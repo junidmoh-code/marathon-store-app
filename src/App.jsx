@@ -272,6 +272,15 @@ function updateProductSizes(id, sizes) {
 // array shape as sneakers — values are S / M / L / XL / XXL / XXXL.
 const CLOTHING_SIZES = ["S", "M", "L", "XL", "XXL", "XXXL"];
 
+// Phase 14A: products can belong to multiple hubs. New shape is `hubs: [...]`,
+// values from { "hub1", "hub2", "hub3" }. Legacy products only have a single
+// `hub` string; getProductHubs unifies both shapes so call sites stay agnostic
+// (no data migration needed). Pine view (Hub 3) ships in Phase 14B.
+const HUB_LABELS = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
+function getProductHubs(product) {
+  return product?.hubs || (product?.hub ? [product.hub] : []);
+}
+
 // Phase 12D: classify an insights_log entry or order as sneaker/clothing.
 // Prefers explicit productType (added on writes after Phase 12D ships) and
 // falls back to a size-letter heuristic for historical entries: the two size
@@ -284,10 +293,16 @@ function inferProductType(entry) {
   return "sneaker";
 }
 
-function updateProductHub(id, hub) {
+function updateProductHubs(id, hubs) {
   if (!id) return Promise.resolve();
-  return update(ref(database, `products/${id}`), { hub })
-    .catch(err => console.warn("updateProductHub failed:", err));
+  // Phase 14A: double-write the legacy `hub` field (= hubs[0]) so out-of-tree
+  // consumers that still read product.hub directly (e.g. the insights Cloud
+  // Function) keep seeing a primary hub. Safe to remove once those callers
+  // migrate to getProductHubs.
+  const patch = { hubs };
+  if (Array.isArray(hubs) && hubs.length) patch.hub = hubs[0];
+  return update(ref(database, `products/${id}`), patch)
+    .catch(err => console.warn("updateProductHubs failed:", err));
 }
 
 // ─── ORDERS HOOK + DIRECT FIREBASE WRITES ────────────────────────────────────
@@ -1355,8 +1370,9 @@ function AdminView({ products, orders, onExit }) {
   const [showAdd, setShowAdd] = useState(false);
   // Phase 12A: productType (sneaker default | clothing). Both types use a
   // shared `sizes` array — sneakers store "3".."11", clothing stores
-  // "S".."XXXL". Clothing's hub is forced to hub2 on save.
-  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hub:"hub1", productType:"sneaker" });
+  // "S".."XXXL". Phase 14A: `hubs` is a multi-select (Hub 1 / Hub 2 / Hub 3);
+  // clothing cannot include Hub 1.
+  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker" });
   // photoMode kept only for back-compat with reset; photo is always uploaded as image now.
   const [saving, setSaving] = useState(false);
   // Inline name editing: editingId = product id being edited, editingName = draft value
@@ -1365,6 +1381,9 @@ function AdminView({ products, orders, onExit }) {
   // Inline sizes editing (works for both types — different option lists).
   const [editSizesId, setEditSizesId]   = useState(null);
   const [editSizesArr, setEditSizesArr] = useState([]);
+  // Inline hubs editing (Phase 14A). Same UX pattern as sizes.
+  const [editHubsId, setEditHubsId]     = useState(null);
+  const [editHubsArr, setEditHubsArr]   = useState([]);
   // Products list search (Phase 12A).
   const [productSearch, setProductSearch] = useState("");
   const sizeOptions = ["3","4","5","5.5","6","7","8","9","10","11"];
@@ -1386,22 +1405,28 @@ function AdminView({ products, orders, onExit }) {
       }
 
       const isClothing = form.productType === "clothing";
+      // Phase 14A: clothing cannot be in Hub 1. Strip defensively and fall
+      // back to a sensible default if everything got unchecked.
+      const cleanedHubs = (isClothing ? form.hubs.filter(h => h !== "hub1") : form.hubs)
+        .filter(h => h === "hub1" || h === "hub2" || h === "hub3");
+      const finalHubs = cleanedHubs.length ? cleanedHubs : (isClothing ? ["hub2"] : ["hub1"]);
       const newProduct = {
         name: form.name,
         category: form.category,
         photo: form.photo,
         photoUrl: photoUrl ?? null,
-        // Clothing routes to Hub 2 only (per Phase 12 brief). The Hub picker
-        // is hidden in the form when Clothing is selected, but we belt-and-
-        // braces the value here.
-        hub: isClothing ? "hub2" : (form.hub || "hub1"),
+        hubs: finalHubs,
+        // Double-write the legacy `hub` field so out-of-tree consumers that
+        // still read product.hub directly (insights Cloud Function, etc.)
+        // keep working. See updateProductHubs comment.
+        hub: finalHubs[0],
         productType: form.productType,
         sizes: form.sizes,
         id,
       };
       await addProductToFirebase(newProduct);
 
-      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hub:"hub1", productType:"sneaker" });
+      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker" });
       setShowAdd(false);
     } catch (err) {
       console.error("addProduct failed:", err);
@@ -1417,6 +1442,14 @@ function AdminView({ products, orders, onExit }) {
   };
 
   const toggleSize = s => setForm(f => ({ ...f, sizes: f.sizes.includes(s) ? f.sizes.filter(x=>x!==s) : [...f.sizes, s] }));
+  const toggleHub  = h => setForm(f => ({ ...f, hubs:  f.hubs.includes(h)  ? f.hubs.filter(x=>x!==h)  : [...f.hubs,  h] }));
+  // Switching to Clothing strips Hub 1 (and falls back to Hub 2 if everything
+  // would go empty). Switching back to Sneaker leaves hubs alone.
+  const setProductType = (nextType) => setForm(f => {
+    if (nextType !== "clothing") return { ...f, productType: nextType };
+    const stripped = f.hubs.filter(h => h !== "hub1");
+    return { ...f, productType: nextType, hubs: stripped.length ? stripped : ["hub2"] };
+  });
 
   // Phase 12A: products filtered by the admin search bar (substring, case-insensitive).
   const filteredProducts = useMemo(() => {
@@ -1523,7 +1556,7 @@ function AdminView({ products, orders, onExit }) {
           <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Product Type</div>
           <div style={{ display:"flex", gap:"0.5rem", marginBottom:"1.25rem" }}>
             {[["sneaker","Sneaker"],["clothing","Clothing"]].map(([val, label]) => (
-              <button key={val} onClick={() => setForm(f => ({ ...f, productType: val }))}
+              <button key={val} onClick={() => setProductType(val)}
                 style={{ padding:"6px 20px", borderRadius:"8px", border:"2px solid", borderColor: form.productType===val?BLUE:"rgba(60,110,255,.15)", background: form.productType===val?"rgba(60,110,255,.12)":"transparent", color: form.productType===val?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.9rem" }}>
                 {label}
               </button>
@@ -1541,25 +1574,26 @@ function AdminView({ products, orders, onExit }) {
             ))}
           </div>
 
-          {form.productType === "sneaker" ? (
-            <>
-              <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Hub</div>
-              <div style={{ display:"flex", gap:"0.5rem", marginBottom:"1.25rem" }}>
-                {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => (
-                  <button key={val} onClick={() => setForm(f => ({ ...f, hub: val }))}
-                    style={{ padding:"6px 20px", borderRadius:"8px", border:"2px solid", borderColor: form.hub===val?BLUE:"rgba(60,110,255,.15)", background: form.hub===val?"rgba(60,110,255,.12)":"transparent", color: form.hub===val?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.9rem" }}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </>
-          ) : (
-            <div style={{ fontSize:"0.78rem", color:"#555", marginBottom:"1.25rem", fontStyle:"italic" }}>Clothing is stocked at Hub 2 only.</div>
-          )}
+          <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Hubs (select at least one)</div>
+          <div style={{ display:"flex", gap:"0.5rem", marginBottom:"0.5rem", flexWrap:"wrap" }}>
+            {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3"]].map(([val, label]) => {
+              const disabled = form.productType === "clothing" && val === "hub1";
+              const checked  = form.hubs.includes(val) && !disabled;
+              return (
+                <button key={val} disabled={disabled} onClick={() => toggleHub(val)}
+                  style={{ padding:"6px 20px", borderRadius:"8px", border:"2px solid", borderColor: checked?BLUE:"rgba(60,110,255,.15)", background: checked?"rgba(60,110,255,.12)":"transparent", color: disabled?"#333":(checked?BLUE_L:"#666"), cursor: disabled?"not-allowed":"pointer", fontWeight:"600", fontSize:"0.9rem", opacity: disabled?0.5:1 }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          {form.productType === "clothing"
+            ? <div style={{ fontSize:"0.78rem", color:"#555", marginBottom:"1.25rem", fontStyle:"italic" }}>Clothing cannot be stocked at Hub 1.</div>
+            : <div style={{ marginBottom:"0.75rem" }}/>}
 
           <button onClick={addProduct}
-                  disabled={saving || !form.name || form.sizes.length === 0}
-                  style={{ ...bBlue, padding:"0.6rem 1.5rem", opacity: (!saving && form.name && form.sizes.length > 0) ? 1 : 0.4 }}>
+                  disabled={saving || !form.name || form.sizes.length === 0 || form.hubs.length === 0}
+                  style={{ ...bBlue, padding:"0.6rem 1.5rem", opacity: (!saving && form.name && form.sizes.length > 0 && form.hubs.length > 0) ? 1 : 0.4 }}>
             {saving ? "Uploading…" : "Save Product"}
           </button>
         </div>
@@ -1585,8 +1619,9 @@ function AdminView({ products, orders, onExit }) {
           </div>
         )}
         {filteredProducts.map(p => {
-          const isEditing = editingId === p.id;
-          const isEditSz  = editSizesId === p.id;
+          const isEditing  = editingId === p.id;
+          const isEditSz   = editSizesId === p.id;
+          const isEditHubs = editHubsId === p.id;
           const isClothing = (p.productType || "sneaker") === "clothing";
           // Legacy clothing products created before this correction may still
           // have a `stock: { S, M, ... }` object and no `sizes` array. Treat
@@ -1630,11 +1665,10 @@ function AdminView({ products, orders, onExit }) {
                           <div style={{ display:"inline-block", background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.25)", color:BLUE_L, fontSize:11, fontWeight:600, padding:"3px 10px", borderRadius:20 }}>
                             {isClothing ? "Clothing" : "Sneaker"}
                           </div>
-                          {/* Hub chip — interactive for sneakers (toggle hub1/hub2). Clothing
-                              is forced to hub2 so the chip is non-clickable. */}
-                          <div onClick={() => { if (!isClothing) updateProductHub(p.id, (p.hub || "hub1") === "hub1" ? "hub2" : "hub1"); }}
-                               style={{ display:"inline-block", background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.3)", color:"#4A7FFF", fontSize:11, fontWeight:600, padding:"3px 10px", borderRadius:20, cursor: isClothing ? "default" : "pointer", opacity: isClothing ? 0.8 : 1 }}>
-                            {isClothing ? "Hub 2" : ((p.hub || "hub1") === "hub1" ? "Hub 1" : "Hub 2")}
+                          {/* Hub chip — read-only display of all assigned hubs.
+                              Use Edit Hubs to change (Phase 14A). */}
+                          <div style={{ display:"inline-block", background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.3)", color:"#4A7FFF", fontSize:11, fontWeight:600, padding:"3px 10px", borderRadius:20 }}>
+                            {getProductHubs(p).map(h => HUB_LABELS[h] || h).join(", ") || "—"}
                           </div>
                         </div>
                       </>
@@ -1665,6 +1699,29 @@ function AdminView({ products, orders, onExit }) {
                       <button onClick={() => setEditSizesId(null)} style={{ ...bGray, padding:"6px 10px", fontSize:12 }}>Cancel</button>
                     </div>
                   </div>
+                ) : isEditHubs ? (
+                  <div style={{ padding:"12px 14px 14px" }}>
+                    <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7, textTransform:"uppercase" }}>Tap to toggle hubs</div>
+                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
+                      {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3"]].map(([val, label]) => {
+                        const disabled = isClothing && val === "hub1";
+                        const on = editHubsArr.includes(val) && !disabled;
+                        return (
+                          <button key={val} disabled={disabled} onClick={() => setEditHubsArr(arr => on ? arr.filter(x => x !== val) : [...arr, val])}
+                                  style={{ padding:"5px 11px", borderRadius:7, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.15)" : "rgba(255,255,255,.05)", color: disabled ? "rgba(255,255,255,.25)" : (on ? "#4A7FFF" : "rgba(255,255,255,.7)"), cursor: disabled ? "not-allowed" : "pointer", fontSize:12, fontWeight:600, opacity: disabled ? 0.5 : 1 }}>{label}</button>
+                        );
+                      })}
+                    </div>
+                    {isClothing && (
+                      <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", marginBottom:8, fontStyle:"italic" }}>Clothing cannot be in Hub 1.</div>
+                    )}
+                    <div style={{ display:"flex", gap:6 }}>
+                      <button onClick={() => { if (editHubsArr.length === 0) return; updateProductHubs(p.id, editHubsArr); setEditHubsId(null); }}
+                              disabled={editHubsArr.length === 0}
+                              style={{ flex:1, ...bBlue, padding:6, fontSize:12, opacity: editHubsArr.length === 0 ? 0.4 : 1 }}>Save Hubs</button>
+                      <button onClick={() => setEditHubsId(null)} style={{ ...bGray, padding:"6px 10px", fontSize:12 }}>Cancel</button>
+                    </div>
+                  </div>
                 ) : (
                   <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px 14px", gap:10 }}>
                     <div style={{ minWidth:0, flex:1 }}>
@@ -1677,11 +1734,16 @@ function AdminView({ products, orders, onExit }) {
                     </div>
                     <div style={{ flexShrink:0 }}>
                       <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7 }}>Actions</div>
-                      <div style={{ display:"flex", gap:6 }}>
+                      <div style={{ display:"flex", gap:6, flexWrap:"wrap", justifyContent:"flex-end" }}>
                         <button onClick={() => { setEditSizesArr([...productSizes]); setEditSizesId(p.id); }}
                                 style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                           Edit Sizes
+                        </button>
+                        <button onClick={() => { setEditHubsArr(getProductHubs(p)); setEditHubsId(p.id); }}
+                                style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                          Edit Hubs
                         </button>
                         <button onClick={() => deleteProduct(p.id, p.name)}
                                 style={{ background:"rgba(180,40,40,.1)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
@@ -1807,10 +1869,15 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   // Filter products by the active mode (sneaker / clothing) + search box.
   // Existing products without productType are treated as sneakers.
+  // Phase 14A: hide Hub 3-only products from the default Store Assistant —
+  // they get their own Pine surface in Phase 14B. Products with no hubs at
+  // all (legacy edge case) still show.
   const filtered = useMemo(() =>
     products.filter(p => {
       const t = p.productType || "sneaker";
       if (t !== mode) return false;
+      const hubs = getProductHubs(p);
+      if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
       const q = search.toLowerCase();
       return p.name.toLowerCase().includes(q) ||
              (p.category || "").toLowerCase().includes(q);
@@ -1868,7 +1935,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerPhone: normalizedPhone,
           // Display Partner orders always go to Hub 1 regardless of product assignment.
           // Regular Display orders follow normal product hub routing.
-          hub: item.requestDisplayPartner ? "hub1" : (item.product.hub || "hub1"),
+          hub: item.requestDisplayPartner ? "hub1" : (getProductHubs(item.product)[0] || "hub1"),
           requestDisplay: item.requestDisplay || false,
           requestDisplayPartner: item.requestDisplayPartner || false,
           status: STATUS.INCOMING,
@@ -2365,7 +2432,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       if (status === STATUS.READY) {
         const product = products.find(p => p.id === order.productId);
         patch.displayRefillScheduledAt     = now;
-        patch.displayRefillHub             = product?.hub || "hub1";
+        patch.displayRefillHub             = getProductHubs(product)[0] || "hub1";
         patch.displayRefillStatus          = null;
         patch.displayRefilledAt            = null;
         patch.displayRefillStockDepletedAt = null;
