@@ -1,0 +1,17 @@
+{
+  "name": "Marathon Club",
+  "short_name": "Marathon",
+  "description": "Marathon Club order management",
+  "theme_color": "#000000",
+  "background_color": "#000000",
+  "display": "standalone",
+  "orientation": "portrait",
+  "scope": "/",
+  "start_url": "/",
+  "icons": [
+    { "src": "/icons/icon-192-circuit.png",          "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512-circuit.png",          "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-192-maskable-circuit.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/icon-512-maskable-circuit.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

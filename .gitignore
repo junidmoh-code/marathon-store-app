@@ -1,0 +1,14 @@
+node_modules
+dist
+.firebase
+.DS_Store
+*.log
+.env
+.env.local
+.env.*.local
+
+.claude/
+
+*-firebase-adminsdk-*.json
+service-account*.json
+*-credentials.json

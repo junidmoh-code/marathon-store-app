@@ -1,0 +1,20 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // TODO: tighten after Phase 1.5 adds Firebase Auth — currently public
+    // write so the Add Product photo upload flow works without auth.
+    match /products/{allPaths=**} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Broadcast media. Public read so the broadcast VM can fetch
+    // unauthenticated; write restricted to the admin email (tightened in
+    // Phase 1.5 once Google Sign-In was live).
+    match /broadcast-media/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null
+                   && request.auth.token.email == "gunidmoh@gmail.com";
+    }
+  }
+}
