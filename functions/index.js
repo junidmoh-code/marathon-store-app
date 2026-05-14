@@ -272,6 +272,16 @@ function saDateStringFromMs(ms) {
   return new Date(ms + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+// Phase 14C: mirror src/App.jsx getProductHubs. Products may carry either the
+// new `hubs: [...]` array or the legacy `hub` string; this helper unifies
+// the two shapes so call sites stay agnostic. Used by buildProductPayload to
+// pick the primary hub for the planner payload.
+function getProductHubs(product) {
+  if (product && Array.isArray(product.hubs) && product.hubs.length) return product.hubs;
+  if (product && product.hub) return [product.hub];
+  return [];
+}
+
 // Build a productName → product index so we can attach insights_log entries
 // (which only carry productName) back to a real product record. Collisions
 // are recorded so the model can be warned via dataQualityNotes.
@@ -511,7 +521,7 @@ function buildProductPayload(e, nowMs) {
     productId:     p.id,
     productName:   p.name,
     productType:   p.productType || "sneaker",
-    hub:           p.hub || "hub1",
+    hub:           getProductHubs(p)[0] || "hub1",
     category:      p.category || "",
     availableSizes: Array.isArray(p.sizes) ? p.sizes : [],
     sizePopularity: sizePopularityPct(e.bySize, e.placedTotal),

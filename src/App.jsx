@@ -295,13 +295,7 @@ function inferProductType(entry) {
 
 function updateProductHubs(id, hubs) {
   if (!id) return Promise.resolve();
-  // Phase 14A: double-write the legacy `hub` field (= hubs[0]) so out-of-tree
-  // consumers that still read product.hub directly (e.g. the insights Cloud
-  // Function) keep seeing a primary hub. Safe to remove once those callers
-  // migrate to getProductHubs.
-  const patch = { hubs };
-  if (Array.isArray(hubs) && hubs.length) patch.hub = hubs[0];
-  return update(ref(database, `products/${id}`), patch)
+  return update(ref(database, `products/${id}`), { hubs })
     .catch(err => console.warn("updateProductHubs failed:", err));
 }
 
@@ -1416,10 +1410,6 @@ function AdminView({ products, orders, onExit }) {
         photo: form.photo,
         photoUrl: photoUrl ?? null,
         hubs: finalHubs,
-        // Double-write the legacy `hub` field so out-of-tree consumers that
-        // still read product.hub directly (insights Cloud Function, etc.)
-        // keep working. See updateProductHubs comment.
-        hub: finalHubs[0],
         productType: form.productType,
         sizes: form.sizes,
         id,
@@ -5925,6 +5915,12 @@ function InsightsView({ onExit }) {
   // in 6 of 9 tabs; hidden on tabs where it doesn't make sense (sizes,
   // depleted, clothing-refills).
   const [category,   setCategory]   = useState("both");
+  // Phase 14C: top-level store filter — slices every Insights tab to a
+  // subset of events tagged with placedAtHub. "all" is current behavior,
+  // "central" keeps hub1/hub2 events, "pine" keeps hub3 events. Events
+  // missing placedAtHub (pre-14B history) are excluded by Central/Pine
+  // until the backfill stamps them.
+  const [storeFilter, setStoreFilter] = useState("all");
   const [auditOpen,  setAuditOpen]  = useState(false);
   const touchStartX = useRef(null);
   const log        = useInsightsLog();
@@ -5932,16 +5928,30 @@ function InsightsView({ onExit }) {
   const products   = useProducts();
   const orders     = useOrders();
 
+  // Pre-filter the three event streams by storeFilter so every downstream
+  // tab/audit consumes an already-narrowed slice. dedupeByOrderNumber and
+  // excludeReturnedOrderNumbers continue to operate on whatever passes through.
+  const matchesStore = useMemo(() => {
+    if (storeFilter === "all") return () => true;
+    if (storeFilter === "pine") return (e) => e && e.placedAtHub === "hub3";
+    return (e) => e && (e.placedAtHub === "hub1" || e.placedAtHub === "hub2");
+  }, [storeFilter]);
+  const filteredLog        = useMemo(() => log.filter(matchesStore),         [log, matchesStore]);
+  const filteredReturnsLog = useMemo(() => returnsLog.filter(matchesStore),  [returnsLog, matchesStore]);
+  const filteredOrders     = useMemo(() => orders.filter(matchesStore),      [orders, matchesStore]);
+
   // ── ORDER AUDIT — runs in-memory, renders to a modal ─────────────────────
+  // Phase 14C: respects the storeFilter via filteredOrders / filteredReturnsLog,
+  // so the audit reflects the same slice the user is viewing.
   const audit = useMemo(() => {
     const today = getSADateString();
     const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow"]);
-    const onTodayCreated = orders.filter(o => o.createdAt && o.createdAt.slice(0,10) === today);
+    const onTodayCreated = filteredOrders.filter(o => o.createdAt && o.createdAt.slice(0,10) === today);
 
     // Status distributions
     const byStatusAll = {};
     const byStatusToday = {};
-    orders.forEach(o => {
+    filteredOrders.forEach(o => {
       const s = o.status === undefined ? "(undefined)" : (o.status || "(empty)");
       byStatusAll[s] = (byStatusAll[s] || 0) + 1;
     });
@@ -5983,11 +5993,11 @@ function InsightsView({ onExit }) {
     const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING]);
     const unaccounted = onTodayCreated.filter(o => !accounted.has(o.status));
 
-    const returnsToday = returnsLog.filter(r => (r.timestamp||"").slice(0,10) === today).length;
+    const returnsToday = filteredReturnsLog.filter(r => (r.timestamp||"").slice(0,10) === today).length;
 
     return {
       today,
-      totalAll: orders.length,
+      totalAll: filteredOrders.length,
       totalToday: onTodayCreated.length,
       byStatusAll, byStatusToday,
       minNum, maxNum, gaps, dups,
@@ -5997,7 +6007,7 @@ function InsightsView({ onExit }) {
       returnsToday,
       netSales: (ready + collected) - returnsToday,
     };
-  }, [orders, returnsLog]);
+  }, [filteredOrders, filteredReturnsLog]);
 
   // Compute filterStart / filterEnd (exclusive) / filterLabel from mode + anchor date.
   const { filterStart, filterEnd, filterLabel } = useMemo(() => {
@@ -6111,7 +6121,23 @@ function InsightsView({ onExit }) {
           </svg>
           <div style={{ fontSize:12, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>INTERNAL INSIGHTS</div>
         </div>
-        <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{log.length} entries</div>
+        <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{filteredLog.length} entries</div>
+      </div>
+      {/* Phase 14C: Store filter — All / Central / Pine. Applies to every tab. */}
+      <div style={{ padding:"10px 14px 0", display:"flex", gap:6 }}>
+        {[["all","All"],["central","Central"],["pine","Pine"]].map(([val, label]) => {
+          const on = storeFilter === val;
+          return (
+            <button key={val} onClick={() => setStoreFilter(val)}
+              style={{ flex:1, padding:"7px 10px", borderRadius:10, fontSize:11.5, fontWeight:700, cursor:"pointer",
+                       background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)",
+                       border: "1px solid " + (on ? "rgba(60,110,255,.55)" : "rgba(255,255,255,.08)"),
+                       color: on ? "#fff" : "rgba(255,255,255,.5)",
+                       boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
+              {label}
+            </button>
+          );
+        })}
       </div>
       {/* TAB BAR */}
       <div style={{ display:"flex", overflowX:"auto", scrollbarWidth:"none", padding:"10px 14px 0", gap:0, borderBottom:"1px solid rgba(255,255,255,.06)", marginBottom:12 }}>
@@ -6165,15 +6191,15 @@ function InsightsView({ onExit }) {
       <div style={{ padding:"0 14px 16px" }}
         onTouchStart={e => { touchStartX.current = e.touches[0].clientX; }}
         onTouchEnd={handleSwipe}>
-        {tab==="overview"         && <InsightOverviewTab        log={log} returnsLog={returnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={orders} filterMode={filterMode} filterDate={filterDate} category={category} />}
-        {tab==="sales"            && <InsightSalesSummaryTab    log={log} returnsLog={returnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={orders} filterMode={filterMode} filterDate={filterDate} category={category} />}
-        {tab==="search"           && <InsightProductSearchTab   log={log} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} category={category} />}
-        {tab==="oos"              && <InsightOOSTrackerTab      log={log} returnsLog={returnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={orders} filterMode={filterMode} filterDate={filterDate} category={category} />}
-        {tab==="sizes"            && <InsightSizePopularityTab  log={log} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="times"            && <InsightBusiestTimesTab    log={log} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="returns"          && <InsightReturnsTab         returnsLog={returnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="clothing-refills" && <InsightClothingRefillsTab orders={orders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
-        {tab==="depleted"         && <InsightStockDepletedTab   orders={orders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
+        {tab==="overview"         && <InsightOverviewTab        log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+        {tab==="sales"            && <InsightSalesSummaryTab    log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+        {tab==="search"           && <InsightProductSearchTab   log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} category={category} />}
+        {tab==="oos"              && <InsightOOSTrackerTab      log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+        {tab==="sizes"            && <InsightSizePopularityTab  log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+        {tab==="times"            && <InsightBusiestTimesTab    log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+        {tab==="returns"          && <InsightReturnsTab         returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+        {tab==="clothing-refills" && <InsightClothingRefillsTab orders={filteredOrders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
+        {tab==="depleted"         && <InsightStockDepletedTab   orders={filteredOrders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
       </div>
 
       {/* AUDIT MODAL */}
