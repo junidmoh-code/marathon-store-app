@@ -5931,10 +5931,13 @@ function InsightsView({ onExit }) {
   // Pre-filter the three event streams by storeFilter so every downstream
   // tab/audit consumes an already-narrowed slice. dedupeByOrderNumber and
   // excludeReturnedOrderNumbers continue to operate on whatever passes through.
+  // Central treats missing placedAtHub as Central — historical events
+  // pre-date Phase 14B and were all placed in the central universe, so the
+  // filter is self-healing without a backfill. Pine stays strict.
   const matchesStore = useMemo(() => {
     if (storeFilter === "all") return () => true;
     if (storeFilter === "pine") return (e) => e && e.placedAtHub === "hub3";
-    return (e) => e && (e.placedAtHub === "hub1" || e.placedAtHub === "hub2");
+    return (e) => e && (!e.placedAtHub || e.placedAtHub === "hub1" || e.placedAtHub === "hub2");
   }, [storeFilter]);
   const filteredLog        = useMemo(() => log.filter(matchesStore),         [log, matchesStore]);
   const filteredReturnsLog = useMemo(() => returnsLog.filter(matchesStore),  [returnsLog, matchesStore]);
