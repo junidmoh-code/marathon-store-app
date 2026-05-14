@@ -1713,8 +1713,8 @@ function AdminView({ products, orders, onExit }) {
                     </div>
                   </div>
                 ) : (
-                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px 14px", gap:10 }}>
-                    <div style={{ minWidth:0, flex:1 }}>
+                  <div style={{ display:"flex", flexDirection:"column", padding:"12px 14px 14px", gap:10 }}>
+                    <div style={{ minWidth:0 }}>
                       <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7 }}>Sizes</div>
                       <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
                         {productSizes.map(s => (
@@ -1722,7 +1722,7 @@ function AdminView({ products, orders, onExit }) {
                         ))}
                       </div>
                     </div>
-                    <div style={{ flexShrink:0 }}>
+                    <div>
                       <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7 }}>Actions</div>
                       <div style={{ display:"flex", gap:6, flexWrap:"wrap", justifyContent:"flex-end" }}>
                         <button onClick={() => { setEditSizesArr([...productSizes]); setEditSizesId(p.id); }}
