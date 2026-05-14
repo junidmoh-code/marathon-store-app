@@ -1852,6 +1852,15 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Phase 12B: product type mode toggle. "sneaker" default. Filters the grid
   // and switches the card UX (size-picker sheet vs inline qty steppers).
   const [mode, setMode]                                 = useState("sneaker");
+  // Phase 14B: Central / Pine universe toggle. Persists per device so the
+  // Pine iPad stays Pine across reloads. "central" sees hub1/hub2 products
+  // and routes orders to those hubs; "pine" sees hub3 products and routes
+  // every order to hub3.
+  const [storeMode, setStoreMode] = useState(() => localStorage.getItem("storeAssistantMode") || "central");
+  const selectStoreMode = (next) => {
+    localStorage.setItem("storeAssistantMode", next);
+    setStoreMode(next);
+  };
   const [selected, setSelected]                         = useState(null);   // product in size picker
   const [pendingSize, setPendingSize]                   = useState("");
   const [pendingDisplayRequest, setPendingDisplay]      = useState(false);
@@ -1869,20 +1878,32 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   // Filter products by the active mode (sneaker / clothing) + search box.
   // Existing products without productType are treated as sneakers.
-  // Phase 14A: hide Hub 3-only products from the default Store Assistant —
-  // they get their own Pine surface in Phase 14B. Products with no hubs at
-  // all (legacy edge case) still show.
+  // Phase 14B: Central universe shows hub1/hub2 products; Pine universe
+  // shows hub3 products. Products with no hubs at all (legacy edge case)
+  // still show in Central only.
   const filtered = useMemo(() =>
     products.filter(p => {
       const t = p.productType || "sneaker";
       if (t !== mode) return false;
       const hubs = getProductHubs(p);
-      if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
+      if (storeMode === "pine") {
+        if (!hubs.includes("hub3")) return false;
+      } else {
+        if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
+      }
       const q = search.toLowerCase();
       return p.name.toLowerCase().includes(q) ||
              (p.category || "").toLowerCase().includes(q);
     }),
-  [products, search, mode]);
+  [products, search, mode, storeMode]);
+
+  // Compute the hub an order placed right now should land in. Single source
+  // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
+  const computeHubForItem = (item) => {
+    if (storeMode === "pine") return "hub3";
+    if (item.requestDisplayPartner) return "hub1";
+    return getProductHubs(item.product).find(h => h === "hub1" || h === "hub2") || "hub1";
+  };
 
   // Cart-driven submit decisions: any sneaker line forces the Checkout flow
   // (needs customer info + WhatsApp). All-clothing carts skip the sheet.
@@ -1923,6 +1944,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       const sneakerCart = cart.filter(it => (it.productType || "sneaker") === "sneaker");
       for (const item of sneakerCart) {
         const orderNum = await getNextOrderNumber();
+        const placedHub = computeHubForItem(item);
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -1933,9 +1955,10 @@ function AssistantView({ products, onExit, orders = [] }) {
           sentSize: null,
           customerName,
           customerPhone: normalizedPhone,
-          // Display Partner orders always go to Hub 1 regardless of product assignment.
-          // Regular Display orders follow normal product hub routing.
-          hub: item.requestDisplayPartner ? "hub1" : (getProductHubs(item.product)[0] || "hub1"),
+          // Phase 14B: hub mirrors placedAtHub (Central pine routing) — Display
+          // Partner stays hub1 in Central; Pine always routes to hub3.
+          hub: placedHub,
+          placedAtHub: placedHub,
           requestDisplay: item.requestDisplay || false,
           requestDisplayPartner: item.requestDisplayPartner || false,
           status: STATUS.INCOMING,
@@ -1970,6 +1993,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerPhone: normalizedPhone,
           orderNumber: orderNum,
           action: "placed",
+          placedAtHub: placedHub,
         });
         sendWhatsAppTemplate(normalizedPhone, "order_placed", [customerName, orderNum, item.product.name, item.size]);
         placed.push(order);
@@ -2001,6 +2025,8 @@ function AssistantView({ products, onExit, orders = [] }) {
       const placed = [];
       for (const item of clothingCart) {
         const orderNum = await getNextOrderNumber();
+        // Phase 14B: Pine clothing refills route to hub3; Central stays on hub2.
+        const placedHub = storeMode === "pine" ? "hub3" : "hub2";
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -2012,7 +2038,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           qty: item.qty || 1,
           customerName: "Shop Refill",
           customerPhone: null,
-          hub: "hub2",
+          hub: placedHub,
+          placedAtHub: placedHub,
           productType: "clothing",
           requestDisplay: false,
           requestDisplayPartner: false,
@@ -2049,6 +2076,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerPhone: null,
           orderNumber: orderNum,
           action: "placed",
+          placedAtHub: placedHub,
         });
         placed.push(order);
       }
@@ -2091,6 +2119,25 @@ function AssistantView({ products, onExit, orders = [] }) {
             return (
               <button key={val} onClick={() => setMode(val)}
                 style={{ padding:"6px 12px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
+                         background: on ? "rgba(60,110,255,.25)" : "transparent",
+                         color: on ? "#fff" : "rgba(255,255,255,.5)",
+                         boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Phase 14B: Central / Pine universe toggle. Per-device localStorage —
+          Pine's iPad once flipped stays Pine forever. */}
+      <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
+        <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
+          {[["central","Central"],["pine","Pine"]].map(([val, label]) => {
+            const on = storeMode === val;
+            return (
+              <button key={val} onClick={() => selectStoreMode(val)}
+                style={{ padding:"6px 22px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
                          background: on ? "rgba(60,110,255,.25)" : "transparent",
                          color: on ? "#fff" : "rgba(255,255,255,.5)",
                          boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
@@ -2227,10 +2274,13 @@ function AssistantView({ products, onExit, orders = [] }) {
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayRequest?BLUE:"rgba(60,110,255,.15)"}`, background:pendingDisplayRequest?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayRequest?BLUE:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
                   Request Display
                 </button>
+                {/* Phase 14B: Display Partner routes to Hub 1 — hidden in Pine mode. */}
+                {storeMode !== "pine" && (
                 <button onClick={() => setPendingDisplayPartner(v => !v)}
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
                   Display Partner
                 </button>
+                )}
               </div>
             </div>
 
@@ -2340,22 +2390,27 @@ function WarehouseView({ products = [], orders, onExit }) {
   const [filter, setFilter] = useState("incoming");
   const [onHoldExpanded, setOnHoldExpanded] = useState(false);
   const [selectedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
-  // Phase 12C: clamp mainTab when the user switches hubs and the previously
-  // selected tab no longer exists for the new hub (Restock on hub1 vs
+  // Phase 12C/14B: clamp mainTab when the user switches hubs and the previously
+  // selected tab no longer exists for the new hub (Restock on hub1/hub3 vs
   // Clothing on hub2). Fall back to Order Queue. NOTE: must come AFTER
   // selectedHub's declaration — placing this useEffect before it triggers a
   // TDZ ReferenceError on the dependency array evaluation at render time.
   useEffect(() => {
     if (selectedHub === "hub2" && mainTab === "restock")  setMainTab("queue");
-    if (selectedHub === "hub1" && mainTab === "clothing") setMainTab("queue");
+    if ((selectedHub === "hub1" || selectedHub === "hub3") && mainTab === "clothing") setMainTab("queue");
   }, [selectedHub, mainTab]);
+  // Phase 14B: hub3 filters by placedAtHub (the source of truth for the Pine
+  // universe); hub1/hub2 still use the legacy order.hub field for back-compat.
+  const orderInHub = (o, h) => h === "hub3"
+    ? o.placedAtHub === "hub3"
+    : (o.hub || "hub1") === h;
   const todayDate    = getSADateString();
   // Restock tab: derive counts from COLLECTED orders only — no Firebase log needed.
   // Hooks must stay above every conditional return (React rules).
   const rawCounts    = useMemo(() => {
     const todayCollected = orders.filter(o =>
       o.status === STATUS.COLLECTED &&
-      (selectedHub ? (o.hub || "hub1") === selectedHub : true) &&
+      (selectedHub ? orderInHub(o, selectedHub) : true) &&
       orderCollectedDate(o) === todayDate
     );
     return computeCollectedCounts(todayCollected);
@@ -2373,13 +2428,13 @@ function WarehouseView({ products = [], orders, onExit }) {
       <div style={{ minHeight:"100vh", background:BG, color:"#fff", fontFamily:FONT, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"2rem" }}>
         <div style={{ fontWeight:"800", fontSize:"1.5rem", letterSpacing:"0.06em", marginBottom:"0.5rem", color:"#fff" }}>WAREHOUSE</div>
         <p style={{ color:"#555", marginBottom:"2.5rem", fontSize:"0.9rem" }}>Select your hub to continue</p>
-        <div style={{ display:"flex", gap:"1.25rem", width:"100%", maxWidth:"440px" }}>
-          {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => (
+        <div style={{ display:"flex", gap:"1rem", width:"100%", maxWidth:"520px" }}>
+          {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3"]].map(([val, label]) => (
             <button key={val} onClick={() => selectHub(val)}
-              style={{ flex:1, background:CARD, border:BORDER, borderRadius:RADIUS, padding:"2.5rem 1rem", cursor:"pointer", color:"#fff", textAlign:"center", boxShadow:GLOW, transition:"border-color 0.15s" }}
+              style={{ flex:1, background:CARD, border:BORDER, borderRadius:RADIUS, padding:"2.2rem 0.75rem", cursor:"pointer", color:"#fff", textAlign:"center", boxShadow:GLOW, transition:"border-color 0.15s" }}
               onMouseEnter={e => { e.currentTarget.style.borderColor=`rgba(60,110,255,.5)`; }}
               onMouseLeave={e => { e.currentTarget.style.borderColor=`rgba(60,110,255,.12)`; }}>
-              <div style={{ fontWeight:"800", fontSize:"2.2rem", color:BLUE, marginBottom:"0.3rem" }}>{label}</div>
+              <div style={{ fontWeight:"800", fontSize:"2rem", color:BLUE, marginBottom:"0.3rem" }}>{label}</div>
               <div style={{ color:"#555", fontSize:"0.85rem" }}>Tap to select</div>
             </button>
           ))}
@@ -2388,8 +2443,10 @@ function WarehouseView({ products = [], orders, onExit }) {
     );
   }
 
-  // Filter orders to only this hub (orders without a hub default to hub1)
-  const hubOrders = orders.filter(o => (o.hub || "hub1") === selectedHub);
+  // Filter orders to only this hub. hub1/hub2: legacy order.hub field.
+  // hub3 (Phase 14B): placedAtHub field — orders flow in here based on which
+  // Store Assistant universe they were placed in.
+  const hubOrders = orders.filter(o => orderInHub(o, selectedHub));
 
   // pickerOpenId — the order whose Substitute Size picker is currently expanded.
   // Only one open at a time (mobile real estate). Cleared after a pick or cancel.
@@ -2414,6 +2471,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         size: order.size,
         orderNumber: order.id,
         hub: order.hub || selectedHub,
+        placedAtHub: order.placedAtHub || order.hub || selectedHub,
       }).catch(err => console.warn("logRestock failed:", err));
     }
     const patch = { status, updatedAt: now, ...extraPatch };
@@ -2432,7 +2490,10 @@ function WarehouseView({ products = [], orders, onExit }) {
       if (status === STATUS.READY) {
         const product = products.find(p => p.id === order.productId);
         patch.displayRefillScheduledAt     = now;
-        patch.displayRefillHub             = getProductHubs(product)[0] || "hub1";
+        // Phase 14B: refill task routes by where the order was placed —
+        // Pine-placed orders go to Hub 3's refill section. Falls back to the
+        // product's stocking hub for legacy orders without placedAtHub.
+        patch.displayRefillHub             = order.placedAtHub || getProductHubs(product)[0] || "hub1";
         patch.displayRefillStatus          = null;
         patch.displayRefilledAt            = null;
         patch.displayRefillStockDepletedAt = null;
@@ -2455,6 +2516,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       customerPhone: order.customerPhone,
       orderNumber: order.id,
       action: insightAction,
+      placedAtHub: order.placedAtHub || order.hub || "hub1",
     });
     // ── WhatsApp notifications ───────────────────────────────────────────────
     // order_ready template: pass customer_name and order_number ONLY.
@@ -2590,6 +2652,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         status: o.clothingRefillStatus || null,
         refilledAt: o.clothingRefilledAt || null,
         outOfStockAt: o.clothingOutOfStockAt || null,
+        placedAtHub: o.placedAtHub || o.hub || "hub2",
       });
     });
     const active = [];
@@ -2654,6 +2717,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         customerPhone: null,
         orderNumber: it.orderId,
         action: insightAction,
+        placedAtHub: it.placedAtHub || "hub2",
       });
     });
   };
@@ -2737,7 +2801,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       {/* HUB ROW */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px 10px" }}>
         <div style={{ background:"rgba(20,40,120,.5)", border:"1px solid rgba(60,110,255,.5)", borderRadius:10, padding:"7px 16px", color:"#4A7FFF", fontSize:13, fontWeight:700 }}>
-          {selectedHub === "hub1" ? "Hub 1" : "Hub 2"}
+          {HUB_LABELS[selectedHub] || selectedHub}
         </div>
         <div onClick={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }}
              style={{ background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"7px 16px", color:"rgba(255,255,255,.7)", fontSize:12, fontWeight:500, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
@@ -2791,7 +2855,9 @@ function WarehouseView({ products = [], orders, onExit }) {
         </div>
       )}
 
-      {/* TABS — middle slot is Restock Status on hub1, Clothing on hub2 (Phase 12C) */}
+      {/* TABS — middle slot is Restock Status on hub1/hub3, Clothing on hub2
+          (Phase 12C / 14B). hub3 mirrors hub1's tab set; if a clothing tab is
+          needed for Pine later, add it here. */}
       <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
         {(selectedHub === "hub2"
           ? [
@@ -3050,7 +3116,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
     <div style={{ textAlign:"center", color:"#444", padding:"4rem" }}>
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#F59E0B" strokeOpacity="0.4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       <div style={{ fontSize:"1rem", marginTop:"0.75rem", color:"rgba(255,255,255,.55)" }}>No display refills pending.</div>
-      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Partner orders sent from {selectedHub === "hub1" ? "Hub 1" : "Hub 2"} appear here 15 minutes after they're marked sent.</div>
+      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Partner orders sent from {HUB_LABELS[selectedHub] || selectedHub} appear here 15 minutes after they're marked sent.</div>
     </div>
   );
 
@@ -4541,6 +4607,7 @@ function ReturnsView({ orders, onExit }) {
       size:        order.size,
       customerName:order.customerName,
       reason:      null,
+      placedAtHub: order.placedAtHub || order.hub || "hub1",
     });
     setExpandedId(null);
   };
