@@ -3574,7 +3574,12 @@ function useCountdown(fromIso, totalSeconds) {
   return secsLeft;
 }
 
-// ─── TV ORDER CARD ────────────────────────────────────────────────────────────
+// ─── TV ORDER ROW ─────────────────────────────────────────────────────────────
+// Dense single-line row used by every column on the TV display. Target:
+// ~38–42px row height so a 1080p screen fits ~25 rows per status column
+// without scrolling. Order number is the dominant visual element on the
+// left; customer + product on the right; optional timer on the far right
+// for Ready / Out of Stock. timerFrom=null skips the timer block.
 function TVCard({ order, color, timerFrom, timerTotal, onExpire }) {
   const secsLeft = useCountdown(timerFrom, timerTotal);
 
@@ -3586,17 +3591,18 @@ function TVCard({ order, color, timerFrom, timerTotal, onExpire }) {
   const mins = secsLeft !== null ? Math.floor(secsLeft / 60) : null;
   const secs = secsLeft !== null ? secsLeft % 60 : null;
   const urgent = secsLeft !== null && secsLeft <= 120; // last 2 mins
+  const meta = [order.productName, order.size ? `Sz ${order.size}` : null].filter(Boolean).join(" ");
 
   return (
-    <div style={{ background:CARD, border:`2px solid ${urgent ? "#F87171" : color}44`, borderRadius:"18px", padding:"1.25rem 1.5rem", display:"flex", flexDirection:"column", gap:"0.4rem", transition:"border-color 0.5s" }}>
-      <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"3.5rem", color, lineHeight:1, letterSpacing:"0.05em" }}>#{order.id}</div>
-      <div style={{ fontWeight:"600", fontSize:"1.1rem", color:"#ddd" }}>{order.customerName}</div>
+    <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", padding:"4px 8px", minHeight:"38px", borderBottom:"1px solid rgba(255,255,255,.05)", fontFamily:FONT }}>
+      <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.8rem", color, lineHeight:1, letterSpacing:"0.02em", minWidth:"85px" }}>#{order.id}</div>
+      <div style={{ flex:1, minWidth:0, fontSize:"1rem", color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+        <span style={{ fontWeight:600 }}>{order.customerName}</span>
+        {meta && <span style={{ color:"rgba(255,255,255,.45)", marginLeft:"0.5rem", fontWeight:500 }}>· {meta}</span>}
+      </div>
       {secsLeft !== null && (
-        <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginTop:"0.25rem" }}>
-          <div style={{ fontFamily:"monospace", fontSize:"1.4rem", fontWeight:"700", color: urgent?"#F87171":color, animation: urgent?"pulse 1s infinite":"none" }}>
-            {String(mins).padStart(2,"0")}:{String(secs).padStart(2,"0")}
-          </div>
-          <div style={{ color:"#444", fontSize:"0.75rem" }}>{urgent && secsLeft > 0 ? "⚠️ Expiring soon" : secsLeft === 0 ? "Expired" : "remaining"}</div>
+        <div style={{ fontFamily:"monospace", fontSize:"1rem", fontWeight:"700", color: urgent?"#F87171":color, lineHeight:1, minWidth:"55px", textAlign:"right", animation: urgent?"pulse 1s infinite":"none" }}>
+          {String(mins).padStart(2,"0")}:{String(secs).padStart(2,"0")}
         </div>
       )}
     </div>
@@ -3649,8 +3655,8 @@ function DisplayView({ orders }) {
 
   const colStyle = borderColor => ({
     flex:1, background:"rgba(4,5,10,.98)", border:`2px solid ${borderColor}22`,
-    borderRadius:RADIUS, padding:"1.5rem", display:"flex", flexDirection:"column",
-    gap:"0.75rem", overflow:"auto",
+    borderRadius:RADIUS, padding:"0.75rem 0.5rem 0.75rem 0.75rem", display:"flex", flexDirection:"column",
+    overflow:"auto",
   });
 
   return (
@@ -3691,27 +3697,22 @@ function DisplayView({ orders }) {
       <div style={{ flex:1, display:"flex", gap:"1rem", padding:"1rem 1.5rem", overflow:"hidden" }}>
 
         <div style={colStyle("#4A7FFF")}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.75rem", marginBottom:"0.25rem" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.5rem", letterSpacing:"0.05em", color:"#4A7FFF" }}>INCOMING</span>
-            {incoming.length > 0 && <span style={{ marginLeft:"auto", background:"#4A7FFF", color:"#000", borderRadius:"999px", padding:"1px 9px", fontWeight:"700", fontSize:"0.85rem", animation:"pulse 2s infinite" }}>{incoming.length}</span>}
+          <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.15rem", letterSpacing:"0.05em", color:"#4A7FFF" }}>INCOMING</span>
+            {incoming.length > 0 && <span style={{ marginLeft:"auto", background:"#4A7FFF", color:"#000", borderRadius:"999px", padding:"1px 8px", fontWeight:"700", fontSize:"0.8rem", animation:"pulse 2s infinite" }}>{incoming.length}</span>}
           </div>
           {incoming.length === 0
             ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No incoming orders</div>
-            : incoming.map(o => (
-              <div key={o.id} style={{ background:"#111", border:"2px solid #4A7FFF44", borderRadius:"18px", padding:"1.25rem 1.5rem" }}>
-                <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"3.5rem", color:"#4A7FFF", lineHeight:1, letterSpacing:"0.05em" }}>#{o.id}</div>
-                <div style={{ fontWeight:"600", fontSize:"1.1rem", color:"#ddd" }}>{o.customerName}</div>
-              </div>
-            ))}
+            : incoming.map(o => <TVCard key={o.id} order={o} color="#4A7FFF" timerFrom={null} timerTotal={null} onExpire={null} />)}
         </div>
 
         <div style={colStyle("#4ADE80")}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.75rem", marginBottom:"0.25rem" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.5rem", color:"#4ADE80", letterSpacing:"0.05em" }}>READY</span>
+          <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.15rem", color:"#4ADE80", letterSpacing:"0.05em" }}>READY</span>
             <span style={{ color:"#2a2a2a", fontSize:"0.7rem", marginLeft:"auto" }}>8 min to collect</span>
-            {ready.length > 0 && <span style={{ background:"#4ADE80", color:"#000", borderRadius:"999px", padding:"1px 9px", fontWeight:"700", fontSize:"0.85rem" }}>{ready.length}</span>}
+            {ready.length > 0 && <span style={{ background:"#4ADE80", color:"#000", borderRadius:"999px", padding:"1px 8px", fontWeight:"700", fontSize:"0.8rem" }}>{ready.length}</span>}
           </div>
           {ready.length === 0
             ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No orders ready yet</div>
@@ -3719,11 +3720,11 @@ function DisplayView({ orders }) {
         </div>
 
         <div style={colStyle("#F87171")}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.75rem", marginBottom:"0.25rem" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.5rem", color:"#F87171", letterSpacing:"0.05em" }}>OUT OF STOCK</span>
+          <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.15rem", color:"#F87171", letterSpacing:"0.05em" }}>OUT OF STOCK</span>
             <span style={{ color:"#2a2a2a", fontSize:"0.7rem", marginLeft:"auto" }}>8 min display</span>
-            {outOfStock.length > 0 && <span style={{ background:"#F87171", color:"#000", borderRadius:"999px", padding:"1px 9px", fontWeight:"700", fontSize:"0.85rem" }}>{outOfStock.length}</span>}
+            {outOfStock.length > 0 && <span style={{ background:"#F87171", color:"#000", borderRadius:"999px", padding:"1px 8px", fontWeight:"700", fontSize:"0.8rem" }}>{outOfStock.length}</span>}
           </div>
           {outOfStock.length === 0
             ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>Nothing out of stock</div>
@@ -3731,20 +3732,14 @@ function DisplayView({ orders }) {
         </div>
 
         <div style={colStyle(BLUE_L)}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.75rem", marginBottom:"0.25rem" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={BLUE_L} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.5rem", color:BLUE_L, letterSpacing:"0.05em" }}>COMING TOMORROW</span>
-            {comingTomorrow.length > 0 && <span style={{ marginLeft:"auto", background:BLUE_L, color:"#000", borderRadius:"999px", padding:"1px 9px", fontWeight:"700", fontSize:"0.85rem" }}>{comingTomorrow.length}</span>}
+          <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={BLUE_L} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.15rem", color:BLUE_L, letterSpacing:"0.05em" }}>COMING TOMORROW</span>
+            {comingTomorrow.length > 0 && <span style={{ marginLeft:"auto", background:BLUE_L, color:"#000", borderRadius:"999px", padding:"1px 8px", fontWeight:"700", fontSize:"0.8rem" }}>{comingTomorrow.length}</span>}
           </div>
           {comingTomorrow.length === 0
             ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No orders for tomorrow</div>
-            : comingTomorrow.map(o => (
-              <div key={o.id} style={{ background:CARD, border:`2px solid rgba(60,110,255,.25)`, borderRadius:"18px", padding:"1.25rem 1.5rem" }}>
-                <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"3.5rem", color:BLUE_L, lineHeight:1, letterSpacing:"0.05em" }}>#{o.id}</div>
-                <div style={{ fontWeight:"600", fontSize:"1.1rem", color:"#ddd" }}>{o.customerName}</div>
-                <div style={{ color:BLUE_L, fontSize:"0.75rem", marginTop:"0.25rem" }}>Available tomorrow</div>
-              </div>
-            ))}
+            : comingTomorrow.map(o => <TVCard key={o.id} order={o} color={BLUE_L} timerFrom={null} timerTotal={null} onExpire={null} />)}
         </div>
 
       </div>
