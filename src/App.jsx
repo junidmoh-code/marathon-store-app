@@ -3558,66 +3558,47 @@ function CustomerView({ orders, onExit }) {
   );
 }
 
-// ─── COUNTDOWN HOOK ───────────────────────────────────────────────────────────
-function useCountdown(fromIso, totalSeconds) {
-  const [secsLeft, setSecsLeft] = useState(null);
-  useEffect(() => {
-    if (!fromIso) return;
-    const tick = () => {
-      const elapsed = Math.floor((Date.now() - new Date(fromIso).getTime()) / 1000);
-      setSecsLeft(Math.max(0, totalSeconds - elapsed));
-    };
-    tick();
-    const t = setInterval(tick, 1000);
-    return () => clearInterval(t);
-  }, [fromIso, totalSeconds]);
-  return secsLeft;
-}
-
-// ─── TV ORDER ROW ─────────────────────────────────────────────────────────────
-// Dense single-line row used by every column on the TV display. Target:
-// ~38–42px row height so a 1080p screen fits ~25 rows per status column
-// without scrolling. Order number is the dominant visual element on the
-// left; customer + product on the right; optional timer on the far right
-// for Ready / Out of Stock. timerFrom=null skips the timer block.
-function TVCard({ order, color, timerFrom, timerTotal, onExpire }) {
-  const secsLeft = useCountdown(timerFrom, timerTotal);
-
-  useEffect(() => {
-    if (secsLeft === 0 && onExpire) onExpire(order.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secsLeft]);
-
-  const mins = secsLeft !== null ? Math.floor(secsLeft / 60) : null;
-  const secs = secsLeft !== null ? secsLeft % 60 : null;
-  const urgent = secsLeft !== null && secsLeft <= 120; // last 2 mins
-  const meta = [order.productName, order.size ? `Sz ${order.size}` : null].filter(Boolean).join(" ");
-
-  return (
-    <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", padding:"4px 8px", minHeight:"40px", borderBottom:"1px solid rgba(255,255,255,.05)", fontFamily:FONT }}>
-      <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.8rem", color, lineHeight:1, letterSpacing:"0.02em", minWidth:"85px" }}>#{order.id}</div>
-      <div style={{ flex:1, minWidth:0, fontSize:"1.1rem", color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-        <span style={{ fontWeight:600 }}>{order.customerName}</span>
-        {meta && <span style={{ color:"rgba(255,255,255,.45)", marginLeft:"0.5rem", fontWeight:500 }}>· {meta}</span>}
-      </div>
-      {secsLeft !== null && (
-        <div style={{ fontFamily:"monospace", fontSize:"1.1rem", fontWeight:"700", color: urgent?"#F87171":color, lineHeight:1, minWidth:"55px", textAlign:"right", animation: urgent?"pulse 1s infinite":"none" }}>
-          {String(mins).padStart(2,"0")}:{String(secs).padStart(2,"0")}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── TV DISPLAY VIEW ──────────────────────────────────────────────────────────
+// Single-screen layout, no scrolling. Header at top, 4 horizontally-stacked
+// sections below (Incoming / Ready / Out of Stock / Coming Tomorrow). Each
+// section: left panel with icon + label + true total count, right pane is a
+// 12-column grid of order numbers. The order-number font size scales
+// inversely with the count visible on the current page so the grid stays
+// legible from across the room.
+//
+// When a section has > TV_PAGE_SIZE orders, it auto-rotates pages every
+// TV_PAGE_ROTATE_MS. Each section cycles independently from a shared tick.
+// Ready / Out-of-Stock orders are still auto-collected after 8 minutes via
+// a background expiry sweep — same behavior as before, just without a
+// visible per-order timer.
+const TV_PAGE_SIZE       = 36;
+const TV_PAGE_ROTATE_MS  = 120 * 1000;
+const TV_EXPIRY_MS       = 8 * 60 * 1000;
+const TV_EXPIRY_CHECK_MS = 10 * 1000;
+const TV_NUMBER_TINT = {
+  "#4A7FFF": "#88AFFF",  // incoming blue
+  "#4ADE80": "#85ECA8",  // ready green
+  "#F87171": "#FBA0A0",  // out-of-stock red
+  "#6A9FFF": "#9CBEFF",  // coming-tomorrow blue
+};
+
 function DisplayView({ orders }) {
+  // 1s tick so the wall clock stays current.
   const [, setTick] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setTick(n => n+1), 1000);
+    const t = setInterval(() => setTick(n => n + 1), 1000);
     return () => clearInterval(t);
   }, []);
 
-  const now = new Date();
+  // Page-rotation tick — increments every TV_PAGE_ROTATE_MS. Each section
+  // takes pageTick % section.numPages so they cycle independently.
+  const [pageTick, setPageTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setPageTick(n => n + 1), TV_PAGE_ROTATE_MS);
+    return () => clearInterval(t);
+  }, []);
+
+  const now     = new Date();
   const timeStr = now.toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
   const dateStr = now.toLocaleDateString([], { weekday:"long", day:"numeric", month:"long" });
 
@@ -3626,119 +3607,148 @@ function DisplayView({ orders }) {
   const outOfStock     = orders.filter(o => o.status === STATUS.OUT_OF_STOCK);
   const comingTomorrow = orders.filter(o => o.status === STATUS.COMING_TOMORROW);
 
-  // When a Ready or Out-of-Stock card's 8-minute timer hits zero, we mark the
-  // order as collected directly in Firebase. Every connected device removes
-  // it from their display within ~100ms via the onValue subscription.
-  // Guarded with an in-memory set so concurrent timers (multiple TV screens
-  // open simultaneously) only fire one write per order.
+  // Background auto-collect of Ready / OOS orders after 8 min. expiredRef
+  // de-dupes when multiple TV screens see the same order cross the threshold.
+  // logRestock fires only for READY (sold) — OOS expiries can't be restocked.
   const expiredRef = useRef(new Set());
-  const handleExpire = (id) => {
-    if (expiredRef.current.has(id)) return;
-    expiredRef.current.add(id);
-    const now = new Date().toISOString();
-    const order = orders.find(o => o.id === id);
-    updateOrder(id, { status: STATUS.COLLECTED, updatedAt: now, collectedAt: now });
-    // Only log a refill request if the item was READY (sold) — OOS expiries can't be restocked.
-    if (order && order.status === STATUS.READY) {
-      logRestock({
-        timestamp: now,
-        date: getSADateString(),
-        productName: order.productName,
-        photoUrl: order.productPhotoUrl || null,
-        photo: order.productPhoto || "",
-        size: order.size,
-        orderNumber: order.id,
-        hub: order.hub || "hub1",
-      }).catch(err => console.warn("logRestock failed:", err));
-    }
-  };
+  useEffect(() => {
+    const check = () => {
+      const nowMs = Date.now();
+      orders.forEach(o => {
+        if (expiredRef.current.has(o.id)) return;
+        const ts = o.status === STATUS.READY        ? (o.readyAt || o.updatedAt)
+                 : o.status === STATUS.OUT_OF_STOCK ? (o.outOfStockAt || o.updatedAt)
+                 : null;
+        if (!ts || nowMs - new Date(ts).getTime() < TV_EXPIRY_MS) return;
+        expiredRef.current.add(o.id);
+        const iso = new Date().toISOString();
+        updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
+        if (o.status === STATUS.READY) {
+          logRestock({
+            timestamp:   iso,
+            date:        getSADateString(),
+            productName: o.productName,
+            photoUrl:    o.productPhotoUrl || null,
+            photo:       o.productPhoto || "",
+            size:        o.size,
+            orderNumber: o.id,
+            hub:         o.hub || "hub1",
+          }).catch(err => console.warn("logRestock failed:", err));
+        }
+      });
+    };
+    const id = setInterval(check, TV_EXPIRY_CHECK_MS);
+    return () => clearInterval(id);
+  }, [orders]);
 
-  const colStyle = borderColor => ({
-    flex:1, background:"rgba(4,5,10,.98)", border:`2px solid ${borderColor}22`,
-    borderRadius:RADIUS, padding:"0.5rem 0.4rem 0.5rem 0.5rem", display:"flex", flexDirection:"column",
-    overflow:"auto",
-  });
+  const sections = [
+    { id: "incoming",       label: "Incoming",        color: "#4A7FFF", orders: incoming,       icon: <IconShoppingBag/> },
+    { id: "ready",          label: "Ready",           color: "#4ADE80", orders: ready,          icon: <IconCheck/> },
+    { id: "outOfStock",     label: "Out of Stock",    color: "#F87171", orders: outOfStock,     icon: <IconX/> },
+    { id: "comingTomorrow", label: "Coming Tomorrow", color: BLUE_L,    orders: comingTomorrow, icon: <IconClock/> },
+  ];
 
   return (
-    <div style={{ minHeight:"100vh", background:BG, color:"#fff", fontFamily:FONT, display:"flex", flexDirection:"column" }}>
-      <style>{`
-        /* SF Pro Display — system font, no import needed */
-        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-      `}</style>
-
-      <div style={{ background:"rgba(4,5,10,.98)", borderBottom:"1px solid rgba(60,110,255,.08)", padding:"0.5rem 2.5rem", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:"0.75rem" }}>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 17h13a4 4 0 003-1.4l3-3.4a2 2 0 00-1.5-3.3l-5.4-.1a2 2 0 01-1.5-.7l-1.7-2A3 3 0 008.4 5H4a2 2 0 00-2 2v10z"/><line x1="2" y1="14" x2="20" y2="14"/></svg>
-          <div>
-            <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.75rem", letterSpacing:"0.08em", lineHeight:1 }}>MARATHON STORE</div>
-            <div style={{ color:"#555", fontSize:"0.7rem", letterSpacing:"0.15em", textTransform:"uppercase" }}>Live Order Queue</div>
-          </div>
+    <div style={{ height:"100vh", width:"100vw", background:"#0B0F1A", color:"#fff", fontFamily:FONT, padding:"16px", display:"flex", flexDirection:"column", boxSizing:"border-box", overflow:"hidden" }}>
+      {/* HEADER */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"8px 16px 14px", borderBottom:"1px solid rgba(255,255,255,.06)" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2 17h13a4 4 0 003-1.4l3-3.4a2 2 0 00-1.5-3.3l-5.4-.1a2 2 0 01-1.5-.7l-1.7-2A3 3 0 008.4 5H4a2 2 0 00-2 2v10z"/>
+            <line x1="2" y1="14" x2="20" y2="14"/>
+          </svg>
+          <span style={{ fontSize:"40px", fontWeight:500, color:"#fff", letterSpacing:"0.02em", lineHeight:1 }}>Marathon</span>
         </div>
         <div style={{ textAlign:"right" }}>
-          <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.5rem", letterSpacing:"0.05em", lineHeight:1 }}>{timeStr}</div>
-          <div style={{ color:"#555", fontSize:"0.8rem" }}>{dateStr}</div>
+          <div style={{ fontSize:"40px", fontWeight:500, color:"#fff", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{timeStr}</div>
+          <div style={{ fontSize:"16px", color:"rgba(255,255,255,.5)", marginTop:"4px" }}>{dateStr}</div>
         </div>
       </div>
 
-      <div style={{ flex:1, display:"flex", gap:"1rem", padding:"0.5rem 1rem", overflow:"hidden" }}>
-
-        <div style={colStyle("#4A7FFF")}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.3rem", letterSpacing:"0.05em", color:"#4A7FFF" }}>INCOMING</span>
-            {incoming.length > 0 && <span style={{ marginLeft:"auto", background:"#4A7FFF", color:"#000", borderRadius:"999px", padding:"1px 6px", fontWeight:"700", fontSize:"0.7rem", animation:"pulse 2s infinite" }}>{incoming.length}</span>}
-          </div>
-          {incoming.length === 0
-            ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No incoming orders</div>
-            : incoming.map(o => <TVCard key={o.id} order={o} color="#4A7FFF" timerFrom={null} timerTotal={null} onExpire={null} />)}
-        </div>
-
-        <div style={colStyle("#4ADE80")}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.3rem", color:"#4ADE80", letterSpacing:"0.05em" }}>READY</span>
-            <span style={{ color:"#2a2a2a", fontSize:"0.7rem", marginLeft:"auto" }}>8 min to collect</span>
-            {ready.length > 0 && <span style={{ background:"#4ADE80", color:"#000", borderRadius:"999px", padding:"1px 6px", fontWeight:"700", fontSize:"0.7rem" }}>{ready.length}</span>}
-          </div>
-          {ready.length === 0
-            ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No orders ready yet</div>
-            : ready.map(o => <TVCard key={o.id} order={o} color="#4ADE80" timerFrom={o.readyAt || o.updatedAt} timerTotal={8*60} onExpire={handleExpire} />)}
-        </div>
-
-        <div style={colStyle("#F87171")}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.3rem", color:"#F87171", letterSpacing:"0.05em" }}>OUT OF STOCK</span>
-            <span style={{ color:"#2a2a2a", fontSize:"0.7rem", marginLeft:"auto" }}>8 min display</span>
-            {outOfStock.length > 0 && <span style={{ background:"#F87171", color:"#000", borderRadius:"999px", padding:"1px 6px", fontWeight:"700", fontSize:"0.7rem" }}>{outOfStock.length}</span>}
-          </div>
-          {outOfStock.length === 0
-            ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>Nothing out of stock</div>
-            : outOfStock.map(o => <TVCard key={o.id} order={o} color="#F87171" timerFrom={o.outOfStockAt || o.updatedAt} timerTotal={8*60} onExpire={handleExpire} />)}
-        </div>
-
-        <div style={colStyle(BLUE_L)}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={BLUE_L} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.3rem", color:BLUE_L, letterSpacing:"0.05em" }}>COMING TOMORROW</span>
-            {comingTomorrow.length > 0 && <span style={{ marginLeft:"auto", background:BLUE_L, color:"#000", borderRadius:"999px", padding:"1px 6px", fontWeight:"700", fontSize:"0.7rem" }}>{comingTomorrow.length}</span>}
-          </div>
-          {comingTomorrow.length === 0
-            ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No orders for tomorrow</div>
-            : comingTomorrow.map(o => <TVCard key={o.id} order={o} color={BLUE_L} timerFrom={null} timerTotal={null} onExpire={null} />)}
-        </div>
-
-      </div>
-
-      <div style={{ background:"rgba(4,5,10,.98)", borderTop:"1px solid rgba(60,110,255,.08)", padding:"0.6rem 2.5rem", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-        <span style={{ color:"#222", fontSize:"0.75rem" }}>Please collect your order within 8 minutes</span>
-        <div style={{ display:"flex", alignItems:"center", gap:"0.5rem" }}>
-          <div style={{ width:"7px", height:"7px", borderRadius:"50%", background:"#4ADE80", animation:"pulse 2s infinite" }} />
-          <span style={{ color:"#333", fontSize:"0.75rem" }}>LIVE</span>
-        </div>
+      {/* 4 STACKED SECTIONS — equal flex share of remaining vertical space */}
+      <div style={{ flex:1, display:"flex", flexDirection:"column", gap:"14px", paddingTop:"14px", minHeight:0 }}>
+        {sections.map(s => (
+          <DisplaySection key={s.id} label={s.label} color={s.color} icon={s.icon} orders={s.orders} pageTick={pageTick} />
+        ))}
       </div>
     </div>
   );
+}
+
+function DisplaySection({ label, color, icon, orders, pageTick }) {
+  const total    = orders.length;
+  const numPages = Math.max(1, Math.ceil(total / TV_PAGE_SIZE));
+  const page     = numPages === 1 ? 0 : pageTick % numPages;
+  const visible  = orders.slice(page * TV_PAGE_SIZE, (page + 1) * TV_PAGE_SIZE);
+  const count    = visible.length;
+  // Rows used by the grid: 1 row for ≤12, 2 for 13–24, 3 for 25+. Empty rows
+  // are simply not rendered, so the used rows vertically center within the
+  // section (align-content: center) — that's why a small section "feels"
+  // generously spaced even though the grid is structurally 12-wide.
+  const rowsUsed = count === 0 ? 1 : Math.min(3, Math.ceil(count / 12));
+  // Linear interpolation: 64px at count<=6, 30px at count>=36. The 64px cap
+  // is the width-bound — at 12 columns on a 1920px screen, a 3-digit
+  // tabular-nums glyph exactly fills the column at 64px.
+  const fontSize = count <= 6  ? 64
+                 : count >= 36 ? 30
+                 : Math.round(64 - ((count - 6) / 30) * (64 - 30));
+  const tint     = TV_NUMBER_TINT[color] || color;
+
+  return (
+    <div style={{ flex:1, display:"flex", background:"rgba(255,255,255,.03)", borderRadius:"24px", padding:"16px 20px", minHeight:0, position:"relative" }}>
+      {/* LEFT panel — icon, label, true total count */}
+      <div style={{ width:"18%", minWidth:"200px", display:"flex", flexDirection:"column", justifyContent:"center", alignItems:"flex-start", gap:"12px", paddingRight:"16px" }}>
+        <div style={{ color, lineHeight:0 }}>{icon}</div>
+        <div style={{ fontSize:"26px", fontWeight:500, color, lineHeight:1, letterSpacing:"0.01em" }}>{label}</div>
+        <div style={{ fontSize:"40px", fontWeight:500, color, lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{total}</div>
+      </div>
+
+      {/* RIGHT panel — 12-column grid of order numbers, vertically centered */}
+      <div style={{ flex:1, display:"grid", gridTemplateColumns:"repeat(12, 1fr)", gridTemplateRows:`repeat(${rowsUsed}, 1fr)`, gap:"8px", alignContent:"center", minHeight:0 }}>
+        {visible.map(o => (
+          <div key={o.id} style={{
+            display:"flex", alignItems:"center", justifyContent:"center",
+            fontSize:`${fontSize}px`, fontWeight:500,
+            color: tint, lineHeight:1,
+            fontVariantNumeric:"tabular-nums",
+          }}>{o.id}</div>
+        ))}
+      </div>
+
+      {/* Page indicator — only when paginated. Subtle bottom-right. */}
+      {numPages > 1 && (
+        <div style={{ position:"absolute", bottom:"10px", right:"20px", fontSize:"12px", color:"rgba(255,255,255,.3)", fontVariantNumeric:"tabular-nums", letterSpacing:"0.04em" }}>
+          {page + 1}/{numPages}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── TV display icons (52×52, inherit accent color via currentColor) ───────────
+function IconShoppingBag() {
+  return <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+    <line x1="3" y1="6" x2="21" y2="6"/>
+    <path d="M16 10a4 4 0 01-8 0"/>
+  </svg>;
+}
+function IconCheck() {
+  return <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="20 6 9 17 4 12"/>
+  </svg>;
+}
+function IconX() {
+  return <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="18" y1="6" x2="6" y2="18"/>
+    <line x1="6" y1="6" x2="18" y2="18"/>
+  </svg>;
+}
+function IconClock() {
+  return <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10"/>
+    <polyline points="12 6 12 12 16 14"/>
+  </svg>;
 }
 
 // ─── SOURCE VIEW + COMPONENTS ────────────────────────────────────────────────
