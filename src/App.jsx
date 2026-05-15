@@ -870,6 +870,97 @@ function useCustomersDb() {
   return customers;
 }
 
+// Customer index for the Assistant order-entry autocomplete. Derived from
+// insights_log (where past customer name + phone + timestamp actually live —
+// `/customers` only stores opt-in flags). Returns one entry per distinct
+// phone with the most-recent name, total order count (action="placed"), and
+// the last-order ISO. Cheap O(N) once over the log.
+const phoneDigits = (s) => (s || "").replace(/\D+/g, "");
+
+function useCustomerIndex() {
+  const log = useInsightsLog();
+  return useMemo(() => {
+    const byPhone = new Map();
+    for (const e of log) {
+      const phone = (e?.customerPhone || "").trim();
+      if (!phone || !e.customerName) continue;
+      let rec = byPhone.get(phone);
+      if (!rec) {
+        rec = { name: e.customerName, phone, orderCount: 0, lastOrderAt: "" };
+        byPhone.set(phone, rec);
+      }
+      if (e.action === "placed") rec.orderCount += 1;
+      // Keep the most recent name variant in case the customer's spelling
+      // drifted over time.
+      if ((e.timestamp || "") > (rec.lastOrderAt || "")) {
+        rec.lastOrderAt = e.timestamp || "";
+        if (e.customerName) rec.name = e.customerName;
+      }
+    }
+    return Array.from(byPhone.values());
+  }, [log]);
+}
+
+// Match against the customer index. `mode` picks the field to prefix-match.
+// Returns up to 5 hits, newest first. Empty query → empty list.
+function matchCustomers(customers, query, mode) {
+  const q = (query || "").trim();
+  if (!q) return [];
+  const hits = [];
+  if (mode === "phone") {
+    const needle = phoneDigits(q);
+    if (!needle) return [];
+    for (const c of customers) {
+      if (phoneDigits(c.phone).startsWith(needle)) hits.push(c);
+    }
+  } else {
+    const needle = q.toLowerCase();
+    for (const c of customers) {
+      if ((c.name || "").toLowerCase().startsWith(needle)) hits.push(c);
+    }
+  }
+  hits.sort((a, b) => (b.lastOrderAt || "").localeCompare(a.lastOrderAt || ""));
+  return hits.slice(0, 5);
+}
+
+// Floating dropdown rendered absolutely under an input. `onPick` receives
+// the chosen customer; `onAddNew` is the manual-entry escape hatch.
+function CustomerSuggestionDropdown({ query, mode, customers, onPick, onAddNew }) {
+  const matches = matchCustomers(customers, query, mode);
+  if (!query || query.trim().length === 0) return null;
+  return (
+    <div style={{
+      position:"absolute", left:0, right:0, top:"calc(100% + 4px)",
+      background:"#11162A", border:"1px solid rgba(60,110,255,.25)",
+      borderRadius:12, boxShadow:"0 6px 24px rgba(0,0,0,.45)",
+      zIndex:1100, overflow:"hidden",
+    }}>
+      {matches.map((c, i) => (
+        <div key={c.phone}
+             onMouseDown={(e) => { e.preventDefault(); onPick(c); }}
+             style={{
+               padding:"10px 14px", cursor:"pointer",
+               borderBottom:"1px solid rgba(255,255,255,.05)",
+               background: "transparent",
+             }}>
+          <div style={{ fontSize:14, fontWeight:500, color:"#fff" }}>{c.name}</div>
+          <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginTop:2 }}>
+            {c.phone} · {c.orderCount} past order{c.orderCount === 1 ? "" : "s"}
+          </div>
+        </div>
+      ))}
+      <div onMouseDown={(e) => { e.preventDefault(); onAddNew(); }}
+           style={{
+             padding:"10px 14px", cursor:"pointer",
+             fontSize:13, color:"#4A7FFF", fontWeight:500,
+             background: matches.length > 0 ? "rgba(60,110,255,.04)" : "transparent",
+           }}>
+        + Add new customer "{query.trim()}"
+      </div>
+    </div>
+  );
+}
+
 function useBroadcastHistory() {
   const authReady = useAuthReady();
   const [broadcasts, setBroadcasts] = useState([]);
@@ -2059,6 +2150,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   };
   const [selected, setSelected]                         = useState(null);   // product in size picker
   const [pendingSize, setPendingSize]                   = useState("");
+  const [pendingQty,  setPendingQty]                    = useState(1);
   const [pendingDisplayRequest, setPendingDisplay]      = useState(false);
   const [pendingDisplayPartner, setPendingDisplayPartner] = useState(false);
   // Cart line shape:
@@ -2071,6 +2163,17 @@ function AssistantView({ products, onExit, orders = [] }) {
   const [marketingOptIn, setMarketingOptIn]             = useState(false);
   const [lastOrders, setLastOrders]                     = useState([]);
   const [submitting, setSubmitting]                     = useState(false);
+  // Autocomplete dropdown open-state per input. Tap a suggestion or the
+  // "+ Add new" row to dismiss; typing in the input reopens.
+  const [nameDropdownOpen, setNameDropdownOpen]   = useState(false);
+  const [phoneDropdownOpen, setPhoneDropdownOpen] = useState(false);
+  const customerIndex = useCustomerIndex();
+  const pickCustomer = (c) => {
+    setCustomerName(c.name || "");
+    setCustomerPhone(c.phone || "");
+    setNameDropdownOpen(false);
+    setPhoneDropdownOpen(false);
+  };
 
   // Filter products by the active mode (sneaker / clothing) + search box.
   // Existing products without productType are treated as sneakers.
@@ -2106,12 +2209,19 @@ function AssistantView({ products, onExit, orders = [] }) {
   const hasSneakerInCart  = cart.some(it => (it.productType || "sneaker") === "sneaker");
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
 
-  const resetSheet = () => { setSelected(null); setPendingSize(""); setPendingDisplay(false); setPendingDisplayPartner(false); };
+  const resetSheet = () => { setSelected(null); setPendingSize(""); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
 
   const addToCart = () => {
     // Size is optional when a Display or Display Partner request is set
     if (!selected || (!pendingSize && !pendingDisplayRequest && !pendingDisplayPartner)) return;
-    setCart(c => [...c, { product: selected, size: pendingSize || null, requestDisplay: pendingDisplayRequest, requestDisplayPartner: pendingDisplayPartner }]);
+    // Quantity expansion: pendingQty > 1 → push N identical cart lines so the
+    // warehouse fulfils one box per pair (no "qty" multiplier on a single
+    // line). Display Partner / Request rows ignore qty (one-off by nature).
+    const reps = (pendingSize && !pendingDisplayRequest && !pendingDisplayPartner)
+      ? Math.max(1, Math.min(10, pendingQty))
+      : 1;
+    const line = { product: selected, size: pendingSize || null, requestDisplay: pendingDisplayRequest, requestDisplayPartner: pendingDisplayPartner };
+    setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
     resetSheet();
   };
 
@@ -2462,6 +2572,19 @@ function AssistantView({ products, onExit, orders = [] }) {
               ))}
             </div>
 
+            {/* Quantity stepper — same-size, multiple-pair shortcut. Pushes
+                N identical cart lines on Add to Cart (one box per pair). */}
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"1.25rem", padding:"4px 0" }}>
+              <div style={{ color:"#ccc", fontSize:"0.95rem", fontWeight:600 }}>Quantity</div>
+              <div style={{ display:"flex", alignItems:"center", gap:"0.5rem" }}>
+                <button onClick={() => setPendingQty(q => Math.max(1, q - 1))} disabled={pendingQty <= 1}
+                        style={{ width:36, height:36, borderRadius:10, border:"1px solid rgba(60,110,255,.25)", background:"rgba(60,110,255,.08)", color: pendingQty <= 1 ? "rgba(255,255,255,.25)" : "#4A7FFF", fontSize:18, fontWeight:700, cursor: pendingQty <= 1 ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>−</button>
+                <div style={{ minWidth:34, textAlign:"center", color:"#fff", fontSize:"1.05rem", fontWeight:700, fontVariantNumeric:"tabular-nums" }}>{pendingQty}</div>
+                <button onClick={() => setPendingQty(q => Math.min(10, q + 1))} disabled={pendingQty >= 10}
+                        style={{ width:36, height:36, borderRadius:10, border:"1px solid rgba(60,110,255,.35)", background:"rgba(60,110,255,.12)", color: pendingQty >= 10 ? "rgba(255,255,255,.25)" : "#4A7FFF", fontSize:18, fontWeight:700, cursor: pendingQty >= 10 ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>+</button>
+              </div>
+            </div>
+
             {/* Optional display requests */}
             <div style={{ marginBottom:"1.25rem" }}>
               <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Requests (optional)</div>
@@ -2482,8 +2605,11 @@ function AssistantView({ products, onExit, orders = [] }) {
 
             {(() => {
               const canAdd = !!(pendingSize || pendingDisplayRequest || pendingDisplayPartner);
+              const qtyOnly = pendingSize && !pendingDisplayRequest && !pendingDisplayPartner;
               const btnLabel = pendingSize
-                ? `Add Size ${pendingSize} to Cart`
+                ? (qtyOnly && pendingQty > 1
+                    ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
+                    : `Add Size ${pendingSize} to Cart`)
                 : canAdd ? "Add Display Request to Cart"
                 : "Select a size or display option";
               return (
@@ -2530,13 +2656,35 @@ function AssistantView({ products, onExit, orders = [] }) {
               ))}
             </div>
 
-            <div style={{ marginBottom:"1rem" }}>
+            <div style={{ marginBottom:"1rem", position:"relative" }}>
               <div style={{ color:"#888", fontSize:"0.78rem", marginBottom:"0.4rem" }}>Customer Name *</div>
-              <input placeholder="e.g. Ahmed" value={customerName} onChange={e => setCustomerName(e.target.value)} style={inputStyle} />
+              <input placeholder="e.g. Ahmed" value={customerName}
+                     onChange={e => { setCustomerName(e.target.value); setNameDropdownOpen(true); }}
+                     onFocus={() => setNameDropdownOpen(true)}
+                     onBlur={() => setTimeout(() => setNameDropdownOpen(false), 150)}
+                     style={inputStyle} />
+              {nameDropdownOpen && (
+                <CustomerSuggestionDropdown
+                  query={customerName} mode="name" customers={customerIndex}
+                  onPick={pickCustomer}
+                  onAddNew={() => setNameDropdownOpen(false)}
+                />
+              )}
             </div>
-            <div style={{ marginBottom:"1rem" }}>
+            <div style={{ marginBottom:"1rem", position:"relative" }}>
               <div style={{ color:"#888", fontSize:"0.78rem", marginBottom:"0.4rem" }}>Phone (optional)</div>
-              <input placeholder="e.g. 071 234 5678" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} style={inputStyle} />
+              <input placeholder="e.g. 071 234 5678" value={customerPhone}
+                     onChange={e => { setCustomerPhone(e.target.value); setPhoneDropdownOpen(true); }}
+                     onFocus={() => setPhoneDropdownOpen(true)}
+                     onBlur={() => setTimeout(() => setPhoneDropdownOpen(false), 150)}
+                     style={inputStyle} />
+              {phoneDropdownOpen && (
+                <CustomerSuggestionDropdown
+                  query={customerPhone} mode="phone" customers={customerIndex}
+                  onPick={pickCustomer}
+                  onAddNew={() => setPhoneDropdownOpen(false)}
+                />
+              )}
             </div>
             <label style={{ display:"flex", alignItems:"center", gap:"0.6rem", marginBottom:"1.5rem", cursor:"pointer", padding:"0.75rem", background:"rgba(60,110,255,.04)", borderRadius:"10px", border:BORDER }}>
               <input type="checkbox" checked={marketingOptIn} onChange={e => setMarketingOptIn(e.target.checked)}
@@ -2544,10 +2692,31 @@ function AssistantView({ products, onExit, orders = [] }) {
               <span style={{ color:"#ccc", fontSize:"0.88rem" }}>Customer wants to receive Marathon Club deals?</span>
             </label>
 
-            <button onClick={placeOrders} disabled={!customerName || !cart.length || submitting}
-              style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:customerName&&cart.length&&!submitting?1:0.4, cursor:customerName&&cart.length&&!submitting?"pointer":"not-allowed" }}>
-              {submitting ? "Placing orders…" : !customerName ? "Enter customer name" : `Place ${cart.length} Order${cart.length > 1 ? "s" : ""} →`}
-            </button>
+            {(() => {
+              // Button label reflects the qty shortcut: if every cart line
+              // is the same product + size (the "3 pairs of size 8" case),
+              // show "Place order — size 8 × 3". Mixed carts fall back to
+              // the count.
+              const sneakerLines = cart.filter(it => (it.productType || "sneaker") === "sneaker");
+              const sample = sneakerLines[0];
+              const singleSku = sample && sneakerLines.every(it =>
+                it.product?.id === sample.product?.id &&
+                it.size === sample.size &&
+                !it.requestDisplay && !it.requestDisplayPartner
+              );
+              const n = cart.length;
+              const placeLabel = !customerName
+                ? "Enter customer name"
+                : singleSku && sample.size
+                  ? (n > 1 ? `Place order — size ${sample.size} × ${n}` : `Place order — size ${sample.size}`)
+                  : `Place ${n} Order${n > 1 ? "s" : ""} →`;
+              return (
+                <button onClick={placeOrders} disabled={!customerName || !cart.length || submitting}
+                  style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:customerName&&cart.length&&!submitting?1:0.4, cursor:customerName&&cart.length&&!submitting?"pointer":"not-allowed" }}>
+                  {submitting ? "Placing orders…" : placeLabel}
+                </button>
+              );
+            })()}
           </div>
         </div>
       )}
