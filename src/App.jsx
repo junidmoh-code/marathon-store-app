@@ -3594,14 +3594,14 @@ function TVCard({ order, color, timerFrom, timerTotal, onExpire }) {
   const meta = [order.productName, order.size ? `Sz ${order.size}` : null].filter(Boolean).join(" ");
 
   return (
-    <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", padding:"4px 8px", minHeight:"38px", borderBottom:"1px solid rgba(255,255,255,.05)", fontFamily:FONT }}>
+    <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", padding:"4px 8px", minHeight:"40px", borderBottom:"1px solid rgba(255,255,255,.05)", fontFamily:FONT }}>
       <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.8rem", color, lineHeight:1, letterSpacing:"0.02em", minWidth:"85px" }}>#{order.id}</div>
-      <div style={{ flex:1, minWidth:0, fontSize:"1rem", color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+      <div style={{ flex:1, minWidth:0, fontSize:"1.1rem", color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
         <span style={{ fontWeight:600 }}>{order.customerName}</span>
         {meta && <span style={{ color:"rgba(255,255,255,.45)", marginLeft:"0.5rem", fontWeight:500 }}>· {meta}</span>}
       </div>
       {secsLeft !== null && (
-        <div style={{ fontFamily:"monospace", fontSize:"1rem", fontWeight:"700", color: urgent?"#F87171":color, lineHeight:1, minWidth:"55px", textAlign:"right", animation: urgent?"pulse 1s infinite":"none" }}>
+        <div style={{ fontFamily:"monospace", fontSize:"1.1rem", fontWeight:"700", color: urgent?"#F87171":color, lineHeight:1, minWidth:"55px", textAlign:"right", animation: urgent?"pulse 1s infinite":"none" }}>
           {String(mins).padStart(2,"0")}:{String(secs).padStart(2,"0")}
         </div>
       )}
@@ -3655,7 +3655,7 @@ function DisplayView({ orders }) {
 
   const colStyle = borderColor => ({
     flex:1, background:"rgba(4,5,10,.98)", border:`2px solid ${borderColor}22`,
-    borderRadius:RADIUS, padding:"0.75rem 0.5rem 0.75rem 0.75rem", display:"flex", flexDirection:"column",
+    borderRadius:RADIUS, padding:"0.5rem 0.4rem 0.5rem 0.5rem", display:"flex", flexDirection:"column",
     overflow:"auto",
   });
 
@@ -3666,41 +3666,27 @@ function DisplayView({ orders }) {
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
       `}</style>
 
-      <div style={{ background:"rgba(4,5,10,.98)", borderBottom:"1px solid rgba(60,110,255,.08)", padding:"1rem 2.5rem", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 17h13a4 4 0 003-1.4l3-3.4a2 2 0 00-1.5-3.3l-5.4-.1a2 2 0 01-1.5-.7l-1.7-2A3 3 0 008.4 5H4a2 2 0 00-2 2v10z"/><line x1="2" y1="14" x2="20" y2="14"/></svg>
+      <div style={{ background:"rgba(4,5,10,.98)", borderBottom:"1px solid rgba(60,110,255,.08)", padding:"0.5rem 2.5rem", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:"0.75rem" }}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 17h13a4 4 0 003-1.4l3-3.4a2 2 0 00-1.5-3.3l-5.4-.1a2 2 0 01-1.5-.7l-1.7-2A3 3 0 008.4 5H4a2 2 0 00-2 2v10z"/><line x1="2" y1="14" x2="20" y2="14"/></svg>
           <div>
-            <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"2rem", letterSpacing:"0.08em", lineHeight:1 }}>MARATHON STORE</div>
+            <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.75rem", letterSpacing:"0.08em", lineHeight:1 }}>MARATHON STORE</div>
             <div style={{ color:"#555", fontSize:"0.7rem", letterSpacing:"0.15em", textTransform:"uppercase" }}>Live Order Queue</div>
           </div>
         </div>
         <div style={{ textAlign:"right" }}>
-          <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"2.5rem", letterSpacing:"0.05em", lineHeight:1 }}>{timeStr}</div>
+          <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.5rem", letterSpacing:"0.05em", lineHeight:1 }}>{timeStr}</div>
           <div style={{ color:"#555", fontSize:"0.8rem" }}>{dateStr}</div>
         </div>
       </div>
 
-      <div style={{ display:"flex", gap:"1px", background:"rgba(60,110,255,.08)" }}>
-        {[
-          { label:"Incoming",        count:incoming.length,       color:"#4A7FFF" },
-          { label:"Ready",           count:ready.length,          color:"#4ADE80" },
-          { label:"Out of Stock",    count:outOfStock.length,     color:"#F87171" },
-          { label:"Coming Tomorrow", count:comingTomorrow.length, color:BLUE_L },
-        ].map(s => (
-          <div key={s.label} style={{ flex:1, padding:"0.6rem", textAlign:"center", background:BG }}>
-            <span style={{ color:s.color, fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", letterSpacing:"0.04em", fontSize:"2rem", marginRight:"0.4rem" }}>{s.count}</span>
-            <span style={{ color:"#555", fontSize:"0.8rem", textTransform:"uppercase", letterSpacing:"0.05em" }}>{s.label}</span>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ flex:1, display:"flex", gap:"1rem", padding:"1rem 1.5rem", overflow:"hidden" }}>
+      <div style={{ flex:1, display:"flex", gap:"1rem", padding:"0.5rem 1rem", overflow:"hidden" }}>
 
         <div style={colStyle("#4A7FFF")}>
           <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.15rem", letterSpacing:"0.05em", color:"#4A7FFF" }}>INCOMING</span>
-            {incoming.length > 0 && <span style={{ marginLeft:"auto", background:"#4A7FFF", color:"#000", borderRadius:"999px", padding:"1px 8px", fontWeight:"700", fontSize:"0.8rem", animation:"pulse 2s infinite" }}>{incoming.length}</span>}
+            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.3rem", letterSpacing:"0.05em", color:"#4A7FFF" }}>INCOMING</span>
+            {incoming.length > 0 && <span style={{ marginLeft:"auto", background:"#4A7FFF", color:"#000", borderRadius:"999px", padding:"1px 6px", fontWeight:"700", fontSize:"0.7rem", animation:"pulse 2s infinite" }}>{incoming.length}</span>}
           </div>
           {incoming.length === 0
             ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No incoming orders</div>
@@ -3710,9 +3696,9 @@ function DisplayView({ orders }) {
         <div style={colStyle("#4ADE80")}>
           <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.15rem", color:"#4ADE80", letterSpacing:"0.05em" }}>READY</span>
+            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.3rem", color:"#4ADE80", letterSpacing:"0.05em" }}>READY</span>
             <span style={{ color:"#2a2a2a", fontSize:"0.7rem", marginLeft:"auto" }}>8 min to collect</span>
-            {ready.length > 0 && <span style={{ background:"#4ADE80", color:"#000", borderRadius:"999px", padding:"1px 8px", fontWeight:"700", fontSize:"0.8rem" }}>{ready.length}</span>}
+            {ready.length > 0 && <span style={{ background:"#4ADE80", color:"#000", borderRadius:"999px", padding:"1px 6px", fontWeight:"700", fontSize:"0.7rem" }}>{ready.length}</span>}
           </div>
           {ready.length === 0
             ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No orders ready yet</div>
@@ -3722,9 +3708,9 @@ function DisplayView({ orders }) {
         <div style={colStyle("#F87171")}>
           <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.15rem", color:"#F87171", letterSpacing:"0.05em" }}>OUT OF STOCK</span>
+            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.3rem", color:"#F87171", letterSpacing:"0.05em" }}>OUT OF STOCK</span>
             <span style={{ color:"#2a2a2a", fontSize:"0.7rem", marginLeft:"auto" }}>8 min display</span>
-            {outOfStock.length > 0 && <span style={{ background:"#F87171", color:"#000", borderRadius:"999px", padding:"1px 8px", fontWeight:"700", fontSize:"0.8rem" }}>{outOfStock.length}</span>}
+            {outOfStock.length > 0 && <span style={{ background:"#F87171", color:"#000", borderRadius:"999px", padding:"1px 6px", fontWeight:"700", fontSize:"0.7rem" }}>{outOfStock.length}</span>}
           </div>
           {outOfStock.length === 0
             ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>Nothing out of stock</div>
@@ -3734,8 +3720,8 @@ function DisplayView({ orders }) {
         <div style={colStyle(BLUE_L)}>
           <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginBottom:"0.4rem", padding:"0 4px" }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={BLUE_L} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.15rem", color:BLUE_L, letterSpacing:"0.05em" }}>COMING TOMORROW</span>
-            {comingTomorrow.length > 0 && <span style={{ marginLeft:"auto", background:BLUE_L, color:"#000", borderRadius:"999px", padding:"1px 8px", fontWeight:"700", fontSize:"0.8rem" }}>{comingTomorrow.length}</span>}
+            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.3rem", color:BLUE_L, letterSpacing:"0.05em" }}>COMING TOMORROW</span>
+            {comingTomorrow.length > 0 && <span style={{ marginLeft:"auto", background:BLUE_L, color:"#000", borderRadius:"999px", padding:"1px 6px", fontWeight:"700", fontSize:"0.7rem" }}>{comingTomorrow.length}</span>}
           </div>
           {comingTomorrow.length === 0
             ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No orders for tomorrow</div>
