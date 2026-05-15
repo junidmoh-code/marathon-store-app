@@ -3662,30 +3662,42 @@ function CustomerView({ orders, onExit }) {
 }
 
 // ─── TV DISPLAY VIEW ──────────────────────────────────────────────────────────
-// Fixed-viewport layout designed for a 1920×1080 TV. No page scroll ever.
-// Header row (70px) at top, four equal-flex section cards stacked below
-// (Incoming / Ready / Out of Stock / Coming Tomorrow). Each card has a fixed
-// 240px left zone (icon + label + true-total count) and a 12-column grid of
-// order numbers on the right. Cell font size is computed from the actual
-// rendered cell dimensions via ResizeObserver so the grid never clips.
+// Fixed-viewport (1920×1080) layout. Never scrolls. Header row at top, four
+// equal-flex section rows stacked below. Each row is a horizontal pair of
+// rounded cards: a 170px left card (icon + wrapped status label + true total
+// count) and a flex:1 right card. The right card switches layout by count:
+//   - 0 items  → empty
+//   - 1–2      → giant centered numbers (~120px)
+//   - 3–36     → 12-col grid, font from min(cellW × 0.45, cellH × 0.80)
+//   - > 36     → paginated 36 at a time, rotate every TV_PAGE_ROTATE_MS
+//                with a TV_PAGE_FADE_MS opacity fade
 //
-// Pagination: sections with > TV_PAGE_SIZE orders rotate pages every
-// TV_PAGE_ROTATE_MS with a 300ms fade. Each section cycles independently.
-// The left-zone count always shows the *true* total, not the page count.
-//
-// Auto-collect: Ready / OOS orders past TV_EXPIRY_MS are silently moved to
-// COLLECTED + restock-logged. expiredRef de-dupes across multiple TV screens.
+// Auto-collect: Ready/OOS orders past TV_EXPIRY_MS are silently moved to
+// COLLECTED + restock-logged. Coming Tomorrow rows older than
+// TV_COMING_TOMORROW_VISIBLE_MS are hidden from the TV (display-only;
+// underlying RTDB status is not changed). Both use a ref-Set guard against
+// double-fires across multiple TV screens.
 const TV_PAGE_SIZE                  = 36;
 const TV_PAGE_ROTATE_MS             = 120 * 1000;
+const TV_PAGE_FADE_MS               = 250;
 const TV_EXPIRY_MS                  = 8 * 60 * 1000;       // Ready / OOS → auto-collect
 const TV_EXPIRY_CHECK_MS            = 10 * 1000;
 const TV_COMING_TOMORROW_VISIBLE_MS = 10 * 60 * 1000;      // display-only timeout
+const TV_GIANT_FONT_PX              = 120;                 // count ≤ 2 case
 const TV_COLORS = {
   incoming:       "#6FA8FF",
   ready:          "#4ADE80",
   outOfStock:     "#F87171",
   comingTomorrow: "#FBBF24",
 };
+const TV_SECTIONS_META = [
+  { id: "incoming",       labelLines: ["Incoming"],            color: TV_COLORS.incoming },
+  { id: "ready",          labelLines: ["Ready"],               color: TV_COLORS.ready },
+  { id: "outOfStock",     labelLines: ["Out", "of", "Stock"],  color: TV_COLORS.outOfStock },
+  { id: "comingTomorrow", labelLines: ["Coming", "Tomorrow"],  color: TV_COLORS.comingTomorrow },
+];
+const TV_DAY_NAMES   = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const TV_MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 function DisplayView({ orders }) {
   // 1s tick so the wall clock stays current.
@@ -3703,115 +3715,141 @@ function DisplayView({ orders }) {
   }, []);
 
   const now     = new Date();
-  const timeStr = now.toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
+  const hh      = String(now.getHours()).padStart(2, "0");
+  const mm      = String(now.getMinutes()).padStart(2, "0");
+  const timeStr = `${hh}:${mm}`;
+  const dateStr = `${TV_DAY_NAMES[now.getDay()]} ${now.getDate()} ${TV_MONTH_NAMES[now.getMonth()]}`;
 
-  const incoming       = orders.filter(o => o.status === STATUS.INCOMING);
-  const ready          = orders.filter(o => o.status === STATUS.READY);
-  const outOfStock     = orders.filter(o => o.status === STATUS.OUT_OF_STOCK);
-  // Display-only timeout: hide Coming Tomorrow rows older than the visible
-  // window. The underlying RTDB status stays as COMING_TOMORROW — this is a
-  // pure view filter. The 1s clock tick above re-renders DisplayView, which
-  // re-runs this filter, so rows fade out as they cross the threshold.
-  const cutoffMs       = Date.now() - TV_COMING_TOMORROW_VISIBLE_MS;
-  const comingTomorrow = orders.filter(o => {
-    if (o.status !== STATUS.COMING_TOMORROW) return false;
-    const ts = o.comingTomorrowAt || o.updatedAt;
-    return !ts || new Date(ts).getTime() >= cutoffMs;
-  });
-
-  // Background auto-collect of Ready / OOS orders after 8 min. expiredRef
-  // de-dupes when multiple TV screens see the same order cross the threshold.
-  // logRestock fires only for READY (sold) — OOS expiries can't be restocked.
-  const expiredRef = useRef(new Set());
+  // Background auto-collect of Ready / OOS orders after 8 min, AND display-
+  // only hide of Coming Tomorrow rows after 10 min. Both use a ref-Set guard
+  // against double-fires; Coming Tomorrow's set is only consulted as a view
+  // filter (no RTDB write). Re-rendering is driven by the 1s wall-clock tick
+  // and by the Ready auto-collect's updateOrder propagating through RTDB.
+  const expiredRef           = useRef(new Set());
+  const hiddenComingTomorrow = useRef(new Set());
   useEffect(() => {
     const check = () => {
       const nowMs = Date.now();
       orders.forEach(o => {
-        if (expiredRef.current.has(o.id)) return;
-        const ts = o.status === STATUS.READY        ? (o.readyAt || o.updatedAt)
-                 : o.status === STATUS.OUT_OF_STOCK ? (o.outOfStockAt || o.updatedAt)
-                 : null;
-        if (!ts || nowMs - new Date(ts).getTime() < TV_EXPIRY_MS) return;
-        expiredRef.current.add(o.id);
-        const iso = new Date().toISOString();
-        updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
-        if (o.status === STATUS.READY) {
-          logRestock({
-            timestamp:   iso,
-            date:        getSADateString(),
-            productName: o.productName,
-            photoUrl:    o.productPhotoUrl || null,
-            photo:       o.productPhoto || "",
-            size:        o.size,
-            orderNumber: o.id,
-            hub:         o.hub || "hub1",
-          }).catch(err => console.warn("logRestock failed:", err));
+        // Ready / OOS → auto-collect (mutates RTDB)
+        if (!expiredRef.current.has(o.id)) {
+          const ts = o.status === STATUS.READY        ? (o.readyAt || o.updatedAt)
+                   : o.status === STATUS.OUT_OF_STOCK ? (o.outOfStockAt || o.updatedAt)
+                   : null;
+          if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
+            expiredRef.current.add(o.id);
+            const iso = new Date().toISOString();
+            updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
+            if (o.status === STATUS.READY) {
+              logRestock({
+                timestamp:   iso,
+                date:        getSADateString(),
+                productName: o.productName,
+                photoUrl:    o.productPhotoUrl || null,
+                photo:       o.productPhoto || "",
+                size:        o.size,
+                orderNumber: o.id,
+                hub:         o.hub || "hub1",
+              }).catch(err => console.warn("logRestock failed:", err));
+            }
+          }
+        }
+        // Coming Tomorrow → display-only hide (no RTDB mutation)
+        if (o.status === STATUS.COMING_TOMORROW && !hiddenComingTomorrow.current.has(o.id)) {
+          const ts = o.comingTomorrowAt || o.updatedAt;
+          if (ts && nowMs - new Date(ts).getTime() >= TV_COMING_TOMORROW_VISIBLE_MS) {
+            hiddenComingTomorrow.current.add(o.id);
+          }
         }
       });
     };
+    check();
     const id = setInterval(check, TV_EXPIRY_CHECK_MS);
     return () => clearInterval(id);
   }, [orders]);
 
-  const sections = [
-    { id: "incoming",       label: "Incoming",        color: TV_COLORS.incoming,       orders: incoming,       icon: <IconShoppingBag/> },
-    { id: "ready",          label: "Ready",           color: TV_COLORS.ready,          orders: ready,          icon: <IconCheck/> },
-    { id: "outOfStock",     label: "Out of Stock",    color: TV_COLORS.outOfStock,     orders: outOfStock,     icon: <IconX/> },
-    { id: "comingTomorrow", label: "Coming Tomorrow", color: TV_COLORS.comingTomorrow, orders: comingTomorrow, icon: <IconClock/> },
-  ];
+  const incoming       = orders.filter(o => o.status === STATUS.INCOMING);
+  const ready          = orders.filter(o => o.status === STATUS.READY);
+  const outOfStock     = orders.filter(o => o.status === STATUS.OUT_OF_STOCK);
+  const comingTomorrow = orders.filter(o =>
+    o.status === STATUS.COMING_TOMORROW && !hiddenComingTomorrow.current.has(o.id)
+  );
+
+  const sectionData = {
+    incoming, ready, outOfStock, comingTomorrow,
+  };
+  const sectionIcons = {
+    incoming:       <IconShoppingBag/>,
+    ready:          <IconCheck/>,
+    outOfStock:     <IconX/>,
+    comingTomorrow: <IconClock/>,
+  };
 
   return (
-    <div style={{ height:"100vh", width:"100vw", background:"#0B0F1A", color:"#fff", fontFamily:FONT, padding:"16px", display:"flex", flexDirection:"column", boxSizing:"border-box", overflow:"hidden" }}>
+    <div style={{ height:"100vh", width:"100vw", background:"#0B0F1A", color:"#fff", fontFamily:FONT, padding:"24px", display:"flex", flexDirection:"column", boxSizing:"border-box", overflow:"hidden" }}>
       <style>{`@keyframes tvFadeIn { from { opacity: 0 } to { opacity: 1 } }`}</style>
 
-      {/* HEADER — fixed 70px row */}
+      {/* HEADER — ~70px row */}
       <div style={{ height:"70px", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <div style={{ display:"flex", alignItems:"center", gap:"14px" }}>
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="M2 17h13a4 4 0 003-1.4l3-3.4a2 2 0 00-1.5-3.3l-5.4-.1a2 2 0 01-1.5-.7l-1.7-2A3 3 0 008.4 5H4a2 2 0 00-2 2v10z"/>
             <line x1="2" y1="14" x2="20" y2="14"/>
           </svg>
-          <span style={{ fontSize:"32px", fontWeight:500, color:"#fff", letterSpacing:"0.02em", lineHeight:1 }}>Marathon</span>
+          <span style={{ fontSize:"40px", fontWeight:700, color:"#fff", lineHeight:1 }}>Marathon</span>
         </div>
-        <div style={{ fontSize:"36px", fontWeight:500, color:"#fff", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{timeStr}</div>
+        <div style={{ textAlign:"right" }}>
+          <div style={{ fontSize:"44px", fontWeight:700, color:"#fff", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{timeStr}</div>
+          <div style={{ fontSize:"18px", fontWeight:400, color:"#9CA3AF", marginTop:"6px" }}>{dateStr}</div>
+        </div>
       </div>
 
-      {/* 4 SECTIONS — equal-flex column, gap 16px */}
-      <div style={{ flex:1, display:"flex", flexDirection:"column", gap:"16px", minHeight:0 }}>
-        {sections.map(s => (
-          <DisplaySection key={s.id} label={s.label} color={s.color} icon={s.icon} orders={s.orders} pageTick={pageTick} />
+      {/* 4 SECTION ROWS — equal-flex, 12px gap, 16px gap below header */}
+      <div style={{ flex:1, paddingTop:"16px", display:"flex", flexDirection:"column", gap:"12px", minHeight:0 }}>
+        {TV_SECTIONS_META.map(meta => (
+          <DisplaySection
+            key={meta.id}
+            labelLines={meta.labelLines}
+            color={meta.color}
+            icon={sectionIcons[meta.id]}
+            orders={sectionData[meta.id]}
+            pageTick={pageTick}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function DisplaySection({ label, color, icon, orders, pageTick }) {
-  const total    = orders.length;
-  const numPages = Math.max(1, Math.ceil(total / TV_PAGE_SIZE));
-  const page     = numPages === 1 ? 0 : pageTick % numPages;
-  const visible  = orders.slice(page * TV_PAGE_SIZE, (page + 1) * TV_PAGE_SIZE);
-  const count    = visible.length;
+function DisplaySection({ labelLines, color, icon, orders, pageTick }) {
+  const total      = orders.length;
+  const numPages   = Math.max(1, Math.ceil(total / TV_PAGE_SIZE));
+  const page       = numPages === 1 ? 0 : pageTick % numPages;
+  const visible    = orders.slice(page * TV_PAGE_SIZE, (page + 1) * TV_PAGE_SIZE);
+  const count      = visible.length;
+  const isMultiLine = labelLines.length > 1;
 
-  // Cell font size derived from the grid container's actual dimensions via
-  // ResizeObserver. Width-based per spec (clientWidth × 0.55, capped at 72);
-  // also bounded by per-cell height × 0.85 so 3-row pages don't clip
-  // vertically (3-row cells are only ~50px tall, which the width formula
-  // would happily overflow).
+  // Grid-mode font size — measured from the grid container via ResizeObserver.
+  // Formula per spec: min(cellW × 0.45, cellH × 0.80). Width factor 0.45 sized
+  // for ~123px cells at 1920p; height factor 0.80 keeps 3-row pages from
+  // overflowing their ~54px cells.
   const gridRef = useRef(null);
   const [cellFontSize, setCellFontSize] = useState(48);
   useEffect(() => {
+    if (count <= 2) return; // not in grid mode
     const el = gridRef.current;
     if (!el) return;
     const compute = () => {
       const w = el.clientWidth;
       const h = el.clientHeight;
       if (!w || !h) return;
-      const cols = 12, gap = 12;
+      const cols = 12, gap = 12, padding = 20;
+      const innerW = w - 2 * padding;
+      const innerH = h - 2 * padding;
       const rows = Math.max(1, Math.ceil(count / cols));
-      const cellW = (w - (cols - 1) * gap) / cols;
-      const cellH = rows === 1 ? h : (h - (rows - 1) * gap) / rows;
-      const size  = Math.max(14, Math.min(72, Math.round(Math.min(cellW * 0.55, cellH * 0.85))));
+      const cellW = (innerW - (cols - 1) * gap) / cols;
+      const cellH = rows === 1 ? innerH : (innerH - (rows - 1) * gap) / rows;
+      const size  = Math.max(14, Math.round(Math.min(cellW * 0.45, cellH * 0.80)));
       setCellFontSize(size);
     };
     compute();
@@ -3821,80 +3859,101 @@ function DisplaySection({ label, color, icon, orders, pageTick }) {
   }, [count]);
 
   return (
-    <div style={{
-      flex:1, minHeight:0,
-      background:"rgba(20,26,42,0.6)",
-      borderRadius:"20px",
-      padding:"24px",
-      display:"grid",
-      gridTemplateColumns:"240px 1fr",
-      position:"relative",
-      boxSizing:"border-box",
-      overflow:"hidden",
-    }}>
-      {/* LEFT zone — 240px fixed, icon + label + true total */}
-      <div style={{ display:"flex", flexDirection:"column", justifyContent:"center", alignItems:"flex-start", gap:"10px", color }}>
-        {icon}
-        <div style={{ fontSize:"24px", fontWeight:600, color, lineHeight:1 }}>{label}</div>
-        <div style={{ fontSize:"48px", fontWeight:700, color, lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{total}</div>
-      </div>
-
-      {/* RIGHT zone — 12-col grid, auto rows, fade on page swap */}
-      <div
-        key={page}
-        ref={gridRef}
-        style={{
-          display:"grid",
-          gridTemplateColumns:"repeat(12, 1fr)",
-          gridAutoRows:"1fr",
-          gap:"12px",
-          overflow:"hidden",
-          minHeight:0,
-          minWidth:0,
-          animation:"tvFadeIn 300ms ease",
-        }}>
-        {visible.map(o => (
-          <div key={o.id} style={{
-            display:"flex", alignItems:"center", justifyContent:"center",
-            fontSize:`${cellFontSize}px`, fontWeight:600,
-            color, lineHeight:1,
-            fontVariantNumeric:"tabular-nums",
-            overflow:"hidden",
-          }}>{o.id}</div>
-        ))}
-      </div>
-
-      {/* Page indicator — subtle, only when paginated */}
-      {numPages > 1 && (
-        <div style={{ position:"absolute", bottom:"10px", right:"20px", fontSize:"12px", color:"rgba(255,255,255,.35)", fontVariantNumeric:"tabular-nums", letterSpacing:"0.04em" }}>
-          {page + 1}/{numPages}
+    <div style={{ flex:1, minHeight:0, display:"flex", gap:"12px" }}>
+      {/* LEFT CARD — 170px fixed */}
+      <div style={{
+        width:"170px", flexShrink:0, height:"100%",
+        background:"#141A2A", borderRadius:"22px",
+        display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"space-between",
+        padding:"28px 12px 22px", boxSizing:"border-box",
+      }}>
+        <div style={{ color, display:"flex", alignItems:"center", justifyContent:"center" }}>{icon}</div>
+        <div style={{ color, textAlign:"center", fontWeight:700,
+                      fontSize: isMultiLine ? "26px" : "28px",
+                      lineHeight: "30px" }}>
+          {labelLines.map((line, i) => <div key={i}>{line}</div>)}
         </div>
-      )}
+        <div style={{ color, fontWeight:800, lineHeight:1, fontVariantNumeric:"tabular-nums",
+                      fontSize: isMultiLine ? "46px" : "60px" }}>
+          {total}
+        </div>
+      </div>
+
+      {/* RIGHT CARD — flex:1, mode switches by count */}
+      <div style={{
+        flex:1, minWidth:0, height:"100%",
+        background:"#141A2A", borderRadius:"22px",
+        position:"relative", overflow:"hidden",
+        boxSizing:"border-box",
+      }}>
+        {count === 0 ? null : count <= 2 ? (
+          // ≤2 → giant centered numbers
+          <div key={page} style={{
+            height:"100%", display:"flex", alignItems:"center", justifyContent:"center",
+            gap:"56px", padding:"20px", boxSizing:"border-box",
+            animation:`tvFadeIn ${TV_PAGE_FADE_MS}ms ease`,
+          }}>
+            {visible.map(o => (
+              <div key={o.id} style={{
+                fontSize:`${TV_GIANT_FONT_PX}px`, fontWeight:800, color, lineHeight:1,
+                fontVariantNumeric:"tabular-nums",
+              }}>{o.id}</div>
+            ))}
+          </div>
+        ) : (
+          // 3–36 → 12-col grid
+          <div key={page} ref={gridRef} style={{
+            display:"grid", gridTemplateColumns:"repeat(12, 1fr)", gridAutoRows:"1fr",
+            gap:"12px", padding:"20px", height:"100%", boxSizing:"border-box",
+            overflow:"hidden",
+            animation:`tvFadeIn ${TV_PAGE_FADE_MS}ms ease`,
+          }}>
+            {visible.map(o => (
+              <div key={o.id} style={{
+                display:"flex", alignItems:"center", justifyContent:"center",
+                fontSize:`${cellFontSize}px`, fontWeight:800, color, lineHeight:1,
+                fontVariantNumeric:"tabular-nums", overflow:"hidden",
+              }}>{o.id}</div>
+            ))}
+          </div>
+        )}
+
+        {/* Page indicator — only when paginated. Subtle bottom-right. */}
+        {numPages > 1 && (
+          <div style={{
+            position:"absolute", bottom:"10px", right:"20px",
+            fontSize:"12px", color:"rgba(255,255,255,.35)",
+            fontVariantNumeric:"tabular-nums", letterSpacing:"0.04em",
+          }}>
+            {page + 1}/{numPages}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-// ── TV display icons (32×32, inherit accent color via currentColor) ───────────
+// ── TV display icons (40×40, stroke 3, inherit accent via currentColor) ──────
 function IconShoppingBag() {
-  return <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+  return <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
     <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
     <line x1="3" y1="6" x2="21" y2="6"/>
     <path d="M16 10a4 4 0 01-8 0"/>
   </svg>;
 }
 function IconCheck() {
-  return <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+  return <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="20 6 9 17 4 12"/>
   </svg>;
 }
 function IconX() {
-  return <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+  return <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
     <line x1="18" y1="6" x2="6" y2="18"/>
     <line x1="6" y1="6" x2="18" y2="18"/>
   </svg>;
 }
 function IconClock() {
-  return <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+  return <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="10"/>
     <polyline points="12 6 12 12 16 14"/>
   </svg>;
