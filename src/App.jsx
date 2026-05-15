@@ -1376,37 +1376,42 @@ function RoleSelector({ onSelect, orders, returnsLog, isAdmin }) {
 }
 
 // ─── ADMIN VIEW ───────────────────────────────────────────────────────────────
+// Sneaker size options (clothing uses CLOTHING_SIZES). Hoisted to module
+// scope so both AdminView's Add Product form and AdminProductDetail's size
+// editor share the same source of truth.
+const SNEAKER_SIZES = ["3","4","5","5.5","6","7","8","9","10","11"];
+
+// `#product/{id}` is the detail-page route. Returns null when the hash is
+// anything else (empty, #admin, etc.).
+function parseProductHash() {
+  const m = (window.location.hash || "").match(/^#product\/(.+)$/);
+  return m ? m[1] : null;
+}
+
 function AdminView({ products, orders, onExit }) {
+  // ── Add Product form state (collapsible at top of list) ─────────────────
   const [showAdd, setShowAdd] = useState(false);
   // Phase 12A: productType (sneaker default | clothing). Both types use a
   // shared `sizes` array — sneakers store "3".."11", clothing stores
   // "S".."XXXL". Phase 14A: `hubs` is a multi-select (Hub 1 / Hub 2 / Hub 3);
   // clothing cannot include Hub 1.
   const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker" });
-  // photoMode kept only for back-compat with reset; photo is always uploaded as image now.
   const [saving, setSaving] = useState(false);
-  // Inline name editing: editingId = product id being edited, editingName = draft value
-  const [editingId, setEditingId]     = useState(null);
-  const [editingName, setEditingName] = useState("");
-  // Inline sizes editing (works for both types — different option lists).
-  const [editSizesId, setEditSizesId]   = useState(null);
-  const [editSizesArr, setEditSizesArr] = useState([]);
-  // Inline hubs editing (Phase 14A). Same UX pattern as sizes.
-  const [editHubsId, setEditHubsId]     = useState(null);
-  const [editHubsArr, setEditHubsArr]   = useState([]);
-  // Inline photo editing — pick a new image, preview, Confirm/Cancel. Storage
-  // path matches the create flow (products/{id}/photo.jpg) so the existing
-  // file is overwritten; the new download URL replaces product.photoUrl.
-  const [editPhotoId, setEditPhotoId]     = useState(null);
-  const [editPhotoUrl, setEditPhotoUrl]   = useState(null);
-  const [editPhotoBlob, setEditPhotoBlob] = useState(null);
-  const [editPhotoSaving, setEditPhotoSaving] = useState(false);
-  const editPhotoFileRef = useRef(null);
-  // Products list search (Phase 12A).
-  const [productSearch, setProductSearch] = useState("");
-  const sizeOptions = ["3","4","5","5.5","6","7","8","9","10","11"];
-  // Emoji selector removed — Add Product now only supports image uploads.
   const fileInputRef = useRef(null);
+  // ── List search ─────────────────────────────────────────────────────────
+  const [productSearch, setProductSearch] = useState("");
+  // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
+  //    browser back clears it. Listener stays mounted for the whole view. ──
+  const [detailId, setDetailId] = useState(() => parseProductHash());
+  useEffect(() => {
+    const onHashChange = () => setDetailId(parseProductHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  // Insights log → fuels the detail page's "Last sold X · N orders all-time"
+  // context line. orders[] alone isn't enough — it's daily-counter-ephemeral
+  // (see project-insights-past-days-pattern memory).
+  const insightsLog = useInsightsLog();
 
   const addProduct = async () => {
     if (!form.name || form.sizes.length === 0) return;
@@ -1450,70 +1455,9 @@ function AdminView({ products, orders, onExit }) {
     }
   };
 
-  const deleteProduct = (id, name) => {
-    if (!window.confirm(`Are you sure you want to delete this product?\n\n"${name}"`)) return;
-    deleteProductFromFirebase(id);
-  };
-
-  // ── Edit Photo flow ─────────────────────────────────────────────────────
-  // Mirrors the compression pipeline in handleImageUpload (800px max-dim,
-  // step quality down from 0.85 until under 200KB) so the per-product file
-  // size stays sane regardless of source. Upload overwrites the existing
-  // products/{id}/photo.jpg; getDownloadURL returns a new token, which is
-  // what updates RTDB and forces every subscriber's <img> to refresh.
-  const startEditPhoto = (id) => {
-    setEditPhotoId(id);
-    setEditPhotoUrl(null);
-    setEditPhotoBlob(null);
-  };
-  const cancelEditPhoto = () => {
-    setEditPhotoId(null);
-    setEditPhotoUrl(null);
-    setEditPhotoBlob(null);
-  };
-  const handleEditPhotoFile = (e) => {
-    const file = e.target.files[0];
-    e.target.value = ""; // allow picking the same file twice in a row
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const img = new Image();
-      img.onload = () => {
-        const MAX_DIM = 800;
-        const MAX_BYTES = 200 * 1024;
-        const scale = Math.min(1, MAX_DIM / img.width, MAX_DIM / img.height);
-        const canvas = document.createElement("canvas");
-        canvas.width  = Math.round(img.width  * scale);
-        canvas.height = Math.round(img.height * scale);
-        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-        let dataUrl = canvas.toDataURL("image/jpeg", 0.05);
-        for (let q = 0.85; q > 0.05; q = Math.round((q - 0.05) * 100) / 100) {
-          const candidate = canvas.toDataURL("image/jpeg", q);
-          if (candidate.length * 0.75 <= MAX_BYTES) { dataUrl = candidate; break; }
-        }
-        setEditPhotoUrl(dataUrl);
-        setEditPhotoBlob(dataURLToBlob(dataUrl));
-      };
-      img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
-  };
-  const saveEditPhoto = async (productId) => {
-    if (!editPhotoBlob || editPhotoSaving) return;
-    setEditPhotoSaving(true);
-    try {
-      const sRef = storageRef(storage, `products/${productId}/photo.jpg`);
-      await uploadBytes(sRef, editPhotoBlob, { contentType: "image/jpeg" });
-      const url = await getDownloadURL(sRef);
-      await update(ref(database, `products/${productId}`), { photoUrl: url });
-      cancelEditPhoto();
-    } catch (err) {
-      console.error("editPhoto failed:", err);
-      alert("Failed to save photo. Please try again.");
-    } finally {
-      setEditPhotoSaving(false);
-    }
-  };
+  // Per-product edit handlers (name/sizes/hubs/photo/delete) used to live
+  // here as inline-editor flows in the list. They've been moved into
+  // AdminProductDetail — list rows are now navigation targets only.
 
   const toggleSize = s => setForm(f => ({ ...f, sizes: f.sizes.includes(s) ? f.sizes.filter(x=>x!==s) : [...f.sizes, s] }));
   const toggleHub  = h => setForm(f => ({ ...f, hubs:  f.hubs.includes(h)  ? f.hubs.filter(x=>x!==h)  : [...f.hubs,  h] }));
@@ -1569,12 +1513,27 @@ function AdminView({ products, orders, onExit }) {
     reader.readAsDataURL(file);
   };
 
-  const stats = {
-    total:      orders.length,
-    incoming:   orders.filter(o => o.status === STATUS.INCOMING).length,
-    ready:      orders.filter(o => o.status === STATUS.READY).length,
-    outOfStock: orders.filter(o => o.status === STATUS.OUT_OF_STOCK).length,
-  };
+  // Detail page: which product, and stale-hash guard. If the hash points
+  // at a product that no longer exists (deleted in another tab), clear it.
+  const detailProduct = detailId ? products.find(p => p.id === detailId) : null;
+  useEffect(() => {
+    if (detailId && products.length > 0 && !detailProduct) {
+      window.history.back();
+    }
+  }, [detailId, products.length, detailProduct]);
+
+  // When the detail page is mounted, render JUST the detail (no list chrome).
+  if (detailProduct) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+        <AdminProductDetail
+          product={detailProduct}
+          insightsLog={insightsLog}
+          onBack={() => window.history.back()}
+        />
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
@@ -1640,7 +1599,7 @@ function AdminView({ products, orders, onExit }) {
           {/* Size toggles — same toggle UX for both types, different option lists. */}
           <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Available Sizes</div>
           <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
-            {(form.productType === "clothing" ? CLOTHING_SIZES : sizeOptions).map(s => (
+            {(form.productType === "clothing" ? CLOTHING_SIZES : SNEAKER_SIZES).map(s => (
               <button key={s} onClick={() => toggleSize(s)}
                 style={{ padding:"6px 14px", borderRadius:"8px", border:"2px solid", borderColor: form.sizes.includes(s)?BLUE:"rgba(60,110,255,.15)", background: form.sizes.includes(s)?"rgba(60,110,255,.12)":"transparent", color: form.sizes.includes(s)?BLUE_L:"#666", cursor:"pointer", fontWeight:"600" }}>
                 {s}
@@ -1683,193 +1642,321 @@ function AdminView({ products, orders, onExit }) {
         />
       </div>
 
-      {/* PRODUCT LIST with timeline dots */}
-      <div style={{ position:"relative" }}>
-        {/* Timeline line */}
-        <div style={{ position:"absolute", left:14, top:0, bottom:0, width:1, background:"linear-gradient(180deg,rgba(60,110,255,.4),rgba(60,110,255,.15))", zIndex:0 }}/>
+      {/* CLEAN PRODUCT LIST — each row is a navigation target (taps push
+          #product/{id} via AdminProductRow). All edit affordances moved to
+          AdminProductDetail. */}
+      <div>
         {filteredProducts.length === 0 && (
           <div style={{ textAlign:"center", color:"#555", padding:"2.5rem 1rem", fontSize:"0.9rem" }}>
             {productSearch.trim() ? "No products match your search." : "No products yet. Add one above."}
           </div>
         )}
-        {filteredProducts.map(p => {
-          const isEditing   = editingId === p.id;
-          const isEditSz    = editSizesId === p.id;
-          const isEditHubs  = editHubsId === p.id;
-          const isEditPhoto = editPhotoId === p.id;
-          const isClothing  = (p.productType || "sneaker") === "clothing";
-          // Legacy clothing products created before this correction may still
-          // have a `stock: { S, M, ... }` object and no `sizes` array. Treat
-          // every key present in stock as an available size — user can edit
-          // and Save to migrate it cleanly into the sizes array shape.
-          const productSizes = Array.isArray(p.sizes) && p.sizes.length
-            ? p.sizes
-            : (isClothing && p.stock ? Object.keys(p.stock) : (p.sizes || []));
-          const sizeChoices = isClothing ? CLOTHING_SIZES : sizeOptions;
-          return (
-            <div key={p.id} style={{ display:"flex", gap:0, marginBottom:10, position:"relative", zIndex:1 }}>
-              <div style={{ width:28, flexShrink:0, display:"flex", flexDirection:"column", alignItems:"center", paddingTop:32 }}>
-                <div style={{ width:12, height:12, borderRadius:"50%", background:"#3A6EFF", boxShadow:"0 0 8px rgba(58,110,255,.7)", border:"2px solid rgba(58,110,255,.3)", flexShrink:0 }}/>
-              </div>
-              <div style={{ flex:1, background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, overflow:"hidden" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:12, padding:"14px 14px 10px" }}>
-                  <ProductPhoto url={p.photoUrl} photo={p.photo} size={80} radius={10}/>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    {isEditing ? (
-                      <div>
-                        <input value={editingName}
-                               onChange={e => setEditingName(e.target.value)}
-                               onKeyDown={e => {
-                                 if (e.key === "Enter") { updateProductName(p.id, editingName); setEditingId(null); }
-                                 if (e.key === "Escape") setEditingId(null);
-                               }}
-                               autoFocus
-                               style={{ ...inputStyle, fontSize:14, padding:"6px 8px", marginBottom:6 }}/>
-                        <div style={{ display:"flex", gap:6 }}>
-                          <button onClick={() => { updateProductName(p.id, editingName); setEditingId(null); }}
-                                  style={{ ...bBlue, padding:"4px 10px", fontSize:11 }}>Save</button>
-                          <button onClick={() => setEditingId(null)}
-                                  style={{ ...bGray, padding:"4px 10px", fontSize:11 }}>Cancel</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div style={{ fontSize:17, fontWeight:700, color:"rgba(255,255,255,.85)", marginBottom:6 }}>{p.name}</div>
-                        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                          {/* Type chip — Sneaker / Clothing */}
-                          <div style={{ display:"inline-block", background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.25)", color:BLUE_L, fontSize:11, fontWeight:600, padding:"3px 10px", borderRadius:20 }}>
-                            {isClothing ? "Clothing" : "Sneaker"}
-                          </div>
-                          {/* Hub chip — read-only display of all assigned hubs.
-                              Use Edit Hubs to change (Phase 14A). */}
-                          <div style={{ display:"inline-block", background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.3)", color:"#4A7FFF", fontSize:11, fontWeight:600, padding:"3px 10px", borderRadius:20 }}>
-                            {getProductHubs(p).map(h => HUB_LABELS[h] || h).join(", ") || "—"}
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                  <div onClick={() => { setEditingId(p.id); setEditingName(p.name); }}
-                       style={{ color:"rgba(255,255,255,.2)", fontSize:18, cursor:"pointer", padding:4 }}>···</div>
-                </div>
-                <div style={{ height:1, background:"rgba(255,255,255,.05)", margin:"0 14px" }}/>
+        {filteredProducts.map(p => <AdminProductRow key={p.id} product={p} />)}
+      </div>
+      <div style={{ height:20 }}/>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-                {/* Unified Edit Sizes flow — same toggle UX for both types,
-                    using sneaker sizeOptions or CLOTHING_SIZES depending on
-                    productType. Save writes the full sizes array. */}
-                {isEditSz ? (
-                  <div style={{ padding:"12px 14px 14px" }}>
-                    <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7, textTransform:"uppercase" }}>Tap to toggle sizes</div>
-                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
-                      {sizeChoices.map(s => {
-                        const on = editSizesArr.includes(s);
-                        return (
-                          <button key={s} onClick={() => setEditSizesArr(arr => on ? arr.filter(x => x !== s) : [...arr, s])}
-                                  style={{ padding:"5px 11px", borderRadius:7, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.15)" : "rgba(255,255,255,.05)", color: on ? "#4A7FFF" : "rgba(255,255,255,.7)", cursor:"pointer", fontSize:12, fontWeight:600 }}>{s}</button>
-                        );
-                      })}
-                    </div>
-                    <div style={{ display:"flex", gap:6 }}>
-                      <button onClick={() => { updateProductSizes(p.id, editSizesArr); setEditSizesId(null); }} style={{ flex:1, ...bBlue, padding:6, fontSize:12 }}>Save Sizes</button>
-                      <button onClick={() => setEditSizesId(null)} style={{ ...bGray, padding:"6px 10px", fontSize:12 }}>Cancel</button>
-                    </div>
-                  </div>
-                ) : isEditPhoto ? (
-                  <div style={{ padding:"12px 14px 14px" }}>
-                    <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7, textTransform:"uppercase" }}>Replace photo</div>
-                    <input ref={editPhotoFileRef} type="file" accept="image/*" onChange={handleEditPhotoFile} style={{ display:"none" }}/>
-                    <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
-                      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
-                        <div style={{ fontSize:9, color:"rgba(255,255,255,.4)" }}>Current</div>
-                        <ProductPhoto url={p.photoUrl} photo={p.photo} size={64} radius={10}/>
-                      </div>
-                      <div style={{ fontSize:18, color:"rgba(255,255,255,.3)" }}>→</div>
-                      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
-                        <div style={{ fontSize:9, color:"rgba(255,255,255,.4)" }}>New</div>
-                        {editPhotoUrl
-                          ? <img src={editPhotoUrl} alt="preview" style={{ width:64, height:64, objectFit:"cover", borderRadius:10, border:"1px solid rgba(60,110,255,.25)" }}/>
-                          : <div style={{ width:64, height:64, borderRadius:10, border:"2px dashed rgba(60,110,255,.25)", display:"flex", alignItems:"center", justifyContent:"center", color:"#555", fontSize:10 }}>none</div>}
-                      </div>
-                      <button onClick={() => editPhotoFileRef.current?.click()} disabled={editPhotoSaving}
-                              style={{ marginLeft:"auto", background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor: editPhotoSaving ? "not-allowed" : "pointer", opacity: editPhotoSaving ? 0.5 : 1 }}>
-                        {editPhotoUrl ? "Choose different" : "Choose photo"}
-                      </button>
-                    </div>
-                    <div style={{ display:"flex", gap:6 }}>
-                      <button onClick={() => saveEditPhoto(p.id)} disabled={!editPhotoBlob || editPhotoSaving}
-                              style={{ flex:1, ...bBlue, padding:6, fontSize:12, opacity: (!editPhotoBlob || editPhotoSaving) ? 0.4 : 1 }}>
-                        {editPhotoSaving ? "Uploading…" : "Save Photo"}
-                      </button>
-                      <button onClick={cancelEditPhoto} disabled={editPhotoSaving} style={{ ...bGray, padding:"6px 10px", fontSize:12, opacity: editPhotoSaving ? 0.5 : 1 }}>Cancel</button>
-                    </div>
-                  </div>
-                ) : isEditHubs ? (
-                  <div style={{ padding:"12px 14px 14px" }}>
-                    <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7, textTransform:"uppercase" }}>Tap to toggle hubs</div>
-                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
-                      {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3"]].map(([val, label]) => {
-                        const disabled = isClothing && val === "hub1";
-                        const on = editHubsArr.includes(val) && !disabled;
-                        return (
-                          <button key={val} disabled={disabled} onClick={() => setEditHubsArr(arr => on ? arr.filter(x => x !== val) : [...arr, val])}
-                                  style={{ padding:"5px 11px", borderRadius:7, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.15)" : "rgba(255,255,255,.05)", color: disabled ? "rgba(255,255,255,.25)" : (on ? "#4A7FFF" : "rgba(255,255,255,.7)"), cursor: disabled ? "not-allowed" : "pointer", fontSize:12, fontWeight:600, opacity: disabled ? 0.5 : 1 }}>{label}</button>
-                        );
-                      })}
-                    </div>
-                    {isClothing && (
-                      <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", marginBottom:8, fontStyle:"italic" }}>Clothing cannot be in Hub 1.</div>
-                    )}
-                    <div style={{ display:"flex", gap:6 }}>
-                      <button onClick={() => { if (editHubsArr.length === 0) return; updateProductHubs(p.id, editHubsArr); setEditHubsId(null); }}
-                              disabled={editHubsArr.length === 0}
-                              style={{ flex:1, ...bBlue, padding:6, fontSize:12, opacity: editHubsArr.length === 0 ? 0.4 : 1 }}>Save Hubs</button>
-                      <button onClick={() => setEditHubsId(null)} style={{ ...bGray, padding:"6px 10px", fontSize:12 }}>Cancel</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ display:"flex", flexDirection:"column", padding:"12px 14px 14px", gap:10 }}>
-                    <div style={{ minWidth:0 }}>
-                      <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7 }}>Sizes</div>
-                      <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-                        {productSizes.map(s => (
-                          <div key={s} style={{ minWidth:32, height:32, padding:"0 8px", background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:7, display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:600, color:"rgba(255,255,255,.8)" }}>{s}</div>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7 }}>Actions</div>
-                      <div style={{ display:"flex", gap:6, flexWrap:"wrap", justifyContent:"flex-end" }}>
-                        <button onClick={() => { setEditSizesArr([...productSizes]); setEditSizesId(p.id); }}
-                                style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                          Edit Sizes
-                        </button>
-                        <button onClick={() => { setEditHubsArr(getProductHubs(p)); setEditHubsId(p.id); }}
-                                style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                          Edit Hubs
-                        </button>
-                        <button onClick={() => startEditPhoto(p.id)}
-                                style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                          Edit Photo
-                        </button>
-                        <button onClick={() => deleteProduct(p.id, p.name)}
-                                style={{ background:"rgba(180,40,40,.1)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
+// ─── ADMIN PRODUCT ROW ───────────────────────────────────────────────────────
+// Compact tappable card in the admin list. Single-line metadata combines
+// type, hubs, and size count. Tap anywhere on the row → hash navigates to
+// #product/{id} which AdminView's hashchange listener catches.
+function AdminProductRow({ product }) {
+  const isClothing = (product.productType || "sneaker") === "clothing";
+  const hubs       = getProductHubs(product);
+  const hubLabel   = hubs.length ? hubs.map(h => HUB_LABELS[h] || h).join(", ") : "—";
+  const sizes      = Array.isArray(product.sizes) ? product.sizes : [];
+  const sizeCount  = sizes.length || (isClothing && product.stock ? Object.keys(product.stock).length : 0);
+  const meta       = `${isClothing ? "Clothing" : "Sneaker"} · ${hubLabel} · ${sizeCount} size${sizeCount === 1 ? "" : "s"}`;
+
+  return (
+    <div onClick={() => { window.location.hash = "product/" + product.id; }}
+         style={{
+           display:"flex", alignItems:"center", gap:12,
+           background:"rgba(255,255,255,.03)",
+           border:"1px solid rgba(255,255,255,.07)",
+           borderRadius:14, padding:"10px 14px", marginBottom:8, cursor:"pointer",
+         }}>
+      <ProductPhoto url={product.photoUrl} photo={product.photo} size={56} radius={10}/>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:16, fontWeight:600, color:"#fff", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{product.name}</div>
+        <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginTop:4, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{meta}</div>
+      </div>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.3)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}>
+        <polyline points="9 18 15 12 9 6"/>
+      </svg>
+    </div>
+  );
+}
+
+// ─── ADMIN PRODUCT DETAIL ────────────────────────────────────────────────────
+// Full-page edit surface reached via #product/{id}. Every field auto-saves
+// — name on blur, type/sizes/hubs on every toggle. Photo replace runs the
+// existing compression pipeline and uploads immediately on file pick (no
+// preview step; consistent with the auto-save theme). Delete prompts for
+// confirmation then navigates back.
+function AdminProductDetail({ product, insightsLog, onBack }) {
+  const isClothing = (product.productType || "sneaker") === "clothing";
+  const productSizes = Array.isArray(product.sizes) && product.sizes.length
+    ? product.sizes
+    : (isClothing && product.stock ? Object.keys(product.stock) : []);
+  const productHubs = getProductHubs(product);
+  const sizeChoices = isClothing ? CLOTHING_SIZES : SNEAKER_SIZES;
+
+  // Name — local draft synced from RTDB, write on blur.
+  const [nameDraft, setNameDraft] = useState(product.name);
+  useEffect(() => { setNameDraft(product.name); }, [product.name]);
+  const saveName = () => {
+    const next = nameDraft.trim();
+    if (next && next !== product.name) updateProductName(product.id, next);
+    else if (!next) setNameDraft(product.name);
+  };
+
+  // Photo — pick file → compress in-browser → upload → set photoUrl. No
+  // preview/confirm; the upload is the action. Compression pipeline is the
+  // same one used by the Add Product form (800px max-dim, step quality down
+  // until <200 KB).
+  const fileRef = useRef(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const handlePhotoFile = (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setPhotoUploading(true);
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const img = new Image();
+      img.onload = async () => {
+        try {
+          const MAX_DIM = 800;
+          const MAX_BYTES = 200 * 1024;
+          const scale = Math.min(1, MAX_DIM / img.width, MAX_DIM / img.height);
+          const canvas = document.createElement("canvas");
+          canvas.width  = Math.round(img.width  * scale);
+          canvas.height = Math.round(img.height * scale);
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+          let dataUrl = canvas.toDataURL("image/jpeg", 0.05);
+          for (let q = 0.85; q > 0.05; q = Math.round((q - 0.05) * 100) / 100) {
+            const candidate = canvas.toDataURL("image/jpeg", q);
+            if (candidate.length * 0.75 <= MAX_BYTES) { dataUrl = candidate; break; }
+          }
+          const blob = dataURLToBlob(dataUrl);
+          const sRef = storageRef(storage, `products/${product.id}/photo.jpg`);
+          await uploadBytes(sRef, blob, { contentType: "image/jpeg" });
+          const url = await getDownloadURL(sRef);
+          await update(ref(database, `products/${product.id}`), { photoUrl: url });
+        } catch (err) {
+          console.error("photo upload failed:", err);
+          alert("Failed to save photo. Please try again.");
+        } finally {
+          setPhotoUploading(false);
+        }
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+  const removePhoto = async () => {
+    if (!product.photoUrl) return;
+    if (!window.confirm(`Remove the photo for "${product.name}"?`)) return;
+    await update(ref(database, `products/${product.id}`), { photoUrl: null });
+  };
+
+  // Type — switching to Clothing strips Hub 1 (mirrors the Add Product
+  // form's setProductType helper). Double-writes `hub` for back-compat per
+  // the project-broadcast-api-async/14A double-write pattern.
+  const setType = (nextType) => {
+    if (nextType === (product.productType || "sneaker")) return;
+    const patch = { productType: nextType };
+    if (nextType === "clothing") {
+      const stripped = productHubs.filter(h => h !== "hub1");
+      patch.hubs = stripped.length ? stripped : ["hub2"];
+      patch.hub  = patch.hubs[0];
+    }
+    update(ref(database, `products/${product.id}`), patch);
+  };
+
+  const toggleSize = (s) => {
+    const next = productSizes.includes(s)
+      ? productSizes.filter(x => x !== s)
+      : [...productSizes, s];
+    updateProductSizes(product.id, next);
+  };
+
+  const toggleHub = (h) => {
+    if (isClothing && h === "hub1") return;
+    const next = productHubs.includes(h)
+      ? productHubs.filter(x => x !== h)
+      : [...productHubs, h];
+    if (next.length === 0) return; // require ≥1 hub
+    updateProductHubs(product.id, next);
+  };
+
+  const handleDelete = () => {
+    if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
+    deleteProductFromFirebase(product.id);
+    onBack();
+  };
+
+  // Activity line — "Last sold X days ago · N orders all-time" from
+  // insights_log (orders/{id} is daily-counter-ephemeral so can't be trusted
+  // for historical aggregates; see project-insights-past-days-pattern memory).
+  const activity = useMemo(() => {
+    const productLog = insightsLog.filter(e => e.productName === product.name);
+    const placed     = productLog.filter(e => e.action === "placed");
+    const sold       = productLog.filter(e => e.action === "collected" || e.action === "ready");
+    let lastSoldLabel = "Never sold";
+    if (sold.length > 0) {
+      const ts = sold[0].timestamp; // log is sorted newest-first
+      if (ts) {
+        const daysAgo = Math.floor((Date.now() - new Date(ts).getTime()) / (24*60*60*1000));
+        if (daysAgo <= 0)    lastSoldLabel = "Last sold today";
+        else if (daysAgo === 1) lastSoldLabel = "Last sold yesterday";
+        else                 lastSoldLabel = `Last sold ${daysAgo} days ago`;
+      }
+    }
+    return `${lastSoldLabel} · ${placed.length} order${placed.length === 1 ? "" : "s"} all-time`;
+  }, [insightsLog, product.name]);
+
+  const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding:"24px 18px 8px" };
+  const card         = { background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, margin:"0 14px", overflow:"hidden" };
+  const cardInner    = { padding:"14px 16px" };
+
+  return (
+    <div>
+      {/* TOP BAR with back chevron */}
+      <div style={{ padding:"44px 8px 8px", display:"flex", alignItems:"center" }}>
+        <button onClick={onBack}
+                style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, fontWeight:500, cursor:"pointer", padding:"6px 10px" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+          Products
+        </button>
+      </div>
+
+      {/* HEADER */}
+      <div style={{ padding:"4px 18px 8px" }}>
+        <div style={{ fontSize:22, fontWeight:700, color:"#fff", lineHeight:1.2 }}>{product.name}</div>
+        <div style={{ fontSize:13, color:"rgba(255,255,255,.45)", marginTop:6 }}>{activity}</div>
+      </div>
+
+      {/* PHOTO */}
+      <div style={sectionTitle}>Photo</div>
+      <div style={card}>
+        <div style={{ ...cardInner, display:"flex", alignItems:"center", gap:14 }}>
+          <ProductPhoto url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
+          <div style={{ flex:1, display:"flex", flexDirection:"column", gap:8 }}>
+            <input ref={fileRef} type="file" accept="image/*" onChange={handlePhotoFile} style={{ display:"none" }} />
+            <button onClick={() => fileRef.current?.click()} disabled={photoUploading}
+                    style={{ background:"rgba(60,110,255,.12)", border:"1px solid rgba(60,110,255,.3)", color:"#4A7FFF", fontSize:14, fontWeight:600, padding:"10px 14px", borderRadius:10, cursor: photoUploading ? "not-allowed" : "pointer", textAlign:"center", opacity: photoUploading ? 0.5 : 1 }}>
+              {photoUploading ? "Uploading…" : "Replace photo"}
+            </button>
+            {product.photoUrl && (
+              <button onClick={removePhoto} disabled={photoUploading}
+                      style={{ background:"rgba(180,40,40,.08)", border:"1px solid rgba(180,40,40,.25)", color:"#FF8888", fontSize:14, fontWeight:600, padding:"10px 14px", borderRadius:10, cursor: photoUploading ? "not-allowed" : "pointer", textAlign:"center", opacity: photoUploading ? 0.5 : 1 }}>
+                Remove photo
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* NAME */}
+      <div style={sectionTitle}>Name</div>
+      <div style={card}>
+        <div style={cardInner}>
+          <input value={nameDraft}
+                 onChange={e => setNameDraft(e.target.value)}
+                 onBlur={saveName}
+                 onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                 style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
+        </div>
+      </div>
+
+      {/* TYPE */}
+      <div style={sectionTitle}>Type</div>
+      <div style={card}>
+        <div style={{ display:"flex", padding:"6px" }}>
+          {[["sneaker","Sneaker"],["clothing","Clothing"]].map(([val, label]) => {
+            const on = (product.productType || "sneaker") === val;
+            return (
+              <button key={val} onClick={() => setType(val)}
+                      style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", cursor:"pointer", fontSize:14, fontWeight:600,
+                               background: on ? "rgba(60,110,255,.18)" : "transparent",
+                               color: on ? "#4A7FFF" : "rgba(255,255,255,.55)" }}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* SIZES */}
+      <div style={sectionTitle}>Available sizes</div>
+      <div style={card}>
+        <div style={{ ...cardInner, display:"flex", gap:6, flexWrap:"wrap" }}>
+          {sizeChoices.map(s => {
+            const on = productSizes.includes(s);
+            return (
+              <button key={s} onClick={() => toggleSize(s)}
+                      style={{ padding:"7px 14px", borderRadius:8, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.18)" : "rgba(255,255,255,.03)", color: on ? "#4A7FFF" : "rgba(255,255,255,.7)", cursor:"pointer", fontSize:13, fontWeight:600 }}>{s}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* HUBS — iOS-style grouped list */}
+      <div style={sectionTitle}>Hubs</div>
+      <div style={card}>
+        {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3 — Pine"]].map(([val, label], i) => {
+          const disabled = isClothing && val === "hub1";
+          const on       = productHubs.includes(val) && !disabled;
+          const isLast   = i === 2;
+          return (
+            <div key={val}>
+              <div onClick={() => !disabled && toggleHub(val)}
+                   style={{
+                     display:"flex", alignItems:"center", justifyContent:"space-between",
+                     padding:"14px 16px",
+                     cursor: disabled ? "not-allowed" : "pointer",
+                     opacity: disabled ? 0.4 : 1,
+                   }}>
+                <div style={{ fontSize:15, color:"#fff", fontWeight:500 }}>{label}</div>
+                <div style={{
+                  width:24, height:24, borderRadius:6,
+                  background: on ? "#4A7FFF" : "rgba(255,255,255,.06)",
+                  border: on ? "none" : "1px solid rgba(255,255,255,.18)",
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                }}>
+                  {on && (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  )}
+                </div>
               </div>
+              {!isLast && <div style={{ height:1, background:"rgba(255,255,255,.06)", margin:"0 16px" }}/>}
             </div>
           );
         })}
       </div>
-      <div style={{ height:20 }}/>
+      {isClothing && (
+        <div style={{ padding:"8px 18px 0", fontSize:12, color:"rgba(255,255,255,.4)", fontStyle:"italic" }}>
+          Clothing cannot be stocked at Hub 1.
         </div>
+      )}
+
+      {/* DELETE */}
+      <div style={{ height:1, background:"rgba(255,255,255,.08)", margin:"32px 14px 16px" }}/>
+      <div style={{ padding:"0 14px 28px" }}>
+        <button onClick={handleDelete}
+                style={{ width:"100%", background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:15, fontWeight:600, padding:"14px", borderRadius:12, cursor:"pointer" }}>
+          Delete product
+        </button>
       </div>
     </div>
   );
