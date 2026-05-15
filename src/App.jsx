@@ -3804,8 +3804,11 @@ function DisplayView({ orders }) {
         </div>
       </div>
 
-      {/* 4 SECTION ROWS — equal-flex, 12px gap, 16px gap below header */}
-      <div style={{ flex:1, paddingTop:"16px", display:"flex", flexDirection:"column", gap:"12px", minHeight:0 }}>
+      {/* 4 SECTION ROWS — equal-flex, 12px gap, 16px gap below header.
+          flex:1 1 0 + minHeight:0 lets rows shrink below content size, which
+          is the #1 flex layout gotcha. Without minHeight:0 the rows refuse
+          to compress and the whole page overflows 100vh. */}
+      <div style={{ flex:"1 1 0", minHeight:0, paddingTop:"16px", display:"flex", flexDirection:"column", gap:"12px" }}>
         {TV_SECTIONS_META.map(meta => (
           <DisplaySection
             key={meta.id}
@@ -3830,11 +3833,11 @@ function DisplaySection({ labelLines, color, icon, orders, pageTick }) {
   const isMultiLine = labelLines.length > 1;
 
   // Grid-mode font size — measured from the grid container via ResizeObserver.
-  // Formula per spec: min(cellW × 0.45, cellH × 0.80). Width factor 0.45 sized
-  // for ~123px cells at 1920p; height factor 0.80 keeps 3-row pages from
-  // overflowing their ~54px cells.
+  // Formula per spec: min(cellW × 0.45, cellH × 0.80). Padding now lives on
+  // the right card (not the grid), so the grid's clientWidth/Height already
+  // represent the inner area — no padding subtraction needed here.
   const gridRef = useRef(null);
-  const [cellFontSize, setCellFontSize] = useState(48);
+  const [cellFontSize, setCellFontSize] = useState(16);
   useEffect(() => {
     if (count <= 2) return; // not in grid mode
     const el = gridRef.current;
@@ -3843,13 +3846,11 @@ function DisplaySection({ labelLines, color, icon, orders, pageTick }) {
       const w = el.clientWidth;
       const h = el.clientHeight;
       if (!w || !h) return;
-      const cols = 12, gap = 12, padding = 20;
-      const innerW = w - 2 * padding;
-      const innerH = h - 2 * padding;
+      const cols = 12, gap = 12;
       const rows = Math.max(1, Math.ceil(count / cols));
-      const cellW = (innerW - (cols - 1) * gap) / cols;
-      const cellH = rows === 1 ? innerH : (innerH - (rows - 1) * gap) / rows;
-      const size  = Math.max(14, Math.round(Math.min(cellW * 0.45, cellH * 0.80)));
+      const cellW = (w - (cols - 1) * gap) / cols;
+      const cellH = rows === 1 ? h : (h - (rows - 1) * gap) / rows;
+      const size  = Math.max(12, Math.round(Math.min(cellW * 0.45, cellH * 0.80)));
       setCellFontSize(size);
     };
     compute();
@@ -3859,18 +3860,22 @@ function DisplaySection({ labelLines, color, icon, orders, pageTick }) {
   }, [count]);
 
   return (
-    <div style={{ flex:1, minHeight:0, display:"flex", gap:"12px" }}>
-      {/* LEFT CARD — 170px fixed */}
+    // Section row: flex:1 1 0 + minHeight:0 lets row shrink to its share of
+    // available height. Cross-axis defaults to align-items:stretch, so the
+    // two cards naturally fill row height — no height:100% needed.
+    <div style={{ flex:"1 1 0", minHeight:0, display:"flex", gap:"12px" }}>
+      {/* LEFT CARD — fixed 170px, contents centered (NOT space-between). */}
       <div style={{
-        width:"170px", flexShrink:0, height:"100%",
+        flex:"0 0 170px",
         background:"#141A2A", borderRadius:"22px",
-        display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"space-between",
-        padding:"28px 12px 22px", boxSizing:"border-box",
+        display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+        gap:"8px", padding:"20px 12px", boxSizing:"border-box",
+        overflow:"hidden",
       }}>
-        <div style={{ color, display:"flex", alignItems:"center", justifyContent:"center" }}>{icon}</div>
+        <div style={{ color }}>{icon}</div>
         <div style={{ color, textAlign:"center", fontWeight:700,
                       fontSize: isMultiLine ? "26px" : "28px",
-                      lineHeight: "30px" }}>
+                      lineHeight: 1.1 }}>
           {labelLines.map((line, i) => <div key={i}>{line}</div>)}
         </div>
         <div style={{ color, fontWeight:800, lineHeight:1, fontVariantNumeric:"tabular-nums",
@@ -3879,18 +3884,23 @@ function DisplaySection({ labelLines, color, icon, orders, pageTick }) {
         </div>
       </div>
 
-      {/* RIGHT CARD — flex:1, mode switches by count */}
+      {/* RIGHT CARD — flex:1 1 0, min-width:0 prevents grid overflow. Padding
+          on the card itself; grid inside is width/height 100% of the padded
+          area. minmax(0, 1fr) on auto-rows is critical: plain `1fr` defaults
+          to minmax(auto, 1fr), which lets rows grow to content min-size and
+          breaks "rows share container height" — this was the actual cause
+          of the page overflow. */}
       <div style={{
-        flex:1, minWidth:0, height:"100%",
+        flex:"1 1 0", minWidth:0,
         background:"#141A2A", borderRadius:"22px",
+        padding:"20px", boxSizing:"border-box",
         position:"relative", overflow:"hidden",
-        boxSizing:"border-box",
       }}>
         {count === 0 ? null : count <= 2 ? (
           // ≤2 → giant centered numbers
           <div key={page} style={{
-            height:"100%", display:"flex", alignItems:"center", justifyContent:"center",
-            gap:"56px", padding:"20px", boxSizing:"border-box",
+            width:"100%", height:"100%",
+            display:"flex", alignItems:"center", justifyContent:"center", gap:"56px",
             animation:`tvFadeIn ${TV_PAGE_FADE_MS}ms ease`,
           }}>
             {visible.map(o => (
@@ -3901,15 +3911,19 @@ function DisplaySection({ labelLines, color, icon, orders, pageTick }) {
             ))}
           </div>
         ) : (
-          // 3–36 → 12-col grid
+          // 3–36 → 12-col grid with minmax(0, 1fr) rows
           <div key={page} ref={gridRef} style={{
-            display:"grid", gridTemplateColumns:"repeat(12, 1fr)", gridAutoRows:"1fr",
-            gap:"12px", padding:"20px", height:"100%", boxSizing:"border-box",
+            width:"100%", height:"100%",
+            display:"grid",
+            gridTemplateColumns:"repeat(12, minmax(0, 1fr))",
+            gridAutoRows:"minmax(0, 1fr)",
+            gap:"12px",
             overflow:"hidden",
             animation:`tvFadeIn ${TV_PAGE_FADE_MS}ms ease`,
           }}>
             {visible.map(o => (
               <div key={o.id} style={{
+                minWidth:0, minHeight:0,
                 display:"flex", alignItems:"center", justifyContent:"center",
                 fontSize:`${cellFontSize}px`, fontWeight:800, color, lineHeight:1,
                 fontVariantNumeric:"tabular-nums", overflow:"hidden",
