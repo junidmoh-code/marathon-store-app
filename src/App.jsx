@@ -3675,10 +3675,11 @@ function CustomerView({ orders, onExit }) {
 //
 // Auto-collect: Ready / OOS orders past TV_EXPIRY_MS are silently moved to
 // COLLECTED + restock-logged. expiredRef de-dupes across multiple TV screens.
-const TV_PAGE_SIZE       = 36;
-const TV_PAGE_ROTATE_MS  = 120 * 1000;
-const TV_EXPIRY_MS       = 8 * 60 * 1000;
-const TV_EXPIRY_CHECK_MS = 10 * 1000;
+const TV_PAGE_SIZE                  = 36;
+const TV_PAGE_ROTATE_MS             = 120 * 1000;
+const TV_EXPIRY_MS                  = 8 * 60 * 1000;       // Ready / OOS → auto-collect
+const TV_EXPIRY_CHECK_MS            = 10 * 1000;
+const TV_COMING_TOMORROW_VISIBLE_MS = 10 * 60 * 1000;      // display-only timeout
 const TV_COLORS = {
   incoming:       "#6FA8FF",
   ready:          "#4ADE80",
@@ -3707,7 +3708,16 @@ function DisplayView({ orders }) {
   const incoming       = orders.filter(o => o.status === STATUS.INCOMING);
   const ready          = orders.filter(o => o.status === STATUS.READY);
   const outOfStock     = orders.filter(o => o.status === STATUS.OUT_OF_STOCK);
-  const comingTomorrow = orders.filter(o => o.status === STATUS.COMING_TOMORROW);
+  // Display-only timeout: hide Coming Tomorrow rows older than the visible
+  // window. The underlying RTDB status stays as COMING_TOMORROW — this is a
+  // pure view filter. The 1s clock tick above re-renders DisplayView, which
+  // re-runs this filter, so rows fade out as they cross the threshold.
+  const cutoffMs       = Date.now() - TV_COMING_TOMORROW_VISIBLE_MS;
+  const comingTomorrow = orders.filter(o => {
+    if (o.status !== STATUS.COMING_TOMORROW) return false;
+    const ts = o.comingTomorrowAt || o.updatedAt;
+    return !ts || new Date(ts).getTime() >= cutoffMs;
+  });
 
   // Background auto-collect of Ready / OOS orders after 8 min. expiredRef
   // de-dupes when multiple TV screens see the same order cross the threshold.
