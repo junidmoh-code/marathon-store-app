@@ -2412,6 +2412,110 @@ function WarehouseView({ products = [], orders, onExit }) {
     setSelectedHub(hub);
   };
 
+  // ── Hooks hoisted before the conditional return ────────────────────────
+  // Every useState/useMemo/useEffect must run in the same order on every
+  // render. With these declared after the (!selectedHub) early return,
+  // toggling between the landing screen and a hub-active view misaligns
+  // React's internal hook indices — post-return state (refills, clothing
+  // batches, 30s ticker, pickerOpenId) leaked between hubs and a hard
+  // refresh was the only way to realign them. dueRefills short-circuits
+  // when selectedHub is null so the landing-screen pass is harmless.
+  const [pickerOpenId, setPickerOpenId] = useState(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
+  const DISPLAY_REFILL_DELAY_MS = 15 * 60 * 1000;
+  const RESOLVED_VISIBLE_MS     = 24 * 60 * 60 * 1000;
+  const { dueRefills, completedRefills } = useMemo(() => {
+    if (!selectedHub) return { dueRefills: [], completedRefills: [] };
+    const due = [];
+    const completed = [];
+    const resolvedAtMs = (o) => {
+      const iso = o.displayRefilledAt || o.displayRefillStockDepletedAt;
+      return iso ? new Date(iso).getTime() : 0;
+    };
+    (orders || []).forEach(o => {
+      if (!o.requestDisplayPartner) return;
+      if (!o.displayRefillScheduledAt) return;
+      if (o.displayRefillHub !== selectedHub) return;
+      if (o.displayRefillStatus) {
+        const rAt = resolvedAtMs(o);
+        if (rAt && nowTick - rAt < RESOLVED_VISIBLE_MS) completed.push(o);
+      } else {
+        const scheduledAt = new Date(o.displayRefillScheduledAt).getTime();
+        if (nowTick - scheduledAt >= DISPLAY_REFILL_DELAY_MS) due.push(o);
+      }
+    });
+    due.sort((a, b) =>
+      new Date(a.displayRefillScheduledAt).getTime() -
+      new Date(b.displayRefillScheduledAt).getTime()
+    );
+    completed.sort((a, b) => resolvedAtMs(b) - resolvedAtMs(a));
+    return { dueRefills: due, completedRefills: completed };
+  }, [orders, selectedHub, nowTick]);
+  const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
+  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","S","M","L","XL","XXL","XXXL"];
+  const sizeRank = (s) => {
+    const i = CANONICAL_SIZE_ORDER.indexOf(s);
+    return i === -1 ? 999 : i;
+  };
+  const { clothingActiveBatches, clothingCompletedBatches } = useMemo(() => {
+    const byKey = new Map();
+    (orders || []).forEach(o => {
+      if (o.productType !== "clothing") return;
+      if ((o.hub || "hub2") !== "hub2") return;
+      const key = `${o.productId}__${o.createdAt}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, {
+          batchKey: key,
+          productId: o.productId,
+          productName: o.productName,
+          productPhoto: o.productPhoto,
+          productPhotoUrl: o.productPhotoUrl,
+          createdAt: o.createdAt,
+          items: [],
+        });
+      }
+      byKey.get(key).items.push({
+        orderId: o.id,
+        size: o.size,
+        qty: o.qty || 1,
+        status: o.clothingRefillStatus || null,
+        refilledAt: o.clothingRefilledAt || null,
+        outOfStockAt: o.clothingOutOfStockAt || null,
+        placedAtHub: o.placedAtHub || o.hub || "hub2",
+      });
+    });
+    const active = [];
+    const completed = [];
+    byKey.forEach(batch => {
+      batch.items.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+      const allResolved = batch.items.length > 0 && batch.items.every(it => it.status);
+      if (allResolved) {
+        // Mixed batches (some available, some OOS) shouldn't happen in
+        // practice — we resolve all items together. If they ever do (admin
+        // edit), treat the batch as the majority status.
+        const oosCount = batch.items.filter(it => it.status === "outOfStock").length;
+        batch.status = oosCount > batch.items.length / 2 ? "outOfStock" : "available";
+        // Pick the most recent resolution timestamp as the batch's resolvedAt.
+        const stamps = batch.items.map(it => it.refilledAt || it.outOfStockAt).filter(Boolean);
+        batch.resolvedAt = stamps.sort().pop() || batch.createdAt;
+        const resolvedMs = new Date(batch.resolvedAt).getTime();
+        if (nowTick - resolvedMs < RESOLVED_VISIBLE_MS) completed.push(batch);
+      } else {
+        batch.status = null;
+        active.push(batch);
+      }
+    });
+    // Active: newest first (within DayCollapsible's bucket logic).
+    active.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    completed.sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || ""));
+    return { clothingActiveBatches: active, clothingCompletedBatches: completed };
+  }, [orders, nowTick]);
+  const [showClothingCompleted, setShowClothingCompleted] = useState(false);
+
   // Hub selector screen — shown until staff pick a hub
   if (!selectedHub) {
     return (
@@ -2437,10 +2541,6 @@ function WarehouseView({ products = [], orders, onExit }) {
   // hub3 (Phase 14B): placedAtHub field — orders flow in here based on which
   // Store Assistant universe they were placed in.
   const hubOrders = orders.filter(o => orderInHub(o, selectedHub));
-
-  // pickerOpenId — the order whose Substitute Size picker is currently expanded.
-  // Only one open at a time (mobile real estate). Cleared after a pick or cancel.
-  const [pickerOpenId, setPickerOpenId] = useState(null);
 
   // extraPatch is merged into the Firebase update — used to stamp sentSize when
   // the warehouse picks a substitute size. Insights/restock logs continue to
@@ -2576,122 +2676,14 @@ function WarehouseView({ products = [], orders, onExit }) {
   };
 
   // ── Display Refills data (Phase 9 / 9.5) ─────────────────────────────────
-  // 15-minute window from "marked sent" to "shows up as a refill task".
-  const DISPLAY_REFILL_DELAY_MS = 15 * 60 * 1000;
-  // Completed (Refilled / Stock Depleted) tasks remain in the "Show Completed"
-  // panel for 24h so accidental taps can be Undone. After 24h they drop out
-  // of the UI — Phase 11 Insights then treats the depletion as locked in.
-  const RESOLVED_VISIBLE_MS = 24 * 60 * 60 * 1000;
-
-  // 30-second ticker so the badge and "waiting Xm" chips update live without
-  // hammering the Firebase listener. Only re-renders this view.
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowTick(Date.now()), 30 * 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Partner orders whose refill belongs to THIS hub (per product.hub stocking).
-  // Split into due (status===null and >= 15 min elapsed) and completed
-  // (status is 'refilled' or 'stockDepleted' AND resolved within last 24h).
-  // Sorted oldest-first for due, newest-first for completed.
-  const { dueRefills, completedRefills } = useMemo(() => {
-    const due = [];
-    const completed = [];
-    const resolvedAtMs = (o) => {
-      const iso = o.displayRefilledAt || o.displayRefillStockDepletedAt;
-      return iso ? new Date(iso).getTime() : 0;
-    };
-    (orders || []).forEach(o => {
-      if (!o.requestDisplayPartner) return;
-      if (!o.displayRefillScheduledAt) return;
-      if (o.displayRefillHub !== selectedHub) return;
-      if (o.displayRefillStatus) {
-        const rAt = resolvedAtMs(o);
-        if (rAt && nowTick - rAt < RESOLVED_VISIBLE_MS) completed.push(o);
-      } else {
-        const scheduledAt = new Date(o.displayRefillScheduledAt).getTime();
-        if (nowTick - scheduledAt >= DISPLAY_REFILL_DELAY_MS) due.push(o);
-      }
-    });
-    due.sort((a, b) =>
-      new Date(a.displayRefillScheduledAt).getTime() -
-      new Date(b.displayRefillScheduledAt).getTime()
-    );
-    completed.sort((a, b) => resolvedAtMs(b) - resolvedAtMs(a));
-    return { dueRefills: due, completedRefills: completed };
-  }, [orders, selectedHub, nowTick]);
-
+  // Hooks for refills (nowTick, dueRefills) live at the top of this function
+  // alongside the other hoisted hooks — see the Rules-of-Hooks note above.
   const refillsBadge = dueRefills.length;
 
-  // Per-session toggle to reveal recently-refilled tasks for Undo.
-  const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
-
   // ── Clothing refill batches (Phase 12C, hub2 only) ────────────────────────
-  // Each "batch" = clothing orders sharing (productId, createdAt). One
-  // Assistant "Place Refill Request" tap writes N orders (one per size) in a
-  // single loop with the same now ISO, so this is a clean batch key.
-  // Active batches: none of their items have a clothingRefillStatus set.
-  // Completed batches: all items resolved AND within 24h of resolution.
-  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","S","M","L","XL","XXL","XXXL"];
-  const sizeRank = (s) => {
-    const i = CANONICAL_SIZE_ORDER.indexOf(s);
-    return i === -1 ? 999 : i;
-  };
-  const { clothingActiveBatches, clothingCompletedBatches } = useMemo(() => {
-    const byKey = new Map();
-    (orders || []).forEach(o => {
-      if (o.productType !== "clothing") return;
-      if ((o.hub || "hub2") !== "hub2") return;
-      const key = `${o.productId}__${o.createdAt}`;
-      if (!byKey.has(key)) {
-        byKey.set(key, {
-          batchKey: key,
-          productId: o.productId,
-          productName: o.productName,
-          productPhoto: o.productPhoto,
-          productPhotoUrl: o.productPhotoUrl,
-          createdAt: o.createdAt,
-          items: [],
-        });
-      }
-      byKey.get(key).items.push({
-        orderId: o.id,
-        size: o.size,
-        qty: o.qty || 1,
-        status: o.clothingRefillStatus || null,
-        refilledAt: o.clothingRefilledAt || null,
-        outOfStockAt: o.clothingOutOfStockAt || null,
-        placedAtHub: o.placedAtHub || o.hub || "hub2",
-      });
-    });
-    const active = [];
-    const completed = [];
-    byKey.forEach(batch => {
-      batch.items.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
-      const allResolved = batch.items.length > 0 && batch.items.every(it => it.status);
-      if (allResolved) {
-        // Mixed batches (some available, some OOS) shouldn't happen in
-        // practice — we resolve all items together. If they ever do (admin
-        // edit), treat the batch as the majority status.
-        const oosCount = batch.items.filter(it => it.status === "outOfStock").length;
-        batch.status = oosCount > batch.items.length / 2 ? "outOfStock" : "available";
-        // Pick the most recent resolution timestamp as the batch's resolvedAt.
-        const stamps = batch.items.map(it => it.refilledAt || it.outOfStockAt).filter(Boolean);
-        batch.resolvedAt = stamps.sort().pop() || batch.createdAt;
-        const resolvedMs = new Date(batch.resolvedAt).getTime();
-        if (nowTick - resolvedMs < RESOLVED_VISIBLE_MS) completed.push(batch);
-      } else {
-        batch.status = null;
-        active.push(batch);
-      }
-    });
-    // Active: newest first (within DayCollapsible's bucket logic).
-    active.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    completed.sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || ""));
-    return { clothingActiveBatches: active, clothingCompletedBatches: completed };
-  }, [orders, nowTick]);
-
+  // Hook + helpers (clothingActiveBatches/Completed, CANONICAL_SIZE_ORDER,
+  // sizeRank) live at the top of this function alongside the other hoisted
+  // hooks — see the Rules-of-Hooks note above.
   const clothingBadge = clothingActiveBatches.length;
 
   // Resolve a batch — patch every item with the same status + timestamp.
@@ -2742,7 +2734,6 @@ function WarehouseView({ products = [], orders, onExit }) {
       updatedAt:            now,
     }));
   };
-  const [showClothingCompleted, setShowClothingCompleted] = useState(false);
 
   const onHoldOrders = hubOrders.filter(o => o.status === STATUS.COMING_TOMORROW);
 
