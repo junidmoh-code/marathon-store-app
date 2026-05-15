@@ -2541,6 +2541,26 @@ function WarehouseView({ products = [], orders, onExit }) {
       patch.displayRefilledAt            = null;
     }
     updateOrder(order.id, patch);
+    // Stock-deplete: append an insights_log entry so the Stock Depleted tab
+    // can show past-day counts. Without this, the tab only ever sees today's
+    // events because orders/{id} gets overwritten when the daily orderNumber
+    // counter wraps. Mirrors the action="out_of_stock" pattern used by OOS
+    // Tracker. dedupeByOrderNumber + composite key handle re-fires.
+    if (status === "stockDepleted") {
+      logInsight({
+        timestamp:        now,
+        productName:      order.productName,
+        productCategory:  order.productCategory || "",
+        productType:      order.productType || "sneaker",
+        size:             order.size,
+        customerName:     order.customerName,
+        customerPhone:    order.customerPhone,
+        orderNumber:      order.id,
+        action:           "stock_depleted",
+        placedAtHub:      order.placedAtHub || order.hub || "hub1",
+        displayRefilledBy: selectedHub,
+      });
+    }
   };
   // Reverse a refill resolution — clears status + both timestamps + by-hub so
   // the task reappears in the active list. Leaves displayRefillScheduledAt
@@ -5612,29 +5632,46 @@ function InsightClothingRefillsTab({ orders, productPhotoMap, filterStart, filte
 // sync). Aggregates by (productName, size) so restock planning sees the most
 // frequently depleted SKUs at the top. Sort: count desc, tiebreak by most
 // recent depletion desc. Local filters: hub pills + product-name search.
-function InsightStockDepletedTab({ orders, productPhotoMap, filterStart, filterEnd, filterLabel }) {
+function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, filterEnd, filterLabel, filterMode, filterDate }) {
   const [hubFilter, setHubFilter] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
 
-  // Window-filtered depletion events (one per order) + local filter passes.
+  // Day-mode + today uses live orders (no log lag); every other window pulls
+  // from insights_log filtered to action="stock_depleted" so past days survive
+  // the daily orderNumber reset that overwrites /orders/{id}. Same pattern as
+  // InsightOOSTrackerTab. dedupeByOrderNumber handles re-fires from undo-redo.
   const events = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    return (orders || [])
-      .filter(o => o.displayRefillStatus === "stockDepleted")
-      .filter(o => {
-        const ts = o.displayRefillStockDepletedAt;
-        return ts && ts >= filterStart && ts < filterEnd;
-      })
-      .filter(o => hubFilter === "all" || (o.displayRefilledBy || o.displayRefillHub) === hubFilter)
-      .filter(o => !q || (o.productName || "").toLowerCase().includes(q))
-      .map(o => ({
-        orderNumber:    o.id,
-        productName:    o.productName || "Unknown",
-        size:           sourceDisplaySize(o) || "—",
-        hub:            o.displayRefilledBy || o.displayRefillHub || "—",
-        timestamp:      o.displayRefillStockDepletedAt,
-      }));
-  }, [orders, filterStart, filterEnd, hubFilter, searchTerm]);
+    let raw;
+    if (filterMode === "day" && filterDate === getSADateString()) {
+      raw = (orders || [])
+        .filter(o => o.displayRefillStatus === "stockDepleted")
+        .filter(o => {
+          const ts = o.displayRefillStockDepletedAt;
+          return ts && ts >= filterStart && ts < filterEnd;
+        })
+        .map(o => ({
+          orderNumber:  o.id,
+          productName:  o.productName || "Unknown",
+          size:         sourceDisplaySize(o) || "—",
+          hub:          o.displayRefilledBy || o.displayRefillHub || "—",
+          timestamp:    o.displayRefillStockDepletedAt,
+        }));
+    } else {
+      raw = (log || [])
+        .filter(e => e.action === "stock_depleted" && e.timestamp >= filterStart && e.timestamp < filterEnd)
+        .map(e => ({
+          orderNumber:  e.orderNumber,
+          productName:  e.productName || "Unknown",
+          size:         e.size || "—",
+          hub:          e.displayRefilledBy || e.placedAtHub || "—",
+          timestamp:    e.timestamp,
+        }));
+    }
+    return dedupeByOrderNumber(raw)
+      .filter(e => hubFilter === "all" || e.hub === hubFilter)
+      .filter(e => !q || (e.productName || "").toLowerCase().includes(q));
+  }, [orders, log, filterStart, filterEnd, filterMode, filterDate, hubFilter, searchTerm]);
 
   // Group by (product, size), keep total + lastTimestamp + hub set.
   const rows = useMemo(() => {
@@ -6202,7 +6239,7 @@ function InsightsView({ onExit }) {
         {tab==="times"            && <InsightBusiestTimesTab    log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
         {tab==="returns"          && <InsightReturnsTab         returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
         {tab==="clothing-refills" && <InsightClothingRefillsTab orders={filteredOrders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
-        {tab==="depleted"         && <InsightStockDepletedTab   orders={filteredOrders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
+        {tab==="depleted"         && <InsightStockDepletedTab   orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
       </div>
 
       {/* AUDIT MODAL */}
