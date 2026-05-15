@@ -182,6 +182,22 @@ const inputStyle = {
 // array replacement. This prevents any race condition where two devices writing
 // concurrently could clobber each other's data.
 //
+// Persist a view's active-tab selection across page refreshes. Stored under
+// `tabState:<sectionKey>` so the keyspace is consistent and greppable. Falls
+// back to defaultTab if localStorage is unavailable (private-mode Safari).
+function usePersistedTab(sectionKey, defaultTab) {
+  const storageKey = `tabState:${sectionKey}`;
+  const [tab, setTabRaw] = useState(() => {
+    try { return localStorage.getItem(storageKey) || defaultTab; }
+    catch { return defaultTab; }
+  });
+  const setTab = (next) => {
+    try { localStorage.setItem(storageKey, next); } catch { /* ignored */ }
+    setTabRaw(next);
+  };
+  return [tab, setTab];
+}
+
 // Tracks Firebase anonymous-auth readiness for any data hook that needs it.
 // Database rules require auth !== null; if onValue is called before sign-in
 // completes, the read is rejected and the listener stays dead (it does not
@@ -928,7 +944,7 @@ function CustomersView({ onExit }) {
   const [cpw, setCpw]       = useState("");
   const [cpwError, setCpwError] = useState(false);
 
-  const [tab, setTab] = useState("list");
+  const [tab, setTab] = usePersistedTab("customers", "list");
   const insightsLog  = useInsightsLog();
   const customersDb  = useCustomersDb();
   const broadcasts   = useBroadcastHistory();
@@ -2376,7 +2392,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
 // ─── WAREHOUSE VIEW ───────────────────────────────────────────────────────────
 function WarehouseView({ products = [], orders, onExit }) {
-  const [mainTab, setMainTab] = useState("queue");
+  const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
   const [filter, setFilter] = useState("incoming");
   const [onHoldExpanded, setOnHoldExpanded] = useState(false);
   const [selectedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
@@ -4319,7 +4335,7 @@ function getSAYesterdayString() {
 }
 
 function SourceView({ onExit, orders, returnsLog }) {
-  const [tab, setTab] = useState("today");
+  const [tab, setTab] = usePersistedTab("source", "today");
   // Active hub — shared across all three top tabs. Defaults to Hub 1.
   const [hub, setHub] = useState("hub1");
   const todayDate   = getSADateString();
@@ -5936,7 +5952,7 @@ function InsightsView({ onExit }) {
   const [authed,     setAuthed]     = useState(() => sessionStorage.getItem(INSIGHTS_SESSION_KEY) === "true");
   const [pw,         setPw]         = useState("");
   const [pwError,    setPwError]    = useState(false);
-  const [tab,        setTab]        = useState("overview");
+  const [tab,        setTab]        = usePersistedTab("insights", "overview");
   const [filterMode, setFilterMode] = useState("day");
   const [filterDate, setFilterDate] = useState(() => getSADateString());
   // Phase 12D: product-type filter ("sneaker" | "clothing" | "both"). Applied
