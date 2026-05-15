@@ -3662,52 +3662,59 @@ function CustomerView({ orders, onExit }) {
 }
 
 // ─── TV DISPLAY VIEW ──────────────────────────────────────────────────────────
-// Fixed-viewport (1920×1080) layout. Never scrolls. Header row at top, four
-// equal-flex section rows stacked below. Each row is a horizontal pair of
-// rounded cards: a 170px left card (icon + wrapped status label + true total
-// count) and a flex:1 right card. The right card switches layout by count:
-//   - 0 items  → empty
-//   - 1–2      → giant centered numbers (~120px)
-//   - 3–36     → 12-col grid, font from min(cellW × 0.45, cellH × 0.80)
-//   - > 36     → paginated 36 at a time, rotate every TV_PAGE_ROTATE_MS
-//                with a TV_PAGE_FADE_MS opacity fade
+// Customer-centric layout for a 1920×1080 TV. The single thing a waiting
+// customer cares about is "is my order ready to collect?" — so READY gets a
+// hero card occupying ~60% of the screen with very large numbers, while the
+// other three statuses share a 3-up row of compact cards below.
 //
-// Auto-collect: Ready/OOS orders past TV_EXPIRY_MS are silently moved to
-// COLLECTED + restock-logged. Coming Tomorrow rows older than
-// TV_COMING_TOMORROW_VISIBLE_MS are hidden from the TV (display-only;
-// underlying RTDB status is not changed). Both use a ref-Set guard against
-// double-fires across multiple TV screens.
-const TV_PAGE_SIZE                  = 36;
+// Layout (top → bottom, all flex with min-height:0 plumbing so nothing
+// overflows 100vh):
+//   - Header (70px): Marathon wordmark + shoe icon, time + date
+//   - Hero READY card (flex 1.6) with checkmark icon, "Ready to Collect"
+//     title, total count, and a number area whose layout adapts to count:
+//        0       → "No orders ready right now"
+//        1 or 2  → giant centered numbers (~180px)
+//        3–8     → 8-column 1-row grid (larger numbers)
+//        9–36    → 12-column grid with rows depending on count
+//        > 36    → paginated 36 at a time, calm fade between pages
+//   - Three-up secondary row (flex 1): Incoming, Out of Stock, Coming
+//     Tomorrow each in a small card with icon + title + total + 6-column
+//     number grid (paginated at 18 per page).
+//
+// Pagination: each section rotates pages every TV_PAGE_ROTATE_MS with a
+// TV_PAGE_FADE_MS opacity fade. Sections cycle independently from a shared
+// pageTick.
+//
+// Side effects: Ready/OOS orders past TV_EXPIRY_MS are auto-moved to
+// COLLECTED (with restock log for READY). Coming Tomorrow rows past
+// TV_COMING_TOMORROW_VISIBLE_MS are display-only hidden (no RTDB mutation).
+// Both use ref-Sets to dedupe across multiple TV screens and prune entries
+// when orders disappear (daily counter reset).
+const TV_HERO_PAGE_SIZE             = 36;
+const TV_SECONDARY_PAGE_SIZE        = 18;
 const TV_PAGE_ROTATE_MS             = 120 * 1000;
 const TV_PAGE_FADE_MS               = 250;
-const TV_EXPIRY_MS                  = 8 * 60 * 1000;       // Ready / OOS → auto-collect
+const TV_EXPIRY_MS                  = 8 * 60 * 1000;
 const TV_EXPIRY_CHECK_MS            = 10 * 1000;
-const TV_COMING_TOMORROW_VISIBLE_MS = 10 * 60 * 1000;      // display-only timeout
-const TV_GIANT_FONT_PX              = 120;                 // count ≤ 2 case
+const TV_COMING_TOMORROW_VISIBLE_MS = 10 * 60 * 1000;
 const TV_COLORS = {
   incoming:       "#6FA8FF",
   ready:          "#4ADE80",
   outOfStock:     "#F87171",
   comingTomorrow: "#FBBF24",
 };
-const TV_SECTIONS_META = [
-  { id: "incoming",       labelLines: ["Incoming"],            color: TV_COLORS.incoming },
-  { id: "ready",          labelLines: ["Ready"],               color: TV_COLORS.ready },
-  { id: "outOfStock",     labelLines: ["Out", "of", "Stock"],  color: TV_COLORS.outOfStock },
-  { id: "comingTomorrow", labelLines: ["Coming", "Tomorrow"],  color: TV_COLORS.comingTomorrow },
-];
 const TV_DAY_NAMES   = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const TV_MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 function DisplayView({ orders }) {
-  // 1s tick so the wall clock stays current.
+  // 1s tick — keeps the clock fresh and re-evaluates derived filters
   const [, setTick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setTick(n => n + 1), 1000);
     return () => clearInterval(t);
   }, []);
 
-  // Page-rotation tick — each section computes its current page from this.
+  // Page-rotation tick — each paginated section computes its page from this
   const [pageTick, setPageTick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setPageTick(n => n + 1), TV_PAGE_ROTATE_MS);
@@ -3715,21 +3722,22 @@ function DisplayView({ orders }) {
   }, []);
 
   const now     = new Date();
-  const hh      = String(now.getHours()).padStart(2, "0");
-  const mm      = String(now.getMinutes()).padStart(2, "0");
-  const timeStr = `${hh}:${mm}`;
+  const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
   const dateStr = `${TV_DAY_NAMES[now.getDay()]} ${now.getDate()} ${TV_MONTH_NAMES[now.getMonth()]}`;
 
-  // Background auto-collect of Ready / OOS orders after 8 min, AND display-
-  // only hide of Coming Tomorrow rows after 10 min. Both use a ref-Set guard
-  // against double-fires; Coming Tomorrow's set is only consulted as a view
-  // filter (no RTDB write). Re-rendering is driven by the 1s wall-clock tick
-  // and by the Ready auto-collect's updateOrder propagating through RTDB.
+  // Background sweep: auto-collect Ready/OOS past 8 min, hide Coming Tomorrow
+  // past 10 min. Ref-Sets dedupe across multiple TV screens. Stale entries
+  // get pruned when orders disappear (daily orderNumber-counter reset).
   const expiredRef           = useRef(new Set());
   const hiddenComingTomorrow = useRef(new Set());
   useEffect(() => {
     const check = () => {
       const nowMs = Date.now();
+      const liveIds = new Set(orders.map(o => o.id));
+      // Prune refs of orders no longer present (daily counter reset, etc.)
+      for (const id of expiredRef.current)           if (!liveIds.has(id)) expiredRef.current.delete(id);
+      for (const id of hiddenComingTomorrow.current) if (!liveIds.has(id)) hiddenComingTomorrow.current.delete(id);
+
       orders.forEach(o => {
         // Ready / OOS → auto-collect (mutates RTDB)
         if (!expiredRef.current.has(o.id)) {
@@ -3754,7 +3762,7 @@ function DisplayView({ orders }) {
             }
           }
         }
-        // Coming Tomorrow → display-only hide (no RTDB mutation)
+        // Coming Tomorrow → display-only hide
         if (o.status === STATUS.COMING_TOMORROW && !hiddenComingTomorrow.current.has(o.id)) {
           const ts = o.comingTomorrowAt || o.updatedAt;
           if (ts && nowMs - new Date(ts).getTime() >= TV_COMING_TOMORROW_VISIBLE_MS) {
@@ -3775,24 +3783,19 @@ function DisplayView({ orders }) {
     o.status === STATUS.COMING_TOMORROW && !hiddenComingTomorrow.current.has(o.id)
   );
 
-  const sectionData = {
-    incoming, ready, outOfStock, comingTomorrow,
-  };
-  const sectionIcons = {
-    incoming:       <IconShoppingBag/>,
-    ready:          <IconCheck/>,
-    outOfStock:     <IconX/>,
-    comingTomorrow: <IconClock/>,
-  };
-
   return (
-    <div style={{ height:"100vh", width:"100vw", background:"#0B0F1A", color:"#fff", fontFamily:FONT, padding:"24px", display:"flex", flexDirection:"column", boxSizing:"border-box", overflow:"hidden" }}>
-      <style>{`@keyframes tvFadeIn { from { opacity: 0 } to { opacity: 1 } }`}</style>
+    <div style={{
+      height:"100vh", width:"100vw",
+      background:"#0B0F1A", color:"#fff", fontFamily:FONT,
+      padding:"24px", boxSizing:"border-box",
+      display:"flex", flexDirection:"column", overflow:"hidden",
+    }}>
+      <style>{`@keyframes tvFade { from { opacity: 0 } to { opacity: 1 } }`}</style>
 
-      {/* HEADER — ~70px row */}
+      {/* HEADER */}
       <div style={{ height:"70px", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
         <div style={{ display:"flex", alignItems:"center", gap:"14px" }}>
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M2 17h13a4 4 0 003-1.4l3-3.4a2 2 0 00-1.5-3.3l-5.4-.1a2 2 0 01-1.5-.7l-1.7-2A3 3 0 008.4 5H4a2 2 0 00-2 2v10z"/>
             <line x1="2" y1="14" x2="20" y2="14"/>
           </svg>
@@ -3804,122 +3807,117 @@ function DisplayView({ orders }) {
         </div>
       </div>
 
-      {/* 4 SECTION ROWS — equal-flex, 12px gap, 16px gap below header.
-          flex:1 1 0 + minHeight:0 lets rows shrink below content size, which
-          is the #1 flex layout gotcha. Without minHeight:0 the rows refuse
-          to compress and the whole page overflows 100vh. */}
-      <div style={{ flex:"1 1 0", minHeight:0, paddingTop:"16px", display:"flex", flexDirection:"column", gap:"12px" }}>
-        {TV_SECTIONS_META.map(meta => (
-          <DisplaySection
-            key={meta.id}
-            labelLines={meta.labelLines}
-            color={meta.color}
-            icon={sectionIcons[meta.id]}
-            orders={sectionData[meta.id]}
-            pageTick={pageTick}
-          />
-        ))}
+      {/* HERO READY — ~60% of remaining height */}
+      <div style={{ flex:"1.6 1 0", minHeight:0, marginTop:"16px" }}>
+        <HeroReadyCard orders={ready} pageTick={pageTick} />
+      </div>
+
+      {/* SECONDARY ROW — three compact cards sharing ~40% */}
+      <div style={{ flex:"1 1 0", minHeight:0, marginTop:"16px", display:"flex", gap:"16px" }}>
+        <SecondaryCard label="Incoming"        color={TV_COLORS.incoming}       orders={incoming}       Icon={IconShoppingBag} pageTick={pageTick} />
+        <SecondaryCard label="Out of Stock"    color={TV_COLORS.outOfStock}     orders={outOfStock}     Icon={IconX}           pageTick={pageTick} />
+        <SecondaryCard label="Coming Tomorrow" color={TV_COLORS.comingTomorrow} orders={comingTomorrow} Icon={IconClock}       pageTick={pageTick} />
       </div>
     </div>
   );
 }
 
-function DisplaySection({ labelLines, color, icon, orders, pageTick }) {
-  const total      = orders.length;
-  const numPages   = Math.max(1, Math.ceil(total / TV_PAGE_SIZE));
-  const page       = numPages === 1 ? 0 : pageTick % numPages;
-  const visible    = orders.slice(page * TV_PAGE_SIZE, (page + 1) * TV_PAGE_SIZE);
-  const count      = visible.length;
-  const isMultiLine = labelLines.length > 1;
+// ─── HERO READY CARD ─────────────────────────────────────────────────────────
+// The dominant focal point. Title row at top; below it, a number area that
+// switches layout by count to keep digits as large as possible:
+//   0       → "no orders ready" muted text
+//   1 or 2  → giant centered numbers (~180px)
+//   3–8     → 8-column 1-row grid (very large numbers)
+//   9–36    → 12-column grid (rows scale with count)
+//   > 36    → paginated 36 at a time
+function HeroReadyCard({ orders, pageTick }) {
+  const color    = TV_COLORS.ready;
+  const total    = orders.length;
+  const numPages = Math.max(1, Math.ceil(total / TV_HERO_PAGE_SIZE));
+  const page     = numPages === 1 ? 0 : pageTick % numPages;
+  const visible  = orders.slice(page * TV_HERO_PAGE_SIZE, (page + 1) * TV_HERO_PAGE_SIZE);
+  const count    = visible.length;
+  // For 3–8 use a tighter 8-col grid so each number stays huge.
+  const cols     = count <= 8 ? Math.min(8, count) : 12;
 
-  // Grid-mode font size — measured from the grid container via ResizeObserver.
-  // Formula per spec: min(cellW × 0.45, cellH × 0.80). Padding now lives on
-  // the right card (not the grid), so the grid's clientWidth/Height already
-  // represent the inner area — no padding subtraction needed here.
   const gridRef = useRef(null);
-  const [cellFontSize, setCellFontSize] = useState(16);
+  const [cellFontSize, setCellFontSize] = useState(60);
   useEffect(() => {
-    if (count <= 2) return; // not in grid mode
+    if (count <= 2) return;
     const el = gridRef.current;
     if (!el) return;
     const compute = () => {
-      const w = el.clientWidth;
-      const h = el.clientHeight;
+      const w = el.clientWidth, h = el.clientHeight;
       if (!w || !h) return;
-      const cols = 12, gap = 12;
+      const gap  = 16;
       const rows = Math.max(1, Math.ceil(count / cols));
       const cellW = (w - (cols - 1) * gap) / cols;
       const cellH = rows === 1 ? h : (h - (rows - 1) * gap) / rows;
-      const size  = Math.max(12, Math.round(Math.min(cellW * 0.45, cellH * 0.80)));
+      const size  = Math.max(20, Math.min(220, Math.round(Math.min(cellW * 0.5, cellH * 0.85))));
       setCellFontSize(size);
     };
     compute();
     const ro = new ResizeObserver(compute);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [count]);
+  }, [count, cols]);
 
   return (
-    // Section row: flex:1 1 0 + minHeight:0 lets row shrink to its share of
-    // available height. Cross-axis defaults to align-items:stretch, so the
-    // two cards naturally fill row height — no height:100% needed.
-    <div style={{ flex:"1 1 0", minHeight:0, display:"flex", gap:"12px" }}>
-      {/* LEFT CARD — fixed 170px, contents centered (NOT space-between). */}
-      <div style={{
-        flex:"0 0 170px",
-        background:"#141A2A", borderRadius:"22px",
-        display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-        gap:"8px", padding:"20px 12px", boxSizing:"border-box",
-        overflow:"hidden",
-      }}>
-        <div style={{ color }}>{icon}</div>
-        <div style={{ color, textAlign:"center", fontWeight:700,
-                      fontSize: isMultiLine ? "26px" : "28px",
-                      lineHeight: 1.1 }}>
-          {labelLines.map((line, i) => <div key={i}>{line}</div>)}
+    <div style={{
+      width:"100%", height:"100%",
+      background:"#141A2A", borderRadius:"24px",
+      padding:"32px 40px", boxSizing:"border-box",
+      display:"flex", flexDirection:"column", overflow:"hidden",
+      position:"relative",
+    }}>
+      {/* Title bar */}
+      <div style={{ flexShrink:0, display:"flex", alignItems:"center", gap:"16px", marginBottom:"16px" }}>
+        <div style={{ color, display:"flex" }}>
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
         </div>
-        <div style={{ color, fontWeight:800, lineHeight:1, fontVariantNumeric:"tabular-nums",
-                      fontSize: isMultiLine ? "46px" : "60px" }}>
-          {total}
+        <div style={{ fontSize:"34px", fontWeight:700, color, lineHeight:1 }}>Ready to Collect</div>
+        <div style={{ marginLeft:"auto", display:"flex", alignItems:"baseline", gap:"10px" }}>
+          <div style={{ fontSize:"14px", color:"#9CA3AF", textTransform:"uppercase", letterSpacing:"0.1em", fontWeight:600 }}>Total</div>
+          <div style={{ fontSize:"44px", fontWeight:800, color, lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{total}</div>
         </div>
+        {numPages > 1 && (
+          <div style={{ fontSize:"14px", color:"rgba(255,255,255,.4)", fontVariantNumeric:"tabular-nums", marginLeft:"12px" }}>
+            {page + 1}/{numPages}
+          </div>
+        )}
       </div>
 
-      {/* RIGHT CARD — flex:1 1 0, min-width:0 prevents grid overflow. Padding
-          on the card itself; grid inside is width/height 100% of the padded
-          area. minmax(0, 1fr) on auto-rows is critical: plain `1fr` defaults
-          to minmax(auto, 1fr), which lets rows grow to content min-size and
-          breaks "rows share container height" — this was the actual cause
-          of the page overflow. */}
-      <div style={{
-        flex:"1 1 0", minWidth:0,
-        background:"#141A2A", borderRadius:"22px",
-        padding:"20px", boxSizing:"border-box",
-        position:"relative", overflow:"hidden",
-      }}>
-        {count === 0 ? null : count <= 2 ? (
-          // ≤2 → giant centered numbers
+      {/* Number area */}
+      <div style={{ flex:"1 1 0", minHeight:0 }}>
+        {count === 0 ? (
+          <div style={{
+            height:"100%", display:"flex", alignItems:"center", justifyContent:"center",
+            color:"rgba(255,255,255,.22)", fontSize:"28px", fontWeight:400,
+          }}>
+            No orders ready right now
+          </div>
+        ) : count <= 2 ? (
           <div key={page} style={{
-            width:"100%", height:"100%",
-            display:"flex", alignItems:"center", justifyContent:"center", gap:"56px",
-            animation:`tvFadeIn ${TV_PAGE_FADE_MS}ms ease`,
+            height:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:"80px",
+            animation:`tvFade ${TV_PAGE_FADE_MS}ms ease`,
           }}>
             {visible.map(o => (
               <div key={o.id} style={{
-                fontSize:`${TV_GIANT_FONT_PX}px`, fontWeight:800, color, lineHeight:1,
+                fontSize:"180px", fontWeight:800, color, lineHeight:1,
                 fontVariantNumeric:"tabular-nums",
               }}>{o.id}</div>
             ))}
           </div>
         ) : (
-          // 3–36 → 12-col grid with minmax(0, 1fr) rows
           <div key={page} ref={gridRef} style={{
             width:"100%", height:"100%",
             display:"grid",
-            gridTemplateColumns:"repeat(12, minmax(0, 1fr))",
+            gridTemplateColumns:`repeat(${cols}, minmax(0, 1fr))`,
             gridAutoRows:"minmax(0, 1fr)",
-            gap:"12px",
-            overflow:"hidden",
-            animation:`tvFadeIn ${TV_PAGE_FADE_MS}ms ease`,
+            gap:"16px", overflow:"hidden",
+            animation:`tvFade ${TV_PAGE_FADE_MS}ms ease`,
           }}>
             {visible.map(o => (
               <div key={o.id} style={{
@@ -3931,43 +3929,127 @@ function DisplaySection({ labelLines, color, icon, orders, pageTick }) {
             ))}
           </div>
         )}
-
-        {/* Page indicator — only when paginated. Subtle bottom-right. */}
-        {numPages > 1 && (
-          <div style={{
-            position:"absolute", bottom:"10px", right:"20px",
-            fontSize:"12px", color:"rgba(255,255,255,.35)",
-            fontVariantNumeric:"tabular-nums", letterSpacing:"0.04em",
-          }}>
-            {page + 1}/{numPages}
-          </div>
-        )}
       </div>
     </div>
   );
 }
 
-// ── TV display icons (40×40, stroke 3, inherit accent via currentColor) ──────
-function IconShoppingBag() {
-  return <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+// ─── SECONDARY STATUS CARD ───────────────────────────────────────────────────
+// Compact card for Incoming / Out of Stock / Coming Tomorrow. Title bar with
+// icon + label + total, then a 6-column number grid below. Pages at 18.
+function SecondaryCard({ label, color, orders, Icon, pageTick }) {
+  const total    = orders.length;
+  const numPages = Math.max(1, Math.ceil(total / TV_SECONDARY_PAGE_SIZE));
+  const page     = numPages === 1 ? 0 : pageTick % numPages;
+  const visible  = orders.slice(page * TV_SECONDARY_PAGE_SIZE, (page + 1) * TV_SECONDARY_PAGE_SIZE);
+  const count    = visible.length;
+
+  const gridRef = useRef(null);
+  const [cellFontSize, setCellFontSize] = useState(28);
+  useEffect(() => {
+    if (count === 0) return;
+    const el = gridRef.current;
+    if (!el) return;
+    const compute = () => {
+      const w = el.clientWidth, h = el.clientHeight;
+      if (!w || !h) return;
+      const cols = 6, gap = 10;
+      const rows = Math.max(1, Math.ceil(count / cols));
+      const cellW = (w - (cols - 1) * gap) / cols;
+      const cellH = rows === 1 ? h : (h - (rows - 1) * gap) / rows;
+      const size  = Math.max(14, Math.min(96, Math.round(Math.min(cellW * 0.45, cellH * 0.8))));
+      setCellFontSize(size);
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [count]);
+
+  return (
+    <div style={{
+      flex:"1 1 0", minWidth:0,
+      background:"#141A2A", borderRadius:"24px",
+      padding:"22px 26px", boxSizing:"border-box",
+      display:"flex", flexDirection:"column", overflow:"hidden",
+      position:"relative",
+    }}>
+      {/* Title row */}
+      <div style={{ flexShrink:0, display:"flex", alignItems:"center", gap:"12px", marginBottom:"14px" }}>
+        <div style={{ color, display:"flex" }}>
+          <Icon size={28} strokeWidth={2.6} />
+        </div>
+        <div style={{ fontSize:"22px", fontWeight:600, color, lineHeight:1 }}>{label}</div>
+        <div style={{ marginLeft:"auto", fontSize:"32px", fontWeight:800, color, lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{total}</div>
+      </div>
+
+      {/* Number grid */}
+      <div style={{ flex:"1 1 0", minHeight:0 }}>
+        {count === 0 ? (
+          <div style={{
+            height:"100%", display:"flex", alignItems:"center", justifyContent:"center",
+            color:"rgba(255,255,255,.2)", fontSize:"15px", fontWeight:400, fontStyle:"italic",
+          }}>
+            none
+          </div>
+        ) : (
+          <div key={page} ref={gridRef} style={{
+            width:"100%", height:"100%",
+            display:"grid",
+            gridTemplateColumns:"repeat(6, minmax(0, 1fr))",
+            gridAutoRows:"minmax(0, 1fr)",
+            gap:"10px", overflow:"hidden",
+            animation:`tvFade ${TV_PAGE_FADE_MS}ms ease`,
+          }}>
+            {visible.map(o => (
+              <div key={o.id} style={{
+                minWidth:0, minHeight:0,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                fontSize:`${cellFontSize}px`, fontWeight:700, color, lineHeight:1,
+                fontVariantNumeric:"tabular-nums", overflow:"hidden",
+              }}>{o.id}</div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Page indicator */}
+      {numPages > 1 && (
+        <div style={{
+          position:"absolute", bottom:"10px", right:"18px",
+          fontSize:"11px", color:"rgba(255,255,255,.3)",
+          fontVariantNumeric:"tabular-nums", letterSpacing:"0.04em",
+        }}>
+          {page + 1}/{numPages}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── TV display icons. Configurable size + strokeWidth; inherit accent via
+//    currentColor on the parent. Used by both the hero (inline 40px check)
+//    and the secondary cards (28px stroke 2.6) ──────────────────────────────
+function IconShoppingBag({ size = 28, strokeWidth = 2.6 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
     <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
     <line x1="3" y1="6" x2="21" y2="6"/>
     <path d="M16 10a4 4 0 01-8 0"/>
   </svg>;
 }
-function IconCheck() {
-  return <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+function IconCheck({ size = 28, strokeWidth = 2.6 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
     <polyline points="20 6 9 17 4 12"/>
   </svg>;
 }
-function IconX() {
-  return <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+function IconX({ size = 28, strokeWidth = 2.6 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
     <line x1="18" y1="6" x2="6" y2="18"/>
     <line x1="6" y1="6" x2="18" y2="18"/>
   </svg>;
 }
-function IconClock() {
-  return <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+function IconClock({ size = 28, strokeWidth = 2.6 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="10"/>
     <polyline points="12 6 12 12 16 14"/>
   </svg>;
