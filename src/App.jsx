@@ -1394,6 +1394,14 @@ function AdminView({ products, orders, onExit }) {
   // Inline hubs editing (Phase 14A). Same UX pattern as sizes.
   const [editHubsId, setEditHubsId]     = useState(null);
   const [editHubsArr, setEditHubsArr]   = useState([]);
+  // Inline photo editing — pick a new image, preview, Confirm/Cancel. Storage
+  // path matches the create flow (products/{id}/photo.jpg) so the existing
+  // file is overwritten; the new download URL replaces product.photoUrl.
+  const [editPhotoId, setEditPhotoId]     = useState(null);
+  const [editPhotoUrl, setEditPhotoUrl]   = useState(null);
+  const [editPhotoBlob, setEditPhotoBlob] = useState(null);
+  const [editPhotoSaving, setEditPhotoSaving] = useState(false);
+  const editPhotoFileRef = useRef(null);
   // Products list search (Phase 12A).
   const [productSearch, setProductSearch] = useState("");
   const sizeOptions = ["3","4","5","5.5","6","7","8","9","10","11"];
@@ -1445,6 +1453,66 @@ function AdminView({ products, orders, onExit }) {
   const deleteProduct = (id, name) => {
     if (!window.confirm(`Are you sure you want to delete this product?\n\n"${name}"`)) return;
     deleteProductFromFirebase(id);
+  };
+
+  // ── Edit Photo flow ─────────────────────────────────────────────────────
+  // Mirrors the compression pipeline in handleImageUpload (800px max-dim,
+  // step quality down from 0.85 until under 200KB) so the per-product file
+  // size stays sane regardless of source. Upload overwrites the existing
+  // products/{id}/photo.jpg; getDownloadURL returns a new token, which is
+  // what updates RTDB and forces every subscriber's <img> to refresh.
+  const startEditPhoto = (id) => {
+    setEditPhotoId(id);
+    setEditPhotoUrl(null);
+    setEditPhotoBlob(null);
+  };
+  const cancelEditPhoto = () => {
+    setEditPhotoId(null);
+    setEditPhotoUrl(null);
+    setEditPhotoBlob(null);
+  };
+  const handleEditPhotoFile = (e) => {
+    const file = e.target.files[0];
+    e.target.value = ""; // allow picking the same file twice in a row
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX_DIM = 800;
+        const MAX_BYTES = 200 * 1024;
+        const scale = Math.min(1, MAX_DIM / img.width, MAX_DIM / img.height);
+        const canvas = document.createElement("canvas");
+        canvas.width  = Math.round(img.width  * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        let dataUrl = canvas.toDataURL("image/jpeg", 0.05);
+        for (let q = 0.85; q > 0.05; q = Math.round((q - 0.05) * 100) / 100) {
+          const candidate = canvas.toDataURL("image/jpeg", q);
+          if (candidate.length * 0.75 <= MAX_BYTES) { dataUrl = candidate; break; }
+        }
+        setEditPhotoUrl(dataUrl);
+        setEditPhotoBlob(dataURLToBlob(dataUrl));
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+  const saveEditPhoto = async (productId) => {
+    if (!editPhotoBlob || editPhotoSaving) return;
+    setEditPhotoSaving(true);
+    try {
+      const sRef = storageRef(storage, `products/${productId}/photo.jpg`);
+      await uploadBytes(sRef, editPhotoBlob, { contentType: "image/jpeg" });
+      const url = await getDownloadURL(sRef);
+      await update(ref(database, `products/${productId}`), { photoUrl: url });
+      cancelEditPhoto();
+    } catch (err) {
+      console.error("editPhoto failed:", err);
+      alert("Failed to save photo. Please try again.");
+    } finally {
+      setEditPhotoSaving(false);
+    }
   };
 
   const toggleSize = s => setForm(f => ({ ...f, sizes: f.sizes.includes(s) ? f.sizes.filter(x=>x!==s) : [...f.sizes, s] }));
@@ -1625,10 +1693,11 @@ function AdminView({ products, orders, onExit }) {
           </div>
         )}
         {filteredProducts.map(p => {
-          const isEditing  = editingId === p.id;
-          const isEditSz   = editSizesId === p.id;
-          const isEditHubs = editHubsId === p.id;
-          const isClothing = (p.productType || "sneaker") === "clothing";
+          const isEditing   = editingId === p.id;
+          const isEditSz    = editSizesId === p.id;
+          const isEditHubs  = editHubsId === p.id;
+          const isEditPhoto = editPhotoId === p.id;
+          const isClothing  = (p.productType || "sneaker") === "clothing";
           // Legacy clothing products created before this correction may still
           // have a `stock: { S, M, ... }` object and no `sizes` array. Treat
           // every key present in stock as an available size — user can edit
@@ -1705,6 +1774,35 @@ function AdminView({ products, orders, onExit }) {
                       <button onClick={() => setEditSizesId(null)} style={{ ...bGray, padding:"6px 10px", fontSize:12 }}>Cancel</button>
                     </div>
                   </div>
+                ) : isEditPhoto ? (
+                  <div style={{ padding:"12px 14px 14px" }}>
+                    <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7, textTransform:"uppercase" }}>Replace photo</div>
+                    <input ref={editPhotoFileRef} type="file" accept="image/*" onChange={handleEditPhotoFile} style={{ display:"none" }}/>
+                    <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
+                      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+                        <div style={{ fontSize:9, color:"rgba(255,255,255,.4)" }}>Current</div>
+                        <ProductPhoto url={p.photoUrl} photo={p.photo} size={64} radius={10}/>
+                      </div>
+                      <div style={{ fontSize:18, color:"rgba(255,255,255,.3)" }}>→</div>
+                      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+                        <div style={{ fontSize:9, color:"rgba(255,255,255,.4)" }}>New</div>
+                        {editPhotoUrl
+                          ? <img src={editPhotoUrl} alt="preview" style={{ width:64, height:64, objectFit:"cover", borderRadius:10, border:"1px solid rgba(60,110,255,.25)" }}/>
+                          : <div style={{ width:64, height:64, borderRadius:10, border:"2px dashed rgba(60,110,255,.25)", display:"flex", alignItems:"center", justifyContent:"center", color:"#555", fontSize:10 }}>none</div>}
+                      </div>
+                      <button onClick={() => editPhotoFileRef.current?.click()} disabled={editPhotoSaving}
+                              style={{ marginLeft:"auto", background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor: editPhotoSaving ? "not-allowed" : "pointer", opacity: editPhotoSaving ? 0.5 : 1 }}>
+                        {editPhotoUrl ? "Choose different" : "Choose photo"}
+                      </button>
+                    </div>
+                    <div style={{ display:"flex", gap:6 }}>
+                      <button onClick={() => saveEditPhoto(p.id)} disabled={!editPhotoBlob || editPhotoSaving}
+                              style={{ flex:1, ...bBlue, padding:6, fontSize:12, opacity: (!editPhotoBlob || editPhotoSaving) ? 0.4 : 1 }}>
+                        {editPhotoSaving ? "Uploading…" : "Save Photo"}
+                      </button>
+                      <button onClick={cancelEditPhoto} disabled={editPhotoSaving} style={{ ...bGray, padding:"6px 10px", fontSize:12, opacity: editPhotoSaving ? 0.5 : 1 }}>Cancel</button>
+                    </div>
+                  </div>
                 ) : isEditHubs ? (
                   <div style={{ padding:"12px 14px 14px" }}>
                     <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7, textTransform:"uppercase" }}>Tap to toggle hubs</div>
@@ -1750,6 +1848,11 @@ function AdminView({ products, orders, onExit }) {
                                 style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                           Edit Hubs
+                        </button>
+                        <button onClick={() => startEditPhoto(p.id)}
+                                style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                          Edit Photo
                         </button>
                         <button onClick={() => deleteProduct(p.id, p.name)}
                                 style={{ background:"rgba(180,40,40,.1)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
