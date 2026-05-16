@@ -5,6 +5,8 @@ import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from 
 import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functionsUS } from "./firebase";
 import { uploadBroadcastMedia } from "./broadcastStorage";
+import AuthGate from "./components/AuthGate";
+import { usePermissions } from "./components/PermissionsContext";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -82,6 +84,24 @@ function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,2
 }
 
 const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups" };
+
+// Each role tile maps to a permission string. Tiles are hidden when the
+// signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
+// bypasses every check via hasPermission's email shortcut.
+// TV Display and Customer are auxiliary admin-only tiles — no dedicated perm
+// in the spec, so they ride on product_admin (admin and super_admin only).
+const ROLE_TO_PERMISSION = {
+  [ROLES.ASSISTANT]:        "store_assistant",
+  [ROLES.WAREHOUSE]:        "warehouse",
+  [ROLES.SOURCE]:           "source",
+  [ROLES.RETURNS]:          "place_orders",
+  [ROLES.INSIGHTS]:         "insights",
+  [ROLES.DISPLAY]:          "product_admin",
+  [ROLES.CUSTOMER]:         "product_admin",
+  [ROLES.CUSTOMERS_DB]:     "customer_data",
+  [ROLES.ADMIN]:            "product_admin",
+  [ROLES.BROADCAST_GROUPS]: "broadcast",
+};
 const STATUS = { INCOMING: "incoming", READY: "ready", OUT_OF_STOCK: "out_of_stock", COLLECTED: "collected", COMING_TOMORROW: "coming_tomorrow" };
 
 // ─── SIZE RANGE + SUBSTITUTE HELPERS ──────────────────────────────────────────
@@ -182,6 +202,22 @@ const inputStyle = {
 // array replacement. This prevents any race condition where two devices writing
 // concurrently could clobber each other's data.
 //
+// Persist a view's active-tab selection across page refreshes. Stored under
+// `tabState:<sectionKey>` so the keyspace is consistent and greppable. Falls
+// back to defaultTab if localStorage is unavailable (private-mode Safari).
+function usePersistedTab(sectionKey, defaultTab) {
+  const storageKey = `tabState:${sectionKey}`;
+  const [tab, setTabRaw] = useState(() => {
+    try { return localStorage.getItem(storageKey) || defaultTab; }
+    catch { return defaultTab; }
+  });
+  const setTab = (next) => {
+    try { localStorage.setItem(storageKey, next); } catch { /* ignored */ }
+    setTabRaw(next);
+  };
+  return [tab, setTab];
+}
+
 // Tracks Firebase anonymous-auth readiness for any data hook that needs it.
 // Database rules require auth !== null; if onValue is called before sign-in
 // completes, the read is rejected and the listener stays dead (it does not
@@ -272,6 +308,15 @@ function updateProductSizes(id, sizes) {
 // array shape as sneakers — values are S / M / L / XL / XXL / XXXL.
 const CLOTHING_SIZES = ["S", "M", "L", "XL", "XXL", "XXXL"];
 
+// Phase 14A: products can belong to multiple hubs. New shape is `hubs: [...]`,
+// values from { "hub1", "hub2", "hub3" }. Legacy products only have a single
+// `hub` string; getProductHubs unifies both shapes so call sites stay agnostic
+// (no data migration needed). Pine view (Hub 3) ships in Phase 14B.
+const HUB_LABELS = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
+function getProductHubs(product) {
+  return product?.hubs || (product?.hub ? [product.hub] : []);
+}
+
 // Phase 12D: classify an insights_log entry or order as sneaker/clothing.
 // Prefers explicit productType (added on writes after Phase 12D ships) and
 // falls back to a size-letter heuristic for historical entries: the two size
@@ -284,10 +329,10 @@ function inferProductType(entry) {
   return "sneaker";
 }
 
-function updateProductHub(id, hub) {
+function updateProductHubs(id, hubs) {
   if (!id) return Promise.resolve();
-  return update(ref(database, `products/${id}`), { hub })
-    .catch(err => console.warn("updateProductHub failed:", err));
+  return update(ref(database, `products/${id}`), { hubs })
+    .catch(err => console.warn("updateProductHubs failed:", err));
 }
 
 // ─── ORDERS HOOK + DIRECT FIREBASE WRITES ────────────────────────────────────
@@ -845,6 +890,97 @@ function useCustomersDb() {
   return customers;
 }
 
+// Customer index for the Assistant order-entry autocomplete. Derived from
+// insights_log (where past customer name + phone + timestamp actually live —
+// `/customers` only stores opt-in flags). Returns one entry per distinct
+// phone with the most-recent name, total order count (action="placed"), and
+// the last-order ISO. Cheap O(N) once over the log.
+const phoneDigits = (s) => (s || "").replace(/\D+/g, "");
+
+function useCustomerIndex() {
+  const log = useInsightsLog();
+  return useMemo(() => {
+    const byPhone = new Map();
+    for (const e of log) {
+      const phone = (e?.customerPhone || "").trim();
+      if (!phone || !e.customerName) continue;
+      let rec = byPhone.get(phone);
+      if (!rec) {
+        rec = { name: e.customerName, phone, orderCount: 0, lastOrderAt: "" };
+        byPhone.set(phone, rec);
+      }
+      if (e.action === "placed") rec.orderCount += 1;
+      // Keep the most recent name variant in case the customer's spelling
+      // drifted over time.
+      if ((e.timestamp || "") > (rec.lastOrderAt || "")) {
+        rec.lastOrderAt = e.timestamp || "";
+        if (e.customerName) rec.name = e.customerName;
+      }
+    }
+    return Array.from(byPhone.values());
+  }, [log]);
+}
+
+// Match against the customer index. `mode` picks the field to prefix-match.
+// Returns up to 5 hits, newest first. Empty query → empty list.
+function matchCustomers(customers, query, mode) {
+  const q = (query || "").trim();
+  if (!q) return [];
+  const hits = [];
+  if (mode === "phone") {
+    const needle = phoneDigits(q);
+    if (!needle) return [];
+    for (const c of customers) {
+      if (phoneDigits(c.phone).startsWith(needle)) hits.push(c);
+    }
+  } else {
+    const needle = q.toLowerCase();
+    for (const c of customers) {
+      if ((c.name || "").toLowerCase().startsWith(needle)) hits.push(c);
+    }
+  }
+  hits.sort((a, b) => (b.lastOrderAt || "").localeCompare(a.lastOrderAt || ""));
+  return hits.slice(0, 5);
+}
+
+// Floating dropdown rendered absolutely under an input. `onPick` receives
+// the chosen customer; `onAddNew` is the manual-entry escape hatch.
+function CustomerSuggestionDropdown({ query, mode, customers, onPick, onAddNew }) {
+  const matches = matchCustomers(customers, query, mode);
+  if (!query || query.trim().length === 0) return null;
+  return (
+    <div style={{
+      position:"absolute", left:0, right:0, top:"calc(100% + 4px)",
+      background:"#11162A", border:"1px solid rgba(60,110,255,.25)",
+      borderRadius:12, boxShadow:"0 6px 24px rgba(0,0,0,.45)",
+      zIndex:1100, overflow:"hidden",
+    }}>
+      {matches.map((c, i) => (
+        <div key={c.phone}
+             onMouseDown={(e) => { e.preventDefault(); onPick(c); }}
+             style={{
+               padding:"10px 14px", cursor:"pointer",
+               borderBottom:"1px solid rgba(255,255,255,.05)",
+               background: "transparent",
+             }}>
+          <div style={{ fontSize:14, fontWeight:500, color:"#fff" }}>{c.name}</div>
+          <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginTop:2 }}>
+            {c.phone} · {c.orderCount} past order{c.orderCount === 1 ? "" : "s"}
+          </div>
+        </div>
+      ))}
+      <div onMouseDown={(e) => { e.preventDefault(); onAddNew(); }}
+           style={{
+             padding:"10px 14px", cursor:"pointer",
+             fontSize:13, color:"#4A7FFF", fontWeight:500,
+             background: matches.length > 0 ? "rgba(60,110,255,.04)" : "transparent",
+           }}>
+        + Add new customer "{query.trim()}"
+      </div>
+    </div>
+  );
+}
+
 function useBroadcastHistory() {
   const authReady = useAuthReady();
   const [broadcasts, setBroadcasts] = useState([]);
@@ -919,7 +1055,7 @@ function CustomersView({ onExit }) {
   const [cpw, setCpw]       = useState("");
   const [cpwError, setCpwError] = useState(false);
 
-  const [tab, setTab] = useState("list");
+  const [tab, setTab] = usePersistedTab("customers", "list");
   const insightsLog  = useInsightsLog();
   const customersDb  = useCustomersDb();
   const broadcasts   = useBroadcastHistory();
@@ -1281,7 +1417,7 @@ function GroupSection({ label, children }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, isAdmin }) {
+function RoleSelector({ onSelect, orders, returnsLog, hasPermission }) {
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
   // Source badge = today's restock requests + on-hold (Tomorrow), excluding OOS.
@@ -1325,51 +1461,83 @@ function RoleSelector({ onSelect, orders, returnsLog, isAdmin }) {
         </div>
       </div>
 
-      {/* ROLE GROUPS */}
-      <div style={{ padding:"10px 14px 36px", background:"#000" }}>
-        <GroupSection label="Operations">
-          <RoleCard icon={RoleIcons.assistant} name="Store Assistant" desc="Place customer orders" badge={assistantBadge}  onClick={() => onSelect(ROLES.ASSISTANT)} />
-          <RoleCard icon={RoleIcons.warehouse} name="Warehouse"        desc="Manage order queue"   badge={incoming}        onClick={() => onSelect(ROLES.WAREHOUSE)} />
-          <RoleCard icon={RoleIcons.source}    name="Source"           desc="Restock requests"     badge={sourceBadge}     onClick={() => onSelect(ROLES.SOURCE)} />
-          <RoleCard icon={RoleIcons.returns}   name="Returns"          desc="Log returned items"   onClick={() => onSelect(ROLES.RETURNS)} last />
-        </GroupSection>
-        <GroupSection label="Insights & Display">
-          <RoleCard icon={RoleIcons.insights} name="Internal Insights" desc="Business analytics"      onClick={() => onSelect(ROLES.INSIGHTS)} />
-          <RoleCard icon={RoleIcons.display}  name="TV Display"        desc="Customer queue screen"   onClick={() => onSelect(ROLES.DISPLAY)} />
-          <RoleCard icon={RoleIcons.customer} name="Customer"          desc="Check order status"      onClick={() => onSelect(ROLES.CUSTOMER)} last />
-        </GroupSection>
-        <GroupSection label="Administration">
-          <RoleCard icon={RoleIcons.customers_db} name="Customers" desc="Customer database" onClick={() => onSelect(ROLES.CUSTOMERS_DB)} />
-          <RoleCard icon={RoleIcons.admin}        name="Admin"     desc="Manage products"   onClick={() => onSelect(ROLES.ADMIN)} last={!isAdmin} />
-          {isAdmin && (
-            <RoleCard icon={RoleIcons.broadcast_groups} name="Group Broadcast" desc="Send to WhatsApp groups" onClick={() => onSelect(ROLES.BROADCAST_GROUPS)} last />
-          )}
-        </GroupSection>
-      </div>
+      {/* ROLE GROUPS — each tile gated by hasPermission. Empty groups are
+          hidden so staff with limited permissions don't see empty headings. */}
+      {(() => {
+        const ops = [
+          hasPermission(ROLE_TO_PERMISSION[ROLES.ASSISTANT]) && <RoleCard key="assistant" icon={RoleIcons.assistant} name="Store Assistant" desc="Place customer orders" badge={assistantBadge}  onClick={() => onSelect(ROLES.ASSISTANT)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) && <RoleCard key="warehouse" icon={RoleIcons.warehouse} name="Warehouse"        desc="Manage order queue"   badge={incoming}        onClick={() => onSelect(ROLES.WAREHOUSE)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])    && <RoleCard key="source"    icon={RoleIcons.source}    name="Source"           desc="Restock requests"     badge={sourceBadge}     onClick={() => onSelect(ROLES.SOURCE)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && <RoleCard key="returns"   icon={RoleIcons.returns}   name="Returns"          desc="Log returned items"   onClick={() => onSelect(ROLES.RETURNS)} />,
+        ].filter(Boolean);
+        const insightsDisplay = [
+          hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && <RoleCard key="insights" icon={RoleIcons.insights} name="Internal Insights" desc="Business analytics"    onClick={() => onSelect(ROLES.INSIGHTS)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.DISPLAY])  && <RoleCard key="display"  icon={RoleIcons.display}  name="TV Display"        desc="Customer queue screen" onClick={() => onSelect(ROLES.DISPLAY)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && <RoleCard key="customer" icon={RoleIcons.customer} name="Customer"          desc="Check order status"    onClick={() => onSelect(ROLES.CUSTOMER)} />,
+        ].filter(Boolean);
+        const admin = [
+          hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && <RoleCard key="customers" icon={RoleIcons.customers_db}     name="Customers"       desc="Customer database"       onClick={() => onSelect(ROLES.CUSTOMERS_DB)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && <RoleCard key="admin"     icon={RoleIcons.admin}            name="Admin"           desc="Manage products"         onClick={() => onSelect(ROLES.ADMIN)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && <RoleCard key="broadcast" icon={RoleIcons.broadcast_groups} name="Group Broadcast" desc="Send to WhatsApp groups" onClick={() => onSelect(ROLES.BROADCAST_GROUPS)} />,
+        ].filter(Boolean);
+        // `last` on the final card in each group removes the trailing divider.
+        const withLast = (cards) => cards.map((card, i) =>
+          i === cards.length - 1 ? <card.type {...card.props} last /> : card
+        );
+        return (
+          <div style={{ padding:"10px 14px 36px", background:"#000" }}>
+            {ops.length > 0              && <GroupSection label="Operations">{withLast(ops)}</GroupSection>}
+            {insightsDisplay.length > 0  && <GroupSection label="Insights & Display">{withLast(insightsDisplay)}</GroupSection>}
+            {admin.length > 0            && <GroupSection label="Administration">{withLast(admin)}</GroupSection>}
+            {ops.length + insightsDisplay.length + admin.length === 0 && (
+              <div style={{ textAlign:"center", color:"#555", padding:"3rem 1rem", fontSize:14 }}>
+                No tools assigned to your account yet. Ask an admin to update your permissions.
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
 
 // ─── ADMIN VIEW ───────────────────────────────────────────────────────────────
+// Sneaker size options (clothing uses CLOTHING_SIZES). Hoisted to module
+// scope so both AdminView's Add Product form and AdminProductDetail's size
+// editor share the same source of truth.
+const SNEAKER_SIZES = ["3","4","5","5.5","6","7","8","9","10","11"];
+
+// `#product/{id}` is the detail-page route. Returns null when the hash is
+// anything else (empty, #admin, etc.).
+function parseProductHash() {
+  const m = (window.location.hash || "").match(/^#product\/(.+)$/);
+  return m ? m[1] : null;
+}
+
 function AdminView({ products, orders, onExit }) {
+  // ── Add Product form state (collapsible at top of list) ─────────────────
   const [showAdd, setShowAdd] = useState(false);
   // Phase 12A: productType (sneaker default | clothing). Both types use a
   // shared `sizes` array — sneakers store "3".."11", clothing stores
-  // "S".."XXXL". Clothing's hub is forced to hub2 on save.
-  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hub:"hub1", productType:"sneaker" });
-  // photoMode kept only for back-compat with reset; photo is always uploaded as image now.
+  // "S".."XXXL". Phase 14A: `hubs` is a multi-select (Hub 1 / Hub 2 / Hub 3);
+  // clothing cannot include Hub 1.
+  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker" });
   const [saving, setSaving] = useState(false);
-  // Inline name editing: editingId = product id being edited, editingName = draft value
-  const [editingId, setEditingId]     = useState(null);
-  const [editingName, setEditingName] = useState("");
-  // Inline sizes editing (works for both types — different option lists).
-  const [editSizesId, setEditSizesId]   = useState(null);
-  const [editSizesArr, setEditSizesArr] = useState([]);
-  // Products list search (Phase 12A).
-  const [productSearch, setProductSearch] = useState("");
-  const sizeOptions = ["3","4","5","5.5","6","7","8","9","10","11"];
-  // Emoji selector removed — Add Product now only supports image uploads.
   const fileInputRef = useRef(null);
+  // ── List search ─────────────────────────────────────────────────────────
+  const [productSearch, setProductSearch] = useState("");
+  // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
+  //    browser back clears it. Listener stays mounted for the whole view. ──
+  const [detailId, setDetailId] = useState(() => parseProductHash());
+  useEffect(() => {
+    const onHashChange = () => setDetailId(parseProductHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  // Insights log → fuels the detail page's "Last sold X · N orders all-time"
+  // context line. orders[] alone isn't enough — it's daily-counter-ephemeral
+  // (see project-insights-past-days-pattern memory).
+  const insightsLog = useInsightsLog();
 
   const addProduct = async () => {
     if (!form.name || form.sizes.length === 0) return;
@@ -1386,22 +1554,24 @@ function AdminView({ products, orders, onExit }) {
       }
 
       const isClothing = form.productType === "clothing";
+      // Phase 14A: clothing cannot be in Hub 1. Strip defensively and fall
+      // back to a sensible default if everything got unchecked.
+      const cleanedHubs = (isClothing ? form.hubs.filter(h => h !== "hub1") : form.hubs)
+        .filter(h => h === "hub1" || h === "hub2" || h === "hub3");
+      const finalHubs = cleanedHubs.length ? cleanedHubs : (isClothing ? ["hub2"] : ["hub1"]);
       const newProduct = {
         name: form.name,
         category: form.category,
         photo: form.photo,
         photoUrl: photoUrl ?? null,
-        // Clothing routes to Hub 2 only (per Phase 12 brief). The Hub picker
-        // is hidden in the form when Clothing is selected, but we belt-and-
-        // braces the value here.
-        hub: isClothing ? "hub2" : (form.hub || "hub1"),
+        hubs: finalHubs,
         productType: form.productType,
         sizes: form.sizes,
         id,
       };
       await addProductToFirebase(newProduct);
 
-      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hub:"hub1", productType:"sneaker" });
+      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker" });
       setShowAdd(false);
     } catch (err) {
       console.error("addProduct failed:", err);
@@ -1411,12 +1581,19 @@ function AdminView({ products, orders, onExit }) {
     }
   };
 
-  const deleteProduct = (id, name) => {
-    if (!window.confirm(`Are you sure you want to delete this product?\n\n"${name}"`)) return;
-    deleteProductFromFirebase(id);
-  };
+  // Per-product edit handlers (name/sizes/hubs/photo/delete) used to live
+  // here as inline-editor flows in the list. They've been moved into
+  // AdminProductDetail — list rows are now navigation targets only.
 
   const toggleSize = s => setForm(f => ({ ...f, sizes: f.sizes.includes(s) ? f.sizes.filter(x=>x!==s) : [...f.sizes, s] }));
+  const toggleHub  = h => setForm(f => ({ ...f, hubs:  f.hubs.includes(h)  ? f.hubs.filter(x=>x!==h)  : [...f.hubs,  h] }));
+  // Switching to Clothing strips Hub 1 (and falls back to Hub 2 if everything
+  // would go empty). Switching back to Sneaker leaves hubs alone.
+  const setProductType = (nextType) => setForm(f => {
+    if (nextType !== "clothing") return { ...f, productType: nextType };
+    const stripped = f.hubs.filter(h => h !== "hub1");
+    return { ...f, productType: nextType, hubs: stripped.length ? stripped : ["hub2"] };
+  });
 
   // Phase 12A: products filtered by the admin search bar (substring, case-insensitive).
   const filteredProducts = useMemo(() => {
@@ -1462,12 +1639,27 @@ function AdminView({ products, orders, onExit }) {
     reader.readAsDataURL(file);
   };
 
-  const stats = {
-    total:      orders.length,
-    incoming:   orders.filter(o => o.status === STATUS.INCOMING).length,
-    ready:      orders.filter(o => o.status === STATUS.READY).length,
-    outOfStock: orders.filter(o => o.status === STATUS.OUT_OF_STOCK).length,
-  };
+  // Detail page: which product, and stale-hash guard. If the hash points
+  // at a product that no longer exists (deleted in another tab), clear it.
+  const detailProduct = detailId ? products.find(p => p.id === detailId) : null;
+  useEffect(() => {
+    if (detailId && products.length > 0 && !detailProduct) {
+      window.history.back();
+    }
+  }, [detailId, products.length, detailProduct]);
+
+  // When the detail page is mounted, render JUST the detail (no list chrome).
+  if (detailProduct) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+        <AdminProductDetail
+          product={detailProduct}
+          insightsLog={insightsLog}
+          onBack={() => window.history.back()}
+        />
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
@@ -1523,7 +1715,7 @@ function AdminView({ products, orders, onExit }) {
           <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Product Type</div>
           <div style={{ display:"flex", gap:"0.5rem", marginBottom:"1.25rem" }}>
             {[["sneaker","Sneaker"],["clothing","Clothing"]].map(([val, label]) => (
-              <button key={val} onClick={() => setForm(f => ({ ...f, productType: val }))}
+              <button key={val} onClick={() => setProductType(val)}
                 style={{ padding:"6px 20px", borderRadius:"8px", border:"2px solid", borderColor: form.productType===val?BLUE:"rgba(60,110,255,.15)", background: form.productType===val?"rgba(60,110,255,.12)":"transparent", color: form.productType===val?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.9rem" }}>
                 {label}
               </button>
@@ -1533,7 +1725,7 @@ function AdminView({ products, orders, onExit }) {
           {/* Size toggles — same toggle UX for both types, different option lists. */}
           <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Available Sizes</div>
           <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
-            {(form.productType === "clothing" ? CLOTHING_SIZES : sizeOptions).map(s => (
+            {(form.productType === "clothing" ? CLOTHING_SIZES : SNEAKER_SIZES).map(s => (
               <button key={s} onClick={() => toggleSize(s)}
                 style={{ padding:"6px 14px", borderRadius:"8px", border:"2px solid", borderColor: form.sizes.includes(s)?BLUE:"rgba(60,110,255,.15)", background: form.sizes.includes(s)?"rgba(60,110,255,.12)":"transparent", color: form.sizes.includes(s)?BLUE_L:"#666", cursor:"pointer", fontWeight:"600" }}>
                 {s}
@@ -1541,25 +1733,26 @@ function AdminView({ products, orders, onExit }) {
             ))}
           </div>
 
-          {form.productType === "sneaker" ? (
-            <>
-              <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Hub</div>
-              <div style={{ display:"flex", gap:"0.5rem", marginBottom:"1.25rem" }}>
-                {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => (
-                  <button key={val} onClick={() => setForm(f => ({ ...f, hub: val }))}
-                    style={{ padding:"6px 20px", borderRadius:"8px", border:"2px solid", borderColor: form.hub===val?BLUE:"rgba(60,110,255,.15)", background: form.hub===val?"rgba(60,110,255,.12)":"transparent", color: form.hub===val?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.9rem" }}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </>
-          ) : (
-            <div style={{ fontSize:"0.78rem", color:"#555", marginBottom:"1.25rem", fontStyle:"italic" }}>Clothing is stocked at Hub 2 only.</div>
-          )}
+          <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Hubs (select at least one)</div>
+          <div style={{ display:"flex", gap:"0.5rem", marginBottom:"0.5rem", flexWrap:"wrap" }}>
+            {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3"]].map(([val, label]) => {
+              const disabled = form.productType === "clothing" && val === "hub1";
+              const checked  = form.hubs.includes(val) && !disabled;
+              return (
+                <button key={val} disabled={disabled} onClick={() => toggleHub(val)}
+                  style={{ padding:"6px 20px", borderRadius:"8px", border:"2px solid", borderColor: checked?BLUE:"rgba(60,110,255,.15)", background: checked?"rgba(60,110,255,.12)":"transparent", color: disabled?"#333":(checked?BLUE_L:"#666"), cursor: disabled?"not-allowed":"pointer", fontWeight:"600", fontSize:"0.9rem", opacity: disabled?0.5:1 }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          {form.productType === "clothing"
+            ? <div style={{ fontSize:"0.78rem", color:"#555", marginBottom:"1.25rem", fontStyle:"italic" }}>Clothing cannot be stocked at Hub 1.</div>
+            : <div style={{ marginBottom:"0.75rem" }}/>}
 
           <button onClick={addProduct}
-                  disabled={saving || !form.name || form.sizes.length === 0}
-                  style={{ ...bBlue, padding:"0.6rem 1.5rem", opacity: (!saving && form.name && form.sizes.length > 0) ? 1 : 0.4 }}>
+                  disabled={saving || !form.name || form.sizes.length === 0 || form.hubs.length === 0}
+                  style={{ ...bBlue, padding:"0.6rem 1.5rem", opacity: (!saving && form.name && form.sizes.length > 0 && form.hubs.length > 0) ? 1 : 0.4 }}>
             {saving ? "Uploading…" : "Save Product"}
           </button>
         </div>
@@ -1575,130 +1768,321 @@ function AdminView({ products, orders, onExit }) {
         />
       </div>
 
-      {/* PRODUCT LIST with timeline dots */}
-      <div style={{ position:"relative" }}>
-        {/* Timeline line */}
-        <div style={{ position:"absolute", left:14, top:0, bottom:0, width:1, background:"linear-gradient(180deg,rgba(60,110,255,.4),rgba(60,110,255,.15))", zIndex:0 }}/>
+      {/* CLEAN PRODUCT LIST — each row is a navigation target (taps push
+          #product/{id} via AdminProductRow). All edit affordances moved to
+          AdminProductDetail. */}
+      <div>
         {filteredProducts.length === 0 && (
           <div style={{ textAlign:"center", color:"#555", padding:"2.5rem 1rem", fontSize:"0.9rem" }}>
             {productSearch.trim() ? "No products match your search." : "No products yet. Add one above."}
           </div>
         )}
-        {filteredProducts.map(p => {
-          const isEditing = editingId === p.id;
-          const isEditSz  = editSizesId === p.id;
-          const isClothing = (p.productType || "sneaker") === "clothing";
-          // Legacy clothing products created before this correction may still
-          // have a `stock: { S, M, ... }` object and no `sizes` array. Treat
-          // every key present in stock as an available size — user can edit
-          // and Save to migrate it cleanly into the sizes array shape.
-          const productSizes = Array.isArray(p.sizes) && p.sizes.length
-            ? p.sizes
-            : (isClothing && p.stock ? Object.keys(p.stock) : (p.sizes || []));
-          const sizeChoices = isClothing ? CLOTHING_SIZES : sizeOptions;
-          return (
-            <div key={p.id} style={{ display:"flex", gap:0, marginBottom:10, position:"relative", zIndex:1 }}>
-              <div style={{ width:28, flexShrink:0, display:"flex", flexDirection:"column", alignItems:"center", paddingTop:32 }}>
-                <div style={{ width:12, height:12, borderRadius:"50%", background:"#3A6EFF", boxShadow:"0 0 8px rgba(58,110,255,.7)", border:"2px solid rgba(58,110,255,.3)", flexShrink:0 }}/>
-              </div>
-              <div style={{ flex:1, background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, overflow:"hidden" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:12, padding:"14px 14px 10px" }}>
-                  <ProductPhoto url={p.photoUrl} photo={p.photo} size={80} radius={10}/>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    {isEditing ? (
-                      <div>
-                        <input value={editingName}
-                               onChange={e => setEditingName(e.target.value)}
-                               onKeyDown={e => {
-                                 if (e.key === "Enter") { updateProductName(p.id, editingName); setEditingId(null); }
-                                 if (e.key === "Escape") setEditingId(null);
-                               }}
-                               autoFocus
-                               style={{ ...inputStyle, fontSize:14, padding:"6px 8px", marginBottom:6 }}/>
-                        <div style={{ display:"flex", gap:6 }}>
-                          <button onClick={() => { updateProductName(p.id, editingName); setEditingId(null); }}
-                                  style={{ ...bBlue, padding:"4px 10px", fontSize:11 }}>Save</button>
-                          <button onClick={() => setEditingId(null)}
-                                  style={{ ...bGray, padding:"4px 10px", fontSize:11 }}>Cancel</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div style={{ fontSize:17, fontWeight:700, color:"rgba(255,255,255,.85)", marginBottom:6 }}>{p.name}</div>
-                        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                          {/* Type chip — Sneaker / Clothing */}
-                          <div style={{ display:"inline-block", background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.25)", color:BLUE_L, fontSize:11, fontWeight:600, padding:"3px 10px", borderRadius:20 }}>
-                            {isClothing ? "Clothing" : "Sneaker"}
-                          </div>
-                          {/* Hub chip — interactive for sneakers (toggle hub1/hub2). Clothing
-                              is forced to hub2 so the chip is non-clickable. */}
-                          <div onClick={() => { if (!isClothing) updateProductHub(p.id, (p.hub || "hub1") === "hub1" ? "hub2" : "hub1"); }}
-                               style={{ display:"inline-block", background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.3)", color:"#4A7FFF", fontSize:11, fontWeight:600, padding:"3px 10px", borderRadius:20, cursor: isClothing ? "default" : "pointer", opacity: isClothing ? 0.8 : 1 }}>
-                            {isClothing ? "Hub 2" : ((p.hub || "hub1") === "hub1" ? "Hub 1" : "Hub 2")}
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                  <div onClick={() => { setEditingId(p.id); setEditingName(p.name); }}
-                       style={{ color:"rgba(255,255,255,.2)", fontSize:18, cursor:"pointer", padding:4 }}>···</div>
-                </div>
-                <div style={{ height:1, background:"rgba(255,255,255,.05)", margin:"0 14px" }}/>
+        {filteredProducts.map(p => <AdminProductRow key={p.id} product={p} />)}
+      </div>
+      <div style={{ height:20 }}/>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-                {/* Unified Edit Sizes flow — same toggle UX for both types,
-                    using sneaker sizeOptions or CLOTHING_SIZES depending on
-                    productType. Save writes the full sizes array. */}
-                {isEditSz ? (
-                  <div style={{ padding:"12px 14px 14px" }}>
-                    <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7, textTransform:"uppercase" }}>Tap to toggle sizes</div>
-                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
-                      {sizeChoices.map(s => {
-                        const on = editSizesArr.includes(s);
-                        return (
-                          <button key={s} onClick={() => setEditSizesArr(arr => on ? arr.filter(x => x !== s) : [...arr, s])}
-                                  style={{ padding:"5px 11px", borderRadius:7, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.15)" : "rgba(255,255,255,.05)", color: on ? "#4A7FFF" : "rgba(255,255,255,.7)", cursor:"pointer", fontSize:12, fontWeight:600 }}>{s}</button>
-                        );
-                      })}
-                    </div>
-                    <div style={{ display:"flex", gap:6 }}>
-                      <button onClick={() => { updateProductSizes(p.id, editSizesArr); setEditSizesId(null); }} style={{ flex:1, ...bBlue, padding:6, fontSize:12 }}>Save Sizes</button>
-                      <button onClick={() => setEditSizesId(null)} style={{ ...bGray, padding:"6px 10px", fontSize:12 }}>Cancel</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px 14px", gap:10 }}>
-                    <div style={{ minWidth:0, flex:1 }}>
-                      <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7 }}>Sizes</div>
-                      <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-                        {productSizes.map(s => (
-                          <div key={s} style={{ minWidth:32, height:32, padding:"0 8px", background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:7, display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:600, color:"rgba(255,255,255,.8)" }}>{s}</div>
-                        ))}
-                      </div>
-                    </div>
-                    <div style={{ flexShrink:0 }}>
-                      <div style={{ fontSize:10, color:"rgba(255,255,255,.3)", fontWeight:600, letterSpacing:"0.5px", marginBottom:7 }}>Actions</div>
-                      <div style={{ display:"flex", gap:6 }}>
-                        <button onClick={() => { setEditSizesArr([...productSizes]); setEditSizesId(p.id); }}
-                                style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                          Edit Sizes
-                        </button>
-                        <button onClick={() => deleteProduct(p.id, p.name)}
-                                style={{ background:"rgba(180,40,40,.1)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B", fontSize:12, fontWeight:600, padding:"7px 12px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
+// ─── ADMIN PRODUCT ROW ───────────────────────────────────────────────────────
+// Compact tappable card in the admin list. Single-line metadata combines
+// type, hubs, and size count. Tap anywhere on the row → hash navigates to
+// #product/{id} which AdminView's hashchange listener catches.
+function AdminProductRow({ product }) {
+  const isClothing = (product.productType || "sneaker") === "clothing";
+  const hubs       = getProductHubs(product);
+  const hubLabel   = hubs.length ? hubs.map(h => HUB_LABELS[h] || h).join(", ") : "—";
+  const sizes      = Array.isArray(product.sizes) ? product.sizes : [];
+  const sizeCount  = sizes.length || (isClothing && product.stock ? Object.keys(product.stock).length : 0);
+  const meta       = `${isClothing ? "Clothing" : "Sneaker"} · ${hubLabel} · ${sizeCount} size${sizeCount === 1 ? "" : "s"}`;
+
+  return (
+    <div onClick={() => { window.location.hash = "product/" + product.id; }}
+         style={{
+           display:"flex", alignItems:"center", gap:12,
+           background:"rgba(255,255,255,.03)",
+           border:"1px solid rgba(255,255,255,.07)",
+           borderRadius:14, padding:"10px 14px", marginBottom:8, cursor:"pointer",
+         }}>
+      <ProductPhoto url={product.photoUrl} photo={product.photo} size={56} radius={10}/>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:16, fontWeight:600, color:"#fff", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{product.name}</div>
+        <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginTop:4, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{meta}</div>
+      </div>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.3)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}>
+        <polyline points="9 18 15 12 9 6"/>
+      </svg>
+    </div>
+  );
+}
+
+// ─── ADMIN PRODUCT DETAIL ────────────────────────────────────────────────────
+// Full-page edit surface reached via #product/{id}. Every field auto-saves
+// — name on blur, type/sizes/hubs on every toggle. Photo replace runs the
+// existing compression pipeline and uploads immediately on file pick (no
+// preview step; consistent with the auto-save theme). Delete prompts for
+// confirmation then navigates back.
+function AdminProductDetail({ product, insightsLog, onBack }) {
+  const isClothing = (product.productType || "sneaker") === "clothing";
+  const productSizes = Array.isArray(product.sizes) && product.sizes.length
+    ? product.sizes
+    : (isClothing && product.stock ? Object.keys(product.stock) : []);
+  const productHubs = getProductHubs(product);
+  const sizeChoices = isClothing ? CLOTHING_SIZES : SNEAKER_SIZES;
+
+  // Name — local draft synced from RTDB, write on blur.
+  const [nameDraft, setNameDraft] = useState(product.name);
+  useEffect(() => { setNameDraft(product.name); }, [product.name]);
+  const saveName = () => {
+    const next = nameDraft.trim();
+    if (next && next !== product.name) updateProductName(product.id, next);
+    else if (!next) setNameDraft(product.name);
+  };
+
+  // Photo — pick file → compress in-browser → upload → set photoUrl. No
+  // preview/confirm; the upload is the action. Compression pipeline is the
+  // same one used by the Add Product form (800px max-dim, step quality down
+  // until <200 KB).
+  const fileRef = useRef(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const handlePhotoFile = (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setPhotoUploading(true);
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const img = new Image();
+      img.onload = async () => {
+        try {
+          const MAX_DIM = 800;
+          const MAX_BYTES = 200 * 1024;
+          const scale = Math.min(1, MAX_DIM / img.width, MAX_DIM / img.height);
+          const canvas = document.createElement("canvas");
+          canvas.width  = Math.round(img.width  * scale);
+          canvas.height = Math.round(img.height * scale);
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+          let dataUrl = canvas.toDataURL("image/jpeg", 0.05);
+          for (let q = 0.85; q > 0.05; q = Math.round((q - 0.05) * 100) / 100) {
+            const candidate = canvas.toDataURL("image/jpeg", q);
+            if (candidate.length * 0.75 <= MAX_BYTES) { dataUrl = candidate; break; }
+          }
+          const blob = dataURLToBlob(dataUrl);
+          const sRef = storageRef(storage, `products/${product.id}/photo.jpg`);
+          await uploadBytes(sRef, blob, { contentType: "image/jpeg" });
+          const url = await getDownloadURL(sRef);
+          await update(ref(database, `products/${product.id}`), { photoUrl: url });
+        } catch (err) {
+          console.error("photo upload failed:", err);
+          alert("Failed to save photo. Please try again.");
+        } finally {
+          setPhotoUploading(false);
+        }
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+  const removePhoto = async () => {
+    if (!product.photoUrl) return;
+    if (!window.confirm(`Remove the photo for "${product.name}"?`)) return;
+    await update(ref(database, `products/${product.id}`), { photoUrl: null });
+  };
+
+  // Type — switching to Clothing strips Hub 1 (mirrors the Add Product
+  // form's setProductType helper). Double-writes `hub` for back-compat per
+  // the project-broadcast-api-async/14A double-write pattern.
+  const setType = (nextType) => {
+    if (nextType === (product.productType || "sneaker")) return;
+    const patch = { productType: nextType };
+    if (nextType === "clothing") {
+      const stripped = productHubs.filter(h => h !== "hub1");
+      patch.hubs = stripped.length ? stripped : ["hub2"];
+      patch.hub  = patch.hubs[0];
+    }
+    update(ref(database, `products/${product.id}`), patch);
+  };
+
+  const toggleSize = (s) => {
+    const next = productSizes.includes(s)
+      ? productSizes.filter(x => x !== s)
+      : [...productSizes, s];
+    updateProductSizes(product.id, next);
+  };
+
+  const toggleHub = (h) => {
+    if (isClothing && h === "hub1") return;
+    const next = productHubs.includes(h)
+      ? productHubs.filter(x => x !== h)
+      : [...productHubs, h];
+    if (next.length === 0) return; // require ≥1 hub
+    updateProductHubs(product.id, next);
+  };
+
+  const handleDelete = () => {
+    if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
+    deleteProductFromFirebase(product.id);
+    onBack();
+  };
+
+  // Activity line — "Last sold X days ago · N orders all-time" from
+  // insights_log (orders/{id} is daily-counter-ephemeral so can't be trusted
+  // for historical aggregates; see project-insights-past-days-pattern memory).
+  const activity = useMemo(() => {
+    const productLog = insightsLog.filter(e => e.productName === product.name);
+    const placed     = productLog.filter(e => e.action === "placed");
+    const sold       = productLog.filter(e => e.action === "collected" || e.action === "ready");
+    let lastSoldLabel = "Never sold";
+    if (sold.length > 0) {
+      const ts = sold[0].timestamp; // log is sorted newest-first
+      if (ts) {
+        const daysAgo = Math.floor((Date.now() - new Date(ts).getTime()) / (24*60*60*1000));
+        if (daysAgo <= 0)    lastSoldLabel = "Last sold today";
+        else if (daysAgo === 1) lastSoldLabel = "Last sold yesterday";
+        else                 lastSoldLabel = `Last sold ${daysAgo} days ago`;
+      }
+    }
+    return `${lastSoldLabel} · ${placed.length} order${placed.length === 1 ? "" : "s"} all-time`;
+  }, [insightsLog, product.name]);
+
+  const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding:"24px 18px 8px" };
+  const card         = { background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, margin:"0 14px", overflow:"hidden" };
+  const cardInner    = { padding:"14px 16px" };
+
+  return (
+    <div>
+      {/* TOP BAR with back chevron */}
+      <div style={{ padding:"44px 8px 8px", display:"flex", alignItems:"center" }}>
+        <button onClick={onBack}
+                style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, fontWeight:500, cursor:"pointer", padding:"6px 10px" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+          Products
+        </button>
+      </div>
+
+      {/* HEADER */}
+      <div style={{ padding:"4px 18px 8px" }}>
+        <div style={{ fontSize:22, fontWeight:700, color:"#fff", lineHeight:1.2 }}>{product.name}</div>
+        <div style={{ fontSize:13, color:"rgba(255,255,255,.45)", marginTop:6 }}>{activity}</div>
+      </div>
+
+      {/* PHOTO */}
+      <div style={sectionTitle}>Photo</div>
+      <div style={card}>
+        <div style={{ ...cardInner, display:"flex", alignItems:"center", gap:14 }}>
+          <ProductPhoto url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
+          <div style={{ flex:1, display:"flex", flexDirection:"column", gap:8 }}>
+            <input ref={fileRef} type="file" accept="image/*" onChange={handlePhotoFile} style={{ display:"none" }} />
+            <button onClick={() => fileRef.current?.click()} disabled={photoUploading}
+                    style={{ background:"rgba(60,110,255,.12)", border:"1px solid rgba(60,110,255,.3)", color:"#4A7FFF", fontSize:14, fontWeight:600, padding:"10px 14px", borderRadius:10, cursor: photoUploading ? "not-allowed" : "pointer", textAlign:"center", opacity: photoUploading ? 0.5 : 1 }}>
+              {photoUploading ? "Uploading…" : "Replace photo"}
+            </button>
+            {product.photoUrl && (
+              <button onClick={removePhoto} disabled={photoUploading}
+                      style={{ background:"rgba(180,40,40,.08)", border:"1px solid rgba(180,40,40,.25)", color:"#FF8888", fontSize:14, fontWeight:600, padding:"10px 14px", borderRadius:10, cursor: photoUploading ? "not-allowed" : "pointer", textAlign:"center", opacity: photoUploading ? 0.5 : 1 }}>
+                Remove photo
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* NAME */}
+      <div style={sectionTitle}>Name</div>
+      <div style={card}>
+        <div style={cardInner}>
+          <input value={nameDraft}
+                 onChange={e => setNameDraft(e.target.value)}
+                 onBlur={saveName}
+                 onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                 style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
+        </div>
+      </div>
+
+      {/* TYPE */}
+      <div style={sectionTitle}>Type</div>
+      <div style={card}>
+        <div style={{ display:"flex", padding:"6px" }}>
+          {[["sneaker","Sneaker"],["clothing","Clothing"]].map(([val, label]) => {
+            const on = (product.productType || "sneaker") === val;
+            return (
+              <button key={val} onClick={() => setType(val)}
+                      style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", cursor:"pointer", fontSize:14, fontWeight:600,
+                               background: on ? "rgba(60,110,255,.18)" : "transparent",
+                               color: on ? "#4A7FFF" : "rgba(255,255,255,.55)" }}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* SIZES */}
+      <div style={sectionTitle}>Available sizes</div>
+      <div style={card}>
+        <div style={{ ...cardInner, display:"flex", gap:6, flexWrap:"wrap" }}>
+          {sizeChoices.map(s => {
+            const on = productSizes.includes(s);
+            return (
+              <button key={s} onClick={() => toggleSize(s)}
+                      style={{ padding:"7px 14px", borderRadius:8, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.18)" : "rgba(255,255,255,.03)", color: on ? "#4A7FFF" : "rgba(255,255,255,.7)", cursor:"pointer", fontSize:13, fontWeight:600 }}>{s}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* HUBS — iOS-style grouped list */}
+      <div style={sectionTitle}>Hubs</div>
+      <div style={card}>
+        {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3 — Pine"]].map(([val, label], i) => {
+          const disabled = isClothing && val === "hub1";
+          const on       = productHubs.includes(val) && !disabled;
+          const isLast   = i === 2;
+          return (
+            <div key={val}>
+              <div onClick={() => !disabled && toggleHub(val)}
+                   style={{
+                     display:"flex", alignItems:"center", justifyContent:"space-between",
+                     padding:"14px 16px",
+                     cursor: disabled ? "not-allowed" : "pointer",
+                     opacity: disabled ? 0.4 : 1,
+                   }}>
+                <div style={{ fontSize:15, color:"#fff", fontWeight:500 }}>{label}</div>
+                <div style={{
+                  width:24, height:24, borderRadius:6,
+                  background: on ? "#4A7FFF" : "rgba(255,255,255,.06)",
+                  border: on ? "none" : "1px solid rgba(255,255,255,.18)",
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                }}>
+                  {on && (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  )}
+                </div>
               </div>
+              {!isLast && <div style={{ height:1, background:"rgba(255,255,255,.06)", margin:"0 16px" }}/>}
             </div>
           );
         })}
       </div>
-      <div style={{ height:20 }}/>
+      {isClothing && (
+        <div style={{ padding:"8px 18px 0", fontSize:12, color:"rgba(255,255,255,.4)", fontStyle:"italic" }}>
+          Clothing cannot be stocked at Hub 1.
         </div>
+      )}
+
+      {/* DELETE */}
+      <div style={{ height:1, background:"rgba(255,255,255,.08)", margin:"32px 14px 16px" }}/>
+      <div style={{ padding:"0 14px 28px" }}>
+        <button onClick={handleDelete}
+                style={{ width:"100%", background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:15, fontWeight:600, padding:"14px", borderRadius:12, cursor:"pointer" }}>
+          Delete product
+        </button>
       </div>
     </div>
   );
@@ -1790,8 +2174,18 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Phase 12B: product type mode toggle. "sneaker" default. Filters the grid
   // and switches the card UX (size-picker sheet vs inline qty steppers).
   const [mode, setMode]                                 = useState("sneaker");
+  // Phase 14B: Central / Pine universe toggle. Persists per device so the
+  // Pine iPad stays Pine across reloads. "central" sees hub1/hub2 products
+  // and routes orders to those hubs; "pine" sees hub3 products and routes
+  // every order to hub3.
+  const [storeMode, setStoreMode] = useState(() => localStorage.getItem("storeAssistantMode") || "central");
+  const selectStoreMode = (next) => {
+    localStorage.setItem("storeAssistantMode", next);
+    setStoreMode(next);
+  };
   const [selected, setSelected]                         = useState(null);   // product in size picker
   const [pendingSize, setPendingSize]                   = useState("");
+  const [pendingQty,  setPendingQty]                    = useState(1);
   const [pendingDisplayRequest, setPendingDisplay]      = useState(false);
   const [pendingDisplayPartner, setPendingDisplayPartner] = useState(false);
   // Cart line shape:
@@ -1804,30 +2198,65 @@ function AssistantView({ products, onExit, orders = [] }) {
   const [marketingOptIn, setMarketingOptIn]             = useState(false);
   const [lastOrders, setLastOrders]                     = useState([]);
   const [submitting, setSubmitting]                     = useState(false);
+  // Autocomplete dropdown open-state per input. Tap a suggestion or the
+  // "+ Add new" row to dismiss; typing in the input reopens.
+  const [nameDropdownOpen, setNameDropdownOpen]   = useState(false);
+  const [phoneDropdownOpen, setPhoneDropdownOpen] = useState(false);
+  const customerIndex = useCustomerIndex();
+  const pickCustomer = (c) => {
+    setCustomerName(c.name || "");
+    setCustomerPhone(c.phone || "");
+    setNameDropdownOpen(false);
+    setPhoneDropdownOpen(false);
+  };
 
   // Filter products by the active mode (sneaker / clothing) + search box.
   // Existing products without productType are treated as sneakers.
+  // Phase 14B: Central universe shows hub1/hub2 products; Pine universe
+  // shows hub3 products. Products with no hubs at all (legacy edge case)
+  // still show in Central only.
   const filtered = useMemo(() =>
     products.filter(p => {
       const t = p.productType || "sneaker";
       if (t !== mode) return false;
+      const hubs = getProductHubs(p);
+      if (storeMode === "pine") {
+        if (!hubs.includes("hub3")) return false;
+      } else {
+        if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
+      }
       const q = search.toLowerCase();
       return p.name.toLowerCase().includes(q) ||
              (p.category || "").toLowerCase().includes(q);
     }),
-  [products, search, mode]);
+  [products, search, mode, storeMode]);
+
+  // Compute the hub an order placed right now should land in. Single source
+  // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
+  const computeHubForItem = (item) => {
+    if (storeMode === "pine") return "hub3";
+    if (item.requestDisplayPartner) return "hub1";
+    return getProductHubs(item.product).find(h => h === "hub1" || h === "hub2") || "hub1";
+  };
 
   // Cart-driven submit decisions: any sneaker line forces the Checkout flow
   // (needs customer info + WhatsApp). All-clothing carts skip the sheet.
   const hasSneakerInCart  = cart.some(it => (it.productType || "sneaker") === "sneaker");
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
 
-  const resetSheet = () => { setSelected(null); setPendingSize(""); setPendingDisplay(false); setPendingDisplayPartner(false); };
+  const resetSheet = () => { setSelected(null); setPendingSize(""); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
 
   const addToCart = () => {
     // Size is optional when a Display or Display Partner request is set
     if (!selected || (!pendingSize && !pendingDisplayRequest && !pendingDisplayPartner)) return;
-    setCart(c => [...c, { product: selected, size: pendingSize || null, requestDisplay: pendingDisplayRequest, requestDisplayPartner: pendingDisplayPartner }]);
+    // Quantity expansion: pendingQty > 1 → push N identical cart lines so the
+    // warehouse fulfils one box per pair (no "qty" multiplier on a single
+    // line). Display Partner / Request rows ignore qty (one-off by nature).
+    const reps = (pendingSize && !pendingDisplayRequest && !pendingDisplayPartner)
+      ? Math.max(1, Math.min(10, pendingQty))
+      : 1;
+    const line = { product: selected, size: pendingSize || null, requestDisplay: pendingDisplayRequest, requestDisplayPartner: pendingDisplayPartner };
+    setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
     resetSheet();
   };
 
@@ -1856,6 +2285,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       const sneakerCart = cart.filter(it => (it.productType || "sneaker") === "sneaker");
       for (const item of sneakerCart) {
         const orderNum = await getNextOrderNumber();
+        const placedHub = computeHubForItem(item);
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -1866,9 +2296,10 @@ function AssistantView({ products, onExit, orders = [] }) {
           sentSize: null,
           customerName,
           customerPhone: normalizedPhone,
-          // Display Partner orders always go to Hub 1 regardless of product assignment.
-          // Regular Display orders follow normal product hub routing.
-          hub: item.requestDisplayPartner ? "hub1" : (item.product.hub || "hub1"),
+          // Phase 14B: hub mirrors placedAtHub (Central pine routing) — Display
+          // Partner stays hub1 in Central; Pine always routes to hub3.
+          hub: placedHub,
+          placedAtHub: placedHub,
           requestDisplay: item.requestDisplay || false,
           requestDisplayPartner: item.requestDisplayPartner || false,
           status: STATUS.INCOMING,
@@ -1903,6 +2334,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerPhone: normalizedPhone,
           orderNumber: orderNum,
           action: "placed",
+          placedAtHub: placedHub,
         });
         sendWhatsAppTemplate(normalizedPhone, "order_placed", [customerName, orderNum, item.product.name, item.size]);
         placed.push(order);
@@ -1934,6 +2366,8 @@ function AssistantView({ products, onExit, orders = [] }) {
       const placed = [];
       for (const item of clothingCart) {
         const orderNum = await getNextOrderNumber();
+        // Phase 14B: Pine clothing refills route to hub3; Central stays on hub2.
+        const placedHub = storeMode === "pine" ? "hub3" : "hub2";
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -1945,7 +2379,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           qty: item.qty || 1,
           customerName: "Shop Refill",
           customerPhone: null,
-          hub: "hub2",
+          hub: placedHub,
+          placedAtHub: placedHub,
           productType: "clothing",
           requestDisplay: false,
           requestDisplayPartner: false,
@@ -1982,6 +2417,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerPhone: null,
           orderNumber: orderNum,
           action: "placed",
+          placedAtHub: placedHub,
         });
         placed.push(order);
       }
@@ -2024,6 +2460,25 @@ function AssistantView({ products, onExit, orders = [] }) {
             return (
               <button key={val} onClick={() => setMode(val)}
                 style={{ padding:"6px 12px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
+                         background: on ? "rgba(60,110,255,.25)" : "transparent",
+                         color: on ? "#fff" : "rgba(255,255,255,.5)",
+                         boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Phase 14B: Central / Pine universe toggle. Per-device localStorage —
+          Pine's iPad once flipped stays Pine forever. */}
+      <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
+        <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
+          {[["central","Central"],["pine","Pine"]].map(([val, label]) => {
+            const on = storeMode === val;
+            return (
+              <button key={val} onClick={() => selectStoreMode(val)}
+                style={{ padding:"6px 22px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
                          background: on ? "rgba(60,110,255,.25)" : "transparent",
                          color: on ? "#fff" : "rgba(255,255,255,.5)",
                          boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
@@ -2152,6 +2607,19 @@ function AssistantView({ products, onExit, orders = [] }) {
               ))}
             </div>
 
+            {/* Quantity stepper — same-size, multiple-pair shortcut. Pushes
+                N identical cart lines on Add to Cart (one box per pair). */}
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"1.25rem", padding:"4px 0" }}>
+              <div style={{ color:"#ccc", fontSize:"0.95rem", fontWeight:600 }}>Quantity</div>
+              <div style={{ display:"flex", alignItems:"center", gap:"0.5rem" }}>
+                <button onClick={() => setPendingQty(q => Math.max(1, q - 1))} disabled={pendingQty <= 1}
+                        style={{ width:36, height:36, borderRadius:10, border:"1px solid rgba(60,110,255,.25)", background:"rgba(60,110,255,.08)", color: pendingQty <= 1 ? "rgba(255,255,255,.25)" : "#4A7FFF", fontSize:18, fontWeight:700, cursor: pendingQty <= 1 ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>−</button>
+                <div style={{ minWidth:34, textAlign:"center", color:"#fff", fontSize:"1.05rem", fontWeight:700, fontVariantNumeric:"tabular-nums" }}>{pendingQty}</div>
+                <button onClick={() => setPendingQty(q => Math.min(10, q + 1))} disabled={pendingQty >= 10}
+                        style={{ width:36, height:36, borderRadius:10, border:"1px solid rgba(60,110,255,.35)", background:"rgba(60,110,255,.12)", color: pendingQty >= 10 ? "rgba(255,255,255,.25)" : "#4A7FFF", fontSize:18, fontWeight:700, cursor: pendingQty >= 10 ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>+</button>
+              </div>
+            </div>
+
             {/* Optional display requests */}
             <div style={{ marginBottom:"1.25rem" }}>
               <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Requests (optional)</div>
@@ -2160,17 +2628,23 @@ function AssistantView({ products, onExit, orders = [] }) {
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayRequest?BLUE:"rgba(60,110,255,.15)"}`, background:pendingDisplayRequest?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayRequest?BLUE:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
                   Request Display
                 </button>
+                {/* Phase 14B: Display Partner routes to Hub 1 — hidden in Pine mode. */}
+                {storeMode !== "pine" && (
                 <button onClick={() => setPendingDisplayPartner(v => !v)}
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
                   Display Partner
                 </button>
+                )}
               </div>
             </div>
 
             {(() => {
               const canAdd = !!(pendingSize || pendingDisplayRequest || pendingDisplayPartner);
+              const qtyOnly = pendingSize && !pendingDisplayRequest && !pendingDisplayPartner;
               const btnLabel = pendingSize
-                ? `Add Size ${pendingSize} to Cart`
+                ? (qtyOnly && pendingQty > 1
+                    ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
+                    : `Add Size ${pendingSize} to Cart`)
                 : canAdd ? "Add Display Request to Cart"
                 : "Select a size or display option";
               return (
@@ -2217,13 +2691,35 @@ function AssistantView({ products, onExit, orders = [] }) {
               ))}
             </div>
 
-            <div style={{ marginBottom:"1rem" }}>
+            <div style={{ marginBottom:"1rem", position:"relative" }}>
               <div style={{ color:"#888", fontSize:"0.78rem", marginBottom:"0.4rem" }}>Customer Name *</div>
-              <input placeholder="e.g. Ahmed" value={customerName} onChange={e => setCustomerName(e.target.value)} style={inputStyle} />
+              <input placeholder="e.g. Ahmed" value={customerName}
+                     onChange={e => { setCustomerName(e.target.value); setNameDropdownOpen(true); }}
+                     onFocus={() => setNameDropdownOpen(true)}
+                     onBlur={() => setTimeout(() => setNameDropdownOpen(false), 150)}
+                     style={inputStyle} />
+              {nameDropdownOpen && (
+                <CustomerSuggestionDropdown
+                  query={customerName} mode="name" customers={customerIndex}
+                  onPick={pickCustomer}
+                  onAddNew={() => setNameDropdownOpen(false)}
+                />
+              )}
             </div>
-            <div style={{ marginBottom:"1rem" }}>
+            <div style={{ marginBottom:"1rem", position:"relative" }}>
               <div style={{ color:"#888", fontSize:"0.78rem", marginBottom:"0.4rem" }}>Phone (optional)</div>
-              <input placeholder="e.g. 071 234 5678" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} style={inputStyle} />
+              <input placeholder="e.g. 071 234 5678" value={customerPhone}
+                     onChange={e => { setCustomerPhone(e.target.value); setPhoneDropdownOpen(true); }}
+                     onFocus={() => setPhoneDropdownOpen(true)}
+                     onBlur={() => setTimeout(() => setPhoneDropdownOpen(false), 150)}
+                     style={inputStyle} />
+              {phoneDropdownOpen && (
+                <CustomerSuggestionDropdown
+                  query={customerPhone} mode="phone" customers={customerIndex}
+                  onPick={pickCustomer}
+                  onAddNew={() => setPhoneDropdownOpen(false)}
+                />
+              )}
             </div>
             <label style={{ display:"flex", alignItems:"center", gap:"0.6rem", marginBottom:"1.5rem", cursor:"pointer", padding:"0.75rem", background:"rgba(60,110,255,.04)", borderRadius:"10px", border:BORDER }}>
               <input type="checkbox" checked={marketingOptIn} onChange={e => setMarketingOptIn(e.target.checked)}
@@ -2231,10 +2727,31 @@ function AssistantView({ products, onExit, orders = [] }) {
               <span style={{ color:"#ccc", fontSize:"0.88rem" }}>Customer wants to receive Marathon Club deals?</span>
             </label>
 
-            <button onClick={placeOrders} disabled={!customerName || !cart.length || submitting}
-              style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:customerName&&cart.length&&!submitting?1:0.4, cursor:customerName&&cart.length&&!submitting?"pointer":"not-allowed" }}>
-              {submitting ? "Placing orders…" : !customerName ? "Enter customer name" : `Place ${cart.length} Order${cart.length > 1 ? "s" : ""} →`}
-            </button>
+            {(() => {
+              // Button label reflects the qty shortcut: if every cart line
+              // is the same product + size (the "3 pairs of size 8" case),
+              // show "Place order — size 8 × 3". Mixed carts fall back to
+              // the count.
+              const sneakerLines = cart.filter(it => (it.productType || "sneaker") === "sneaker");
+              const sample = sneakerLines[0];
+              const singleSku = sample && sneakerLines.every(it =>
+                it.product?.id === sample.product?.id &&
+                it.size === sample.size &&
+                !it.requestDisplay && !it.requestDisplayPartner
+              );
+              const n = cart.length;
+              const placeLabel = !customerName
+                ? "Enter customer name"
+                : singleSku && sample.size
+                  ? (n > 1 ? `Place order — size ${sample.size} × ${n}` : `Place order — size ${sample.size}`)
+                  : `Place ${n} Order${n > 1 ? "s" : ""} →`;
+              return (
+                <button onClick={placeOrders} disabled={!customerName || !cart.length || submitting}
+                  style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:customerName&&cart.length&&!submitting?1:0.4, cursor:customerName&&cart.length&&!submitting?"pointer":"not-allowed" }}>
+                  {submitting ? "Placing orders…" : placeLabel}
+                </button>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -2269,26 +2786,31 @@ function AssistantView({ products, onExit, orders = [] }) {
 
 // ─── WAREHOUSE VIEW ───────────────────────────────────────────────────────────
 function WarehouseView({ products = [], orders, onExit }) {
-  const [mainTab, setMainTab] = useState("queue");
+  const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
   const [filter, setFilter] = useState("incoming");
   const [onHoldExpanded, setOnHoldExpanded] = useState(false);
   const [selectedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
-  // Phase 12C: clamp mainTab when the user switches hubs and the previously
-  // selected tab no longer exists for the new hub (Restock on hub1 vs
+  // Phase 12C/14B: clamp mainTab when the user switches hubs and the previously
+  // selected tab no longer exists for the new hub (Restock on hub1/hub3 vs
   // Clothing on hub2). Fall back to Order Queue. NOTE: must come AFTER
   // selectedHub's declaration — placing this useEffect before it triggers a
   // TDZ ReferenceError on the dependency array evaluation at render time.
   useEffect(() => {
     if (selectedHub === "hub2" && mainTab === "restock")  setMainTab("queue");
-    if (selectedHub === "hub1" && mainTab === "clothing") setMainTab("queue");
+    if ((selectedHub === "hub1" || selectedHub === "hub3") && mainTab === "clothing") setMainTab("queue");
   }, [selectedHub, mainTab]);
+  // Phase 14B: hub3 filters by placedAtHub (the source of truth for the Pine
+  // universe); hub1/hub2 still use the legacy order.hub field for back-compat.
+  const orderInHub = (o, h) => h === "hub3"
+    ? o.placedAtHub === "hub3"
+    : (o.hub || "hub1") === h;
   const todayDate    = getSADateString();
   // Restock tab: derive counts from COLLECTED orders only — no Firebase log needed.
   // Hooks must stay above every conditional return (React rules).
   const rawCounts    = useMemo(() => {
     const todayCollected = orders.filter(o =>
       o.status === STATUS.COLLECTED &&
-      (selectedHub ? (o.hub || "hub1") === selectedHub : true) &&
+      (selectedHub ? orderInHub(o, selectedHub) : true) &&
       orderCollectedDate(o) === todayDate
     );
     return computeCollectedCounts(todayCollected);
@@ -2300,19 +2822,123 @@ function WarehouseView({ products = [], orders, onExit }) {
     setSelectedHub(hub);
   };
 
+  // ── Hooks hoisted before the conditional return ────────────────────────
+  // Every useState/useMemo/useEffect must run in the same order on every
+  // render. With these declared after the (!selectedHub) early return,
+  // toggling between the landing screen and a hub-active view misaligns
+  // React's internal hook indices — post-return state (refills, clothing
+  // batches, 30s ticker, pickerOpenId) leaked between hubs and a hard
+  // refresh was the only way to realign them. dueRefills short-circuits
+  // when selectedHub is null so the landing-screen pass is harmless.
+  const [pickerOpenId, setPickerOpenId] = useState(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
+  const DISPLAY_REFILL_DELAY_MS = 15 * 60 * 1000;
+  const RESOLVED_VISIBLE_MS     = 24 * 60 * 60 * 1000;
+  const { dueRefills, completedRefills } = useMemo(() => {
+    if (!selectedHub) return { dueRefills: [], completedRefills: [] };
+    const due = [];
+    const completed = [];
+    const resolvedAtMs = (o) => {
+      const iso = o.displayRefilledAt || o.displayRefillStockDepletedAt;
+      return iso ? new Date(iso).getTime() : 0;
+    };
+    (orders || []).forEach(o => {
+      if (!o.requestDisplayPartner) return;
+      if (!o.displayRefillScheduledAt) return;
+      if (o.displayRefillHub !== selectedHub) return;
+      if (o.displayRefillStatus) {
+        const rAt = resolvedAtMs(o);
+        if (rAt && nowTick - rAt < RESOLVED_VISIBLE_MS) completed.push(o);
+      } else {
+        const scheduledAt = new Date(o.displayRefillScheduledAt).getTime();
+        if (nowTick - scheduledAt >= DISPLAY_REFILL_DELAY_MS) due.push(o);
+      }
+    });
+    due.sort((a, b) =>
+      new Date(a.displayRefillScheduledAt).getTime() -
+      new Date(b.displayRefillScheduledAt).getTime()
+    );
+    completed.sort((a, b) => resolvedAtMs(b) - resolvedAtMs(a));
+    return { dueRefills: due, completedRefills: completed };
+  }, [orders, selectedHub, nowTick]);
+  const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
+  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","S","M","L","XL","XXL","XXXL"];
+  const sizeRank = (s) => {
+    const i = CANONICAL_SIZE_ORDER.indexOf(s);
+    return i === -1 ? 999 : i;
+  };
+  const { clothingActiveBatches, clothingCompletedBatches } = useMemo(() => {
+    const byKey = new Map();
+    (orders || []).forEach(o => {
+      if (o.productType !== "clothing") return;
+      if ((o.hub || "hub2") !== "hub2") return;
+      const key = `${o.productId}__${o.createdAt}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, {
+          batchKey: key,
+          productId: o.productId,
+          productName: o.productName,
+          productPhoto: o.productPhoto,
+          productPhotoUrl: o.productPhotoUrl,
+          createdAt: o.createdAt,
+          items: [],
+        });
+      }
+      byKey.get(key).items.push({
+        orderId: o.id,
+        size: o.size,
+        qty: o.qty || 1,
+        status: o.clothingRefillStatus || null,
+        refilledAt: o.clothingRefilledAt || null,
+        outOfStockAt: o.clothingOutOfStockAt || null,
+        placedAtHub: o.placedAtHub || o.hub || "hub2",
+      });
+    });
+    const active = [];
+    const completed = [];
+    byKey.forEach(batch => {
+      batch.items.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+      const allResolved = batch.items.length > 0 && batch.items.every(it => it.status);
+      if (allResolved) {
+        // Mixed batches (some available, some OOS) shouldn't happen in
+        // practice — we resolve all items together. If they ever do (admin
+        // edit), treat the batch as the majority status.
+        const oosCount = batch.items.filter(it => it.status === "outOfStock").length;
+        batch.status = oosCount > batch.items.length / 2 ? "outOfStock" : "available";
+        // Pick the most recent resolution timestamp as the batch's resolvedAt.
+        const stamps = batch.items.map(it => it.refilledAt || it.outOfStockAt).filter(Boolean);
+        batch.resolvedAt = stamps.sort().pop() || batch.createdAt;
+        const resolvedMs = new Date(batch.resolvedAt).getTime();
+        if (nowTick - resolvedMs < RESOLVED_VISIBLE_MS) completed.push(batch);
+      } else {
+        batch.status = null;
+        active.push(batch);
+      }
+    });
+    // Active: newest first (within DayCollapsible's bucket logic).
+    active.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    completed.sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || ""));
+    return { clothingActiveBatches: active, clothingCompletedBatches: completed };
+  }, [orders, nowTick]);
+  const [showClothingCompleted, setShowClothingCompleted] = useState(false);
+
   // Hub selector screen — shown until staff pick a hub
   if (!selectedHub) {
     return (
       <div style={{ minHeight:"100vh", background:BG, color:"#fff", fontFamily:FONT, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"2rem" }}>
         <div style={{ fontWeight:"800", fontSize:"1.5rem", letterSpacing:"0.06em", marginBottom:"0.5rem", color:"#fff" }}>WAREHOUSE</div>
         <p style={{ color:"#555", marginBottom:"2.5rem", fontSize:"0.9rem" }}>Select your hub to continue</p>
-        <div style={{ display:"flex", gap:"1.25rem", width:"100%", maxWidth:"440px" }}>
-          {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => (
+        <div style={{ display:"flex", gap:"1rem", width:"100%", maxWidth:"520px" }}>
+          {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3"]].map(([val, label]) => (
             <button key={val} onClick={() => selectHub(val)}
-              style={{ flex:1, background:CARD, border:BORDER, borderRadius:RADIUS, padding:"2.5rem 1rem", cursor:"pointer", color:"#fff", textAlign:"center", boxShadow:GLOW, transition:"border-color 0.15s" }}
+              style={{ flex:1, background:CARD, border:BORDER, borderRadius:RADIUS, padding:"2.2rem 0.75rem", cursor:"pointer", color:"#fff", textAlign:"center", boxShadow:GLOW, transition:"border-color 0.15s" }}
               onMouseEnter={e => { e.currentTarget.style.borderColor=`rgba(60,110,255,.5)`; }}
               onMouseLeave={e => { e.currentTarget.style.borderColor=`rgba(60,110,255,.12)`; }}>
-              <div style={{ fontWeight:"800", fontSize:"2.2rem", color:BLUE, marginBottom:"0.3rem" }}>{label}</div>
+              <div style={{ fontWeight:"800", fontSize:"2rem", color:BLUE, marginBottom:"0.3rem" }}>{label}</div>
               <div style={{ color:"#555", fontSize:"0.85rem" }}>Tap to select</div>
             </button>
           ))}
@@ -2321,12 +2947,10 @@ function WarehouseView({ products = [], orders, onExit }) {
     );
   }
 
-  // Filter orders to only this hub (orders without a hub default to hub1)
-  const hubOrders = orders.filter(o => (o.hub || "hub1") === selectedHub);
-
-  // pickerOpenId — the order whose Substitute Size picker is currently expanded.
-  // Only one open at a time (mobile real estate). Cleared after a pick or cancel.
-  const [pickerOpenId, setPickerOpenId] = useState(null);
+  // Filter orders to only this hub. hub1/hub2: legacy order.hub field.
+  // hub3 (Phase 14B): placedAtHub field — orders flow in here based on which
+  // Store Assistant universe they were placed in.
+  const hubOrders = orders.filter(o => orderInHub(o, selectedHub));
 
   // extraPatch is merged into the Firebase update — used to stamp sentSize when
   // the warehouse picks a substitute size. Insights/restock logs continue to
@@ -2347,6 +2971,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         size: order.size,
         orderNumber: order.id,
         hub: order.hub || selectedHub,
+        placedAtHub: order.placedAtHub || order.hub || selectedHub,
       }).catch(err => console.warn("logRestock failed:", err));
     }
     const patch = { status, updatedAt: now, ...extraPatch };
@@ -2365,7 +2990,10 @@ function WarehouseView({ products = [], orders, onExit }) {
       if (status === STATUS.READY) {
         const product = products.find(p => p.id === order.productId);
         patch.displayRefillScheduledAt     = now;
-        patch.displayRefillHub             = product?.hub || "hub1";
+        // Phase 14B: refill task routes by where the order was placed —
+        // Pine-placed orders go to Hub 3's refill section. Falls back to the
+        // product's stocking hub for legacy orders without placedAtHub.
+        patch.displayRefillHub             = order.placedAtHub || getProductHubs(product)[0] || "hub1";
         patch.displayRefillStatus          = null;
         patch.displayRefilledAt            = null;
         patch.displayRefillStockDepletedAt = null;
@@ -2388,6 +3016,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       customerPhone: order.customerPhone,
       orderNumber: order.id,
       action: insightAction,
+      placedAtHub: order.placedAtHub || order.hub || "hub1",
     });
     // ── WhatsApp notifications ───────────────────────────────────────────────
     // order_ready template: pass customer_name and order_number ONLY.
@@ -2422,6 +3051,26 @@ function WarehouseView({ products = [], orders, onExit }) {
       patch.displayRefilledAt            = null;
     }
     updateOrder(order.id, patch);
+    // Stock-deplete: append an insights_log entry so the Stock Depleted tab
+    // can show past-day counts. Without this, the tab only ever sees today's
+    // events because orders/{id} gets overwritten when the daily orderNumber
+    // counter wraps. Mirrors the action="out_of_stock" pattern used by OOS
+    // Tracker. dedupeByOrderNumber + composite key handle re-fires.
+    if (status === "stockDepleted") {
+      logInsight({
+        timestamp:        now,
+        productName:      order.productName,
+        productCategory:  order.productCategory || "",
+        productType:      order.productType || "sneaker",
+        size:             order.size,
+        customerName:     order.customerName,
+        customerPhone:    order.customerPhone,
+        orderNumber:      order.id,
+        action:           "stock_depleted",
+        placedAtHub:      order.placedAtHub || order.hub || "hub1",
+        displayRefilledBy: selectedHub,
+      });
+    }
   };
   // Reverse a refill resolution — clears status + both timestamps + by-hub so
   // the task reappears in the active list. Leaves displayRefillScheduledAt
@@ -2437,121 +3086,14 @@ function WarehouseView({ products = [], orders, onExit }) {
   };
 
   // ── Display Refills data (Phase 9 / 9.5) ─────────────────────────────────
-  // 15-minute window from "marked sent" to "shows up as a refill task".
-  const DISPLAY_REFILL_DELAY_MS = 15 * 60 * 1000;
-  // Completed (Refilled / Stock Depleted) tasks remain in the "Show Completed"
-  // panel for 24h so accidental taps can be Undone. After 24h they drop out
-  // of the UI — Phase 11 Insights then treats the depletion as locked in.
-  const RESOLVED_VISIBLE_MS = 24 * 60 * 60 * 1000;
-
-  // 30-second ticker so the badge and "waiting Xm" chips update live without
-  // hammering the Firebase listener. Only re-renders this view.
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowTick(Date.now()), 30 * 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Partner orders whose refill belongs to THIS hub (per product.hub stocking).
-  // Split into due (status===null and >= 15 min elapsed) and completed
-  // (status is 'refilled' or 'stockDepleted' AND resolved within last 24h).
-  // Sorted oldest-first for due, newest-first for completed.
-  const { dueRefills, completedRefills } = useMemo(() => {
-    const due = [];
-    const completed = [];
-    const resolvedAtMs = (o) => {
-      const iso = o.displayRefilledAt || o.displayRefillStockDepletedAt;
-      return iso ? new Date(iso).getTime() : 0;
-    };
-    (orders || []).forEach(o => {
-      if (!o.requestDisplayPartner) return;
-      if (!o.displayRefillScheduledAt) return;
-      if (o.displayRefillHub !== selectedHub) return;
-      if (o.displayRefillStatus) {
-        const rAt = resolvedAtMs(o);
-        if (rAt && nowTick - rAt < RESOLVED_VISIBLE_MS) completed.push(o);
-      } else {
-        const scheduledAt = new Date(o.displayRefillScheduledAt).getTime();
-        if (nowTick - scheduledAt >= DISPLAY_REFILL_DELAY_MS) due.push(o);
-      }
-    });
-    due.sort((a, b) =>
-      new Date(a.displayRefillScheduledAt).getTime() -
-      new Date(b.displayRefillScheduledAt).getTime()
-    );
-    completed.sort((a, b) => resolvedAtMs(b) - resolvedAtMs(a));
-    return { dueRefills: due, completedRefills: completed };
-  }, [orders, selectedHub, nowTick]);
-
+  // Hooks for refills (nowTick, dueRefills) live at the top of this function
+  // alongside the other hoisted hooks — see the Rules-of-Hooks note above.
   const refillsBadge = dueRefills.length;
 
-  // Per-session toggle to reveal recently-refilled tasks for Undo.
-  const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
-
   // ── Clothing refill batches (Phase 12C, hub2 only) ────────────────────────
-  // Each "batch" = clothing orders sharing (productId, createdAt). One
-  // Assistant "Place Refill Request" tap writes N orders (one per size) in a
-  // single loop with the same now ISO, so this is a clean batch key.
-  // Active batches: none of their items have a clothingRefillStatus set.
-  // Completed batches: all items resolved AND within 24h of resolution.
-  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","S","M","L","XL","XXL","XXXL"];
-  const sizeRank = (s) => {
-    const i = CANONICAL_SIZE_ORDER.indexOf(s);
-    return i === -1 ? 999 : i;
-  };
-  const { clothingActiveBatches, clothingCompletedBatches } = useMemo(() => {
-    const byKey = new Map();
-    (orders || []).forEach(o => {
-      if (o.productType !== "clothing") return;
-      if ((o.hub || "hub2") !== "hub2") return;
-      const key = `${o.productId}__${o.createdAt}`;
-      if (!byKey.has(key)) {
-        byKey.set(key, {
-          batchKey: key,
-          productId: o.productId,
-          productName: o.productName,
-          productPhoto: o.productPhoto,
-          productPhotoUrl: o.productPhotoUrl,
-          createdAt: o.createdAt,
-          items: [],
-        });
-      }
-      byKey.get(key).items.push({
-        orderId: o.id,
-        size: o.size,
-        qty: o.qty || 1,
-        status: o.clothingRefillStatus || null,
-        refilledAt: o.clothingRefilledAt || null,
-        outOfStockAt: o.clothingOutOfStockAt || null,
-      });
-    });
-    const active = [];
-    const completed = [];
-    byKey.forEach(batch => {
-      batch.items.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
-      const allResolved = batch.items.length > 0 && batch.items.every(it => it.status);
-      if (allResolved) {
-        // Mixed batches (some available, some OOS) shouldn't happen in
-        // practice — we resolve all items together. If they ever do (admin
-        // edit), treat the batch as the majority status.
-        const oosCount = batch.items.filter(it => it.status === "outOfStock").length;
-        batch.status = oosCount > batch.items.length / 2 ? "outOfStock" : "available";
-        // Pick the most recent resolution timestamp as the batch's resolvedAt.
-        const stamps = batch.items.map(it => it.refilledAt || it.outOfStockAt).filter(Boolean);
-        batch.resolvedAt = stamps.sort().pop() || batch.createdAt;
-        const resolvedMs = new Date(batch.resolvedAt).getTime();
-        if (nowTick - resolvedMs < RESOLVED_VISIBLE_MS) completed.push(batch);
-      } else {
-        batch.status = null;
-        active.push(batch);
-      }
-    });
-    // Active: newest first (within DayCollapsible's bucket logic).
-    active.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    completed.sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || ""));
-    return { clothingActiveBatches: active, clothingCompletedBatches: completed };
-  }, [orders, nowTick]);
-
+  // Hook + helpers (clothingActiveBatches/Completed, CANONICAL_SIZE_ORDER,
+  // sizeRank) live at the top of this function alongside the other hoisted
+  // hooks — see the Rules-of-Hooks note above.
   const clothingBadge = clothingActiveBatches.length;
 
   // Resolve a batch — patch every item with the same status + timestamp.
@@ -2587,6 +3129,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         customerPhone: null,
         orderNumber: it.orderId,
         action: insightAction,
+        placedAtHub: it.placedAtHub || "hub2",
       });
     });
   };
@@ -2601,7 +3144,6 @@ function WarehouseView({ products = [], orders, onExit }) {
       updatedAt:            now,
     }));
   };
-  const [showClothingCompleted, setShowClothingCompleted] = useState(false);
 
   const onHoldOrders = hubOrders.filter(o => o.status === STATUS.COMING_TOMORROW);
 
@@ -2670,7 +3212,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       {/* HUB ROW */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px 10px" }}>
         <div style={{ background:"rgba(20,40,120,.5)", border:"1px solid rgba(60,110,255,.5)", borderRadius:10, padding:"7px 16px", color:"#4A7FFF", fontSize:13, fontWeight:700 }}>
-          {selectedHub === "hub1" ? "Hub 1" : "Hub 2"}
+          {HUB_LABELS[selectedHub] || selectedHub}
         </div>
         <div onClick={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }}
              style={{ background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"7px 16px", color:"rgba(255,255,255,.7)", fontSize:12, fontWeight:500, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
@@ -2724,7 +3266,9 @@ function WarehouseView({ products = [], orders, onExit }) {
         </div>
       )}
 
-      {/* TABS — middle slot is Restock Status on hub1, Clothing on hub2 (Phase 12C) */}
+      {/* TABS — middle slot is Restock Status on hub1/hub3, Clothing on hub2
+          (Phase 12C / 14B). hub3 mirrors hub1's tab set; if a clothing tab is
+          needed for Pine later, add it here. */}
       <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
         {(selectedHub === "hub2"
           ? [
@@ -2983,7 +3527,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
     <div style={{ textAlign:"center", color:"#444", padding:"4rem" }}>
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#F59E0B" strokeOpacity="0.4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       <div style={{ fontSize:"1rem", marginTop:"0.75rem", color:"rgba(255,255,255,.55)" }}>No display refills pending.</div>
-      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Partner orders sent from {selectedHub === "hub1" ? "Hub 1" : "Hub 2"} appear here 15 minutes after they're marked sent.</div>
+      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Partner orders sent from {HUB_LABELS[selectedHub] || selectedHub} appear here 15 minutes after they're marked sent.</div>
     </div>
   );
 
@@ -3408,206 +3952,398 @@ function CustomerView({ orders, onExit }) {
   );
 }
 
-// ─── COUNTDOWN HOOK ───────────────────────────────────────────────────────────
-function useCountdown(fromIso, totalSeconds) {
-  const [secsLeft, setSecsLeft] = useState(null);
+// ─── TV DISPLAY VIEW ──────────────────────────────────────────────────────────
+// Customer-centric layout for a 1920×1080 TV. The single thing a waiting
+// customer cares about is "is my order ready to collect?" — so READY gets a
+// hero card occupying ~60% of the screen with very large numbers, while the
+// other three statuses share a 3-up row of compact cards below.
+//
+// Layout (top → bottom, all flex with min-height:0 plumbing so nothing
+// overflows 100vh):
+//   - Header (70px): Marathon wordmark + shoe icon, time + date
+//   - Hero READY card (flex 1.6) with checkmark icon, "Ready to Collect"
+//     title, total count, and a number area whose layout adapts to count:
+//        0       → "No orders ready right now"
+//        1 or 2  → giant centered numbers (~180px)
+//        3–8     → 8-column 1-row grid (larger numbers)
+//        9–36    → 12-column grid with rows depending on count
+//        > 36    → paginated 36 at a time, calm fade between pages
+//   - Three-up secondary row (flex 1): Incoming, Out of Stock, Coming
+//     Tomorrow each in a small card with icon + title + total + 6-column
+//     number grid (paginated at 18 per page).
+//
+// Pagination: each section rotates pages every TV_PAGE_ROTATE_MS with a
+// TV_PAGE_FADE_MS opacity fade. Sections cycle independently from a shared
+// pageTick.
+//
+// Side effects: Ready/OOS orders past TV_EXPIRY_MS are auto-moved to
+// COLLECTED (with restock log for READY). Coming Tomorrow rows past
+// TV_COMING_TOMORROW_VISIBLE_MS are display-only hidden (no RTDB mutation).
+// Both use ref-Sets to dedupe across multiple TV screens and prune entries
+// when orders disappear (daily counter reset).
+const TV_HERO_PAGE_SIZE             = 36;
+const TV_SECONDARY_PAGE_SIZE        = 18;
+const TV_PAGE_ROTATE_MS             = 120 * 1000;
+const TV_PAGE_FADE_MS               = 250;
+const TV_EXPIRY_MS                  = 8 * 60 * 1000;
+const TV_EXPIRY_CHECK_MS            = 10 * 1000;
+const TV_COMING_TOMORROW_VISIBLE_MS = 10 * 60 * 1000;
+const TV_COLORS = {
+  incoming:       "#6FA8FF",
+  ready:          "#4ADE80",
+  outOfStock:     "#F87171",
+  comingTomorrow: "#FBBF24",
+};
+const TV_DAY_NAMES   = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const TV_MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+function DisplayView({ orders }) {
+  // 1s tick — keeps the clock fresh and re-evaluates derived filters
+  const [, setTick] = useState(0);
   useEffect(() => {
-    if (!fromIso) return;
-    const tick = () => {
-      const elapsed = Math.floor((Date.now() - new Date(fromIso).getTime()) / 1000);
-      setSecsLeft(Math.max(0, totalSeconds - elapsed));
-    };
-    tick();
-    const t = setInterval(tick, 1000);
+    const t = setInterval(() => setTick(n => n + 1), 1000);
     return () => clearInterval(t);
-  }, [fromIso, totalSeconds]);
-  return secsLeft;
-}
+  }, []);
 
-// ─── TV ORDER CARD ────────────────────────────────────────────────────────────
-function TVCard({ order, color, timerFrom, timerTotal, onExpire }) {
-  const secsLeft = useCountdown(timerFrom, timerTotal);
-
+  // Page-rotation tick — each paginated section computes its page from this
+  const [pageTick, setPageTick] = useState(0);
   useEffect(() => {
-    if (secsLeft === 0 && onExpire) onExpire(order.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secsLeft]);
+    const t = setInterval(() => setPageTick(n => n + 1), TV_PAGE_ROTATE_MS);
+    return () => clearInterval(t);
+  }, []);
 
-  const mins = secsLeft !== null ? Math.floor(secsLeft / 60) : null;
-  const secs = secsLeft !== null ? secsLeft % 60 : null;
-  const urgent = secsLeft !== null && secsLeft <= 120; // last 2 mins
+  const now     = new Date();
+  const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const dateStr = `${TV_DAY_NAMES[now.getDay()]} ${now.getDate()} ${TV_MONTH_NAMES[now.getMonth()]}`;
+
+  // Background sweep: auto-collect Ready/OOS past 8 min, hide Coming Tomorrow
+  // past 10 min. Ref-Sets dedupe across multiple TV screens. Stale entries
+  // get pruned when orders disappear (daily orderNumber-counter reset).
+  const expiredRef           = useRef(new Set());
+  const hiddenComingTomorrow = useRef(new Set());
+  useEffect(() => {
+    const check = () => {
+      const nowMs = Date.now();
+      const liveIds = new Set(orders.map(o => o.id));
+      // Prune refs of orders no longer present (daily counter reset, etc.)
+      for (const id of expiredRef.current)           if (!liveIds.has(id)) expiredRef.current.delete(id);
+      for (const id of hiddenComingTomorrow.current) if (!liveIds.has(id)) hiddenComingTomorrow.current.delete(id);
+
+      orders.forEach(o => {
+        // Ready / OOS → auto-collect (mutates RTDB)
+        if (!expiredRef.current.has(o.id)) {
+          const ts = o.status === STATUS.READY        ? (o.readyAt || o.updatedAt)
+                   : o.status === STATUS.OUT_OF_STOCK ? (o.outOfStockAt || o.updatedAt)
+                   : null;
+          if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
+            expiredRef.current.add(o.id);
+            const iso = new Date().toISOString();
+            updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
+            if (o.status === STATUS.READY) {
+              logRestock({
+                timestamp:   iso,
+                date:        getSADateString(),
+                productName: o.productName,
+                photoUrl:    o.productPhotoUrl || null,
+                photo:       o.productPhoto || "",
+                size:        o.size,
+                orderNumber: o.id,
+                hub:         o.hub || "hub1",
+              }).catch(err => console.warn("logRestock failed:", err));
+            }
+          }
+        }
+        // Coming Tomorrow → display-only hide
+        if (o.status === STATUS.COMING_TOMORROW && !hiddenComingTomorrow.current.has(o.id)) {
+          const ts = o.comingTomorrowAt || o.updatedAt;
+          if (ts && nowMs - new Date(ts).getTime() >= TV_COMING_TOMORROW_VISIBLE_MS) {
+            hiddenComingTomorrow.current.add(o.id);
+          }
+        }
+      });
+    };
+    check();
+    const id = setInterval(check, TV_EXPIRY_CHECK_MS);
+    return () => clearInterval(id);
+  }, [orders]);
+
+  const incoming       = orders.filter(o => o.status === STATUS.INCOMING);
+  const ready          = orders.filter(o => o.status === STATUS.READY);
+  const outOfStock     = orders.filter(o => o.status === STATUS.OUT_OF_STOCK);
+  const comingTomorrow = orders.filter(o =>
+    o.status === STATUS.COMING_TOMORROW && !hiddenComingTomorrow.current.has(o.id)
+  );
 
   return (
-    <div style={{ background:CARD, border:`2px solid ${urgent ? "#F87171" : color}44`, borderRadius:"18px", padding:"1.25rem 1.5rem", display:"flex", flexDirection:"column", gap:"0.4rem", transition:"border-color 0.5s" }}>
-      <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"3.5rem", color, lineHeight:1, letterSpacing:"0.05em" }}>#{order.id}</div>
-      <div style={{ fontWeight:"600", fontSize:"1.1rem", color:"#ddd" }}>{order.customerName}</div>
-      {secsLeft !== null && (
-        <div style={{ display:"flex", alignItems:"center", gap:"0.5rem", marginTop:"0.25rem" }}>
-          <div style={{ fontFamily:"monospace", fontSize:"1.4rem", fontWeight:"700", color: urgent?"#F87171":color, animation: urgent?"pulse 1s infinite":"none" }}>
-            {String(mins).padStart(2,"0")}:{String(secs).padStart(2,"0")}
+    <div style={{
+      height:"100vh", width:"100vw",
+      background:"#0B0F1A", color:"#fff", fontFamily:FONT,
+      padding:"24px", boxSizing:"border-box",
+      display:"flex", flexDirection:"column", overflow:"hidden",
+    }}>
+      <style>{`@keyframes tvFade { from { opacity: 0 } to { opacity: 1 } }`}</style>
+
+      {/* HEADER */}
+      <div style={{ height:"70px", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:"14px" }}>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2 17h13a4 4 0 003-1.4l3-3.4a2 2 0 00-1.5-3.3l-5.4-.1a2 2 0 01-1.5-.7l-1.7-2A3 3 0 008.4 5H4a2 2 0 00-2 2v10z"/>
+            <line x1="2" y1="14" x2="20" y2="14"/>
+          </svg>
+          <span style={{ fontSize:"40px", fontWeight:700, color:"#fff", lineHeight:1 }}>Marathon</span>
+        </div>
+        <div style={{ textAlign:"right" }}>
+          <div style={{ fontSize:"44px", fontWeight:700, color:"#fff", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{timeStr}</div>
+          <div style={{ fontSize:"18px", fontWeight:400, color:"#9CA3AF", marginTop:"6px" }}>{dateStr}</div>
+        </div>
+      </div>
+
+      {/* HERO READY — ~60% of remaining height */}
+      <div style={{ flex:"1.6 1 0", minHeight:0, marginTop:"16px" }}>
+        <HeroReadyCard orders={ready} pageTick={pageTick} />
+      </div>
+
+      {/* SECONDARY ROW — three compact cards sharing ~40% */}
+      <div style={{ flex:"1 1 0", minHeight:0, marginTop:"16px", display:"flex", gap:"16px" }}>
+        <SecondaryCard label="Incoming"        color={TV_COLORS.incoming}       orders={incoming}       Icon={IconShoppingBag} pageTick={pageTick} />
+        <SecondaryCard label="Out of Stock"    color={TV_COLORS.outOfStock}     orders={outOfStock}     Icon={IconX}           pageTick={pageTick} />
+        <SecondaryCard label="Coming Tomorrow" color={TV_COLORS.comingTomorrow} orders={comingTomorrow} Icon={IconClock}       pageTick={pageTick} />
+      </div>
+    </div>
+  );
+}
+
+// ─── HERO READY CARD ─────────────────────────────────────────────────────────
+// The dominant focal point. Title row at top; below it, a number area that
+// switches layout by count to keep digits as large as possible:
+//   0       → "no orders ready" muted text
+//   1 or 2  → giant centered numbers (~180px)
+//   3–8     → 8-column 1-row grid (very large numbers)
+//   9–36    → 12-column grid (rows scale with count)
+//   > 36    → paginated 36 at a time
+function HeroReadyCard({ orders, pageTick }) {
+  const color    = TV_COLORS.ready;
+  const total    = orders.length;
+  const numPages = Math.max(1, Math.ceil(total / TV_HERO_PAGE_SIZE));
+  const page     = numPages === 1 ? 0 : pageTick % numPages;
+  const visible  = orders.slice(page * TV_HERO_PAGE_SIZE, (page + 1) * TV_HERO_PAGE_SIZE);
+  const count    = visible.length;
+  // For 3–8 use a tighter 8-col grid so each number stays huge.
+  const cols     = count <= 8 ? Math.min(8, count) : 12;
+
+  const gridRef = useRef(null);
+  const [cellFontSize, setCellFontSize] = useState(60);
+  useEffect(() => {
+    if (count <= 2) return;
+    const el = gridRef.current;
+    if (!el) return;
+    const compute = () => {
+      const w = el.clientWidth, h = el.clientHeight;
+      if (!w || !h) return;
+      const gap  = 16;
+      const rows = Math.max(1, Math.ceil(count / cols));
+      const cellW = (w - (cols - 1) * gap) / cols;
+      const cellH = rows === 1 ? h : (h - (rows - 1) * gap) / rows;
+      const size  = Math.max(20, Math.min(220, Math.round(Math.min(cellW * 0.5, cellH * 0.85))));
+      setCellFontSize(size);
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [count, cols]);
+
+  return (
+    <div style={{
+      width:"100%", height:"100%",
+      background:"#141A2A", borderRadius:"24px",
+      padding:"32px 40px", boxSizing:"border-box",
+      display:"flex", flexDirection:"column", overflow:"hidden",
+      position:"relative",
+    }}>
+      {/* Title bar */}
+      <div style={{ flexShrink:0, display:"flex", alignItems:"center", gap:"16px", marginBottom:"16px" }}>
+        <div style={{ color, display:"flex" }}>
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </div>
+        <div style={{ fontSize:"34px", fontWeight:700, color, lineHeight:1 }}>Ready to Collect</div>
+        <div style={{ marginLeft:"auto", display:"flex", alignItems:"baseline", gap:"10px" }}>
+          <div style={{ fontSize:"14px", color:"#9CA3AF", textTransform:"uppercase", letterSpacing:"0.1em", fontWeight:600 }}>Total</div>
+          <div style={{ fontSize:"44px", fontWeight:800, color, lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{total}</div>
+        </div>
+        {numPages > 1 && (
+          <div style={{ fontSize:"14px", color:"rgba(255,255,255,.4)", fontVariantNumeric:"tabular-nums", marginLeft:"12px" }}>
+            {page + 1}/{numPages}
           </div>
-          <div style={{ color:"#444", fontSize:"0.75rem" }}>{urgent && secsLeft > 0 ? "⚠️ Expiring soon" : secsLeft === 0 ? "Expired" : "remaining"}</div>
+        )}
+      </div>
+
+      {/* Number area */}
+      <div style={{ flex:"1 1 0", minHeight:0 }}>
+        {count === 0 ? (
+          <div style={{
+            height:"100%", display:"flex", alignItems:"center", justifyContent:"center",
+            color:"rgba(255,255,255,.22)", fontSize:"28px", fontWeight:400,
+          }}>
+            No orders ready right now
+          </div>
+        ) : count <= 2 ? (
+          <div key={page} style={{
+            height:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:"80px",
+            animation:`tvFade ${TV_PAGE_FADE_MS}ms ease`,
+          }}>
+            {visible.map(o => (
+              <div key={o.id} style={{
+                fontSize:"180px", fontWeight:800, color, lineHeight:1,
+                fontVariantNumeric:"tabular-nums",
+              }}>{o.id}</div>
+            ))}
+          </div>
+        ) : (
+          <div key={page} ref={gridRef} style={{
+            width:"100%", height:"100%",
+            display:"grid",
+            gridTemplateColumns:`repeat(${cols}, minmax(0, 1fr))`,
+            gridAutoRows:"minmax(0, 1fr)",
+            gap:"16px", overflow:"hidden",
+            animation:`tvFade ${TV_PAGE_FADE_MS}ms ease`,
+          }}>
+            {visible.map(o => (
+              <div key={o.id} style={{
+                minWidth:0, minHeight:0,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                fontSize:`${cellFontSize}px`, fontWeight:800, color, lineHeight:1,
+                fontVariantNumeric:"tabular-nums", overflow:"hidden",
+              }}>{o.id}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── SECONDARY STATUS CARD ───────────────────────────────────────────────────
+// Compact card for Incoming / Out of Stock / Coming Tomorrow. Title bar with
+// icon + label + total, then a 6-column number grid below. Pages at 18.
+function SecondaryCard({ label, color, orders, Icon, pageTick }) {
+  const total    = orders.length;
+  const numPages = Math.max(1, Math.ceil(total / TV_SECONDARY_PAGE_SIZE));
+  const page     = numPages === 1 ? 0 : pageTick % numPages;
+  const visible  = orders.slice(page * TV_SECONDARY_PAGE_SIZE, (page + 1) * TV_SECONDARY_PAGE_SIZE);
+  const count    = visible.length;
+
+  const gridRef = useRef(null);
+  const [cellFontSize, setCellFontSize] = useState(28);
+  useEffect(() => {
+    if (count === 0) return;
+    const el = gridRef.current;
+    if (!el) return;
+    const compute = () => {
+      const w = el.clientWidth, h = el.clientHeight;
+      if (!w || !h) return;
+      const cols = 6, gap = 10;
+      const rows = Math.max(1, Math.ceil(count / cols));
+      const cellW = (w - (cols - 1) * gap) / cols;
+      const cellH = rows === 1 ? h : (h - (rows - 1) * gap) / rows;
+      const size  = Math.max(14, Math.min(96, Math.round(Math.min(cellW * 0.45, cellH * 0.8))));
+      setCellFontSize(size);
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [count]);
+
+  return (
+    <div style={{
+      flex:"1 1 0", minWidth:0,
+      background:"#141A2A", borderRadius:"24px",
+      padding:"22px 26px", boxSizing:"border-box",
+      display:"flex", flexDirection:"column", overflow:"hidden",
+      position:"relative",
+    }}>
+      {/* Title row */}
+      <div style={{ flexShrink:0, display:"flex", alignItems:"center", gap:"12px", marginBottom:"14px" }}>
+        <div style={{ color, display:"flex" }}>
+          <Icon size={28} strokeWidth={2.6} />
+        </div>
+        <div style={{ fontSize:"22px", fontWeight:600, color, lineHeight:1 }}>{label}</div>
+        <div style={{ marginLeft:"auto", fontSize:"32px", fontWeight:800, color, lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{total}</div>
+      </div>
+
+      {/* Number grid */}
+      <div style={{ flex:"1 1 0", minHeight:0 }}>
+        {count === 0 ? (
+          <div style={{
+            height:"100%", display:"flex", alignItems:"center", justifyContent:"center",
+            color:"rgba(255,255,255,.2)", fontSize:"15px", fontWeight:400, fontStyle:"italic",
+          }}>
+            none
+          </div>
+        ) : (
+          <div key={page} ref={gridRef} style={{
+            width:"100%", height:"100%",
+            display:"grid",
+            gridTemplateColumns:"repeat(6, minmax(0, 1fr))",
+            gridAutoRows:"minmax(0, 1fr)",
+            gap:"10px", overflow:"hidden",
+            animation:`tvFade ${TV_PAGE_FADE_MS}ms ease`,
+          }}>
+            {visible.map(o => (
+              <div key={o.id} style={{
+                minWidth:0, minHeight:0,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                fontSize:`${cellFontSize}px`, fontWeight:700, color, lineHeight:1,
+                fontVariantNumeric:"tabular-nums", overflow:"hidden",
+              }}>{o.id}</div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Page indicator */}
+      {numPages > 1 && (
+        <div style={{
+          position:"absolute", bottom:"10px", right:"18px",
+          fontSize:"11px", color:"rgba(255,255,255,.3)",
+          fontVariantNumeric:"tabular-nums", letterSpacing:"0.04em",
+        }}>
+          {page + 1}/{numPages}
         </div>
       )}
     </div>
   );
 }
 
-// ─── TV DISPLAY VIEW ──────────────────────────────────────────────────────────
-function DisplayView({ orders }) {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setTick(n => n+1), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  const now = new Date();
-  const timeStr = now.toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
-  const dateStr = now.toLocaleDateString([], { weekday:"long", day:"numeric", month:"long" });
-
-  const incoming       = orders.filter(o => o.status === STATUS.INCOMING);
-  const ready          = orders.filter(o => o.status === STATUS.READY);
-  const outOfStock     = orders.filter(o => o.status === STATUS.OUT_OF_STOCK);
-  const comingTomorrow = orders.filter(o => o.status === STATUS.COMING_TOMORROW);
-
-  // When a Ready or Out-of-Stock card's 8-minute timer hits zero, we mark the
-  // order as collected directly in Firebase. Every connected device removes
-  // it from their display within ~100ms via the onValue subscription.
-  // Guarded with an in-memory set so concurrent timers (multiple TV screens
-  // open simultaneously) only fire one write per order.
-  const expiredRef = useRef(new Set());
-  const handleExpire = (id) => {
-    if (expiredRef.current.has(id)) return;
-    expiredRef.current.add(id);
-    const now = new Date().toISOString();
-    const order = orders.find(o => o.id === id);
-    updateOrder(id, { status: STATUS.COLLECTED, updatedAt: now, collectedAt: now });
-    // Only log a refill request if the item was READY (sold) — OOS expiries can't be restocked.
-    if (order && order.status === STATUS.READY) {
-      logRestock({
-        timestamp: now,
-        date: getSADateString(),
-        productName: order.productName,
-        photoUrl: order.productPhotoUrl || null,
-        photo: order.productPhoto || "",
-        size: order.size,
-        orderNumber: order.id,
-        hub: order.hub || "hub1",
-      }).catch(err => console.warn("logRestock failed:", err));
-    }
-  };
-
-  const colStyle = borderColor => ({
-    flex:1, background:"rgba(4,5,10,.98)", border:`2px solid ${borderColor}22`,
-    borderRadius:RADIUS, padding:"1.5rem", display:"flex", flexDirection:"column",
-    gap:"0.75rem", overflow:"auto",
-  });
-
-  return (
-    <div style={{ minHeight:"100vh", background:BG, color:"#fff", fontFamily:FONT, display:"flex", flexDirection:"column" }}>
-      <style>{`
-        /* SF Pro Display — system font, no import needed */
-        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-      `}</style>
-
-      <div style={{ background:"rgba(4,5,10,.98)", borderBottom:"1px solid rgba(60,110,255,.08)", padding:"1rem 2.5rem", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 17h13a4 4 0 003-1.4l3-3.4a2 2 0 00-1.5-3.3l-5.4-.1a2 2 0 01-1.5-.7l-1.7-2A3 3 0 008.4 5H4a2 2 0 00-2 2v10z"/><line x1="2" y1="14" x2="20" y2="14"/></svg>
-          <div>
-            <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"2rem", letterSpacing:"0.08em", lineHeight:1 }}>MARATHON STORE</div>
-            <div style={{ color:"#555", fontSize:"0.7rem", letterSpacing:"0.15em", textTransform:"uppercase" }}>Live Order Queue</div>
-          </div>
-        </div>
-        <div style={{ textAlign:"right" }}>
-          <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"2.5rem", letterSpacing:"0.05em", lineHeight:1 }}>{timeStr}</div>
-          <div style={{ color:"#555", fontSize:"0.8rem" }}>{dateStr}</div>
-        </div>
-      </div>
-
-      <div style={{ display:"flex", gap:"1px", background:"rgba(60,110,255,.08)" }}>
-        {[
-          { label:"Incoming",        count:incoming.length,       color:"#4A7FFF" },
-          { label:"Ready",           count:ready.length,          color:"#4ADE80" },
-          { label:"Out of Stock",    count:outOfStock.length,     color:"#F87171" },
-          { label:"Coming Tomorrow", count:comingTomorrow.length, color:BLUE_L },
-        ].map(s => (
-          <div key={s.label} style={{ flex:1, padding:"0.6rem", textAlign:"center", background:BG }}>
-            <span style={{ color:s.color, fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", letterSpacing:"0.04em", fontSize:"2rem", marginRight:"0.4rem" }}>{s.count}</span>
-            <span style={{ color:"#555", fontSize:"0.8rem", textTransform:"uppercase", letterSpacing:"0.05em" }}>{s.label}</span>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ flex:1, display:"flex", gap:"1rem", padding:"1rem 1.5rem", overflow:"hidden" }}>
-
-        <div style={colStyle("#4A7FFF")}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.75rem", marginBottom:"0.25rem" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.5rem", letterSpacing:"0.05em", color:"#4A7FFF" }}>INCOMING</span>
-            {incoming.length > 0 && <span style={{ marginLeft:"auto", background:"#4A7FFF", color:"#000", borderRadius:"999px", padding:"1px 9px", fontWeight:"700", fontSize:"0.85rem", animation:"pulse 2s infinite" }}>{incoming.length}</span>}
-          </div>
-          {incoming.length === 0
-            ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No incoming orders</div>
-            : incoming.map(o => (
-              <div key={o.id} style={{ background:"#111", border:"2px solid #4A7FFF44", borderRadius:"18px", padding:"1.25rem 1.5rem" }}>
-                <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"3.5rem", color:"#4A7FFF", lineHeight:1, letterSpacing:"0.05em" }}>#{o.id}</div>
-                <div style={{ fontWeight:"600", fontSize:"1.1rem", color:"#ddd" }}>{o.customerName}</div>
-              </div>
-            ))}
-        </div>
-
-        <div style={colStyle("#4ADE80")}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.75rem", marginBottom:"0.25rem" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.5rem", color:"#4ADE80", letterSpacing:"0.05em" }}>READY</span>
-            <span style={{ color:"#2a2a2a", fontSize:"0.7rem", marginLeft:"auto" }}>8 min to collect</span>
-            {ready.length > 0 && <span style={{ background:"#4ADE80", color:"#000", borderRadius:"999px", padding:"1px 9px", fontWeight:"700", fontSize:"0.85rem" }}>{ready.length}</span>}
-          </div>
-          {ready.length === 0
-            ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No orders ready yet</div>
-            : ready.map(o => <TVCard key={o.id} order={o} color="#4ADE80" timerFrom={o.readyAt || o.updatedAt} timerTotal={8*60} onExpire={handleExpire} />)}
-        </div>
-
-        <div style={colStyle("#F87171")}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.75rem", marginBottom:"0.25rem" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.5rem", color:"#F87171", letterSpacing:"0.05em" }}>OUT OF STOCK</span>
-            <span style={{ color:"#2a2a2a", fontSize:"0.7rem", marginLeft:"auto" }}>8 min display</span>
-            {outOfStock.length > 0 && <span style={{ background:"#F87171", color:"#000", borderRadius:"999px", padding:"1px 9px", fontWeight:"700", fontSize:"0.85rem" }}>{outOfStock.length}</span>}
-          </div>
-          {outOfStock.length === 0
-            ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>Nothing out of stock</div>
-            : outOfStock.map(o => <TVCard key={o.id} order={o} color="#F87171" timerFrom={o.outOfStockAt || o.updatedAt} timerTotal={8*60} onExpire={handleExpire} />)}
-        </div>
-
-        <div style={colStyle(BLUE_L)}>
-          <div style={{ display:"flex", alignItems:"center", gap:"0.75rem", marginBottom:"0.25rem" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={BLUE_L} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.5rem", color:BLUE_L, letterSpacing:"0.05em" }}>COMING TOMORROW</span>
-            {comingTomorrow.length > 0 && <span style={{ marginLeft:"auto", background:BLUE_L, color:"#000", borderRadius:"999px", padding:"1px 9px", fontWeight:"700", fontSize:"0.85rem" }}>{comingTomorrow.length}</span>}
-          </div>
-          {comingTomorrow.length === 0
-            ? <div style={{ color:"#2a2a2a", textAlign:"center", marginTop:"3rem", fontSize:"0.9rem" }}>No orders for tomorrow</div>
-            : comingTomorrow.map(o => (
-              <div key={o.id} style={{ background:CARD, border:`2px solid rgba(60,110,255,.25)`, borderRadius:"18px", padding:"1.25rem 1.5rem" }}>
-                <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"3.5rem", color:BLUE_L, lineHeight:1, letterSpacing:"0.05em" }}>#{o.id}</div>
-                <div style={{ fontWeight:"600", fontSize:"1.1rem", color:"#ddd" }}>{o.customerName}</div>
-                <div style={{ color:BLUE_L, fontSize:"0.75rem", marginTop:"0.25rem" }}>Available tomorrow</div>
-              </div>
-            ))}
-        </div>
-
-      </div>
-
-      <div style={{ background:"rgba(4,5,10,.98)", borderTop:"1px solid rgba(60,110,255,.08)", padding:"0.6rem 2.5rem", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-        <span style={{ color:"#222", fontSize:"0.75rem" }}>Please collect your order within 8 minutes</span>
-        <div style={{ display:"flex", alignItems:"center", gap:"0.5rem" }}>
-          <div style={{ width:"7px", height:"7px", borderRadius:"50%", background:"#4ADE80", animation:"pulse 2s infinite" }} />
-          <span style={{ color:"#333", fontSize:"0.75rem" }}>LIVE</span>
-        </div>
-      </div>
-    </div>
-  );
+// ── TV display icons. Configurable size + strokeWidth; inherit accent via
+//    currentColor on the parent. Used by both the hero (inline 40px check)
+//    and the secondary cards (28px stroke 2.6) ──────────────────────────────
+function IconShoppingBag({ size = 28, strokeWidth = 2.6 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+    <line x1="3" y1="6" x2="21" y2="6"/>
+    <path d="M16 10a4 4 0 01-8 0"/>
+  </svg>;
+}
+function IconCheck({ size = 28, strokeWidth = 2.6 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="20 6 9 17 4 12"/>
+  </svg>;
+}
+function IconX({ size = 28, strokeWidth = 2.6 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <line x1="18" y1="6" x2="6" y2="18"/>
+    <line x1="6" y1="6" x2="18" y2="18"/>
+  </svg>;
+}
+function IconClock({ size = 28, strokeWidth = 2.6 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10"/>
+    <polyline points="12 6 12 12 16 14"/>
+  </svg>;
 }
 
 // ─── SOURCE VIEW + COMPONENTS ────────────────────────────────────────────────
@@ -4185,7 +4921,7 @@ function getSAYesterdayString() {
 }
 
 function SourceView({ onExit, orders, returnsLog }) {
-  const [tab, setTab] = useState("today");
+  const [tab, setTab] = usePersistedTab("source", "today");
   // Active hub — shared across all three top tabs. Defaults to Hub 1.
   const [hub, setHub] = useState("hub1");
   const todayDate   = getSADateString();
@@ -4474,6 +5210,7 @@ function ReturnsView({ orders, onExit }) {
       size:        order.size,
       customerName:order.customerName,
       reason:      null,
+      placedAtHub: order.placedAtHub || order.hub || "hub1",
     });
     setExpandedId(null);
   };
@@ -5488,29 +6225,46 @@ function InsightClothingRefillsTab({ orders, productPhotoMap, filterStart, filte
 // sync). Aggregates by (productName, size) so restock planning sees the most
 // frequently depleted SKUs at the top. Sort: count desc, tiebreak by most
 // recent depletion desc. Local filters: hub pills + product-name search.
-function InsightStockDepletedTab({ orders, productPhotoMap, filterStart, filterEnd, filterLabel }) {
+function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, filterEnd, filterLabel, filterMode, filterDate }) {
   const [hubFilter, setHubFilter] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
 
-  // Window-filtered depletion events (one per order) + local filter passes.
+  // Day-mode + today uses live orders (no log lag); every other window pulls
+  // from insights_log filtered to action="stock_depleted" so past days survive
+  // the daily orderNumber reset that overwrites /orders/{id}. Same pattern as
+  // InsightOOSTrackerTab. dedupeByOrderNumber handles re-fires from undo-redo.
   const events = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    return (orders || [])
-      .filter(o => o.displayRefillStatus === "stockDepleted")
-      .filter(o => {
-        const ts = o.displayRefillStockDepletedAt;
-        return ts && ts >= filterStart && ts < filterEnd;
-      })
-      .filter(o => hubFilter === "all" || (o.displayRefilledBy || o.displayRefillHub) === hubFilter)
-      .filter(o => !q || (o.productName || "").toLowerCase().includes(q))
-      .map(o => ({
-        orderNumber:    o.id,
-        productName:    o.productName || "Unknown",
-        size:           sourceDisplaySize(o) || "—",
-        hub:            o.displayRefilledBy || o.displayRefillHub || "—",
-        timestamp:      o.displayRefillStockDepletedAt,
-      }));
-  }, [orders, filterStart, filterEnd, hubFilter, searchTerm]);
+    let raw;
+    if (filterMode === "day" && filterDate === getSADateString()) {
+      raw = (orders || [])
+        .filter(o => o.displayRefillStatus === "stockDepleted")
+        .filter(o => {
+          const ts = o.displayRefillStockDepletedAt;
+          return ts && ts >= filterStart && ts < filterEnd;
+        })
+        .map(o => ({
+          orderNumber:  o.id,
+          productName:  o.productName || "Unknown",
+          size:         sourceDisplaySize(o) || "—",
+          hub:          o.displayRefilledBy || o.displayRefillHub || "—",
+          timestamp:    o.displayRefillStockDepletedAt,
+        }));
+    } else {
+      raw = (log || [])
+        .filter(e => e.action === "stock_depleted" && e.timestamp >= filterStart && e.timestamp < filterEnd)
+        .map(e => ({
+          orderNumber:  e.orderNumber,
+          productName:  e.productName || "Unknown",
+          size:         e.size || "—",
+          hub:          e.displayRefilledBy || e.placedAtHub || "—",
+          timestamp:    e.timestamp,
+        }));
+    }
+    return dedupeByOrderNumber(raw)
+      .filter(e => hubFilter === "all" || e.hub === hubFilter)
+      .filter(e => !q || (e.productName || "").toLowerCase().includes(q));
+  }, [orders, log, filterStart, filterEnd, filterMode, filterDate, hubFilter, searchTerm]);
 
   // Group by (product, size), keep total + lastTimestamp + hub set.
   const rows = useMemo(() => {
@@ -5784,13 +6538,19 @@ function InsightsView({ onExit }) {
   const [authed,     setAuthed]     = useState(() => sessionStorage.getItem(INSIGHTS_SESSION_KEY) === "true");
   const [pw,         setPw]         = useState("");
   const [pwError,    setPwError]    = useState(false);
-  const [tab,        setTab]        = useState("overview");
+  const [tab,        setTab]        = usePersistedTab("insights", "overview");
   const [filterMode, setFilterMode] = useState("day");
   const [filterDate, setFilterDate] = useState(() => getSADateString());
   // Phase 12D: product-type filter ("sneaker" | "clothing" | "both"). Applied
   // in 6 of 9 tabs; hidden on tabs where it doesn't make sense (sizes,
   // depleted, clothing-refills).
   const [category,   setCategory]   = useState("both");
+  // Phase 14C: top-level store filter — slices every Insights tab to a
+  // subset of events tagged with placedAtHub. "all" is current behavior,
+  // "central" keeps hub1/hub2 events, "pine" keeps hub3 events. Events
+  // missing placedAtHub (pre-14B history) are excluded by Central/Pine
+  // until the backfill stamps them.
+  const [storeFilter, setStoreFilter] = useState("all");
   const [auditOpen,  setAuditOpen]  = useState(false);
   const touchStartX = useRef(null);
   const log        = useInsightsLog();
@@ -5798,16 +6558,33 @@ function InsightsView({ onExit }) {
   const products   = useProducts();
   const orders     = useOrders();
 
+  // Pre-filter the three event streams by storeFilter so every downstream
+  // tab/audit consumes an already-narrowed slice. dedupeByOrderNumber and
+  // excludeReturnedOrderNumbers continue to operate on whatever passes through.
+  // Central treats missing placedAtHub as Central — historical events
+  // pre-date Phase 14B and were all placed in the central universe, so the
+  // filter is self-healing without a backfill. Pine stays strict.
+  const matchesStore = useMemo(() => {
+    if (storeFilter === "all") return () => true;
+    if (storeFilter === "pine") return (e) => e && e.placedAtHub === "hub3";
+    return (e) => e && (!e.placedAtHub || e.placedAtHub === "hub1" || e.placedAtHub === "hub2");
+  }, [storeFilter]);
+  const filteredLog        = useMemo(() => log.filter(matchesStore),         [log, matchesStore]);
+  const filteredReturnsLog = useMemo(() => returnsLog.filter(matchesStore),  [returnsLog, matchesStore]);
+  const filteredOrders     = useMemo(() => orders.filter(matchesStore),      [orders, matchesStore]);
+
   // ── ORDER AUDIT — runs in-memory, renders to a modal ─────────────────────
+  // Phase 14C: respects the storeFilter via filteredOrders / filteredReturnsLog,
+  // so the audit reflects the same slice the user is viewing.
   const audit = useMemo(() => {
     const today = getSADateString();
     const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow"]);
-    const onTodayCreated = orders.filter(o => o.createdAt && o.createdAt.slice(0,10) === today);
+    const onTodayCreated = filteredOrders.filter(o => o.createdAt && o.createdAt.slice(0,10) === today);
 
     // Status distributions
     const byStatusAll = {};
     const byStatusToday = {};
-    orders.forEach(o => {
+    filteredOrders.forEach(o => {
       const s = o.status === undefined ? "(undefined)" : (o.status || "(empty)");
       byStatusAll[s] = (byStatusAll[s] || 0) + 1;
     });
@@ -5849,11 +6626,11 @@ function InsightsView({ onExit }) {
     const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING]);
     const unaccounted = onTodayCreated.filter(o => !accounted.has(o.status));
 
-    const returnsToday = returnsLog.filter(r => (r.timestamp||"").slice(0,10) === today).length;
+    const returnsToday = filteredReturnsLog.filter(r => (r.timestamp||"").slice(0,10) === today).length;
 
     return {
       today,
-      totalAll: orders.length,
+      totalAll: filteredOrders.length,
       totalToday: onTodayCreated.length,
       byStatusAll, byStatusToday,
       minNum, maxNum, gaps, dups,
@@ -5863,7 +6640,7 @@ function InsightsView({ onExit }) {
       returnsToday,
       netSales: (ready + collected) - returnsToday,
     };
-  }, [orders, returnsLog]);
+  }, [filteredOrders, filteredReturnsLog]);
 
   // Compute filterStart / filterEnd (exclusive) / filterLabel from mode + anchor date.
   const { filterStart, filterEnd, filterLabel } = useMemo(() => {
@@ -5977,7 +6754,23 @@ function InsightsView({ onExit }) {
           </svg>
           <div style={{ fontSize:12, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>INTERNAL INSIGHTS</div>
         </div>
-        <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{log.length} entries</div>
+        <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{filteredLog.length} entries</div>
+      </div>
+      {/* Phase 14C: Store filter — All / Central / Pine. Applies to every tab. */}
+      <div style={{ padding:"10px 14px 0", display:"flex", gap:6 }}>
+        {[["all","All"],["central","Central"],["pine","Pine"]].map(([val, label]) => {
+          const on = storeFilter === val;
+          return (
+            <button key={val} onClick={() => setStoreFilter(val)}
+              style={{ flex:1, padding:"7px 10px", borderRadius:10, fontSize:11.5, fontWeight:700, cursor:"pointer",
+                       background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)",
+                       border: "1px solid " + (on ? "rgba(60,110,255,.55)" : "rgba(255,255,255,.08)"),
+                       color: on ? "#fff" : "rgba(255,255,255,.5)",
+                       boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
+              {label}
+            </button>
+          );
+        })}
       </div>
       {/* TAB BAR */}
       <div style={{ display:"flex", overflowX:"auto", scrollbarWidth:"none", padding:"10px 14px 0", gap:0, borderBottom:"1px solid rgba(255,255,255,.06)", marginBottom:12 }}>
@@ -6031,15 +6824,15 @@ function InsightsView({ onExit }) {
       <div style={{ padding:"0 14px 16px" }}
         onTouchStart={e => { touchStartX.current = e.touches[0].clientX; }}
         onTouchEnd={handleSwipe}>
-        {tab==="overview"         && <InsightOverviewTab        log={log} returnsLog={returnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={orders} filterMode={filterMode} filterDate={filterDate} category={category} />}
-        {tab==="sales"            && <InsightSalesSummaryTab    log={log} returnsLog={returnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={orders} filterMode={filterMode} filterDate={filterDate} category={category} />}
-        {tab==="search"           && <InsightProductSearchTab   log={log} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} category={category} />}
-        {tab==="oos"              && <InsightOOSTrackerTab      log={log} returnsLog={returnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={orders} filterMode={filterMode} filterDate={filterDate} category={category} />}
-        {tab==="sizes"            && <InsightSizePopularityTab  log={log} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="times"            && <InsightBusiestTimesTab    log={log} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="returns"          && <InsightReturnsTab         returnsLog={returnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="clothing-refills" && <InsightClothingRefillsTab orders={orders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
-        {tab==="depleted"         && <InsightStockDepletedTab   orders={orders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
+        {tab==="overview"         && <InsightOverviewTab        log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+        {tab==="sales"            && <InsightSalesSummaryTab    log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+        {tab==="search"           && <InsightProductSearchTab   log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} category={category} />}
+        {tab==="oos"              && <InsightOOSTrackerTab      log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+        {tab==="sizes"            && <InsightSizePopularityTab  log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+        {tab==="times"            && <InsightBusiestTimesTab    log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+        {tab==="returns"          && <InsightReturnsTab         returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+        {tab==="clothing-refills" && <InsightClothingRefillsTab orders={filteredOrders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
+        {tab==="depleted"         && <InsightStockDepletedTab   orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
       </div>
 
       {/* AUDIT MODAL */}
@@ -6877,52 +7670,46 @@ function AdminSignInScreen({ onCancel }) {
   );
 }
 
-function AdminIndicator({ email, onSignOut }) {
-  const handle = email.split("@")[0];
+// Top-right pill shown for any signed-in non-anonymous user (super-admin via
+// Google OR a staff PIN account). Tap "Sign Out" to return to the Login screen.
+function UserIndicator({ label, onSignOut }) {
   return (
     <div style={{ position:"fixed", top:10, right:10, zIndex:9998, background:CARD, border:BORDER_BRIGHT, borderRadius:999, padding:"6px 12px", display:"flex", alignItems:"center", gap:8, fontFamily:FONT, fontSize:"0.75rem", boxShadow:GLOW, backdropFilter:"blur(8px)" }}>
-      <span style={{ color:"#9CA3AF" }}>Signed in: <span style={{ color:BLUE_L, fontWeight:600 }}>{handle}</span></span>
+      <span style={{ color:"#9CA3AF" }}>Signed in: <span style={{ color:BLUE_L, fontWeight:600 }}>{label}</span></span>
       <span style={{ color:"#444" }}>·</span>
       <span onClick={onSignOut} style={{ color:BLUE, cursor:"pointer", fontWeight:600 }}>Sign Out</span>
     </div>
   );
 }
 
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
-export default function App() {
-  // ── ALL HOOKS MUST COME BEFORE ANY CONDITIONAL RETURN ───────────────────────
-  // React requires hooks to be called in the same order on every render.
+// ─── APP INNER ────────────────────────────────────────────────────────────────
+// The post-AuthGate shell. Auth state + permissions arrive via the
+// PermissionsContext provided by <AuthGate>; we no longer manage anon sign-in
+// here (AuthGate handles the #tv anon path; everything else requires real
+// login). Junid's #admin Google popup path still works for super-admin —
+// the wantAdmin/AdminSignInScreen render happens when an unauthenticated
+// session navigates to #admin, *before* AuthGate has provided context
+// (which means this branch only ever fires when isSuperAdmin === false from
+// AuthGate's perspective, e.g. signed out from the Google session).
+function AppInner() {
+  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut } = usePermissions();
 
-  // Track Firebase anonymous auth readiness — no DB reads/writes happen until
-  // a valid auth token exists (otherwise the new security rules block them).
-  const [authReady, setAuthReady] = useState(false);
+  // hash tracks the URL fragment for the #admin sign-in trigger and any
+  // future client-side routing.
+  const [hash, setHash] = useState(() => window.location.hash);
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setAuthReady(true);
-      } else {
-        signInAnonymously(auth).catch(err => console.warn("Anonymous sign-in failed:", err));
-      }
-    });
-    return () => unsub();
-  }, []);
-
-  // Admin sign-in state (Phase 1.5). authUser tracks the current Firebase user
-  // (anonymous OR Google admin); hash tracks the URL fragment for the #admin
-  // sign-in trigger. isAdmin/wantAdmin are derived each render.
-  const [authUser, setAuthUser] = useState(() => auth.currentUser);
-  const [hash,     setHash]     = useState(() => window.location.hash);
-  useEffect(() => {
-    const unsubAuth   = onAuthStateChanged(auth, setAuthUser);
     const onHashChange = () => setHash(window.location.hash);
     window.addEventListener("hashchange", onHashChange);
-    return () => { unsubAuth(); window.removeEventListener("hashchange", onHashChange); };
+    return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
-  const isAdmin   = !!authUser && !authUser.isAnonymous && authUser.email === ADMIN_EMAIL;
   const wantAdmin = hash === "#admin";
+  // Legacy isAdmin alias — true for super-admin only. Some downstream views
+  // (e.g. BroadcastGroupsView role check) still read this; the right gate is
+  // hasPermission("broadcast"), but we keep isAdmin for back-compat.
+  const isAdmin = isSuperAdmin;
 
   async function handleAdminSignOut() {
-    await signOut(auth); // existing onAuthStateChanged effect re-signs anonymously
+    await doSignOut();
     if (window.location.hash === "#admin") window.location.hash = "";
   }
 
@@ -6932,13 +7719,15 @@ export default function App() {
     else localStorage.removeItem("marathon_role");
   }, [role]);
 
-  // Safety: if the persisted role is BROADCAST_GROUPS but the user isn't admin
-  // anymore (signed out, or signed in with a different Google account), drop
-  // them back to RoleSelector. Prevents a blank screen and avoids implying any
-  // admin context they don't have.
+  // Safety: if the persisted role isn't available to this user's permission
+  // set (signed out, switched account, permissions revoked), drop them back
+  // to RoleSelector. Prevents a blank screen and avoids exposing a view the
+  // user shouldn't see.
   useEffect(() => {
-    if (role === ROLES.BROADCAST_GROUPS && !isAdmin) setRole(null);
-  }, [role, isAdmin]);
+    if (!role) return;
+    const required = ROLE_TO_PERMISSION[role];
+    if (required && !hasPermission(required)) setRole(null);
+  }, [role, hasPermission]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -7119,47 +7908,73 @@ export default function App() {
   // ────────────────────────────────────────────────────────────────────────────
 
   // ── ALL CONDITIONAL RETURNS AFTER ALL HOOKS ─────────────────────────────────
-  if (window.location.pathname === "/privacy") return <PrivacyPage />;
+  // (Privacy page handled by the outer App wrapper before AuthGate mounts.)
 
-  // Show a minimal loading screen while anonymous sign-in is in flight.
-  // This prevents any onValue listeners from firing before auth is ready,
-  // which would be rejected by the new "auth !== null" database rules.
+  // Helper: enforce permission on each role-keyed view. If user lacks the
+  // permission (e.g. via direct hash navigation that bypassed the tile list),
+  // render nothing so the role-reset effect above can drop them to the
+  // selector. The UI alone is bypassable; server-side Rules (Phase 2) are
+  // the real enforcement.
+  const guard = (roleKey, node) => hasPermission(ROLE_TO_PERMISSION[roleKey]) ? node : null;
+
   let view = null;
-  if (!authReady) {
-    view = (
-      <div style={{ minHeight:"100vh", background:BG, display:"flex", alignItems:"center", justifyContent:"center" }}>
-        <div style={{ color:"#555", fontFamily:"-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif", fontSize:"1rem" }}>Loading…</div>
-      </div>
-    );
-  } else if (wantAdmin && !isAdmin) {
+  if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} isAdmin={isAdmin} />;
-  } else if (role === ROLES.INSIGHTS)     view = <InsightsView   onExit={() => setRole(null)} />;
-  else if (role === ROLES.SOURCE)         view = <SourceView     orders={orders} returnsLog={returnsLog} onExit={() => setRole(null)} />;
-  else if (role === ROLES.RETURNS)        view = <ReturnsView    orders={orders} onExit={() => setRole(null)} />;
-  else if (role === ROLES.CUSTOMERS_DB)   view = <CustomersView  onExit={() => setRole(null)} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} />;
+  } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
+  else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} onExit={() => setRole(null)} />);
+  else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.CUSTOMERS_DB)   view = guard(ROLES.CUSTOMERS_DB, <CustomersView  onExit={() => setRole(null)} />);
   else if (role === ROLES.DISPLAY) {
-    view = (
-      <div>
-        <button onClick={() => setRole(null)} style={{ position:"fixed", top:"1rem", left:"1rem", zIndex:999, background:"rgba(4,5,10,.85)", border:BORDER, borderRadius:"8px", color:BLUE, padding:"4px 12px", cursor:"pointer", fontSize:"0.75rem", fontWeight:"600", backdropFilter:"blur(8px)" }}>← Exit</button>
-        <DisplayView orders={orders} />
-      </div>
-    );
+    // TV mode is intentionally chrome-free — no Exit button, no admin pill.
+    // Exit by swiping right from the screen edge or clearing localStorage.
+    view = guard(ROLES.DISPLAY, <DisplayView orders={orders} />);
   }
-  else if (role === ROLES.ADMIN)     view = <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />;
-  else if (role === ROLES.ASSISTANT) view = <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />;
-  else if (role === ROLES.WAREHOUSE) view = <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />;
-  else if (role === ROLES.CUSTOMER)  view = <CustomerView  orders={orders} onExit={() => setRole(null)} />;
-  else if (role === ROLES.BROADCAST_GROUPS && isAdmin) view = <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />;
+  else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.BROADCAST_GROUPS) view = guard(ROLES.BROADCAST_GROUPS, <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />);
+
+  // The user-indicator pill shows for any signed-in real user (PIN account
+  // OR super-admin). Suppressed on the TV display so it's truly chrome-free.
+  const indicatorLabel = isSuperAdmin
+    ? (authUser?.email?.split("@")[0] || "Admin")
+    : (permRecord?.displayName || permRecord?.username || authUser?.email?.split("@")[0] || "Staff");
+  const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY;
 
   return (
     <>
       <PWAUpdateBanner />
-      {!role && authReady && <AndroidInstallChip />}
-      {!role && authReady && <IOSInstallTooltip />}
+      {!role && <AndroidInstallChip />}
+      {!role && <IOSInstallTooltip />}
       {view}
-      {isAdmin && <AdminIndicator email={authUser.email} onSignOut={handleAdminSignOut} />}
+      {showIndicator && <UserIndicator label={indicatorLabel} onSignOut={handleAdminSignOut} />}
     </>
+  );
+}
+
+// ─── TV ONLY SHELL ────────────────────────────────────────────────────────────
+// Mounted by AuthGate when hash === "#tv". Pulls orders via the anonymous
+// auth that AuthGate kicks off; renders the bare TV display with no admin
+// chrome, no role selector, no login screen.
+function TvOnlyShell() {
+  const orders = useOrders();
+  return <DisplayView orders={orders} />;
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+// Default export wraps AppInner in AuthGate. The renderTv callback returns
+// the TV-only shell so it never mounts on non-TV routes. Privacy page is
+// the only path that bypasses both AuthGate and the rest of the shell.
+export default function App() {
+  if (typeof window !== "undefined" && window.location.pathname === "/privacy") {
+    return <PrivacyPage />;
+  }
+  return (
+    <AuthGate renderTv={() => <TvOnlyShell />}>
+      <AppInner />
+    </AuthGate>
   );
 }
