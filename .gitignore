@@ -12,3 +12,7 @@ dist
 *-firebase-adminsdk-*.json
 service-account*.json
 *-credentials.json
+
+# Phase 1 auth seed — PINs must not enter git history
+scripts/seedUsers.js
+scripts/seedUsers.pins.json

@@ -5,6 +5,8 @@ import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from 
 import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functionsUS } from "./firebase";
 import { uploadBroadcastMedia } from "./broadcastStorage";
+import AuthGate from "./components/AuthGate";
+import { usePermissions } from "./components/PermissionsContext";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -82,6 +84,24 @@ function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,2
 }
 
 const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups" };
+
+// Each role tile maps to a permission string. Tiles are hidden when the
+// signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
+// bypasses every check via hasPermission's email shortcut.
+// TV Display and Customer are auxiliary admin-only tiles — no dedicated perm
+// in the spec, so they ride on product_admin (admin and super_admin only).
+const ROLE_TO_PERMISSION = {
+  [ROLES.ASSISTANT]:        "store_assistant",
+  [ROLES.WAREHOUSE]:        "warehouse",
+  [ROLES.SOURCE]:           "source",
+  [ROLES.RETURNS]:          "place_orders",
+  [ROLES.INSIGHTS]:         "insights",
+  [ROLES.DISPLAY]:          "product_admin",
+  [ROLES.CUSTOMER]:         "product_admin",
+  [ROLES.CUSTOMERS_DB]:     "customer_data",
+  [ROLES.ADMIN]:            "product_admin",
+  [ROLES.BROADCAST_GROUPS]: "broadcast",
+};
 const STATUS = { INCOMING: "incoming", READY: "ready", OUT_OF_STOCK: "out_of_stock", COLLECTED: "collected", COMING_TOMORROW: "coming_tomorrow" };
 
 // ─── SIZE RANGE + SUBSTITUTE HELPERS ──────────────────────────────────────────
@@ -1397,7 +1417,7 @@ function GroupSection({ label, children }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, isAdmin }) {
+function RoleSelector({ onSelect, orders, returnsLog, hasPermission }) {
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
   // Source badge = today's restock requests + on-hold (Tomorrow), excluding OOS.
@@ -1441,27 +1461,42 @@ function RoleSelector({ onSelect, orders, returnsLog, isAdmin }) {
         </div>
       </div>
 
-      {/* ROLE GROUPS */}
-      <div style={{ padding:"10px 14px 36px", background:"#000" }}>
-        <GroupSection label="Operations">
-          <RoleCard icon={RoleIcons.assistant} name="Store Assistant" desc="Place customer orders" badge={assistantBadge}  onClick={() => onSelect(ROLES.ASSISTANT)} />
-          <RoleCard icon={RoleIcons.warehouse} name="Warehouse"        desc="Manage order queue"   badge={incoming}        onClick={() => onSelect(ROLES.WAREHOUSE)} />
-          <RoleCard icon={RoleIcons.source}    name="Source"           desc="Restock requests"     badge={sourceBadge}     onClick={() => onSelect(ROLES.SOURCE)} />
-          <RoleCard icon={RoleIcons.returns}   name="Returns"          desc="Log returned items"   onClick={() => onSelect(ROLES.RETURNS)} last />
-        </GroupSection>
-        <GroupSection label="Insights & Display">
-          <RoleCard icon={RoleIcons.insights} name="Internal Insights" desc="Business analytics"      onClick={() => onSelect(ROLES.INSIGHTS)} />
-          <RoleCard icon={RoleIcons.display}  name="TV Display"        desc="Customer queue screen"   onClick={() => onSelect(ROLES.DISPLAY)} />
-          <RoleCard icon={RoleIcons.customer} name="Customer"          desc="Check order status"      onClick={() => onSelect(ROLES.CUSTOMER)} last />
-        </GroupSection>
-        <GroupSection label="Administration">
-          <RoleCard icon={RoleIcons.customers_db} name="Customers" desc="Customer database" onClick={() => onSelect(ROLES.CUSTOMERS_DB)} />
-          <RoleCard icon={RoleIcons.admin}        name="Admin"     desc="Manage products"   onClick={() => onSelect(ROLES.ADMIN)} last={!isAdmin} />
-          {isAdmin && (
-            <RoleCard icon={RoleIcons.broadcast_groups} name="Group Broadcast" desc="Send to WhatsApp groups" onClick={() => onSelect(ROLES.BROADCAST_GROUPS)} last />
-          )}
-        </GroupSection>
-      </div>
+      {/* ROLE GROUPS — each tile gated by hasPermission. Empty groups are
+          hidden so staff with limited permissions don't see empty headings. */}
+      {(() => {
+        const ops = [
+          hasPermission(ROLE_TO_PERMISSION[ROLES.ASSISTANT]) && <RoleCard key="assistant" icon={RoleIcons.assistant} name="Store Assistant" desc="Place customer orders" badge={assistantBadge}  onClick={() => onSelect(ROLES.ASSISTANT)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) && <RoleCard key="warehouse" icon={RoleIcons.warehouse} name="Warehouse"        desc="Manage order queue"   badge={incoming}        onClick={() => onSelect(ROLES.WAREHOUSE)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])    && <RoleCard key="source"    icon={RoleIcons.source}    name="Source"           desc="Restock requests"     badge={sourceBadge}     onClick={() => onSelect(ROLES.SOURCE)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && <RoleCard key="returns"   icon={RoleIcons.returns}   name="Returns"          desc="Log returned items"   onClick={() => onSelect(ROLES.RETURNS)} />,
+        ].filter(Boolean);
+        const insightsDisplay = [
+          hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && <RoleCard key="insights" icon={RoleIcons.insights} name="Internal Insights" desc="Business analytics"    onClick={() => onSelect(ROLES.INSIGHTS)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.DISPLAY])  && <RoleCard key="display"  icon={RoleIcons.display}  name="TV Display"        desc="Customer queue screen" onClick={() => onSelect(ROLES.DISPLAY)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && <RoleCard key="customer" icon={RoleIcons.customer} name="Customer"          desc="Check order status"    onClick={() => onSelect(ROLES.CUSTOMER)} />,
+        ].filter(Boolean);
+        const admin = [
+          hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && <RoleCard key="customers" icon={RoleIcons.customers_db}     name="Customers"       desc="Customer database"       onClick={() => onSelect(ROLES.CUSTOMERS_DB)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && <RoleCard key="admin"     icon={RoleIcons.admin}            name="Admin"           desc="Manage products"         onClick={() => onSelect(ROLES.ADMIN)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && <RoleCard key="broadcast" icon={RoleIcons.broadcast_groups} name="Group Broadcast" desc="Send to WhatsApp groups" onClick={() => onSelect(ROLES.BROADCAST_GROUPS)} />,
+        ].filter(Boolean);
+        // `last` on the final card in each group removes the trailing divider.
+        const withLast = (cards) => cards.map((card, i) =>
+          i === cards.length - 1 ? <card.type {...card.props} last /> : card
+        );
+        return (
+          <div style={{ padding:"10px 14px 36px", background:"#000" }}>
+            {ops.length > 0              && <GroupSection label="Operations">{withLast(ops)}</GroupSection>}
+            {insightsDisplay.length > 0  && <GroupSection label="Insights & Display">{withLast(insightsDisplay)}</GroupSection>}
+            {admin.length > 0            && <GroupSection label="Administration">{withLast(admin)}</GroupSection>}
+            {ops.length + insightsDisplay.length + admin.length === 0 && (
+              <div style={{ textAlign:"center", color:"#555", padding:"3rem 1rem", fontSize:14 }}>
+                No tools assigned to your account yet. Ask an admin to update your permissions.
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -7635,52 +7670,46 @@ function AdminSignInScreen({ onCancel }) {
   );
 }
 
-function AdminIndicator({ email, onSignOut }) {
-  const handle = email.split("@")[0];
+// Top-right pill shown for any signed-in non-anonymous user (super-admin via
+// Google OR a staff PIN account). Tap "Sign Out" to return to the Login screen.
+function UserIndicator({ label, onSignOut }) {
   return (
     <div style={{ position:"fixed", top:10, right:10, zIndex:9998, background:CARD, border:BORDER_BRIGHT, borderRadius:999, padding:"6px 12px", display:"flex", alignItems:"center", gap:8, fontFamily:FONT, fontSize:"0.75rem", boxShadow:GLOW, backdropFilter:"blur(8px)" }}>
-      <span style={{ color:"#9CA3AF" }}>Signed in: <span style={{ color:BLUE_L, fontWeight:600 }}>{handle}</span></span>
+      <span style={{ color:"#9CA3AF" }}>Signed in: <span style={{ color:BLUE_L, fontWeight:600 }}>{label}</span></span>
       <span style={{ color:"#444" }}>·</span>
       <span onClick={onSignOut} style={{ color:BLUE, cursor:"pointer", fontWeight:600 }}>Sign Out</span>
     </div>
   );
 }
 
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
-export default function App() {
-  // ── ALL HOOKS MUST COME BEFORE ANY CONDITIONAL RETURN ───────────────────────
-  // React requires hooks to be called in the same order on every render.
+// ─── APP INNER ────────────────────────────────────────────────────────────────
+// The post-AuthGate shell. Auth state + permissions arrive via the
+// PermissionsContext provided by <AuthGate>; we no longer manage anon sign-in
+// here (AuthGate handles the #tv anon path; everything else requires real
+// login). Junid's #admin Google popup path still works for super-admin —
+// the wantAdmin/AdminSignInScreen render happens when an unauthenticated
+// session navigates to #admin, *before* AuthGate has provided context
+// (which means this branch only ever fires when isSuperAdmin === false from
+// AuthGate's perspective, e.g. signed out from the Google session).
+function AppInner() {
+  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut } = usePermissions();
 
-  // Track Firebase anonymous auth readiness — no DB reads/writes happen until
-  // a valid auth token exists (otherwise the new security rules block them).
-  const [authReady, setAuthReady] = useState(false);
+  // hash tracks the URL fragment for the #admin sign-in trigger and any
+  // future client-side routing.
+  const [hash, setHash] = useState(() => window.location.hash);
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setAuthReady(true);
-      } else {
-        signInAnonymously(auth).catch(err => console.warn("Anonymous sign-in failed:", err));
-      }
-    });
-    return () => unsub();
-  }, []);
-
-  // Admin sign-in state (Phase 1.5). authUser tracks the current Firebase user
-  // (anonymous OR Google admin); hash tracks the URL fragment for the #admin
-  // sign-in trigger. isAdmin/wantAdmin are derived each render.
-  const [authUser, setAuthUser] = useState(() => auth.currentUser);
-  const [hash,     setHash]     = useState(() => window.location.hash);
-  useEffect(() => {
-    const unsubAuth   = onAuthStateChanged(auth, setAuthUser);
     const onHashChange = () => setHash(window.location.hash);
     window.addEventListener("hashchange", onHashChange);
-    return () => { unsubAuth(); window.removeEventListener("hashchange", onHashChange); };
+    return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
-  const isAdmin   = !!authUser && !authUser.isAnonymous && authUser.email === ADMIN_EMAIL;
   const wantAdmin = hash === "#admin";
+  // Legacy isAdmin alias — true for super-admin only. Some downstream views
+  // (e.g. BroadcastGroupsView role check) still read this; the right gate is
+  // hasPermission("broadcast"), but we keep isAdmin for back-compat.
+  const isAdmin = isSuperAdmin;
 
   async function handleAdminSignOut() {
-    await signOut(auth); // existing onAuthStateChanged effect re-signs anonymously
+    await doSignOut();
     if (window.location.hash === "#admin") window.location.hash = "";
   }
 
@@ -7690,13 +7719,15 @@ export default function App() {
     else localStorage.removeItem("marathon_role");
   }, [role]);
 
-  // Safety: if the persisted role is BROADCAST_GROUPS but the user isn't admin
-  // anymore (signed out, or signed in with a different Google account), drop
-  // them back to RoleSelector. Prevents a blank screen and avoids implying any
-  // admin context they don't have.
+  // Safety: if the persisted role isn't available to this user's permission
+  // set (signed out, switched account, permissions revoked), drop them back
+  // to RoleSelector. Prevents a blank screen and avoids exposing a view the
+  // user shouldn't see.
   useEffect(() => {
-    if (role === ROLES.BROADCAST_GROUPS && !isAdmin) setRole(null);
-  }, [role, isAdmin]);
+    if (!role) return;
+    const required = ROLE_TO_PERMISSION[role];
+    if (required && !hasPermission(required)) setRole(null);
+  }, [role, hasPermission]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -7877,45 +7908,73 @@ export default function App() {
   // ────────────────────────────────────────────────────────────────────────────
 
   // ── ALL CONDITIONAL RETURNS AFTER ALL HOOKS ─────────────────────────────────
-  if (window.location.pathname === "/privacy") return <PrivacyPage />;
+  // (Privacy page handled by the outer App wrapper before AuthGate mounts.)
 
-  // Show a minimal loading screen while anonymous sign-in is in flight.
-  // This prevents any onValue listeners from firing before auth is ready,
-  // which would be rejected by the new "auth !== null" database rules.
+  // Helper: enforce permission on each role-keyed view. If user lacks the
+  // permission (e.g. via direct hash navigation that bypassed the tile list),
+  // render nothing so the role-reset effect above can drop them to the
+  // selector. The UI alone is bypassable; server-side Rules (Phase 2) are
+  // the real enforcement.
+  const guard = (roleKey, node) => hasPermission(ROLE_TO_PERMISSION[roleKey]) ? node : null;
+
   let view = null;
-  if (!authReady) {
-    view = (
-      <div style={{ minHeight:"100vh", background:BG, display:"flex", alignItems:"center", justifyContent:"center" }}>
-        <div style={{ color:"#555", fontFamily:"-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif", fontSize:"1rem" }}>Loading…</div>
-      </div>
-    );
-  } else if (wantAdmin && !isAdmin) {
+  if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} isAdmin={isAdmin} />;
-  } else if (role === ROLES.INSIGHTS)     view = <InsightsView   onExit={() => setRole(null)} />;
-  else if (role === ROLES.SOURCE)         view = <SourceView     orders={orders} returnsLog={returnsLog} onExit={() => setRole(null)} />;
-  else if (role === ROLES.RETURNS)        view = <ReturnsView    orders={orders} onExit={() => setRole(null)} />;
-  else if (role === ROLES.CUSTOMERS_DB)   view = <CustomersView  onExit={() => setRole(null)} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} />;
+  } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
+  else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} onExit={() => setRole(null)} />);
+  else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.CUSTOMERS_DB)   view = guard(ROLES.CUSTOMERS_DB, <CustomersView  onExit={() => setRole(null)} />);
   else if (role === ROLES.DISPLAY) {
     // TV mode is intentionally chrome-free — no Exit button, no admin pill.
-    // Exit by swiping right from the screen edge (the global edge-swipe-back
-    // gesture above) or by clearing localStorage "marathon_role".
-    view = <DisplayView orders={orders} />;
+    // Exit by swiping right from the screen edge or clearing localStorage.
+    view = guard(ROLES.DISPLAY, <DisplayView orders={orders} />);
   }
-  else if (role === ROLES.ADMIN)     view = <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />;
-  else if (role === ROLES.ASSISTANT) view = <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />;
-  else if (role === ROLES.WAREHOUSE) view = <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />;
-  else if (role === ROLES.CUSTOMER)  view = <CustomerView  orders={orders} onExit={() => setRole(null)} />;
-  else if (role === ROLES.BROADCAST_GROUPS && isAdmin) view = <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />;
+  else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.BROADCAST_GROUPS) view = guard(ROLES.BROADCAST_GROUPS, <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />);
+
+  // The user-indicator pill shows for any signed-in real user (PIN account
+  // OR super-admin). Suppressed on the TV display so it's truly chrome-free.
+  const indicatorLabel = isSuperAdmin
+    ? (authUser?.email?.split("@")[0] || "Admin")
+    : (permRecord?.displayName || permRecord?.username || authUser?.email?.split("@")[0] || "Staff");
+  const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY;
 
   return (
     <>
       <PWAUpdateBanner />
-      {!role && authReady && <AndroidInstallChip />}
-      {!role && authReady && <IOSInstallTooltip />}
+      {!role && <AndroidInstallChip />}
+      {!role && <IOSInstallTooltip />}
       {view}
-      {isAdmin && role !== ROLES.DISPLAY && <AdminIndicator email={authUser.email} onSignOut={handleAdminSignOut} />}
+      {showIndicator && <UserIndicator label={indicatorLabel} onSignOut={handleAdminSignOut} />}
     </>
+  );
+}
+
+// ─── TV ONLY SHELL ────────────────────────────────────────────────────────────
+// Mounted by AuthGate when hash === "#tv". Pulls orders via the anonymous
+// auth that AuthGate kicks off; renders the bare TV display with no admin
+// chrome, no role selector, no login screen.
+function TvOnlyShell() {
+  const orders = useOrders();
+  return <DisplayView orders={orders} />;
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+// Default export wraps AppInner in AuthGate. The renderTv callback returns
+// the TV-only shell so it never mounts on non-TV routes. Privacy page is
+// the only path that bypasses both AuthGate and the rest of the shell.
+export default function App() {
+  if (typeof window !== "undefined" && window.location.pathname === "/privacy") {
+    return <PrivacyPage />;
+  }
+  return (
+    <AuthGate renderTv={() => <TvOnlyShell />}>
+      <AppInner />
+    </AuthGate>
   );
 }
