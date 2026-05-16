@@ -16,6 +16,18 @@ const FONT   = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif"
 const BLUE   = "#4A7FFF";
 const BLUE_L = "#6A9FFF";
 
+// Firebase Auth rejects passwords shorter than 6 characters, so we can't send
+// the raw 4-digit PIN. Prefixing with a fixed "pin-" string makes it 8 chars
+// while still being deterministic. THIS TRANSFORMATION MUST BE BYTE-IDENTICAL
+// to the one in scripts/seedUsers.js — if they drift, the credentials seeded
+// for staff will never match what they type here.
+function toAuthPassword(pin) {
+  if (!/^\d{4}$/.test(String(pin))) {
+    throw new Error(`PIN must be exactly 4 digits, got: ${pin}`);
+  }
+  return `pin-${pin}`;
+}
+
 export default function Login() {
   const [username, setUsername] = useState("");
   const [pin,      setPin]      = useState("");
@@ -30,8 +42,9 @@ export default function Login() {
     setBusy(true);
     setError(null);
     try {
-      const email = `${username.trim().toLowerCase()}@marathon.internal`;
-      await signInWithEmailAndPassword(auth, email, pin);
+      const email    = `${username.trim().toLowerCase()}@marathon.internal`;
+      const password = toAuthPassword(pin);
+      await signInWithEmailAndPassword(auth, email, password);
       // AuthGate's onAuthStateChanged handler fires next; this component unmounts.
     } catch (err) {
       if (err.code === "auth/too-many-requests") {

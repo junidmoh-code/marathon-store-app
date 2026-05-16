@@ -24,7 +24,7 @@ const clicked = await page.evaluate(() => {
   // Find a div that looks like AdminProductRow: cursor:pointer + img + chevron.
   const all = Array.from(document.querySelectorAll("div"));
   for (const d of all) {
-    if ((d.style.cursor || "") !== "pointer") continue;
+    if (getComputedStyle(d).cursor !== "pointer") continue;
     if (!d.querySelector("img")) continue;
     if (!d.querySelector("svg polyline")) continue;
     d.click();

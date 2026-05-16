@@ -16,11 +16,24 @@
 const path = require("node:path");
 const { existsSync, readFileSync } = require("node:fs");
 
+// Firebase Auth rejects passwords shorter than 6 characters, so we can't pass
+// the raw 4-digit PIN. Prefixing with a fixed "pin-" string makes it 8 chars
+// while still being deterministic. THIS TRANSFORMATION MUST BE BYTE-IDENTICAL
+// to the one in src/components/Login.jsx — if they drift, seeded credentials
+// will never match what users type.
+function toAuthPassword(pin) {
+  if (!/^\d{4}$/.test(String(pin))) {
+    throw new Error(`PIN must be exactly 4 digits, got: ${pin}`);
+  }
+  return `pin-${pin}`;
+}
+
 // firebase-admin is pulled from functions/node_modules so this script needs
 // no separate install.
 const adminPath = path.resolve(__dirname, "..", "functions", "node_modules", "firebase-admin");
 const admin = require(adminPath);
 
+const PROJECT_ID   = "marathon-club";
 const DATABASE_URL = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
 
 // Role → permissions list. Mirrors the spec exactly. super_admin is the
@@ -43,7 +56,11 @@ if (!Array.isArray(roster.users) || roster.users.length === 0) {
   process.exit(1);
 }
 
-admin.initializeApp({ databaseURL: DATABASE_URL });
+// projectId must be set explicitly: when running under ADC (gcloud
+// application-default login), firebase-admin can't infer the project from the
+// credentials alone and falls back to GOOGLE_CLOUD_PROJECT — which isn't set
+// in a typical dev shell. Hard-coding it keeps the script self-contained.
+admin.initializeApp({ projectId: PROJECT_ID, databaseURL: DATABASE_URL });
 const fbAuth = admin.auth();
 const db     = admin.database();
 
@@ -54,15 +71,16 @@ async function seedOne({ username, displayName, role, pin }) {
   if (!ROLE_PERMS[role]) {
     throw new Error(`Unknown role '${role}' for ${username}. Valid roles: ${Object.keys(ROLE_PERMS).join(", ")}`);
   }
-  const email = `${username}@marathon.internal`;
+  const email    = `${username}@marathon.internal`;
+  const password = toAuthPassword(pin);
   let userRecord;
   try {
     userRecord = await fbAuth.getUserByEmail(email);
-    await fbAuth.updateUser(userRecord.uid, { password: pin, displayName });
+    await fbAuth.updateUser(userRecord.uid, { password, displayName });
     console.log(`  updated  ${username.padEnd(16)} ${userRecord.uid}`);
   } catch (err) {
     if (err.code !== "auth/user-not-found") throw err;
-    userRecord = await fbAuth.createUser({ email, password: pin, displayName });
+    userRecord = await fbAuth.createUser({ email, password, displayName });
     console.log(`  created  ${username.padEnd(16)} ${userRecord.uid}`);
   }
   await db.ref(`users/${userRecord.uid}`).set({
