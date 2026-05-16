@@ -1,6 +1,17 @@
 {
   "rules": {
     ".read": "auth !== null",
-    ".write": "auth !== null"
+    "broadcastHistory":        { ".write": "auth !== null" },
+    "broadcasts":              { ".write": "auth !== null" },
+    "customers":               { ".write": "auth !== null" },
+    "insights_log":            { ".write": "auth !== null" },
+    "orderCounter":            { ".write": "auth !== null" },
+    "orders":                  { ".write": "auth !== null" },
+    "products":                { ".write": "auth !== null" },
+    "restock_log":             { ".write": "auth !== null" },
+    "restock_requests":        { ".write": "auth !== null" },
+    "returns_log":             { ".write": "auth !== null" },
+    "source_onhold_responses": { ".write": "auth !== null" },
+    "users":                   { ".write": "auth.token.email === 'gunidmoh@gmail.com'" }
   }
 }

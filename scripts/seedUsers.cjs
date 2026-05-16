@@ -16,17 +16,10 @@
 const path = require("node:path");
 const { existsSync, readFileSync } = require("node:fs");
 
-// Firebase Auth rejects passwords shorter than 6 characters, so we can't pass
-// the raw 4-digit PIN. Prefixing with a fixed "pin-" string makes it 8 chars
-// while still being deterministic. THIS TRANSFORMATION MUST BE BYTE-IDENTICAL
-// to the one in src/components/Login.jsx — if they drift, seeded credentials
-// will never match what users type.
-function toAuthPassword(pin) {
-  if (!/^\d{4}$/.test(String(pin))) {
-    throw new Error(`PIN must be exactly 4 digits, got: ${pin}`);
-  }
-  return `pin-${pin}`;
-}
+// Shared PIN/username transforms. Single source of truth for the
+// pin-prefix scheme (Firebase Auth's 6-char minimum makes raw 4-digit PINs
+// unusable as passwords).
+const { toAuthPassword, usernameToEmail } = require("../functions/lib/auth-utils.cjs");
 
 // firebase-admin is pulled from functions/node_modules so this script needs
 // no separate install.
@@ -71,7 +64,7 @@ async function seedOne({ username, displayName, role, pin }) {
   if (!ROLE_PERMS[role]) {
     throw new Error(`Unknown role '${role}' for ${username}. Valid roles: ${Object.keys(ROLE_PERMS).join(", ")}`);
   }
-  const email    = `${username}@marathon.internal`;
+  const email    = usernameToEmail(username);
   const password = toAuthPassword(pin);
   let userRecord;
   try {

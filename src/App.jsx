@@ -7,6 +7,7 @@ import { database, storage, auth, googleProvider, functionsUS } from "./firebase
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
+import UserManagement from "./components/UserManagement";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -7703,6 +7704,10 @@ function AppInner() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
   const wantAdmin = hash === "#admin";
+  // /#admin/users (list) and /#admin/users/<uid> (detail) both mount the
+  // UserManagement view. The component itself gates non-super-admin viewers
+  // with a NotAuthorized screen — see src/components/UserManagement.jsx.
+  const wantUserMgmt = hash === "#admin/users" || hash === "#admin/users/" || hash.startsWith("#admin/users/");
   // Legacy isAdmin alias — true for super-admin only. Some downstream views
   // (e.g. BroadcastGroupsView role check) still read this; the right gate is
   // hasPermission("broadcast"), but we keep isAdmin for back-compat.
@@ -7918,7 +7923,12 @@ function AppInner() {
   const guard = (roleKey, node) => hasPermission(ROLE_TO_PERMISSION[roleKey]) ? node : null;
 
   let view = null;
-  if (wantAdmin && !isSuperAdmin) {
+  if (wantUserMgmt) {
+    // UserManagement handles its own super-admin gate + renders NotAuthorized
+    // for non-super-admin viewers. Hash-routed sub-paths (e.g. /#admin/users/<uid>)
+    // are parsed inside the component, so we just mount it and let it handle the rest.
+    view = <UserManagement authUser={authUser} onExit={() => (window.location.hash = "")} />;
+  } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
     view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} />;
