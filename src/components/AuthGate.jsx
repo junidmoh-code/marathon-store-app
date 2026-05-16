@@ -29,11 +29,12 @@ function LoadingScreen({ label = "Loading…" }) {
 }
 
 export default function AuthGate({ children, renderTv }) {
-  const [hash,       setHash]       = useState(window.location.hash);
-  const [authReady,  setAuthReady]  = useState(false);
-  const [user,       setUser]       = useState(null);
-  const [permRecord, setPermRecord] = useState(null);
-  const [permLoaded, setPermLoaded] = useState(false);
+  const [hash,         setHash]         = useState(window.location.hash);
+  const [authReady,    setAuthReady]    = useState(false);
+  const [user,         setUser]         = useState(null);
+  const [permRecord,   setPermRecord]   = useState(null);
+  const [permLoaded,   setPermLoaded]   = useState(false);
+  const [tvAuthReady,  setTvAuthReady]  = useState(false);
 
   // Track hash changes for the #tv bypass
   useEffect(() => {
@@ -51,13 +52,25 @@ export default function AuthGate({ children, renderTv }) {
     return () => off();
   }, []);
 
-  // On #tv with no current user, kick off anon sign-in so RTDB reads work
+  // On #tv, ensure we have a signed-in user (anon is fine) BEFORE rendering
+  // the TV display — otherwise useOrders subscribes with a null auth and the
+  // first read fails. If auth.currentUser already exists (warm start), flip
+  // tvAuthReady immediately; otherwise wait for the anon sign-in to settle.
+  // .catch() also flips the flag so we don't hang if anon fails — the TV
+  // will then render with whatever state it has (useOrders just returns []).
   const isTv = hash === "#tv";
   useEffect(() => {
     if (!isTv) return;
-    if (!auth.currentUser) {
-      signInAnonymously(auth).catch((err) => console.warn("anonymous sign-in failed:", err));
+    if (auth.currentUser) {
+      setTvAuthReady(true);
+      return;
     }
+    signInAnonymously(auth)
+      .then(() => setTvAuthReady(true))
+      .catch((err) => {
+        console.warn("anonymous sign-in failed:", err);
+        setTvAuthReady(true);
+      });
   }, [isTv]);
 
   // Subscribe to /users/{uid} for real (non-anonymous) users
@@ -77,9 +90,12 @@ export default function AuthGate({ children, renderTv }) {
     return () => off();
   }, [user]);
 
-  // TV bypass: hand off entirely to the caller's renderTv. Children + Login
-  // never mount on this path.
-  if (isTv) return renderTv ? renderTv() : null;
+  // TV bypass: hand off entirely to the caller's renderTv — but only once
+  // tvAuthReady is true, so the TV's data hooks always see a valid auth.
+  if (isTv) {
+    if (!tvAuthReady) return <LoadingScreen />;
+    return renderTv ? renderTv() : null;
+  }
 
   if (!authReady) return <LoadingScreen />;
   if (!user || user.isAnonymous) return <Login />;

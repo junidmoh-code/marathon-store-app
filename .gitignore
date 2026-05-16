@@ -13,6 +13,6 @@ dist
 service-account*.json
 *-credentials.json
 
-# Phase 1 auth seed — PINs must not enter git history
-scripts/seedUsers.js
+# Phase 1 auth seed — PINs file must never enter git history.
+# The script itself is safe to track (no secrets); only the data file holds PINs.
 scripts/seedUsers.pins.json

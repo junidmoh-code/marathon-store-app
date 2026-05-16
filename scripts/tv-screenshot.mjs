@@ -8,9 +8,9 @@ const browser = await puppeteer.launch({
 });
 const page = await browser.newPage();
 
-await page.goto(URL, { waitUntil: "networkidle0", timeout: 60_000 });
+await page.goto(URL, { waitUntil: "networkidle2", timeout: 60_000 });
 await page.evaluate(() => localStorage.setItem("marathon_role", "display"));
-await page.reload({ waitUntil: "networkidle0", timeout: 60_000 });
+await page.reload({ waitUntil: "networkidle2", timeout: 60_000 });
 
 await new Promise(r => setTimeout(r, 4000));
 

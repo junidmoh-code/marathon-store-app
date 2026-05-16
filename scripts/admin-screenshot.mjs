@@ -8,39 +8,18 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 
 // Boot into Admin
-await page.goto(URL, { waitUntil: "networkidle0", timeout: 60_000 });
+await page.goto(URL, { waitUntil: "networkidle2", timeout: 60_000 });
 await page.evaluate(() => {
   localStorage.setItem("marathon_role", "admin");
 });
-await page.reload({ waitUntil: "networkidle0", timeout: 60_000 });
+await page.reload({ waitUntil: "networkidle2", timeout: 60_000 });
 await new Promise(r => setTimeout(r, 3500));
 
 // List screenshot — viewport only (first ~10 rows)
 await page.screenshot({ path: "/tmp/admin-list.png" });
 console.log("list: /tmp/admin-list.png");
 
-// Pick first product id (from rendered list) and navigate to its detail
-const firstId = await page.evaluate(() => {
-  // The chevron-right SVG sits inside each row card; rows are siblings.
-  // Easiest: read window state via the products list — but products aren't
-  // exposed. Fallback to walking DOM: rows have a known role pattern.
-  // Hack: find divs that contain ProductPhoto img + chevron-right.
-  const candidates = Array.from(document.querySelectorAll("div"));
-  for (const d of candidates) {
-    const svgs = d.querySelectorAll("svg");
-    const imgs = d.querySelectorAll("img");
-    if (imgs.length === 1 && svgs.length === 1) {
-      // crude — probably a row; check its inline style for cursor:pointer
-      if ((d.style.cursor || "") === "pointer") return null; // we don't get id here
-    }
-  }
-  return null;
-});
-
-// Simpler: just set hash to a known pattern. We need a real product id.
-// Easiest path: read products from Firebase via the page's own database
-// connection isn't accessible. So inspect href/state from the row click.
-// Instead, just click the first matching row and let hashchange happen.
+// Click the first product row and let hashchange navigate to its detail page.
 const clicked = await page.evaluate(() => {
   // Find a div that looks like AdminProductRow: cursor:pointer + img + chevron.
   const all = Array.from(document.querySelectorAll("div"));
