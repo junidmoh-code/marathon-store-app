@@ -407,9 +407,14 @@ function updateOrder(id, patch) {
 // ─── INSIGHTS LOG ────────────────────────────────────────────────────────────
 // Permanently appended — never deleted. Each entry is pushed to /insights_log
 // with a Firebase-generated chronological key.
-function logInsight(entry) {
-  push(ref(database, "insights_log"), entry)
-    .catch(err => console.warn("logInsight failed:", err));
+function logInsight(entry, onError) {
+  // Callers that need depletion-specific (or other context-specific) error
+  // handling can pass `onError(err)`. Otherwise the default warn fires so
+  // failures are still observable in DevTools.
+  push(ref(database, "insights_log"), entry).catch(err => {
+    if (onError) onError(err);
+    else console.warn("logInsight failed:", err);
+  });
 }
 
 function useInsightsLog() {
@@ -3051,25 +3056,61 @@ function WarehouseView({ products = [], orders, onExit }) {
       patch.displayRefilledAt            = null;
     }
     updateOrder(order.id, patch);
-    // Stock-deplete: append an insights_log entry so the Stock Depleted tab
-    // can show past-day counts. Without this, the tab only ever sees today's
-    // events because orders/{id} gets overwritten when the daily orderNumber
-    // counter wraps. Mirrors the action="out_of_stock" pattern used by OOS
-    // Tracker. dedupeByOrderNumber + composite key handle re-fires.
+    // ─────────────────────────────────────────────────────────────────────
+    // CRITICAL — DO NOT REMOVE OR REFACTOR AWAY
+    // ─────────────────────────────────────────────────────────────────────
+    // Every transition to status === "stockDepleted" MUST produce one
+    // /insights_log entry with action: "stock_depleted". Without it,
+    // depletion events live ONLY in /orders/{orderNumber}, which is
+    // overwritten on the daily orderNumber reset — yesterday's data is
+    // gone tomorrow.
+    //
+    // History: this call did not exist before commit 7810a8b (Fri 2026-05-15
+    // 18:28 SAST). Friday's daytime depletions were never logged and were
+    // lost when the daily counter wrapped overnight. See Phase 13B hardening
+    // PR for the full diagnosis chain.
+    //
+    // Contract:
+    //   • Mirrors action="out_of_stock" in updateStatus (~line 3008).
+    //   • InsightStockDepletedTab past-window reads filter by action and
+    //     dedupe via eventCompositeKey (SA-date :: orderNumber), so re-fires
+    //     from rapid double-taps and undo/redo collapse to one row.
+    //   • The push() is non-blocking — the patch to /orders/{id} above has
+    //     already succeeded — but its failure is observable via onError.
+    // ─────────────────────────────────────────────────────────────────────
     if (status === "stockDepleted") {
-      logInsight({
-        timestamp:        now,
-        productName:      order.productName,
-        productCategory:  order.productCategory || "",
-        productType:      order.productType || "sneaker",
-        size:             order.size,
-        customerName:     order.customerName,
-        customerPhone:    order.customerPhone,
-        orderNumber:      order.id,
-        action:           "stock_depleted",
-        placedAtHub:      order.placedAtHub || order.hub || "hub1",
-        displayRefilledBy: selectedHub,
-      });
+      logInsight(
+        {
+          timestamp:         now,
+          productName:       order.productName,
+          productCategory:   order.productCategory || "",
+          productType:       order.productType || "sneaker",
+          size:              order.size,
+          customerName:      order.customerName,
+          customerPhone:     order.customerPhone,
+          orderNumber:       order.id,
+          action:            "stock_depleted",
+          placedAtHub:       order.placedAtHub || order.hub || "hub1",
+          displayRefilledBy: selectedHub,
+        },
+        (err) => {
+          // Depletion-specific surface so this critical write is observable.
+          // The user's depletion already succeeded (orders/{id} patched);
+          // only the historical log entry is missing.
+          console.warn("stock_depleted logInsight FAILED:", {
+            orderId:     order.id,
+            productName: order.productName,
+            size:        order.size,
+            error:       err?.message || String(err),
+          });
+          if (typeof window !== "undefined") {
+            window.__stockDepletedLogFailures = (window.__stockDepletedLogFailures || 0) + 1;
+            window.dispatchEvent(new CustomEvent("marathon:stock-depleted-log-warning", {
+              detail: { orderId: order.id, productName: order.productName, error: err?.message || String(err) },
+            }));
+          }
+        }
+      );
     }
   };
   // Reverse a refill resolution — clears status + both timestamps + by-hub so
