@@ -728,7 +728,11 @@ function AddStaffModal({ onClose, onCreated }) {
                      style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
                               borderBottom: i < ALL_PERMISSIONS.length - 1 ? `1px solid ${DIVIDER}` : "none",
                               cursor: "pointer" }}>
-                  <Checkbox checked={on} onChange={() => togglePerm(p.key)} />
+                  {/* Stop click bubbling so the row's onClick doesn't fire a
+                      second time and net the toggle back to its old value. */}
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <Checkbox checked={on} onChange={() => togglePerm(p.key)} />
+                  </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, color: "#fff", display: "flex", alignItems: "center", gap: 6 }}>
                       {p.label}

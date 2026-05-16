@@ -876,7 +876,11 @@ exports.createStaffUser = onCall(
       throw new HttpsError("already-exists", `Username "${username}" is already taken.`);
     }
 
-    // ── Create the Firebase Auth user ────────────────────────────────────
+    // ── Create the Firebase Auth user. The getUserByEmail preflight above
+    //    closes the common case, but it's racy: two concurrent creates with
+    //    the same username can both pass the preflight, then one createUser
+    //    fails with auth/email-already-exists. Preserve the already-exists
+    //    contract here so the UI can render the right field-level error. ──
     let userRecord;
     try {
       userRecord = await admin.auth().createUser({
@@ -885,6 +889,9 @@ exports.createStaffUser = onCall(
         displayName: cleanDisplayName,
       });
     } catch (err) {
+      if (err.code === "auth/email-already-exists") {
+        throw new HttpsError("already-exists", `Username "${username}" is already taken.`);
+      }
       console.error("createStaffUser: createUser failed:", err);
       throw new HttpsError("internal", "Could not create Firebase Auth user.");
     }

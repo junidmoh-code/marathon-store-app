@@ -1,6 +1,9 @@
 {
   "rules": {
     ".read": "auth !== null",
-    ".write": "auth !== null"
+    ".write": "auth !== null",
+    "users": {
+      ".write": "auth.token.email === 'gunidmoh@gmail.com'"
+    }
   }
 }

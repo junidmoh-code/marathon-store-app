@@ -4,8 +4,10 @@
 // match what Login.jsx sends to Firebase Auth.
 
 export function toAuthPassword(pin) {
+  // Never echo the supplied PIN in this error — the message may be logged
+  // or surfaced upstream and the PIN is credential material.
   if (!/^\d{4}$/.test(String(pin))) {
-    throw new Error(`PIN must be exactly 4 digits, got: ${pin}`);
+    throw new Error("PIN must be exactly 4 digits.");
   }
   return `pin-${pin}`;
 }
