@@ -3,7 +3,7 @@
 // for every staff PIN account. Idempotent — re-running updates the PIN
 // (password) and permissions record without duplicating accounts.
 //
-//   node scripts/seedUsers.js
+//   node scripts/seedUsers.cjs
 //
 // Auth: ADC (run `gcloud auth application-default login --project marathon-club`
 // once) OR GOOGLE_APPLICATION_CREDENTIALS pointing at a service-account JSON.

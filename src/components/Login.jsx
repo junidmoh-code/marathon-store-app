@@ -19,7 +19,7 @@ const BLUE_L = "#6A9FFF";
 // Firebase Auth rejects passwords shorter than 6 characters, so we can't send
 // the raw 4-digit PIN. Prefixing with a fixed "pin-" string makes it 8 chars
 // while still being deterministic. THIS TRANSFORMATION MUST BE BYTE-IDENTICAL
-// to the one in scripts/seedUsers.js — if they drift, the credentials seeded
+// to the one in scripts/seedUsers.cjs — if they drift, the credentials seeded
 // for staff will never match what they type here.
 function toAuthPassword(pin) {
   if (!/^\d{4}$/.test(String(pin))) {
