@@ -1,10 +1,18 @@
 // ─── AUTH GATE ────────────────────────────────────────────────────────────────
 // Wraps the app, decides which surface to show:
-//   1. hash === "#tv"  → calls renderTv() which mounts the TV display. Anon
-//      sign-in is kicked off so RTDB reads work. Bypasses everything else.
-//   2. otherwise + no user (or anonymous user from a prior TV visit) → Login.
-//   3. otherwise + signed-in real user → fetches /users/{uid} permissions,
-//      provides PermissionsContext to children.
+//   1. hash === "#tv"     → calls renderTv() which mounts the TV display. Anon
+//                           sign-in is kicked off so RTDB reads work. Bypasses
+//                           everything else.
+//   2. hash === "#admin"
+//      AND unauthenticated → renders children with a stub PermissionsContext
+//                           so AppInner can mount its <AdminSignInScreen /> and
+//                           drive the Google popup. Without this bypass the
+//                           staff Login form would show instead and Junid
+//                           would have no way to reach the super-admin path
+//                           from a fresh device.
+//   3. otherwise + no user (or anonymous from a prior TV visit) → Login.
+//   4. otherwise + signed-in real user → fetches /users/{uid} permissions,
+//                           provides PermissionsContext to children.
 //
 // hasPermission(name) returns true for the super-admin email regardless of
 // /users/{uid} contents, so Junid's existing Google sign-in path keeps working.
@@ -98,6 +106,28 @@ export default function AuthGate({ children, renderTv }) {
   }
 
   if (!authReady) return <LoadingScreen />;
+
+  // #admin bypass for unauthenticated visitors. AppInner sees wantAdmin &&
+  // !isSuperAdmin and renders <AdminSignInScreen />. Once signInWithPopup
+  // resolves, onAuthStateChanged fires, user becomes Junid's real account,
+  // and AuthGate re-renders down the normal authenticated path below.
+  const isAdmin = hash === "#admin";
+  if (isAdmin && (!user || user.isAnonymous)) {
+    return (
+      <PermissionsContext.Provider
+        value={{
+          user:          user || null,
+          permRecord:    null,
+          isSuperAdmin:  false,
+          permissions:   [],
+          hasPermission: () => false,
+          signOut:       () => signOut(auth).catch((err) => console.warn("signOut failed:", err)),
+        }}>
+        {children}
+      </PermissionsContext.Provider>
+    );
+  }
+
   if (!user || user.isAnonymous) return <Login />;
   if (!permLoaded) return <LoadingScreen />;
 
