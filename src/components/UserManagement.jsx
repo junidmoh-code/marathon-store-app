@@ -124,16 +124,31 @@ export default function UserManagement({ authUser, onExit }) {
     return () => unsub();
   }, [authUser]);
 
-  // Hash-change listener so the back/forward buttons drive the UI
+  // Hash-change listener so list→detail navigation + back/forward buttons drive
+  // the UI. CRITICAL — DO NOT add anything to the dep array.
+  //
+  // Earlier this effect had [onExit] as its dep array. App.jsx passes a fresh
+  // `onExit` function reference on every render, so the effect re-ran every
+  // parent render — cleaning up and re-attaching the listener constantly. In
+  // production that churn was wide enough that the listener was missing when
+  // the asynchronously-dispatched hashchange event fired after a row tap. The
+  // URL bar would update (proof the click + hash assignment worked) but the
+  // component never re-rendered into the detail view; only a manual page
+  // refresh fixed it because that re-ran the parseHash() initial-state
+  // calculation. See PR #12 for the diagnosis chain.
+  //
+  // Fix: empty deps. Listener attaches ONCE on mount, persists for the
+  // component lifetime, never churns. The `onExit?.()` branch was also
+  // removed — App.jsx's wantUserMgmt detection already unmounts this
+  // component when the hash leaves /admin/users, so calling onExit from
+  // here is redundant.
   useEffect(() => {
     const onHashChange = () => {
-      const next = parseHash();
-      if (next) setRoute(next);
-      else onExit?.();   // hash left /admin/users entirely
+      setRoute(parseHash() || { view: "list", uid: null });
     };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
-  }, [onExit]);
+  }, []);
 
   // Gate (defense in depth — the route mount in App.jsx is already gated)
   if (!authUser || authUser.email !== ADMIN_EMAIL) {
