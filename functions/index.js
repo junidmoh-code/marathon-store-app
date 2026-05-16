@@ -2,6 +2,7 @@ const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https")
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
+const { toAuthPassword, usernameToEmail } = require("./lib/auth-utils.cjs");
 
 // Initialise the admin SDK once at module scope. Required for Phase 13A's
 // analyzeReorderNeeds, which reads /products, /orders, /insights_log and writes
@@ -810,5 +811,176 @@ exports.analyzeReorderNeeds = onCall(
         productNameCollisions: collisions,
       },
     };
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Staff user management (super-admin only)
+// ─────────────────────────────────────────────────────────────────────────────
+// Three callable functions for super-admin-only staff user lifecycle. The
+// Firebase Auth client SDK can't create or delete users — only this admin
+// SDK path can — so the UI at /#admin/users calls these instead of touching
+// auth directly. /users/{uid} reads/writes for permission edits go straight
+// to RTDB from the client (no Cloud Function needed); these only handle
+// auth-side operations + paired /users record creation/deletion.
+//
+// Auth gate: assertAdmin (mirrors analyzeReorderNeeds + broadcast functions).
+// Token transforms: toAuthPassword + usernameToEmail from ./lib/auth-utils.cjs
+// (the same module Login.jsx imports its ES-module mirror from).
+
+const VALID_PERMISSIONS = [
+  "store_assistant", "warehouse",   "source",       "display_refills",
+  "place_orders",    "product_admin","insights",    "broadcast",
+  "customer_data",   "user_management",
+];
+const VALID_ROLES = ["admin", "store_assistant", "warehouse"];
+
+exports.createStaffUser = onCall(
+  { region: "europe-west1" },
+  async (request) => {
+    assertAdmin(request);
+
+    const { username, displayName, pin, role, permissions } = request.data || {};
+
+    // ── Validate ──────────────────────────────────────────────────────────
+    if (typeof username !== "string" || !/^[a-z0-9_]{1,30}$/.test(username)) {
+      throw new HttpsError("invalid-argument", "Username must be 1-30 chars, lowercase letters/digits/underscore only.");
+    }
+    if (typeof displayName !== "string" || displayName.trim().length < 1 || displayName.length > 50) {
+      throw new HttpsError("invalid-argument", "Display name must be 1-50 chars.");
+    }
+    if (typeof pin !== "string" || !/^\d{4}$/.test(pin)) {
+      throw new HttpsError("invalid-argument", "PIN must be exactly 4 digits.");
+    }
+    if (!VALID_ROLES.includes(role)) {
+      throw new HttpsError("invalid-argument", `Role must be one of: ${VALID_ROLES.join(", ")}.`);
+    }
+    if (!Array.isArray(permissions) || permissions.some((p) => typeof p !== "string" || !VALID_PERMISSIONS.includes(p))) {
+      throw new HttpsError("invalid-argument", `Permissions must be an array of: ${VALID_PERMISSIONS.join(", ")}.`);
+    }
+    const cleanDisplayName = displayName.trim();
+
+    // ── Username collision check via Firebase Auth ───────────────────────
+    const email = usernameToEmail(username);
+    let collision = false;
+    try {
+      await admin.auth().getUserByEmail(email);
+      collision = true;
+    } catch (err) {
+      if (err.code !== "auth/user-not-found") {
+        console.error("createStaffUser: getUserByEmail unexpected error:", err);
+        throw new HttpsError("internal", "Could not verify username availability.");
+      }
+    }
+    if (collision) {
+      throw new HttpsError("already-exists", `Username "${username}" is already taken.`);
+    }
+
+    // ── Create the Firebase Auth user ────────────────────────────────────
+    let userRecord;
+    try {
+      userRecord = await admin.auth().createUser({
+        email,
+        password: toAuthPassword(pin),
+        displayName: cleanDisplayName,
+      });
+    } catch (err) {
+      console.error("createStaffUser: createUser failed:", err);
+      throw new HttpsError("internal", "Could not create Firebase Auth user.");
+    }
+
+    // ── Write the /users/{uid} record. On failure, roll back the auth user
+    //    so we never leave an orphan account that can sign in but has no
+    //    permissions record. ──────────────────────────────────────────────
+    try {
+      await admin.database().ref(`users/${userRecord.uid}`).set({
+        username,
+        displayName: cleanDisplayName,
+        role,
+        permissions,
+        createdAt: admin.database.ServerValue.TIMESTAMP,
+      });
+    } catch (err) {
+      console.error("createStaffUser: /users write failed — rolling back auth user:", err);
+      try { await admin.auth().deleteUser(userRecord.uid); }
+      catch (rollbackErr) { console.error("createStaffUser: rollback also failed:", rollbackErr); }
+      throw new HttpsError("internal", "Could not persist user record.");
+    }
+
+    return { uid: userRecord.uid, username, displayName: cleanDisplayName };
+  }
+);
+
+exports.deleteStaffUser = onCall(
+  { region: "europe-west1" },
+  async (request) => {
+    assertAdmin(request);
+
+    const { uid } = request.data || {};
+    if (typeof uid !== "string" || !uid) {
+      throw new HttpsError("invalid-argument", "uid is required.");
+    }
+
+    // ── Self-deletion guard. The super-admin uses a Google account with the
+    //    ADMIN_EMAIL address; if anyone ever tampers with /users to include
+    //    that email, this stops a UI mis-click from locking the org out. ──
+    let target;
+    try {
+      target = await admin.auth().getUser(uid);
+    } catch (err) {
+      if (err.code === "auth/user-not-found") {
+        throw new HttpsError("not-found", "User not found.");
+      }
+      console.error("deleteStaffUser: getUser failed:", err);
+      throw new HttpsError("internal", "Could not look up user.");
+    }
+    if (target.email === ADMIN_EMAIL) {
+      throw new HttpsError("failed-precondition", "Cannot delete the super-admin account.");
+    }
+
+    // ── /users record first, auth user second. If auth-delete fails after
+    //    the RTDB delete, the user can no longer access role-gated views
+    //    (no /users record → no permissions). ──────────────────────────
+    try {
+      await admin.database().ref(`users/${uid}`).remove();
+    } catch (err) {
+      console.error("deleteStaffUser: /users remove failed:", err);
+      throw new HttpsError("internal", "Could not remove user record.");
+    }
+    try {
+      await admin.auth().deleteUser(uid);
+    } catch (err) {
+      console.error("deleteStaffUser: deleteUser failed (but /users already removed):", err);
+      throw new HttpsError("internal", "Could not delete Firebase Auth user. The /users record was already removed; manual cleanup may be required.");
+    }
+
+    return { success: true };
+  }
+);
+
+exports.updateStaffPassword = onCall(
+  { region: "europe-west1" },
+  async (request) => {
+    assertAdmin(request);
+
+    const { uid, pin } = request.data || {};
+    if (typeof uid !== "string" || !uid) {
+      throw new HttpsError("invalid-argument", "uid is required.");
+    }
+    if (typeof pin !== "string" || !/^\d{4}$/.test(pin)) {
+      throw new HttpsError("invalid-argument", "PIN must be exactly 4 digits.");
+    }
+
+    try {
+      await admin.auth().updateUser(uid, { password: toAuthPassword(pin) });
+    } catch (err) {
+      if (err.code === "auth/user-not-found") {
+        throw new HttpsError("not-found", "User not found.");
+      }
+      console.error("updateStaffPassword: updateUser failed:", err);
+      throw new HttpsError("internal", "Could not update PIN.");
+    }
+
+    return { success: true };
   }
 );
