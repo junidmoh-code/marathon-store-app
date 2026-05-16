@@ -84,7 +84,7 @@ function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,2
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -102,6 +102,7 @@ const ROLE_TO_PERMISSION = {
   [ROLES.CUSTOMERS_DB]:     "customer_data",
   [ROLES.ADMIN]:            "product_admin",
   [ROLES.BROADCAST_GROUPS]: "broadcast",
+  [ROLES.USER_MANAGEMENT]:  "user_management",
 };
 const STATUS = { INCOMING: "incoming", READY: "ready", OUT_OF_STOCK: "out_of_stock", COLLECTED: "collected", COMING_TOMORROW: "coming_tomorrow" };
 
@@ -1342,6 +1343,17 @@ const RoleIcons = {
       <path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/>
     </svg>
   ),
+  user_management: (
+    // lucide-style "user + cog": person silhouette with a small adjust-mark to
+    // distinguish from the customers_db two-people icon. Same stroke/weight.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="9" cy="7" r="4"/>
+      <path d="M3 21v-2a4 4 0 0 1 4-4h4"/>
+      <circle cx="18" cy="17" r="3"/>
+      <path d="m15.5 14.5-1-1"/>
+      <path d="m21.5 19.5-1-1"/>
+    </svg>
+  ),
 };
 
 // Section header svg icons
@@ -1480,6 +1492,9 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission }) {
           hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && <RoleCard key="customers" icon={RoleIcons.customers_db}     name="Customers"       desc="Customer database"       onClick={() => onSelect(ROLES.CUSTOMERS_DB)} />,
           hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && <RoleCard key="admin"     icon={RoleIcons.admin}            name="Admin"           desc="Manage products"         onClick={() => onSelect(ROLES.ADMIN)} />,
           hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && <RoleCard key="broadcast" icon={RoleIcons.broadcast_groups} name="Group Broadcast" desc="Send to WhatsApp groups" onClick={() => onSelect(ROLES.BROADCAST_GROUPS)} />,
+          // User Management is hash-routed (not role-routed) — the screen mounts
+          // on wantUserMgmt in the App view cascade. Tap → set hash → mount.
+          hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && <RoleCard key="user_mgmt" icon={RoleIcons.user_management} name="User Management" desc="Manage staff accounts" onClick={() => (window.location.hash = "#admin/users")} />,
         ].filter(Boolean);
         // `last` on the final card in each group removes the trailing divider.
         const withLast = (cards) => cards.map((card, i) =>
