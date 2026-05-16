@@ -213,6 +213,11 @@ function NotFoundView({ onBack }) {
 // ─── List view ───────────────────────────────────────────────────────────────
 
 function UserListView({ users, loading, onSelect, onAdd, onExit }) {
+  // iOS large-title pattern. The sticky nav bar only contains the back affordance
+  // and a centred small "Staff" label — leaves the top-right corner free for the
+  // globally-fixed UserIndicator pill (Signed in: gunidmoh · Sign Out, zIndex
+  // 9998). The "+ Add staff" action lives in a dedicated large-title row below
+  // the bar, where it can't be covered by that pill at any viewport width.
   return (
     <>
       <div style={{ position: "sticky", top: 0, zIndex: 10, background: "rgba(0,0,0,.85)", backdropFilter: "blur(10px)",
@@ -222,13 +227,25 @@ function UserListView({ users, loading, onSelect, onAdd, onExit }) {
           <ChevronLeft /> Exit
         </button>
         <div style={{ fontSize: 17, fontWeight: 600 }}>Staff</div>
-        <button onClick={onAdd} style={{ ...linkBtn, fontWeight: 600 }}>+ Add</button>
+        <div style={{ width: 50 }} aria-hidden />
       </div>
 
       <div style={{ maxWidth: 600, margin: "0 auto", padding: "20px 16px" }}>
-        <div style={{ fontSize: 11, color: TEXT_2, letterSpacing: "0.05em", textTransform: "uppercase",
-                      padding: "0 4px 8px" }}>
-          {loading ? "Loading…" : `${users.length} ${users.length === 1 ? "member" : "members"}`}
+        {/* Large-title row: matches iOS "large title with primary action" pattern. */}
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between",
+                      gap: 12, padding: "6px 4px 14px" }}>
+          <div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: "#fff", letterSpacing: "-0.01em", lineHeight: 1.1 }}>
+              Staff
+            </div>
+            <div style={{ fontSize: 12, color: TEXT_2, marginTop: 4 }}>
+              {loading ? "Loading…" : `${users.length} ${users.length === 1 ? "member" : "members"}`}
+            </div>
+          </div>
+          <button onClick={onAdd}
+                  style={{ ...primaryBtn, padding: "8px 14px", fontSize: 13, whiteSpace: "nowrap", flexShrink: 0 }}>
+            + Add staff
+          </button>
         </div>
 
         <div style={{ background: CARD, borderRadius: 12, overflow: "hidden" }}>
@@ -237,7 +254,7 @@ function UserListView({ users, loading, onSelect, onAdd, onExit }) {
           ))}
           {!loading && users.length === 0 && (
             <div style={{ padding: 24, textAlign: "center", color: TEXT_2, fontSize: 14 }}>
-              No staff yet. Tap + Add to create the first account.
+              No staff yet. Tap "+ Add staff" to create the first account.
             </div>
           )}
         </div>
@@ -247,17 +264,32 @@ function UserListView({ users, loading, onSelect, onAdd, onExit }) {
 }
 
 function UserRow({ user, onClick, divider }) {
-  const [hover, setHover] = useState(false);
+  const [hover,  setHover]  = useState(false);
+  const [active, setActive] = useState(false);
   const permCount = Array.isArray(user.permissions) ? user.permissions.length : 0;
+  // Semantic <button> instead of a clickable <div>: gets click + Enter + Space
+  // handlers natively, focusable for keyboard nav, and the active state below
+  // gives reliable tap feedback on mobile (cursor:pointer + :hover alone won't
+  // visibly fire on touch). Reset default button chrome so it inherits the row
+  // layout.
   return (
-    <div onClick={onClick}
+    <button type="button"
+         onClick={onClick}
          onMouseEnter={() => setHover(true)}
-         onMouseLeave={() => setHover(false)}
+         onMouseLeave={() => { setHover(false); setActive(false); }}
+         onMouseDown={() => setActive(true)}
+         onMouseUp={() => setActive(false)}
+         onTouchStart={() => setActive(true)}
+         onTouchEnd={() => setActive(false)}
+         onTouchCancel={() => setActive(false)}
          style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px",
                   cursor: "pointer",
-                  background: hover ? CARD_HOVER : "transparent",
+                  background: active ? "#3a3a3c" : hover ? CARD_HOVER : "transparent",
                   borderBottom: divider ? `1px solid ${DIVIDER}` : "none",
-                  transition: "background 80ms" }}>
+                  transition: "background 80ms",
+                  width: "100%", textAlign: "left",
+                  border: "none", color: "inherit", font: "inherit",
+                  appearance: "none" }}>
       <AvatarCircle name={user.displayName} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 15, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -272,7 +304,7 @@ function UserRow({ user, onClick, divider }) {
         </div>
       </div>
       <ChevronRight />
-    </div>
+    </button>
   );
 }
 
