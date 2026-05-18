@@ -229,28 +229,44 @@ exports.sendBroadcast = onCall(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI Reorder Planner — backend (Phase 13A)
+// AI Reorder Planner — backend (Phase 13A + Phase 1 UI prep)
 // ─────────────────────────────────────────────────────────────────────────────
 // analyzeReorderNeeds is a Gen 2 admin-only callable that ingests the store's
 // full operational history (every product, every order, every insights_log
 // entry) and asks Claude Sonnet 4.6 to produce a structured reorder plan for
 // the upcoming 45-day cycle. The flow:
 //
-//   1. Read /products, /orders, /insights_log in parallel — no time filter.
-//   2. Aggregate per-product lifetime stats AND a recent-60-day slice so the
-//      model can weight recent trends without losing all-time signal.
-//   3. Pre-filter out products with zero activity ever. If more than 200
+//   1. Gate the call:
+//      a) /insights/reorderPlan/status — reject if state === "running" within
+//         REORDER_CONCURRENT_LOCK_MS (concurrent-run protection).
+//      b) /insights/reorderPlan/latest — reject if generatedAt is within
+//         REORDER_RATE_LIMIT_MS, unless the super-admin passes { force: true }.
+//   2. Write state = "running" to /insights/reorderPlan/status so the UI can
+//      reflect progress without holding the callable open for the full run.
+//   3. Read /products, /orders, /insights_log in parallel — no time filter.
+//   4. Aggregate per-product lifetime stats AND a recent-60-day slice so the
+//      model can weight recent trends without losing all-time signal. Also
+//      surface SLOW MOVERS — stocked products with little/no sales activity.
+//   5. Pre-filter out products with zero activity ever. If more than 200
 //      remain, sort by composite activity score and cap at the top 200,
 //      surfacing the pagination state in dataQualityNotes.
-//   4. Read the admin's businessContext memory (manually seeded via the
+//   6. Read the admin's businessContext memory (manually seeded via the
 //      Firebase console) and include it in the system prompt.
-//   5. Call Claude with a strict-JSON instruction and parse the response.
+//   7. Call Claude with a strict-JSON instruction and parse the response.
 //      One retry on parse failure with a tightening prompt.
-//   6. Log token counts, cost estimate, and pagination state to
+//   8. Write the full { plan, meta } to /insights/reorderPlan/latest so the
+//      UI can render from cache between runs (and survive 70 s callable
+//      client-timeouts — the UI fire-and-forgets the call and polls RTDB).
+//   9. Log token counts, cost estimate, and pagination state to
 //      /aiAssistant/usage/{YYYY-MM-DD}/{pushKey} — no API key, no full prompt.
+//  10. Write state = "idle" (or "error") to /insights/reorderPlan/status in a
+//      finally block so the UI is never left thinking a run is still active.
+//
+// The callable still returns { plan, meta } on success for the rare case a
+// caller actually awaits — the UI doesn't, but the contract is preserved.
 //
 // Sizing: this is a heavy-compute, owner-triggered tool. 1 GiB memory and
-// 300 s timeout cover full-history aggregation for typical catalog sizes.
+// 900 s timeout cover full-history aggregation for typical catalog sizes.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const anthropicApiKey = defineSecret("anthropic-api-key");
@@ -262,6 +278,23 @@ const REORDER_RECENT_DAYS    = 60;
 const REORDER_TOP_N          = 200;
 const PRICE_INPUT_PER_MTOK   = 3;   // USD per 1M input tokens (Sonnet 4.6)
 const PRICE_OUTPUT_PER_MTOK  = 15;  // USD per 1M output tokens (Sonnet 4.6)
+
+// RTDB paths for the UI handshake. The UI reads from these so it can
+// fire-and-forget the callable (the full run is ~5 min, well past the 70 s
+// httpsCallable client timeout).
+//   /insights/reorderPlan/status — { state, startedAt, startedBy, ... }
+//   /insights/reorderPlan/latest — most recent successful { plan, meta }
+const REORDER_STATUS_PATH = "insights/reorderPlan/status";
+const REORDER_LATEST_PATH = "insights/reorderPlan/latest";
+
+// Gating windows for the run.
+//   CONCURRENT_LOCK_MS — how long a "running" status blocks a fresh start.
+//   Set under the 900 s server timeout so a crashed or stuck run can be
+//   retried without manual cleanup.
+//   RATE_LIMIT_MS — minimum gap between fresh runs. Super-admin can bypass
+//   with payload.force === true; non-super-admin force is ignored.
+const REORDER_CONCURRENT_LOCK_MS = 15 * 60 * 1000;
+const REORDER_RATE_LIMIT_MS      = 60 * 60 * 1000;
 
 function isoToMs(iso) {
   if (!iso) return 0;
@@ -563,6 +596,14 @@ PRIORITIES:
 5. Stockouts and substitutions are demand signals — products with frequent stockouts likely need higher reorder quantities than sales alone suggest.
 6. Display refill activity reflects shelf presence in partner stores; depletionCount is a strong negative signal (couldn't restock the display).
 
+SLOW MOVERS: In addition to reorder recommendations, identify SLOW MOVERS — products that appear in the catalog with available stock per size but have had little to no sales activity or depletion events within the data window. For each slow mover, emit an entry in the same recommendations array with:
+- action: "slow_mover"
+- priority: "high" | "medium" | "low" (based on how stagnant — longer dormancy or higher stock = higher priority)
+- totalSuggested: 0 (no reorder)
+- suggestedQuantity: {} (empty)
+- reasoning: explain why this item is slow, how long it's been stagnant, and a suggested action (review pricing, transfer between stores, discount, or remove from catalog)
+Do not include products with insufficient data history as slow movers — only flag items where you have confidence they're not moving.
+
 OUTPUT FORMAT: Respond with STRICT JSON only. Forbidden: any text before the opening {, any text after the closing }, markdown code fences (\`\`\`json or \`\`\`), prose explanations, apologies, headings, bullet lists outside JSON values, multiple JSON objects, trailing commas. The JSON must match this shape exactly:
 {
   "summary": "string — 2-4 sentences of headline findings",
@@ -570,7 +611,7 @@ OUTPUT FORMAT: Respond with STRICT JSON only. Forbidden: any text before the ope
     {
       "productId": "string",
       "productName": "string",
-      "action": "reorder" | "review" | "skip",
+      "action": "reorder" | "review" | "skip" | "slow_mover",
       "priority": "high" | "medium" | "low",
       "suggestedQuantity": { "<size>": <integer>, ... },
       "totalSuggested": <integer>,
@@ -647,156 +688,214 @@ exports.analyzeReorderNeeds = onCall(
     assertAdmin(request);
     const startedAt = Date.now();
     const callerEmail = request.auth.token.email;
+    const callerUid   = request.auth.uid;
+    const isSuperAdmin = callerEmail === ADMIN_EMAIL;
+    // payload.force is honoured only for the super-admin. Any other caller
+    // that passes force: true falls back to the normal rate-limit path.
+    const requestedForce = !!(request.data && request.data.force);
+    const force = requestedForce && isSuperAdmin;
 
-    // ── 1. Load full operational history in parallel.
+    // ── 0. Gates: concurrent-run lock + 1-hour rate limit.
+    //     Both reads happen BEFORE any status mutation, so a rejected call
+    //     never overwrites the prior run's state.
     const db = admin.database();
-    let productsSnap, ordersSnap, logsSnap, returnsSnap, contextSnap;
+    let statusSnap, latestSnap;
     try {
-      [productsSnap, ordersSnap, logsSnap, returnsSnap, contextSnap] = await Promise.all([
-        db.ref("products").once("value"),
-        db.ref("orders").once("value"),
-        db.ref("insights_log").once("value"),
-        db.ref("returns_log").once("value"),
-        db.ref("aiAssistant/memory/gunidmoh/businessContext").once("value"),
+      [statusSnap, latestSnap] = await Promise.all([
+        db.ref(REORDER_STATUS_PATH).once("value"),
+        db.ref(REORDER_LATEST_PATH).once("value"),
       ]);
     } catch (err) {
-      console.error("analyzeReorderNeeds: RTDB read failed:", err.message);
-      throw new HttpsError("unavailable", "Could not load store data.");
+      console.error("analyzeReorderNeeds: gate read failed:", err.message);
+      throw new HttpsError("unavailable", "Could not check planner state.");
     }
+    const currentStatus = statusSnap.val() || {};
+    const latestCached  = latestSnap.val() || {};
 
-    const productsRaw = productsSnap.val() || {};
-    const ordersRaw   = ordersSnap.val()   || {};
-    const logsRaw     = logsSnap.val()     || {};
-    const returnsRaw  = returnsSnap.val()  || {};
-    const businessContext = contextSnap.val() || null;
-
-    const products = Object.values(productsRaw)
-      .filter(v => v && typeof v === "object" && v.id && v.name);
-    const orders     = Object.values(ordersRaw).filter(Boolean);
-    const logs       = Object.values(logsRaw).filter(Boolean);
-    const returnsLog = Object.values(returnsRaw).filter(Boolean);
-
-    if (!products.length) {
-      throw new HttpsError("failed-precondition", "No products in catalog.");
-    }
-
-    // ── 2. Aggregate + pre-filter to active products only.
-    const { stats, collisions } = aggregatePerProduct({
-      products, orders, logs, returnsLog, nowMs: Date.now(),
-    });
-
-    const activeEntries = Array.from(stats.values()).filter(isActive);
-    const activeAll     = activeEntries.length;
-    let paginated       = false;
-
-    activeEntries.sort((a, b) => activityScore(b) - activityScore(a));
-    let toSend = activeEntries;
-    if (toSend.length > REORDER_TOP_N) {
-      toSend = toSend.slice(0, REORDER_TOP_N);
-      paginated = true;
-    }
-
-    if (!toSend.length) {
+    if (
+      currentStatus.state === "running" &&
+      currentStatus.startedAt &&
+      (Date.now() - currentStatus.startedAt) < REORDER_CONCURRENT_LOCK_MS
+    ) {
+      const minsAgo = Math.max(1, Math.round((Date.now() - currentStatus.startedAt) / 60000));
+      console.warn(`analyzeReorderNeeds: Concurrent run rejected for ${callerUid}`);
       throw new HttpsError(
         "failed-precondition",
-        "No products with any sales or activity yet — nothing to plan."
+        `A reorder analysis is already running. Started ${minsAgo} minute${minsAgo === 1 ? "" : "s"} ago.`,
       );
     }
 
-    const productPayload = toSend.map(e => buildProductPayload(e, Date.now()));
-    if (collisions.length) {
-      console.warn("analyzeReorderNeeds: productName collisions:", collisions);
+    if (
+      latestCached.generatedAt &&
+      (Date.now() - latestCached.generatedAt) < REORDER_RATE_LIMIT_MS &&
+      !force
+    ) {
+      const ageMin  = Math.max(1, Math.round((Date.now() - latestCached.generatedAt) / 60000));
+      const waitMin = Math.max(1, Math.round(REORDER_RATE_LIMIT_MS / 60000) - ageMin);
+      console.warn(`analyzeReorderNeeds: Rate-limit hit for ${callerUid}, last gen ${ageMin} min ago`);
+      throw new HttpsError(
+        "resource-exhausted",
+        `Rate limited. Last analysis was ${ageMin} minute${ageMin === 1 ? "" : "s"} ago. Wait ${waitMin} more minute${waitMin === 1 ? "" : "s"} or set force: true (super-admin only).`,
+      );
     }
 
-    // ── 3. Call Claude (strict JSON, one parse retry).
-    const system = systemPrompt(businessContext);
-    const user = buildUserPayload({
-      products,
-      activeAll,
-      sent: productPayload,
-      paginated,
-      businessContextPresent: !!businessContext,
+    // ── 1. Mark the run as running. The try/finally below guarantees this
+    //     state transitions to "idle" or "error" before the handler returns,
+    //     so the UI is never left polling a stuck "running".
+    await db.ref(REORDER_STATUS_PATH).set({
+      state: "running",
+      startedAt,
+      startedBy: callerUid,
     });
+    console.log("analyzeReorderNeeds: Status -> running");
 
-    const AnthropicCtor = Anthropic.default || Anthropic;
-    const client = new AnthropicCtor({ apiKey: anthropicApiKey.value() });
-
-    let parseRetries = 0;
-    let usage = { input_tokens: 0, output_tokens: 0 };
-    let parsed = null;
-    let lastRawText = "";
-
+    let lastError = null;
     try {
-      let resp = await callClaude({ client, system, user });
-      usage = resp.usage || usage;
-      lastRawText = (resp.content || []).map(c => c.text || "").join("");
-      parsed = extractJSON(lastRawText);
+      // ── 2. Load full operational history in parallel.
+      let productsSnap, ordersSnap, logsSnap, returnsSnap, contextSnap;
+      try {
+        [productsSnap, ordersSnap, logsSnap, returnsSnap, contextSnap] = await Promise.all([
+          db.ref("products").once("value"),
+          db.ref("orders").once("value"),
+          db.ref("insights_log").once("value"),
+          db.ref("returns_log").once("value"),
+          db.ref("aiAssistant/memory/gunidmoh/businessContext").once("value"),
+        ]);
+      } catch (err) {
+        console.error("analyzeReorderNeeds: RTDB read failed:", err.message);
+        throw new HttpsError("unavailable", "Could not load store data.");
+      }
 
-      if (!parsed) {
-        parseRetries = 1;
-        const retryHint = "Your previous response was not valid JSON. Re-emit the entire response as a single JSON object that matches the schema. No prose, no markdown, no code fences.";
-        resp = await callClaude({ client, system, user, retryHint });
-        const u2 = resp.usage || { input_tokens: 0, output_tokens: 0 };
-        usage = {
-          input_tokens:  (usage.input_tokens  || 0) + (u2.input_tokens  || 0),
-          output_tokens: (usage.output_tokens || 0) + (u2.output_tokens || 0),
-        };
+      const productsRaw = productsSnap.val() || {};
+      const ordersRaw   = ordersSnap.val()   || {};
+      const logsRaw     = logsSnap.val()     || {};
+      const returnsRaw  = returnsSnap.val()  || {};
+      const businessContext = contextSnap.val() || null;
+
+      const products = Object.values(productsRaw)
+        .filter(v => v && typeof v === "object" && v.id && v.name);
+      const orders     = Object.values(ordersRaw).filter(Boolean);
+      const logs       = Object.values(logsRaw).filter(Boolean);
+      const returnsLog = Object.values(returnsRaw).filter(Boolean);
+
+      if (!products.length) {
+        throw new HttpsError("failed-precondition", "No products in catalog.");
+      }
+
+      // ── 3. Aggregate + pre-filter to active products only.
+      const { stats, collisions } = aggregatePerProduct({
+        products, orders, logs, returnsLog, nowMs: Date.now(),
+      });
+
+      const activeEntries = Array.from(stats.values()).filter(isActive);
+      const activeAll     = activeEntries.length;
+      let paginated       = false;
+
+      activeEntries.sort((a, b) => activityScore(b) - activityScore(a));
+      let toSend = activeEntries;
+      if (toSend.length > REORDER_TOP_N) {
+        toSend = toSend.slice(0, REORDER_TOP_N);
+        paginated = true;
+      }
+
+      if (!toSend.length) {
+        throw new HttpsError(
+          "failed-precondition",
+          "No products with any sales or activity yet — nothing to plan.",
+        );
+      }
+
+      const productPayload = toSend.map(e => buildProductPayload(e, Date.now()));
+      if (collisions.length) {
+        console.warn("analyzeReorderNeeds: productName collisions:", collisions);
+      }
+
+      // ── 4. Call Claude (strict JSON, one parse retry).
+      const system = systemPrompt(businessContext);
+      const user = buildUserPayload({
+        products,
+        activeAll,
+        sent: productPayload,
+        paginated,
+        businessContextPresent: !!businessContext,
+      });
+
+      const AnthropicCtor = Anthropic.default || Anthropic;
+      const client = new AnthropicCtor({ apiKey: anthropicApiKey.value() });
+
+      let parseRetries = 0;
+      let usage = { input_tokens: 0, output_tokens: 0 };
+      let parsed = null;
+      let lastRawText = "";
+
+      try {
+        let resp = await callClaude({ client, system, user });
+        usage = resp.usage || usage;
         lastRawText = (resp.content || []).map(c => c.text || "").join("");
         parsed = extractJSON(lastRawText);
-      }
-    } catch (err) {
-      const status = err && err.status;
-      console.error("analyzeReorderNeeds: Anthropic call failed:", status, err.message);
-      if (status === 429) {
-        throw new HttpsError("resource-exhausted", "AI service is rate-limited. Try again in a few minutes.");
-      }
-      if (status === 401 || status === 403) {
-        throw new HttpsError("internal", "AI service authentication failed. Check the anthropic-api-key secret.");
-      }
-      if (!status) {
-        throw new HttpsError("unavailable", "Could not reach the AI service.");
-      }
-      throw new HttpsError("internal", `AI service error (HTTP ${status}).`);
-    }
 
-    if (!parsed) {
-      console.error("analyzeReorderNeeds: JSON parse failed after retry. Raw length:", lastRawText.length);
-      throw new HttpsError("internal", "AI service returned unparseable output.");
-    }
+        if (!parsed) {
+          parseRetries = 1;
+          const retryHint = "Your previous response was not valid JSON. Re-emit the entire response as a single JSON object that matches the schema. No prose, no markdown, no code fences.";
+          resp = await callClaude({ client, system, user, retryHint });
+          const u2 = resp.usage || { input_tokens: 0, output_tokens: 0 };
+          usage = {
+            input_tokens:  (usage.input_tokens  || 0) + (u2.input_tokens  || 0),
+            output_tokens: (usage.output_tokens || 0) + (u2.output_tokens || 0),
+          };
+          lastRawText = (resp.content || []).map(c => c.text || "").join("");
+          parsed = extractJSON(lastRawText);
+        }
+      } catch (err) {
+        const status = err && err.status;
+        console.error("analyzeReorderNeeds: Anthropic call failed:", status, err.message);
+        if (status === 429) {
+          throw new HttpsError("resource-exhausted", "AI service is rate-limited. Try again in a few minutes.");
+        }
+        if (status === 401 || status === 403) {
+          throw new HttpsError("internal", "AI service authentication failed. Check the anthropic-api-key secret.");
+        }
+        if (!status) {
+          throw new HttpsError("unavailable", "Could not reach the AI service.");
+        }
+        throw new HttpsError("internal", `AI service error (HTTP ${status}).`);
+      }
 
-    // ── 4. Log usage (token counts + cost only — never the prompt or key).
-    const inputTokens  = usage.input_tokens  || 0;
-    const outputTokens = usage.output_tokens || 0;
-    const estimatedCostUSD = +(
-      (inputTokens  / 1e6) * PRICE_INPUT_PER_MTOK +
-      (outputTokens / 1e6) * PRICE_OUTPUT_PER_MTOK
-    ).toFixed(6);
+      if (!parsed) {
+        console.error("analyzeReorderNeeds: JSON parse failed after retry. Raw length:", lastRawText.length);
+        throw new HttpsError("internal", "AI service returned unparseable output.");
+      }
 
-    const durationMs = Date.now() - startedAt;
-    const today = saDateStringFromMs(Date.now());
-    try {
-      await db.ref(`aiAssistant/usage/${today}`).push({
-        timestamp: new Date().toISOString(),
-        callerEmail,
-        model: REORDER_MODEL,
-        inputTokens,
-        outputTokens,
-        estimatedCostUSD,
-        productsAnalyzed: productPayload.length,
-        activeProductsTotal: activeAll,
-        catalogTotal: products.length,
-        paginated,
-        parseRetries,
-        durationMs,
-      });
-    } catch (err) {
-      console.warn("analyzeReorderNeeds: usage log write failed:", err.message);
-    }
+      // ── 5. Log usage (token counts + cost only — never the prompt or key).
+      const inputTokens  = usage.input_tokens  || 0;
+      const outputTokens = usage.output_tokens || 0;
+      const estimatedCostUSD = +(
+        (inputTokens  / 1e6) * PRICE_INPUT_PER_MTOK +
+        (outputTokens / 1e6) * PRICE_OUTPUT_PER_MTOK
+      ).toFixed(6);
 
-    // ── 5. Return the parsed plan + meta the UI will want to surface.
-    return {
-      plan: parsed,
-      meta: {
+      const durationMs = Date.now() - startedAt;
+      const today = saDateStringFromMs(Date.now());
+      try {
+        await db.ref(`aiAssistant/usage/${today}`).push({
+          timestamp: new Date().toISOString(),
+          callerEmail,
+          model: REORDER_MODEL,
+          inputTokens,
+          outputTokens,
+          estimatedCostUSD,
+          productsAnalyzed: productPayload.length,
+          activeProductsTotal: activeAll,
+          catalogTotal: products.length,
+          paginated,
+          parseRetries,
+          durationMs,
+        });
+      } catch (err) {
+        console.warn("analyzeReorderNeeds: usage log write failed:", err.message);
+      }
+
+      const meta = {
         reportDate: today,
         cycleDays: REORDER_CYCLE_DAYS,
         catalogTotal: products.length,
@@ -809,8 +908,61 @@ exports.analyzeReorderNeeds = onCall(
         outputTokens,
         estimatedCostUSD,
         productNameCollisions: collisions,
-      },
-    };
+      };
+
+      // ── 6. Cache the result BEFORE the finally block flips status to idle.
+      //     The UI polls status and reads latest, so writing latest first
+      //     means the reader never sees idle without a fresh result.
+      try {
+        await db.ref(REORDER_LATEST_PATH).set({
+          plan: parsed,
+          meta,
+          generatedAt: Date.now(),
+          generatedBy: callerUid,
+          durationMs,
+        });
+        console.log(`analyzeReorderNeeds: Result cache written to /${REORDER_LATEST_PATH}`);
+      } catch (err) {
+        // Non-fatal: this run's plan still returns to any caller that did
+        // await; the next successful run will refresh the cache.
+        console.warn("analyzeReorderNeeds: result cache write failed:", err.message);
+      }
+
+      // ── 7. Return the parsed plan + meta. UI uses /insights/reorderPlan
+      //     for the long-running case; this direct return covers awaited
+      //     callers and keeps the existing callable contract intact.
+      return { plan: parsed, meta };
+    } catch (err) {
+      lastError = err;
+      throw err;
+    } finally {
+      // Status must always transition out of "running". Writes here are
+      // best-effort — a failure logs but does not change what the caller
+      // sees (the HttpsError, if any, was already thrown).
+      try {
+        if (lastError) {
+          const errorMessage = String((lastError && lastError.message) || lastError).slice(0, 500);
+          await db.ref(REORDER_STATUS_PATH).set({
+            state: "error",
+            startedAt,
+            startedBy: callerUid,
+            erroredAt: Date.now(),
+            errorMessage,
+          });
+          console.log("analyzeReorderNeeds: Status -> error");
+        } else {
+          await db.ref(REORDER_STATUS_PATH).set({
+            state: "idle",
+            startedAt,
+            startedBy: callerUid,
+            completedAt: Date.now(),
+          });
+          console.log("analyzeReorderNeeds: Status -> idle");
+        }
+      } catch (e) {
+        console.warn("analyzeReorderNeeds: status write failed:", e.message);
+      }
+    }
   }
 );
 
