@@ -551,7 +551,7 @@ function getAvailableSizes(p) {
   if (!p) return [];
   if (Array.isArray(p.sizes)) return p.sizes;
   if (p.sizes && typeof p.sizes === "object") return Object.keys(p.sizes);
-  if (p.stock && typeof p.stock === "object") return Object.keys(p.stock);
+  if (p.stock && typeof p.stock === "object" && !Array.isArray(p.stock)) return Object.keys(p.stock);
   return [];
 }
 
