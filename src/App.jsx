@@ -2652,12 +2652,21 @@ function AssistantView({ products, onExit, orders = [] }) {
             {(() => {
               const canAdd = !!(pendingSize || pendingDisplayPartner);
               const qtyOnly = pendingSize && !pendingDisplayPartner;
-              const btnLabel = pendingSize
-                ? (qtyOnly && pendingQty > 1
-                    ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
-                    : `Add Size ${pendingSize} to Cart`)
-                : canAdd ? "Add Display Partner Request to Cart"
-                : "Select a size or display option";
+              // CR fix: pendingDisplayPartner checked first so the CTA always
+              // surfaces the Display Partner request even when a size is also
+              // selected — previously it rendered "Add Size X to Cart" with
+              // no mention of the partner request.
+              const btnLabel = pendingDisplayPartner
+                ? (pendingSize
+                    ? (pendingQty > 1
+                        ? `Add ${pendingQty} × Size ${pendingSize} + Display Partner to Cart`
+                        : `Add Size ${pendingSize} + Display Partner to Cart`)
+                    : "Add Display Partner Request to Cart")
+                : pendingSize
+                  ? (qtyOnly && pendingQty > 1
+                      ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
+                      : `Add Size ${pendingSize} to Cart`)
+                  : "Select a size or display option";
               return (
                 <button onClick={addToCart} disabled={!canAdd}
                   style={{ width:"100%", ...bBlue, borderRadius:"10px", padding:"0.9rem", fontSize:"1rem", marginBottom:"0.65rem", opacity:canAdd?1:0.4, cursor:canAdd?"pointer":"not-allowed" }}>
