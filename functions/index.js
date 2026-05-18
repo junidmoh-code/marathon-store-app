@@ -755,6 +755,39 @@ function extractJSON(text) {
   return null;
 }
 
+/**
+ * analyzeReorderNeeds — AI-powered reorder analysis Cloud Function.
+ *
+ * Reads sales / depletion / stockout / order history from RTDB, packages
+ * it for Anthropic Claude, and writes a structured recommendation plan
+ * back to RTDB for the frontend to consume.
+ *
+ * RTDB paths (writes only — Admin SDK bypasses security rules):
+ *   /insights/reorderPlan/status   — { state, startedAt, startedBy,
+ *                                      completedAt | erroredAt,
+ *                                      errorMessage? }
+ *   /insights/reorderPlan/latest   — { plan, meta, generatedAt,
+ *                                      generatedBy, durationMs }
+ *
+ * Status state machine:
+ *   idle    → running   (acquired atomically via transaction)
+ *   running → idle      (successful completion)
+ *   running → error     (Anthropic call failed, persist write failed,
+ *                        or any uncaught exception)
+ *
+ * Concurrent-run protection: 15-minute window. A new caller is rejected
+ * with failed-precondition if status.state === "running" AND startedAt
+ * is within the last 15 minutes.
+ *
+ * Rate limit: 1 hour between fresh runs for non-super-admin callers.
+ * Super-admin (gunidmoh@gmail.com) can override with { force: true }
+ * in the payload; force is ignored for non-super-admin.
+ *
+ * Returns: { plan, meta } directly to the caller for backwards
+ * compatibility. Frontend should subscribe to /insights/reorderPlan/*
+ * instead of awaiting the return value — function execution can exceed
+ * the 70s client-side callable timeout.
+ */
 exports.analyzeReorderNeeds = onCall(
   {
     region: "europe-west1",
