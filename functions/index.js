@@ -540,8 +540,48 @@ function isActive(e) {
       || e.displayRefillCount > 0;
 }
 
+// ── Product schema is dual-shaped across the catalog:
+//   • Sneakers (admin form) write `sizes` as an array of size strings.
+//   • Clothing and older records write `sizes` as an object map
+//     { sizeKey: count } and/or carry `stock` as { sizeKey: count }.
+// These helpers normalise both shapes so downstream code stays oblivious
+// to the difference. stockBySize/totalOnHand are returned only when a
+// numeric quantity is actually present — never fabricated.
+function getAvailableSizes(p) {
+  if (!p) return [];
+  if (Array.isArray(p.sizes)) return p.sizes;
+  if (p.sizes && typeof p.sizes === "object") return Object.keys(p.sizes);
+  if (p.stock && typeof p.stock === "object") return Object.keys(p.stock);
+  return [];
+}
+
+function extractStockBySize(p) {
+  const candidate =
+    (p && p.stock && typeof p.stock === "object" && !Array.isArray(p.stock)) ? p.stock :
+    (p && p.sizes && typeof p.sizes === "object" && !Array.isArray(p.sizes)) ? p.sizes :
+    null;
+  if (!candidate) return { hasStockData: false };
+  let total = 0;
+  let anyNumeric = false;
+  const out = {};
+  for (const [size, count] of Object.entries(candidate)) {
+    if (typeof count === "number" && Number.isFinite(count)) {
+      out[size] = count;
+      total += count;
+      anyNumeric = true;
+    }
+  }
+  if (!anyNumeric) return { hasStockData: false };
+  return { stockBySize: out, totalOnHand: total, hasStockData: true };
+}
+
 // Build the per-product payload object sent to Claude. Lean: photo bytes are
 // excluded, only productPhotoUrl (a Firebase Storage URL) is passed if present.
+// Two shapes are emitted from this module:
+//   • type: "active"  — full stats (sales, stockouts, etc). Used for reorder/
+//     review/skip decisions. Built by buildProductPayload.
+//   • type: "dormant" — no activity in the data window; still in the catalog.
+//     Used for slow_mover decisions only. Built by buildDormantPayload.
 function buildProductPayload(e, nowMs) {
   const p = e.product;
   const daysOfData = e.firstSaleMs
@@ -551,13 +591,15 @@ function buildProductPayload(e, nowMs) {
   const salesPerDay = daysOfData ? +(e.totalSales / daysOfData).toFixed(3) : 0;
   const recentSalesPerDay = recentDays ? +(e.recentSales / recentDays).toFixed(3) : 0;
 
-  return {
+  const stock = extractStockBySize(p);
+  const payload = {
+    type:          "active",
     productId:     p.id,
     productName:   p.name,
     productType:   p.productType || "sneaker",
     hub:           getProductHubs(p)[0] || "hub1",
     category:      p.category || "",
-    availableSizes: Array.isArray(p.sizes) ? p.sizes : [],
+    availableSizes: getAvailableSizes(p),
     sizePopularity: sizePopularityPct(e.bySize, e.placedTotal),
     stats: {
       totalSales:          e.totalSales,
@@ -575,6 +617,34 @@ function buildProductPayload(e, nowMs) {
     daysOfData,
     dataConfidence: dataConfidence(e.totalSales, daysOfData),
   };
+  if (stock.hasStockData) {
+    payload.stockBySize  = stock.stockBySize;
+    payload.totalOnHand  = stock.totalOnHand;
+  }
+  return payload;
+}
+
+// Lean dormant-product payload. No activity stats — by definition there are
+// none. The model uses this to issue action:"slow_mover" entries. Stock
+// fields are included only when the catalog actually records numeric
+// per-size quantities for this product.
+function buildDormantPayload(product) {
+  const stock = extractStockBySize(product);
+  const payload = {
+    type:           "dormant",
+    productId:      product.id,
+    productName:    product.name,
+    productType:    product.productType || "sneaker",
+    hub:            getProductHubs(product)[0] || "hub1",
+    category:       product.category || "",
+    availableSizes: getAvailableSizes(product),
+    dataConfidence: "low",
+  };
+  if (stock.hasStockData) {
+    payload.stockBySize = stock.stockBySize;
+    payload.totalOnHand = stock.totalOnHand;
+  }
+  return payload;
 }
 
 function systemPrompt(businessContext) {
@@ -596,13 +666,19 @@ PRIORITIES:
 5. Stockouts and substitutions are demand signals — products with frequent stockouts likely need higher reorder quantities than sales alone suggest.
 6. Display refill activity reflects shelf presence in partner stores; depletionCount is a strong negative signal (couldn't restock the display).
 
-SLOW MOVERS: In addition to reorder recommendations, identify SLOW MOVERS — products that appear in the catalog with available stock per size but have had little to no sales activity or depletion events within the data window. For each slow mover, emit an entry in the same recommendations array with:
+PRODUCT CATEGORIES: The products array carries entries with a "type" field:
+- type: "active"  — products with recorded sales / stockout / depletion / substitution / display-refill activity in the data window. Apply the reorder/review/skip logic above ONLY to these.
+- type: "dormant" — products in the catalog with ZERO recorded activity in the data window. Use these as slow-mover candidates ONLY.
+Some entries (both active and dormant) carry stockBySize (per-size on-hand) and totalOnHand. Others do not — the catalog records per-size quantities for some product types and not others. When stock data is absent, do not infer or fabricate it.
+
+SLOW MOVERS: For each dormant product, emit an entry in the recommendations array with:
 - action: "slow_mover"
-- priority: "high" | "medium" | "low" (based on how stagnant — longer dormancy or higher stock = higher priority)
+- priority: "high" | "medium" | "low" — base priority on how confidently the item appears inactive (e.g. number of available sizes still listed, broad catalog presence, no recent activity). When stockBySize/totalOnHand IS provided, also weight higher dormant stock as higher priority. When stock data is absent, base priority on dormancy signals alone — do NOT assume a stock level.
 - totalSuggested: 0 (no reorder)
 - suggestedQuantity: {} (empty)
-- reasoning: explain why this item is slow, how long it's been stagnant, and a suggested action (review pricing, transfer between stores, discount, or remove from catalog)
-Do not include products with insufficient data history as slow movers — only flag items where you have confidence they're not moving.
+- reasoning: explain why this item appears slow and suggest a next action (review pricing, transfer between stores, discount, or remove from catalog). If stockBySize is provided you may reference the unsold quantities; otherwise do not invent numbers.
+
+Do NOT issue reorder/review/skip actions for type:"dormant" entries — those are out of scope for the reorder cycle. Do NOT issue slow_mover actions for type:"active" entries.
 
 OUTPUT FORMAT: Respond with STRICT JSON only. Forbidden: any text before the opening {, any text after the closing }, markdown code fences (\`\`\`json or \`\`\`), prose explanations, apologies, headings, bullet lists outside JSON values, multiple JSON objects, trailing commas. The JSON must match this shape exactly:
 {
@@ -628,14 +704,16 @@ Include every product in recommendations (one entry per productId). If a product
 FINAL REMINDER: Your output must start with { and end with }. Nothing else. No "Here is the plan:", no \`\`\`json fences, no remarks after the closing brace. The parser is strict and will reject anything that is not a single valid JSON object.`;
 }
 
-function buildUserPayload({ products, activeAll, sent, paginated, businessContextPresent }) {
+function buildUserPayload({ products, activeAll, dormantAll, sent, paginatedActive, paginatedDormant, businessContextPresent }) {
   return JSON.stringify({
     reportDate: saDateStringFromMs(Date.now()),
     cycleDays: REORDER_CYCLE_DAYS,
     totalProductsInCatalog: products.length,
-    totalActiveProducts: activeAll,
+    activeProductsTotal: activeAll,
+    dormantProductsTotal: dormantAll,
     productsAnalyzed: sent.length,
-    paginated,
+    paginatedActive,
+    paginatedDormant,
     businessContextPresent,
     products: sent,
   });
@@ -695,35 +773,20 @@ exports.analyzeReorderNeeds = onCall(
     const requestedForce = !!(request.data && request.data.force);
     const force = requestedForce && isSuperAdmin;
 
-    // ── 0. Gates: concurrent-run lock + 1-hour rate limit.
-    //     Both reads happen BEFORE any status mutation, so a rejected call
-    //     never overwrites the prior run's state.
+    // ── 0a. Rate-limit gate. Reads /insights/reorderPlan/latest only.
+    //     This check is intentionally non-atomic — the running-lock
+    //     transaction below is the authoritative serialisation point. Two
+    //     callers that slip past the rate-limit window will both reach the
+    //     transaction, and only the winner acquires the lock.
     const db = admin.database();
-    let statusSnap, latestSnap;
+    let latestSnap;
     try {
-      [statusSnap, latestSnap] = await Promise.all([
-        db.ref(REORDER_STATUS_PATH).once("value"),
-        db.ref(REORDER_LATEST_PATH).once("value"),
-      ]);
+      latestSnap = await db.ref(REORDER_LATEST_PATH).once("value");
     } catch (err) {
-      console.error("analyzeReorderNeeds: gate read failed:", err.message);
+      console.error("analyzeReorderNeeds: latest read failed:", err.message);
       throw new HttpsError("unavailable", "Could not check planner state.");
     }
-    const currentStatus = statusSnap.val() || {};
-    const latestCached  = latestSnap.val() || {};
-
-    if (
-      currentStatus.state === "running" &&
-      currentStatus.startedAt &&
-      (Date.now() - currentStatus.startedAt) < REORDER_CONCURRENT_LOCK_MS
-    ) {
-      const minsAgo = Math.max(1, Math.round((Date.now() - currentStatus.startedAt) / 60000));
-      console.warn(`analyzeReorderNeeds: Concurrent run rejected for ${callerUid}`);
-      throw new HttpsError(
-        "failed-precondition",
-        `A reorder analysis is already running. Started ${minsAgo} minute${minsAgo === 1 ? "" : "s"} ago.`,
-      );
-    }
+    const latestCached = latestSnap.val() || {};
 
     if (
       latestCached.generatedAt &&
@@ -739,17 +802,55 @@ exports.analyzeReorderNeeds = onCall(
       );
     }
 
-    // ── 1. Mark the run as running. The try/finally below guarantees this
-    //     state transitions to "idle" or "error" before the handler returns,
-    //     so the UI is never left polling a stuck "running".
-    await db.ref(REORDER_STATUS_PATH).set({
-      state: "running",
-      startedAt,
-      startedBy: callerUid,
-    });
+    // ── 0b. Acquire the running-lock atomically. RTDB transaction reads the
+    //     current status, decides whether to commit, and writes the new
+    //     state in a single round-trip — closing the TOCTOU window that a
+    //     read-then-set sequence would leave open. If another invocation
+    //     holds an unexpired "running" status, the transaction aborts.
+    const statusRef = db.ref(REORDER_STATUS_PATH);
+    let blockingStatus = null;
+    let txnResult;
+    try {
+      txnResult = await statusRef.transaction((current) => {
+        if (
+          current &&
+          current.state === "running" &&
+          current.startedAt &&
+          (Date.now() - current.startedAt) < REORDER_CONCURRENT_LOCK_MS
+        ) {
+          blockingStatus = current;
+          return; // abort — another run holds the lock
+        }
+        return {
+          state: "running",
+          startedAt,
+          startedBy: callerUid,
+        };
+      });
+    } catch (err) {
+      console.error("analyzeReorderNeeds: status transaction failed:", err.message);
+      throw new HttpsError("unavailable", "Could not acquire planner lock.");
+    }
+
+    if (!txnResult.committed) {
+      const minsAgo = blockingStatus && blockingStatus.startedAt
+        ? Math.max(1, Math.round((Date.now() - blockingStatus.startedAt) / 60000))
+        : 1;
+      console.warn(`analyzeReorderNeeds: Concurrent run rejected for ${callerUid}`);
+      throw new HttpsError(
+        "failed-precondition",
+        `A reorder analysis is already running. Started ${minsAgo} minute${minsAgo === 1 ? "" : "s"} ago.`,
+      );
+    }
     console.log("analyzeReorderNeeds: Status -> running");
 
     let lastError = null;
+    // Tracks whether the /latest cache write succeeded. The finally block
+    // checks this to decide between "idle" and "error" — if the plan was
+    // never persisted, transitioning to "idle" would leave the UI reading
+    // stale or empty /latest after a successful run (CodeRabbit #3).
+    let persistFailed = false;
+    let persistError  = null;
     try {
       // ── 2. Load full operational history in parallel.
       let productsSnap, ordersSnap, logsSnap, returnsSnap, contextSnap;
@@ -782,30 +883,64 @@ exports.analyzeReorderNeeds = onCall(
         throw new HttpsError("failed-precondition", "No products in catalog.");
       }
 
-      // ── 3. Aggregate + pre-filter to active products only.
+      // ── 3. Aggregate, then split the catalog into two candidate sets:
+      //     • active  — products with any recorded activity in the window.
+      //                 Drives reorder/review/skip decisions.
+      //     • dormant — products in the catalog with zero recorded activity
+      //                 but at least one listed size. Drives slow_mover
+      //                 decisions only (CodeRabbit #2: previously these were
+      //                 filtered out before reaching the prompt, so the
+      //                 model had nothing to flag).
       const { stats, collisions } = aggregatePerProduct({
         products, orders, logs, returnsLog, nowMs: Date.now(),
       });
 
-      const activeEntries = Array.from(stats.values()).filter(isActive);
-      const activeAll     = activeEntries.length;
-      let paginated       = false;
+      const allEntries    = Array.from(stats.values());
+      const activeEntries = allEntries.filter(isActive);
+      const dormantEntries = allEntries.filter(
+        e => !isActive(e) && getAvailableSizes(e.product).length > 0
+      );
+      const activeAll  = activeEntries.length;
+      const dormantAll = dormantEntries.length;
 
+      // Active: sort by composite activity score, cap at REORDER_TOP_N.
       activeEntries.sort((a, b) => activityScore(b) - activityScore(a));
-      let toSend = activeEntries;
-      if (toSend.length > REORDER_TOP_N) {
-        toSend = toSend.slice(0, REORDER_TOP_N);
-        paginated = true;
+      let activeToSend = activeEntries;
+      let paginatedActive = false;
+      if (activeToSend.length > REORDER_TOP_N) {
+        activeToSend = activeToSend.slice(0, REORDER_TOP_N);
+        paginatedActive = true;
       }
 
-      if (!toSend.length) {
+      // Dormant: sort stocked items first (highest totalOnHand wins when
+      // numeric stock data is available), then alphabetically by name for
+      // a stable order. Cap at REORDER_TOP_N to keep prompt size bounded.
+      const dormantWithStock = dormantEntries.map(e => {
+        const stock = extractStockBySize(e.product);
+        return { entry: e, totalOnHand: stock.hasStockData ? stock.totalOnHand : -1 };
+      });
+      dormantWithStock.sort((a, b) => {
+        if (b.totalOnHand !== a.totalOnHand) return b.totalOnHand - a.totalOnHand;
+        return (a.entry.product.name || "").localeCompare(b.entry.product.name || "");
+      });
+      let dormantToSend = dormantWithStock.map(d => d.entry);
+      let paginatedDormant = false;
+      if (dormantToSend.length > REORDER_TOP_N) {
+        dormantToSend = dormantToSend.slice(0, REORDER_TOP_N);
+        paginatedDormant = true;
+      }
+
+      if (!activeToSend.length && !dormantToSend.length) {
         throw new HttpsError(
           "failed-precondition",
-          "No products with any sales or activity yet — nothing to plan.",
+          "No products with any sales activity or listed sizes — nothing to plan.",
         );
       }
 
-      const productPayload = toSend.map(e => buildProductPayload(e, Date.now()));
+      const productPayload = [
+        ...activeToSend.map(e => buildProductPayload(e, Date.now())),
+        ...dormantToSend.map(e => buildDormantPayload(e.product)),
+      ];
       if (collisions.length) {
         console.warn("analyzeReorderNeeds: productName collisions:", collisions);
       }
@@ -815,8 +950,10 @@ exports.analyzeReorderNeeds = onCall(
       const user = buildUserPayload({
         products,
         activeAll,
+        dormantAll,
         sent: productPayload,
-        paginated,
+        paginatedActive,
+        paginatedDormant,
         businessContextPresent: !!businessContext,
       });
 
@@ -886,8 +1023,10 @@ exports.analyzeReorderNeeds = onCall(
           estimatedCostUSD,
           productsAnalyzed: productPayload.length,
           activeProductsTotal: activeAll,
+          dormantProductsTotal: dormantAll,
           catalogTotal: products.length,
-          paginated,
+          paginatedActive,
+          paginatedDormant,
           parseRetries,
           durationMs,
         });
@@ -900,8 +1039,10 @@ exports.analyzeReorderNeeds = onCall(
         cycleDays: REORDER_CYCLE_DAYS,
         catalogTotal: products.length,
         activeProductsTotal: activeAll,
+        dormantProductsTotal: dormantAll,
         productsAnalyzed: productPayload.length,
-        paginated,
+        paginatedActive,
+        paginatedDormant,
         parseRetries,
         durationMs,
         inputTokens,
@@ -923,9 +1064,13 @@ exports.analyzeReorderNeeds = onCall(
         });
         console.log(`analyzeReorderNeeds: Result cache written to /${REORDER_LATEST_PATH}`);
       } catch (err) {
-        // Non-fatal: this run's plan still returns to any caller that did
-        // await; the next successful run will refresh the cache.
-        console.warn("analyzeReorderNeeds: result cache write failed:", err.message);
+        // Persist failure is recorded but NOT rethrown here — the caller
+        // still gets { plan, meta } from this run. The finally block reads
+        // persistFailed and writes status:"error" instead of "idle" so the
+        // polling UI doesn't read stale /latest after seeing idle.
+        persistFailed = true;
+        persistError  = (err && err.message) || String(err);
+        console.warn("analyzeReorderNeeds: result cache write failed:", persistError);
       }
 
       // ── 7. Return the parsed plan + meta. UI uses /insights/reorderPlan
@@ -938,7 +1083,12 @@ exports.analyzeReorderNeeds = onCall(
     } finally {
       // Status must always transition out of "running". Writes here are
       // best-effort — a failure logs but does not change what the caller
-      // sees (the HttpsError, if any, was already thrown).
+      // sees (the HttpsError, if any, was already thrown). Three branches:
+      //   • lastError set       → status:"error" with the thrown message
+      //   • persistFailed set   → status:"error" — the run succeeded but
+      //                           /latest wasn't written, so leaving status
+      //                           "idle" would point the UI at stale data
+      //   • otherwise           → status:"idle"
       try {
         if (lastError) {
           const errorMessage = String((lastError && lastError.message) || lastError).slice(0, 500);
@@ -950,6 +1100,16 @@ exports.analyzeReorderNeeds = onCall(
             errorMessage,
           });
           console.log("analyzeReorderNeeds: Status -> error");
+        } else if (persistFailed) {
+          const errorMessage = `Result persist failed: ${String(persistError || "unknown").slice(0, 460)}`;
+          await db.ref(REORDER_STATUS_PATH).set({
+            state: "error",
+            startedAt,
+            startedBy: callerUid,
+            erroredAt: Date.now(),
+            errorMessage,
+          });
+          console.log("analyzeReorderNeeds: Status -> error (persist failure)");
         } else {
           await db.ref(REORDER_STATUS_PATH).set({
             state: "idle",
