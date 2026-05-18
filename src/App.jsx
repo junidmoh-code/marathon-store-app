@@ -1354,6 +1354,16 @@ const RoleIcons = {
       <path d="m21.5 19.5-1-1"/>
     </svg>
   ),
+  ai_reorder: (
+    // lucide-style "sparkles": one large four-point star + two small accents.
+    // Reads as AI / magic / something-generated, distinct from the bar-chart
+    // insights icon (this tile takes you INTO Insights but to a different tab).
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/>
+      <path d="M19 14l.75 2.25L22 17l-2.25.75L19 20l-.75-2.25L16 17l2.25-.75L19 14z"/>
+      <path d="M5 14l.6 1.9L7.5 16.5l-1.9.6L5 19l-.6-1.9L2.5 16.5l1.9-.6L5 14z"/>
+    </svg>
+  ),
 };
 
 // Section header svg icons
@@ -1495,6 +1505,15 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission }) {
           // User Management is hash-routed (not role-routed) — the screen mounts
           // on wantUserMgmt in the App view cascade. Tap → set hash → mount.
           hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && <RoleCard key="user_mgmt" icon={RoleIcons.user_management} name="User Management" desc="Manage staff accounts" onClick={() => (window.location.hash = "#admin/users")} />,
+          // AI Reorder shortcut: mounts the existing Insights view but pre-selects
+          // the "reorder" tab by writing its persistence key first. Gated by the
+          // "ai_reorder" permission string — no record grants it explicitly, so
+          // only super-admin sees the tile via the usePermissions() bypass.
+          // (The Cloud Function's assertAdmin is super-admin-only anyway.)
+          hasPermission("ai_reorder") && <RoleCard key="ai_reorder" icon={RoleIcons.ai_reorder} name="AI Reorder" desc="Reorder plan + slow movers" onClick={() => {
+            try { localStorage.setItem("tabState:insights", "reorder"); } catch { /* localStorage unavailable; tab will start on overview */ }
+            onSelect(ROLES.INSIGHTS);
+          }} />,
         ].filter(Boolean);
         // `last` on the final card in each group removes the trailing divider.
         const withLast = (cards) => cards.map((card, i) =>
