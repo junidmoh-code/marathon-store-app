@@ -3,7 +3,7 @@ import { ref, onValue, set, update, remove, push, runTransaction, get } from "fi
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
-import { database, storage, auth, googleProvider, functionsUS } from "./firebase";
+import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -6545,6 +6545,387 @@ function InsightSalesSummaryTab({ log, returnsLog, productPhotoMap, filterStart,
   );
 }
 
+// ─── AI REORDER TAB ───────────────────────────────────────────────────────────
+// Subscribes to /insights/reorderPlan/status and /insights/reorderPlan/latest
+// (both written by the analyzeReorderNeeds Cloud Function in functions/index.js).
+// A real run takes ~5 min — well past the 70 s httpsCallable client timeout —
+// so the UI fires the call but does NOT await: status writes from the function
+// drive the display via the onValue subscription.
+//
+// Status state machine (idle → running → idle | error) is the source of truth.
+// Three steady displays:
+//   • idle  + plan exists → render the cached plan + "Run Again"
+//   • idle  + no plan     → empty state with first-run CTA
+//   • running             → progress card; cached plan (if any) stays visible muted
+//   • error               → error card with retry; cached plan stays visible muted
+//
+// Triggering: callable runs analyzeReorderNeeds (region europe-west1). The
+// expected happy path returns deadline-exceeded after ~70 s while the function
+// keeps running server-side; status subscription will flip to "running" on its
+// own. Synchronous rejections (rate limit, concurrent run, permission) surface
+// as triggerError. The Run buttons are super-admin-only because the function's
+// assertAdmin only accepts ADMIN_EMAIL.
+function InsightReorderTab({ productPhotoMap }) {
+  const { isSuperAdmin } = usePermissions();
+  const [status, setStatus]   = useState(null);
+  const [latest, setLatest]   = useState(null);
+  const [statusLoaded, setStatusLoaded] = useState(false);
+  const [latestLoaded, setLatestLoaded] = useState(false);
+  const [triggering,   setTriggering]   = useState(false);
+  const [triggerError, setTriggerError] = useState(null);
+
+  // ── Subscribe to both RTDB nodes for the duration of the tab's mount.
+  useEffect(() => {
+    const u1 = onValue(ref(database, "insights/reorderPlan/status"), snap => {
+      setStatus(snap.val());
+      setStatusLoaded(true);
+    });
+    const u2 = onValue(ref(database, "insights/reorderPlan/latest"), snap => {
+      setLatest(snap.val());
+      setLatestLoaded(true);
+    });
+    return () => { u1(); u2(); };
+  }, []);
+
+  const runAnalysis = (force = false) => {
+    setTriggering(true);
+    setTriggerError(null);
+    const callable = httpsCallable(functions, "analyzeReorderNeeds");
+    callable(force ? { force: true } : {}).catch(err => {
+      const code = err.code || "";
+      // deadline-exceeded ≈ "still working" — expected for real runs.
+      if (code === "deadline-exceeded" || code === "functions/deadline-exceeded") return;
+      setTriggerError(err.message || "Failed to start analysis.");
+    });
+    // Re-enable the button after ~2 s. By then the function has either rejected
+    // at the gate (catch above fires) or written state:"running" (subscription
+    // updates the UI). Re-clicking after the lock is held just gets rejected.
+    setTimeout(() => setTriggering(false), 2000);
+  };
+
+  // ── Display helpers (scoped to this component to keep them grep-near the JSX).
+  const fmtDate = ms => {
+    if (!ms) return "—";
+    const d = new Date(ms);
+    return d.toLocaleDateString("en-ZA", { year:"numeric", month:"short", day:"numeric" })
+         + " · " + d.toLocaleTimeString("en-ZA", { hour:"2-digit", minute:"2-digit" });
+  };
+  const fmtDuration = ms => {
+    if (!ms || ms < 0) return "—";
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
+  };
+
+  const allLoaded = statusLoaded && latestLoaded;
+  const state     = status?.state ?? null;
+  const running   = state === "running";
+  const errored   = state === "error";
+  const hasPlan   = !!(latest && latest.plan);
+  const canRun    = isSuperAdmin && !triggering && !running;
+
+  // ── Action / priority styling. Kept inline so the badge meaning is visible
+  // when reading the JSX below.
+  const ACTION_STYLE = {
+    reorder:    { label: "Reorder",    bg: "rgba(34,197,94,.12)",  border: "rgba(34,197,94,.5)",  color: "#86EFAC" },
+    review:     { label: "Review",     bg: "rgba(245,158,11,.12)", border: "rgba(245,158,11,.5)", color: "#FCD34D" },
+    slow_mover: { label: "Slow mover", bg: "rgba(251,146,60,.12)", border: "rgba(251,146,60,.5)", color: "#FDBA74" },
+    skip:       { label: "Skip",       bg: "rgba(255,255,255,.04)", border: "rgba(255,255,255,.18)", color: "rgba(255,255,255,.5)" },
+  };
+  const PRIORITY_COLOR = { high: "#F87171", medium: "#F59E0B", low: "rgba(255,255,255,.45)" };
+  const ACTION_ORDER   = ["reorder", "review", "slow_mover", "skip"];
+  const PRIORITY_ORDER = { high: 0, medium: 1, low: 2 };
+
+  // ── Group + sort recommendations once per plan change.
+  const groupedRecs = useMemo(() => {
+    if (!hasPlan || !Array.isArray(latest.plan.recommendations)) return {};
+    const groups = { reorder: [], review: [], slow_mover: [], skip: [] };
+    for (const r of latest.plan.recommendations) {
+      const action = ACTION_STYLE[r.action] ? r.action : "skip";
+      groups[action].push(r);
+    }
+    for (const k of Object.keys(groups)) {
+      groups[k].sort((a, b) => {
+        const ap = PRIORITY_ORDER[a.priority] ?? 9;
+        const bp = PRIORITY_ORDER[b.priority] ?? 9;
+        if (ap !== bp) return ap - bp;
+        return (b.totalSuggested || 0) - (a.totalSuggested || 0);
+      });
+    }
+    return groups;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latest && latest.generatedAt]);
+
+  // ── Style fragments reused inside the render below.
+  const cardBase = { background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:14, padding:"14px 16px", marginBottom:10 };
+  const sectionLabel = { fontSize:10, fontWeight:700, color:"rgba(255,255,255,.35)", textTransform:"uppercase", letterSpacing:"1.5px", marginBottom:8 };
+  const runBtnStyle = (disabled) => ({
+    background: disabled ? "rgba(60,110,255,.15)" : "rgba(60,110,255,.22)",
+    color: disabled ? "rgba(255,255,255,.4)" : "#fff",
+    border: "1px solid " + (disabled ? "rgba(60,110,255,.3)" : "rgba(60,110,255,.55)"),
+    borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700,
+    cursor: disabled ? "not-allowed" : "pointer",
+    boxShadow: disabled ? "none" : "0 0 8px rgba(60,110,255,.3)",
+  });
+
+  // ── Loading skeleton: first paint before either subscription has fired.
+  if (!allLoaded) {
+    return (
+      <div style={{ ...cardBase, borderColor:"rgba(60,110,255,.15)", padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:13 }}>
+        Loading…
+      </div>
+    );
+  }
+
+  // ── Trigger error banner (renders above everything when present).
+  const TriggerErrorBanner = () => triggerError ? (
+    <div style={{ background:"rgba(248,113,113,.1)", border:"1px solid rgba(248,113,113,.45)", borderRadius:12, padding:"10px 14px", marginBottom:10, display:"flex", alignItems:"center", gap:10 }}>
+      <div style={{ fontSize:12, color:"#F87171", flex:1 }}>{triggerError}</div>
+      <button onClick={() => setTriggerError(null)} style={{ background:"transparent", border:"none", color:"#F87171", cursor:"pointer", fontSize:18, lineHeight:1, padding:0 }}>×</button>
+    </div>
+  ) : null;
+
+  // ── Empty state — first-ever load, nothing cached, nothing running.
+  if (!hasPlan && !running && !errored) {
+    return (
+      <div>
+        <TriggerErrorBanner />
+        <div style={{ ...cardBase, borderColor:"rgba(60,110,255,.3)", padding:"2.5rem 1.5rem", textAlign:"center" }}>
+          <div style={{ marginBottom:14, display:"flex", justifyContent:"center" }}>
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 8px rgba(60,110,255,.45))" }}>
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+          </div>
+          <div style={{ fontWeight:700, color:"#fff", fontSize:15, marginBottom:6 }}>No reorder analysis yet</div>
+          <div style={{ color:"rgba(255,255,255,.45)", fontSize:12, marginBottom:22, maxWidth:300, marginLeft:"auto", marginRight:"auto", lineHeight:1.5 }}>
+            Run a fresh analysis to surface what to reorder for the next cycle and which products have gone quiet.
+          </div>
+          {isSuperAdmin ? (
+            <button onClick={() => runAnalysis(false)} disabled={!canRun} style={runBtnStyle(!canRun)}>
+              {triggering ? "Starting…" : "Run Analysis"}
+            </button>
+          ) : (
+            <div style={{ color:"rgba(255,255,255,.35)", fontSize:11 }}>Only the super-admin can trigger a fresh analysis.</div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Main render: status banner (if any) + cached plan body.
+  const plan      = latest?.plan;
+  const meta      = latest?.meta;
+  const summary   = plan?.summary;
+  const topSellers = Array.isArray(plan?.topSellers) ? plan.topSellers : [];
+  const sleepers   = Array.isArray(plan?.sleepers)   ? plan.sleepers   : [];
+  const qualityNotes = Array.isArray(plan?.dataQualityNotes) ? plan.dataQualityNotes : [];
+
+  return (
+    <div>
+      <TriggerErrorBanner />
+
+      {/* RUNNING BANNER */}
+      {running && (
+        <div style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.55)", borderRadius:14, padding:"14px 16px", marginBottom:10, display:"flex", alignItems:"center", gap:12, boxShadow:"0 0 12px rgba(60,110,255,.2)" }}>
+          <div style={{ width:14, height:14, borderRadius:"50%", border:"2px solid rgba(60,110,255,.3)", borderTopColor:"#4A7FFF", animation:"spin 0.9s linear infinite", flexShrink:0 }} />
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontWeight:700, color:"#fff", fontSize:13 }}>Analysis in progress…</div>
+            <div style={{ color:"rgba(255,255,255,.55)", fontSize:11, marginTop:2 }}>
+              Started {fmtDate(status?.startedAt)} · typically 4–5 minutes
+            </div>
+          </div>
+          {/* Inline keyframes (no global stylesheet to extend). */}
+          <style>{"@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}"}</style>
+        </div>
+      )}
+
+      {/* ERROR BANNER */}
+      {errored && (
+        <div style={{ background:"rgba(248,113,113,.1)", border:"1px solid rgba(248,113,113,.5)", borderRadius:14, padding:"14px 16px", marginBottom:10 }}>
+          <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
+            <div style={{ fontSize:18, lineHeight:1 }}>⚠</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontWeight:700, color:"#F87171", fontSize:13 }}>Last analysis failed</div>
+              <div style={{ color:"rgba(255,255,255,.6)", fontSize:11, marginTop:4, lineHeight:1.5, wordBreak:"break-word" }}>
+                {status?.errorMessage || "Unknown error."}
+              </div>
+              <div style={{ color:"rgba(255,255,255,.35)", fontSize:10, marginTop:6 }}>
+                Failed {fmtDate(status?.erroredAt)}
+              </div>
+              {isSuperAdmin && (
+                <button onClick={() => runAnalysis(true)} disabled={!canRun}
+                  style={{ ...runBtnStyle(!canRun), marginTop:12, padding:"7px 14px", fontSize:12 }}>
+                  {triggering ? "Retrying…" : "Retry"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {hasPlan && (
+        <>
+          {/* HEADER: summary text + run-again button */}
+          <div style={{ ...cardBase, borderColor:"rgba(60,110,255,.55)", boxShadow:"0 0 14px rgba(60,110,255,.15)" }}>
+            <div style={sectionLabel}>Plan Summary</div>
+            <div style={{ color:"#fff", fontSize:13, lineHeight:1.55, marginBottom:12 }}>
+              {summary || "No summary provided."}
+            </div>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12 }}>
+              <div style={{ color:"rgba(255,255,255,.4)", fontSize:11 }}>
+                Generated {fmtDate(latest.generatedAt)}
+              </div>
+              {isSuperAdmin && !running && (
+                <button onClick={() => runAnalysis(false)} disabled={!canRun}
+                  style={{ ...runBtnStyle(!canRun), padding:"7px 14px", fontSize:12 }}>
+                  {triggering ? "Starting…" : "Run Again"}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* META STRIP */}
+          {meta && (
+            <div style={{ ...cardBase, padding:"12px 14px" }}>
+              <div style={sectionLabel}>Run Details</div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(2, 1fr)", gap:8, fontSize:11 }}>
+                <MetaRow label="Cycle" value={`${meta.cycleDays ?? "?"} days`} />
+                <MetaRow label="Active products" value={`${meta.activeProductsTotal ?? 0}${meta.paginatedActive ? " (top 200)" : ""}`} />
+                <MetaRow label="Dormant products" value={`${meta.dormantProductsTotal ?? 0}${meta.paginatedDormant ? " (top 200)" : ""}`} />
+                <MetaRow label="Analysed" value={`${meta.productsAnalyzed ?? 0} / ${meta.catalogTotal ?? 0}`} />
+                <MetaRow label="Duration" value={fmtDuration(latest.durationMs ?? meta.durationMs)} />
+                <MetaRow label="Cost (USD)" value={meta.estimatedCostUSD != null ? `$${meta.estimatedCostUSD.toFixed(4)}` : "—"} />
+              </div>
+            </div>
+          )}
+
+          {/* DATA QUALITY NOTES (model-emitted) */}
+          {qualityNotes.length > 0 && (
+            <div style={{ ...cardBase, borderColor:"rgba(245,158,11,.35)", background:"rgba(245,158,11,.05)" }}>
+              <div style={{ ...sectionLabel, color:"#F59E0B" }}>Data Quality Notes</div>
+              <ul style={{ margin:0, padding:"0 0 0 18px", color:"rgba(255,255,255,.7)", fontSize:11, lineHeight:1.6 }}>
+                {qualityNotes.map((n, i) => <li key={i}>{n}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {/* RECOMMENDATIONS — grouped by action, ordered reorder → review → slow_mover → skip */}
+          {ACTION_ORDER.map(action => {
+            const list = groupedRecs[action] || [];
+            if (!list.length) return null;
+            const style = ACTION_STYLE[action];
+            return (
+              <div key={action} style={{ marginBottom:14 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, padding:"4px 2px 8px" }}>
+                  <span style={{ background:style.bg, border:`1px solid ${style.border}`, color:style.color, padding:"3px 10px", borderRadius:999, fontSize:11, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.5px" }}>
+                    {style.label}
+                  </span>
+                  <span style={{ color:"rgba(255,255,255,.45)", fontSize:11, fontWeight:600 }}>{list.length}</span>
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                  {list.map(rec => {
+                    const sizes = rec.suggestedQuantity && typeof rec.suggestedQuantity === "object"
+                      ? Object.entries(rec.suggestedQuantity).filter(([, q]) => q > 0)
+                      : [];
+                    return (
+                      <div key={rec.productId || rec.productName} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.22)", borderLeft:`3px solid ${style.border}`, borderRadius:12, padding:"12px 14px" }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                          <ProductThumb name={rec.productName} photoMap={productPhotoMap} size={40}/>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontWeight:700, fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{rec.productName || "(no name)"}</div>
+                            <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3 }}>
+                              {rec.priority && (
+                                <span style={{ fontSize:10, fontWeight:700, color:PRIORITY_COLOR[rec.priority] || PRIORITY_COLOR.low, textTransform:"uppercase", letterSpacing:"0.5px" }}>
+                                  {rec.priority}
+                                </span>
+                              )}
+                              {action === "reorder" && rec.totalSuggested != null && (
+                                <span style={{ color:"rgba(255,255,255,.55)", fontSize:10 }}>· {rec.totalSuggested} units</span>
+                              )}
+                            </div>
+                          </div>
+                          {action === "reorder" && rec.totalSuggested != null && (
+                            <div style={{ background:style.bg, color:style.color, border:`1px solid ${style.border}`, borderRadius:999, padding:"4px 12px", fontSize:13, fontWeight:700, flexShrink:0 }}>
+                              ×{rec.totalSuggested}
+                            </div>
+                          )}
+                        </div>
+
+                        {sizes.length > 0 && (
+                          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:10 }}>
+                            {sizes.map(([sz, count]) => (
+                              <span key={sz} style={{ display:"inline-flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.22)", borderRadius:7, padding:"3px 9px", fontSize:11, fontWeight:600, color:"#fff" }}>
+                                <span>{sz}</span>
+                                <span style={{ background:"rgba(60,110,255,.2)", color:BLUE_L, borderRadius:999, padding:"0 6px", fontSize:10, fontWeight:700 }}>{count}</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {rec.reasoning && (
+                          <div style={{ color:"rgba(255,255,255,.62)", fontSize:11, lineHeight:1.55, marginTop:sizes.length > 0 ? 10 : 8 }}>
+                            {rec.reasoning}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* TOP SELLERS */}
+          {topSellers.length > 0 && (
+            <div style={{ ...cardBase }}>
+              <div style={sectionLabel}>Top Sellers</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                {topSellers.map((t, i) => (
+                  <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom: i < topSellers.length - 1 ? "1px solid rgba(255,255,255,.05)" : "none" }}>
+                    <span style={{ color:"#fff", fontSize:12, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1, marginRight:8 }}>{t.productName}</span>
+                    <span style={{ color:BLUE_L, fontSize:12, fontWeight:700, flexShrink:0 }}>{t.totalSales}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* SLEEPERS */}
+          {sleepers.length > 0 && (
+            <div style={{ ...cardBase }}>
+              <div style={sectionLabel}>Sleepers</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                {sleepers.map((s, i) => (
+                  <div key={i} style={{ padding:"6px 0", borderBottom: i < sleepers.length - 1 ? "1px solid rgba(255,255,255,.05)" : "none" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:8 }}>
+                      <span style={{ color:"#fff", fontSize:12, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>{s.productName}</span>
+                      <span style={{ color:"rgba(255,255,255,.45)", fontSize:10, flexShrink:0 }}>
+                        last {s.lastSaleDate || "—"} · {s.totalSales ?? 0} sales
+                      </span>
+                    </div>
+                    {s.note && <div style={{ color:"rgba(255,255,255,.55)", fontSize:11, marginTop:3, lineHeight:1.5 }}>{s.note}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Small label/value row used inside the AI Reorder meta strip.
+function MetaRow({ label, value }) {
+  return (
+    <div style={{ display:"flex", justifyContent:"space-between", gap:6, alignItems:"baseline" }}>
+      <span style={{ color:"rgba(255,255,255,.4)" }}>{label}</span>
+      <span style={{ color:"#fff", fontWeight:600 }}>{value}</span>
+    </div>
+  );
+}
+
 // Insights auth persists for the session via sessionStorage.
 // Cleared when the user taps Exit so the next visit re-asks for the password.
 const INSIGHTS_SESSION_KEY = "insightsAuth";
@@ -6726,9 +7107,11 @@ function InsightsView({ onExit }) {
     { key:"returns",          label:"Returns" },
     { key:"clothing-refills", label:"Clothing Refills" },
     { key:"depleted",         label:"Stock Depleted" },
+    { key:"reorder",          label:"AI Reorder" },
   ];
   // Tabs where the Sneaker/Clothing/Both toggle is NOT applicable.
-  const CATEGORY_HIDDEN_TABS = new Set(["depleted", "clothing-refills"]);
+  // "reorder" is AI-driven across the whole catalog — the toggle doesn't bind.
+  const CATEGORY_HIDDEN_TABS = new Set(["depleted", "clothing-refills", "reorder"]);
   const tabKeys = TABS.map(t => t.key);
 
   const handleSwipe = (e) => {
@@ -6849,6 +7232,7 @@ function InsightsView({ onExit }) {
         {tab==="returns"          && <InsightReturnsTab         returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
         {tab==="clothing-refills" && <InsightClothingRefillsTab orders={filteredOrders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
         {tab==="depleted"         && <InsightStockDepletedTab   orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
+        {tab==="reorder"          && <InsightReorderTab          productPhotoMap={productPhotoMap} />}
       </div>
 
       {/* AUDIT MODAL */}
