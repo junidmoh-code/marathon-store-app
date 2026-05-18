@@ -6594,15 +6594,20 @@ function InsightReorderTab({ productPhotoMap }) {
   const [triggerError, setTriggerError] = useState(null);
 
   // ── Subscribe to both RTDB nodes for the duration of the tab's mount.
+  // Cancel callbacks (third arg to onValue) ensure statusLoaded/latestLoaded
+  // flip even when Firebase denies the read, so the tab never hangs on
+  // "Loading…" forever. CR finding #1.
   useEffect(() => {
-    const u1 = onValue(ref(database, "insights/reorderPlan/status"), snap => {
-      setStatus(snap.val());
-      setStatusLoaded(true);
-    });
-    const u2 = onValue(ref(database, "insights/reorderPlan/latest"), snap => {
-      setLatest(snap.val());
-      setLatestLoaded(true);
-    });
+    const u1 = onValue(
+      ref(database, "insights/reorderPlan/status"),
+      snap => { setStatus(snap.val()); setStatusLoaded(true); },
+      err  => { console.warn("reorderPlan/status read error:", err.message); setStatusLoaded(true); }
+    );
+    const u2 = onValue(
+      ref(database, "insights/reorderPlan/latest"),
+      snap => { setLatest(snap.val()); setLatestLoaded(true); },
+      err  => { console.warn("reorderPlan/latest read error:", err.message);  setLatestLoaded(true); }
+    );
     return () => { u1(); u2(); };
   }, []);
 
@@ -6784,7 +6789,9 @@ function InsightReorderTab({ productPhotoMap }) {
       )}
 
       {hasPlan && (
-        <>
+        // Dim the cached plan while a run or error is active so it's obvious
+        // the visible recommendations may be stale. CR finding #3.
+        <div style={{ opacity: running || errored ? 0.55 : 1, transition:"opacity 150ms ease" }}>
           {/* HEADER: summary text + run-again button */}
           <div style={{ ...cardBase, borderColor:"rgba(60,110,255,.55)", boxShadow:"0 0 14px rgba(60,110,255,.15)" }}>
             <div style={sectionLabel}>Plan Summary</div>
@@ -6929,7 +6936,7 @@ function InsightReorderTab({ productPhotoMap }) {
               </div>
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
@@ -7174,8 +7181,10 @@ function InsightsView({ onExit }) {
         </div>
         <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{filteredLog.length} entries</div>
       </div>
-      {/* Phase 14C: Store filter — All / Central / Pine. Applies to every tab. */}
-      <div style={{ padding:"10px 14px 0", display:"flex", gap:6 }}>
+      {/* Phase 14C: Store filter — All / Central / Pine. Hidden on the AI
+          Reorder tab: that data is a global analysis, not store-sliced, so
+          showing the pill there would be misleading. CR finding #2. */}
+      <div style={{ padding:"10px 14px 0", display:"flex", gap:6, visibility: tab === "reorder" ? "hidden" : "visible" }}>
         {[["all","All"],["central","Central"],["pine","Pine"]].map(([val, label]) => {
           const on = storeFilter === val;
           return (
