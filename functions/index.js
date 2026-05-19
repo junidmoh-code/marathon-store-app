@@ -281,7 +281,7 @@ const anthropicApiKey = defineSecret("anthropic-api-key");
 // recommendations the owner wouldn't action anyway. Combined effect: 4–5 min
 // runs are expected to drop to ~20–25 s.
 const REORDER_MODEL          = "claude-haiku-4-5";
-const REORDER_MAX_TOKENS     = 6000;
+const REORDER_MAX_TOKENS     = 16000;
 const REORDER_CYCLE_DAYS     = 45;
 const REORDER_RECENT_DAYS    = 60;
 const REORDER_TOP_N          = 50;
@@ -747,14 +747,25 @@ async function callClaude({ client, system, user, retryHint }) {
 
 function extractJSON(text) {
   if (!text) return null;
-  const trimmed = text.trim();
+  let trimmed = text.trim();
+
   // Fast path: clean JSON.
   try { return JSON.parse(trimmed); } catch (_) {}
-  // Tolerant: strip optional ```json fences, then retry.
-  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-  if (fenceMatch) {
-    try { return JSON.parse(fenceMatch[1]); } catch (_) {}
+
+  // Strip leading + trailing markdown fences independently. Haiku 4.5 tends
+  // to wrap output in ```json ... ``` despite the prompt forbidding it, and
+  // when output is also truncated by max_tokens the closing fence may be
+  // missing entirely. Older balanced-fences regex only worked when both
+  // fences were present, so a leading-only fence (the common Haiku case)
+  // fell through to the last-ditch span extraction and failed.
+  if (/^```(?:json)?\s*/i.test(trimmed)) {
+    trimmed = trimmed.replace(/^```(?:json)?\s*/i, "");
   }
+  if (/\s*```\s*$/.test(trimmed)) {
+    trimmed = trimmed.replace(/\s*```\s*$/, "");
+  }
+  try { return JSON.parse(trimmed); } catch (_) {}
+
   // Last-ditch: grab the largest {...} span.
   const first = trimmed.indexOf("{");
   const last  = trimmed.lastIndexOf("}");
