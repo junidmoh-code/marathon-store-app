@@ -745,6 +745,28 @@ async function callClaude({ client, system, user, retryHint }) {
   });
 }
 
+// RTDB rejects keys containing ".", "#", "$", "/", "[", or "]". Claude
+// emits sneaker sizes like "5.5", "6.5" as keys in suggestedQuantity —
+// valid JSON, but unwritable. This sanitizer walks the parsed plan and
+// rewrites every forbidden character in every key to "_". The frontend
+// display layer reverses the mapping for size labels (e.g. "5_5" → "5.5"
+// for sneakers). Applied only at the persist boundary; the in-memory
+// `parsed` object that we return to the caller is left unchanged so any
+// awaiting client still gets the natural-keys version.
+const RTDB_KEY_FORBIDDEN = /[.#$/\[\]]/g;
+function deepSanitizeRtdbKeys(value) {
+  if (Array.isArray(value)) return value.map(deepSanitizeRtdbKeys);
+  if (value && typeof value === "object" && value.constructor === Object) {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      const safeKey = String(k).replace(RTDB_KEY_FORBIDDEN, "_");
+      out[safeKey] = deepSanitizeRtdbKeys(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 function extractJSON(text) {
   if (!text) return null;
   let trimmed = text.trim();
@@ -1119,7 +1141,7 @@ exports.analyzeReorderNeeds = onCall(
       //     means the reader never sees idle without a fresh result.
       try {
         await db.ref(REORDER_LATEST_PATH).set({
-          plan: parsed,
+          plan: deepSanitizeRtdbKeys(parsed),
           meta,
           generatedAt: Date.now(),
           generatedBy: callerUid,
