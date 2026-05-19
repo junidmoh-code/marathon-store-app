@@ -1241,7 +1241,7 @@ exports.analyzeReorderNeeds = onCall(
 // Body: { messages: [{ role, content }, ...] } — Anthropic message format.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CHAT_MODEL                  = "claude-sonnet-4-20250514";
+const CHAT_MODEL                  = "claude-sonnet-4-6";
 const CHAT_MAX_TOKENS             = 4096;
 const CHAT_CONTEXT_RECENT_LIMIT   = 100;
 const CHAT_ALLOWED_ORIGINS = new Set([
