@@ -1041,7 +1041,17 @@ exports.analyzeReorderNeeds = onCall(
       }
 
       if (!parsed) {
+        // TEMP DEBUG: dump head/tail snippets so we can see *why* the parse
+        // fails — historically the code logged only .length, which hid the
+        // shape of the failure (preamble? markdown fences? truncation?
+        // multiple JSON objects?). Bounded: 800 head chars + 300 tail chars
+        // keeps the log line under ~1.5 KB and never includes whole plans.
+        // Remove after Haiku JSON discipline is dialed in.
+        const head = lastRawText.slice(0, 800);
+        const tail = lastRawText.length > 1100 ? lastRawText.slice(-300) : "";
         console.error("analyzeReorderNeeds: JSON parse failed after retry. Raw length:", lastRawText.length);
+        console.error("analyzeReorderNeeds: rawText HEAD (first 800 chars):\n" + head);
+        if (tail) console.error("analyzeReorderNeeds: rawText TAIL (last 300 chars):\n" + tail);
         throw new HttpsError("internal", "AI service returned unparseable output.");
       }
 
