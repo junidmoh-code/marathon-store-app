@@ -281,7 +281,7 @@ const anthropicApiKey = defineSecret("anthropic-api-key");
 // recommendations the owner wouldn't action anyway. Combined effect: 4–5 min
 // runs are expected to drop to ~20–25 s.
 const REORDER_MODEL          = "claude-haiku-4-5";
-const REORDER_MAX_TOKENS     = 16000;
+const REORDER_MAX_TOKENS     = 24000;
 const REORDER_CYCLE_DAYS     = 45;
 const REORDER_RECENT_DAYS    = 60;
 const REORDER_TOP_N          = 50;
