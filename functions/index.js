@@ -271,13 +271,22 @@ exports.sendBroadcast = onCall(
 
 const anthropicApiKey = defineSecret("anthropic-api-key");
 
-const REORDER_MODEL          = "claude-sonnet-4-6";
-const REORDER_MAX_TOKENS     = 32000;
+// Model + sizing. Switched from Sonnet 4.6 to Haiku 4.5: the reorder analysis
+// is structured-JSON output with a tight schema and clear instructions —
+// exactly the workload Haiku handles well at ~3-5x the speed of Sonnet.
+// Sonnet stays reserved for the chat interface (marathon-ai) where
+// conversational quality matters. REORDER_TOP_N dropped from 200 to 50 per
+// set (active + dormant) because output generation time is dominated by
+// per-product reasoning, and the long tail beyond the top 50 produces
+// recommendations the owner wouldn't action anyway. Combined effect: 4–5 min
+// runs are expected to drop to ~20–25 s.
+const REORDER_MODEL          = "claude-haiku-4-5";
+const REORDER_MAX_TOKENS     = 6000;
 const REORDER_CYCLE_DAYS     = 45;
 const REORDER_RECENT_DAYS    = 60;
-const REORDER_TOP_N          = 200;
-const PRICE_INPUT_PER_MTOK   = 3;   // USD per 1M input tokens (Sonnet 4.6)
-const PRICE_OUTPUT_PER_MTOK  = 15;  // USD per 1M output tokens (Sonnet 4.6)
+const REORDER_TOP_N          = 50;
+const PRICE_INPUT_PER_MTOK   = 1;    // USD per 1M input tokens (Haiku 4.5)
+const PRICE_OUTPUT_PER_MTOK  = 5;    // USD per 1M output tokens (Haiku 4.5)
 
 // RTDB paths for the UI handshake. The UI reads from these so it can
 // fire-and-forget the callable (the full run is ~5 min, well past the 70 s
