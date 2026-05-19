@@ -8,6 +8,7 @@ import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
 import UserManagement from "./components/UserManagement";
+import TvDisplayMockup from "./components/TvDisplayMockup";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -2636,37 +2637,33 @@ function AssistantView({ products, onExit, orders = [] }) {
               </div>
             </div>
 
-            {/* Display Partner request — shown in all store modes (Pine, Central).
-                "Request Display" removed: that flow is now fully automated.
-                Display Partner is still manual and routes to Hub 1. */}
+            {/* Optional display requests */}
             <div style={{ marginBottom:"1.25rem" }}>
-              <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Partner (optional)</div>
+              <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Requests (optional)</div>
               <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
+                <button onClick={() => setPendingDisplay(v => !v)}
+                  style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayRequest?BLUE:"rgba(60,110,255,.15)"}`, background:pendingDisplayRequest?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayRequest?BLUE:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
+                  Request Display
+                </button>
+                {/* Phase 14B: Display Partner routes to Hub 1 — hidden in Pine mode. */}
+                {storeMode !== "pine" && (
                 <button onClick={() => setPendingDisplayPartner(v => !v)}
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
-                  Request Display Partner
+                  Display Partner
                 </button>
+                )}
               </div>
             </div>
 
             {(() => {
-              const canAdd = !!(pendingSize || pendingDisplayPartner);
-              const qtyOnly = pendingSize && !pendingDisplayPartner;
-              // CR fix: pendingDisplayPartner checked first so the CTA always
-              // surfaces the Display Partner request even when a size is also
-              // selected — previously it rendered "Add Size X to Cart" with
-              // no mention of the partner request.
-              const btnLabel = pendingDisplayPartner
-                ? (pendingSize
-                    ? (pendingQty > 1
-                        ? `Add ${pendingQty} × Size ${pendingSize} + Display Partner to Cart`
-                        : `Add Size ${pendingSize} + Display Partner to Cart`)
-                    : "Add Display Partner Request to Cart")
-                : pendingSize
-                  ? (qtyOnly && pendingQty > 1
-                      ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
-                      : `Add Size ${pendingSize} to Cart`)
-                  : "Select a size or display option";
+              const canAdd = !!(pendingSize || pendingDisplayRequest || pendingDisplayPartner);
+              const qtyOnly = pendingSize && !pendingDisplayRequest && !pendingDisplayPartner;
+              const btnLabel = pendingSize
+                ? (qtyOnly && pendingQty > 1
+                    ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
+                    : `Add Size ${pendingSize} to Cart`)
+                : canAdd ? "Add Display Request to Cart"
+                : "Select a size or display option";
               return (
                 <button onClick={addToCart} disabled={!canAdd}
                   style={{ width:"100%", ...bBlue, borderRadius:"10px", padding:"0.9rem", fontSize:"1rem", marginBottom:"0.65rem", opacity:canAdd?1:0.4, cursor:canAdd?"pointer":"not-allowed" }}>
@@ -7958,7 +7955,7 @@ function AppInner() {
   else if (role === ROLES.DISPLAY) {
     // TV mode is intentionally chrome-free — no Exit button, no admin pill.
     // Exit by swiping right from the screen edge or clearing localStorage.
-    view = guard(ROLES.DISPLAY, <DisplayView orders={orders} />);
+    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
@@ -7984,13 +7981,72 @@ function AppInner() {
   );
 }
 
+// ─── TV AUTO-COLLECT WRAPPER ──────────────────────────────────────────────────
+// • READY / OOS → auto-collected (RTDB write) after 8 min
+// • COMING_TOMORROW → display-only hidden after 15 min (no DB write)
+const TV_TOMORROW_HIDE_MS = 15 * 60 * 1000;
+
+function TvWithAutoCollect({ orders }) {
+  const expiredRef        = useRef(new Set());
+  const hiddenTomorrowRef = useRef(new Set());
+  const [tick, setTick]   = useState(0);
+
+  useEffect(() => {
+    const check = () => {
+      const nowMs   = Date.now();
+      const liveIds = new Set(orders.map(o => o.id));
+      for (const id of expiredRef.current)        if (!liveIds.has(id)) expiredRef.current.delete(id);
+      for (const id of hiddenTomorrowRef.current) if (!liveIds.has(id)) hiddenTomorrowRef.current.delete(id);
+
+      let changed = false;
+      orders.forEach(o => {
+        // Auto-collect READY / OOS after 8 min
+        if ((o.status === STATUS.READY || o.status === STATUS.OUT_OF_STOCK) && !expiredRef.current.has(o.id)) {
+          const ts = o.status === STATUS.READY ? (o.readyAt || o.updatedAt) : (o.outOfStockAt || o.updatedAt);
+          if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
+            expiredRef.current.add(o.id);
+            const iso = new Date().toISOString();
+            updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
+            if (o.status === STATUS.READY) {
+              logRestock({ timestamp: iso, date: getSADateString(), productName: o.productName,
+                photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
+                size: o.size, orderNumber: o.id, hub: o.hub || "hub1",
+              }).catch(err => console.warn("logRestock failed:", err));
+            }
+          }
+        }
+        // Hide COMING_TOMORROW after 15 min (display-only)
+        if (o.status === STATUS.COMING_TOMORROW && !hiddenTomorrowRef.current.has(o.id)) {
+          const ts = o.comingTomorrowAt || o.updatedAt;
+          if (ts && nowMs - new Date(ts).getTime() >= TV_TOMORROW_HIDE_MS) {
+            hiddenTomorrowRef.current.add(o.id);
+            changed = true;
+          }
+        }
+      });
+      if (changed) setTick(n => n + 1);
+    };
+    check();
+    const id = setInterval(check, TV_EXPIRY_CHECK_MS);
+    return () => clearInterval(id);
+  }, [orders]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const filteredOrders = useMemo(
+    () => orders.filter(o => o.status !== STATUS.COMING_TOMORROW || !hiddenTomorrowRef.current.has(o.id)),
+    [orders, tick]
+  );
+
+  return <TvDisplayMockup orders={filteredOrders} />;
+}
+
 // ─── TV ONLY SHELL ────────────────────────────────────────────────────────────
 // Mounted by AuthGate when hash === "#tv". Pulls orders via the anonymous
 // auth that AuthGate kicks off; renders the bare TV display with no admin
 // chrome, no role selector, no login screen.
 function TvOnlyShell() {
   const orders = useOrders();
-  return <DisplayView orders={orders} />;
+  return <TvWithAutoCollect orders={orders} />;
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
