@@ -2284,14 +2284,14 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   const addToCart = () => {
     // Size is optional when a Display or Display Partner request is set
-    if (!selected || (!pendingSize && !pendingDisplayRequest && !pendingDisplayPartner)) return;
+    if (!selected || (!pendingSize && !pendingDisplayPartner)) return;
     // Quantity expansion: pendingQty > 1 → push N identical cart lines so the
     // warehouse fulfils one box per pair (no "qty" multiplier on a single
-    // line). Display Partner / Request rows ignore qty (one-off by nature).
-    const reps = (pendingSize && !pendingDisplayRequest && !pendingDisplayPartner)
+    // line). Display Partner rows ignore qty (one-off by nature).
+    const reps = (pendingSize && !pendingDisplayPartner)
       ? Math.max(1, Math.min(10, pendingQty))
       : 1;
-    const line = { product: selected, size: pendingSize || null, requestDisplay: pendingDisplayRequest, requestDisplayPartner: pendingDisplayPartner };
+    const line = { product: selected, size: pendingSize || null, requestDisplay: false, requestDisplayPartner: pendingDisplayPartner };
     setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
     resetSheet();
   };
@@ -2656,33 +2656,33 @@ function AssistantView({ products, onExit, orders = [] }) {
               </div>
             </div>
 
-            {/* Optional display requests */}
+            {/* Display Partner request — shown in all store modes (Pine, Central).
+                "Request Display" removed: that flow is now fully automated.
+                Display Partner is still manual and routes to Hub 1. */}
             <div style={{ marginBottom:"1.25rem" }}>
-              <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Requests (optional)</div>
+              <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Partner (optional)</div>
               <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
-                <button onClick={() => setPendingDisplay(v => !v)}
-                  style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayRequest?BLUE:"rgba(60,110,255,.15)"}`, background:pendingDisplayRequest?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayRequest?BLUE:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
-                  Request Display
-                </button>
-                {/* Phase 14B: Display Partner routes to Hub 1 — hidden in Pine mode. */}
-                {storeMode !== "pine" && (
                 <button onClick={() => setPendingDisplayPartner(v => !v)}
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
-                  Display Partner
+                  Request Display Partner
                 </button>
-                )}
               </div>
             </div>
 
             {(() => {
-              const canAdd = !!(pendingSize || pendingDisplayRequest || pendingDisplayPartner);
-              const qtyOnly = pendingSize && !pendingDisplayRequest && !pendingDisplayPartner;
-              const btnLabel = pendingSize
-                ? (qtyOnly && pendingQty > 1
-                    ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
-                    : `Add Size ${pendingSize} to Cart`)
-                : canAdd ? "Add Display Request to Cart"
-                : "Select a size or display option";
+              const canAdd = !!(pendingSize || pendingDisplayPartner);
+              const qtyOnly = pendingSize && !pendingDisplayPartner;
+              const btnLabel = pendingDisplayPartner
+                ? (pendingSize
+                    ? (pendingQty > 1
+                        ? `Add ${pendingQty} × Size ${pendingSize} + Display Partner to Cart`
+                        : `Add Size ${pendingSize} + Display Partner to Cart`)
+                    : "Add Display Partner Request to Cart")
+                : pendingSize
+                  ? (qtyOnly && pendingQty > 1
+                      ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
+                      : `Add Size ${pendingSize} to Cart`)
+                  : "Select a size or display option";
               return (
                 <button onClick={addToCart} disabled={!canAdd}
                   style={{ width:"100%", ...bBlue, borderRadius:"10px", padding:"0.9rem", fontSize:"1rem", marginBottom:"0.65rem", opacity:canAdd?1:0.4, cursor:canAdd?"pointer":"not-allowed" }}>
