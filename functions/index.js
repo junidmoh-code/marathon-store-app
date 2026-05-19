@@ -1169,6 +1169,202 @@ exports.analyzeReorderNeeds = onCall(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Chat proxy (marathon-ai frontend → Anthropic) — Phase 3 backend
+// ─────────────────────────────────────────────────────────────────────────────
+// chatStream is the server-side proxy for marathon-ai's chat view. The
+// frontend cannot call Anthropic directly because doing so would bundle the
+// API key into a publicly-fetchable JS file on marathon-club-ai.web.app
+// (Firebase Hosting is static, no auth gate on assets). This function keeps
+// the key inside Secret Manager and exposes a thin SSE streaming endpoint.
+//
+// Flow on each request:
+//   1. Verify the Firebase ID token in the Authorization header. Reject if
+//      missing/invalid OR if the verified email isn't ADMIN_EMAIL.
+//   2. Read /orders, /insights_log, /insights/reorderPlan/latest. Take the
+//      most recent CHAT_CONTEXT_RECENT_LIMIT entries from orders + logs
+//      (full plan is small enough to send whole).
+//   3. Build the system prompt with the spec'd Marathon-business preamble
+//      plus the live context as compact JSON.
+//   4. Open an Anthropic streaming session and pipe text deltas to the
+//      client as SSE events.
+//
+// SSE event shape (all events are JSON in the `data:` field):
+//   { type: "context", summary: { ordersSent, logsSent, planGeneratedAt } }
+//   { type: "token",   text: "..." }
+//   { type: "done",    usage: { input_tokens, output_tokens } }
+//   { type: "error",   message: "..." }
+//
+// CORS: allowlist (production hosting + Vite dev ports). Preflight handled.
+// Body: { messages: [{ role, content }, ...] } — Anthropic message format.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CHAT_MODEL                  = "claude-sonnet-4-20250514";
+const CHAT_MAX_TOKENS             = 4096;
+const CHAT_CONTEXT_RECENT_LIMIT   = 100;
+const CHAT_ALLOWED_ORIGINS = new Set([
+  "https://marathon-club-ai.web.app",
+  "http://localhost:5174",
+  "http://localhost:5173",
+]);
+
+function chatSystemPrompt({ orders, logs, plan }) {
+  const recent = (obj, limit) => {
+    const arr = Object.values(obj || {}).filter(v => v && typeof v === "object");
+    arr.sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")));
+    return arr.slice(0, limit);
+  };
+  const recentOrders = recent(orders, CHAT_CONTEXT_RECENT_LIMIT);
+  const recentLogs   = recent(logs,   CHAT_CONTEXT_RECENT_LIMIT);
+
+  return `You are an AI business assistant for Marathon, a sneaker retail store in Durban, South Africa with 3 locations (Pine, PE, Trophy). You have access to the store's current data including orders, stock depletions, and AI reorder analysis. Answer questions about inventory, sales patterns, reorder decisions, and business strategy. Be direct and specific — this is a working tool, not a demo.
+
+LIVE STORE DATA (snapshot at the start of this turn):
+
+Recent orders (most recent ${recentOrders.length} of ${Object.keys(orders || {}).length} total):
+${JSON.stringify(recentOrders)}
+
+Recent insights events (most recent ${recentLogs.length} of ${Object.keys(logs || {}).length} total):
+${JSON.stringify(recentLogs)}
+
+Latest AI reorder plan${plan?.generatedAt ? ` (generated ${new Date(plan.generatedAt).toISOString()})` : ""}:
+${plan ? JSON.stringify(plan) : "No plan has been generated yet."}`;
+}
+
+exports.chatStream = onRequest(
+  {
+    region: "europe-west1",
+    secrets: [anthropicApiKey],
+    timeoutSeconds: 540,
+    memory: "512MiB",
+  },
+  async (req, res) => {
+    // ── CORS — manual because SSE responses need streaming-friendly headers.
+    const origin = req.headers.origin || "";
+    if (CHAT_ALLOWED_ORIGINS.has(origin)) {
+      res.set("Access-Control-Allow-Origin", origin);
+      res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+      res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.set("Vary", "Origin");
+    }
+    if (req.method === "OPTIONS") {
+      res.set("Access-Control-Max-Age", "3600");
+      return res.status(204).send("");
+    }
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+
+    // ── Auth: verify Firebase ID token + email allowlist.
+    const authHeader = req.headers.authorization || "";
+    const idToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!idToken) {
+      return res.status(401).json({ error: "Missing Authorization bearer token." });
+    }
+    let decoded;
+    try {
+      decoded = await admin.auth().verifyIdToken(idToken);
+    } catch (err) {
+      console.warn("chatStream: token verification failed:", err.code || err.message);
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+    if (decoded.email !== ADMIN_EMAIL) {
+      console.warn(`chatStream: forbidden caller ${decoded.email}`);
+      return res.status(403).json({ error: "Forbidden." });
+    }
+
+    // ── Validate body.
+    const messages = req.body && req.body.messages;
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: "messages must be a non-empty array." });
+    }
+
+    // ── Load live context. RTDB reads under Admin SDK bypass security rules.
+    const db = admin.database();
+    let ordersSnap, logsSnap, planSnap;
+    try {
+      [ordersSnap, logsSnap, planSnap] = await Promise.all([
+        db.ref("orders").once("value"),
+        db.ref("insights_log").once("value"),
+        db.ref("insights/reorderPlan/latest").once("value"),
+      ]);
+    } catch (err) {
+      console.error("chatStream: context read failed:", err.message);
+      return res.status(503).json({ error: "Could not load store context." });
+    }
+
+    const orders = ordersSnap.val() || {};
+    const logs   = logsSnap.val()   || {};
+    const plan   = planSnap.val()   || null;
+    const ordersCount = Object.keys(orders).length;
+    const logsCount   = Object.keys(logs).length;
+    const ordersSent  = Math.min(ordersCount, CHAT_CONTEXT_RECENT_LIMIT);
+    const logsSent    = Math.min(logsCount,   CHAT_CONTEXT_RECENT_LIMIT);
+
+    // ── Open the SSE stream. From here on, errors are reported as SSE events
+    // (HTTP headers have already been sent, so 4xx/5xx is no longer an option).
+    res.set("Content-Type", "text/event-stream");
+    res.set("Cache-Control", "no-cache");
+    res.set("Connection", "keep-alive");
+    res.set("X-Accel-Buffering", "no"); // tell any intermediate proxy not to buffer
+    res.flushHeaders?.();
+
+    const sse = (event) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    sse({
+      type: "context",
+      summary: {
+        ordersTotal:           ordersCount,
+        ordersSent,
+        insightsLogTotal:      logsCount,
+        insightsLogSent:       logsSent,
+        reorderPlanGeneratedAt: plan?.generatedAt || null,
+        reorderPlanPresent:    !!plan,
+      },
+    });
+
+    const system = chatSystemPrompt({ orders, logs, plan });
+
+    const AnthropicCtor = Anthropic.default || Anthropic;
+    const client = new AnthropicCtor({ apiKey: anthropicApiKey.value() });
+
+    try {
+      const stream = await client.messages.stream({
+        model: CHAT_MODEL,
+        max_tokens: CHAT_MAX_TOKENS,
+        system,
+        messages,
+      });
+
+      for await (const event of stream) {
+        if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+          sse({ type: "token", text: event.delta.text });
+        }
+      }
+
+      const final = await stream.finalMessage();
+      const usage = final?.usage || {};
+      sse({
+        type: "done",
+        usage: {
+          input_tokens:  usage.input_tokens  || 0,
+          output_tokens: usage.output_tokens || 0,
+        },
+      });
+      console.log(`chatStream: completed for ${decoded.email}, tokens in/out: ${usage.input_tokens || 0}/${usage.output_tokens || 0}`);
+    } catch (err) {
+      const status = err && err.status;
+      console.error("chatStream: Anthropic call failed:", status, err.message);
+      // Errors after headers flushed must come back as SSE events, not HTTP.
+      sse({ type: "error", message: err.message || `AI service error${status ? ` (HTTP ${status})` : ""}.` });
+    }
+
+    res.end();
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Staff user management (super-admin only)
 // ─────────────────────────────────────────────────────────────────────────────
 // Three callable functions for super-admin-only staff user lifecycle. The
