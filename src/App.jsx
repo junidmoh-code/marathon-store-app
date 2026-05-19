@@ -7229,7 +7229,12 @@ function InsightsView({ onExit }) {
           })}
         </div>
       )}
-      <InsightsDatePicker mode={filterMode} setMode={setFilterMode} dateStr={filterDate} setDateStr={setFilterDate} />
+      {/* Date picker is hidden on the reorder tab — InsightReorderTab does not
+          consume filterMode/filterDate, so showing it would imply a filter that
+          is actually a no-op. CR finding (outside-diff). */}
+      {tab !== "reorder" && (
+        <InsightsDatePicker mode={filterMode} setMode={setFilterMode} dateStr={filterDate} setDateStr={setFilterDate} />
+      )}
 
       {/* Order Audit button — admin-protected (Insights password gate already passed) */}
       <div style={{ padding:"0 14px 12px" }}>
