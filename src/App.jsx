@@ -9,6 +9,7 @@ import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
 import { toAuthPassword } from "./utils/auth-utils";
 import UserManagement from "./components/UserManagement";
+import TvDisplayMockup from "./components/TvDisplayMockup";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -8820,7 +8821,7 @@ function AppInner() {
   else if (role === ROLES.DISPLAY) {
     // TV mode is intentionally chrome-free — no Exit button, no admin pill.
     // Exit by swiping right from the screen edge or clearing localStorage.
-    view = guard(ROLES.DISPLAY, <DisplayView orders={orders} />);
+    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
@@ -8846,13 +8847,85 @@ function AppInner() {
   );
 }
 
+// ─── TV AUTO-COLLECT WRAPPER ──────────────────────────────────────────────────
+// Side-effects layer around <TvDisplayMockup>. Watches the live orders list:
+// • READY / OOS → auto-collected (writes STATUS.COLLECTED back to RTDB and
+//   logs a restock entry if it was READY) after TV_EXPIRY_MS = 8 min.
+// • COMING_TOMORROW → display-only hidden after TV_TOMORROW_HIDE_MS = 15 min
+//   (no DB write — the row just vanishes from the TV until it changes status).
+// Both use ref-Sets to dedupe across multiple TV screens and prune entries
+// when the underlying order disappears.
+const TV_TOMORROW_HIDE_MS = 15 * 60 * 1000;
+
+function TvWithAutoCollect({ orders }) {
+  // Dedupe markers are keyed by a composite of order.id + createdAt rather
+  // than id alone. order.id is daily-scoped (it's the orderNumber, which
+  // resets each day — see project memory project_order_number_daily_reset),
+  // so without the createdAt suffix yesterday's "001" marker would silently
+  // carry over to today's brand-new "001" and either auto-collect it the
+  // instant it appears or hide it forever from COMING_TOMORROW.
+  const orderKey = (o) => `${o.id}:${o.createdAt || ""}`;
+  const expiredRef        = useRef(new Set());
+  const hiddenTomorrowRef = useRef(new Set());
+  const [tick, setTick]   = useState(0);
+
+  useEffect(() => {
+    const check = () => {
+      const nowMs    = Date.now();
+      const liveKeys = new Set(orders.map(orderKey));
+      for (const k of expiredRef.current)        if (!liveKeys.has(k)) expiredRef.current.delete(k);
+      for (const k of hiddenTomorrowRef.current) if (!liveKeys.has(k)) hiddenTomorrowRef.current.delete(k);
+
+      let changed = false;
+      orders.forEach(o => {
+        const key = orderKey(o);
+        // Auto-collect READY / OOS after 8 min
+        if ((o.status === STATUS.READY || o.status === STATUS.OUT_OF_STOCK) && !expiredRef.current.has(key)) {
+          const ts = o.status === STATUS.READY ? (o.readyAt || o.updatedAt) : (o.outOfStockAt || o.updatedAt);
+          if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
+            expiredRef.current.add(key);
+            const iso = new Date().toISOString();
+            updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
+            if (o.status === STATUS.READY) {
+              logRestock({ timestamp: iso, date: getSADateString(), productName: o.productName,
+                photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
+                size: o.size, orderNumber: o.id, hub: o.hub || "hub1",
+              }).catch(err => console.warn("logRestock failed:", err));
+            }
+          }
+        }
+        // Hide COMING_TOMORROW after 15 min (display-only)
+        if (o.status === STATUS.COMING_TOMORROW && !hiddenTomorrowRef.current.has(key)) {
+          const ts = o.comingTomorrowAt || o.updatedAt;
+          if (ts && nowMs - new Date(ts).getTime() >= TV_TOMORROW_HIDE_MS) {
+            hiddenTomorrowRef.current.add(key);
+            changed = true;
+          }
+        }
+      });
+      if (changed) setTick(n => n + 1);
+    };
+    check();
+    const id = setInterval(check, TV_EXPIRY_CHECK_MS);
+    return () => clearInterval(id);
+  }, [orders]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const filteredOrders = useMemo(
+    () => orders.filter(o => o.status !== STATUS.COMING_TOMORROW || !hiddenTomorrowRef.current.has(orderKey(o))),
+    [orders, tick]
+  );
+
+  return <TvDisplayMockup orders={filteredOrders} />;
+}
+
 // ─── TV ONLY SHELL ────────────────────────────────────────────────────────────
 // Mounted by AuthGate when hash === "#tv". Pulls orders via the anonymous
 // auth that AuthGate kicks off; renders the bare TV display with no admin
 // chrome, no role selector, no login screen.
 function TvOnlyShell() {
   const orders = useOrders();
-  return <DisplayView orders={orders} />;
+  return <TvWithAutoCollect orders={orders} />;
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
