@@ -8858,24 +8858,32 @@ function AppInner() {
 const TV_TOMORROW_HIDE_MS = 15 * 60 * 1000;
 
 function TvWithAutoCollect({ orders }) {
+  // Dedupe markers are keyed by a composite of order.id + createdAt rather
+  // than id alone. order.id is daily-scoped (it's the orderNumber, which
+  // resets each day — see project memory project_order_number_daily_reset),
+  // so without the createdAt suffix yesterday's "001" marker would silently
+  // carry over to today's brand-new "001" and either auto-collect it the
+  // instant it appears or hide it forever from COMING_TOMORROW.
+  const orderKey = (o) => `${o.id}:${o.createdAt || ""}`;
   const expiredRef        = useRef(new Set());
   const hiddenTomorrowRef = useRef(new Set());
   const [tick, setTick]   = useState(0);
 
   useEffect(() => {
     const check = () => {
-      const nowMs   = Date.now();
-      const liveIds = new Set(orders.map(o => o.id));
-      for (const id of expiredRef.current)        if (!liveIds.has(id)) expiredRef.current.delete(id);
-      for (const id of hiddenTomorrowRef.current) if (!liveIds.has(id)) hiddenTomorrowRef.current.delete(id);
+      const nowMs    = Date.now();
+      const liveKeys = new Set(orders.map(orderKey));
+      for (const k of expiredRef.current)        if (!liveKeys.has(k)) expiredRef.current.delete(k);
+      for (const k of hiddenTomorrowRef.current) if (!liveKeys.has(k)) hiddenTomorrowRef.current.delete(k);
 
       let changed = false;
       orders.forEach(o => {
+        const key = orderKey(o);
         // Auto-collect READY / OOS after 8 min
-        if ((o.status === STATUS.READY || o.status === STATUS.OUT_OF_STOCK) && !expiredRef.current.has(o.id)) {
+        if ((o.status === STATUS.READY || o.status === STATUS.OUT_OF_STOCK) && !expiredRef.current.has(key)) {
           const ts = o.status === STATUS.READY ? (o.readyAt || o.updatedAt) : (o.outOfStockAt || o.updatedAt);
           if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
-            expiredRef.current.add(o.id);
+            expiredRef.current.add(key);
             const iso = new Date().toISOString();
             updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
             if (o.status === STATUS.READY) {
@@ -8887,10 +8895,10 @@ function TvWithAutoCollect({ orders }) {
           }
         }
         // Hide COMING_TOMORROW after 15 min (display-only)
-        if (o.status === STATUS.COMING_TOMORROW && !hiddenTomorrowRef.current.has(o.id)) {
+        if (o.status === STATUS.COMING_TOMORROW && !hiddenTomorrowRef.current.has(key)) {
           const ts = o.comingTomorrowAt || o.updatedAt;
           if (ts && nowMs - new Date(ts).getTime() >= TV_TOMORROW_HIDE_MS) {
-            hiddenTomorrowRef.current.add(o.id);
+            hiddenTomorrowRef.current.add(key);
             changed = true;
           }
         }
@@ -8904,7 +8912,7 @@ function TvWithAutoCollect({ orders }) {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const filteredOrders = useMemo(
-    () => orders.filter(o => o.status !== STATUS.COMING_TOMORROW || !hiddenTomorrowRef.current.has(o.id)),
+    () => orders.filter(o => o.status !== STATUS.COMING_TOMORROW || !hiddenTomorrowRef.current.has(orderKey(o))),
     [orders, tick]
   );
 
