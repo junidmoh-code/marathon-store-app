@@ -8,6 +8,7 @@ import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
 import UserManagement from "./components/UserManagement";
+import TvDisplayMockup from "./components/TvDisplayMockup";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -46,15 +47,20 @@ function ProductIcon({ size = 28, color = "#4A7FFF", opacity = 0.6 }) {
 }
 
 // Renders a product photo thumbnail (img for URLs, clean SVG fallback otherwise).
+const _normPhotoKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
+
 // photoMap shape: { [productName]: { photoUrl, photo } }
+// Exact match first; falls back to normalized key (trim, collapse spaces, lowercase,
+// remove spaces around hyphens) to handle old order names that drifted from catalog.
 function ProductThumb({ name, photoMap, size = 40 }) {
-  const p   = photoMap?.[name];
+  const p   = photoMap?.[name] ?? photoMap?.[_normPhotoKey(name)];
+  if (!p) console.warn("[ProductThumb] no map entry for:", JSON.stringify(name));
   const url = p?.photoUrl;
   if (url && (url.startsWith("http") || url.startsWith("data:"))) {
     return (
       <img src={url} alt={name}
         style={{ width:size, height:size, objectFit:"cover", borderRadius:RADIUS, flexShrink:0, border:"1px solid rgba(60,110,255,.12)" }}
-        onError={e => { e.currentTarget.style.display = "none"; }} />
+        onError={e => { console.warn("[ProductThumb] photoUrl load failed:", name, url); e.currentTarget.style.display = "none"; }} />
     );
   }
   const emoji = p?.photo;
@@ -62,9 +68,10 @@ function ProductThumb({ name, photoMap, size = 40 }) {
     return (
       <img src={emoji} alt={name}
         style={{ width:size, height:size, objectFit:"cover", borderRadius:RADIUS, flexShrink:0, border:"1px solid rgba(60,110,255,.12)" }}
-        onError={e => { e.currentTarget.style.display = "none"; }} />
+        onError={e => { console.warn("[ProductThumb] photo load failed:", name, emoji.slice(0, 80)); e.currentTarget.style.display = "none"; }} />
     );
   }
+  if (p) console.warn("[ProductThumb] unusable photo fields for:", name, { photoUrl: url, photo: (p.photo || "").slice(0, 40) });
   return (
     <div style={{ width:size, height:size, borderRadius:8, background:"rgba(60,110,255,.08)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, border:"1px solid rgba(60,110,255,.12)" }}>
       <ProductIcon size={Math.round(size * 0.55)} />
@@ -1556,7 +1563,13 @@ function AdminView({ products, orders, onExit }) {
   // shared `sizes` array — sneakers store "3".."11", clothing stores
   // "S".."XXXL". Phase 14A: `hubs` is a multi-select (Hub 1 / Hub 2 / Hub 3);
   // clothing cannot include Hub 1.
-  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker" });
+  // POS Phase 2: stockPrice / retailPrice / hasShoeBoxOption added. Prices
+  // are stored as raw <input type="number"> strings here and parsed on save —
+  // that way an empty field round-trips to "not set" instead of 0.
+  // `shoeboxTouched` tracks whether the user has manually toggled the shoebox
+  // checkbox: once true we stop auto-syncing it from category/productType.
+  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+  const [shoeboxTouched, setShoeboxTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
   // ── List search ─────────────────────────────────────────────────────────
@@ -2283,14 +2296,14 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   const addToCart = () => {
     // Size is optional when a Display or Display Partner request is set
-    if (!selected || (!pendingSize && !pendingDisplayRequest && !pendingDisplayPartner)) return;
+    if (!selected || (!pendingSize && !pendingDisplayPartner)) return;
     // Quantity expansion: pendingQty > 1 → push N identical cart lines so the
     // warehouse fulfils one box per pair (no "qty" multiplier on a single
-    // line). Display Partner / Request rows ignore qty (one-off by nature).
-    const reps = (pendingSize && !pendingDisplayRequest && !pendingDisplayPartner)
+    // line). Display Partner rows ignore qty (one-off by nature).
+    const reps = (pendingSize && !pendingDisplayPartner)
       ? Math.max(1, Math.min(10, pendingQty))
       : 1;
-    const line = { product: selected, size: pendingSize || null, requestDisplay: pendingDisplayRequest, requestDisplayPartner: pendingDisplayPartner };
+    const line = { product: selected, size: pendingSize || null, requestDisplay: false, requestDisplayPartner: pendingDisplayPartner };
     setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
     resetSheet();
   };
@@ -2655,33 +2668,33 @@ function AssistantView({ products, onExit, orders = [] }) {
               </div>
             </div>
 
-            {/* Optional display requests */}
+            {/* Display Partner request — shown in all store modes (Pine, Central).
+                "Request Display" removed: that flow is now fully automated.
+                Display Partner is still manual and routes to Hub 1. */}
             <div style={{ marginBottom:"1.25rem" }}>
-              <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Requests (optional)</div>
+              <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Partner (optional)</div>
               <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
-                <button onClick={() => setPendingDisplay(v => !v)}
-                  style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayRequest?BLUE:"rgba(60,110,255,.15)"}`, background:pendingDisplayRequest?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayRequest?BLUE:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
-                  Request Display
-                </button>
-                {/* Phase 14B: Display Partner routes to Hub 1 — hidden in Pine mode. */}
-                {storeMode !== "pine" && (
                 <button onClick={() => setPendingDisplayPartner(v => !v)}
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
-                  Display Partner
+                  Request Display Partner
                 </button>
-                )}
               </div>
             </div>
 
             {(() => {
-              const canAdd = !!(pendingSize || pendingDisplayRequest || pendingDisplayPartner);
-              const qtyOnly = pendingSize && !pendingDisplayRequest && !pendingDisplayPartner;
-              const btnLabel = pendingSize
-                ? (qtyOnly && pendingQty > 1
-                    ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
-                    : `Add Size ${pendingSize} to Cart`)
-                : canAdd ? "Add Display Request to Cart"
-                : "Select a size or display option";
+              const canAdd = !!(pendingSize || pendingDisplayPartner);
+              const qtyOnly = pendingSize && !pendingDisplayPartner;
+              const btnLabel = pendingDisplayPartner
+                ? (pendingSize
+                    ? (pendingQty > 1
+                        ? `Add ${pendingQty} × Size ${pendingSize} + Display Partner to Cart`
+                        : `Add Size ${pendingSize} + Display Partner to Cart`)
+                    : "Add Display Partner Request to Cart")
+                : pendingSize
+                  ? (qtyOnly && pendingQty > 1
+                      ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
+                      : `Add Size ${pendingSize} to Cart`)
+                  : "Select a size or display option";
               return (
                 <button onClick={addToCart} disabled={!canAdd}
                   style={{ width:"100%", ...bBlue, borderRadius:"10px", padding:"0.9rem", fontSize:"1rem", marginBottom:"0.65rem", opacity:canAdd?1:0.4, cursor:canAdd?"pointer":"not-allowed" }}>
@@ -7105,10 +7118,16 @@ function InsightsView({ onExit }) {
   }, [filterMode, filterDate]);
 
   // Build name → { photoUrl, photo } lookup for thumbnail display in every tab.
+  // Also indexes by normalized name (lowercase, collapsed spaces, no spaces around
+  // hyphens) so old order names that drifted from the catalog still resolve.
   const productPhotoMap = useMemo(() => {
+    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
     const map = {};
     products.forEach(p => {
-      if (p.name) map[p.name] = { photoUrl: p.photoUrl || null, photo: p.photo || "" };
+      if (!p.name) return;
+      const entry = { photoUrl: p.photoUrl || null, photo: p.photo || "" };
+      map[p.name] = entry;
+      map[normKey(p.name)] = entry;
     });
     return map;
   }, [products]);
@@ -8371,7 +8390,7 @@ function AppInner() {
   else if (role === ROLES.DISPLAY) {
     // TV mode is intentionally chrome-free — no Exit button, no admin pill.
     // Exit by swiping right from the screen edge or clearing localStorage.
-    view = guard(ROLES.DISPLAY, <DisplayView orders={orders} />);
+    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
@@ -8397,13 +8416,72 @@ function AppInner() {
   );
 }
 
+// ─── TV AUTO-COLLECT WRAPPER ──────────────────────────────────────────────────
+// • READY / OOS → auto-collected (RTDB write) after 8 min
+// • COMING_TOMORROW → display-only hidden after 15 min (no DB write)
+const TV_TOMORROW_HIDE_MS = 15 * 60 * 1000;
+
+function TvWithAutoCollect({ orders }) {
+  const expiredRef        = useRef(new Set());
+  const hiddenTomorrowRef = useRef(new Set());
+  const [tick, setTick]   = useState(0);
+
+  useEffect(() => {
+    const check = () => {
+      const nowMs   = Date.now();
+      const liveIds = new Set(orders.map(o => o.id));
+      for (const id of expiredRef.current)        if (!liveIds.has(id)) expiredRef.current.delete(id);
+      for (const id of hiddenTomorrowRef.current) if (!liveIds.has(id)) hiddenTomorrowRef.current.delete(id);
+
+      let changed = false;
+      orders.forEach(o => {
+        // Auto-collect READY / OOS after 8 min
+        if ((o.status === STATUS.READY || o.status === STATUS.OUT_OF_STOCK) && !expiredRef.current.has(o.id)) {
+          const ts = o.status === STATUS.READY ? (o.readyAt || o.updatedAt) : (o.outOfStockAt || o.updatedAt);
+          if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
+            expiredRef.current.add(o.id);
+            const iso = new Date().toISOString();
+            updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
+            if (o.status === STATUS.READY) {
+              logRestock({ timestamp: iso, date: getSADateString(), productName: o.productName,
+                photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
+                size: o.size, orderNumber: o.id, hub: o.hub || "hub1",
+              }).catch(err => console.warn("logRestock failed:", err));
+            }
+          }
+        }
+        // Hide COMING_TOMORROW after 15 min (display-only)
+        if (o.status === STATUS.COMING_TOMORROW && !hiddenTomorrowRef.current.has(o.id)) {
+          const ts = o.comingTomorrowAt || o.updatedAt;
+          if (ts && nowMs - new Date(ts).getTime() >= TV_TOMORROW_HIDE_MS) {
+            hiddenTomorrowRef.current.add(o.id);
+            changed = true;
+          }
+        }
+      });
+      if (changed) setTick(n => n + 1);
+    };
+    check();
+    const id = setInterval(check, TV_EXPIRY_CHECK_MS);
+    return () => clearInterval(id);
+  }, [orders]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const filteredOrders = useMemo(
+    () => orders.filter(o => o.status !== STATUS.COMING_TOMORROW || !hiddenTomorrowRef.current.has(o.id)),
+    [orders, tick]
+  );
+
+  return <TvDisplayMockup orders={filteredOrders} />;
+}
+
 // ─── TV ONLY SHELL ────────────────────────────────────────────────────────────
 // Mounted by AuthGate when hash === "#tv". Pulls orders via the anonymous
 // auth that AuthGate kicks off; renders the bare TV display with no admin
 // chrome, no role selector, no login screen.
 function TvOnlyShell() {
   const orders = useOrders();
-  return <DisplayView orders={orders} />;
+  return <TvWithAutoCollect orders={orders} />;
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
