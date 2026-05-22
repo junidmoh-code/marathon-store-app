@@ -47,15 +47,20 @@ function ProductIcon({ size = 28, color = "#4A7FFF", opacity = 0.6 }) {
 }
 
 // Renders a product photo thumbnail (img for URLs, clean SVG fallback otherwise).
+const _normPhotoKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
+
 // photoMap shape: { [productName]: { photoUrl, photo } }
+// Exact match first; falls back to normalized key (trim, collapse spaces, lowercase,
+// remove spaces around hyphens) to handle old order names that drifted from catalog.
 function ProductThumb({ name, photoMap, size = 40 }) {
-  const p   = photoMap?.[name];
+  const p   = photoMap?.[name] ?? photoMap?.[_normPhotoKey(name)];
+  if (!p) console.warn("[ProductThumb] no map entry for:", JSON.stringify(name));
   const url = p?.photoUrl;
   if (url && (url.startsWith("http") || url.startsWith("data:"))) {
     return (
       <img src={url} alt={name}
         style={{ width:size, height:size, objectFit:"cover", borderRadius:RADIUS, flexShrink:0, border:"1px solid rgba(60,110,255,.12)" }}
-        onError={e => { e.currentTarget.style.display = "none"; }} />
+        onError={e => { console.warn("[ProductThumb] photoUrl load failed:", name, url); e.currentTarget.style.display = "none"; }} />
     );
   }
   const emoji = p?.photo;
@@ -63,9 +68,10 @@ function ProductThumb({ name, photoMap, size = 40 }) {
     return (
       <img src={emoji} alt={name}
         style={{ width:size, height:size, objectFit:"cover", borderRadius:RADIUS, flexShrink:0, border:"1px solid rgba(60,110,255,.12)" }}
-        onError={e => { e.currentTarget.style.display = "none"; }} />
+        onError={e => { console.warn("[ProductThumb] photo load failed:", name, emoji.slice(0, 80)); e.currentTarget.style.display = "none"; }} />
     );
   }
+  if (p) console.warn("[ProductThumb] unusable photo fields for:", name, { photoUrl: url, photo: (p.photo || "").slice(0, 40) });
   return (
     <div style={{ width:size, height:size, borderRadius:8, background:"rgba(60,110,255,.08)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, border:"1px solid rgba(60,110,255,.12)" }}>
       <ProductIcon size={Math.round(size * 0.55)} />
@@ -7536,10 +7542,16 @@ function InsightsView({ onExit }) {
   }, [filterMode, filterDate]);
 
   // Build name → { photoUrl, photo } lookup for thumbnail display in every tab.
+  // Also indexes by normalized name (lowercase, collapsed spaces, no spaces around
+  // hyphens) so old order names that drifted from the catalog still resolve.
   const productPhotoMap = useMemo(() => {
+    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
     const map = {};
     products.forEach(p => {
-      if (p.name) map[p.name] = { photoUrl: p.photoUrl || null, photo: p.photo || "" };
+      if (!p.name) return;
+      const entry = { photoUrl: p.photoUrl || null, photo: p.photo || "" };
+      map[p.name] = entry;
+      map[normKey(p.name)] = entry;
     });
     return map;
   }, [products]);
