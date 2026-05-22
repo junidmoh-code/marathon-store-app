@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
-import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
+import { toAuthPassword } from "./utils/auth-utils";
 import UserManagement from "./components/UserManagement";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
@@ -1556,7 +1557,13 @@ function AdminView({ products, orders, onExit }) {
   // shared `sizes` array — sneakers store "3".."11", clothing stores
   // "S".."XXXL". Phase 14A: `hubs` is a multi-select (Hub 1 / Hub 2 / Hub 3);
   // clothing cannot include Hub 1.
-  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker" });
+  // POS Phase 2: stockPrice / retailPrice / hasShoeBoxOption added. Prices
+  // are raw <input type="number"> strings here and parsed on save — that way
+  // an empty field round-trips to "not set" instead of 0. `shoeboxTouched`
+  // tracks whether the user has manually toggled the shoebox checkbox; once
+  // true we stop auto-syncing it from category/productType.
+  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+  const [shoeboxTouched, setShoeboxTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
   // ── List search ─────────────────────────────────────────────────────────
@@ -1604,9 +1611,21 @@ function AdminView({ products, orders, onExit }) {
         sizes: form.sizes,
         id,
       };
+      // POS Phase 2: parse the price strings. Empty / non-finite / non-positive
+      // → omit the field entirely. We never want to write `0` and have the POS
+      // treat the product as free.
+      const stockNum  = Number(form.stockPrice);
+      const retailNum = Number(form.retailPrice);
+      if (Number.isFinite(stockNum)  && stockNum  > 0) newProduct.stockPrice  = stockNum;
+      if (Number.isFinite(retailNum) && retailNum > 0) newProduct.retailPrice = retailNum;
+      // Persist the shoebox flag explicitly so POS has a defined value for
+      // newly-created products. Legacy products without it are treated as
+      // false per the reader contract in SCHEMA.md.
+      newProduct.hasShoeBoxOption = !!form.hasShoeBoxOption;
       await addProductToFirebase(newProduct);
 
-      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker" });
+      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+      setShoeboxTouched(false);
       setShowAdd(false);
     } catch (err) {
       console.error("addProduct failed:", err);
@@ -1623,12 +1642,30 @@ function AdminView({ products, orders, onExit }) {
   const toggleSize = s => setForm(f => ({ ...f, sizes: f.sizes.includes(s) ? f.sizes.filter(x=>x!==s) : [...f.sizes, s] }));
   const toggleHub  = h => setForm(f => ({ ...f, hubs:  f.hubs.includes(h)  ? f.hubs.filter(x=>x!==h)  : [...f.hubs,  h] }));
   // Switching to Clothing strips Hub 1 (and falls back to Hub 2 if everything
-  // would go empty). Switching back to Sneaker leaves hubs alone.
+  // would go empty). Switching back to Sneaker leaves hubs alone. POS Phase 2:
+  // also auto-sync the shoebox checkbox when productType changes — clothing
+  // never has a shoebox, sneakers default to true — unless the user has
+  // manually toggled it (shoeboxTouched).
   const setProductType = (nextType) => setForm(f => {
-    if (nextType !== "clothing") return { ...f, productType: nextType };
+    const shoeboxPatch = shoeboxTouched ? {} : { hasShoeBoxOption: nextType === "sneaker" || /foot|shoe/i.test(f.category || "") };
+    if (nextType !== "clothing") return { ...f, productType: nextType, ...shoeboxPatch };
     const stripped = f.hubs.filter(h => h !== "hub1");
-    return { ...f, productType: nextType, hubs: stripped.length ? stripped : ["hub2"] };
+    return { ...f, productType: nextType, hubs: stripped.length ? stripped : ["hub2"], ...shoeboxPatch };
   });
+  // POS Phase 2: category onChange handler. Auto-sets the shoebox flag based
+  // on category text (footwear / shoe / sneaker → true; everything else →
+  // false), unless the user has manually toggled it.
+  const setCategory = (nextCategory) => setForm(f => {
+    const patch = { category: nextCategory };
+    if (!shoeboxTouched) {
+      patch.hasShoeBoxOption = /foot|shoe/i.test(nextCategory) || f.productType === "sneaker";
+    }
+    return { ...f, ...patch };
+  });
+  const toggleShoebox = () => {
+    setShoeboxTouched(true);
+    setForm(f => ({ ...f, hasShoeBoxOption: !f.hasShoeBoxOption }));
+  };
 
   // Phase 12A: products filtered by the admin search bar (substring, case-insensitive).
   const filteredProducts = useMemo(() => {
@@ -1683,6 +1720,11 @@ function AdminView({ products, orders, onExit }) {
     }
   }, [detailId, products.length, detailProduct]);
 
+  // POS Phase 2: Backfill Prices screen — full-screen row editor for all
+  // products. Gated by a manager PIN re-prompt (uses reauthenticateWithCredential
+  // against the signed-in user's own credential — no auth-state churn).
+  const [showBackfill, setShowBackfill] = useState(false);
+
   // When the detail page is mounted, render JUST the detail (no list chrome).
   if (detailProduct) {
     return (
@@ -1691,6 +1733,19 @@ function AdminView({ products, orders, onExit }) {
           product={detailProduct}
           insightsLog={insightsLog}
           onBack={() => window.history.back()}
+        />
+      </div>
+    );
+  }
+
+  // POS Phase 2: Backfill Prices full-screen. Wider container than the rest
+  // of the admin (the row-editor needs the room).
+  if (showBackfill) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:680, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+        <BackfillPricesScreen
+          products={products}
+          onBack={() => setShowBackfill(false)}
         />
       </div>
     );
@@ -1721,10 +1776,16 @@ function AdminView({ products, orders, onExit }) {
             <span style={{ fontSize:20, fontWeight:700, color:"#fff" }}>Products</span>
             <span style={{ background:"rgba(60,110,255,.15)", border:"1px solid rgba(60,110,255,.3)", color:"#4A7FFF", fontSize:12, fontWeight:700, padding:"3px 10px", borderRadius:12 }}>{products.length}</span>
           </div>
-          <button onClick={() => setShowAdd(!showAdd)} style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:10, padding:"10px 18px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6, boxShadow:"0 0 14px rgba(60,110,255,.3)" }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            Add Product
-          </button>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <button onClick={() => setShowBackfill(true)}
+                    style={{ background:"rgba(60,110,255,.12)", color:"#4A7FFF", border:"1px solid rgba(60,110,255,.35)", borderRadius:10, padding:"10px 14px", fontSize:13, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
+              Backfill Prices
+            </button>
+            <button onClick={() => setShowAdd(!showAdd)} style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:10, padding:"10px 18px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6, boxShadow:"0 0 14px rgba(60,110,255,.3)" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Add Product
+            </button>
+          </div>
         </div>
 
         <div style={{ padding:"0 14px" }}>
@@ -1734,7 +1795,7 @@ function AdminView({ products, orders, onExit }) {
           <div style={{ fontWeight:"700", fontSize:"0.95rem", marginBottom:"1rem", color:"#ccc" }}>New Product</div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem", marginBottom:"1rem" }}>
             <input placeholder="Product name" value={form.name} onChange={e => setForm(f=>({...f,name:e.target.value}))} style={inputStyle} />
-            <input placeholder="Category (e.g. Sneakers)" value={form.category} onChange={e => setForm(f=>({...f,category:e.target.value}))} style={inputStyle} />
+            <input placeholder="Category (e.g. Sneakers)" value={form.category} onChange={e => setCategory(e.target.value)} style={inputStyle} />
             <div style={{ gridColumn:"1 / -1" }}>
               <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Product Photo</div>
               <div>
@@ -1784,6 +1845,20 @@ function AdminView({ products, orders, onExit }) {
           {form.productType === "clothing"
             ? <div style={{ fontSize:"0.78rem", color:"#555", marginBottom:"1.25rem", fontStyle:"italic" }}>Clothing cannot be stocked at Hub 1.</div>
             : <div style={{ marginBottom:"0.75rem" }}/>}
+
+          {/* POS Phase 2: pricing block. Two optional price inputs (ZAR) plus
+              a shoebox checkbox. The shoebox checkbox auto-syncs from category
+              / productType until the user manually toggles it. */}
+          <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Pricing (ZAR, optional)</div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem", marginBottom:"1rem" }}>
+            <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="Stock Price (R)" value={form.stockPrice}  onChange={e => setForm(f=>({...f, stockPrice:  e.target.value}))} style={inputStyle} />
+            <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="Retail Price (R)" value={form.retailPrice} onChange={e => setForm(f=>({...f, retailPrice: e.target.value}))} style={inputStyle} />
+          </div>
+          <label style={{ display:"flex", alignItems:"center", gap:10, marginBottom:"1.25rem", cursor:"pointer", color:"#ccc", fontSize:"0.9rem" }}>
+            <input type="checkbox" checked={!!form.hasShoeBoxOption} onChange={toggleShoebox} style={{ width:18, height:18, accentColor:BLUE, cursor:"pointer" }} />
+            Shoebox option
+            <span style={{ color:"#555", fontSize:"0.78rem", fontStyle:"italic", marginLeft:4 }}>(auto-checked for footwear)</span>
+          </label>
 
           <button onClick={addProduct}
                   disabled={saving || !form.name || form.sizes.length === 0 || form.hubs.length === 0}
@@ -1956,6 +2031,39 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     updateProductHubs(product.id, next);
   };
 
+  // POS Phase 2: local drafts for the two price fields so the input still
+  // works while typing (decimals, partial values like "12."). Synced from
+  // RTDB on mount and on external change, written back on blur. Empty input
+  // → write null so the POS reader sees "not set" instead of 0.
+  const [stockPriceDraft,  setStockPriceDraft]  = useState(typeof product.stockPrice  === "number" ? String(product.stockPrice)  : "");
+  const [retailPriceDraft, setRetailPriceDraft] = useState(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
+  useEffect(() => { setStockPriceDraft( typeof product.stockPrice  === "number" ? String(product.stockPrice)  : ""); }, [product.stockPrice]);
+  useEffect(() => { setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : ""); }, [product.retailPrice]);
+  const savePrice = (field, draft) => {
+    const trimmed = String(draft).trim();
+    if (trimmed === "") {
+      update(ref(database, `products/${product.id}`), { [field]: null })
+        .catch(err => console.warn(`update ${field} failed:`, err));
+      return;
+    }
+    const num = Number(trimmed);
+    // Reject 0 (and negatives / NaN) — matching the create flow's `> 0` rule.
+    // The POS contract is that prices are unset/null, never `0` (a free price
+    // would mis-ring at checkout). Restore the previous value from RTDB.
+    if (!Number.isFinite(num) || num <= 0) {
+      if (field === "stockPrice")  setStockPriceDraft( typeof product.stockPrice  === "number" ? String(product.stockPrice)  : "");
+      if (field === "retailPrice") setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
+      return;
+    }
+    update(ref(database, `products/${product.id}`), { [field]: num })
+      .catch(err => console.warn(`update ${field} failed:`, err));
+  };
+  const toggleShoebox = () => {
+    const next = !(product.hasShoeBoxOption === true);
+    update(ref(database, `products/${product.id}`), { hasShoeBoxOption: next })
+      .catch(err => console.warn("update hasShoeBoxOption failed:", err));
+  };
+
   const handleDelete = () => {
     if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
     deleteProductFromFirebase(product.id);
@@ -2070,6 +2178,48 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
         </div>
       </div>
 
+      {/* PRICING — POS Phase 2. Two optional ZAR price inputs (saved on blur)
+          plus a shoebox checkbox. Blank input is allowed and writes null. */}
+      <div style={sectionTitle}>Pricing (ZAR)</div>
+      <div style={card}>
+        <div style={{ display:"flex", padding:"0", borderBottom:"1px solid rgba(255,255,255,.06)" }}>
+          <div style={{ flex:1, padding:"14px 16px", borderRight:"1px solid rgba(255,255,255,.06)" }}>
+            <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Stock Price</div>
+            <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="—"
+                   value={stockPriceDraft}
+                   onChange={e => setStockPriceDraft(e.target.value)}
+                   onBlur={() => savePrice("stockPrice", stockPriceDraft)}
+                   onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                   style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
+          </div>
+          <div style={{ flex:1, padding:"14px 16px" }}>
+            <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Retail Price</div>
+            <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="—"
+                   value={retailPriceDraft}
+                   onChange={e => setRetailPriceDraft(e.target.value)}
+                   onBlur={() => savePrice("retailPrice", retailPriceDraft)}
+                   onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                   style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
+          </div>
+        </div>
+        <div onClick={toggleShoebox}
+             style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 16px", cursor:"pointer" }}>
+          <div style={{ fontSize:15, color:"#fff", fontWeight:500 }}>Shoebox option</div>
+          <div style={{
+            width:24, height:24, borderRadius:6,
+            background: product.hasShoeBoxOption === true ? "#4A7FFF" : "rgba(255,255,255,.06)",
+            border:     product.hasShoeBoxOption === true ? "none" : "1px solid rgba(255,255,255,.18)",
+            display:"flex", alignItems:"center", justifyContent:"center",
+          }}>
+            {product.hasShoeBoxOption === true && (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* HUBS — iOS-style grouped list */}
       <div style={sectionTitle}>Hubs</div>
       <div style={card}>
@@ -2119,6 +2269,287 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           Delete product
         </button>
       </div>
+    </div>
+  );
+}
+
+// ─── BACKFILL PRICES SCREEN (POS Phase 2) ─────────────────────────────────────
+// Bulk row-editor for stockPrice / retailPrice / hasShoeBoxOption. Used to
+// populate price data for products that pre-date these fields. Gated by a
+// manager-PIN re-prompt — the signed-in user re-enters their own PIN to
+// confirm. We use reauthenticateWithCredential (rather than a second
+// signInWithEmailAndPassword) so the auth-state subscriber doesn't churn.
+//
+// Edits are accumulated locally and committed in one multi-path `update()`
+// on Save All — that way the user can fix several products without writing
+// half-baked rows back to RTDB while they're still typing.
+function BackfillPricesScreen({ products, onBack }) {
+  const { user: authUser, isSuperAdmin } = usePermissions();
+  // Super-admin signs in via Google (no email/password provider linked), so
+  // reauthenticateWithCredential can't succeed for them — and they already
+  // bypass every other permission check by design. Skip the gate entirely
+  // for super-admin. Non-super-admin users without a password provider
+  // (shouldn't happen in normal operation) still see the gate but get a
+  // clear "re-auth not available" message instead of a misleading
+  // "Wrong PIN" — see verifyPin below.
+  const [gateOpen, setGateOpen]   = useState(!isSuperAdmin);
+  const [pin, setPin]             = useState("");
+  const [gateError, setGateError] = useState("");
+  const [verifying, setVerifying] = useState(false);
+
+  // Local drafts: { [productId]: { stockPrice, retailPrice, hasShoeBoxOption } }
+  // Initialised from the products list once the gate opens. Drafts start as
+  // strings so partial input ("12.") doesn't get coerced mid-typing.
+  //
+  // `draftsDirty` tracks per-field user edits: { [productId]: { stockPrice?:
+  // true, retailPrice?: true, hasShoeBoxOption?: true } }. The resync effect
+  // below only refreshes *non-dirty* fields from RTDB — that way if admin B
+  // updates a product's price while admin A is editing this screen, admin B's
+  // change appears in untouched rows but admin A's typed edits aren't
+  // clobbered. Without this, Save All would write admin A's stale draft back
+  // over admin B's newer value. Flags clear after a successful save.
+  // Treat stored 0/negative as unset (legacy rows pre-dating the `> 0` rule).
+  // That way the editor surfaces them as blank and Save All will normalize
+  // them to null on the next write.
+  const seedDraft = (p) => ({
+    stockPrice:       typeof p.stockPrice  === "number" && p.stockPrice  > 0 ? String(p.stockPrice)  : "",
+    retailPrice:      typeof p.retailPrice === "number" && p.retailPrice > 0 ? String(p.retailPrice) : "",
+    hasShoeBoxOption: p.hasShoeBoxOption === true,
+  });
+  const [drafts, setDrafts] = useState(() => {
+    const m = {};
+    for (const p of products) m[p.id] = seedDraft(p);
+    return m;
+  });
+  const [draftsDirty, setDraftsDirty] = useState({});
+  // Resync untouched draft fields from RTDB on every products change. We
+  // depend on `products` itself (not just ids) so price/shoebox changes from
+  // other tabs flow into clean rows. Dirty fields are preserved.
+  useEffect(() => {
+    setDrafts(prev => {
+      const next = { ...prev };
+      for (const p of products) {
+        const fresh    = seedDraft(p);
+        const existing = next[p.id];
+        const dirty    = draftsDirty[p.id] || {};
+        if (!existing) {
+          next[p.id] = fresh;
+          continue;
+        }
+        next[p.id] = {
+          stockPrice:       dirty.stockPrice       ? existing.stockPrice       : fresh.stockPrice,
+          retailPrice:      dirty.retailPrice      ? existing.retailPrice      : fresh.retailPrice,
+          hasShoeBoxOption: dirty.hasShoeBoxOption ? existing.hasShoeBoxOption : fresh.hasShoeBoxOption,
+        };
+      }
+      // Drop rows for products that have been deleted elsewhere.
+      for (const id of Object.keys(next)) if (!products.find(p => p.id === id)) delete next[id];
+      return next;
+    });
+  }, [products, draftsDirty]);
+
+  const verifyPin = async () => {
+    setGateError("");
+    if (!authUser?.email) { setGateError("Not signed in."); return; }
+    // Bail before attempting reauth if the signed-in user has no password
+    // provider — otherwise Firebase throws and the catch block below would
+    // mislabel it as "Wrong PIN" (e.g., Google-auth sessions, though
+    // super-admin bypasses this gate entirely above).
+    const hasPasswordProvider = (authUser.providerData || []).some(p => p.providerId === "password");
+    if (!hasPasswordProvider) {
+      setGateError("Re-authentication is not available for this account. Sign in with a staff PIN account.");
+      return;
+    }
+    if (!/^\d{4}$/.test(pin)) { setGateError("PIN must be 4 digits."); return; }
+    setVerifying(true);
+    try {
+      const cred = EmailAuthProvider.credential(authUser.email, toAuthPassword(pin));
+      await reauthenticateWithCredential(authUser, cred);
+      setGateOpen(false);
+    } catch (err) {
+      console.warn("Backfill PIN re-auth failed:", err);
+      setGateError("Wrong PIN. Try again.");
+      setPin("");
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  // Compute the patch object for a single product (or null when nothing's
+  // changed). Empty string → null (clears the field); non-finite/negative →
+  // null. Used by Save All to build a multi-path RTDB update.
+  const patchFor = (product) => {
+    const d = drafts[product.id];
+    if (!d) return null;
+    const patch = {};
+    const parsePrice = (raw, currentVal) => {
+      // hadStoredNumber tracks whether the RTDB field exists at all (even
+      // if it's an invalid 0/negative). A blank draft against a stored
+      // value should always write null — that includes cleaning up legacy
+      // 0 values. normalizedCurrent is only used to decide whether a typed
+      // number equals what's already there (so we skip no-op writes).
+      const hadStoredNumber = typeof currentVal === "number";
+      const normalizedCurrent = hadStoredNumber && currentVal > 0 ? currentVal : null;
+      const trimmed = String(raw).trim();
+      if (trimmed === "") return hadStoredNumber ? null : "__NO_CHANGE__";
+      const num = Number(trimmed);
+      // Reject 0 (and negatives / NaN) — matches create-flow's `> 0` rule.
+      if (!Number.isFinite(num) || num <= 0) return "__NO_CHANGE__";
+      return num === normalizedCurrent ? "__NO_CHANGE__" : num;
+    };
+    const stockVal  = parsePrice(d.stockPrice,  product.stockPrice);
+    const retailVal = parsePrice(d.retailPrice, product.retailPrice);
+    if (stockVal  !== "__NO_CHANGE__") patch.stockPrice  = stockVal;
+    if (retailVal !== "__NO_CHANGE__") patch.retailPrice = retailVal;
+    const boxVal = !!d.hasShoeBoxOption;
+    if (boxVal !== (product.hasShoeBoxOption === true)) patch.hasShoeBoxOption = boxVal;
+    return Object.keys(patch).length === 0 ? null : patch;
+  };
+
+  // Count of pending changes — drives the Save All button label/disabled state.
+  const pendingCount = useMemo(() => {
+    let n = 0;
+    for (const p of products) if (patchFor(p)) n++;
+    return n;
+  }, [drafts, products]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
+  const saveAll = async () => {
+    setSaving(true);
+    setSaveMsg("");
+    try {
+      const multi = {};
+      for (const p of products) {
+        const patch = patchFor(p);
+        if (!patch) continue;
+        for (const [k, v] of Object.entries(patch)) multi[`products/${p.id}/${k}`] = v;
+      }
+      if (Object.keys(multi).length === 0) {
+        setSaveMsg("Nothing to save.");
+        return;
+      }
+      await update(ref(database), multi);
+      // Clear dirty flags so the resync effect can refresh these rows from
+      // RTDB (which now matches what we just wrote).
+      setDraftsDirty({});
+      setSaveMsg(`Saved ${pendingCount} product${pendingCount === 1 ? "" : "s"}.`);
+    } catch (err) {
+      console.error("Backfill save failed:", err);
+      setSaveMsg("Save failed. Check console.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const setRowField = (id, field, value) => {
+    setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+    setDraftsDirty(prev => ({ ...prev, [id]: { ...prev[id], [field]: true } }));
+  };
+
+  // ── PIN gate ─────────────────────────────────────────────────────────────
+  if (gateOpen) {
+    return (
+      <div style={{ padding:"44px 16px 24px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:24 }}>
+          <button onClick={onBack}
+                  style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, fontWeight:500, cursor:"pointer", padding:"6px 10px" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            Cancel
+          </button>
+        </div>
+        <div style={{ maxWidth:360, margin:"40px auto 0", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, padding:"28px 24px" }}>
+          <div style={{ fontSize:18, fontWeight:700, color:"#fff", marginBottom:6 }}>Manager PIN</div>
+          <div style={{ fontSize:13, color:"rgba(255,255,255,.55)", marginBottom:20, lineHeight:1.4 }}>
+            Re-enter your 4-digit PIN to open the Backfill Prices editor.
+          </div>
+          <input type="password" inputMode="numeric" pattern="[0-9]*" maxLength={4}
+                 value={pin}
+                 onChange={e => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                 onKeyDown={e => { if (e.key === "Enter") verifyPin(); }}
+                 autoFocus
+                 placeholder="••••"
+                 style={{ width:"100%", textAlign:"center", letterSpacing:"0.4em", fontSize:22, fontWeight:600, background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.12)", borderRadius:10, padding:"14px 12px", color:"#fff", outline:"none", marginBottom:12 }}/>
+          {gateError && <div style={{ color:"#F87171", fontSize:13, marginBottom:12 }}>{gateError}</div>}
+          <button onClick={verifyPin} disabled={verifying || pin.length !== 4}
+                  style={{ width:"100%", background:"#4A7FFF", color:"#fff", border:"none", borderRadius:10, padding:"12px", fontSize:15, fontWeight:700, cursor: verifying || pin.length !== 4 ? "not-allowed" : "pointer", opacity: verifying || pin.length !== 4 ? 0.5 : 1 }}>
+            {verifying ? "Verifying…" : "Unlock"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Row editor ───────────────────────────────────────────────────────────
+  const cellInput = { width:"100%", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:8, padding:"8px 10px", color:"#fff", fontSize:14, outline:"none", boxSizing:"border-box", fontFamily:"inherit" };
+  return (
+    <div>
+      {/* Top bar */}
+      <div style={{ padding:"44px 8px 8px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <button onClick={onBack}
+                style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, fontWeight:500, cursor:"pointer", padding:"6px 10px" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          Products
+        </button>
+        <button onClick={saveAll} disabled={saving || pendingCount === 0}
+                style={{ background: pendingCount === 0 ? "rgba(255,255,255,.06)" : "#4A7FFF", color: pendingCount === 0 ? "rgba(255,255,255,.4)" : "#fff", border:"none", borderRadius:10, padding:"10px 18px", fontSize:13, fontWeight:700, cursor: saving || pendingCount === 0 ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1 }}>
+          {saving ? "Saving…" : `Save All${pendingCount > 0 ? ` (${pendingCount})` : ""}`}
+        </button>
+      </div>
+
+      {/* Title */}
+      <div style={{ padding:"4px 18px 8px" }}>
+        <div style={{ fontSize:22, fontWeight:700, color:"#fff" }}>Backfill Prices</div>
+        <div style={{ fontSize:13, color:"rgba(255,255,255,.5)", marginTop:6, lineHeight:1.4 }}>
+          Edit prices and shoebox flag across every product. Blank price = unset. Changes commit when you tap <b>Save All</b>.
+        </div>
+        {saveMsg && <div style={{ fontSize:13, color: saveMsg.startsWith("Saved") ? "#4ADE80" : "#F87171", marginTop:10 }}>{saveMsg}</div>}
+      </div>
+
+      {/* Table header (hidden on narrow screens — each row carries its own
+          labels). Visible from 540px wide. */}
+      <div style={{ display:"grid", gridTemplateColumns:"1.4fr 1fr 1fr 90px", gap:8, padding:"10px 18px", fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", borderBottom:"1px solid rgba(255,255,255,.06)" }}>
+        <div>Product</div>
+        <div>Stock (R)</div>
+        <div>Retail (R)</div>
+        <div style={{ textAlign:"center" }}>Shoebox</div>
+      </div>
+
+      {/* Rows */}
+      <div>
+        {products.length === 0 && (
+          <div style={{ padding:"32px 18px", color:"rgba(255,255,255,.45)", textAlign:"center" }}>No products to edit.</div>
+        )}
+        {products.map(p => {
+          const d = drafts[p.id] || { stockPrice:"", retailPrice:"", hasShoeBoxOption:false };
+          const dirty = !!patchFor(p);
+          return (
+            <div key={p.id}
+                 style={{ display:"grid", gridTemplateColumns:"1.4fr 1fr 1fr 90px", gap:8, alignItems:"center", padding:"10px 18px", borderBottom:"1px solid rgba(255,255,255,.05)", background: dirty ? "rgba(60,110,255,.04)" : "transparent" }}>
+              <div style={{ display:"flex", flexDirection:"column", gap:2, minWidth:0 }}>
+                <div style={{ fontSize:14, color:"#fff", fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
+                <div style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>{p.category || (p.productType === "clothing" ? "Clothing" : "Sneaker")}</div>
+              </div>
+              <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="—"
+                     value={d.stockPrice}
+                     onChange={e => setRowField(p.id, "stockPrice", e.target.value)}
+                     style={cellInput}/>
+              <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="—"
+                     value={d.retailPrice}
+                     onChange={e => setRowField(p.id, "retailPrice", e.target.value)}
+                     style={cellInput}/>
+              <div style={{ display:"flex", justifyContent:"center" }}>
+                <input type="checkbox"
+                       checked={!!d.hasShoeBoxOption}
+                       onChange={e => setRowField(p.id, "hasShoeBoxOption", e.target.checked)}
+                       style={{ width:20, height:20, accentColor:"#4A7FFF", cursor:"pointer" }}/>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ height:24 }}/>
     </div>
   );
 }
