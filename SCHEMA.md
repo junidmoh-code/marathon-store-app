@@ -50,6 +50,6 @@ is:
 const stock   = typeof p.stockPrice  === "number" ? p.stockPrice  : null;
 const retail  = typeof p.retailPrice === "number" ? p.retailPrice : null;
 const hasBox  = p.hasShoeBoxOption === true;
-const barcode = typeof p.barcode === "string" && p.barcode.length > 0 ? p.barcode : null;
-const sku     = typeof p.sku     === "string" && p.sku.length     > 0 ? p.sku     : null;
+const barcode = typeof p.barcode === "string" && p.barcode.trim().length > 0 ? p.barcode.trim() : null;
+const sku     = typeof p.sku     === "string" && p.sku.trim().length     > 0 ? p.sku.trim()     : null;
 ```
