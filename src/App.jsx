@@ -47,13 +47,18 @@ function ProductIcon({ size = 28, color = "#4A7FFF", opacity = 0.6 }) {
 }
 
 // Renders a product photo thumbnail (img for URLs, clean SVG fallback otherwise).
-const _normPhotoKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
+// Returns "" for non-string inputs so downstream callers (e.g. InsightReorderTab)
+// that occasionally pass a falsy productName don't crash on render.
+const _normPhotoKey = s => typeof s === "string"
+  ? s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-')
+  : "";
 
 // photoMap shape: { [productName]: { photoUrl, photo } }
 // Exact match first; falls back to normalized key (trim, collapse spaces, lowercase,
 // remove spaces around hyphens) to handle old order names that drifted from catalog.
 function ProductThumb({ name, photoMap, size = 40 }) {
-  const p   = photoMap?.[name] ?? photoMap?.[_normPhotoKey(name)];
+  const normName = _normPhotoKey(name);
+  const p   = photoMap?.[name] ?? (normName ? photoMap?.[normName] : undefined);
   if (!p) console.warn("[ProductThumb] no map entry for:", JSON.stringify(name));
   const url = p?.photoUrl;
   if (url && (url.startsWith("http") || url.startsWith("data:"))) {
@@ -3108,11 +3113,12 @@ function AssistantView({ products, onExit, orders = [] }) {
             {(() => {
               const canAdd = !!(pendingSize || pendingDisplayPartner);
               const qtyOnly = pendingSize && !pendingDisplayPartner;
+              // Display Partner adds exactly one cart line regardless of pendingQty
+              // (addToCart forces reps=1 — one-off by nature). Drop the "N ×"
+              // prefix so the CTA doesn't promise a quantity the cart will ignore.
               const btnLabel = pendingDisplayPartner
                 ? (pendingSize
-                    ? (pendingQty > 1
-                        ? `Add ${pendingQty} × Size ${pendingSize} + Display Partner to Cart`
-                        : `Add Size ${pendingSize} + Display Partner to Cart`)
+                    ? `Add Size ${pendingSize} + Display Partner to Cart`
                     : "Add Display Partner Request to Cart")
                 : pendingSize
                   ? (qtyOnly && pendingQty > 1
