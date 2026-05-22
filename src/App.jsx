@@ -2284,8 +2284,15 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
 // on Save All — that way the user can fix several products without writing
 // half-baked rows back to RTDB while they're still typing.
 function BackfillPricesScreen({ products, onBack }) {
-  const { user: authUser } = usePermissions();
-  const [gateOpen, setGateOpen]   = useState(true);  // shown until PIN verified
+  const { user: authUser, isSuperAdmin } = usePermissions();
+  // Super-admin signs in via Google (no email/password provider linked), so
+  // reauthenticateWithCredential can't succeed for them — and they already
+  // bypass every other permission check by design. Skip the gate entirely
+  // for super-admin. Non-super-admin users without a password provider
+  // (shouldn't happen in normal operation) still see the gate but get a
+  // clear "re-auth not available" message instead of a misleading
+  // "Wrong PIN" — see verifyPin below.
+  const [gateOpen, setGateOpen]   = useState(!isSuperAdmin);
   const [pin, setPin]             = useState("");
   const [gateError, setGateError] = useState("");
   const [verifying, setVerifying] = useState(false);
@@ -2301,9 +2308,12 @@ function BackfillPricesScreen({ products, onBack }) {
   // change appears in untouched rows but admin A's typed edits aren't
   // clobbered. Without this, Save All would write admin A's stale draft back
   // over admin B's newer value. Flags clear after a successful save.
+  // Treat stored 0/negative as unset (legacy rows pre-dating the `> 0` rule).
+  // That way the editor surfaces them as blank and Save All will normalize
+  // them to null on the next write.
   const seedDraft = (p) => ({
-    stockPrice:       typeof p.stockPrice  === "number" ? String(p.stockPrice)  : "",
-    retailPrice:      typeof p.retailPrice === "number" ? String(p.retailPrice) : "",
+    stockPrice:       typeof p.stockPrice  === "number" && p.stockPrice  > 0 ? String(p.stockPrice)  : "",
+    retailPrice:      typeof p.retailPrice === "number" && p.retailPrice > 0 ? String(p.retailPrice) : "",
     hasShoeBoxOption: p.hasShoeBoxOption === true,
   });
   const [drafts, setDrafts] = useState(() => {
@@ -2340,8 +2350,17 @@ function BackfillPricesScreen({ products, onBack }) {
 
   const verifyPin = async () => {
     setGateError("");
+    if (!authUser?.email) { setGateError("Not signed in."); return; }
+    // Bail before attempting reauth if the signed-in user has no password
+    // provider — otherwise Firebase throws and the catch block below would
+    // mislabel it as "Wrong PIN" (e.g., Google-auth sessions, though
+    // super-admin bypasses this gate entirely above).
+    const hasPasswordProvider = (authUser.providerData || []).some(p => p.providerId === "password");
+    if (!hasPasswordProvider) {
+      setGateError("Re-authentication is not available for this account. Sign in with a staff PIN account.");
+      return;
+    }
     if (!/^\d{4}$/.test(pin)) { setGateError("PIN must be 4 digits."); return; }
-    if (!authUser?.email)    { setGateError("Not signed in."); return; }
     setVerifying(true);
     try {
       const cred = EmailAuthProvider.credential(authUser.email, toAuthPassword(pin));
@@ -2364,12 +2383,16 @@ function BackfillPricesScreen({ products, onBack }) {
     if (!d) return null;
     const patch = {};
     const parsePrice = (raw, currentVal) => {
+      // Normalize legacy 0/negative stored values to "unset" so an empty
+      // draft against `stockPrice: 0` writes null (instead of being treated
+      // as no-change and preserving the bad value).
+      const normalizedCurrent = typeof currentVal === "number" && currentVal > 0 ? currentVal : null;
       const trimmed = String(raw).trim();
-      if (trimmed === "") return currentVal == null ? "__NO_CHANGE__" : null;
+      if (trimmed === "") return normalizedCurrent == null ? "__NO_CHANGE__" : null;
       const num = Number(trimmed);
       // Reject 0 (and negatives / NaN) — matches create-flow's `> 0` rule.
       if (!Number.isFinite(num) || num <= 0) return "__NO_CHANGE__";
-      return num === currentVal ? "__NO_CHANGE__" : num;
+      return num === normalizedCurrent ? "__NO_CHANGE__" : num;
     };
     const stockVal  = parsePrice(d.stockPrice,  product.stockPrice);
     const retailVal = parsePrice(d.retailPrice, product.retailPrice);
