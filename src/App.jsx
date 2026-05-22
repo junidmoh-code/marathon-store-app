@@ -2383,12 +2383,15 @@ function BackfillPricesScreen({ products, onBack }) {
     if (!d) return null;
     const patch = {};
     const parsePrice = (raw, currentVal) => {
-      // Normalize legacy 0/negative stored values to "unset" so an empty
-      // draft against `stockPrice: 0` writes null (instead of being treated
-      // as no-change and preserving the bad value).
-      const normalizedCurrent = typeof currentVal === "number" && currentVal > 0 ? currentVal : null;
+      // hadStoredNumber tracks whether the RTDB field exists at all (even
+      // if it's an invalid 0/negative). A blank draft against a stored
+      // value should always write null — that includes cleaning up legacy
+      // 0 values. normalizedCurrent is only used to decide whether a typed
+      // number equals what's already there (so we skip no-op writes).
+      const hadStoredNumber = typeof currentVal === "number";
+      const normalizedCurrent = hadStoredNumber && currentVal > 0 ? currentVal : null;
       const trimmed = String(raw).trim();
-      if (trimmed === "") return normalizedCurrent == null ? "__NO_CHANGE__" : null;
+      if (trimmed === "") return hadStoredNumber ? null : "__NO_CHANGE__";
       const num = Number(trimmed);
       // Reject 0 (and negatives / NaN) — matches create-flow's `> 0` rule.
       if (!Number.isFinite(num) || num <= 0) return "__NO_CHANGE__";
