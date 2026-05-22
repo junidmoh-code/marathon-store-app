@@ -1557,7 +1557,13 @@ function AdminView({ products, orders, onExit }) {
   // shared `sizes` array — sneakers store "3".."11", clothing stores
   // "S".."XXXL". Phase 14A: `hubs` is a multi-select (Hub 1 / Hub 2 / Hub 3);
   // clothing cannot include Hub 1.
-  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker" });
+  // POS Phase 2: stockPrice / retailPrice / hasShoeBoxOption added. Prices
+  // are raw <input type="number"> strings here and parsed on save — that way
+  // an empty field round-trips to "not set" instead of 0. `shoeboxTouched`
+  // tracks whether the user has manually toggled the shoebox checkbox; once
+  // true we stop auto-syncing it from category/productType.
+  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+  const [shoeboxTouched, setShoeboxTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
   // ── List search ─────────────────────────────────────────────────────────
@@ -2041,8 +2047,10 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       return;
     }
     const num = Number(trimmed);
-    if (!Number.isFinite(num) || num < 0) {
-      // Reject invalid input by restoring the previous value from RTDB.
+    // Reject 0 (and negatives / NaN) — matching the create flow's `> 0` rule.
+    // The POS contract is that prices are unset/null, never `0` (a free price
+    // would mis-ring at checkout). Restore the previous value from RTDB.
+    if (!Number.isFinite(num) || num <= 0) {
       if (field === "stockPrice")  setStockPriceDraft( typeof product.stockPrice  === "number" ? String(product.stockPrice)  : "");
       if (field === "retailPrice") setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
       return;
@@ -2285,37 +2293,50 @@ function BackfillPricesScreen({ products, onBack }) {
   // Local drafts: { [productId]: { stockPrice, retailPrice, hasShoeBoxOption } }
   // Initialised from the products list once the gate opens. Drafts start as
   // strings so partial input ("12.") doesn't get coerced mid-typing.
-  const [drafts, setDrafts] = useState(() => seedDrafts(products));
-  function seedDrafts(list) {
+  //
+  // `draftsDirty` tracks per-field user edits: { [productId]: { stockPrice?:
+  // true, retailPrice?: true, hasShoeBoxOption?: true } }. The resync effect
+  // below only refreshes *non-dirty* fields from RTDB — that way if admin B
+  // updates a product's price while admin A is editing this screen, admin B's
+  // change appears in untouched rows but admin A's typed edits aren't
+  // clobbered. Without this, Save All would write admin A's stale draft back
+  // over admin B's newer value. Flags clear after a successful save.
+  const seedDraft = (p) => ({
+    stockPrice:       typeof p.stockPrice  === "number" ? String(p.stockPrice)  : "",
+    retailPrice:      typeof p.retailPrice === "number" ? String(p.retailPrice) : "",
+    hasShoeBoxOption: p.hasShoeBoxOption === true,
+  });
+  const [drafts, setDrafts] = useState(() => {
     const m = {};
-    for (const p of list) {
-      m[p.id] = {
-        stockPrice:       typeof p.stockPrice  === "number" ? String(p.stockPrice)  : "",
-        retailPrice:      typeof p.retailPrice === "number" ? String(p.retailPrice) : "",
-        hasShoeBoxOption: p.hasShoeBoxOption === true,
-      };
-    }
+    for (const p of products) m[p.id] = seedDraft(p);
     return m;
-  }
-  // Re-seed when products list shape changes (added/removed) so new products
-  // appear without losing in-flight edits to existing rows.
+  });
+  const [draftsDirty, setDraftsDirty] = useState({});
+  // Resync untouched draft fields from RTDB on every products change. We
+  // depend on `products` itself (not just ids) so price/shoebox changes from
+  // other tabs flow into clean rows. Dirty fields are preserved.
   useEffect(() => {
     setDrafts(prev => {
       const next = { ...prev };
       for (const p of products) {
-        if (!next[p.id]) {
-          next[p.id] = {
-            stockPrice:       typeof p.stockPrice  === "number" ? String(p.stockPrice)  : "",
-            retailPrice:      typeof p.retailPrice === "number" ? String(p.retailPrice) : "",
-            hasShoeBoxOption: p.hasShoeBoxOption === true,
-          };
+        const fresh    = seedDraft(p);
+        const existing = next[p.id];
+        const dirty    = draftsDirty[p.id] || {};
+        if (!existing) {
+          next[p.id] = fresh;
+          continue;
         }
+        next[p.id] = {
+          stockPrice:       dirty.stockPrice       ? existing.stockPrice       : fresh.stockPrice,
+          retailPrice:      dirty.retailPrice      ? existing.retailPrice      : fresh.retailPrice,
+          hasShoeBoxOption: dirty.hasShoeBoxOption ? existing.hasShoeBoxOption : fresh.hasShoeBoxOption,
+        };
       }
       // Drop rows for products that have been deleted elsewhere.
       for (const id of Object.keys(next)) if (!products.find(p => p.id === id)) delete next[id];
       return next;
     });
-  }, [products.map(p => p.id).join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [products, draftsDirty]);
 
   const verifyPin = async () => {
     setGateError("");
@@ -2346,7 +2367,8 @@ function BackfillPricesScreen({ products, onBack }) {
       const trimmed = String(raw).trim();
       if (trimmed === "") return currentVal == null ? "__NO_CHANGE__" : null;
       const num = Number(trimmed);
-      if (!Number.isFinite(num) || num < 0) return "__NO_CHANGE__";
+      // Reject 0 (and negatives / NaN) — matches create-flow's `> 0` rule.
+      if (!Number.isFinite(num) || num <= 0) return "__NO_CHANGE__";
       return num === currentVal ? "__NO_CHANGE__" : num;
     };
     const stockVal  = parsePrice(d.stockPrice,  product.stockPrice);
@@ -2382,6 +2404,9 @@ function BackfillPricesScreen({ products, onBack }) {
         return;
       }
       await update(ref(database), multi);
+      // Clear dirty flags so the resync effect can refresh these rows from
+      // RTDB (which now matches what we just wrote).
+      setDraftsDirty({});
       setSaveMsg(`Saved ${pendingCount} product${pendingCount === 1 ? "" : "s"}.`);
     } catch (err) {
       console.error("Backfill save failed:", err);
@@ -2391,7 +2416,10 @@ function BackfillPricesScreen({ products, onBack }) {
     }
   };
 
-  const setRowField = (id, field, value) => setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+  const setRowField = (id, field, value) => {
+    setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+    setDraftsDirty(prev => ({ ...prev, [id]: { ...prev[id], [field]: true } }));
+  };
 
   // ── PIN gate ─────────────────────────────────────────────────────────────
   if (gateOpen) {
