@@ -29,6 +29,8 @@ Each product is its own node. `productId` is generated client-side as
 | **`stockPrice`**  | **number (ZAR)**                  | **no**   | **POS Phase 2. Wholesale / B2B unit price. Optional — existing products without it remain valid.** |
 | **`retailPrice`** | **number (ZAR)**                  | **no**   | **POS Phase 2. Walk-in / consumer unit price. Optional.** |
 | **`hasShoeBoxOption`** | **boolean**                  | **no**   | **POS Phase 2. True for footwear that ships with a shoebox add-on. Optional; treat missing as false.** |
+| **`barcode`**     | **string**                        | **no**   | **POS Phase 2 (scanner workflow). Physical scannable code — EAN-13, UPC, or custom in-house format. Free-text, not validated. Optional.** |
+| **`sku`**         | **string**                        | **no**   | **POS Phase 2 (scanner workflow). Stock keeping unit for inventory cross-reference. Free-text. Optional.** |
 
 ### Validation invariants (enforced client-side)
 
@@ -36,14 +38,18 @@ Each product is its own node. `productId` is generated client-side as
 - `hubs[]` must contain at least one value.
 - For `productType === "clothing"`, `hubs` may not contain `"hub1"`.
 - Price fields, when set, are positive numbers in ZAR (no currency code stored).
+- `barcode` and `sku`, when set, are non-empty trimmed strings. No format validation — empty/whitespace trimmed input is omitted on create and cleared (written as `null`) on edit.
 
 ### Backwards compatibility
 
-`stockPrice`, `retailPrice`, and `hasShoeBoxOption` are pure additions — all
-read sites must tolerate them being absent. The reader contract is:
+`stockPrice`, `retailPrice`, `hasShoeBoxOption`, `barcode`, and `sku` are pure
+additions — all read sites must tolerate them being absent. The reader contract
+is:
 
 ```js
-const stock  = typeof p.stockPrice  === "number" ? p.stockPrice  : null;
-const retail = typeof p.retailPrice === "number" ? p.retailPrice : null;
-const hasBox = p.hasShoeBoxOption === true;
+const stock   = typeof p.stockPrice  === "number" ? p.stockPrice  : null;
+const retail  = typeof p.retailPrice === "number" ? p.retailPrice : null;
+const hasBox  = p.hasShoeBoxOption === true;
+const barcode = typeof p.barcode === "string" && p.barcode.trim().length > 0 ? p.barcode.trim() : null;
+const sku     = typeof p.sku     === "string" && p.sku.trim().length     > 0 ? p.sku.trim()     : null;
 ```

@@ -1574,7 +1574,7 @@ function AdminView({ products, orders, onExit }) {
   // an empty field round-trips to "not set" instead of 0. `shoeboxTouched`
   // tracks whether the user has manually toggled the shoebox checkbox; once
   // true we stop auto-syncing it from category/productType.
-  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true, barcode:"", sku:"" });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
@@ -1634,9 +1634,16 @@ function AdminView({ products, orders, onExit }) {
       // newly-created products. Legacy products without it are treated as
       // false per the reader contract in SCHEMA.md.
       newProduct.hasShoeBoxOption = !!form.hasShoeBoxOption;
+      // POS Phase 2 (scanner workflow): barcode / sku are optional free-text.
+      // Empty trimmed → field omitted entirely. Same null-vs-unset convention
+      // as the price fields (see SCHEMA.md reader contract).
+      const barcodeTrimmed = String(form.barcode || "").trim();
+      const skuTrimmed     = String(form.sku     || "").trim();
+      if (barcodeTrimmed) newProduct.barcode = barcodeTrimmed;
+      if (skuTrimmed)     newProduct.sku     = skuTrimmed;
       await addProductToFirebase(newProduct);
 
-      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true, barcode:"", sku:"" });
       setShoeboxTouched(false);
       setShowAdd(false);
     } catch (err) {
@@ -1872,6 +1879,15 @@ function AdminView({ products, orders, onExit }) {
             <span style={{ color:"#555", fontSize:"0.78rem", fontStyle:"italic", marginLeft:4 }}>(auto-checked for footwear)</span>
           </label>
 
+          {/* POS Phase 2 (scanner workflow): optional identifiers. Free-text so
+              we accept EAN-13, UPC, custom in-house codes, etc. without
+              validating format. Empty → field omitted at save. */}
+          <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Identifiers (optional)</div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem", marginBottom:"1.25rem" }}>
+            <input type="text" placeholder="Barcode" value={form.barcode} onChange={e => setForm(f=>({...f, barcode: e.target.value}))} style={inputStyle} />
+            <input type="text" placeholder="SKU"     value={form.sku}     onChange={e => setForm(f=>({...f, sku:     e.target.value}))} style={inputStyle} />
+          </div>
+
           <button onClick={addProduct}
                   disabled={saving || !form.name || form.sizes.length === 0 || form.hubs.length === 0}
                   style={{ ...bBlue, padding:"0.6rem 1.5rem", opacity: (!saving && form.name && form.sizes.length > 0 && form.hubs.length > 0) ? 1 : 0.4 }}>
@@ -2076,6 +2092,20 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       .catch(err => console.warn("update hasShoeBoxOption failed:", err));
   };
 
+  // POS Phase 2 (scanner workflow): barcode / sku drafts. Same save-on-blur
+  // pattern as the price fields above, but for free-text strings. Empty
+  // trimmed → write null so the POS reader sees "not set" (matches the
+  // price convention; see SCHEMA.md reader contract).
+  const [barcodeDraft, setBarcodeDraft] = useState(typeof product.barcode === "string" ? product.barcode : "");
+  const [skuDraft,     setSkuDraft]     = useState(typeof product.sku     === "string" ? product.sku     : "");
+  useEffect(() => { setBarcodeDraft(typeof product.barcode === "string" ? product.barcode : ""); }, [product.barcode]);
+  useEffect(() => { setSkuDraft(    typeof product.sku     === "string" ? product.sku     : ""); }, [product.sku]);
+  const saveIdentifier = (field, draft) => {
+    const trimmed = String(draft).trim();
+    update(ref(database, `products/${product.id}`), { [field]: trimmed === "" ? null : trimmed })
+      .catch(err => console.warn(`update ${field} failed:`, err));
+  };
+
   const handleDelete = () => {
     if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
     deleteProductFromFirebase(product.id);
@@ -2228,6 +2258,32 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
                 <polyline points="20 6 9 17 4 12"/>
               </svg>
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* IDENTIFIERS — POS Phase 2 (scanner workflow). Two optional free-text
+          fields saved on blur. Blank input writes null. */}
+      <div style={sectionTitle}>Identifiers</div>
+      <div style={card}>
+        <div style={{ display:"flex", padding:"0" }}>
+          <div style={{ flex:1, padding:"14px 16px", borderRight:"1px solid rgba(255,255,255,.06)" }}>
+            <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Barcode</div>
+            <input type="text" placeholder="—"
+                   value={barcodeDraft}
+                   onChange={e => setBarcodeDraft(e.target.value)}
+                   onBlur={() => saveIdentifier("barcode", barcodeDraft)}
+                   onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                   style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
+          </div>
+          <div style={{ flex:1, padding:"14px 16px" }}>
+            <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>SKU</div>
+            <input type="text" placeholder="—"
+                   value={skuDraft}
+                   onChange={e => setSkuDraft(e.target.value)}
+                   onBlur={() => saveIdentifier("sku", skuDraft)}
+                   onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                   style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
           </div>
         </div>
       </div>
