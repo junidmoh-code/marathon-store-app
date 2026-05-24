@@ -293,13 +293,61 @@ function useProducts() {
   return products;
 }
 
+// ─── SKU + BARCODE AUTO-GENERATION (POS Phase 2) ─────────────────────────────
+// Reserves the next sequential SKU + barcode for a new product. Both counters
+// live at /products_meta and are advanced together inside a single
+// runTransaction so two concurrent add-product calls can't collide on the
+// same number. Today they march in lockstep (product 0001 → barcode 00000001).
+// A future size-level barcode feature will advance the barcode counter per
+// (product, size) while SKU continues advancing per product, so the two
+// counters are tracked independently even though they currently increment
+// together. See SCHEMA.md for the /products_meta layout.
+//
+// Atomicity caveat: the transaction reserves the number atomically, but the
+// subsequent /products/{id} write is a separate operation. If that write
+// fails (network drop after the transaction commits) the counter has already
+// advanced and the SKU/barcode pair is "burned" — i.e. there'll be a gap in
+// the sequence. Gaps are acceptable; the alternative (decrementing the
+// counter on failure) is racy and worse. Burns are logged for visibility.
+const SKU_MAX     =     9999; // 4-digit zero-padded ceiling
+const BARCODE_MAX = 99999999; // 8-digit zero-padded ceiling
+
+async function reserveNextSkuAndBarcode() {
+  const metaRef = ref(database, "products_meta");
+  let reserved = null;
+  const tx = await runTransaction(metaRef, (current) => {
+    const lastSku     = (current && typeof current.lastSku     === "number") ? current.lastSku     : 0;
+    const lastBarcode = (current && typeof current.lastBarcode === "number") ? current.lastBarcode : 0;
+    const nextSku     = lastSku     + 1;
+    const nextBarcode = lastBarcode + 1;
+    if (nextSku     > SKU_MAX)     { reserved = { error: "SKU counter exhausted (max 9999). Contact admin to expand width." };       return; /* abort */ }
+    if (nextBarcode > BARCODE_MAX) { reserved = { error: "Barcode counter exhausted (max 99999999). Contact admin to expand width." }; return; /* abort */ }
+    reserved = {
+      sku:     String(nextSku).padStart(4, "0"),
+      barcode: String(nextBarcode).padStart(8, "0"),
+    };
+    // Preserve any other fields someone has added to /products_meta in the
+    // future — only overwrite the two counter keys we own.
+    return { ...(current || {}), lastSku: nextSku, lastBarcode: nextBarcode };
+  });
+  if (!tx.committed) {
+    // Transaction was aborted by `return;` (exhaustion) — surface the message.
+    throw new Error(reserved?.error || "SKU/barcode reservation aborted.");
+  }
+  return reserved; // { sku, barcode }
+}
+
 function addProductToFirebase(product) {
   if (!product || !product.id || !product.name) {
     console.warn("addProductToFirebase: refusing to write invalid product", product);
-    return Promise.resolve();
+    return Promise.reject(new Error("Invalid product payload"));
   }
+  // Errors must propagate to the caller — addProduct relies on this rejecting
+  // when the /products/{id} write fails so the catch block runs (otherwise
+  // a failed write would silently burn the reserved sku/barcode pair AND
+  // clear the form as if save succeeded).
   return set(ref(database, `products/${product.id}`), product)
-    .catch(err => console.warn("Add product failed:", err));
+    .catch(err => { console.warn("Add product failed:", err); throw err; });
 }
 
 function deleteProductFromFirebase(id) {
@@ -1574,7 +1622,9 @@ function AdminView({ products, orders, onExit }) {
   // an empty field round-trips to "not set" instead of 0. `shoeboxTouched`
   // tracks whether the user has manually toggled the shoebox checkbox; once
   // true we stop auto-syncing it from category/productType.
-  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true, barcode:"", sku:"" });
+  // sku + barcode are NOT in form state — they auto-generate at save time via
+  // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
+  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
@@ -1634,21 +1684,27 @@ function AdminView({ products, orders, onExit }) {
       // newly-created products. Legacy products without it are treated as
       // false per the reader contract in SCHEMA.md.
       newProduct.hasShoeBoxOption = !!form.hasShoeBoxOption;
-      // POS Phase 2 (scanner workflow): barcode / sku are optional free-text.
-      // Empty trimmed → field omitted entirely. Same null-vs-unset convention
-      // as the price fields (see SCHEMA.md reader contract).
-      const barcodeTrimmed = String(form.barcode || "").trim();
-      const skuTrimmed     = String(form.sku     || "").trim();
-      if (barcodeTrimmed) newProduct.barcode = barcodeTrimmed;
-      if (skuTrimmed)     newProduct.sku     = skuTrimmed;
+      // POS Phase 2: reserve the next sequential sku + barcode atomically
+      // BEFORE the product write so two concurrent adds can't collide. If
+      // reservation fails (counter exhausted or RTDB error), surface the
+      // message and abort — no half-saved product, no advanced counter.
+      const { sku, barcode } = await reserveNextSkuAndBarcode();
+      newProduct.sku     = sku;
+      newProduct.barcode = barcode;
       await addProductToFirebase(newProduct);
 
-      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true, barcode:"", sku:"" });
+      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
       setShoeboxTouched(false);
       setShowAdd(false);
     } catch (err) {
       console.error("addProduct failed:", err);
-      alert("Failed to save product. Please try again.");
+      // Surface counter-exhaustion + reservation errors with their actual
+      // message so the admin knows what's wrong; everything else gets the
+      // generic prompt.
+      const msg = /counter exhausted|reservation/i.test(String(err?.message || ""))
+        ? `Failed to save product:\n${err.message}`
+        : "Failed to save product. Please try again.";
+      alert(msg);
     } finally {
       setSaving(false);
     }
@@ -1879,13 +1935,12 @@ function AdminView({ products, orders, onExit }) {
             <span style={{ color:"#555", fontSize:"0.78rem", fontStyle:"italic", marginLeft:4 }}>(auto-checked for footwear)</span>
           </label>
 
-          {/* POS Phase 2 (scanner workflow): optional identifiers. Free-text so
-              we accept EAN-13, UPC, custom in-house codes, etc. without
-              validating format. Empty → field omitted at save. */}
-          <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Identifiers (optional)</div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem", marginBottom:"1.25rem" }}>
-            <input type="text" placeholder="Barcode" value={form.barcode} onChange={e => setForm(f=>({...f, barcode: e.target.value}))} style={inputStyle} />
-            <input type="text" placeholder="SKU"     value={form.sku}     onChange={e => setForm(f=>({...f, sku:     e.target.value}))} style={inputStyle} />
+          {/* POS Phase 2 (scanner workflow): SKU + barcode are auto-assigned
+              sequentially at save time via reserveNextSkuAndBarcode(). No
+              manual entry — the values appear read-only in the product
+              detail screen after creation. */}
+          <div style={{ color:"#555", fontSize:"0.78rem", marginBottom:"1.25rem", fontStyle:"italic" }}>
+            SKU + barcode will be auto-assigned on save.
           </div>
 
           <button onClick={addProduct}
@@ -2092,19 +2147,12 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       .catch(err => console.warn("update hasShoeBoxOption failed:", err));
   };
 
-  // POS Phase 2 (scanner workflow): barcode / sku drafts. Same save-on-blur
-  // pattern as the price fields above, but for free-text strings. Empty
-  // trimmed → write null so the POS reader sees "not set" (matches the
-  // price convention; see SCHEMA.md reader contract).
-  const [barcodeDraft, setBarcodeDraft] = useState(typeof product.barcode === "string" ? product.barcode : "");
-  const [skuDraft,     setSkuDraft]     = useState(typeof product.sku     === "string" ? product.sku     : "");
-  useEffect(() => { setBarcodeDraft(typeof product.barcode === "string" ? product.barcode : ""); }, [product.barcode]);
-  useEffect(() => { setSkuDraft(    typeof product.sku     === "string" ? product.sku     : ""); }, [product.sku]);
-  const saveIdentifier = (field, draft) => {
-    const trimmed = String(draft).trim();
-    update(ref(database, `products/${product.id}`), { [field]: trimmed === "" ? null : trimmed })
-      .catch(err => console.warn(`update ${field} failed:`, err));
-  };
+  // POS Phase 2 (scanner workflow): sku + barcode are auto-assigned at
+  // create time (reserveNextSkuAndBarcode + addProduct) and are displayed
+  // read-only here. Editing would break the sequential invariant the POS
+  // scanner workflow depends on, so there are intentionally no setters.
+  // Legacy / backfilled values appear here exactly as stored; products that
+  // pre-date the backfill render as "—" until PR B's script runs.
 
   const handleDelete = () => {
     if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
@@ -2262,28 +2310,25 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
         </div>
       </div>
 
-      {/* IDENTIFIERS — POS Phase 2 (scanner workflow). Two optional free-text
-          fields saved on blur. Blank input writes null. */}
+      {/* IDENTIFIERS — POS Phase 2 (scanner workflow). Read-only display of
+          the sku + barcode auto-assigned at create time. Editing is
+          intentionally not exposed: a manual change would break the
+          sequential invariant the POS scanner workflow depends on. Legacy
+          products that pre-date the backfill render "—" until PR B runs. */}
       <div style={sectionTitle}>Identifiers</div>
       <div style={card}>
         <div style={{ display:"flex", padding:"0" }}>
           <div style={{ flex:1, padding:"14px 16px", borderRight:"1px solid rgba(255,255,255,.06)" }}>
             <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Barcode</div>
-            <input type="text" placeholder="—"
-                   value={barcodeDraft}
-                   onChange={e => setBarcodeDraft(e.target.value)}
-                   onBlur={() => saveIdentifier("barcode", barcodeDraft)}
-                   onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
-                   style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
+            <div style={{ color:"#fff", fontSize:17, fontWeight:500, fontFamily:"'SF Mono', Menlo, monospace" }}>
+              {(typeof product.barcode === "string" && product.barcode.trim().length > 0) ? product.barcode : "—"}
+            </div>
           </div>
           <div style={{ flex:1, padding:"14px 16px" }}>
             <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>SKU</div>
-            <input type="text" placeholder="—"
-                   value={skuDraft}
-                   onChange={e => setSkuDraft(e.target.value)}
-                   onBlur={() => saveIdentifier("sku", skuDraft)}
-                   onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
-                   style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
+            <div style={{ color:"#fff", fontSize:17, fontWeight:500, fontFamily:"'SF Mono', Menlo, monospace" }}>
+              {(typeof product.sku === "string" && product.sku.trim().length > 0) ? product.sku : "—"}
+            </div>
           </div>
         </div>
       </div>

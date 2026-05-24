@@ -29,8 +29,8 @@ Each product is its own node. `productId` is generated client-side as
 | **`stockPrice`**  | **number (ZAR)**                  | **no**   | **POS Phase 2. Wholesale / B2B unit price. Optional — existing products without it remain valid.** |
 | **`retailPrice`** | **number (ZAR)**                  | **no**   | **POS Phase 2. Walk-in / consumer unit price. Optional.** |
 | **`hasShoeBoxOption`** | **boolean**                  | **no**   | **POS Phase 2. True for footwear that ships with a shoebox add-on. Optional; treat missing as false.** |
-| **`barcode`**     | **string**                        | **no**   | **POS Phase 2 (scanner workflow). Physical scannable code — EAN-13, UPC, or custom in-house format. Free-text, not validated. Optional.** |
-| **`sku`**         | **string**                        | **no**   | **POS Phase 2 (scanner workflow). Stock keeping unit for inventory cross-reference. Free-text. Optional.** |
+| **`barcode`**     | **string** (8-digit zero-padded)  | **no**   | **POS Phase 2 (scanner workflow). Auto-assigned at create time from `/products_meta/lastBarcode`. Format: `"00000001"`..`"99999999"`. Wider than `sku` to leave room for future per-(product, size) variants on the same counter.** |
+| **`sku`**         | **string** (4-digit zero-padded)  | **no**   | **POS Phase 2 (scanner workflow). Auto-assigned at create time from `/products_meta/lastSku`. Format: `"0001"`..`"9999"`. Always per-product (no size variants).** |
 
 ### Validation invariants (enforced client-side)
 
@@ -38,13 +38,15 @@ Each product is its own node. `productId` is generated client-side as
 - `hubs[]` must contain at least one value.
 - For `productType === "clothing"`, `hubs` may not contain `"hub1"`.
 - Price fields, when set, are positive numbers in ZAR (no currency code stored).
-- `barcode` and `sku`, when set, are non-empty trimmed strings. No format validation — empty/whitespace trimmed input is omitted on create and cleared (written as `null`) on edit.
+- `sku` is exactly 4 zero-padded decimal digits (`/^\d{4}$/`). `barcode` is exactly 8 zero-padded decimal digits (`/^\d{8}$/`). Both are reserved atomically via `runTransaction` on `/products_meta`, so the sequence is gap-free in the happy path. Network failures after reservation can leave a "burned" number (counter advanced but no product written) — gaps are acceptable.
+- Manual entry of `sku` / `barcode` is **not** exposed in the admin UI. Both fields are read-only after creation to preserve the sequential invariant the POS scanner workflow depends on.
 
 ### Backwards compatibility
 
 `stockPrice`, `retailPrice`, `hasShoeBoxOption`, `barcode`, and `sku` are pure
-additions — all read sites must tolerate them being absent. The reader contract
-is:
+additions — all read sites must tolerate them being absent. Products that
+pre-date the backfill have no `sku` / `barcode` until the one-time backfill
+script (PR B) runs. The reader contract is:
 
 ```js
 const stock   = typeof p.stockPrice  === "number" ? p.stockPrice  : null;
@@ -53,3 +55,22 @@ const hasBox  = p.hasShoeBoxOption === true;
 const barcode = typeof p.barcode === "string" && p.barcode.trim().length > 0 ? p.barcode.trim() : null;
 const sku     = typeof p.sku     === "string" && p.sku.trim().length     > 0 ? p.sku.trim()     : null;
 ```
+
+---
+
+## `/products_meta`
+
+Holds the SKU and barcode counters that back the product-creation auto-assignment.
+Single node, two integer fields — wrapped in a `runTransaction` so two concurrent
+add-product calls can't collide on the same number.
+
+| Field         | Type             | Notes |
+|---------------|------------------|-------|
+| `lastSku`     | number (integer) | Last assigned SKU value. Range `1`..`9999`. Absent or non-numeric is treated as `0`. |
+| `lastBarcode` | number (integer) | Last assigned barcode value. Range `1`..`99999999`. Absent or non-numeric is treated as `0`. |
+
+**Lifecycle:** Both counters start at `0` (or whatever the backfill script lands at). Each new product *reserves* the next values by reading and incrementing both counters in a single `runTransaction` on `/products_meta`. The reservation transaction serializes cleanly across concurrent adds. The new product node is then written to `/products/{id}` in a **separate follow-up write** (not inside the transaction handler). If that follow-up write fails, the reserved pair is "burned" — the counter has advanced but no product exists at that number. We do **not** roll back the counter on failure: decrementing after another writer has already incremented would silently reassign their reservation. Gaps in the sequence are acceptable.
+
+**Today** the two counters advance in lockstep (product 0001 → barcode 00000001, product 0002 → barcode 00000002, …). **Future per-(product, size) barcode expansion** will advance `lastBarcode` once per size variant while `lastSku` continues to advance once per product, so the two values drift apart over time — that's why `barcode` has 10000× the address space of `sku`. The schema accommodates that today; no further migration needed when the size-variant work lands.
+
+**Overflow:** If `lastSku` would exceed `9999` or `lastBarcode` would exceed `99999999`, the reservation transaction aborts and `addProduct` surfaces a "counter exhausted" error to the admin. SKU runs out first (current product count is ~1026, ~9× runway remaining).
