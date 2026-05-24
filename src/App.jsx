@@ -340,10 +340,14 @@ async function reserveNextSkuAndBarcode() {
 function addProductToFirebase(product) {
   if (!product || !product.id || !product.name) {
     console.warn("addProductToFirebase: refusing to write invalid product", product);
-    return Promise.resolve();
+    return Promise.reject(new Error("Invalid product payload"));
   }
+  // Errors must propagate to the caller — addProduct relies on this rejecting
+  // when the /products/{id} write fails so the catch block runs (otherwise
+  // a failed write would silently burn the reserved sku/barcode pair AND
+  // clear the form as if save succeeded).
   return set(ref(database, `products/${product.id}`), product)
-    .catch(err => console.warn("Add product failed:", err));
+    .catch(err => { console.warn("Add product failed:", err); throw err; });
 }
 
 function deleteProductFromFirebase(id) {
