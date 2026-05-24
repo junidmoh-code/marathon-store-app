@@ -8,6 +8,7 @@
     "orderCounter":            { ".write": "auth !== null" },
     "orders":                  { ".write": "auth !== null" },
     "products":                { ".write": "auth !== null" },
+    "products_meta":           { ".write": "auth !== null" },
     "restock_log":             { ".write": "auth !== null" },
     "restock_requests":        { ".write": "auth !== null" },
     "returns_log":             { ".write": "auth !== null" },
