@@ -2775,6 +2775,12 @@ function AssistantView({ products, onExit, orders = [] }) {
     if (allowedStores.length === 0) return;        // block screen handles this
     if (!allowedStores.includes(storeMode)) selectStoreMode(allowedStores[0]);
   }, [allowedStores, storeMode]);
+  // Clamp at RENDER too: the effect above persists the correction but only runs
+  // after commit, so the very first paint (and any product filtering / order
+  // routing it drives) must use this derived value — never a stale localStorage
+  // store the user isn't assigned to. Falls back to storeMode only when there
+  // are zero allowed stores, in which case the block screen renders anyway.
+  const effectiveStoreMode = allowedStores.includes(storeMode) ? storeMode : (allowedStores[0] || storeMode);
   const [selected, setSelected]                         = useState(null);   // product in size picker
   const [pendingSize, setPendingSize]                   = useState("");
   const [pendingQty,  setPendingQty]                    = useState(1);
@@ -2812,7 +2818,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       const t = p.productType || "sneaker";
       if (t !== mode) return false;
       const hubs = getProductHubs(p);
-      if (storeMode === "pine") {
+      if (effectiveStoreMode === "pine") {
         if (!hubs.includes("hub3")) return false;
       } else {
         if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
@@ -2821,12 +2827,12 @@ function AssistantView({ products, onExit, orders = [] }) {
       return p.name.toLowerCase().includes(q) ||
              (p.category || "").toLowerCase().includes(q);
     }),
-  [products, search, mode, storeMode]);
+  [products, search, mode, effectiveStoreMode]);
 
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
   const computeHubForItem = (item) => {
-    if (storeMode === "pine") return "hub3";
+    if (effectiveStoreMode === "pine") return "hub3";
     if (item.requestDisplayPartner) return "hub1";
     return getProductHubs(item.product).find(h => h === "hub1" || h === "hub2") || "hub1";
   };
@@ -2961,7 +2967,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       for (const item of clothingCart) {
         const orderNum = await getNextOrderNumber();
         // Phase 14B: Pine clothing refills route to hub3; Central stays on hub2.
-        const placedHub = storeMode === "pine" ? "hub3" : "hub2";
+        const placedHub = effectiveStoreMode === "pine" ? "hub3" : "hub2";
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -3094,7 +3100,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
         <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
           {[["central","Central"],["pine","Pine"]].filter(([val]) => allowedStores.includes(val)).map(([val, label]) => {
-            const on = storeMode === val;
+            const on = effectiveStoreMode === val;
             return (
               <button key={val} onClick={() => selectStoreMode(val)}
                 style={{ padding:"6px 22px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,

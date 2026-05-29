@@ -26,7 +26,10 @@ export function effectiveStoreIds(permRecord, isSuperAdmin = false) {
   if (isSuperAdmin) return [...STORE_IDS];
   const raw = permRecord?.storeIds;
   if (!Array.isArray(raw)) return [...STORE_IDS]; // legacy = all-access
-  return raw.filter((s) => STORE_IDS.includes(s));
+  // Iterate STORE_IDS (not raw) so the result is deduped and canonically
+  // ordered — a duplicated persisted value can't inflate length and fool the
+  // single-store check downstream.
+  return STORE_IDS.filter((s) => raw.includes(s));
 }
 
 // Compute the next storeIds array after toggling one store on/off.

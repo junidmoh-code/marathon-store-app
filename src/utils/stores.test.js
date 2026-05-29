@@ -38,6 +38,11 @@ describe("effectiveStoreIds — order placement gate", () => {
     expect(effectiveStoreIds({ storeIds: ["pine", "bogus"] })).toEqual(["pine"]);
   });
 
+  it("dedupes and canonicalizes order (duplicate can't inflate length)", () => {
+    expect(effectiveStoreIds({ storeIds: ["pine", "pine"] })).toEqual(["pine"]);
+    expect(effectiveStoreIds({ storeIds: ["pine", "central"] })).toEqual(["central", "pine"]);
+  });
+
   it("returns a copy, not the canonical STORE_IDS reference", () => {
     const out = effectiveStoreIds({}, true);
     expect(out).not.toBe(STORE_IDS);

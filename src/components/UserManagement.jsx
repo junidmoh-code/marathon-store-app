@@ -361,6 +361,17 @@ function UserDetailView({ user, onBack }) {
   const [error, setError] = useState(null);
   const [busy,  setBusy]  = useState(false);
   const [pendingWarnFor, setPendingWarnFor] = useState(null); // permission key awaiting warn-confirm
+  // Phase 15: optimistic mirror of storeIds. Toggling two store checkboxes in
+  // quick succession would otherwise each compute from the same stale `user`
+  // prop (the /users subscription hasn't echoed the first write yet) and the
+  // second write would clobber the first. Computing from local state instead
+  // makes successive toggles compose. `undefined` mirrors "no field" (legacy
+  // all-access). Re-syncs whenever the persisted value changes.
+  const [localStoreIds, setLocalStoreIds] = useState(() =>
+    Array.isArray(user.storeIds) ? user.storeIds : undefined);
+  useEffect(() => {
+    setLocalStoreIds(Array.isArray(user.storeIds) ? user.storeIds : undefined);
+  }, [user.storeIds]);
 
   // Save a single field directly to RTDB
   async function saveField(field, value) {
@@ -388,7 +399,9 @@ function UserDetailView({ user, onBack }) {
   // the field is absent (legacy = all-access), so unchecking ONE store leaves
   // the other assigned rather than collapsing to a single store.
   async function toggleStore(storeId, on) {
-    await saveField("storeIds", nextStoreIds(user.storeIds, storeId, on));
+    const next = nextStoreIds(localStoreIds, storeId, on);
+    setLocalStoreIds(next);   // optimistic — compose successive toggles
+    await saveField("storeIds", next);
   }
   async function handleDelete() {
     setBusy(true);
@@ -488,8 +501,8 @@ function UserDetailView({ user, onBack }) {
           {STORE_IDS.map((storeId, i) => {
             // Legacy users (no storeIds field) are all-access → show every store
             // checked. The first toggle materializes an explicit array.
-            const hasScope = Array.isArray(user.storeIds);
-            const on = !hasScope || user.storeIds.includes(storeId);
+            const hasScope = Array.isArray(localStoreIds);
+            const on = !hasScope || localStoreIds.includes(storeId);
             return (
               <div key={storeId}
                    style={{ display: "flex", alignItems: "center", padding: "12px 16px",
@@ -503,9 +516,10 @@ function UserDetailView({ user, onBack }) {
           })}
         </div>
         <div style={{ fontSize: 11, color: TEXT_2, padding: "0 4px", marginBottom: 22, lineHeight: 1.5 }}>
-          {shouldWarnNoStore(user)
+          {/* Reflect the optimistic local scope so the hint updates on toggle. */}
+          {shouldWarnNoStore({ ...user, storeIds: localStoreIds })
             ? <span style={{ color: RED }}>⚠ No stores assigned — this user can't place orders.</span>
-            : !Array.isArray(user.storeIds)
+            : !Array.isArray(localStoreIds)
               ? "No restriction set — currently all stores. Uncheck one to limit access."
               : "Store assistants only see assigned stores in the order flow."}
         </div>
