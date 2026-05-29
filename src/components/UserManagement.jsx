@@ -22,6 +22,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { ref, onValue, update, remove } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../firebase";
+import { STORE_IDS, STORE_LABELS, nextStoreIds, shouldWarnNoStore } from "../utils/stores";
 
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 
@@ -307,8 +308,18 @@ function UserRow({ user, onClick, divider }) {
                   appearance: "none" }}>
       <AvatarCircle name={user.displayName} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 15, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {user.displayName || "(no name)"}
+        <div style={{ fontSize: 15, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {user.displayName || "(no name)"}
+          </span>
+          {shouldWarnNoStore(user) && (
+            <span title="No stores assigned — can't place orders"
+                  style={{ flexShrink: 0, fontSize: 10, color: RED, border: `1px solid ${RED}`,
+                           padding: "1px 5px", borderRadius: 4, fontWeight: 600 }}>
+              ⚠ NO STORE
+            </span>
+          )}
         </div>
         <div style={{ fontSize: 12, color: TEXT_2, marginTop: 1, display: "flex", alignItems: "center", gap: 6 }}>
           <span>@{user.username || "?"}</span>
@@ -372,6 +383,12 @@ function UserDetailView({ user, onBack }) {
     const current = Array.isArray(user.permissions) ? user.permissions : [];
     const next = on ? Array.from(new Set([...current, permKey])) : current.filter((p) => p !== permKey);
     await saveField("permissions", next);
+  }
+  // Phase 15: per-user store assignment. nextStoreIds seeds from all stores when
+  // the field is absent (legacy = all-access), so unchecking ONE store leaves
+  // the other assigned rather than collapsing to a single store.
+  async function toggleStore(storeId, on) {
+    await saveField("storeIds", nextStoreIds(user.storeIds, storeId, on));
   }
   async function handleDelete() {
     setBusy(true);
@@ -464,6 +481,33 @@ function UserDetailView({ user, onBack }) {
               />
             );
           })}
+        </div>
+
+        <SectionLabel>Assigned Stores</SectionLabel>
+        <div style={{ background: CARD, borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
+          {STORE_IDS.map((storeId, i) => {
+            // Legacy users (no storeIds field) are all-access → show every store
+            // checked. The first toggle materializes an explicit array.
+            const hasScope = Array.isArray(user.storeIds);
+            const on = !hasScope || user.storeIds.includes(storeId);
+            return (
+              <div key={storeId}
+                   style={{ display: "flex", alignItems: "center", padding: "12px 16px",
+                            borderBottom: i < STORE_IDS.length - 1 ? `1px solid ${DIVIDER}` : "none" }}>
+                <div style={{ flex: 1, minWidth: 0, fontSize: 15, color: "#fff" }}>
+                  {STORE_LABELS[storeId]}
+                </div>
+                <Checkbox checked={on} onChange={(next) => toggleStore(storeId, next)} />
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11, color: TEXT_2, padding: "0 4px", marginBottom: 22, lineHeight: 1.5 }}>
+          {shouldWarnNoStore(user)
+            ? <span style={{ color: RED }}>⚠ No stores assigned — this user can't place orders.</span>
+            : !Array.isArray(user.storeIds)
+              ? "No restriction set — currently all stores. Uncheck one to limit access."
+              : "Store assistants only see assigned stores in the order flow."}
         </div>
 
         <SectionLabel>Security</SectionLabel>

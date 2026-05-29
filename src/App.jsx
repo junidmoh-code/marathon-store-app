@@ -2762,6 +2762,19 @@ function AssistantView({ products, onExit, orders = [] }) {
     localStorage.setItem("storeAssistantMode", next);
     setStoreMode(next);
   };
+  // Phase 15: per-user store assignment. `allowedStores` is the set this user
+  // may place orders against (super-admin / legacy users → both). Drives the
+  // store toggle below: 0 → block screen, 1 → auto-select + hide toggle, 2 →
+  // show both. Keep storeMode clamped to an allowed value so a stale per-device
+  // localStorage choice (e.g. a Pine-only user on a tablet last left on
+  // "central") can't route orders to a store they aren't assigned to.
+  const { storeIds: allowedStores } = usePermissions();
+  const noStoreAccess = allowedStores.length === 0;
+  const singleStore   = allowedStores.length === 1;
+  useEffect(() => {
+    if (allowedStores.length === 0) return;        // block screen handles this
+    if (!allowedStores.includes(storeMode)) selectStoreMode(allowedStores[0]);
+  }, [allowedStores, storeMode]);
   const [selected, setSelected]                         = useState(null);   // product in size picker
   const [pendingSize, setPendingSize]                   = useState("");
   const [pendingQty,  setPendingQty]                    = useState(1);
@@ -2851,6 +2864,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   const placeOrders = async () => {
     if (!cart.length || !customerName || submitting) return;
+    if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
     setSubmitting(true);
     try {
       const normalizedPhone = customerPhone.trim().startsWith("0")
@@ -2939,6 +2953,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   const placeRefillRequests = async () => {
     const clothingCart = cart.filter(it => it.productType === "clothing");
     if (!clothingCart.length || submitting) return;
+    if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
     setSubmitting(true);
     try {
       const now = new Date().toISOString();
@@ -3018,6 +3033,27 @@ function AssistantView({ products, onExit, orders = [] }) {
     boxShadow: "0 -4px 30px rgba(60,110,255,.12)",
   };
 
+  // Phase 15: a user assigned to zero stores can't place orders anywhere. Block
+  // the whole order surface with a clear message rather than showing an empty
+  // store toggle + product grid that would route nowhere.
+  if (noStoreAccess) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto",
+                    display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:18, padding:"0 28px", textAlign:"center" }}>
+        <div style={{ fontSize:40 }}>🔒</div>
+        <div style={{ fontSize:18, fontWeight:700 }}>No store assigned</div>
+        <div style={{ fontSize:14, color:"rgba(255,255,255,.5)", lineHeight:1.5, maxWidth:300 }}>
+          Your account isn't assigned to any store yet, so you can't place orders. Contact an admin to get access.
+        </div>
+        <button onClick={onExit}
+                style={{ marginTop:6, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)",
+                         borderRadius:10, padding:"10px 18px", color:"#fff", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:FONT }}>
+          ← Switch View
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom: cart.length > 0 ? 90 : 40 }}>
       {/* TOP BAR */}
@@ -3050,10 +3086,14 @@ function AssistantView({ products, onExit, orders = [] }) {
       </div>
 
       {/* Phase 14B: Central / Pine universe toggle. Per-device localStorage —
-          Pine's iPad once flipped stays Pine forever. */}
+          Pine's iPad once flipped stays Pine forever.
+          Phase 15: only render stores this user is assigned to, and hide the
+          toggle entirely when they have exactly one (it's auto-selected by the
+          clamp effect) so there's zero chance of picking the wrong store. */}
+      {!singleStore && (
       <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
         <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
-          {[["central","Central"],["pine","Pine"]].map(([val, label]) => {
+          {[["central","Central"],["pine","Pine"]].filter(([val]) => allowedStores.includes(val)).map(([val, label]) => {
             const on = storeMode === val;
             return (
               <button key={val} onClick={() => selectStoreMode(val)}
@@ -3067,6 +3107,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           })}
         </div>
       </div>
+      )}
 
       {/* PLACE ORDER HERO */}
       <div style={{ position:"relative", width:"100%", height:160, overflow:"hidden", marginBottom:4 }}>

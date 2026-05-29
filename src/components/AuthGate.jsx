@@ -22,6 +22,7 @@ import { onAuthStateChanged, signInAnonymously, signOut } from "firebase/auth";
 import { onValue, ref } from "firebase/database";
 import { auth, database } from "../firebase";
 import { PermissionsContext, ADMIN_EMAIL } from "./PermissionsContext";
+import { effectiveStoreIds } from "../utils/stores";
 import Login from "./Login";
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
@@ -120,6 +121,7 @@ export default function AuthGate({ children, renderTv }) {
           permRecord:    null,
           isSuperAdmin:  false,
           permissions:   [],
+          storeIds:      [],
           hasPermission: () => false,
           signOut:       () => signOut(auth).catch((err) => console.warn("signOut failed:", err)),
         }}>
@@ -133,12 +135,13 @@ export default function AuthGate({ children, renderTv }) {
 
   const isSuperAdmin  = user.email === ADMIN_EMAIL;
   const permissions   = Array.isArray(permRecord?.permissions) ? permRecord.permissions : [];
+  const storeIds      = effectiveStoreIds(permRecord, isSuperAdmin);
   const hasPermission = (p) => isSuperAdmin || permissions.includes(p);
   const doSignOut     = () => signOut(auth).catch((err) => console.warn("signOut failed:", err));
 
   return (
     <PermissionsContext.Provider
-      value={{ user, permRecord, isSuperAdmin, permissions, hasPermission, signOut: doSignOut }}>
+      value={{ user, permRecord, isSuperAdmin, permissions, storeIds, hasPermission, signOut: doSignOut }}>
       {children}
     </PermissionsContext.Provider>
   );
