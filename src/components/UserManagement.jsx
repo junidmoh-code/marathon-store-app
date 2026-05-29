@@ -22,6 +22,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { ref, onValue, update, remove } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../firebase";
+import { STORE_IDS, STORE_LABELS, nextStoreIds, shouldWarnNoStore } from "../utils/stores";
 
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 
@@ -307,8 +308,18 @@ function UserRow({ user, onClick, divider }) {
                   appearance: "none" }}>
       <AvatarCircle name={user.displayName} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 15, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {user.displayName || "(no name)"}
+        <div style={{ fontSize: 15, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {user.displayName || "(no name)"}
+          </span>
+          {shouldWarnNoStore(user) && (
+            <span title="No stores assigned — can't place orders"
+                  style={{ flexShrink: 0, fontSize: 10, color: RED, border: `1px solid ${RED}`,
+                           padding: "1px 5px", borderRadius: 4, fontWeight: 600 }}>
+              ⚠ NO STORE
+            </span>
+          )}
         </div>
         <div style={{ fontSize: 12, color: TEXT_2, marginTop: 1, display: "flex", alignItems: "center", gap: 6 }}>
           <span>@{user.username || "?"}</span>
@@ -350,6 +361,17 @@ function UserDetailView({ user, onBack }) {
   const [error, setError] = useState(null);
   const [busy,  setBusy]  = useState(false);
   const [pendingWarnFor, setPendingWarnFor] = useState(null); // permission key awaiting warn-confirm
+  // Phase 15: optimistic mirror of storeIds. Toggling two store checkboxes in
+  // quick succession would otherwise each compute from the same stale `user`
+  // prop (the /users subscription hasn't echoed the first write yet) and the
+  // second write would clobber the first. Computing from local state instead
+  // makes successive toggles compose. `undefined` mirrors "no field" (legacy
+  // all-access). Re-syncs whenever the persisted value changes.
+  const [localStoreIds, setLocalStoreIds] = useState(() =>
+    Array.isArray(user.storeIds) ? user.storeIds : undefined);
+  useEffect(() => {
+    setLocalStoreIds(Array.isArray(user.storeIds) ? user.storeIds : undefined);
+  }, [user.storeIds]);
 
   // Save a single field directly to RTDB
   async function saveField(field, value) {
@@ -372,6 +394,14 @@ function UserDetailView({ user, onBack }) {
     const current = Array.isArray(user.permissions) ? user.permissions : [];
     const next = on ? Array.from(new Set([...current, permKey])) : current.filter((p) => p !== permKey);
     await saveField("permissions", next);
+  }
+  // Phase 15: per-user store assignment. nextStoreIds seeds from all stores when
+  // the field is absent (legacy = all-access), so unchecking ONE store leaves
+  // the other assigned rather than collapsing to a single store.
+  async function toggleStore(storeId, on) {
+    const next = nextStoreIds(localStoreIds, storeId, on);
+    setLocalStoreIds(next);   // optimistic — compose successive toggles
+    await saveField("storeIds", next);
   }
   async function handleDelete() {
     setBusy(true);
@@ -464,6 +494,34 @@ function UserDetailView({ user, onBack }) {
               />
             );
           })}
+        </div>
+
+        <SectionLabel>Assigned Stores</SectionLabel>
+        <div style={{ background: CARD, borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
+          {STORE_IDS.map((storeId, i) => {
+            // Legacy users (no storeIds field) are all-access → show every store
+            // checked. The first toggle materializes an explicit array.
+            const hasScope = Array.isArray(localStoreIds);
+            const on = !hasScope || localStoreIds.includes(storeId);
+            return (
+              <div key={storeId}
+                   style={{ display: "flex", alignItems: "center", padding: "12px 16px",
+                            borderBottom: i < STORE_IDS.length - 1 ? `1px solid ${DIVIDER}` : "none" }}>
+                <div style={{ flex: 1, minWidth: 0, fontSize: 15, color: "#fff" }}>
+                  {STORE_LABELS[storeId]}
+                </div>
+                <Checkbox checked={on} onChange={(next) => toggleStore(storeId, next)} />
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11, color: TEXT_2, padding: "0 4px", marginBottom: 22, lineHeight: 1.5 }}>
+          {/* Reflect the optimistic local scope so the hint updates on toggle. */}
+          {shouldWarnNoStore({ ...user, storeIds: localStoreIds })
+            ? <span style={{ color: RED }}>⚠ No stores assigned — this user can't place orders.</span>
+            : !Array.isArray(localStoreIds)
+              ? "No restriction set — currently all stores. Uncheck one to limit access."
+              : "Store assistants only see assigned stores in the order flow."}
         </div>
 
         <SectionLabel>Security</SectionLabel>

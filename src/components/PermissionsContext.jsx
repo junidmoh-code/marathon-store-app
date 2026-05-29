@@ -15,6 +15,9 @@ export const PermissionsContext = createContext({
   permRecord:    null,
   isSuperAdmin:  false,
   permissions:   [],
+  // Phase 15: effective stores this user may place orders against (see
+  // effectiveStoreIds). Empty array = no store access; the order flow blocks.
+  storeIds:      [],
   hasPermission: () => false,
   signOut:       () => {},
 });

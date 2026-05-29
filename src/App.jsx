@@ -2762,6 +2762,25 @@ function AssistantView({ products, onExit, orders = [] }) {
     localStorage.setItem("storeAssistantMode", next);
     setStoreMode(next);
   };
+  // Phase 15: per-user store assignment. `allowedStores` is the set this user
+  // may place orders against (super-admin / legacy users → both). Drives the
+  // store toggle below: 0 → block screen, 1 → auto-select + hide toggle, 2 →
+  // show both. Keep storeMode clamped to an allowed value so a stale per-device
+  // localStorage choice (e.g. a Pine-only user on a tablet last left on
+  // "central") can't route orders to a store they aren't assigned to.
+  const { storeIds: allowedStores } = usePermissions();
+  const noStoreAccess = allowedStores.length === 0;
+  const singleStore   = allowedStores.length === 1;
+  useEffect(() => {
+    if (allowedStores.length === 0) return;        // block screen handles this
+    if (!allowedStores.includes(storeMode)) selectStoreMode(allowedStores[0]);
+  }, [allowedStores, storeMode]);
+  // Clamp at RENDER too: the effect above persists the correction but only runs
+  // after commit, so the very first paint (and any product filtering / order
+  // routing it drives) must use this derived value — never a stale localStorage
+  // store the user isn't assigned to. Falls back to storeMode only when there
+  // are zero allowed stores, in which case the block screen renders anyway.
+  const effectiveStoreMode = allowedStores.includes(storeMode) ? storeMode : (allowedStores[0] || storeMode);
   const [selected, setSelected]                         = useState(null);   // product in size picker
   const [pendingSize, setPendingSize]                   = useState("");
   const [pendingQty,  setPendingQty]                    = useState(1);
@@ -2799,7 +2818,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       const t = p.productType || "sneaker";
       if (t !== mode) return false;
       const hubs = getProductHubs(p);
-      if (storeMode === "pine") {
+      if (effectiveStoreMode === "pine") {
         if (!hubs.includes("hub3")) return false;
       } else {
         if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
@@ -2808,12 +2827,12 @@ function AssistantView({ products, onExit, orders = [] }) {
       return p.name.toLowerCase().includes(q) ||
              (p.category || "").toLowerCase().includes(q);
     }),
-  [products, search, mode, storeMode]);
+  [products, search, mode, effectiveStoreMode]);
 
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
   const computeHubForItem = (item) => {
-    if (storeMode === "pine") return "hub3";
+    if (effectiveStoreMode === "pine") return "hub3";
     if (item.requestDisplayPartner) return "hub1";
     return getProductHubs(item.product).find(h => h === "hub1" || h === "hub2") || "hub1";
   };
@@ -2851,6 +2870,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   const placeOrders = async () => {
     if (!cart.length || !customerName || submitting) return;
+    if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
     setSubmitting(true);
     try {
       const normalizedPhone = customerPhone.trim().startsWith("0")
@@ -2939,6 +2959,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   const placeRefillRequests = async () => {
     const clothingCart = cart.filter(it => it.productType === "clothing");
     if (!clothingCart.length || submitting) return;
+    if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
     setSubmitting(true);
     try {
       const now = new Date().toISOString();
@@ -2946,7 +2967,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       for (const item of clothingCart) {
         const orderNum = await getNextOrderNumber();
         // Phase 14B: Pine clothing refills route to hub3; Central stays on hub2.
-        const placedHub = storeMode === "pine" ? "hub3" : "hub2";
+        const placedHub = effectiveStoreMode === "pine" ? "hub3" : "hub2";
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -3018,6 +3039,27 @@ function AssistantView({ products, onExit, orders = [] }) {
     boxShadow: "0 -4px 30px rgba(60,110,255,.12)",
   };
 
+  // Phase 15: a user assigned to zero stores can't place orders anywhere. Block
+  // the whole order surface with a clear message rather than showing an empty
+  // store toggle + product grid that would route nowhere.
+  if (noStoreAccess) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto",
+                    display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:18, padding:"0 28px", textAlign:"center" }}>
+        <div style={{ fontSize:40 }}>🔒</div>
+        <div style={{ fontSize:18, fontWeight:700 }}>No store assigned</div>
+        <div style={{ fontSize:14, color:"rgba(255,255,255,.5)", lineHeight:1.5, maxWidth:300 }}>
+          Your account isn't assigned to any store yet, so you can't place orders. Contact an admin to get access.
+        </div>
+        <button onClick={onExit}
+                style={{ marginTop:6, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)",
+                         borderRadius:10, padding:"10px 18px", color:"#fff", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:FONT }}>
+          ← Switch View
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom: cart.length > 0 ? 90 : 40 }}>
       {/* TOP BAR */}
@@ -3050,11 +3092,15 @@ function AssistantView({ products, onExit, orders = [] }) {
       </div>
 
       {/* Phase 14B: Central / Pine universe toggle. Per-device localStorage —
-          Pine's iPad once flipped stays Pine forever. */}
+          Pine's iPad once flipped stays Pine forever.
+          Phase 15: only render stores this user is assigned to, and hide the
+          toggle entirely when they have exactly one (it's auto-selected by the
+          clamp effect) so there's zero chance of picking the wrong store. */}
+      {!singleStore && (
       <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
         <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
-          {[["central","Central"],["pine","Pine"]].map(([val, label]) => {
-            const on = storeMode === val;
+          {[["central","Central"],["pine","Pine"]].filter(([val]) => allowedStores.includes(val)).map(([val, label]) => {
+            const on = effectiveStoreMode === val;
             return (
               <button key={val} onClick={() => selectStoreMode(val)}
                 style={{ padding:"6px 22px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
@@ -3067,6 +3113,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           })}
         </div>
       </div>
+      )}
 
       {/* PLACE ORDER HERO */}
       <div style={{ position:"relative", width:"100%", height:160, overflow:"hidden", marginBottom:4 }}>

@@ -22,6 +22,7 @@ import { onAuthStateChanged, signInAnonymously, signOut } from "firebase/auth";
 import { onValue, ref } from "firebase/database";
 import { auth, database } from "../firebase";
 import { PermissionsContext, ADMIN_EMAIL } from "./PermissionsContext";
+import { effectiveStoreIds } from "../utils/stores";
 import Login from "./Login";
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
@@ -42,6 +43,11 @@ export default function AuthGate({ children, renderTv }) {
   const [user,         setUser]         = useState(null);
   const [permRecord,   setPermRecord]   = useState(null);
   const [permLoaded,   setPermLoaded]   = useState(false);
+  // Phase 15: a transient /users/{uid} read failure leaves permRecord null,
+  // which effectiveStoreIds would treat as "legacy = all-access". For a scoped
+  // user that would silently over-grant store access until the read recovers.
+  // Track the error so we can fail CLOSED (no stores) on read failure instead.
+  const [permReadError, setPermReadError] = useState(false);
   const [tvAuthReady,  setTvAuthReady]  = useState(false);
 
   // Track hash changes for the #tv bypass
@@ -92,8 +98,8 @@ export default function AuthGate({ children, renderTv }) {
     const r = ref(database, `users/${user.uid}`);
     const off = onValue(
       r,
-      (snap) => { setPermRecord(snap.val() || null); setPermLoaded(true); },
-      (err)  => { console.warn("permissions read failed:", err); setPermRecord(null); setPermLoaded(true); }
+      (snap) => { setPermReadError(false); setPermRecord(snap.val() || null); setPermLoaded(true); },
+      (err)  => { console.warn("permissions read failed:", err); setPermReadError(true); setPermRecord(null); setPermLoaded(true); }
     );
     return () => off();
   }, [user]);
@@ -120,6 +126,7 @@ export default function AuthGate({ children, renderTv }) {
           permRecord:    null,
           isSuperAdmin:  false,
           permissions:   [],
+          storeIds:      [],
           hasPermission: () => false,
           signOut:       () => signOut(auth).catch((err) => console.warn("signOut failed:", err)),
         }}>
@@ -133,12 +140,15 @@ export default function AuthGate({ children, renderTv }) {
 
   const isSuperAdmin  = user.email === ADMIN_EMAIL;
   const permissions   = Array.isArray(permRecord?.permissions) ? permRecord.permissions : [];
+  // Fail closed for scoped users on a read error (super-admin still bypasses).
+  const storeIds      = permReadError ? effectiveStoreIds({ storeIds: [] }, isSuperAdmin)
+                                      : effectiveStoreIds(permRecord, isSuperAdmin);
   const hasPermission = (p) => isSuperAdmin || permissions.includes(p);
   const doSignOut     = () => signOut(auth).catch((err) => console.warn("signOut failed:", err));
 
   return (
     <PermissionsContext.Provider
-      value={{ user, permRecord, isSuperAdmin, permissions, hasPermission, signOut: doSignOut }}>
+      value={{ user, permRecord, isSuperAdmin, permissions, storeIds, hasPermission, signOut: doSignOut }}>
       {children}
     </PermissionsContext.Provider>
   );

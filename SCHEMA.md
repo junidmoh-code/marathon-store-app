@@ -74,3 +74,40 @@ add-product calls can't collide on the same number.
 **Today** the two counters advance in lockstep (product 0001 → barcode 00000001, product 0002 → barcode 00000002, …). **Future per-(product, size) barcode expansion** will advance `lastBarcode` once per size variant while `lastSku` continues to advance once per product, so the two values drift apart over time — that's why `barcode` has 10000× the address space of `sku`. The schema accommodates that today; no further migration needed when the size-variant work lands.
 
 **Overflow:** If `lastSku` would exceed `9999` or `lastBarcode` would exceed `99999999`, the reservation transaction aborts and `addProduct` surfaces a "counter exhausted" error to the admin. SKU runs out first (current product count is ~1026, ~9× runway remaining).
+
+---
+
+## `/users/{uid}`
+
+One node per staff account, keyed by Firebase Auth UID. Written by the
+super-admin User Management UI (`src/components/UserManagement.jsx`) and the
+`createStaffUser` Cloud Function. Read by `AuthGate` into `PermissionsContext`.
+
+| Field         | Type                       | Required | Notes |
+|---------------|----------------------------|----------|-------|
+| `displayName` | string                     | yes      | Shown in staff lists. |
+| `username`    | string                     | yes      | Lowercase handle; maps to `{username}@marathon.internal` auth email. |
+| `role`        | `"admin" \| "store_assistant" \| "warehouse"` | yes | Drives default permission set. |
+| `permissions` | string[]                   | yes      | Editable permission flags (see `ALL_PERMISSIONS`). |
+| **`storeIds`** | **(`"central"` \| `"pine"`)[]** | **no** | **Phase 15. Stores this user may place orders against. See semantics below.** |
+
+### `storeIds` semantics (Phase 15)
+
+Per-user store assignment for the order placement flow. Resolved by
+`effectiveStoreIds` in `src/utils/stores.js`:
+
+- **Field absent (legacy users)** → all-access. No big-bang migration; existing
+  behavior is preserved and the admin narrows each user as needed.
+- **Field present, non-empty** → user only sees/selects those stores in the order
+  flow. One store → auto-selected, picker hidden. Two → both shown.
+- **Field present, empty `[]`** → **no store access**; the order surface blocks
+  with a "No store assigned" screen. The admin UI flags this with a warning
+  indicator when the user is an order-taker (`shouldWarnNoStore`).
+- **Super-admin (`gunidmoh@gmail.com`)** → bypasses; always sees all stores.
+
+The two `storeIds` values map to the existing Central/Pine `storeMode` toggle in
+`AssistantView` (`central` → hub1/hub2 routing, `pine` → hub3).
+
+> **Separate from POS.** This is distinct from marathon-pos-app's
+> `/users/{uid}/posAccess.storeIds`. Each app tracks its own store scope; do not
+> conflate the two.
