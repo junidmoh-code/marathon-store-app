@@ -375,7 +375,12 @@ const CLOTHING_SIZES = ["S", "M", "L", "XL", "XXL", "XXXL"];
 // values from { "hub1", "hub2", "hub3" }. Legacy products only have a single
 // `hub` string; getProductHubs unifies both shapes so call sites stay agnostic
 // (no data migration needed). Pine view (Hub 3) ships in Phase 14B.
-const HUB_LABELS = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
+// Trial: "hubC" (Hub C) is a warehouse destination for customer clothing
+// orders. It is NOT a product-tagging hub — clothing customer orders route here
+// regardless of the product's `hubs`, so hubC never appears in getProductHubs /
+// the product editor. To retire the trial, drop hubC here and the few hubC
+// branches in AssistantView.placeOrders + WarehouseView.
+const HUB_LABELS = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", hubC: "Hub C" };
 function getProductHubs(product) {
   return product?.hubs || (product?.hub ? [product.hub] : []);
 }
@@ -2753,6 +2758,13 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Phase 12B: product type mode toggle. "sneaker" default. Filters the grid
   // and switches the card UX (size-picker sheet vs inline qty steppers).
   const [mode, setMode]                                 = useState("sneaker");
+  // Trial: clothing can be ordered two ways — as a store REFILL (existing flow,
+  // routes to hub2/hub3, no customer) or FOR A CUSTOMER (new, routes to Hub C
+  // and goes through the normal customer checkout + Order Queue lifecycle). The
+  // intent is stamped per cart line at add time (see addClothingLines) so
+  // flipping this toggle never reinterprets items already in the cart. Sneakers
+  // ignore it entirely. Remove this state + the toggle below to retire the trial.
+  const [clothingIntent, setClothingIntent]             = useState("refill"); // "refill" | "customer"
   // Phase 14B: Central / Pine universe toggle. Persists per device so the
   // Pine iPad stays Pine across reloads. "central" sees hub1/hub2 products
   // and routes orders to those hubs; "pine" sees hub3 products and routes
@@ -2837,10 +2849,14 @@ function AssistantView({ products, onExit, orders = [] }) {
     return getProductHubs(item.product).find(h => h === "hub1" || h === "hub2") || "hub1";
   };
 
-  // Cart-driven submit decisions: any sneaker line forces the Checkout flow
-  // (needs customer info + WhatsApp). All-clothing carts skip the sheet.
-  const hasSneakerInCart  = cart.some(it => (it.productType || "sneaker") === "sneaker");
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
+  // Cart-driven submit decision: a line needs the customer Checkout
+  // (name/phone/WhatsApp) when it's a sneaker OR a clothing line tagged
+  // "customer" (trial). Any such line forces the Checkout flow; an all-refill
+  // clothing cart skips the sheet and goes straight through placeRefillRequests.
+  const isCustomerLine    = (it) => (it.productType || "sneaker") === "sneaker"
+                                 || (it.productType === "clothing" && it.intent === "customer");
+  const hasCustomerInCart = cart.some(isCustomerLine);
 
   const resetSheet = () => { setSelected(null); setPendingSize(""); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
 
@@ -2861,7 +2877,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Phase 12B: clothing card reports a batch of cart lines at once
   // (one per non-zero size). Each line carries productType:"clothing" so the
   // submit decision can split sneaker vs clothing.
-  const addClothingLines = (lines) => setCart(c => [...c, ...lines]);
+  // Trial: stamp the current refill/customer intent onto each line so the cart
+  // remembers it even if the toggle flips afterwards.
+  const addClothingLines = (lines) =>
+    setCart(c => [...c, ...lines.map(l => ({ ...l, intent: clothingIntent }))]);
 
   const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
 
@@ -2878,13 +2897,18 @@ function AssistantView({ products, onExit, orders = [] }) {
         : customerPhone.trim();
       const now = new Date().toISOString();
       const placed = [];
-      // Phase 12B: the checkout flow handles SNEAKER items only. Clothing
-      // items stay in the cart and get placed via the floating Place Refill
+      // The checkout flow handles every line that needs customer info: sneakers
+      // (always) plus clothing tagged "customer" (trial). Clothing "refill"
+      // lines stay in the cart and get placed via the floating Place Refill
       // Request bar (different shape, no customer info).
-      const sneakerCart = cart.filter(it => (it.productType || "sneaker") === "sneaker");
-      for (const item of sneakerCart) {
+      const customerCart = cart.filter(isCustomerLine);
+      for (const item of customerCart) {
         const orderNum = await getNextOrderNumber();
-        const placedHub = computeHubForItem(item);
+        // Trial: customer clothing orders route to Hub C regardless of the
+        // product's hubs or the Central/Pine store mode; sneakers keep their
+        // existing hub routing.
+        const isClothingCustomer = item.productType === "clothing";
+        const placedHub = isClothingCustomer ? "hubC" : computeHubForItem(item);
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -2893,10 +2917,17 @@ function AssistantView({ products, onExit, orders = [] }) {
           productPhotoUrl: item.product.photoUrl ?? null,
           size: item.size,
           sentSize: null,
+          // Explicit type so the warehouse/inference treats a clothing customer
+          // order as clothing (size letters already imply it, but be explicit).
+          productType: isClothingCustomer ? "clothing" : (item.product.productType || "sneaker"),
+          // Clothing customer orders carry a qty (one card line can request
+          // several of one size); sneakers expand qty into separate lines.
+          ...(isClothingCustomer ? { qty: item.qty || 1 } : {}),
           customerName,
           customerPhone: normalizedPhone,
           // Phase 14B: hub mirrors placedAtHub (Central pine routing) — Display
-          // Partner stays hub1 in Central; Pine always routes to hub3.
+          // Partner stays hub1 in Central; Pine always routes to hub3. Trial:
+          // clothing customer orders land in hubC.
           hub: placedHub,
           placedAtHub: placedHub,
           requestDisplay: item.requestDisplay || false,
@@ -2940,9 +2971,10 @@ function AssistantView({ products, onExit, orders = [] }) {
       }
       if (normalizedPhone) upsertCustomer(normalizedPhone, customerName, now, marketingOptIn);
       setLastOrders(placed);
-      // Keep clothing items in the cart so the user can place them next via
-      // the floating Place Refill Request bar.
-      setCart(prev => prev.filter(it => it.productType === "clothing"));
+      // Keep clothing REFILL items in the cart so the user can place them next
+      // via the floating Place Refill Request bar. Just-placed customer lines
+      // (sneakers + clothing-customer) drop out.
+      setCart(prev => prev.filter(it => !isCustomerLine(it)));
       closeCheckout();
     } catch (e) {
       console.error("Failed to place orders:", e);
@@ -3115,6 +3147,34 @@ function AssistantView({ products, onExit, orders = [] }) {
       </div>
       )}
 
+      {/* Trial: clothing Refill vs For-Customer toggle. Refill keeps the
+          existing hub2/hub3 routing (no customer info). For Customer routes the
+          order to Hub C and runs it through the normal customer checkout +
+          Order Queue lifecycle. Sneakers never see this. */}
+      {mode === "clothing" && (
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"0 14px 8px" }}>
+        <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
+          {[["refill","Refill"],["customer","For Customer"]].map(([val, label]) => {
+            const on = clothingIntent === val;
+            return (
+              <button key={val} onClick={() => setClothingIntent(val)}
+                style={{ padding:"6px 18px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
+                         background: on ? "rgba(60,110,255,.25)" : "transparent",
+                         color: on ? "#fff" : "rgba(255,255,255,.5)",
+                         boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {clothingIntent === "customer" && (
+          <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.3px" }}>
+            Customer orders are sent to {HUB_LABELS.hubC}
+          </div>
+        )}
+      </div>
+      )}
+
       {/* PLACE ORDER HERO */}
       <div style={{ position:"relative", width:"100%", height:160, overflow:"hidden", marginBottom:4 }}>
         <img src="/hero/place-order.jpg" alt="Place Order" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"center" }}/>
@@ -3127,7 +3187,10 @@ function AssistantView({ products, onExit, orders = [] }) {
       <div style={{ padding:"0 13px" }}>
       {/* ── Confirmation banner ── */}
       {lastOrders.length > 0 && (() => {
-        const isRefill = lastOrders[0].productType === "clothing";
+        // Clothing now appears in both flows, so key the headline off the
+        // refill marker rather than productType (customer clothing → Hub C
+        // reads as a normal customer order).
+        const isRefill = lastOrders[0].customerName === "Shop Refill";
         const headline = isRefill
           ? `Refill request placed — ${lastOrders.length} line${lastOrders.length > 1 ? "s" : ""}`
           : `${lastOrders.length} order${lastOrders.length > 1 ? "s" : ""} placed for ${lastOrders[0].customerName}`;
@@ -3283,9 +3346,9 @@ function AssistantView({ products, onExit, orders = [] }) {
             })()}
 
             {cart.length > 0 && (
-              <button onClick={() => { resetSheet(); (hasSneakerInCart ? openCheckout() : placeRefillRequests()); }}
+              <button onClick={() => { resetSheet(); (hasCustomerInCart ? openCheckout() : placeRefillRequests()); }}
                 style={{ width:"100%", ...bGhost, borderRadius:"10px", padding:"0.75rem", fontSize:"0.95rem" }}>
-                {hasSneakerInCart
+                {hasCustomerInCart
                   ? `Checkout (${cart.length} item${cart.length > 1 ? "s" : ""}) →`
                   : `Place Refill Request (${cart.length} item${cart.length > 1 ? "s" : ""}) →`}
               </button>
@@ -3306,13 +3369,17 @@ function AssistantView({ products, onExit, orders = [] }) {
             {/* Cart review */}
             <div style={{ background:"rgba(60,110,255,.04)", borderRadius:"12px", padding:"0.85rem 1rem", marginBottom:"1.25rem", border:BORDER }}>
               <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Order Summary</div>
-              {cart.map((item, idx) => (
-                <div key={idx} style={{ display:"flex", alignItems:"center", gap:"0.75rem", padding:"0.45rem 0", borderBottom: idx < cart.length-1 ? "1px solid rgba(60,110,255,.06)" : "none" }}>
+              {/* Only the lines this Checkout will place (sneakers + clothing
+                  customer). Clothing refill lines stay in the cart for the
+                  Place Refill Request bar, so they're not listed here. Remove
+                  by index against the full cart to delete the right line. */}
+              {cart.map((item, idx) => ({ item, idx })).filter(({ item }) => isCustomerLine(item)).map(({ item, idx }, i, arr) => (
+                <div key={idx} style={{ display:"flex", alignItems:"center", gap:"0.75rem", padding:"0.45rem 0", borderBottom: i < arr.length-1 ? "1px solid rgba(60,110,255,.06)" : "none" }}>
                   {item.product.photoUrl
                     ? <img src={item.product.photoUrl} alt="" style={{ width:34, height:34, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
                     : <span style={{ fontSize:"1.3rem", flexShrink:0 }}>{item.product.photo}</span>}
                   <span style={{ flex:1, color:"#ccc", fontSize:"0.87rem" }}>{item.product.name}</span>
-                  <span style={{ color:BLUE_L, fontWeight:"700", fontSize:"0.87rem", flexShrink:0 }}>{item.size ? `Sz ${item.size}` : "Display"}</span>
+                  <span style={{ color:BLUE_L, fontWeight:"700", fontSize:"0.87rem", flexShrink:0 }}>{item.size ? `Sz ${item.size}` : "Display"}{item.qty > 1 ? ` × ${item.qty}` : ""}</span>
                   <button onClick={() => removeFromCart(idx)} style={{ background:"transparent", border:"none", color:"#444", cursor:"pointer", fontSize:"0.9rem", flexShrink:0 }}>✕</button>
                 </div>
               ))}
@@ -3359,22 +3426,24 @@ function AssistantView({ products, onExit, orders = [] }) {
               // is the same product + size (the "3 pairs of size 8" case),
               // show "Place order — size 8 × 3". Mixed carts fall back to
               // the count.
-              const sneakerLines = cart.filter(it => (it.productType || "sneaker") === "sneaker");
-              const sample = sneakerLines[0];
-              const singleSku = sample && sneakerLines.every(it =>
+              // Count only the lines this Checkout places (sneakers + clothing
+              // customer); clothing refill lines are placed separately.
+              const customerLines = cart.filter(isCustomerLine);
+              const sample = customerLines[0];
+              const singleSku = sample && customerLines.every(it =>
                 it.product?.id === sample.product?.id &&
                 it.size === sample.size &&
                 !it.requestDisplay && !it.requestDisplayPartner
               );
-              const n = cart.length;
+              const n = customerLines.length;
               const placeLabel = !customerName
                 ? "Enter customer name"
                 : singleSku && sample.size
                   ? (n > 1 ? `Place order — size ${sample.size} × ${n}` : `Place order — size ${sample.size}`)
                   : `Place ${n} Order${n > 1 ? "s" : ""} →`;
               return (
-                <button onClick={placeOrders} disabled={!customerName || !cart.length || submitting}
-                  style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:customerName&&cart.length&&!submitting?1:0.4, cursor:customerName&&cart.length&&!submitting?"pointer":"not-allowed" }}>
+                <button onClick={placeOrders} disabled={!customerName || !customerLines.length || submitting}
+                  style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:customerName&&customerLines.length&&!submitting?1:0.4, cursor:customerName&&customerLines.length&&!submitting?"pointer":"not-allowed" }}>
                   {submitting ? "Placing orders…" : placeLabel}
                 </button>
               );
@@ -3388,7 +3457,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"12px 14px 14px", background:"linear-gradient(transparent, rgba(0,0,0,.92) 30%)", zIndex:50, pointerEvents:"none" }}>
           <div style={{ maxWidth:430, margin:"0 auto", pointerEvents:"auto" }}>
             <button
-              onClick={hasSneakerInCart ? openCheckout : placeRefillRequests}
+              onClick={hasCustomerInCart ? openCheckout : placeRefillRequests}
               disabled={submitting}
               style={{ width:"100%", padding:"13px 16px", borderRadius:12, border:"1px solid rgba(60,110,255,.55)",
                        background:"#4A7FFF", color:"#fff",
@@ -3398,8 +3467,8 @@ function AssistantView({ products, onExit, orders = [] }) {
                        opacity: submitting ? 0.7 : 1 }}>
               <span>
                 {submitting
-                  ? (hasSneakerInCart ? "Placing orders…" : "Placing refill…")
-                  : (hasSneakerInCart ? `Checkout (${cart.length})` : `Place Refill Request (${cart.length})`)
+                  ? (hasCustomerInCart ? "Placing orders…" : "Placing refill…")
+                  : (hasCustomerInCart ? `Checkout (${cart.length})` : `Place Refill Request (${cart.length})`)
                 }
               </span>
               <span style={{ fontSize:16 }}>→</span>
@@ -3425,11 +3494,14 @@ function WarehouseView({ products = [], orders, onExit }) {
   useEffect(() => {
     if (selectedHub === "hub2" && mainTab === "restock")  setMainTab("queue");
     if ((selectedHub === "hub1" || selectedHub === "hub3") && mainTab === "clothing") setMainTab("queue");
+    // Trial: hubC has only the Order Queue tab — clamp anything else back.
+    if (selectedHub === "hubC" && mainTab !== "queue") setMainTab("queue");
   }, [selectedHub, mainTab]);
   // Phase 14B: hub3 filters by placedAtHub (the source of truth for the Pine
   // universe); hub1/hub2 still use the legacy order.hub field for back-compat.
-  const orderInHub = (o, h) => h === "hub3"
-    ? o.placedAtHub === "hub3"
+  // Trial: hubC (customer clothing) also filters by placedAtHub.
+  const orderInHub = (o, h) => (h === "hub3" || h === "hubC")
+    ? o.placedAtHub === h
     : (o.hub || "hub1") === h;
   const todayDate    = getSADateString();
   // Restock tab: derive counts from COLLECTED orders only — no Firebase log needed.
@@ -3560,7 +3632,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         <div style={{ fontWeight:"800", fontSize:"1.5rem", letterSpacing:"0.06em", marginBottom:"0.5rem", color:"#fff" }}>WAREHOUSE</div>
         <p style={{ color:"#555", marginBottom:"2.5rem", fontSize:"0.9rem" }}>Select your hub to continue</p>
         <div style={{ display:"flex", gap:"1rem", width:"100%", maxWidth:"520px" }}>
-          {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3"]].map(([val, label]) => (
+          {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3"],["hubC","Hub C"]].map(([val, label]) => (
             <button key={val} onClick={() => selectHub(val)}
               style={{ flex:1, background:CARD, border:BORDER, borderRadius:RADIUS, padding:"2.2rem 0.75rem", cursor:"pointer", color:"#fff", textAlign:"center", boxShadow:GLOW, transition:"border-color 0.15s" }}
               onMouseEnter={e => { e.currentTarget.style.borderColor=`rgba(60,110,255,.5)`; }}
@@ -3897,7 +3969,13 @@ function WarehouseView({ products = [], orders, onExit }) {
           (Phase 12C / 14B). hub3 mirrors hub1's tab set; if a clothing tab is
           needed for Pine later, add it here. */}
       <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
-        {(selectedHub === "hub2"
+        {(selectedHub === "hubC"
+          ? [
+              // Trial: Hub C only fulfils customer clothing orders, so it gets
+              // the Order Queue and nothing else.
+              ["queue",    "Order Queue",     null],
+            ]
+          : selectedHub === "hub2"
           ? [
               ["queue",    "Order Queue",     null],
               ["clothing", "Clothing",        clothingBadge],
@@ -3990,7 +4068,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                       </div>
                       <div style={{ marginLeft:"auto", color:"rgba(255,255,255,.2)", fontSize:16 }}>···</div>
                     </div>
-                    <div style={{ fontSize:15, fontWeight:600, color:"#fff" }}>{order.productName}{order.size ? ` — Size ${order.size}` : ""}</div>
+                    <div style={{ fontSize:15, fontWeight:600, color:"#fff" }}>{order.productName}{order.size ? ` — Size ${order.size}` : ""}{order.qty > 1 ? ` × ${order.qty}` : ""}</div>
                     <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginTop:3, display:"flex", alignItems:"center", gap:4 }}>
                       <svg width="10" height="10" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                       {order.customerName}{order.customerPhone ? ` · ${order.customerPhone}` : ""}
