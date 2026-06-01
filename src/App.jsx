@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
-import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
+import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import { uploadBroadcastMedia } from "./broadcastStorage";
@@ -1817,11 +1817,6 @@ function AdminView({ products, orders, onExit }) {
     }
   }, [detailId, products.length, detailProduct]);
 
-  // POS Phase 2: Backfill Prices screen — full-screen row editor for all
-  // products. Gated by a manager PIN re-prompt (uses reauthenticateWithCredential
-  // against the signed-in user's own credential — no auth-state churn).
-  const [showBackfill, setShowBackfill] = useState(false);
-
   // When the detail page is mounted, render JUST the detail (no list chrome).
   if (detailProduct) {
     return (
@@ -1830,19 +1825,6 @@ function AdminView({ products, orders, onExit }) {
           product={detailProduct}
           insightsLog={insightsLog}
           onBack={() => window.history.back()}
-        />
-      </div>
-    );
-  }
-
-  // POS Phase 2: Backfill Prices full-screen. Wider container than the rest
-  // of the admin (the row-editor needs the room).
-  if (showBackfill) {
-    return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:680, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-        <BackfillPricesScreen
-          products={products}
-          onBack={() => setShowBackfill(false)}
         />
       </div>
     );
@@ -1874,10 +1856,6 @@ function AdminView({ products, orders, onExit }) {
             <span style={{ background:"rgba(60,110,255,.15)", border:"1px solid rgba(60,110,255,.3)", color:"#4A7FFF", fontSize:12, fontWeight:700, padding:"3px 10px", borderRadius:12 }}>{products.length}</span>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <button onClick={() => setShowBackfill(true)}
-                    style={{ background:"rgba(60,110,255,.12)", color:"#4A7FFF", border:"1px solid rgba(60,110,255,.35)", borderRadius:10, padding:"10px 14px", fontSize:13, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
-              Backfill Prices
-            </button>
             <button onClick={() => setShowAdd(!showAdd)} style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:10, padding:"10px 18px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6, boxShadow:"0 0 14px rgba(60,110,255,.3)" }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               Add Product
@@ -2435,291 +2413,6 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   );
 }
 
-// ─── BACKFILL PRICES SCREEN (POS Phase 2) ─────────────────────────────────────
-// Bulk row-editor for stockPrice / retailPrice / hasShoeBoxOption. Used to
-// populate price data for products that pre-date these fields. Gated by a
-// manager-PIN re-prompt — the signed-in user re-enters their own PIN to
-// confirm. We use reauthenticateWithCredential (rather than a second
-// signInWithEmailAndPassword) so the auth-state subscriber doesn't churn.
-//
-// Edits are accumulated locally and committed in one multi-path `update()`
-// on Save All — that way the user can fix several products without writing
-// half-baked rows back to RTDB while they're still typing.
-function BackfillPricesScreen({ products, onBack }) {
-  const { user: authUser, isSuperAdmin } = usePermissions();
-  // Super-admin signs in via Google (no email/password provider linked), so
-  // reauthenticateWithCredential can't succeed for them — and they already
-  // bypass every other permission check by design. Skip the gate entirely
-  // for super-admin. Non-super-admin users without a password provider
-  // (shouldn't happen in normal operation) still see the gate but get a
-  // clear "re-auth not available" message instead of a misleading
-  // "Wrong PIN" — see verifyPin below.
-  const [gateOpen, setGateOpen]   = useState(!isSuperAdmin);
-  const [pin, setPin]             = useState("");
-  const [gateError, setGateError] = useState("");
-  const [verifying, setVerifying] = useState(false);
-
-  // Local drafts: { [productId]: { stockPrice, retailPrice, hasShoeBoxOption } }
-  // Initialised from the products list once the gate opens. Drafts start as
-  // strings so partial input ("12.") doesn't get coerced mid-typing.
-  //
-  // `draftsDirty` tracks per-field user edits: { [productId]: { stockPrice?:
-  // true, retailPrice?: true, hasShoeBoxOption?: true } }. The resync effect
-  // below only refreshes *non-dirty* fields from RTDB — that way if admin B
-  // updates a product's price while admin A is editing this screen, admin B's
-  // change appears in untouched rows but admin A's typed edits aren't
-  // clobbered. Without this, Save All would write admin A's stale draft back
-  // over admin B's newer value. Flags clear after a successful save.
-  // Treat stored 0/negative as unset (legacy rows pre-dating the `> 0` rule).
-  // That way the editor surfaces them as blank and Save All will normalize
-  // them to null on the next write.
-  const seedDraft = (p) => ({
-    stockPrice:       typeof p.stockPrice  === "number" && p.stockPrice  > 0 ? String(p.stockPrice)  : "",
-    retailPrice:      typeof p.retailPrice === "number" && p.retailPrice > 0 ? String(p.retailPrice) : "",
-    // Clothing never has a shoebox — seed false so Save All actively clears any
-    // legacy stored `true` (the row shows dirty until corrected).
-    hasShoeBoxOption: p.productType === "clothing" ? false : p.hasShoeBoxOption === true,
-  });
-  const [drafts, setDrafts] = useState(() => {
-    const m = {};
-    for (const p of products) m[p.id] = seedDraft(p);
-    return m;
-  });
-  const [draftsDirty, setDraftsDirty] = useState({});
-  // Resync untouched draft fields from RTDB on every products change. We
-  // depend on `products` itself (not just ids) so price/shoebox changes from
-  // other tabs flow into clean rows. Dirty fields are preserved.
-  useEffect(() => {
-    setDrafts(prev => {
-      const next = { ...prev };
-      for (const p of products) {
-        const fresh    = seedDraft(p);
-        const existing = next[p.id];
-        const dirty    = draftsDirty[p.id] || {};
-        if (!existing) {
-          next[p.id] = fresh;
-          continue;
-        }
-        next[p.id] = {
-          stockPrice:       dirty.stockPrice       ? existing.stockPrice       : fresh.stockPrice,
-          retailPrice:      dirty.retailPrice      ? existing.retailPrice      : fresh.retailPrice,
-          hasShoeBoxOption: dirty.hasShoeBoxOption ? existing.hasShoeBoxOption : fresh.hasShoeBoxOption,
-        };
-      }
-      // Drop rows for products that have been deleted elsewhere.
-      for (const id of Object.keys(next)) if (!products.find(p => p.id === id)) delete next[id];
-      return next;
-    });
-  }, [products, draftsDirty]);
-
-  const verifyPin = async () => {
-    setGateError("");
-    if (!authUser?.email) { setGateError("Not signed in."); return; }
-    // Bail before attempting reauth if the signed-in user has no password
-    // provider — otherwise Firebase throws and the catch block below would
-    // mislabel it as "Wrong PIN" (e.g., Google-auth sessions, though
-    // super-admin bypasses this gate entirely above).
-    const hasPasswordProvider = (authUser.providerData || []).some(p => p.providerId === "password");
-    if (!hasPasswordProvider) {
-      setGateError("Re-authentication is not available for this account. Sign in with a staff PIN account.");
-      return;
-    }
-    if (!/^\d{4}$/.test(pin)) { setGateError("PIN must be 4 digits."); return; }
-    setVerifying(true);
-    try {
-      const cred = EmailAuthProvider.credential(authUser.email, toAuthPassword(pin));
-      await reauthenticateWithCredential(authUser, cred);
-      setGateOpen(false);
-    } catch (err) {
-      console.warn("Backfill PIN re-auth failed:", err);
-      setGateError("Wrong PIN. Try again.");
-      setPin("");
-    } finally {
-      setVerifying(false);
-    }
-  };
-
-  // Compute the patch object for a single product (or null when nothing's
-  // changed). Empty string → null (clears the field); non-finite/negative →
-  // null. Used by Save All to build a multi-path RTDB update.
-  const patchFor = (product) => {
-    const d = drafts[product.id];
-    if (!d) return null;
-    const patch = {};
-    const parsePrice = (raw, currentVal) => {
-      // hadStoredNumber tracks whether the RTDB field exists at all (even
-      // if it's an invalid 0/negative). A blank draft against a stored
-      // value should always write null — that includes cleaning up legacy
-      // 0 values. normalizedCurrent is only used to decide whether a typed
-      // number equals what's already there (so we skip no-op writes).
-      const hadStoredNumber = typeof currentVal === "number";
-      const normalizedCurrent = hadStoredNumber && currentVal > 0 ? currentVal : null;
-      const trimmed = String(raw).trim();
-      if (trimmed === "") return hadStoredNumber ? null : "__NO_CHANGE__";
-      const num = Number(trimmed);
-      // Reject 0 (and negatives / NaN) — matches create-flow's `> 0` rule.
-      if (!Number.isFinite(num) || num <= 0) return "__NO_CHANGE__";
-      return num === normalizedCurrent ? "__NO_CHANGE__" : num;
-    };
-    const stockVal  = parsePrice(d.stockPrice,  product.stockPrice);
-    const retailVal = parsePrice(d.retailPrice, product.retailPrice);
-    if (stockVal  !== "__NO_CHANGE__") patch.stockPrice  = stockVal;
-    if (retailVal !== "__NO_CHANGE__") patch.retailPrice = retailVal;
-    const boxVal = product.productType === "clothing" ? false : !!d.hasShoeBoxOption;
-    if (boxVal !== (product.hasShoeBoxOption === true)) patch.hasShoeBoxOption = boxVal;
-    return Object.keys(patch).length === 0 ? null : patch;
-  };
-
-  // Count of pending changes — drives the Save All button label/disabled state.
-  const pendingCount = useMemo(() => {
-    let n = 0;
-    for (const p of products) if (patchFor(p)) n++;
-    return n;
-  }, [drafts, products]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState("");
-  const saveAll = async () => {
-    setSaving(true);
-    setSaveMsg("");
-    try {
-      const multi = {};
-      for (const p of products) {
-        const patch = patchFor(p);
-        if (!patch) continue;
-        for (const [k, v] of Object.entries(patch)) multi[`products/${p.id}/${k}`] = v;
-      }
-      if (Object.keys(multi).length === 0) {
-        setSaveMsg("Nothing to save.");
-        return;
-      }
-      await update(ref(database), multi);
-      // Clear dirty flags so the resync effect can refresh these rows from
-      // RTDB (which now matches what we just wrote).
-      setDraftsDirty({});
-      setSaveMsg(`Saved ${pendingCount} product${pendingCount === 1 ? "" : "s"}.`);
-    } catch (err) {
-      console.error("Backfill save failed:", err);
-      setSaveMsg("Save failed. Check console.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const setRowField = (id, field, value) => {
-    setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
-    setDraftsDirty(prev => ({ ...prev, [id]: { ...prev[id], [field]: true } }));
-  };
-
-  // ── PIN gate ─────────────────────────────────────────────────────────────
-  if (gateOpen) {
-    return (
-      <div style={{ padding:"44px 16px 24px" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:24 }}>
-          <button onClick={onBack}
-                  style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, fontWeight:500, cursor:"pointer", padding:"6px 10px" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-            Cancel
-          </button>
-        </div>
-        <div style={{ maxWidth:360, margin:"40px auto 0", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, padding:"28px 24px" }}>
-          <div style={{ fontSize:18, fontWeight:700, color:"#fff", marginBottom:6 }}>Manager PIN</div>
-          <div style={{ fontSize:13, color:"rgba(255,255,255,.55)", marginBottom:20, lineHeight:1.4 }}>
-            Re-enter your 4-digit PIN to open the Backfill Prices editor.
-          </div>
-          <input type="password" inputMode="numeric" pattern="[0-9]*" maxLength={4}
-                 value={pin}
-                 onChange={e => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
-                 onKeyDown={e => { if (e.key === "Enter") verifyPin(); }}
-                 autoFocus
-                 placeholder="••••"
-                 style={{ width:"100%", textAlign:"center", letterSpacing:"0.4em", fontSize:22, fontWeight:600, background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.12)", borderRadius:10, padding:"14px 12px", color:"#fff", outline:"none", marginBottom:12 }}/>
-          {gateError && <div style={{ color:"#F87171", fontSize:13, marginBottom:12 }}>{gateError}</div>}
-          <button onClick={verifyPin} disabled={verifying || pin.length !== 4}
-                  style={{ width:"100%", background:"#4A7FFF", color:"#fff", border:"none", borderRadius:10, padding:"12px", fontSize:15, fontWeight:700, cursor: verifying || pin.length !== 4 ? "not-allowed" : "pointer", opacity: verifying || pin.length !== 4 ? 0.5 : 1 }}>
-            {verifying ? "Verifying…" : "Unlock"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Row editor ───────────────────────────────────────────────────────────
-  const cellInput = { width:"100%", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:8, padding:"8px 10px", color:"#fff", fontSize:14, outline:"none", boxSizing:"border-box", fontFamily:"inherit" };
-  return (
-    <div>
-      {/* Top bar */}
-      <div style={{ padding:"44px 8px 8px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <button onClick={onBack}
-                style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, fontWeight:500, cursor:"pointer", padding:"6px 10px" }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-          Products
-        </button>
-        <button onClick={saveAll} disabled={saving || pendingCount === 0}
-                style={{ background: pendingCount === 0 ? "rgba(255,255,255,.06)" : "#4A7FFF", color: pendingCount === 0 ? "rgba(255,255,255,.4)" : "#fff", border:"none", borderRadius:10, padding:"10px 18px", fontSize:13, fontWeight:700, cursor: saving || pendingCount === 0 ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1 }}>
-          {saving ? "Saving…" : `Save All${pendingCount > 0 ? ` (${pendingCount})` : ""}`}
-        </button>
-      </div>
-
-      {/* Title */}
-      <div style={{ padding:"4px 18px 8px" }}>
-        <div style={{ fontSize:22, fontWeight:700, color:"#fff" }}>Backfill Prices</div>
-        <div style={{ fontSize:13, color:"rgba(255,255,255,.5)", marginTop:6, lineHeight:1.4 }}>
-          Edit prices and shoebox flag across every product. Blank price = unset. Changes commit when you tap <b>Save All</b>.
-        </div>
-        {saveMsg && <div style={{ fontSize:13, color: saveMsg.startsWith("Saved") ? "#4ADE80" : "#F87171", marginTop:10 }}>{saveMsg}</div>}
-      </div>
-
-      {/* Table header (hidden on narrow screens — each row carries its own
-          labels). Visible from 540px wide. */}
-      <div style={{ display:"grid", gridTemplateColumns:"1.4fr 1fr 1fr 90px", gap:8, padding:"10px 18px", fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", borderBottom:"1px solid rgba(255,255,255,.06)" }}>
-        <div>Product</div>
-        <div>Stock (R)</div>
-        <div>Retail (R)</div>
-        <div style={{ textAlign:"center" }}>Shoebox</div>
-      </div>
-
-      {/* Rows */}
-      <div>
-        {products.length === 0 && (
-          <div style={{ padding:"32px 18px", color:"rgba(255,255,255,.45)", textAlign:"center" }}>No products to edit.</div>
-        )}
-        {products.map(p => {
-          const d = drafts[p.id] || { stockPrice:"", retailPrice:"", hasShoeBoxOption:false };
-          const dirty = !!patchFor(p);
-          return (
-            <div key={p.id}
-                 style={{ display:"grid", gridTemplateColumns:"1.4fr 1fr 1fr 90px", gap:8, alignItems:"center", padding:"10px 18px", borderBottom:"1px solid rgba(255,255,255,.05)", background: dirty ? "rgba(60,110,255,.04)" : "transparent" }}>
-              <div style={{ display:"flex", flexDirection:"column", gap:2, minWidth:0 }}>
-                <div style={{ fontSize:14, color:"#fff", fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
-                <div style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>{p.category || (p.productType === "clothing" ? "Clothing" : "Sneaker")}</div>
-              </div>
-              <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="—"
-                     value={d.stockPrice}
-                     onChange={e => setRowField(p.id, "stockPrice", e.target.value)}
-                     style={cellInput}/>
-              <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="—"
-                     value={d.retailPrice}
-                     onChange={e => setRowField(p.id, "retailPrice", e.target.value)}
-                     style={cellInput}/>
-              <div style={{ display:"flex", justifyContent:"center" }}>
-                {/* Clothing never has a shoebox — disable + force unchecked. */}
-                <input type="checkbox"
-                       checked={(p.productType === "clothing") ? false : !!d.hasShoeBoxOption}
-                       disabled={p.productType === "clothing"}
-                       onChange={e => setRowField(p.id, "hasShoeBoxOption", e.target.checked)}
-                       style={{ width:20, height:20, accentColor:"#4A7FFF", cursor: p.productType === "clothing" ? "not-allowed" : "pointer", opacity: p.productType === "clothing" ? 0.3 : 1 }}/>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ height:24 }}/>
-    </div>
-  );
-}
-
 // ─── ASSISTANT VIEW ───────────────────────────────────────────────────────────
 // Multi-item cart flow:
 //   1. Tap product → size picker sheet → "Add to Cart"
@@ -2730,7 +2423,7 @@ function BackfillPricesScreen({ products, onBack }) {
 // Renders one clothing product with per-size qty steppers. Each card owns its
 // own draft qty state. Tapping "Add to Cart" reports cart lines back to the
 // parent (one per non-zero size) and resets the draft to zeros.
-function ClothingCard({ product, onAdd }) {
+function ClothingCard({ product, onAdd, onViewPhoto }) {
   const sizes = Array.isArray(product.sizes) ? product.sizes : [];
   // Initial state: every available size starts at 0.
   const [qty, setQty] = useState(() => sizes.reduce((m, s) => (m[s] = 0, m), {}));
@@ -2755,7 +2448,9 @@ function ClothingCard({ product, onAdd }) {
   return (
     <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.06)", borderRadius:12, overflow:"hidden" }}>
       <div style={{ display:"flex", gap:12, padding:"12px 13px 0" }}>
-        <div style={{ width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center" }}>
+        <div onClick={product.photoUrl && onViewPhoto ? () => onViewPhoto(product.photoUrl) : undefined}
+             title={product.photoUrl ? "View full photo" : undefined}
+             style={{ width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto ? "zoom-in" : "default" }}>
           {product.photoUrl
             ? <img src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
             : <span style={{ fontSize:36 }}>{product.photo}</span>}
@@ -2843,6 +2538,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // are zero allowed stores, in which case the block screen renders anyway.
   const effectiveStoreMode = allowedStores.includes(storeMode) ? storeMode : (allowedStores[0] || storeMode);
   const [selected, setSelected]                         = useState(null);   // product in size picker
+  // Tapping a product photo opens a full-screen lightbox so staff can see the
+  // complete (uncropped) image. Holds the photo URL to show, or null.
+  const [fullPhoto, setFullPhoto]                       = useState(null);
   const [pendingSize, setPendingSize]                   = useState("");
   const [pendingQty,  setPendingQty]                    = useState(1);
   const [pendingDisplayRequest, setPendingDisplay]      = useState(false);
@@ -3302,7 +3000,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       ) : isRefillMode ? (
         <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
           {filtered.map(p => (
-            <ClothingCard key={p.id} product={p} onAdd={addClothingLines} />
+            <ClothingCard key={p.id} product={p} onAdd={addClothingLines} onViewPhoto={setFullPhoto} />
           ))}
         </div>
       ) : (
@@ -3315,10 +3013,20 @@ function AssistantView({ products, onExit, orders = [] }) {
                             border: isSel ? "2px solid #4A7FFF" : "1px solid rgba(255,255,255,.06)",
                             borderRadius:12, overflow:"hidden", cursor:"pointer", position:"relative",
                             boxShadow: isSel ? "0 0 16px rgba(60,110,255,.2)" : "none" }}>
-                <div style={{ width:"100%", height:140, background: isSel ? "rgba(60,110,255,.05)" : "rgba(255,255,255,.05)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:52 }}>
+                <div style={{ width:"100%", height:140, position:"relative", background: isSel ? "rgba(60,110,255,.05)" : "rgba(255,255,255,.05)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:52 }}>
                   {p.photoUrl
                     ? <img src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
                     : <span>{p.photo}</span>}
+                  {/* View full photo — opens an uncropped lightbox without
+                      triggering the card's add-to-cart tap. */}
+                  {p.photoUrl && (
+                    <button onClick={(e) => { e.stopPropagation(); setFullPhoto(p.photoUrl); }}
+                      title="View full photo"
+                      style={{ position:"absolute", top:8, right:8, width:30, height:30, borderRadius:8, border:"none", cursor:"pointer",
+                               background:"rgba(0,0,0,.55)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
+                    </button>
+                  )}
                 </div>
                 <div style={{ padding:"12px 13px 14px" }}>
                   <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:5 }}>{p.name}</div>
@@ -3343,7 +3051,9 @@ function AssistantView({ products, onExit, orders = [] }) {
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"1.5rem" }}>
               <div style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
                 {selected.photoUrl
-                  ? <img src={selected.photoUrl} alt={selected.name} style={{ width:"56px", height:"56px", objectFit:"cover", borderRadius:RADIUS }} />
+                  ? <img src={selected.photoUrl} alt={selected.name} onClick={() => setFullPhoto(selected.photoUrl)}
+                         title="View full photo"
+                         style={{ width:"56px", height:"56px", objectFit:"cover", borderRadius:RADIUS, cursor:"zoom-in" }} />
                   : <div style={{ fontSize:"2.8rem" }}>{selected.photo}</div>}
                 <div>
                   <div style={{ fontWeight:"700", fontSize:"1.05rem" }}>{selected.name}</div>
@@ -3518,6 +3228,18 @@ function AssistantView({ products, onExit, orders = [] }) {
               );
             })()}
           </div>
+        </div>
+      )}
+
+      {/* ── Full-photo lightbox ── tap a product photo to see the complete,
+          uncropped image; tap anywhere (or ✕) to dismiss. */}
+      {fullPhoto && (
+        <div onClick={() => setFullPhoto(null)}
+             style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.92)", zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center", padding:"24px" }}>
+          <img src={fullPhoto} alt="" style={{ maxWidth:"100%", maxHeight:"100%", objectFit:"contain", borderRadius:8 }} />
+          <button onClick={(e) => { e.stopPropagation(); setFullPhoto(null); }}
+            style={{ position:"absolute", top:"max(16px, env(safe-area-inset-top))", right:16, width:40, height:40, borderRadius:"50%", border:"none", cursor:"pointer",
+                     background:"rgba(255,255,255,.12)", color:"#fff", fontSize:20, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
         </div>
       )}
 
