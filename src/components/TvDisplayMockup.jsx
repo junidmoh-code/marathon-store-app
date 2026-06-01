@@ -607,9 +607,9 @@ export default function TvDisplayMockup({ orders: liveProp }) {
           toggles sneaker visuals. Invisible by default; when sneakers are
           hidden it shows a small, subtle eye-slash so staff know the mode is
           active and where to tap to restore. */}
-      <div
+      <button
+        type="button"
         onClick={() => setSneakersOn(v => !v)}
-        role="button"
         aria-label={sneakersOn ? "Hide sneakers" : "Show sneakers"}
         title={sneakersOn ? "Hide sneakers" : "Show sneakers"}
         style={{
@@ -618,12 +618,13 @@ export default function TvDisplayMockup({ orders: liveProp }) {
           display: "flex", alignItems: "center", justifyContent: "center",
           cursor: "pointer", zIndex: 300,
           WebkitTapHighlightColor: "transparent",
+          background: "transparent", border: 0, padding: 0,
         }}
       >
         {!sneakersOn && (
           <EyeSlashIcon color="rgba(255,255,255,0.28)" size={20}/>
         )}
-      </div>
+      </button>
     </div>
     </>
   );
