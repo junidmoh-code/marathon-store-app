@@ -2476,7 +2476,9 @@ function BackfillPricesScreen({ products, onBack }) {
   const seedDraft = (p) => ({
     stockPrice:       typeof p.stockPrice  === "number" && p.stockPrice  > 0 ? String(p.stockPrice)  : "",
     retailPrice:      typeof p.retailPrice === "number" && p.retailPrice > 0 ? String(p.retailPrice) : "",
-    hasShoeBoxOption: p.hasShoeBoxOption === true,
+    // Clothing never has a shoebox — seed false so Save All actively clears any
+    // legacy stored `true` (the row shows dirty until corrected).
+    hasShoeBoxOption: p.productType === "clothing" ? false : p.hasShoeBoxOption === true,
   });
   const [drafts, setDrafts] = useState(() => {
     const m = {};
@@ -2563,7 +2565,7 @@ function BackfillPricesScreen({ products, onBack }) {
     const retailVal = parsePrice(d.retailPrice, product.retailPrice);
     if (stockVal  !== "__NO_CHANGE__") patch.stockPrice  = stockVal;
     if (retailVal !== "__NO_CHANGE__") patch.retailPrice = retailVal;
-    const boxVal = !!d.hasShoeBoxOption;
+    const boxVal = product.productType === "clothing" ? false : !!d.hasShoeBoxOption;
     if (boxVal !== (product.hasShoeBoxOption === true)) patch.hasShoeBoxOption = boxVal;
     return Object.keys(patch).length === 0 ? null : patch;
   };
