@@ -8,6 +8,7 @@ import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
 import { toAuthPassword } from "./utils/auth-utils";
+import { normalizeSAPhone } from "./utils/phone";
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 
@@ -2659,9 +2660,7 @@ function AssistantView({ products, onExit, orders = [] }) {
     if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
     setSubmitting(true);
     try {
-      const normalizedPhone = customerPhone.trim().startsWith("0")
-        ? "+27" + customerPhone.trim().slice(1)
-        : customerPhone.trim();
+      const normalizedPhone = normalizeSAPhone(customerPhone);
       const now = new Date().toISOString();
       const placed = [];
       // The checkout flow handles every line that needs customer info: sneakers
@@ -3181,7 +3180,7 @@ function AssistantView({ products, onExit, orders = [] }) {
             </div>
             <div style={{ marginBottom:"1rem", position:"relative" }}>
               <div style={{ color:"#888", fontSize:"0.78rem", marginBottom:"0.4rem" }}>Phone (optional)</div>
-              <input placeholder="e.g. 071 234 5678" value={customerPhone}
+              <input placeholder="e.g. 071 234 5678 or 71 234 5678" inputMode="tel" value={customerPhone}
                      onChange={e => { setCustomerPhone(e.target.value); setPhoneDropdownOpen(true); }}
                      onFocus={() => setPhoneDropdownOpen(true)}
                      onBlur={() => setTimeout(() => setPhoneDropdownOpen(false), 150)}
