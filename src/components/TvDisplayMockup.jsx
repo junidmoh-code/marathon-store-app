@@ -560,7 +560,8 @@ export default function TvDisplayMockup({ orders: liveProp }) {
           alt="Jordan"
           width={80}
           height={80}
-          style={{ width: 80, height: 80, objectFit: "contain", mixBlendMode: "screen" }}
+          style={{ width: 80, height: 80, objectFit: "contain", mixBlendMode: "screen",
+                   visibility: sneakersOn ? "visible" : "hidden" }}
         />
         <div style={{
           flex: 1, textAlign: "center",
