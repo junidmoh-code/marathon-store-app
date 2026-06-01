@@ -384,7 +384,7 @@ function ShoeConveyor() {
 
 const VISIBLE_ORDERS = 5;
 
-function Column({ section }) {
+function Column({ section, sneakersOn = true }) {
   const { Icon } = section;
   const needsScroll = section.orders.length > VISIBLE_ORDERS;
   // Duplicate list so the CSS animation loops seamlessly (scroll to -50% = back to start)
@@ -410,10 +410,13 @@ function Column({ section }) {
       overflow: "hidden",
       minHeight: 0,
     }}>
-      {/* faded backdrop sneaker (decorative) */}
-      <div style={{ position: "absolute", right: "-8%", top: "22%", opacity: 0.12, pointerEvents: "none" }}>
-        <img src={section.shoeImg} alt="" width={340} style={{ display: "block", objectFit: "contain" }}/>
-      </div>
+      {/* faded backdrop sneaker (decorative) — hidden in "no sneakers" mode.
+          position:absolute + pointerEvents:none, so omitting it has no layout impact. */}
+      {sneakersOn && (
+        <div style={{ position: "absolute", right: "-8%", top: "22%", opacity: 0.12, pointerEvents: "none" }}>
+          <img src={section.shoeImg} alt="" width={340} style={{ display: "block", objectFit: "contain" }}/>
+        </div>
+      )}
 
       {/* header */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: 10, position: "relative", zIndex: 1 }}>
@@ -582,7 +585,7 @@ export default function TvDisplayMockup({ orders: liveProp }) {
 
       {/* COLUMNS */}
       <main style={{ display: "flex", gap: "0.9vw", flex: 1, minHeight: 0, marginTop: "0.35vw" }}>
-        {SECTIONS.map((s) => <Column key={s.id} section={s}/>)}
+        {SECTIONS.map((s) => <Column key={s.id} section={s} sneakersOn={sneakersOn}/>)}
       </main>
 
       {/* SHOE CONVEYOR — keep an equal-height spacer when hidden so the column
