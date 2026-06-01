@@ -2989,7 +2989,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Clothing items are removed from the cart on success; any sneaker items
   // remain (rare — usually clothing-only cart triggers this path).
   const placeRefillRequests = async () => {
-    const clothingCart = cart.filter(it => it.productType === "clothing");
+    // Refills are clothing lines NOT tagged "customer" (those go through
+    // Checkout → Hub C). Call sites already gate on hasCustomerInCart, but
+    // keep the filter intent-aware so it stays correct if that ever changes.
+    const clothingCart = cart.filter(it => it.productType === "clothing" && it.intent !== "customer");
     if (!clothingCart.length || submitting) return;
     if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
     setSubmitting(true);
@@ -3054,8 +3057,9 @@ function AssistantView({ products, onExit, orders = [] }) {
         placed.push(order);
       }
       setLastOrders(placed);
-      // Drop the placed clothing lines; leave any sneaker items in place.
-      setCart(prev => prev.filter(it => (it.productType || "sneaker") === "sneaker"));
+      // Drop the placed refill lines; leave sneakers and any clothing-customer
+      // lines in place (the latter still need to go through Checkout).
+      setCart(prev => prev.filter(it => !(it.productType === "clothing" && it.intent !== "customer")));
     } catch (e) {
       console.error("Failed to place refill requests:", e);
       alert("Could not place refill request. Check your connection and try again.");
@@ -6842,6 +6846,9 @@ function InsightClothingRefillsTab({ orders, productPhotoMap, filterStart, filte
     const map = {};
     (orders || []).forEach(o => {
       if (o.productType !== "clothing") return;
+      // Trial: this tab measures store REFILL demand — exclude clothing
+      // customer orders (routed to Hub C), which aren't refills.
+      if (o.placedAtHub === "hubC") return;
       if (!(o.createdAt && o.createdAt >= filterStart && o.createdAt < filterEnd)) return;
       const key = o.productName || "Unknown";
       if (!map[key]) map[key] = { productName: key, total: 0, sizes: {}, lastAt: "" };
@@ -6856,7 +6863,7 @@ function InsightClothingRefillsTab({ orders, productPhotoMap, filterStart, filte
 
   const totalUnits     = rows.reduce((n, r) => n + r.total, 0);
   const totalRequests  = useMemo(() =>
-    (orders || []).filter(o => o.productType === "clothing" && o.createdAt && o.createdAt >= filterStart && o.createdAt < filterEnd).length,
+    (orders || []).filter(o => o.productType === "clothing" && o.placedAtHub !== "hubC" && o.createdAt && o.createdAt >= filterStart && o.createdAt < filterEnd).length,
     [orders, filterStart, filterEnd]
   );
   const distinctProducts = rows.length;
