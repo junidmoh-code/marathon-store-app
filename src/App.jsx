@@ -1633,8 +1633,11 @@ function AdminView({ products, orders, onExit }) {
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
-  // ── List search ─────────────────────────────────────────────────────────
+  // ── List search + type filter ───────────────────────────────────────────
   const [productSearch, setProductSearch] = useState("");
+  // Admin product list is split by product type so sneakers and clothing are
+  // managed separately. Defaults to sneakers (the bulk of the catalogue).
+  const [typeFilter, setTypeFilter] = useState("sneaker"); // "sneaker" | "clothing"
   // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
   //    browser back clears it. Listener stays mounted for the whole view. ──
   const [detailId, setDetailId] = useState(() => parseProductHash());
@@ -1687,8 +1690,9 @@ function AdminView({ products, orders, onExit }) {
       if (Number.isFinite(retailNum) && retailNum > 0) newProduct.retailPrice = retailNum;
       // Persist the shoebox flag explicitly so POS has a defined value for
       // newly-created products. Legacy products without it are treated as
-      // false per the reader contract in SCHEMA.md.
-      newProduct.hasShoeBoxOption = !!form.hasShoeBoxOption;
+      // false per the reader contract in SCHEMA.md. Clothing NEVER has a
+      // shoebox — force false regardless of the form state.
+      newProduct.hasShoeBoxOption = isClothing ? false : !!form.hasShoeBoxOption;
       // POS Phase 2: reserve the next sequential sku + barcode atomically
       // BEFORE the product write so two concurrent adds can't collide. If
       // reservation fails (counter exhausted or RTDB error), surface the
@@ -1727,18 +1731,26 @@ function AdminView({ products, orders, onExit }) {
   // never has a shoebox, sneakers default to true — unless the user has
   // manually toggled it (shoeboxTouched).
   const setProductType = (nextType) => setForm(f => {
-    const shoeboxPatch = shoeboxTouched ? {} : { hasShoeBoxOption: nextType === "sneaker" || /foot|shoe/i.test(f.category || "") };
-    if (nextType !== "clothing") return { ...f, productType: nextType, ...shoeboxPatch };
-    const stripped = f.hubs.filter(h => h !== "hub1");
-    return { ...f, productType: nextType, hubs: stripped.length ? stripped : ["hub2"], ...shoeboxPatch };
+    if (nextType === "clothing") {
+      // Clothing can't be in Hub 1 and never has a shoebox — force both,
+      // overriding any manual shoebox toggle.
+      const stripped = f.hubs.filter(h => h !== "hub1");
+      return { ...f, productType: "clothing", hubs: stripped.length ? stripped : ["hub2"], hasShoeBoxOption: false };
+    }
+    // Switching to Sneaker defaults the shoebox on (matches prior behavior),
+    // unless the user already toggled it manually.
+    const shoeboxPatch = shoeboxTouched ? {} : { hasShoeBoxOption: true };
+    return { ...f, productType: nextType, ...shoeboxPatch };
   });
   // POS Phase 2: category onChange handler. Auto-sets the shoebox flag based
   // on category text (footwear / shoe / sneaker → true; everything else →
-  // false), unless the user has manually toggled it.
+  // false), unless the user has manually toggled it. Clothing always stays
+  // shoebox-off regardless of category text.
   const setCategory = (nextCategory) => setForm(f => {
     const patch = { category: nextCategory };
     if (!shoeboxTouched) {
-      patch.hasShoeBoxOption = /foot|shoe/i.test(nextCategory) || f.productType === "sneaker";
+      patch.hasShoeBoxOption = f.productType !== "clothing" &&
+        (/foot|shoe/i.test(nextCategory) || f.productType === "sneaker");
     }
     return { ...f, ...patch };
   });
@@ -1747,12 +1759,17 @@ function AdminView({ products, orders, onExit }) {
     setForm(f => ({ ...f, hasShoeBoxOption: !f.hasShoeBoxOption }));
   };
 
-  // Phase 12A: products filtered by the admin search bar (substring, case-insensitive).
+  // Products filtered by the active type tab (Sneakers / Clothing) + the search
+  // bar (substring, case-insensitive). Products without productType are treated
+  // as sneakers.
   const filteredProducts = useMemo(() => {
     const q = productSearch.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter(p => (p.name || "").toLowerCase().includes(q));
-  }, [products, productSearch]);
+    return products.filter(p => {
+      if ((p.productType || "sneaker") !== typeFilter) return false;
+      if (q && !(p.name || "").toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [products, productSearch, typeFilter]);
 
   const handleImageUpload = e => {
     const file = e.target.files[0];
@@ -1934,11 +1951,15 @@ function AdminView({ products, orders, onExit }) {
             <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="Stock Price (R)" value={form.stockPrice}  onChange={e => setForm(f=>({...f, stockPrice:  e.target.value}))} style={inputStyle} />
             <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="Retail Price (R)" value={form.retailPrice} onChange={e => setForm(f=>({...f, retailPrice: e.target.value}))} style={inputStyle} />
           </div>
+          {/* Shoebox option — sneakers only. Clothing never ships with a
+              shoebox, so the toggle is hidden and the flag forced false. */}
+          {form.productType !== "clothing" && (
           <label style={{ display:"flex", alignItems:"center", gap:10, marginBottom:"1.25rem", cursor:"pointer", color:"#ccc", fontSize:"0.9rem" }}>
             <input type="checkbox" checked={!!form.hasShoeBoxOption} onChange={toggleShoebox} style={{ width:18, height:18, accentColor:BLUE, cursor:"pointer" }} />
             Shoebox option
             <span style={{ color:"#555", fontSize:"0.78rem", fontStyle:"italic", marginLeft:4 }}>(auto-checked for footwear)</span>
           </label>
+          )}
 
           {/* POS Phase 2 (scanner workflow): SKU + barcode are auto-assigned
               sequentially at save time via reserveNextSkuAndBarcode(). No
@@ -1956,6 +1977,23 @@ function AdminView({ products, orders, onExit }) {
         </div>
       )}
 
+      {/* TYPE TABS — manage Sneakers and Clothing separately. */}
+      <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2, marginBottom:14 }}>
+        {[["sneaker","Sneakers"],["clothing","Clothing"]].map(([val, label]) => {
+          const on = typeFilter === val;
+          const count = products.filter(p => (p.productType || "sneaker") === val).length;
+          return (
+            <button key={val} onClick={() => setTypeFilter(val)}
+              style={{ flex:1, padding:"8px 6px", borderRadius:9, border:"none", cursor:"pointer", fontSize:13, fontWeight:700,
+                       background: on ? "rgba(60,110,255,.25)" : "transparent",
+                       color: on ? "#fff" : "rgba(255,255,255,.5)",
+                       boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
+              {label} <span style={{ opacity:.7, fontWeight:600 }}>({count})</span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* PRODUCT SEARCH BAR (Phase 12A) */}
       <div style={{ marginBottom:14 }}>
         <input
@@ -1972,7 +2010,7 @@ function AdminView({ products, orders, onExit }) {
       <div>
         {filteredProducts.length === 0 && (
           <div style={{ textAlign:"center", color:"#555", padding:"2.5rem 1rem", fontSize:"0.9rem" }}>
-            {productSearch.trim() ? "No products match your search." : "No products yet. Add one above."}
+            {productSearch.trim() ? "No products match your search." : `No ${typeFilter === "clothing" ? "clothing" : "sneaker"} products yet. Add one above.`}
           </div>
         )}
         {filteredProducts.map(p => <AdminProductRow key={p.id} product={p} />)}
@@ -2099,6 +2137,8 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       const stripped = productHubs.filter(h => h !== "hub1");
       patch.hubs = stripped.length ? stripped : ["hub2"];
       patch.hub  = patch.hubs[0];
+      // Clothing never has a shoebox — clear the flag when converting.
+      patch.hasShoeBoxOption = false;
     }
     update(ref(database, `products/${product.id}`), patch);
   };
@@ -2147,6 +2187,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       .catch(err => console.warn(`update ${field} failed:`, err));
   };
   const toggleShoebox = () => {
+    if (isClothing) return; // clothing never has a shoebox
     const next = !(product.hasShoeBoxOption === true);
     update(ref(database, `products/${product.id}`), { hasShoeBoxOption: next })
       .catch(err => console.warn("update hasShoeBoxOption failed:", err));
@@ -2297,6 +2338,8 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
                    style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
           </div>
         </div>
+        {/* Shoebox option — sneakers only; clothing never ships with one. */}
+        {!isClothing && (
         <div onClick={toggleShoebox}
              style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 16px", cursor:"pointer" }}>
           <div style={{ fontSize:15, color:"#fff", fontWeight:500 }}>Shoebox option</div>
@@ -2313,6 +2356,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
             )}
           </div>
         </div>
+        )}
       </div>
 
       {/* IDENTIFIERS — POS Phase 2 (scanner workflow). Read-only display of
@@ -2657,10 +2701,12 @@ function BackfillPricesScreen({ products, onBack }) {
                      onChange={e => setRowField(p.id, "retailPrice", e.target.value)}
                      style={cellInput}/>
               <div style={{ display:"flex", justifyContent:"center" }}>
+                {/* Clothing never has a shoebox — disable + force unchecked. */}
                 <input type="checkbox"
-                       checked={!!d.hasShoeBoxOption}
+                       checked={(p.productType === "clothing") ? false : !!d.hasShoeBoxOption}
+                       disabled={p.productType === "clothing"}
                        onChange={e => setRowField(p.id, "hasShoeBoxOption", e.target.checked)}
-                       style={{ width:20, height:20, accentColor:"#4A7FFF", cursor:"pointer" }}/>
+                       style={{ width:20, height:20, accentColor:"#4A7FFF", cursor: p.productType === "clothing" ? "not-allowed" : "pointer", opacity: p.productType === "clothing" ? 0.3 : 1 }}/>
               </div>
             </div>
           );
@@ -2755,16 +2801,17 @@ function ClothingCard({ product, onAdd }) {
 
 function AssistantView({ products, onExit, orders = [] }) {
   const [search, setSearch]                             = useState("");
-  // Phase 12B: product type mode toggle. "sneaker" default. Filters the grid
-  // and switches the card UX (size-picker sheet vs inline qty steppers).
+  // Single 3-way mode selector (replaces the old Sneakers/Clothing toggle +
+  // separate Refill/Customer toggle):
+  //   "sneaker"  → sneakers, customer order (photo grid + size sheet)
+  //   "clothing" → clothing FOR A CUSTOMER → Hub C (same photo grid + size
+  //                 sheet UX as sneakers; full customer checkout + Order Queue)
+  //   "cr"       → Clothing Refill (bulk multi-size qty list → hub2/hub3)
+  // Helpers below derive product-type filtering, the card layout, and the
+  // per-line intent from this one value.
   const [mode, setMode]                                 = useState("sneaker");
-  // Trial: clothing can be ordered two ways — as a store REFILL (existing flow,
-  // routes to hub2/hub3, no customer) or FOR A CUSTOMER (new, routes to Hub C
-  // and goes through the normal customer checkout + Order Queue lifecycle). The
-  // intent is stamped per cart line at add time (see addClothingLines) so
-  // flipping this toggle never reinterprets items already in the cart. Sneakers
-  // ignore it entirely. Remove this state + the toggle below to retire the trial.
-  const [clothingIntent, setClothingIntent]             = useState("refill"); // "refill" | "customer"
+  const wantsClothing = mode === "clothing" || mode === "cr"; // product-type filter
+  const isRefillMode  = mode === "cr";                        // bulk refill card UX
   // Phase 14B: Central / Pine universe toggle. Persists per device so the
   // Pine iPad stays Pine across reloads. "central" sees hub1/hub2 products
   // and routes orders to those hubs; "pine" sees hub3 products and routes
@@ -2820,26 +2867,29 @@ function AssistantView({ products, onExit, orders = [] }) {
     setPhoneDropdownOpen(false);
   };
 
-  // Filter products by the active mode (sneaker / clothing) + search box.
+  // Filter products by the active mode (sneaker vs clothing) + search box.
   // Existing products without productType are treated as sneakers.
-  // Phase 14B: Central universe shows hub1/hub2 products; Pine universe
-  // shows hub3 products. Products with no hubs at all (legacy edge case)
-  // still show in Central only.
+  // SNEAKERS stay store-gated: Phase 14B Central shows hub1/hub2 products, Pine
+  // shows hub3. CLOTHING (both customer + refill) is visible to ALL stores — no
+  // hub gating — so every assistant can order/refill clothing regardless of
+  // which store they're on.
   const filtered = useMemo(() =>
     products.filter(p => {
-      const t = p.productType || "sneaker";
-      if (t !== mode) return false;
-      const hubs = getProductHubs(p);
-      if (effectiveStoreMode === "pine") {
-        if (!hubs.includes("hub3")) return false;
-      } else {
-        if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
+      const isClothingProduct = (p.productType || "sneaker") === "clothing";
+      if (isClothingProduct !== wantsClothing) return false;
+      if (!wantsClothing) {
+        const hubs = getProductHubs(p);
+        if (effectiveStoreMode === "pine") {
+          if (!hubs.includes("hub3")) return false;
+        } else {
+          if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
+        }
       }
       const q = search.toLowerCase();
       return p.name.toLowerCase().includes(q) ||
              (p.category || "").toLowerCase().includes(q);
     }),
-  [products, search, mode, effectiveStoreMode]);
+  [products, search, wantsClothing, effectiveStoreMode]);
 
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
@@ -2857,12 +2907,30 @@ function AssistantView({ products, onExit, orders = [] }) {
   const isCustomerLine    = (it) => (it.productType || "sneaker") === "sneaker"
                                  || (it.productType === "clothing" && it.intent === "customer");
   const hasCustomerInCart = cart.some(isCustomerLine);
+  // Counts for the action labels: a mixed cart (customer + refill, reachable by
+  // switching modes mid-cart) is placed in two steps, so each label should show
+  // only the lines its action will actually submit.
+  const customerCount     = cart.filter(isCustomerLine).length;
+  const refillCount       = cart.length - customerCount;
 
   const resetSheet = () => { setSelected(null); setPendingSize(""); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
 
   const addToCart = () => {
-    // Size is optional when a Display or Display Partner request is set
-    if (!selected || (!pendingSize && !pendingDisplayPartner)) return;
+    if (!selected) return;
+    // Clothing customer orders use the SAME size-sheet UX as sneakers, but a
+    // size is mandatory (no Display Partner for clothing) and each line is
+    // tagged clothing/customer so it routes to Hub C via Checkout.
+    const isClothingCustomer = (selected.productType || "sneaker") === "clothing";
+    if (isClothingCustomer) {
+      if (!pendingSize) return;
+      const reps = Math.max(1, Math.min(10, pendingQty));
+      const line = { product: selected, size: pendingSize, productType: "clothing", intent: "customer" };
+      setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
+      resetSheet();
+      return;
+    }
+    // Sneakers: size is optional when a Display Partner request is set.
+    if (!pendingSize && !pendingDisplayPartner) return;
     // Quantity expansion: pendingQty > 1 → push N identical cart lines so the
     // warehouse fulfils one box per pair (no "qty" multiplier on a single
     // line). Display Partner rows ignore qty (one-off by nature).
@@ -2874,13 +2942,12 @@ function AssistantView({ products, onExit, orders = [] }) {
     resetSheet();
   };
 
-  // Phase 12B: clothing card reports a batch of cart lines at once
-  // (one per non-zero size). Each line carries productType:"clothing" so the
-  // submit decision can split sneaker vs clothing.
-  // Trial: stamp the current refill/customer intent onto each line so the cart
-  // remembers it even if the toggle flips afterwards.
+  // The bulk ClothingCard (CR / refill mode only) reports a batch of cart lines
+  // at once (one per non-zero size). Each line is tagged intent:"refill" so the
+  // submit decision sends them through placeRefillRequests (hub2/hub3), never
+  // the customer Checkout.
   const addClothingLines = (lines) =>
-    setCart(c => [...c, ...lines.map(l => ({ ...l, intent: clothingIntent }))]);
+    setCart(c => [...c, ...lines.map(l => ({ ...l, intent: "refill" }))]);
 
   const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
 
@@ -2920,9 +2987,6 @@ function AssistantView({ products, onExit, orders = [] }) {
           // Explicit type so the warehouse/inference treats a clothing customer
           // order as clothing (size letters already imply it, but be explicit).
           productType: isClothingCustomer ? "clothing" : (item.product.productType || "sneaker"),
-          // Clothing customer orders carry a qty (one card line can request
-          // several of one size); sneakers expand qty into separate lines.
-          ...(isClothingCustomer ? { qty: item.qty || 1 } : {}),
           customerName,
           customerPhone: normalizedPhone,
           // Phase 14B: hub mirrors placedAtHub (Central pine routing) — Display
@@ -2930,6 +2994,10 @@ function AssistantView({ products, onExit, orders = [] }) {
           // clothing customer orders land in hubC.
           hub: placedHub,
           placedAtHub: placedHub,
+          // Record which operational store (central/pine) the order was placed
+          // from. The hub usually implies it, but clothing customer orders all
+          // route to Hub C, so persist the store explicitly for tracking.
+          placedStore: effectiveStoreMode,
           requestDisplay: item.requestDisplay || false,
           requestDisplayPartner: item.requestDisplayPartner || false,
           status: STATUS.INCOMING,
@@ -3016,6 +3084,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerPhone: null,
           hub: placedHub,
           placedAtHub: placedHub,
+          placedStore: effectiveStoreMode,
           productType: "clothing",
           requestDisplay: false,
           requestDisplayPartner: false,
@@ -3108,15 +3177,23 @@ function AssistantView({ products, onExit, orders = [] }) {
           <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
           <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ASSISTANT</div>
         </div>
-        {/* Phase 12B: Sneakers / Clothing segmented toggle (replaces the
-            old incoming/cart pill). The cart trigger now lives in a floating
-            bottom bar that only appears when cart > 0. */}
-        <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
-          {[["sneaker","Sneakers"],["clothing","Clothing"]].map(([val, label]) => {
+        {/* Spacer balances the ← Switch View button so "ASSISTANT" stays
+            centred; the product mode selector now lives in its own row below. */}
+        <div style={{ width:92 }} />
+      </div>
+
+      {/* Product mode — one segmented control replaces the old Sneakers/Clothing
+          toggle PLUS the separate Refill/Customer toggle:
+            Sneakers  → sneakers, customer order
+            Clothing  → clothing for a customer → Hub C (same UX as sneakers)
+            CR        → Clothing Refill (bulk multi-size, → hub2/hub3) */}
+      <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
+        <div style={{ display:"flex", width:"100%", maxWidth:360, background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
+          {[["sneaker","Sneakers"],["clothing","Clothing"],["cr","CR"]].map(([val, label]) => {
             const on = mode === val;
             return (
-              <button key={val} onClick={() => setMode(val)}
-                style={{ padding:"6px 12px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
+              <button key={val} onClick={() => { setMode(val); resetSheet(); }}
+                style={{ flex:1, padding:"7px 6px", borderRadius:9, border:"none", cursor:"pointer", fontSize:12, fontWeight:700,
                          background: on ? "rgba(60,110,255,.25)" : "transparent",
                          color: on ? "#fff" : "rgba(255,255,255,.5)",
                          boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
@@ -3151,32 +3228,16 @@ function AssistantView({ products, onExit, orders = [] }) {
       </div>
       )}
 
-      {/* Trial: clothing Refill vs For-Customer toggle. Refill keeps the
-          existing hub2/hub3 routing (no customer info). For Customer routes the
-          order to Hub C and runs it through the normal customer checkout +
-          Order Queue lifecycle. Sneakers never see this. */}
+      {/* Mode hint line — clarifies where each clothing mode's orders go. */}
       {mode === "clothing" && (
-      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"0 14px 8px" }}>
-        <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
-          {[["refill","Refill"],["customer","For Customer"]].map(([val, label]) => {
-            const on = clothingIntent === val;
-            return (
-              <button key={val} onClick={() => setClothingIntent(val)}
-                style={{ padding:"6px 18px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
-                         background: on ? "rgba(60,110,255,.25)" : "transparent",
-                         color: on ? "#fff" : "rgba(255,255,255,.5)",
-                         boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
-                {label}
-              </button>
-            );
-          })}
+        <div style={{ textAlign:"center", fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.3px", padding:"0 14px 8px" }}>
+          Customer clothing orders are sent to {HUB_LABELS.hubC}
         </div>
-        {clothingIntent === "customer" && (
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.3px" }}>
-            Customer orders are sent to {HUB_LABELS.hubC}
-          </div>
-        )}
-      </div>
+      )}
+      {mode === "cr" && (
+        <div style={{ textAlign:"center", fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.3px", padding:"0 14px 8px" }}>
+          Store refill — set quantities per size
+        </div>
       )}
 
       {/* PLACE ORDER HERO */}
@@ -3227,15 +3288,16 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       </div>
 
-      {/* PRODUCT GRID — sneakers use a 2-col tappable grid (existing).
-          Clothing uses a 1-col list with inline qty steppers per size. */}
+      {/* PRODUCT GRID — Sneakers AND clothing-for-customer use the 2-col
+          tappable photo grid + size-picker sheet. CR (Clothing Refill) uses the
+          1-col bulk list with inline qty steppers per size. */}
       {filtered.length === 0 ? (
         <div style={{ textAlign:"center", color:"#444", padding:"3rem 1rem", fontSize:14 }}>
-          {mode === "clothing"
+          {wantsClothing
             ? "No clothing products yet. Add one from Admin."
             : "No products match your search."}
         </div>
-      ) : mode === "clothing" ? (
+      ) : isRefillMode ? (
         <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
           {filtered.map(p => (
             <ClothingCard key={p.id} product={p} onAdd={addClothingLines} />
@@ -3246,7 +3308,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           {filtered.map(p => {
             const isSel = selected && selected.id === p.id;
             return (
-              <div key={p.id} onClick={() => { setSelected(p); setPendingSize(""); }}
+              <div key={p.id} onClick={() => { resetSheet(); setSelected(p); }}
                    style={{ background: isSel ? "rgba(20,40,100,.25)" : "rgba(255,255,255,.03)",
                             border: isSel ? "2px solid #4A7FFF" : "1px solid rgba(255,255,255,.06)",
                             borderRadius:12, overflow:"hidden", cursor:"pointer", position:"relative",
@@ -3313,9 +3375,9 @@ function AssistantView({ products, onExit, orders = [] }) {
               </div>
             </div>
 
-            {/* Display Partner request — shown in all store modes (Pine, Central).
-                "Request Display" removed: that flow is now fully automated.
-                Display Partner is still manual and routes to Hub 1. */}
+            {/* Display Partner request — sneakers only (it routes to Hub 1, which
+                clothing can't use). Hidden for clothing customer orders. */}
+            {(selected.productType || "sneaker") !== "clothing" && (
             <div style={{ marginBottom:"1.25rem" }}>
               <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Partner (optional)</div>
               <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
@@ -3325,6 +3387,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                 </button>
               </div>
             </div>
+            )}
 
             {(() => {
               const canAdd = !!(pendingSize || pendingDisplayPartner);
@@ -3340,7 +3403,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                   ? (qtyOnly && pendingQty > 1
                       ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
                       : `Add Size ${pendingSize} to Cart`)
-                  : "Select a size or display option";
+                  : ((selected.productType || "sneaker") === "clothing" ? "Select a size" : "Select a size or display option");
               return (
                 <button onClick={addToCart} disabled={!canAdd}
                   style={{ width:"100%", ...bBlue, borderRadius:"10px", padding:"0.9rem", fontSize:"1rem", marginBottom:"0.65rem", opacity:canAdd?1:0.4, cursor:canAdd?"pointer":"not-allowed" }}>
@@ -3353,8 +3416,8 @@ function AssistantView({ products, onExit, orders = [] }) {
               <button onClick={() => { resetSheet(); (hasCustomerInCart ? openCheckout() : placeRefillRequests()); }}
                 style={{ width:"100%", ...bGhost, borderRadius:"10px", padding:"0.75rem", fontSize:"0.95rem" }}>
                 {hasCustomerInCart
-                  ? `Checkout (${cart.length} item${cart.length > 1 ? "s" : ""}) →`
-                  : `Place Refill Request (${cart.length} item${cart.length > 1 ? "s" : ""}) →`}
+                  ? `Checkout (${customerCount} item${customerCount > 1 ? "s" : ""}) →`
+                  : `Place Refill Request (${refillCount} item${refillCount > 1 ? "s" : ""}) →`}
               </button>
             )}
           </div>
@@ -3472,7 +3535,7 @@ function AssistantView({ products, onExit, orders = [] }) {
               <span>
                 {submitting
                   ? (hasCustomerInCart ? "Placing orders…" : "Placing refill…")
-                  : (hasCustomerInCart ? `Checkout (${cart.length})` : `Place Refill Request (${cart.length})`)
+                  : (hasCustomerInCart ? `Checkout (${customerCount})` : `Place Refill Request (${refillCount})`)
                 }
               </span>
               <span style={{ fontSize:16 }}>→</span>
