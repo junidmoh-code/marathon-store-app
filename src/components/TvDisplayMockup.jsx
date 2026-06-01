@@ -65,6 +65,15 @@ const ClockIcon = ({ color, size }) => stroke(color, size, <>
   <path d="M12 7v5l3 2"/>
 </>);
 
+// Eye with a slash through it — subtle indicator that sneaker visuals are
+// hidden ("no sneakers" mode). Tapping the hidden bottom-left zone restores them.
+const EyeSlashIcon = ({ color, size }) => stroke(color, size, <>
+  <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/>
+  <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/>
+  <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/>
+  <path d="M2 2l20 20"/>
+</>);
+
 // Brand-neutral placeholder for the Jordan jumpman position. Stylised leaping
 // figure — keeps the silhouette readable at small sizes without invoking any
 // real trademark. Real logo decision pending.
@@ -480,6 +489,10 @@ function Column({ section }) {
 }
 
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
+// localStorage key for the sneaker-visibility preference (persists across TV
+// refreshes). Default (key absent) → sneakers shown.
+const SNEAKERS_LS_KEY = "mc_tv_sneakers";
+
 // Status values mirror App.jsx STATUS constants (no import needed — strings).
 const STATUS_MAP = {
   incoming: "incoming",
@@ -494,6 +507,18 @@ export default function TvDisplayMockup({ orders: liveProp }) {
     const t = setInterval(() => setNow(new Date()), 10_000);
     return () => clearInterval(t);
   }, []);
+
+  // Sneaker visuals (sliding conveyor, header shoe, floating shoebox) can be
+  // toggled off via a hidden bottom-left tap zone. Preference persists in
+  // localStorage so a TV refresh remembers the last state. Default: shown.
+  const [sneakersOn, setSneakersOn] = useState(() => {
+    try { return localStorage.getItem(SNEAKERS_LS_KEY) !== "off"; }
+    catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(SNEAKERS_LS_KEY, sneakersOn ? "on" : "off"); }
+    catch { /* storage unavailable — toggle still works for the session */ }
+  }, [sneakersOn]);
 
   // Derive live sections when real orders are provided; fall back to sample data.
   const SECTIONS = useMemo(() => {
@@ -546,9 +571,11 @@ export default function TvDisplayMockup({ orders: liveProp }) {
         }}>
           MARATHON
         </div>
+        {/* fixed-width slot stays reserved either way so the header never shifts */}
         <div style={{ width: 110, display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
           <img src={aj1Green} alt="" width={110}
-               style={{ objectFit: "contain", filter: "drop-shadow(0 4px 12px rgba(0,0,0,0.6))" }}/>
+               style={{ objectFit: "contain", filter: "drop-shadow(0 4px 12px rgba(0,0,0,0.6))",
+                        visibility: sneakersOn ? "visible" : "hidden" }}/>
         </div>
         <ClockCard now={now}/>
       </header>
@@ -558,11 +585,12 @@ export default function TvDisplayMockup({ orders: liveProp }) {
         {SECTIONS.map((s) => <Column key={s.id} section={s}/>)}
       </main>
 
-      {/* SHOE CONVEYOR */}
-      <ShoeConveyor />
+      {/* SHOE CONVEYOR — keep an equal-height spacer when hidden so the column
+          area below the main grid never grows/shifts. */}
+      {sneakersOn ? <ShoeConveyor /> : <div style={{ height: 160, flexShrink: 0 }} />}
 
-      {/* SHOEBOX SCREENSAVER */}
-      <ShoeboxFloat />
+      {/* SHOEBOX SCREENSAVER — position:fixed, so omitting it has no layout impact */}
+      {sneakersOn && <ShoeboxFloat />}
 
       {/* FOOTER */}
       <footer style={{
@@ -574,6 +602,28 @@ export default function TvDisplayMockup({ orders: liveProp }) {
         <Sneaker size={22} accent={COLORS.red}/>
         <span>MARATHON. KEEP MOVING.</span>
       </footer>
+
+      {/* Hidden ~60×60 tap/click zone in the bottom-left corner. Single tap
+          toggles sneaker visuals. Invisible by default; when sneakers are
+          hidden it shows a small, subtle eye-slash so staff know the mode is
+          active and where to tap to restore. */}
+      <div
+        onClick={() => setSneakersOn(v => !v)}
+        role="button"
+        aria-label={sneakersOn ? "Hide sneakers" : "Show sneakers"}
+        title={sneakersOn ? "Hide sneakers" : "Show sneakers"}
+        style={{
+          position: "fixed", left: 0, bottom: 0,
+          width: 60, height: 60,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          cursor: "pointer", zIndex: 300,
+          WebkitTapHighlightColor: "transparent",
+        }}
+      >
+        {!sneakersOn && (
+          <EyeSlashIcon color="rgba(255,255,255,0.28)" size={20}/>
+        )}
+      </div>
     </div>
     </>
   );
