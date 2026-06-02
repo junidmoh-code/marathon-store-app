@@ -8838,9 +8838,9 @@ function AppInner() {
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMERS_DB)   view = guard(ROLES.CUSTOMERS_DB, <CustomersView  onExit={() => setRole(null)} />);
   else if (role === ROLES.DISPLAY) {
-    // TV mode is intentionally chrome-free — no Exit button, no admin pill.
-    // Exit by swiping right from the screen edge or clearing localStorage.
-    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} />);
+    // TV mode is chrome-free, but a hidden top-right DOUBLE-tap exits back to
+    // the view picker (TvDisplayMockup renders the invisible zone from onExit).
+    view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} onExit={() => setRole(null)} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
@@ -8876,7 +8876,7 @@ function AppInner() {
 // when the underlying order disappears.
 const TV_TOMORROW_HIDE_MS = 15 * 60 * 1000;
 
-function TvWithAutoCollect({ orders }) {
+function TvWithAutoCollect({ orders, onExit }) {
   // Dedupe markers are keyed by a composite of order.id + createdAt rather
   // than id alone. order.id is daily-scoped (it's the orderNumber, which
   // resets each day — see project memory project_order_number_daily_reset),
@@ -8935,7 +8935,7 @@ function TvWithAutoCollect({ orders }) {
     [orders, tick]
   );
 
-  return <TvDisplayMockup orders={filteredOrders} />;
+  return <TvDisplayMockup orders={filteredOrders} onExit={onExit} />;
 }
 
 // ─── TV ONLY SHELL ────────────────────────────────────────────────────────────
@@ -8944,7 +8944,8 @@ function TvWithAutoCollect({ orders }) {
 // chrome, no role selector, no login screen.
 function TvOnlyShell() {
   const orders = useOrders();
-  return <TvWithAutoCollect orders={orders} />;
+  // Hidden top-right double-tap leaves the #tv kiosk URL → back to the normal app.
+  return <TvWithAutoCollect orders={orders} onExit={() => { window.location.hash = ""; }} />;
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
