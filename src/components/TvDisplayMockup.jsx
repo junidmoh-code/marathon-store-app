@@ -504,12 +504,32 @@ const STATUS_MAP = {
   tomorrow: "coming_tomorrow",
 };
 
-export default function TvDisplayMockup({ orders: liveProp }) {
+export default function TvDisplayMockup({ orders: liveProp, onExit }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 10_000);
     return () => clearInterval(t);
   }, []);
+
+  // Hidden top-right corner: a DOUBLE tap/click exits TV mode (back to the view
+  // picker). TV mode is otherwise chrome-free, so without this there's no way
+  // off the screen. Double-tap (not single) so a customer brushing the corner
+  // can't accidentally drop the kiosk out of TV mode. First tap "arms" it for
+  // 2s and shows a faint ✕; the second tap within that window exits.
+  const [exitArmed, setExitArmed] = useState(false);
+  const exitTimerRef = useRef(null);
+  useEffect(() => () => clearTimeout(exitTimerRef.current), []);
+  const handleExitTap = () => {
+    if (!onExit) return;
+    if (exitArmed) {
+      clearTimeout(exitTimerRef.current);
+      setExitArmed(false);
+      onExit();
+    } else {
+      setExitArmed(true);
+      exitTimerRef.current = setTimeout(() => setExitArmed(false), 2000);
+    }
+  };
 
   // Sneaker visuals (sliding conveyor, header shoe, floating shoebox) can be
   // toggled off via a hidden bottom-left tap zone. Preference persists in
@@ -629,6 +649,31 @@ export default function TvDisplayMockup({ orders: liveProp }) {
           <EyeSlashIcon color="rgba(255,255,255,0.28)" size={20}/>
         )}
       </button>
+
+      {/* Hidden ~64×64 tap/click zone in the top-right corner. DOUBLE tap to
+          exit TV mode. Invisible until armed; the first tap shows a faint ✕ for
+          2s so staff know the second tap will exit. Only rendered when an
+          onExit handler is wired (in-app DISPLAY role / #tv shell). */}
+      {onExit && (
+        <button
+          type="button"
+          onClick={handleExitTap}
+          aria-label="Exit TV display (double-tap)"
+          title={exitArmed ? "Tap again to exit" : "Exit TV display (double-tap)"}
+          style={{
+            position: "fixed", right: 0, top: 0,
+            width: 64, height: 64,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", zIndex: 300,
+            WebkitTapHighlightColor: "transparent",
+            background: "transparent", border: 0, padding: 0,
+          }}
+        >
+          {exitArmed && (
+            <span style={{ color: "rgba(255,255,255,0.4)", fontSize: 22, lineHeight: 1, fontWeight: 300 }}>✕</span>
+          )}
+        </button>
+      )}
     </div>
     </>
   );
