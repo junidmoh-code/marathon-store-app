@@ -12,6 +12,11 @@ describe("normalizeSAPhone", () => {
     expect(normalizeSAPhone(undefined)).toBe("");
   });
 
+  it("returns empty for input with no digits", () => {
+    expect(normalizeSAPhone("abc")).toBe("");
+    expect(normalizeSAPhone("---")).toBe("");
+  });
+
   it("normalises a local number with a leading 0", () => {
     expect(normalizeSAPhone("0712345678")).toBe("+27712345678");
   });
