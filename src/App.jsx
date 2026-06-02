@@ -8,7 +8,7 @@ import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
 import { toAuthPassword } from "./utils/auth-utils";
-import { normalizeSAPhone } from "./utils/phone";
+import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits } from "./utils/phone";
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 
@@ -964,8 +964,6 @@ function useCustomersDb() {
 // `/customers` only stores opt-in flags). Returns one entry per distinct
 // phone with the most-recent name, total order count (action="placed"), and
 // the last-order ISO. Cheap O(N) once over the log.
-const phoneDigits = (s) => (s || "").replace(/\D+/g, "");
-
 function useCustomerIndex() {
   const log = useInsightsLog();
   return useMemo(() => {
@@ -997,10 +995,12 @@ function matchCustomers(customers, query, mode) {
   if (!q) return [];
   const hits = [];
   if (mode === "phone") {
-    const needle = phoneDigits(q);
+    // Match on national significant digits so a typed local "0…" query finds
+    // customers stored in international "+27…" form (and vice-versa).
+    const needle = saSignificantDigits(q);
     if (!needle) return [];
     for (const c of customers) {
-      if (phoneDigits(c.phone).startsWith(needle)) hits.push(c);
+      if (saSignificantDigits(c.phone).startsWith(needle)) hits.push(c);
     }
   } else {
     const needle = q.toLowerCase();
@@ -2563,7 +2563,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   const customerIndex = useCustomerIndex();
   const pickCustomer = (c) => {
     setCustomerName(c.name || "");
-    setCustomerPhone(c.phone || "");
+    // Existing customers are stored normalised (+27…); show the strict local
+    // 0XXXXXXXXX form so the required-phone validation passes.
+    setCustomerPhone(toLocalSA(c.phone || ""));
     setNameDropdownOpen(false);
     setPhoneDropdownOpen(false);
   };
@@ -2657,6 +2659,9 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   const placeOrders = async () => {
     if (!cart.length || !customerName || submitting) return;
+    // Phone is required for customer orders and must be a valid 10-digit SA
+    // number starting with 0 (the Place button enforces this too).
+    if (!isValidLocalSAPhone(customerPhone)) return;
     if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
     setSubmitting(true);
     try {
@@ -3179,9 +3184,12 @@ function AssistantView({ products, onExit, orders = [] }) {
               )}
             </div>
             <div style={{ marginBottom:"1rem", position:"relative" }}>
-              <div style={{ color:"#888", fontSize:"0.78rem", marginBottom:"0.4rem" }}>Phone (optional)</div>
-              <input placeholder="e.g. 071 234 5678 or 71 234 5678" inputMode="tel" value={customerPhone}
-                     onChange={e => { setCustomerPhone(e.target.value); setPhoneDropdownOpen(true); }}
+              <div style={{ color:"#888", fontSize:"0.78rem", marginBottom:"0.4rem" }}>Phone *</div>
+              {/* Required for customer orders. Input is restricted to digits and
+                  capped at 10 so a short/overlong number can't be entered; it
+                  must be the standard 10-digit SA mobile starting with 0. */}
+              <input placeholder="0712345678" inputMode="numeric" maxLength={10} value={customerPhone}
+                     onChange={e => { setCustomerPhone(e.target.value.replace(/\D/g, "").slice(0, 10)); setPhoneDropdownOpen(true); }}
                      onFocus={() => setPhoneDropdownOpen(true)}
                      onBlur={() => setTimeout(() => setPhoneDropdownOpen(false), 150)}
                      style={inputStyle} />
@@ -3191,6 +3199,11 @@ function AssistantView({ products, onExit, orders = [] }) {
                   onPick={pickCustomer}
                   onAddNew={() => setPhoneDropdownOpen(false)}
                 />
+              )}
+              {customerPhone && !isValidLocalSAPhone(customerPhone) && (
+                <div style={{ color:"#FF6B6B", fontSize:"0.72rem", marginTop:"0.35rem" }}>
+                  Enter a 10-digit number starting with 0 (e.g. 0712345678).
+                </div>
               )}
             </div>
             <label style={{ display:"flex", alignItems:"center", gap:"0.6rem", marginBottom:"1.5rem", cursor:"pointer", padding:"0.75rem", background:"rgba(60,110,255,.04)", borderRadius:"10px", border:BORDER }}>
@@ -3214,14 +3227,18 @@ function AssistantView({ products, onExit, orders = [] }) {
                 !it.requestDisplay && !it.requestDisplayPartner
               );
               const n = customerLines.length;
+              const phoneOk = isValidLocalSAPhone(customerPhone);
+              const canPlace = customerName && phoneOk && customerLines.length && !submitting;
               const placeLabel = !customerName
                 ? "Enter customer name"
-                : singleSku && sample.size
-                  ? (n > 1 ? `Place order — size ${sample.size} × ${n}` : `Place order — size ${sample.size}`)
-                  : `Place ${n} Order${n > 1 ? "s" : ""} →`;
+                : !phoneOk
+                  ? "Enter a valid phone number"
+                  : singleSku && sample.size
+                    ? (n > 1 ? `Place order — size ${sample.size} × ${n}` : `Place order — size ${sample.size}`)
+                    : `Place ${n} Order${n > 1 ? "s" : ""} →`;
               return (
-                <button onClick={placeOrders} disabled={!customerName || !customerLines.length || submitting}
-                  style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:customerName&&customerLines.length&&!submitting?1:0.4, cursor:customerName&&customerLines.length&&!submitting?"pointer":"not-allowed" }}>
+                <button onClick={placeOrders} disabled={!canPlace}
+                  style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:canPlace?1:0.4, cursor:canPlace?"pointer":"not-allowed" }}>
                   {submitting ? "Placing orders…" : placeLabel}
                 </button>
               );

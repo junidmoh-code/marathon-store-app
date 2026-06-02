@@ -22,3 +22,33 @@ export function normalizeSAPhone(raw) {
   if (d.startsWith("0"))  return "+27" + d.slice(1);                 // 0XXXXXXXXX (local)
   return "+27" + d;                                                  // bare national (e.g. 9-digit, no 0)
 }
+
+// Strict validity for the REQUIRED customer-order phone: exactly 10 digits
+// starting with 0 (the standard SA local mobile form, e.g. "0712345678").
+// Anything shorter or longer is rejected. Separators are ignored so a value
+// like "071 234 5678" still validates on its digit content.
+export function isValidLocalSAPhone(raw) {
+  return /^0\d{9}$/.test((raw || "").replace(/\D/g, ""));
+}
+
+// Convert any stored / normalised SA number to the local 0XXXXXXXXX form so the
+// strict input shows it consistently (e.g. when picking an existing customer
+// whose number is saved as "+27712345678"). Best-effort: returns the digits
+// unchanged if it isn't a recognisable SA mobile.
+export function toLocalSA(raw) {
+  const d = (raw || "").replace(/\D/g, "");
+  if (/^27\d{9}$/.test(d)) return "0" + d.slice(2); // 27XXXXXXXXX → 0XXXXXXXXX
+  if (/^\d{9}$/.test(d))   return "0" + d;          // bare 9-digit → add 0
+  return d;                                          // already 0XXXXXXXXX or unknown
+}
+
+// National significant digits — drops a leading country code (27) or trunk 0 so
+// the same subscriber matches regardless of how the number was stored (+27…,
+// 27…, 0…, or bare). Used for phone-search prefix matching, where the typed
+// query (local 0…) must match stored numbers saved in +27… form.
+export function saSignificantDigits(raw) {
+  let d = (raw || "").replace(/\D/g, "");
+  if (d.startsWith("27")) d = d.slice(2);
+  else if (d.startsWith("0")) d = d.slice(1);
+  return d;
+}
