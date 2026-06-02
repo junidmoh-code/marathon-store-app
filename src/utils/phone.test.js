@@ -2,7 +2,7 @@
 // flexible entry formats staff use, including the short / no-leading-0 numbers.
 
 import { describe, it, expect } from "vitest";
-import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA } from "./phone";
+import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits } from "./phone";
 
 describe("normalizeSAPhone", () => {
   it("keeps empty / whitespace-only input empty (phone is optional)", () => {
@@ -77,5 +77,19 @@ describe("toLocalSA", () => {
   });
   it("the result of a SA number passes isValidLocalSAPhone", () => {
     expect(isValidLocalSAPhone(toLocalSA("+27712345678"))).toBe(true);
+  });
+});
+
+describe("saSignificantDigits", () => {
+  it("reduces every stored format to the same national digits", () => {
+    expect(saSignificantDigits("+27712345678")).toBe("712345678");
+    expect(saSignificantDigits("27712345678")).toBe("712345678");
+    expect(saSignificantDigits("0712345678")).toBe("712345678");
+    expect(saSignificantDigits("712345678")).toBe("712345678");
+  });
+  it("lets a typed local query prefix-match an international-stored number", () => {
+    const stored = saSignificantDigits("+27712345678");
+    expect(stored.startsWith(saSignificantDigits("0712"))).toBe(true); // partial local query
+    expect(stored.startsWith(saSignificantDigits("0712345678"))).toBe(true); // full local query
   });
 });

@@ -41,3 +41,14 @@ export function toLocalSA(raw) {
   if (/^\d{9}$/.test(d))   return "0" + d;          // bare 9-digit → add 0
   return d;                                          // already 0XXXXXXXXX or unknown
 }
+
+// National significant digits — drops a leading country code (27) or trunk 0 so
+// the same subscriber matches regardless of how the number was stored (+27…,
+// 27…, 0…, or bare). Used for phone-search prefix matching, where the typed
+// query (local 0…) must match stored numbers saved in +27… form.
+export function saSignificantDigits(raw) {
+  let d = (raw || "").replace(/\D/g, "");
+  if (d.startsWith("27")) d = d.slice(2);
+  else if (d.startsWith("0")) d = d.slice(1);
+  return d;
+}

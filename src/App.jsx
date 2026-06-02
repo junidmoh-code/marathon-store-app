@@ -8,7 +8,7 @@ import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
 import { toAuthPassword } from "./utils/auth-utils";
-import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA } from "./utils/phone";
+import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits } from "./utils/phone";
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 
@@ -964,8 +964,6 @@ function useCustomersDb() {
 // `/customers` only stores opt-in flags). Returns one entry per distinct
 // phone with the most-recent name, total order count (action="placed"), and
 // the last-order ISO. Cheap O(N) once over the log.
-const phoneDigits = (s) => (s || "").replace(/\D+/g, "");
-
 function useCustomerIndex() {
   const log = useInsightsLog();
   return useMemo(() => {
@@ -997,10 +995,12 @@ function matchCustomers(customers, query, mode) {
   if (!q) return [];
   const hits = [];
   if (mode === "phone") {
-    const needle = phoneDigits(q);
+    // Match on national significant digits so a typed local "0…" query finds
+    // customers stored in international "+27…" form (and vice-versa).
+    const needle = saSignificantDigits(q);
     if (!needle) return [];
     for (const c of customers) {
-      if (phoneDigits(c.phone).startsWith(needle)) hits.push(c);
+      if (saSignificantDigits(c.phone).startsWith(needle)) hits.push(c);
     }
   } else {
     const needle = q.toLowerCase();
