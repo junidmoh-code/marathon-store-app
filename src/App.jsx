@@ -774,6 +774,28 @@ function orderOOSDate(order) {
   return new Date(new Date(order.outOfStockAt).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+// ── Warehouse history status reconstruction ────────────────────────────────
+// The TV display's 8-minute sweep auto-collects orders that were left Ready OR
+// Out of Stock by overwriting status → COLLECTED (see DisplayView). That is
+// correct for the live TV, but it means the warehouse history/queue would label
+// a timed-out Out-of-Stock (or Coming-Tomorrow) order as "Collected" — which it
+// never was. The status flips, but the original transition timestamps survive,
+// so we rebuild the status the order actually held when it was collected by
+// taking the most recent of readyAt / outOfStockAt / comingTomorrowAt. Only an
+// order whose latest transition was Ready was genuinely collected; otherwise we
+// surface its real blocking status. Display-only — never mutates the order.
+function warehouseDisplayStatus(order) {
+  if (order.status !== STATUS.COLLECTED) return order.status;
+  const stamps = [
+    [order.readyAt,          STATUS.COLLECTED],
+    [order.outOfStockAt,     STATUS.OUT_OF_STOCK],
+    [order.comingTomorrowAt, STATUS.COMING_TOMORROW],
+  ].filter(([ts]) => ts);
+  if (!stamps.length) return STATUS.COLLECTED;
+  stamps.sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime());
+  return stamps[0][1];
+}
+
 // Set of orderNumbers returned on a specific SA day. Used by Source to net
 // out returns from its restock pull list, mirroring the same-period
 // returnedNums Set the Insights Net Sales card builds inline.
@@ -3293,7 +3315,9 @@ function WarehouseView({ products = [], orders, onExit }) {
               dateOf={queueDateOf}
               emptyMessage="No orders in the last 3 days."
               renderItem={(order) => {
-            const status = order.status;
+            // Use the reconstructed status so a timer-auto-collected Out-of-Stock
+            // / Coming-Tomorrow order shows its real label here, not "Collected".
+            const status = warehouseDisplayStatus(order);
             const incoming = status === STATUS.INCOMING;
             const ready    = status === STATUS.READY;
             const oos      = status === STATUS.OUT_OF_STOCK;
