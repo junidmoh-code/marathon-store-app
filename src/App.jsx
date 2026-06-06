@@ -404,6 +404,39 @@ function updateProductHubs(id, hubs) {
     .catch(err => console.warn("updateProductHubs failed:", err));
 }
 
+// ─── PRODUCT DEPLETION (Phase 15) ─────────────────────────────────────────────
+// A *product-level* "this display is gone" flag, distinct from the order-scoped
+// displayRefillStatus:"stockDepleted" (which lives on a single partner-refill
+// order and only feeds Insights). depletedAt is a persistent state on the
+// product itself:
+//   • absent / null  → product is live and orderable
+//   • ISO timestamp  → product is depleted: blurred + un-orderable in the
+//                      assistant grid, listed in the Depleted Products tab.
+// depletedBy stores the hub label that depleted it (anonymous auth has no
+// email — mirrors displayRefilledBy). Scope is the WHOLE product — one flag,
+// depleted across every hub at once. "Bring Live" clears it (clearProductDepleted).
+function setProductDepleted(id, depletedBy = null) {
+  if (!id) return Promise.resolve();
+  return update(ref(database, `products/${id}`), {
+    depletedAt: new Date().toISOString(),
+    depletedBy,
+  }).catch(err => console.warn("setProductDepleted failed:", err));
+}
+
+function clearProductDepleted(id) {
+  if (!id) return Promise.resolve();
+  return update(ref(database, `products/${id}`), {
+    depletedAt: null,
+    depletedBy: null,
+  }).catch(err => console.warn("clearProductDepleted failed:", err));
+}
+
+// True when a product is currently depleted (display gone). Single source of
+// truth so the assistant grid, the size sheet, and the Depleted tab agree.
+function isProductDepleted(product) {
+  return !!(product && product.depletedAt);
+}
+
 // ─── ORDERS HOOK + DIRECT FIREBASE WRITES ────────────────────────────────────
 // Orders are stored at /orders/{orderId} so each order is its own node — that
 // way two devices mutating different orders (or the same one) never clobber
@@ -2414,6 +2447,90 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   );
 }
 
+// ─── DEPLETED PRODUCTS PANEL (Phase 15) ───────────────────────────────────────
+// Shared review panel used by BOTH the Warehouse and Store Assistant views.
+// Lists every currently-depleted product (depletedAt set) newest-first, each
+// row showing photo, name, when it was depleted (+ which hub), and a "Bring
+// Live" button that clears the flag so the product is instantly orderable again.
+// Both roles can view AND reactivate — no permission gate beyond reaching the
+// view. Reads `products` straight from the live hook so reactivations and new
+// depletions reflect in real time across devices.
+function DepletedProductsPanel({ products }) {
+  const depleted = useMemo(
+    () => (products || [])
+      .filter(isProductDepleted)
+      .sort((a, b) => String(b.depletedAt).localeCompare(String(a.depletedAt))),
+    [products]
+  );
+
+  // "X ago" — same lightweight approach as the Insights tabs (recomputed each
+  // render; absolute precision isn't needed here).
+  const fmtAgo = (iso) => {
+    if (!iso) return "—";
+    const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    if (mins < 1)  return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24)  return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 30) return `${days}d ago`;
+    return `${Math.floor(days / 30)}mo ago`;
+  };
+
+  // Track which rows have a reactivation in flight so the button can't double-fire.
+  const [pending, setPending] = useState({});
+  const bringLive = (p) => {
+    setPending(m => ({ ...m, [p.id]: true }));
+    clearProductDepleted(p.id).finally(() => setPending(m => { const n = { ...m }; delete n[p.id]; return n; }));
+  };
+
+  return (
+    <div>
+      {/* SUMMARY BOX — mirrors the Insights Stock Depleted tab */}
+      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(248,113,113,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(248,113,113,.15)" }}>
+        <div style={{ fontWeight:800, fontSize:42, color:"#F87171", lineHeight:1, letterSpacing:"-1.5px" }}>{depleted.length}</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Depleted Products</div>
+          <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:2 }}>Currently unavailable to order · tap Bring Live to reactivate</div>
+        </div>
+      </div>
+
+      {depleted.length === 0 ? (
+        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+          Nothing depleted right now — every product is live.
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {depleted.map(p => {
+            const busy = !!pending[p.id];
+            return (
+              <div key={p.id} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(248,113,113,.3)", borderLeft:"3px solid rgba(248,113,113,.6)", borderRadius:12, padding:"12px 14px", display:"flex", alignItems:"center", gap:12 }}>
+                <ProductPhoto url={p.photoUrl} photo={p.photo} size={44} radius={10}/>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontWeight:700, fontSize:14, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
+                  <div style={{ color:"rgba(255,255,255,.45)", fontSize:11, marginTop:3 }}>
+                    Depleted {fmtAgo(p.depletedAt)}
+                    {p.depletedBy ? ` · ${HUB_LABELS[p.depletedBy] || p.depletedBy}` : ""}
+                  </div>
+                </div>
+                <button onClick={() => bringLive(p)} disabled={busy}
+                        style={{ flexShrink:0, padding:"9px 16px", borderRadius:10, fontSize:13, fontWeight:700, cursor: busy ? "default" : "pointer",
+                                 background: busy ? "rgba(255,255,255,.04)" : "rgba(0,150,70,.2)",
+                                 border: busy ? "1px solid rgba(255,255,255,.08)" : "1px solid rgba(0,180,80,.45)",
+                                 color: busy ? "rgba(255,255,255,.35)" : "#4ADE80",
+                                 display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                  {!busy && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>}
+                  {busy ? "Bringing…" : "Bring Live"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── ASSISTANT VIEW ───────────────────────────────────────────────────────────
 // Multi-item cart flow:
 //   1. Tap product → size picker sheet → "Add to Cart"
@@ -2426,6 +2543,8 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
 // parent (one per non-zero size) and resets the draft to zeros.
 function ClothingCard({ product, onAdd, onViewPhoto }) {
   const sizes = Array.isArray(product.sizes) ? product.sizes : [];
+  // Phase 15: depleted clothing products grey out + can't be added to cart.
+  const depleted = isProductDepleted(product);
   // Initial state: every available size starts at 0.
   const [qty, setQty] = useState(() => sizes.reduce((m, s) => (m[s] = 0, m), {}));
   // If the product's size list changes (admin edit), preserve any existing
@@ -2438,6 +2557,7 @@ function ClothingCard({ product, onAdd, onViewPhoto }) {
   const total = Object.values(qty).reduce((n, v) => n + (v || 0), 0);
   const bump = (sz, delta) => setQty(prev => ({ ...prev, [sz]: Math.max(0, (prev[sz] || 0) + delta) }));
   const handleAdd = () => {
+    if (depleted) return;
     const lines = Object.entries(qty)
       .filter(([, n]) => n > 0)
       .map(([size, n]) => ({ product, size, qty: n, productType: "clothing" }));
@@ -2447,17 +2567,21 @@ function ClothingCard({ product, onAdd, onViewPhoto }) {
   };
 
   return (
-    <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.06)", borderRadius:12, overflow:"hidden" }}>
+    <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.06)", borderRadius:12, overflow:"hidden", opacity: depleted ? 0.45 : 1 }}>
       <div style={{ display:"flex", gap:12, padding:"12px 13px 0" }}>
-        <div onClick={product.photoUrl && onViewPhoto ? () => onViewPhoto(product.photoUrl) : undefined}
-             title={product.photoUrl ? "View full photo" : undefined}
-             style={{ width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto ? "zoom-in" : "default" }}>
+        <div onClick={product.photoUrl && onViewPhoto && !depleted ? () => onViewPhoto(product.photoUrl) : undefined}
+             title={product.photoUrl && !depleted ? "View full photo" : undefined}
+             style={{ width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto && !depleted ? "zoom-in" : "default",
+                      filter: depleted ? "grayscale(1) blur(2px)" : "none" }}>
           {product.photoUrl
             ? <img src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
             : <span style={{ fontSize:36 }}>{product.photo}</span>}
         </div>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:8 }}>{product.name}</div>
+          {depleted ? (
+            <div style={{ color:"#F87171", fontSize:12, fontWeight:800, letterSpacing:"0.04em", textTransform:"uppercase" }}>Unavailable</div>
+          ) : (
           <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
             {sizes.map(sz => {
               const n = qty[sz] || 0;
@@ -2480,17 +2604,18 @@ function ClothingCard({ product, onAdd, onViewPhoto }) {
               <div style={{ color:"rgba(255,255,255,.4)", fontSize:12, fontStyle:"italic" }}>No sizes set up for this product yet.</div>
             )}
           </div>
+          )}
         </div>
       </div>
       <div style={{ padding:"10px 13px 12px" }}>
-        <button onClick={handleAdd} disabled={total === 0}
-          style={{ width:"100%", padding:"9px 12px", borderRadius:10, fontSize:13, fontWeight:700, cursor: total === 0 ? "not-allowed" : "pointer",
-                   background: total === 0 ? "rgba(255,255,255,.03)" : "rgba(0,150,70,.2)",
-                   border: total === 0 ? "1px solid rgba(255,255,255,.06)" : "1px solid rgba(0,180,80,.4)",
-                   color: total === 0 ? "rgba(255,255,255,.3)" : "#4ADE80",
+        <button onClick={handleAdd} disabled={depleted || total === 0}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, fontSize:13, fontWeight:700, cursor: (depleted || total === 0) ? "not-allowed" : "pointer",
+                   background: (depleted || total === 0) ? "rgba(255,255,255,.03)" : "rgba(0,150,70,.2)",
+                   border: (depleted || total === 0) ? "1px solid rgba(255,255,255,.06)" : "1px solid rgba(0,180,80,.4)",
+                   color: (depleted || total === 0) ? "rgba(255,255,255,.3)" : "#4ADE80",
                    display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          {total === 0 ? "Add quantities to add" : `Add ${total} item${total !== 1 ? "s" : ""} to cart`}
+          {!depleted && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>}
+          {depleted ? "Unavailable" : total === 0 ? "Add quantities to add" : `Add ${total} item${total !== 1 ? "s" : ""} to cart`}
         </button>
       </div>
     </div>
@@ -2538,6 +2663,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // store the user isn't assigned to. Falls back to storeMode only when there
   // are zero allowed stores, in which case the block screen renders anyway.
   const effectiveStoreMode = allowedStores.includes(storeMode) ? storeMode : (allowedStores[0] || storeMode);
+  // Phase 15: Depleted Products review overlay (same panel as Warehouse). Any
+  // store assistant can open it and reactivate products.
+  const [showDepleted, setShowDepleted]                 = useState(false);
   const [selected, setSelected]                         = useState(null);   // product in size picker
   // Tapping a product photo opens a full-screen lightbox so staff can see the
   // complete (uncropped) image. Holds the photo URL to show, or null.
@@ -2594,6 +2722,10 @@ function AssistantView({ products, onExit, orders = [] }) {
     }),
   [products, search, wantsClothing, effectiveStoreMode]);
 
+  // Phase 15: count of depleted products (whole-product scope — independent of
+  // the sneaker/clothing + Central/Pine filters above).
+  const depletedCount = useMemo(() => products.filter(isProductDepleted).length, [products]);
+
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
   const computeHubForItem = (item) => {
@@ -2620,6 +2752,9 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   const addToCart = () => {
     if (!selected) return;
+    // Phase 15: never let a depleted product into the cart (guards the case
+    // where a product is depleted on another device while its sheet is open).
+    if (isProductDepleted(selected)) { resetSheet(); return; }
     // Clothing customer orders use the SAME size-sheet UX as sneakers, but a
     // size is mandatory (no Display Partner for clothing) and each line is
     // tagged clothing/customer so it routes to Hub C via Checkout.
@@ -2944,6 +3079,17 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       )}
 
+      {/* Phase 15: Depleted Products review — opens the shared panel as an
+          overlay. Store assistants can view + Bring Live, same as Warehouse. */}
+      <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 10px" }}>
+        <button onClick={() => setShowDepleted(true)}
+          style={{ display:"flex", alignItems:"center", gap:7, padding:"7px 16px", borderRadius:999, cursor:"pointer", fontSize:12, fontWeight:700,
+                   background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.35)", color:"#F87171" }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+          Depleted Products{depletedCount > 0 ? ` (${depletedCount})` : ""}
+        </button>
+      </div>
+
       {/* PLACE ORDER HERO */}
       <div style={{ position:"relative", width:"100%", height:160, overflow:"hidden", marginBottom:4 }}>
         <img src="/hero/place-order.jpg" alt="Place Order" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"center" }}/>
@@ -3011,19 +3157,27 @@ function AssistantView({ products, onExit, orders = [] }) {
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
           {filtered.map(p => {
             const isSel = selected && selected.id === p.id;
+            // Phase 15: depleted products stay in the grid (no layout shift) but
+            // are greyed + blurred and cannot be tapped to order. Same card markup
+            // so the column rhythm is identical to live products.
+            const depleted = isProductDepleted(p);
             return (
-              <div key={p.id} onClick={() => { resetSheet(); setSelected(p); }}
+              <div key={p.id} onClick={depleted ? undefined : () => { resetSheet(); setSelected(p); }}
+                   aria-disabled={depleted}
                    style={{ background: isSel ? "rgba(20,40,100,.25)" : "rgba(255,255,255,.03)",
                             border: isSel ? "2px solid #4A7FFF" : "1px solid rgba(255,255,255,.06)",
-                            borderRadius:12, overflow:"hidden", cursor:"pointer", position:"relative",
+                            borderRadius:12, overflow:"hidden", cursor: depleted ? "not-allowed" : "pointer", position:"relative",
+                            opacity: depleted ? 0.45 : 1,
                             boxShadow: isSel ? "0 0 16px rgba(60,110,255,.2)" : "none" }}>
-                <div style={{ width:"100%", height:140, position:"relative", background: isSel ? "rgba(60,110,255,.05)" : "rgba(255,255,255,.05)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:52 }}>
+                <div style={{ width:"100%", height:140, position:"relative", background: isSel ? "rgba(60,110,255,.05)" : "rgba(255,255,255,.05)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:52,
+                              filter: depleted ? "grayscale(1) blur(2px)" : "none" }}>
                   {p.photoUrl
                     ? <img src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
                     : <span>{p.photo}</span>}
                   {/* View full photo — opens an uncropped lightbox without
-                      triggering the card's add-to-cart tap. */}
-                  {p.photoUrl && (
+                      triggering the card's add-to-cart tap. Hidden when depleted
+                      (the photo is blurred and the product can't be ordered). */}
+                  {p.photoUrl && !depleted && (
                     <button onClick={(e) => { e.stopPropagation(); setFullPhoto(p.photoUrl); }}
                       title="View full photo"
                       style={{ position:"absolute", top:8, right:8, width:30, height:30, borderRadius:8, border:"none", cursor:"pointer",
@@ -3034,12 +3188,22 @@ function AssistantView({ products, onExit, orders = [] }) {
                 </div>
                 <div style={{ padding:"12px 13px 14px" }}>
                   <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:5 }}>{p.name}</div>
-                  <div style={{ fontSize:13, fontWeight:500, color:"#4A7FFF" }}>Tap to add →</div>
+                  <div style={{ fontSize:13, fontWeight:500, color: depleted ? "rgba(255,255,255,.4)" : "#4A7FFF" }}>
+                    {depleted ? "Unavailable" : "Tap to add →"}
+                  </div>
                 </div>
-                <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
-                              background: isSel ? "rgba(60,110,255,.2)" : "rgba(60,110,255,.1)",
-                              border: isSel ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.3)",
-                              borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", color:"#4A7FFF", fontSize:16, fontWeight:600 }}>+</div>
+                {depleted ? (
+                  <div style={{ position:"absolute", bottom:12, right:12, padding:"4px 9px",
+                                background:"rgba(248,113,113,.15)", border:"1px solid rgba(248,113,113,.45)",
+                                borderRadius:8, color:"#F87171", fontSize:11, fontWeight:800, letterSpacing:"0.04em", textTransform:"uppercase" }}>
+                    Unavailable
+                  </div>
+                ) : (
+                  <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
+                                background: isSel ? "rgba(60,110,255,.2)" : "rgba(60,110,255,.1)",
+                                border: isSel ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.3)",
+                                borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", color:"#4A7FFF", fontSize:16, fontWeight:600 }}>+</div>
+                )}
               </div>
             );
           })}
@@ -3283,6 +3447,22 @@ function AssistantView({ products, onExit, orders = [] }) {
           </div>
         </div>
       )}
+
+      {/* ── Phase 15: Depleted Products overlay ── */}
+      {showDepleted && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.9)", zIndex:1100, display:"flex", flexDirection:"column" }}>
+          <div style={{ maxWidth:430, width:"100%", margin:"0 auto", display:"flex", flexDirection:"column", height:"100%" }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 16px 14px" }}>
+              <div style={{ fontSize:17, fontWeight:800, color:"#fff" }}>Depleted Products</div>
+              <button onClick={() => setShowDepleted(false)}
+                style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", borderRadius:"50%", width:34, height:34, color:"#fff", cursor:"pointer", fontSize:16, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
+            </div>
+            <div style={{ flex:1, overflowY:"auto", padding:"0 14px 40px" }}>
+              <DepletedProductsPanel products={products} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3304,6 +3484,8 @@ function WarehouseView({ products = [], orders, onExit }) {
     // Trial: hubC has only the Order Queue tab — clamp anything else back.
     if (selectedHub === "hubC" && mainTab !== "queue") setMainTab("queue");
   }, [selectedHub, mainTab]);
+  // Phase 15: count of currently-depleted products — badge on the Depleted tab.
+  const depletedCount = useMemo(() => products.filter(isProductDepleted).length, [products]);
   // Phase 14B: hub3 filters by placedAtHub (the source of truth for the Pine
   // universe); hub1/hub2 still use the legacy order.hub field for back-compat.
   // Trial: hubC (customer clothing) also filters by placedAtHub.
@@ -3576,6 +3758,12 @@ function WarehouseView({ products = [], orders, onExit }) {
         placedAtHub:      order.placedAtHub || order.hub || "hub1",
         displayRefilledBy: selectedHub,
       });
+      // Phase 15: a refill task resolved "no inventory left" also means the
+      // product display is gone — flag the PRODUCT depleted so it blurs in the
+      // assistant grid and surfaces in the Depleted Products tab. Only "Bring
+      // Live" clears it again (we deliberately don't auto-clear on refilled/undo,
+      // so the depleted state stays under explicit human control).
+      if (order.productId) setProductDepleted(order.productId, selectedHub);
     }
   };
   // Reverse a refill resolution — clears status + both timestamps + by-hub so
@@ -3787,11 +3975,13 @@ function WarehouseView({ products = [], orders, onExit }) {
               ["queue",    "Order Queue",     null],
               ["clothing", "Clothing",        clothingBadge],
               ["refills",  "Display Refills", refillsBadge],
+              ["depleted", "Depleted",        depletedCount],
             ]
           : [
               ["queue",   "Order Queue",     null],
               ["restock", "Restock Status",  null],
               ["refills", "Display Refills", refillsBadge],
+              ["depleted", "Depleted",       depletedCount],
             ]
         ).map(([key, label, badge]) => (
           <div key={key} onClick={() => setMainTab(key)}
@@ -3803,6 +3993,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             {key === "restock"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>}
             {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
             {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
+            {key === "depleted" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>}
             <span>{label}</span>
             {badge != null && badge > 0 && (
               <span style={{ background: mainTab===key ? "#F59E0B" : "rgba(245,158,11,.85)", color:"#000", fontSize:10, fontWeight:800, minWidth:18, height:18, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
@@ -4012,6 +4203,12 @@ function WarehouseView({ products = [], orders, onExit }) {
             nowTick={nowTick}
             selectedHub={selectedHub}
           />
+        </div>
+      )}
+
+      {mainTab === "depleted" && (
+        <div style={{ padding:"0 13px" }}>
+          <DepletedProductsPanel products={products} />
         </div>
       )}
     </div>
