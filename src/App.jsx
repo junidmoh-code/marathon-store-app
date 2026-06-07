@@ -3102,17 +3102,6 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       )}
 
-      {/* Phase 15: Depleted Products review — opens the shared panel as an
-          overlay. Store assistants can view + Bring Live, same as Warehouse. */}
-      <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 10px" }}>
-        <button onClick={() => setShowDepleted(true)}
-          style={{ display:"flex", alignItems:"center", gap:7, padding:"7px 16px", borderRadius:999, cursor:"pointer", fontSize:12, fontWeight:700,
-                   background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.35)", color:"#F87171" }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
-          Depleted Products{depletedCount > 0 ? ` (${depletedCount})` : ""}
-        </button>
-      </div>
-
       {/* PLACE ORDER HERO */}
       <div style={{ position:"relative", width:"100%", height:160, overflow:"hidden", marginBottom:4 }}>
         <img src="/hero/place-order.jpg" alt="Place Order" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"center" }}/>
@@ -3152,6 +3141,17 @@ function AssistantView({ products, onExit, orders = [] }) {
       {/* Inline cart summary removed (Phase 12B) — the floating bottom bar
           below the screen is now the single cart trigger. Sneaker users still
           see the cart review inside the Checkout sheet. */}
+
+      {/* Phase 15: compact Depleted Products entry — small, right-aligned above
+          the search box. Same overlay as before; icon + count, not a big bar. */}
+      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:8 }}>
+        <button onClick={() => setShowDepleted(true)} title="Depleted products"
+          style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:999, cursor:"pointer", fontSize:11, fontWeight:700, lineHeight:1,
+                   background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.35)", color:"#F87171" }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+          Depleted{depletedCount > 0 ? ` ${depletedCount}` : ""}
+        </button>
+      </div>
 
       {/* SEARCH BAR */}
       <div style={{ paddingBottom:14 }}>
