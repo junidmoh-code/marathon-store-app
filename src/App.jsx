@@ -415,14 +415,12 @@ function updateProductHubs(id, hubs) {
 // depletedBy stores the hub label that depleted it (anonymous auth has no
 // email — mirrors displayRefilledBy). Scope is the WHOLE product — one flag,
 // depleted across every hub at once. "Bring Live" clears it (clearProductDepleted).
-function setProductDepleted(id, depletedBy = null) {
-  if (!id) return Promise.resolve();
-  return update(ref(database, `products/${id}`), {
-    depletedAt: new Date().toISOString(),
-    depletedBy,
-  }).catch(err => console.warn("setProductDepleted failed:", err));
-}
-
+//
+// The depletion *write* is not a standalone helper: it happens inside
+// setDisplayRefillStatus as part of a single atomic root-level multi-path
+// update() (orders/{id}/* + products/{id}/depletedAt+depletedBy) so the order
+// resolution and the product flag can't diverge. clearProductDepleted below is
+// the standalone reactivation write ("Bring Live").
 function clearProductDepleted(id) {
   if (!id) return Promise.resolve();
   return update(ref(database, `products/${id}`), {

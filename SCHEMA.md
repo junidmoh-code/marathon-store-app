@@ -31,7 +31,7 @@ Each product is its own node. `productId` is generated client-side as
 | **`hasShoeBoxOption`** | **boolean**                  | **no**   | **POS Phase 2. True for footwear that ships with a shoebox add-on. Optional; treat missing as false. ALWAYS false for `productType === "clothing"` — admin write paths force it off and consumers must treat clothing as false regardless of the stored value.** |
 | **`barcode`**     | **string** (8-digit zero-padded)  | **no**   | **POS Phase 2 (scanner workflow). Auto-assigned at create time from `/products_meta/lastBarcode`. Format: `"00000001"`..`"99999999"`. Wider than `sku` to leave room for future per-(product, size) variants on the same counter.** |
 | **`sku`**         | **string** (4-digit zero-padded)  | **no**   | **POS Phase 2 (scanner workflow). Auto-assigned at create time from `/products_meta/lastSku`. Format: `"0001"`..`"9999"`. Always per-product (no size variants).** |
-| **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15. Product-level depletion flag. Absent/`null` = live & orderable. An ISO timestamp = depleted: blurred + un-orderable in the Store Assistant grid and listed in the Depleted Products tab. Set by `setProductDepleted`; cleared by `clearProductDepleted` ("Bring Live"). WHOLE-product scope — depleted across every hub at once.** |
+| **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15. Product-level depletion flag. Absent/`null` = live & orderable. An ISO timestamp = depleted: blurred + un-orderable in the Store Assistant grid and listed in the Depleted Products tab. Set by `setDisplayRefillStatus` (inline atomic multi-path write); cleared by `clearProductDepleted` ("Bring Live"). WHOLE-product scope — depleted across every hub at once.** |
 | **`depletedBy`**  | **string \| null**                | **no**   | **Phase 15. Hub label (`"hub1"`/`"hub2"`/`"hub3"`/`"hubC"`) that depleted the product. Anonymous auth has no email, so the hub is the meaningful signal (mirrors `displayRefilledBy` on orders). Cleared alongside `depletedAt`.** |
 
 ### Product depletion (Phase 15)
@@ -40,8 +40,9 @@ Each product is its own node. `productId` is generated client-side as
 once. It is distinct from the order-scoped `displayRefillStatus: "stockDepleted"`
 on `/orders/{orderId}` (which tracks a single partner-refill task and feeds
 Insights). A product is depleted when the Warehouse resolves a Display Refill
-task as **Stock Depleted**: `setDisplayRefillStatus` additionally calls
-`setProductDepleted(order.productId, selectedHub)`. The depleted state is only
+task as **Stock Depleted**: `setDisplayRefillStatus` writes the order resolution
+fields and `products/{id}/depletedAt`+`depletedBy` together in a single atomic
+root-level multi-path `update()`, so the two can't diverge. The depleted state is only
 ever cleared by an explicit **Bring Live** (`clearProductDepleted`) from the
 Depleted Products tab — it is *not* auto-cleared when a later refill is marked
 refilled or undone, so the state stays under explicit human control. Both
