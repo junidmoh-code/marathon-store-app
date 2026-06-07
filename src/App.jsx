@@ -98,7 +98,7 @@ function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,2
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", DEPLETED: "depleted" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -118,6 +118,15 @@ const ROLE_TO_PERMISSION = {
   [ROLES.BROADCAST_GROUPS]: "broadcast",
   [ROLES.USER_MANAGEMENT]:  "user_management",
 };
+// Depleted Products (Phase 15) is reachable by anyone who manages stock —
+// store assistant, warehouse, OR admin. Because it spans three permissions it
+// can't live in the single-string ROLE_TO_PERMISSION map; this helper is the
+// one definition of "who may open it", shared by the home tile, the view guard
+// in the App cascade, and the persisted-role safety reset.
+const canAccessDepleted = (hasPermission) =>
+  hasPermission(ROLE_TO_PERMISSION[ROLES.ASSISTANT]) ||
+  hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) ||
+  hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN]);
 const STATUS = { INCOMING: "incoming", READY: "ready", OUT_OF_STOCK: "out_of_stock", COLLECTED: "collected", COMING_TOMORROW: "coming_tomorrow" };
 
 // ─── SIZE RANGE + SUBSTITUTE HELPERS ──────────────────────────────────────────
@@ -1462,6 +1471,14 @@ const RoleIcons = {
       <path d="M5 14l.6 1.9L7.5 16.5l-1.9.6L5 19l-.6-1.9L2.5 16.5l1.9-.6L5 14z"/>
     </svg>
   ),
+  depleted: (
+    // "no entry / unavailable": a circle with a diagonal slash — reads as
+    // out-of-stock. Matches the slashed-circle used on the old warehouse tab.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9"/>
+      <line x1="5.6" y1="5.6" x2="18.4" y2="18.4"/>
+    </svg>
+  ),
 };
 
 // Section header svg icons
@@ -1538,8 +1555,10 @@ function GroupSection({ label, children }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, hasPermission }) {
+function RoleSelector({ onSelect, orders, returnsLog, hasPermission, products }) {
   const today = getSADateString();
+  // Phase 15: count of currently-depleted products — badge on the Depleted tile.
+  const depletedCount = products ? products.filter(isProductDepleted).length : 0;
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
   // Source badge = today's restock requests + on-hold (Tomorrow), excluding OOS.
   // Today's request = orders marked READY/COLLECTED today (sold/sent items),
@@ -1590,6 +1609,10 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission }) {
           hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) && <RoleCard key="warehouse" icon={RoleIcons.warehouse} name="Warehouse"        desc="Manage order queue"   badge={incoming}        onClick={() => onSelect(ROLES.WAREHOUSE)} />,
           hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])    && <RoleCard key="source"    icon={RoleIcons.source}    name="Source"           desc="Restock requests"     badge={sourceBadge}     onClick={() => onSelect(ROLES.SOURCE)} />,
           hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && <RoleCard key="returns"   icon={RoleIcons.returns}   name="Returns"          desc="Log returned items"   onClick={() => onSelect(ROLES.RETURNS)} />,
+          // Phase 15: depleted-products access point. Single entry for everyone
+          // who manages stock (assistant / warehouse / admin) — replaces the old
+          // in-view pill + warehouse tab. Badge shows the live depleted count.
+          canAccessDepleted(hasPermission) && <RoleCard key="depleted" icon={RoleIcons.depleted} name="Depleted Products" desc="Reactivate sold-out stock" badge={depletedCount} onClick={() => onSelect(ROLES.DEPLETED)} />,
         ].filter(Boolean);
         const insightsDisplay = [
           hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && <RoleCard key="insights" icon={RoleIcons.insights} name="Internal Insights" desc="Business analytics"    onClick={() => onSelect(ROLES.INSIGHTS)} />,
@@ -2529,6 +2552,33 @@ function DepletedProductsPanel({ products }) {
   );
 }
 
+// ─── DEPLETED PRODUCTS VIEW (Phase 15) ────────────────────────────────────────
+// Standalone full-screen view mounted from the home-page "Depleted Products"
+// tile. This is now the SINGLE access point for managing depleted stock across
+// roles (assistant / warehouse / admin) — the old in-assistant pill and the
+// warehouse "Depleted" tab were removed in favour of this. Body is the shared
+// DepletedProductsPanel; chrome matches the other role views (← Exit top bar).
+function DepletedView({ products = [], onExit }) {
+  const depletedCount = products.filter(isProductDepleted).length;
+  return (
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      {/* TOP BAR — mirrors ReturnsView/SourceView chrome */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
+        <div onClick={onExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><line x1="5.6" y1="5.6" x2="18.4" y2="18.4"/></svg>
+          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>DEPLETED</div>
+        </div>
+        <div style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>{depletedCount} depleted</div>
+      </div>
+
+      <div style={{ padding:"14px" }}>
+        <DepletedProductsPanel products={products} />
+      </div>
+    </div>
+  );
+}
+
 // ─── ASSISTANT VIEW ───────────────────────────────────────────────────────────
 // Multi-item cart flow:
 //   1. Tap product → size picker sheet → "Add to Cart"
@@ -2661,9 +2711,6 @@ function AssistantView({ products, onExit, orders = [] }) {
   // store the user isn't assigned to. Falls back to storeMode only when there
   // are zero allowed stores, in which case the block screen renders anyway.
   const effectiveStoreMode = allowedStores.includes(storeMode) ? storeMode : (allowedStores[0] || storeMode);
-  // Phase 15: Depleted Products review overlay (same panel as Warehouse). Any
-  // store assistant can open it and reactivate products.
-  const [showDepleted, setShowDepleted]                 = useState(false);
   const [selected, setSelected]                         = useState(null);   // product in size picker
   // Tapping a product photo opens a full-screen lightbox so staff can see the
   // complete (uncropped) image. Holds the photo URL to show, or null.
@@ -2719,10 +2766,6 @@ function AssistantView({ products, onExit, orders = [] }) {
              (p.category || "").toLowerCase().includes(q);
     }),
   [products, search, wantsClothing, effectiveStoreMode]);
-
-  // Phase 15: count of depleted products (whole-product scope — independent of
-  // the sneaker/clothing + Central/Pine filters above).
-  const depletedCount = useMemo(() => products.filter(isProductDepleted).length, [products]);
 
   // Phase 15: `selected` and `cart` hold product SNAPSHOTS, so a depletion
   // written from another device after the sheet/cart was opened is invisible on
@@ -3142,32 +3185,10 @@ function AssistantView({ products, onExit, orders = [] }) {
           below the screen is now the single cart trigger. Sneaker users still
           see the cart review inside the Checkout sheet. */}
 
-      {/* Phase 15: compact Depleted Products entry — small, right-aligned above
-          the search box. Iridescent/holographic gradient outline + text + icon
-          over a dark fill (premium, subtle). The dark padding-box + gradient
-          border-box trick gives a gradient outline with a transparent-dark fill.
-          IRIDESCENT below is reused for the border, the text, and the SVG icon. */}
-      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:8 }}>
-        <button onClick={() => setShowDepleted(true)} title="Depleted products"
-          style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"5px 12px", borderRadius:999, cursor:"pointer", fontSize:11.5, fontWeight:700, lineHeight:1,
-                   border:"1px solid transparent",
-                   background:"linear-gradient(#0b0b12,#0b0b12) padding-box, linear-gradient(95deg,#a855f7,#ec4899,#f59e0b,#22c55e) border-box",
-                   boxShadow:"0 0 10px rgba(168,85,247,.12)" }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <defs>
-              <linearGradient id="iridDepleted" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
-                <stop offset="0" stopColor="#a855f7"/><stop offset="0.35" stopColor="#ec4899"/>
-                <stop offset="0.7" stopColor="#f59e0b"/><stop offset="1" stopColor="#22c55e"/>
-              </linearGradient>
-            </defs>
-            <circle cx="12" cy="12" r="10" stroke="url(#iridDepleted)"/>
-            <polyline points="8 12 11 15 16 9" stroke="url(#iridDepleted)"/>
-          </svg>
-          <span style={{ background:"linear-gradient(95deg,#a855f7,#ec4899,#f59e0b,#22c55e)", WebkitBackgroundClip:"text", backgroundClip:"text", WebkitTextFillColor:"transparent", color:"transparent" }}>
-            Depleted{depletedCount > 0 ? ` ${depletedCount}` : ""}
-          </span>
-        </button>
-      </div>
+      {/* Phase 15: the Depleted Products access point now lives on the home page
+          (a dedicated tile → DepletedView), not here. Depleted products still
+          render blurred + un-orderable in the grid below; only the entry pill
+          was removed. */}
 
       {/* SEARCH BAR */}
       <div style={{ paddingBottom:14 }}>
@@ -3487,21 +3508,6 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       )}
 
-      {/* ── Phase 15: Depleted Products overlay ── */}
-      {showDepleted && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.9)", zIndex:1100, display:"flex", flexDirection:"column" }}>
-          <div style={{ maxWidth:430, width:"100%", margin:"0 auto", display:"flex", flexDirection:"column", height:"100%" }}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 16px 14px" }}>
-              <div style={{ fontSize:17, fontWeight:800, color:"#fff" }}>Depleted Products</div>
-              <button onClick={() => setShowDepleted(false)}
-                style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", borderRadius:"50%", width:34, height:34, color:"#fff", cursor:"pointer", fontSize:16, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
-            </div>
-            <div style={{ flex:1, overflowY:"auto", padding:"0 14px 40px" }}>
-              <DepletedProductsPanel products={products} />
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -3522,9 +3528,11 @@ function WarehouseView({ products = [], orders, onExit }) {
     if ((selectedHub === "hub1" || selectedHub === "hub3") && mainTab === "clothing") setMainTab("queue");
     // Trial: hubC has only the Order Queue tab — clamp anything else back.
     if (selectedHub === "hubC" && mainTab !== "queue") setMainTab("queue");
+    // Phase 15: the Depleted tab was removed from the warehouse (moved to the
+    // home-page tile). Clamp any persisted "depleted" selection back to the
+    // queue so returning users don't land on a now-nonexistent blank tab.
+    if (mainTab === "depleted") setMainTab("queue");
   }, [selectedHub, mainTab]);
-  // Phase 15: count of currently-depleted products — badge on the Depleted tab.
-  const depletedCount = useMemo(() => products.filter(isProductDepleted).length, [products]);
   // Phase 14B: hub3 filters by placedAtHub (the source of truth for the Pine
   // universe); hub1/hub2 still use the legacy order.hub field for back-compat.
   // Trial: hubC (customer clothing) also filters by placedAtHub.
@@ -4028,13 +4036,11 @@ function WarehouseView({ products = [], orders, onExit }) {
               ["queue",    "Order Queue",     null],
               ["clothing", "Clothing",        clothingBadge],
               ["refills",  "Display Refills", refillsBadge],
-              ["depleted", "Depleted",        depletedCount],
             ]
           : [
               ["queue",   "Order Queue",     null],
               ["restock", "Restock Status",  null],
               ["refills", "Display Refills", refillsBadge],
-              ["depleted", "Depleted",       depletedCount],
             ]
         ).map(([key, label, badge]) => (
           <div key={key} onClick={() => setMainTab(key)}
@@ -4046,7 +4052,6 @@ function WarehouseView({ products = [], orders, onExit }) {
             {key === "restock"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>}
             {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
             {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
-            {key === "depleted" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>}
             <span>{label}</span>
             {badge != null && badge > 0 && (
               <span style={{ background: mainTab===key ? "#F59E0B" : "rgba(245,158,11,.85)", color:"#000", fontSize:10, fontWeight:800, minWidth:18, height:18, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
@@ -4256,12 +4261,6 @@ function WarehouseView({ products = [], orders, onExit }) {
             nowTick={nowTick}
             selectedHub={selectedHub}
           />
-        </div>
-      )}
-
-      {mainTab === "depleted" && (
-        <div style={{ padding:"0 13px" }}>
-          <DepletedProductsPanel products={products} />
         </div>
       )}
     </div>
@@ -8900,6 +8899,8 @@ function AppInner() {
     if (!role) return;
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
+    // DEPLETED isn't in the single-string map — enforce its multi-permission gate.
+    if (role === ROLES.DEPLETED && !canAccessDepleted(hasPermission)) setRole(null);
   }, [role, hasPermission]);
 
   const products = useProducts();
@@ -9099,7 +9100,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} products={products} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
@@ -9112,6 +9113,9 @@ function AppInner() {
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
+  // Depleted Products: multi-permission view (assistant/warehouse/admin), so it
+  // uses canAccessDepleted instead of the single-permission `guard` helper.
+  else if (role === ROLES.DEPLETED)  view = canAccessDepleted(hasPermission) ? <DepletedView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.BROADCAST_GROUPS) view = guard(ROLES.BROADCAST_GROUPS, <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />);
 
