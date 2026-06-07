@@ -3143,13 +3143,29 @@ function AssistantView({ products, onExit, orders = [] }) {
           see the cart review inside the Checkout sheet. */}
 
       {/* Phase 15: compact Depleted Products entry — small, right-aligned above
-          the search box. Same overlay as before; icon + count, not a big bar. */}
+          the search box. Iridescent/holographic gradient outline + text + icon
+          over a dark fill (premium, subtle). The dark padding-box + gradient
+          border-box trick gives a gradient outline with a transparent-dark fill.
+          IRIDESCENT below is reused for the border, the text, and the SVG icon. */}
       <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:8 }}>
         <button onClick={() => setShowDepleted(true)} title="Depleted products"
-          style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:999, cursor:"pointer", fontSize:11, fontWeight:700, lineHeight:1,
-                   background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.35)", color:"#F87171" }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
-          Depleted{depletedCount > 0 ? ` ${depletedCount}` : ""}
+          style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"5px 12px", borderRadius:999, cursor:"pointer", fontSize:11.5, fontWeight:700, lineHeight:1,
+                   border:"1px solid transparent",
+                   background:"linear-gradient(#0b0b12,#0b0b12) padding-box, linear-gradient(95deg,#a855f7,#ec4899,#f59e0b,#22c55e) border-box",
+                   boxShadow:"0 0 10px rgba(168,85,247,.12)" }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <defs>
+              <linearGradient id="iridDepleted" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stopColor="#a855f7"/><stop offset="0.35" stopColor="#ec4899"/>
+                <stop offset="0.7" stopColor="#f59e0b"/><stop offset="1" stopColor="#22c55e"/>
+              </linearGradient>
+            </defs>
+            <circle cx="12" cy="12" r="10" stroke="url(#iridDepleted)"/>
+            <polyline points="8 12 11 15 16 9" stroke="url(#iridDepleted)"/>
+          </svg>
+          <span style={{ background:"linear-gradient(95deg,#a855f7,#ec4899,#f59e0b,#22c55e)", WebkitBackgroundClip:"text", backgroundClip:"text", WebkitTextFillColor:"transparent", color:"transparent" }}>
+            Depleted{depletedCount > 0 ? ` ${depletedCount}` : ""}
+          </span>
         </button>
       </div>
 
