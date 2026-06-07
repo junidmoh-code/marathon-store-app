@@ -2726,6 +2726,22 @@ function AssistantView({ products, onExit, orders = [] }) {
   // the sneaker/clothing + Central/Pine filters above).
   const depletedCount = useMemo(() => products.filter(isProductDepleted).length, [products]);
 
+  // Phase 15: `selected` and `cart` hold product SNAPSHOTS, so a depletion
+  // written from another device after the sheet/cart was opened is invisible on
+  // the snapshot. Re-resolve against the live `products` list by id before
+  // letting any order through (addToCart / placeOrders / placeRefillRequests).
+  const liveDepleted = (p) => isProductDepleted(products.find(x => x.id === p?.id) || p);
+  // Strip cart lines whose product is now depleted; alert with the names. Returns
+  // true if anything was blocked so the caller can abort the submit.
+  const blockDepletedCart = (lineFilter) => {
+    const blocked = cart.filter(it => lineFilter(it) && liveDepleted(it.product));
+    if (!blocked.length) return false;
+    const names = [...new Set(blocked.map(b => b.product.name))].join(", ");
+    alert(`Removed — no longer available: ${names}`);
+    setCart(prev => prev.filter(it => !(lineFilter(it) && liveDepleted(it.product))));
+    return true;
+  };
+
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
   const computeHubForItem = (item) => {
@@ -2752,9 +2768,10 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   const addToCart = () => {
     if (!selected) return;
-    // Phase 15: never let a depleted product into the cart (guards the case
-    // where a product is depleted on another device while its sheet is open).
-    if (isProductDepleted(selected)) { resetSheet(); return; }
+    // Phase 15: never let a depleted product into the cart. Resolve against the
+    // live catalog, not the `selected` snapshot, so a depletion that landed
+    // while the size sheet was open is still caught.
+    if (liveDepleted(selected)) { resetSheet(); return; }
     // Clothing customer orders use the SAME size-sheet UX as sneakers, but a
     // size is mandatory (no Display Partner for clothing) and each line is
     // tagged clothing/customer so it routes to Hub C via Checkout.
@@ -2798,6 +2815,10 @@ function AssistantView({ products, onExit, orders = [] }) {
     // number starting with 0 (the Place button enforces this too).
     if (!isValidLocalSAPhone(customerPhone)) return;
     if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
+    // Phase 15: a product can be depleted after it was added to the cart. Strip
+    // any now-depleted customer lines (live-catalog check) and abort so the user
+    // reviews before placing.
+    if (blockDepletedCart(isCustomerLine)) return;
     setSubmitting(true);
     try {
       const normalizedPhone = normalizeSAPhone(customerPhone);
@@ -2899,9 +2920,13 @@ function AssistantView({ products, onExit, orders = [] }) {
     // Refills are clothing lines NOT tagged "customer" (those go through
     // Checkout → Hub C). Call sites already gate on hasCustomerInCart, but
     // keep the filter intent-aware so it stays correct if that ever changes.
-    const clothingCart = cart.filter(it => it.productType === "clothing" && it.intent !== "customer");
+    const isRefillLine = (it) => it.productType === "clothing" && it.intent !== "customer";
+    const clothingCart = cart.filter(isRefillLine);
     if (!clothingCart.length || submitting) return;
     if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
+    // Phase 15: drop any refill line whose product was depleted after it was
+    // added to the cart (live-catalog check) and abort so the user reviews.
+    if (blockDepletedCart(isRefillLine)) return;
     setSubmitting(true);
     try {
       const now = new Date().toISOString();
@@ -3738,12 +3763,32 @@ function WarehouseView({ products = [], orders, onExit }) {
       patch.displayRefillStockDepletedAt = now;
       patch.displayRefilledAt            = null;
     }
-    updateOrder(order.id, patch);
+
+    // Phase 15: when a refill resolves "no inventory left", the order patch AND
+    // the product-level depletion flag MUST land together — the depleted-product
+    // UI (blur + un-orderable + Depleted tab) depends on them staying in sync. A
+    // single root-level multi-path update() is atomic in RTDB, so either both
+    // commit or neither does — unlike two independent fire-and-forget writes that
+    // could leave the task resolved-depleted with the product still orderable
+    // (or vice-versa). The non-depleted path keeps the plain per-order write.
+    if (status === "stockDepleted" && order.productId) {
+      const updates = {};
+      for (const [k, v] of Object.entries(patch)) updates[`orders/${order.id}/${k}`] = v;
+      updates[`products/${order.productId}/depletedAt`] = now;
+      updates[`products/${order.productId}/depletedBy`] = selectedHub;
+      update(ref(database), updates)
+        .catch(err => console.warn("setDisplayRefillStatus (stockDepleted) failed:", err));
+    } else {
+      updateOrder(order.id, patch);
+    }
+
     // Stock-deplete: append an insights_log entry so the Stock Depleted tab
     // can show past-day counts. Without this, the tab only ever sees today's
     // events because orders/{id} gets overwritten when the daily orderNumber
     // counter wraps. Mirrors the action="out_of_stock" pattern used by OOS
-    // Tracker. dedupeByOrderNumber + composite key handle re-fires.
+    // Tracker. dedupeByOrderNumber + composite key handle re-fires. This stays a
+    // separate best-effort append (a push, not part of the atomic update above);
+    // a lost insight entry never affects whether a product is orderable.
     if (status === "stockDepleted") {
       logInsight({
         timestamp:        now,
@@ -3758,12 +3803,6 @@ function WarehouseView({ products = [], orders, onExit }) {
         placedAtHub:      order.placedAtHub || order.hub || "hub1",
         displayRefilledBy: selectedHub,
       });
-      // Phase 15: a refill task resolved "no inventory left" also means the
-      // product display is gone — flag the PRODUCT depleted so it blurs in the
-      // assistant grid and surfaces in the Depleted Products tab. Only "Bring
-      // Live" clears it again (we deliberately don't auto-clear on refilled/undo,
-      // so the depleted state stays under explicit human control).
-      if (order.productId) setProductDepleted(order.productId, selectedHub);
     }
   };
   // Reverse a refill resolution — clears status + both timestamps + by-hub so
