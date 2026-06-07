@@ -16,12 +16,18 @@
 //   • >1 product (ambiguous)      → SKIP (can't tell which is out of stock)
 //   • 0 products (unmatched)      → SKIP (old shorthand/typo names, no catalog row)
 // For a written product, depletedAt = the MOST RECENT matching event's timestamp
-// and depletedBy = that event's hub (displayRefilledBy, falling back to placedAtHub).
+// (events with a missing/unparseable timestamp are ignored, so no `undefined`
+// ever reaches the atomic update — which Firebase would reject for the whole
+// batch) and depletedBy = that event's hub (displayRefilledBy → placedAtHub).
 //
-// IDEMPOTENT / SAFE — skips any product that ALREADY has depletedAt set, so
-// re-running never clobbers a product Junid has since "Bring Live"d, and never
-// overwrites a fresh live depletion with an older historical timestamp. Default
-// is a DRY RUN; nothing is written without --commit.
+// RUN-ONCE / SAFE — this is a one-time migration. On --commit it records a
+// sentinel at /_migrations/backfill_depleted_from_history and REFUSES to run
+// again if that sentinel exists. This is what makes it "Bring Live"-safe: once
+// Junid reactivates a product (clearProductDepleted writes depletedAt:null), a
+// second run can't re-deplete it, because there is no second run. Within the
+// single run it also skips any product that already has depletedAt set, so it
+// won't overwrite a fresh live depletion with an older historical timestamp.
+// Default is a DRY RUN; nothing is written without --commit.
 //
 // Auth: anonymous Firebase auth. The marathon-club RTDB rules permit any
 // authenticated user (incl. anon) to write /products — the project's known
@@ -53,8 +59,15 @@ const FB_CONFIG = {
 
 const COMMIT = process.argv.includes("--commit");
 
+// Run-once sentinel — set on --commit; a second --commit aborts (see header).
+const SENTINEL_PATH = "_migrations/backfill_depleted_from_history";
+
 // Normalized name key — must match the matching contract documented above.
 const norm = (s) => String(s == null ? "" : s).toLowerCase().trim().replace(/\s+/g, " ");
+
+// A usable event timestamp is a present, parseable date string. Guards against
+// undefined depletedAt sneaking into the atomic update (Firebase rejects it).
+const validTs = (ts) => typeof ts === "string" && ts !== "" && !Number.isNaN(Date.parse(ts));
 
 const app  = initializeApp(FB_CONFIG);
 const auth = getAuth(app);
@@ -65,25 +78,30 @@ console.log(`[backfill-depleted] mode:    ${COMMIT ? "COMMIT (will write)" : "DR
 console.log(`[backfill-depleted] signing in anonymously …`);
 await signInAnonymously(auth);
 
-// ─── Read source data ────────────────────────────────────────────────────────
-console.log(`[backfill-depleted] reading /insights_log and /products …`);
-const [logSnap, prodSnap] = await Promise.all([
+// ─── Read source data + run-once sentinel ────────────────────────────────────
+console.log(`[backfill-depleted] reading /insights_log, /products, sentinel …`);
+const [logSnap, prodSnap, sentinelSnap] = await Promise.all([
   get(ref(db, "insights_log")),
   get(ref(db, "products")),
+  get(ref(db, SENTINEL_PATH)),
 ]);
-const logs     = Object.values(logSnap.val() || {}).filter(Boolean);
-const products = Object.entries(prodSnap.val() || {}).map(([id, v]) => ({ id, ...v }));
+const logs        = Object.values(logSnap.val() || {}).filter(Boolean);
+const products    = Object.entries(prodSnap.val() || {}).map(([id, v]) => ({ id, ...v }));
+const alreadyRan  = sentinelSnap.exists();
+if (alreadyRan) {
+  console.log(`[backfill-depleted] NOTE: already ran (${SENTINEL_PATH} = ${JSON.stringify(sentinelSnap.val())}). A --commit will ABORT.`);
+}
 
 const events = logs.filter((e) => e.action === "stock_depleted");
 console.log(`[backfill-depleted] stock_depleted events: ${events.length}`);
 
-// ─── Collapse events to one entry per normalized product name (latest wins) ──
+// ─── Collapse events to one entry per normalized product name (latest valid wins) ──
 const byName = new Map(); // normName -> { rawName, latest }
 for (const e of events) {
   const nn = norm(e.productName);
-  if (!nn) continue;
+  if (!nn || !validTs(e.timestamp)) continue; // skip nameless or timestamp-less events
   const cur = byName.get(nn) || { rawName: e.productName, latest: null };
-  if (!cur.latest || String(e.timestamp || "") > String(cur.latest.timestamp || "")) cur.latest = e;
+  if (!cur.latest || e.timestamp > cur.latest.timestamp) cur.latest = e;
   byName.set(nn, cur);
 }
 
@@ -131,13 +149,22 @@ if (!COMMIT) {
   process.exit(0);
 }
 
-// ─── Commit: one atomic root multi-path update ───────────────────────────────
+// ─── Run-once guard ──────────────────────────────────────────────────────────
+// Refuse a second commit so we never re-deplete a product Junid has since
+// brought live (see header). This is the real "Bring Live"-safety mechanism.
+if (alreadyRan) {
+  console.error(`\n[backfill-depleted] ✗ ABORT — already ran (${SENTINEL_PATH} exists). Refusing to re-deplete.`);
+  process.exit(1);
+}
+
+// ─── Commit: one atomic root multi-path update (flags + sentinel together) ───
 const updates = {};
 for (const w of toWrite) {
   updates[`products/${w.id}/depletedAt`] = w.depletedAt;
   updates[`products/${w.id}/depletedBy`] = w.depletedBy;
 }
-console.log(`\n[backfill-depleted] writing ${toWrite.length} products …`);
+updates[SENTINEL_PATH] = { ranAt: new Date().toISOString(), count: toWrite.length };
+console.log(`\n[backfill-depleted] writing ${toWrite.length} products + sentinel …`);
 try {
   await update(ref(db), updates);
   console.log(`[backfill-depleted] ✓ done — ${toWrite.length} products marked depleted.`);
