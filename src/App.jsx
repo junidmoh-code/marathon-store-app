@@ -4,6 +4,7 @@ import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
+import Fuse from "fuse.js";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -2715,6 +2716,16 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Tapping a product photo opens a full-screen lightbox so staff can see the
   // complete (uncropped) image. Holds the photo URL to show, or null.
   const [fullPhoto, setFullPhoto]                       = useState(null);
+  // Scroll-to-top FAB: appears once the user has scrolled past the search box so
+  // a single tap returns to the top (the search bar) after browsing the grid.
+  const [showScrollTop, setShowScrollTop]               = useState(false);
+  useEffect(() => {
+    const onScroll = () => setShowScrollTop(window.scrollY > 400);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+  const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
   const [pendingSize, setPendingSize]                   = useState("");
   const [pendingQty,  setPendingQty]                    = useState(1);
   const [pendingDisplayRequest, setPendingDisplay]      = useState(false);
@@ -2749,7 +2760,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // shows hub3. CLOTHING (both customer + refill) is visible to ALL stores — no
   // hub gating — so every assistant can order/refill clothing regardless of
   // which store they're on.
-  const filtered = useMemo(() =>
+  // Products matching the active mode (sneaker/clothing) + store universe,
+  // BEFORE any text search. The fuzzy search runs over this candidate set so a
+  // typo can never pull in products from the wrong mode/hub.
+  const base = useMemo(() =>
     products.filter(p => {
       const isClothingProduct = (p.productType || "sneaker") === "clothing";
       if (isClothingProduct !== wantsClothing) return false;
@@ -2761,11 +2775,36 @@ function AssistantView({ products, onExit, orders = [] }) {
           if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
         }
       }
-      const q = search.toLowerCase();
-      return p.name.toLowerCase().includes(q) ||
-             (p.category || "").toLowerCase().includes(q);
+      return true;
     }),
-  [products, search, wantsClothing, effectiveStoreMode]);
+  [products, wantsClothing, effectiveStoreMode]);
+
+  // Fuzzy search (Fuse.js): typo- and case-tolerant matching over name +
+  // category. Rebuilt only when `base` changes (memoised — fine for ~1.2k
+  // products). Tuned to surface close matches ("avryn"/"avrn"/"avryen" →
+  // "Adidas Avryn") without going so loose it returns everything:
+  //   threshold 0.4  → moderate fuzziness
+  //   ignoreLocation → match anywhere in the string (partial matches)
+  //   minMatchCharLength 2 → ignore 1-char noise (1-char queries handled below)
+  const fuse = useMemo(() => new Fuse(base, {
+    keys: [{ name: "name", weight: 0.85 }, { name: "category", weight: 0.15 }],
+    threshold: 0.4,
+    ignoreLocation: true,
+    minMatchCharLength: 2,
+  }), [base]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim();
+    if (!q) return base;
+    // 1-char queries: Fuse's minMatchCharLength would return nothing, so fall
+    // back to a plain case-insensitive substring match for the first letter.
+    if (q.length < 2) {
+      const lc = q.toLowerCase();
+      return base.filter(p =>
+        p.name.toLowerCase().includes(lc) || (p.category || "").toLowerCase().includes(lc));
+    }
+    return fuse.search(q).map(r => r.item);
+  }, [search, base, fuse]);
 
   // Phase 15: `selected` and `cart` hold product SNAPSHOTS, so a depletion
   // written from another device after the sheet/cart was opened is invisible on
@@ -3508,6 +3547,17 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       )}
 
+      {/* ── Scroll-to-top FAB ── appears after scrolling down; one tap returns
+          to the search box. Sits above the floating cart bar when it's shown. */}
+      {showScrollTop && (
+        <button onClick={scrollToTop} aria-label="Scroll to top"
+          style={{ position:"fixed", right:16, bottom: cart.length > 0 && !checkoutOpen && !selected ? 92 : 24, zIndex:60,
+                   width:46, height:46, borderRadius:"50%", cursor:"pointer",
+                   background:"#4A7FFF", border:"1px solid rgba(60,110,255,.55)", color:"#fff",
+                   boxShadow:"0 4px 16px rgba(0,0,0,.45)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+        </button>
+      )}
     </div>
   );
 }
