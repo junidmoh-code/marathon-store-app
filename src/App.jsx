@@ -917,6 +917,23 @@ function returnedOrderIdsOnSADate(returnsLog, saDate) {
   return set;
 }
 
+// Composite "this exact order was returned" lookup — `${SA-date}::${orderNumber}`.
+// orderNumber is DAILY-SCOPED (it resets each day), so a bare all-time set of
+// returned numbers wrongly flags today's freshly-SOLD #001 as returned just
+// because some PAST day's #001 was returned. Keying by the return's own SA-date
+// (same basis as returnedOrderIdsOnSADate above) and matching on the order side
+// via orderSaleDate(o) confines each match to a single day. Returns intact —
+// this only changes how the Returns view READS the log, never what it writes.
+function returnedCompositeKeySet(returnsLog) {
+  const set = new Set();
+  (returnsLog || []).forEach(r => {
+    if (!r.orderNumber || !r.timestamp) return;
+    const d = new Date(new Date(r.timestamp).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    set.add(`${d}::${r.orderNumber}`);
+  });
+  return set;
+}
+
 // Reads the entire restock_log across ALL dates.
 // Returns { "YYYY-MM-DD": { pushKey: entry, ... }, ... }
 function useRestockLogAll() {
@@ -5997,12 +6014,11 @@ function ReturnsView({ orders, onExit }) {
       .sort((a, b) => (b.readyAt || b.updatedAt || "").localeCompare(a.readyAt || a.updatedAt || ""));
   }, [orders, todayDate]);
 
-  // Set of order IDs already logged as returned
-  const returnedIds = useMemo(() => {
-    const s = new Set();
-    returnsLog.forEach(r => r.orderNumber && s.add(r.orderNumber));
-    return s;
-  }, [returnsLog]);
+  // Composite `${SA-date}::${orderNumber}` set of already-returned orders. NOT a
+  // bare orderNumber set: numbers reset daily, so a bare set flags every later
+  // day's same-numbered SALE as "Returned" (the false-positive bug). Matched
+  // per-order below via orderSaleDate(order).
+  const returnedKeys = useMemo(() => returnedCompositeKeySet(returnsLog), [returnsLog]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -6055,7 +6071,9 @@ function ReturnsView({ orders, onExit }) {
               : "No orders match your search."
           }
           renderItem={(order) => {
-            const isReturned = returnedIds.has(order.id);
+            // Match by the order's OWN sale day + number, so a past day's return
+            // of the same number can't mark today's sale as returned.
+            const isReturned = returnedKeys.has(`${orderSaleDate(order)}::${order.id}`);
             const isExpanded = expandedId === order.id;
             return (
               <div style={{ background:CARD, border: isReturned ? "1px solid rgba(74,222,128,.25)" : isExpanded ? BORDER_BRIGHT : BORDER, borderRadius:RADIUS, padding:"1.25rem", transition:"border-color 0.2s", boxShadow: isExpanded ? "0 0 12px rgba(60,110,255,.12)" : "none" }}>
