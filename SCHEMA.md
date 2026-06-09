@@ -152,3 +152,34 @@ The two `storeIds` values map to the existing Central/Pine `storeMode` toggle in
 > **Separate from POS.** This is distinct from marathon-pos-app's
 > `/users/{uid}/posAccess.storeIds`. Each app tracks its own store scope; do not
 > conflate the two.
+
+---
+
+## `/marketing/campaigns/{campaignId}`
+
+> **Owned by marathon-ai, not this app.** The marathon-store-app PWA never reads
+> or writes `/marketing`. It is written exclusively by the **Marathon AI**
+> Marketing view (weekly advertising campaigns). The authoritative, field-level
+> schema lives in **`marathon-ai/SCHEMA.md`** — this entry is a cross-reference
+> so the RTDB map here stays complete.
+
+One node per weekly advertising campaign, keyed `"c" + Date.now()` at confirm
+time. Campaigns run **Wednesday → Wednesday** (SA-local). Each holds the
+advertised 15–20 `picks` with a frozen `baseline` snapshot, a ~15-product
+un-advertised `control` cohort for measurement, and a `results` field
+(`null` until the campaign week elapses, then computed and cached by Marathon AI).
+
+| Field         | Type                 | Notes |
+|---------------|----------------------|-------|
+| `campaignId`  | string               | Mirror of the node key (`"c{ms}"`). |
+| `status`      | `"active"`           | Stored at write; displayed status is derived from dates + `results`. |
+| `pickedAt`    | ISO string           | When the campaign was confirmed. |
+| `weekStart` / `weekEnd` | `"YYYY-MM-DD"` | SA dates of the campaign's opening and closing Wednesdays (7 days apart). |
+| `coveragePct` | number \| null       | Name-match coverage snapshot at pick time. |
+| `picks`       | object[]             | Advertised products, each with `productId`, `name`, `photoUrl`, `productType`, `sizes[]`, `reason`, and a `baseline` snapshot. |
+| `control`     | object[]             | Un-advertised comparison products (`productId`, `name`, `category`, `baseline`). |
+| `results`     | object \| null       | Computed after `weekEnd` (lift vs baseline + control). See marathon-ai/SCHEMA.md. |
+
+Marketing reads `/products`, `/insights_log` and `/returns_log` (documented
+above) through the shared Slow Movers engine; the only path it **writes** is
+`/marketing`.
