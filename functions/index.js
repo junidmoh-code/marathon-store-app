@@ -57,6 +57,8 @@ function renderWhatsAppText(templateName, params = []) {
 // Retained Meta WhatsApp send path. No longer wired to the sendWhatsApp endpoint
 // (which now only enqueues to the whatsapp_outbox collection) — kept in place to
 // be repurposed as the scheduled outbox fallback function next.
+// Temporary: unused until the scheduled Meta fallback (which will call this) lands.
+// eslint-disable-next-line no-unused-vars
 async function sendViaMetaTemplate(req, res) {
   const body = req.body || {};
   console.log("sendWhatsApp request:", JSON.stringify({
