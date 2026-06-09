@@ -32,23 +32,64 @@ function normaliseSAPhone(raw) {
   return "+" + digits;
 }
 
-async function handlePost(req, res) {
+// Approved WhatsApp templates: the exact Meta body text plus the number of
+// params each expects. renderedText (built here) is what the self-hosted
+// gateway sends as free text — the primary path now; templateName + variables
+// are still stored for the Meta fallback. {{n}} maps to templateParams[n-1].
+// NOTE: the out-of-stock template is genuinely named "rder_out_of_stock" in
+// Meta (typo baked in) — keep it.
+const TEMPLATE_BODIES = {
+  order_placed:      { params: 4, render: (p) => `Hi ${p[0]}! Your order #${p[1]} has been placed. ${p[2]} Size ${p[3]}. We'll notify you when it's ready! 👟` },
+  order_ready:       { params: 2, render: (p) => `Hi ${p[0]}, your order #${p[1]} is ready to collect at Marathon Club. See you soon!` },
+  rder_out_of_stock: { params: 1, render: (p) => `Sorry, #${p[0]} is out of stock. Please speak to our assistant 😔` },
+  order_tomorrow:    { params: 1, render: (p) => `Your Marathon order ${p[0]} is scheduled for tomorrow. We will notify you when it is ready for collection.` },
+};
+
+// Mask a phone number for logging — keep only the last 4 digits, never the full
+// number (PII).
+function maskPhone(raw) {
+  const digits = String(raw || "").replace(/\D/g, "");
+  return digits.length >= 4 ? `***${digits.slice(-4)}` : "***";
+}
+
+// Validate the template + param arity, then render the message. Returns
+// { ok: true, text } on success, or { ok: false, error } when the template is
+// unknown or the param count is wrong — callers must NOT send on failure. We
+// deliberately fail loudly rather than render a generic fallback, so a caller
+// bug can't ship a broken ("undefined") message to a customer.
+function renderWhatsAppText(templateName, params = []) {
+  const entry = TEMPLATE_BODIES[templateName];
+  if (!entry) {
+    return { ok: false, error: `Unknown templateName "${templateName}"` };
+  }
+  if (params.length !== entry.params) {
+    return { ok: false, error: `Template "${templateName}" expects ${entry.params} param(s) but got ${params.length}` };
+  }
+  return { ok: true, text: entry.render(params.map(String)) };
+}
+
+// Retained Meta WhatsApp send path. No longer wired to the sendWhatsApp endpoint
+// (which now only enqueues to the whatsapp_outbox collection) — kept in place to
+// be repurposed as the scheduled outbox fallback function next.
+// Temporary: unused until the scheduled Meta fallback (which will call this) lands.
+// eslint-disable-next-line no-unused-vars
+async function sendViaMetaTemplate(req, res) {
   const body = req.body || {};
   console.log("sendWhatsApp request:", JSON.stringify({
     templateName:  body.templateName,
-    recipientPhone: body.recipientPhone,
+    recipient:     maskPhone(body.recipientPhone),
     paramCount:    (body.templateParams || []).length,
   }));
 
   const { templateName, recipientPhone, templateParams = [] } = body;
 
   if (!templateName || !recipientPhone) {
-    console.warn("Missing required fields:", { templateName, recipientPhone });
+    console.warn("Missing required fields:", { templateName, recipientPhone: maskPhone(recipientPhone) });
     return res.status(400).json({ error: "templateName and recipientPhone are required" });
   }
 
   const to = normaliseSAPhone(recipientPhone);
-  console.log("Sending template:", templateName, "to:", to, "params:", templateParams);
+  console.log("Sending template:", templateName, "to:", maskPhone(to), "params:", templateParams);
 
   const payload = {
     messaging_product: "whatsapp",
@@ -63,7 +104,7 @@ async function handlePost(req, res) {
     },
   };
 
-  console.log("Meta API payload:", JSON.stringify(payload));
+  console.log("Meta API payload:", JSON.stringify({ ...payload, to: maskPhone(to) }));
 
   let waRes, json;
   try {
@@ -104,8 +145,67 @@ async function handlePost(req, res) {
   }
 
   const messageId = json.messages?.[0]?.id ?? null;
-  console.log("WhatsApp sent successfully:", templateName, "to:", to, "msgId:", messageId);
+  console.log("WhatsApp sent successfully:", templateName, "to:", maskPhone(to), "msgId:", messageId);
   return res.json({ success: true, messageId });
+}
+
+// Primary send path: enqueue a doc to the whatsapp_outbox collection (default
+// database) for the self-hosted gateway to consume. Same request contract as
+// before ({ templateName, recipientPhone, templateParams }) so callers are
+// unchanged — this no longer calls Meta directly.
+async function handlePost(req, res) {
+  const body = req.body || {};
+  const { templateName, recipientPhone, templateParams = [] } = body;
+
+  console.log("sendWhatsApp enqueue:", JSON.stringify({
+    templateName,
+    recipient:  maskPhone(recipientPhone),
+    paramCount: templateParams.length,
+  }));
+
+  if (!templateName || !recipientPhone) {
+    console.warn("Missing required fields:", { templateName, recipientPhone: maskPhone(recipientPhone) });
+    return res.status(400).json({ error: "templateName and recipientPhone are required" });
+  }
+
+  // Strict validation: reject unknown templates or wrong param counts rather
+  // than rendering a generic fallback — a caller bug should fail loudly, not
+  // ship a customer a broken message.
+  const rendered = renderWhatsAppText(templateName, templateParams);
+  if (!rendered.ok) {
+    console.error("sendWhatsApp rejected invalid template request:", JSON.stringify({
+      templateName,
+      paramCount: templateParams.length,
+      error:      rendered.error,
+    }));
+    return res.status(400).json({ error: rendered.error });
+  }
+
+  const to           = normaliseSAPhone(recipientPhone);
+  const renderedText = rendered.text;
+
+  const outboxDoc = {
+    to,
+    renderedText,
+    templateName,
+    variables:  templateParams,
+    status:     "pending",
+    provider:   null,
+    createdAt:  admin.firestore.FieldValue.serverTimestamp(),
+    sentAt:     null,
+    messageId:  null,
+    attempts:   0,
+    lastError:  null,
+  };
+
+  try {
+    const ref = await admin.firestore().collection("whatsapp_outbox").add(outboxDoc);
+    console.log("WhatsApp enqueued:", JSON.stringify({ templateName, recipient: maskPhone(to), outboxId: ref.id }));
+    return res.json({ success: true, outboxId: ref.id, status: "pending" });
+  } catch (err) {
+    console.error("Failed to enqueue WhatsApp outbox doc:", err.message);
+    return res.status(500).json({ error: "Could not enqueue WhatsApp message", detail: err.message });
+  }
 }
 
 exports.sendWhatsApp = onRequest(
