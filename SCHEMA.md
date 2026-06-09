@@ -180,6 +180,8 @@ un-advertised `control` cohort for measurement, and a `results` field
 | `control`     | object[]             | Un-advertised comparison products (`productId`, `name`, `category`, `baseline`). |
 | `results`     | object \| null       | Computed after `weekEnd` (lift vs baseline + control). See marathon-ai/SCHEMA.md. |
 
-Marketing reads `/products`, `/insights_log` and `/returns_log` (documented
-above) through the shared Slow Movers engine; the only path it **writes** is
-`/marketing`.
+Marketing reads `/products` (documented above) plus `/insights_log` and
+`/returns_log` through the shared Slow Movers engine. Those two log paths are
+written by this app's order flow (`src/App.jsx`) and read by `functions/index.js`
+but are not yet broken out as their own sections in this file. The only path
+Marketing **writes** is `/marketing`.
