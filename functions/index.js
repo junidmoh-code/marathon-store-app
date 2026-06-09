@@ -184,6 +184,43 @@ async function handlePost(req, res) {
   const to           = normaliseSAPhone(recipientPhone);
   const renderedText = rendered.text;
 
+  // Server-side dedupe: the frontend sendWhatsAppTemplate is fire-and-forget
+  // with no double-tap guard, so an accidental double-tap can fire two
+  // identical requests. Look for an identical message enqueued in the last 90s
+  // and reuse it instead of creating a duplicate. We filter ONLY on createdAt
+  // (single-field, auto-indexed) and match to/templateName/renderedText/status
+  // in memory — a composite where() would require a manual index.
+  const DEDUPE_WINDOW_MS = 90 * 1000;
+  const ACTIVE_STATUSES  = ["pending", "sending", "sent"];
+  try {
+    const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - DEDUPE_WINDOW_MS);
+    const recent = await admin.firestore()
+      .collection("whatsapp_outbox")
+      .where("createdAt", ">=", cutoff)
+      .get();
+    const dup = recent.docs.find((d) => {
+      const x = d.data();
+      return x.to === to
+        && x.templateName === templateName
+        && x.renderedText === renderedText
+        && ACTIVE_STATUSES.includes(x.status);
+    });
+    if (dup) {
+      const status = dup.data().status;
+      console.log("sendWhatsApp deduped:", JSON.stringify({
+        templateName,
+        recipient: maskPhone(to),
+        outboxId:  dup.id,
+        status,
+      }));
+      return res.json({ success: true, outboxId: dup.id, status, deduped: true });
+    }
+  } catch (err) {
+    // Never drop a real message because the lookup failed — log and fall
+    // through to creating the doc.
+    console.warn("sendWhatsApp dedupe lookup failed; proceeding to enqueue:", err.message);
+  }
+
   const outboxDoc = {
     to,
     renderedText,
