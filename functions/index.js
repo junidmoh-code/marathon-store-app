@@ -1,4 +1,5 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
@@ -16,6 +17,13 @@ if (!admin.apps.length) {
 
 const WA_PHONE_ID = "1100352259829109";
 const metaToken   = defineSecret("meta-whatsapp-token");
+
+// ── Meta fallback sweep config ──────────────────────────────────────────────
+// The self-hosted gateway is the primary sender; this fallback delivers via
+// Meta only when the gateway hasn't sent a doc in time (e.g. the mini is down).
+const META_FALLBACK_ENABLED  = process.env.META_FALLBACK_ENABLED !== "false";        // default true
+const FALLBACK_GRACE_SECONDS = parseInt(process.env.FALLBACK_GRACE_SECONDS, 10) || 60; // gateway's head start
+const META_MAX_ATTEMPTS      = parseInt(process.env.META_MAX_ATTEMPTS, 10) || 2;       // Meta tries before "failed"
 
 // Set CORS headers on every response — must happen before any early return.
 function setCORSHeaders(res) {
@@ -68,29 +76,15 @@ function renderWhatsAppText(templateName, params = []) {
   return { ok: true, text: entry.render(params.map(String)) };
 }
 
-// Retained Meta WhatsApp send path. No longer wired to the sendWhatsApp endpoint
-// (which now only enqueues to the whatsapp_outbox collection) — kept in place to
-// be repurposed as the scheduled outbox fallback function next.
-// Temporary: unused until the scheduled Meta fallback (which will call this) lands.
-// eslint-disable-next-line no-unused-vars
-async function sendViaMetaTemplate(req, res) {
-  const body = req.body || {};
-  console.log("sendWhatsApp request:", JSON.stringify({
-    templateName:  body.templateName,
-    recipient:     maskPhone(body.recipientPhone),
-    paramCount:    (body.templateParams || []).length,
-  }));
-
-  const { templateName, recipientPhone, templateParams = [] } = body;
-
-  if (!templateName || !recipientPhone) {
-    console.warn("Missing required fields:", { templateName, recipientPhone: maskPhone(recipientPhone) });
-    return res.status(400).json({ error: "templateName and recipientPhone are required" });
-  }
-
-  const to = normaliseSAPhone(recipientPhone);
-  console.log("Sending template:", templateName, "to:", maskPhone(to), "params:", templateParams);
-
+// Send a WhatsApp template via the Meta Graph API. This is the fallback send
+// path, driven by metaFallbackSweep when the self-hosted gateway hasn't
+// delivered an outbox doc in time. `to` must already be E.164-normalized (the
+// producer stores it that way). Returns { ok: true, messageId } on success, or
+// { ok: false, error, metaCode } on failure — it never throws for Meta errors,
+// so the caller can decide whether to retry or fail the doc.
+// NOTE: token handling (metaToken secret + hardcoded WA_PHONE_ID) is unchanged;
+// moving the token to Secret Manager properly is a separate follow-up.
+async function sendViaMetaTemplate(to, templateName, templateParams = []) {
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -118,35 +112,20 @@ async function sendViaMetaTemplate(req, res) {
     });
     json = await waRes.json();
   } catch (err) {
-    console.error("Fetch to Meta API failed:", err.message);
-    return res.status(502).json({ error: "Could not reach WhatsApp API", detail: err.message });
+    return { ok: false, error: `Could not reach WhatsApp API: ${err.message}` };
   }
-
-  console.log("Meta API response status:", waRes.status, "body:", JSON.stringify(json));
 
   if (!waRes.ok) {
     const metaCode    = json?.error?.code;
     const metaMessage = json?.error?.message || "WhatsApp API call failed";
-    const metaType    = json?.error?.type || "";
-
     if (metaCode === 190) {
-      console.error("TOKEN EXPIRED — rotate Meta token in Business Manager, then: gcloud secrets versions add meta-whatsapp-token --data-file=<file> --project=marathon-club && firebase deploy --only functions:sendWhatsApp");
-      return res.status(401).json({
-        error: "WhatsApp token expired or invalid. Rotate the meta-whatsapp-token secret in Secret Manager (marathon-club) and redeploy sendWhatsApp.",
-        metaCode,
-        metaMessage,
-      });
+      console.error("TOKEN EXPIRED — rotate Meta token in Business Manager, then: gcloud secrets versions add meta-whatsapp-token --data-file=<file> --project=marathon-club && firebase deploy --only functions");
     }
-
-    // For template/param errors (not auth errors), return 200 with success:false
-    // so the browser doesn't see a 502 and the app continues without interruption.
-    console.warn("Meta API soft error (non-auth):", JSON.stringify(json));
-    return res.status(200).json({ success: false, metaCode, metaMessage, detail: json });
+    return { ok: false, error: metaMessage, metaCode };
   }
 
   const messageId = json.messages?.[0]?.id ?? null;
-  console.log("WhatsApp sent successfully:", templateName, "to:", maskPhone(to), "msgId:", messageId);
-  return res.json({ success: true, messageId });
+  return { ok: true, messageId };
 }
 
 // Primary send path: enqueue a doc to the whatsapp_outbox collection (default
@@ -265,6 +244,124 @@ exports.sendWhatsApp = onRequest(
       console.error("sendWhatsApp unhandled error:", err.stack || err.message);
       res.status(500).json({ error: err.message || "Internal server error" });
     });
+  }
+);
+
+// Claim a single stale outbox doc and deliver it via Meta. The claim is a
+// Firestore transaction acting as a mutex against the gateway: it proceeds only
+// if the doc is still "pending", so we can never double-send a doc the gateway
+// already grabbed. Resolves quietly (no throw) so one bad doc can't abort the sweep.
+async function processFallbackDoc(db, docRef, docId) {
+  let claimed;
+  try {
+    claimed = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(docRef);
+      if (!snap.exists) return null;
+      const data = snap.data();
+      if (data.status !== "pending") return null;   // gateway grabbed it (or it failed) — skip
+      const attempts = (data.attempts || 0) + 1;
+      tx.update(docRef, {
+        status:    "sending",
+        provider:  "meta",
+        attempts,
+        claimedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return { ...data, attempts };
+    });
+  } catch (err) {
+    console.error("metaFallbackSweep claim failed:", JSON.stringify({ docId, error: err.message }));
+    return;
+  }
+  if (!claimed) return;  // no longer pending — the gateway won the race
+
+  const to           = claimed.to;
+  const templateName = claimed.templateName;
+  const templateParams = claimed.variables || claimed.templateParams || [];
+
+  const result = await sendViaMetaTemplate(to, templateName, templateParams);
+
+  if (result.ok) {
+    await docRef.update({
+      status:    "sent",
+      provider:  "meta",
+      sentAt:    admin.firestore.FieldValue.serverTimestamp(),
+      messageId: result.messageId,
+    });
+    console.log("metaFallbackSweep meta-send:", JSON.stringify({
+      docId, recipient: maskPhone(to), templateName, outcome: "sent", messageId: result.messageId,
+    }));
+    return;
+  }
+
+  // Meta send failed. The fallback is the last resort, so it's the only path
+  // that ever sets "failed" — but only once we've exhausted META_MAX_ATTEMPTS.
+  if (claimed.attempts >= META_MAX_ATTEMPTS) {
+    await docRef.update({
+      status:    "failed",
+      lastError: result.error || "Meta send failed",
+    });
+    console.error("metaFallbackSweep meta-send:", JSON.stringify({
+      docId, recipient: maskPhone(to), templateName, outcome: "failed",
+      attempts: claimed.attempts, error: result.error,
+    }));
+  } else {
+    // Revert to pending so a later sweep retries — or the gateway sends it if
+    // it recovers. Clearing provider hands it back to whoever claims next.
+    await docRef.update({
+      status:    "pending",
+      provider:  null,
+      lastError: result.error || "Meta send failed",
+    });
+    console.warn("metaFallbackSweep meta-send:", JSON.stringify({
+      docId, recipient: maskPhone(to), templateName, outcome: "retry",
+      attempts: claimed.attempts, error: result.error,
+    }));
+  }
+}
+
+// Scheduled Meta fallback for the WhatsApp outbox. Runs every minute and
+// delivers via Meta any "pending" doc the gateway hasn't sent within the grace
+// window. Equality-only query (no composite index); age is filtered in memory.
+exports.metaFallbackSweep = onSchedule(
+  {
+    schedule:       "every 1 minutes",
+    region:         "europe-west1",
+    timeoutSeconds: 120,
+    memory:         "256MiB",
+    secrets:        [metaToken],
+  },
+  async () => {
+    if (!META_FALLBACK_ENABLED) {
+      console.log("metaFallbackSweep: disabled (META_FALLBACK_ENABLED=false)");
+      return;
+    }
+
+    const db = admin.firestore();
+    // 1. Equality-only query — no composite where() on createdAt (that would
+    //    need a manual index). Cap the batch so one run stays bounded.
+    const snap = await db.collection("whatsapp_outbox")
+      .where("status", "==", "pending")
+      .limit(50)
+      .get();
+
+    // 2. Filter age in memory so the gateway gets first dibs on fresh docs.
+    const cutoffMs = Date.now() - FALLBACK_GRACE_SECONDS * 1000;
+    const stale = snap.docs.filter((d) => {
+      const ca = d.data().createdAt;
+      // createdAt is a Firestore Timestamp; skip docs whose serverTimestamp
+      // hasn't resolved yet (toMillis unavailable) — they're brand new anyway.
+      return ca && typeof ca.toMillis === "function" && ca.toMillis() <= cutoffMs;
+    });
+
+    if (stale.length === 0) {
+      console.log("metaFallbackSweep: nothing to do", { scanned: snap.size });
+      return;
+    }
+    console.log("metaFallbackSweep: claiming stale pending docs", { stale: stale.length, scanned: snap.size });
+
+    for (const docSnap of stale) {
+      await processFallbackDoc(db, docSnap.ref, docSnap.id);
+    }
   }
 );
 
