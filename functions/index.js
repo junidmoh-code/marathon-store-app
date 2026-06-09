@@ -22,8 +22,8 @@ const metaToken   = defineSecret("meta-whatsapp-token");
 // The self-hosted gateway is the primary sender; this fallback delivers via
 // Meta only when the gateway hasn't sent a doc in time (e.g. the mini is down).
 const META_FALLBACK_ENABLED  = process.env.META_FALLBACK_ENABLED !== "false";        // default true
-const FALLBACK_GRACE_SECONDS = parseInt(process.env.FALLBACK_GRACE_SECONDS || "60", 10); // gateway's head start
-const META_MAX_ATTEMPTS      = parseInt(process.env.META_MAX_ATTEMPTS || "2", 10);   // Meta tries before "failed"
+const FALLBACK_GRACE_SECONDS = parseInt(process.env.FALLBACK_GRACE_SECONDS, 10) || 60; // gateway's head start
+const META_MAX_ATTEMPTS      = parseInt(process.env.META_MAX_ATTEMPTS, 10) || 2;       // Meta tries before "failed"
 
 // Set CORS headers on every response — must happen before any early return.
 function setCORSHeaders(res) {
