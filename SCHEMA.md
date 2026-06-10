@@ -118,6 +118,44 @@ destination regardless of store or the product's `hubs`. The Hub C warehouse vie
 
 ---
 
+## `/insights_log`
+
+Append-only event log, keyed by Firebase push id (chronological). Written by
+`logInsight` in `src/App.jsx` at each order-lifecycle transition; read by the
+Insights tabs (in-app) and by `functions/index.js` / the Slow Movers engine for
+historical analytics. **Entries are never updated or deleted** — `/orders/{id}`
+is ephemeral (daily `orderCounter` wraps and overwrites), so this log is the only
+durable record of past-day activity.
+
+| Field             | Type                                                                          | Notes |
+|-------------------|-------------------------------------------------------------------------------|-------|
+| `timestamp`       | ISO string                                                                    | When the event fired. Primary sort key. |
+| `productId`       | string \| null \| **absent**                                                  | The durable `p{timestamp}` product key (see `/products`). **Added 2026-06-10**; **absent** on the ~18.6k events written before. New events always include the key, but its value is `null` when written against a legacy order/batch that itself predates `productId` (the `?? null` keeps the field present rather than letting RTDB drop an `undefined`). Prefer it for joins; fall back to `productName` when absent **or null**. |
+| `productName`     | string                                                                        | Product name at event time. The legacy join key — name-matching only resolves ~55–66% of events, which is why `productId` was added. |
+| `productCategory` | string                                                                        | May be empty (clothing refills write `""`). |
+| `productType`     | `"sneaker" \| "clothing"`                                                     | |
+| `size`            | string                                                                        | |
+| `customerName`    | string                                                                        | `"Shop Refill"` for clothing/shop refills. |
+| `customerPhone`   | string \| null                                                                | `null` for refills. |
+| `orderNumber`     | string                                                                        | The daily 3-digit order id (`/orders` key); **not globally unique** — dedupe with a composite `${SA-date}::${orderNumber}` key. |
+| `action`          | `"placed" \| "ready" \| "out_of_stock" \| "tomorrow" \| "collected" \| "stock_depleted"` | The lifecycle transition. |
+| `placedAtHub`     | `"hub1" \| "hub2" \| "hub3" \| "hubC"`                                        | Fulfilment hub. |
+| `displayRefilledBy` | string                                                                       | `stock_depleted` events only — the resolving hub label. |
+
+> **`productId` is the join key going forward.** Every new event carries the
+> field (string id, or `null` for a legacy order/batch). Consumers should prefer
+> it and only name-match events where it is absent or `null` — this keeps
+> attribution backward-compatible while lifting coverage to ~100% for new data.
+>
+> **Consumer wiring is a follow-up.** As of this change the *writers* emit
+> `productId`; the readers (in-app Insights tabs and `functions/index.js`
+> aggregation) still join by `productName`. Switching them to the prefer-id /
+> fall-back-to-name lookup is tracked separately — there is no rush, since the
+> id only helps events written after 2026-06-10 (a small slice until new data
+> accumulates).
+
+---
+
 ## `/users/{uid}`
 
 One node per staff account, keyed by Firebase Auth UID. Written by the
@@ -180,8 +218,8 @@ un-advertised `control` cohort for measurement, and a `results` field
 | `control`     | object[]             | Un-advertised comparison products (`productId`, `name`, `category`, `baseline`). |
 | `results`     | object \| null       | Computed after `weekEnd` (lift vs baseline + control). See marathon-ai/SCHEMA.md. |
 
-Marketing reads `/products` (documented above) plus `/insights_log` and
-`/returns_log` through the shared Slow Movers engine. Those two log paths are
-written by this app's order flow (`src/App.jsx`) and read by `functions/index.js`
-but are not yet broken out as their own sections in this file. The only path
-Marketing **writes** is `/marketing`.
+Marketing reads `/products` (documented above) plus `/insights_log` (documented
+above) and `/returns_log` through the shared Slow Movers engine. Those log paths
+are written by this app's order flow (`src/App.jsx`) and read by
+`functions/index.js`; `/returns_log` is not yet broken out as its own section in
+this file. The only path Marketing **writes** is `/marketing`.
