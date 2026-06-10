@@ -2981,6 +2981,11 @@ function AssistantView({ products, onExit, orders = [] }) {
         await writeOrder(order);
         logInsight({
           timestamp: now,
+          // productId (p{timestamp}) is the durable product key. Logging it on
+          // every event lets analytics join on id instead of name-matching,
+          // which only resolves ~55-66% of historical events. Consumers still
+          // fall back to productName for events written before this field.
+          productId: item.product.id,
           productName: item.product.name,
           productCategory: item.product.category || "",
           productType: item.product.productType || "sneaker",
@@ -3074,6 +3079,9 @@ function AssistantView({ products, onExit, orders = [] }) {
         await writeOrder(order);
         logInsight({
           timestamp: now,
+          // productId joins analytics on the durable key; see the note at the
+          // checkout logInsight site. Older events fall back to productName.
+          productId: item.product.id,
           productName: item.product.name,
           productCategory: item.product.category || "",
           productType: "clothing",
@@ -3810,6 +3818,9 @@ function WarehouseView({ products = [], orders, onExit }) {
     const insightAction = { [STATUS.READY]:"ready", [STATUS.OUT_OF_STOCK]:"out_of_stock", [STATUS.COMING_TOMORROW]:"tomorrow", [STATUS.COLLECTED]:"collected" }[status];
     if (insightAction) logInsight({
       timestamp: now,
+      // productId joins analytics on the durable key; see the note at the
+      // checkout logInsight site. Older events fall back to productName.
+      productId: order.productId,
       productName: order.productName,
       productCategory: order.productCategory || "",
       productType: order.productType || "sneaker",
@@ -3881,6 +3892,9 @@ function WarehouseView({ products = [], orders, onExit }) {
     if (status === "stockDepleted") {
       logInsight({
         timestamp:        now,
+        // productId joins analytics on the durable key; see the note at the
+        // checkout logInsight site. Older events fall back to productName.
+        productId:        order.productId,
         productName:      order.productName,
         productCategory:  order.productCategory || "",
         productType:      order.productType || "sneaker",
@@ -3943,6 +3957,9 @@ function WarehouseView({ products = [], orders, onExit }) {
       updateOrder(it.orderId, patch);
       if (insightAction) logInsight({
         timestamp: now,
+        // productId joins analytics on the durable key; see the note at the
+        // checkout logInsight site. Older events fall back to productName.
+        productId: batch.productId,
         productName: batch.productName,
         productCategory: "",
         productType: "clothing",
