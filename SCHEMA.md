@@ -130,7 +130,7 @@ durable record of past-day activity.
 | Field             | Type                                                                          | Notes |
 |-------------------|-------------------------------------------------------------------------------|-------|
 | `timestamp`       | ISO string                                                                    | When the event fired. Primary sort key. |
-| `productId`       | string \| **absent**                                                          | The durable `p{timestamp}` product key (see `/products`). **Added 2026-06-10**; absent on the ~18.6k events written before. Prefer it for joins; fall back to `productName` when missing. |
+| `productId`       | string \| null \| **absent**                                                  | The durable `p{timestamp}` product key (see `/products`). **Added 2026-06-10**; **absent** on the ~18.6k events written before. New events always include the key, but its value is `null` when written against a legacy order/batch that itself predates `productId` (the `?? null` keeps the field present rather than letting RTDB drop an `undefined`). Prefer it for joins; fall back to `productName` when absent **or null**. |
 | `productName`     | string                                                                        | Product name at event time. The legacy join key — name-matching only resolves ~55–66% of events, which is why `productId` was added. |
 | `productCategory` | string                                                                        | May be empty (clothing refills write `""`). |
 | `productType`     | `"sneaker" \| "clothing"`                                                     | |
@@ -142,10 +142,17 @@ durable record of past-day activity.
 | `placedAtHub`     | `"hub1" \| "hub2" \| "hub3" \| "hubC"`                                        | Fulfilment hub. |
 | `displayRefilledBy` | string                                                                       | `stock_depleted` events only — the resolving hub label. |
 
-> **`productId` is the join key going forward.** Every new event carries it.
-> Consumers should prefer it and only name-match historical (pre-2026-06-10)
-> events that lack it — this keeps attribution backward-compatible while lifting
-> coverage to ~100% for new data.
+> **`productId` is the join key going forward.** Every new event carries the
+> field (string id, or `null` for a legacy order/batch). Consumers should prefer
+> it and only name-match events where it is absent or `null` — this keeps
+> attribution backward-compatible while lifting coverage to ~100% for new data.
+>
+> **Consumer wiring is a follow-up.** As of this change the *writers* emit
+> `productId`; the readers (in-app Insights tabs and `functions/index.js`
+> aggregation) still join by `productName`. Switching them to the prefer-id /
+> fall-back-to-name lookup is tracked separately — there is no rush, since the
+> id only helps events written after 2026-06-10 (a small slice until new data
+> accumulates).
 
 ---
 

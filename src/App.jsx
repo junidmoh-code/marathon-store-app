@@ -3820,7 +3820,10 @@ function WarehouseView({ products = [], orders, onExit }) {
       timestamp: now,
       // productId joins analytics on the durable key; see the note at the
       // checkout logInsight site. Older events fall back to productName.
-      productId: order.productId,
+      // ?? null keeps the key present for legacy orders lacking productId —
+      // RTDB drops undefined fields, which would break the "always present"
+      // contract and force consumers to guess.
+      productId: order.productId ?? null,
       productName: order.productName,
       productCategory: order.productCategory || "",
       productType: order.productType || "sneaker",
@@ -3894,7 +3897,8 @@ function WarehouseView({ products = [], orders, onExit }) {
         timestamp:        now,
         // productId joins analytics on the durable key; see the note at the
         // checkout logInsight site. Older events fall back to productName.
-        productId:        order.productId,
+        // ?? null keeps the key present for legacy orders (RTDB drops undefined).
+        productId:        order.productId ?? null,
         productName:      order.productName,
         productCategory:  order.productCategory || "",
         productType:      order.productType || "sneaker",
@@ -3959,7 +3963,8 @@ function WarehouseView({ products = [], orders, onExit }) {
         timestamp: now,
         // productId joins analytics on the durable key; see the note at the
         // checkout logInsight site. Older events fall back to productName.
-        productId: batch.productId,
+        // ?? null keeps the key present for legacy batches (RTDB drops undefined).
+        productId: batch.productId ?? null,
         productName: batch.productName,
         productCategory: "",
         productType: "clothing",
