@@ -19,6 +19,20 @@ import { GRAY, GREEN, AMBER, BLUE_L, RED, BORDER, bGreen, bGhost, tabOn, tabOff 
 
 export default function Transfer({ products, registry, actorRole }) {
   const [mode, setMode] = useState("dispatch");
+  const [prefill, setPrefill] = useState(null);
+
+  // Picking an open refill request prefills a Dispatch (destination + line + the
+  // refillId link) and jumps to the Dispatch tab. On receive, that link closes
+  // the request (see Receive).
+  const pickRefill = (r) => {
+    setPrefill({
+      to: r.requestingLocation,
+      refillId: r.id,
+      lines: [{ productId: r.productId, productName: products.find(p => p.id === r.productId)?.name || r.productId, size: r.size, qty: r.qty || 1 }],
+    });
+    setMode("dispatch");
+  };
+
   return (
     <div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
@@ -26,15 +40,15 @@ export default function Transfer({ products, registry, actorRole }) {
           <button key={k} onClick={() => setMode(k)} style={mode === k ? tabOn : tabOff}>{l}</button>
         ))}
       </div>
-      {mode === "dispatch" && <Dispatch products={products} registry={registry} actorRole={actorRole} />}
+      {mode === "dispatch" && <Dispatch key={prefill?.refillId || "new"} products={products} registry={registry} actorRole={actorRole} prefill={prefill} onDone={() => setPrefill(null)} />}
       {mode === "receive"  && <Receive  products={products} registry={registry} actorRole={actorRole} />}
-      {mode === "refill"   && <RefillList products={products} registry={registry} onPick={() => setMode("dispatch")} />}
+      {mode === "refill"   && <RefillList products={products} registry={registry} onPick={pickRefill} />}
     </div>
   );
 }
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────
-function Dispatch({ products, registry, actorRole, prefill }) {
+function Dispatch({ products, registry, actorRole, prefill, onDone }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState(prefill?.to || "");
   const [refillId, setRefillId] = useState(prefill?.refillId || null);
@@ -61,27 +75,37 @@ function Dispatch({ products, registry, actorRole, prefill }) {
     if (!lines.length) return flash("err", "Add at least one line.");
     setBusy(true);
     const transferId = push(child(ref(database), "transfers")).key;
+    const done = [];
     let fail = 0;
     for (const ln of lines) {
       const res = await applyMovement({
         type: "transfer_out", productId: ln.productId, size: ln.size, qty: ln.qty,
         from, to: IN_TRANSIT, actorRole, link: { transferId, refillId: refillId || null },
       });
-      if (!res.ok) fail++;
+      if (res.ok) done.push(ln); else fail++;
     }
-    // Record the transfer doc (final destination kept here; in_transit is the leg).
+    // If NOTHING moved, don't create a transfer doc — there is no transfer.
+    if (!done.length) {
+      setBusy(false);
+      return flash("err", `Nothing dispatched — check stock at ${labelFor(from, registry)}`);
+    }
+    // Persist the transfer doc reflecting ONLY the lines that actually moved, so the
+    // record never claims more in transit than was decremented from the source.
+    let docErr = false;
     await update(ref(database), {
       [`transfers/${transferId}`]: {
         status: "dispatched",
         from, to, refillId: refillId || null,
-        lines: lines.map(l => ({ productId: l.productId, size: l.size, qtyDispatched: l.qty, qtyReceived: null })),
+        lines: done.map(l => ({ productId: l.productId, size: l.size, qtyDispatched: l.qty, qtyReceived: null })),
         createdBy: auth.currentUser?.uid || null,
         createdAt: new Date().toISOString(),
       },
-    }).catch(() => { fail++; });
+    }).catch(() => { docErr = true; });
     setBusy(false);
-    if (fail) flash("err", `${fail} line(s) failed — check stock at ${labelFor(from, registry)}`);
-    else { setLines([]); setRefillId(null); flash("ok", `Dispatched ${lines.length} line(s) → in transit`); }
+    if (docErr) return flash("err", "Dispatched, but the transfer record failed to save — see In-Transit.");
+    setLines([]); setRefillId(null);
+    onDone && onDone();
+    flash(fail ? "err" : "ok", fail ? `Dispatched ${done.length}, ${fail} failed (insufficient stock)` : `Dispatched ${done.length} line(s) → in transit`);
   };
 
   return (
@@ -163,6 +187,13 @@ function Receive({ products, registry, actorRole }) {
       }
       updatedLines.push({ ...ln, qtyReceived: received });
     }
+    // If any leg failed, leave the transfer OPEN (dispatched) — don't mark it received
+    // or fulfil the refill on a partial receive. The successful legs are already in the
+    // ledger and visible; the operator reviews In-Transit and retries the rest.
+    if (fail > 0) {
+      setBusy(false);
+      return flash("err", `${fail} leg(s) failed — transfer left open. Review In-Transit before retrying.`);
+    }
     await update(ref(database), {
       [`transfers/${transfer.id}/status`]: discrepancy ? "discrepancy" : "received",
       [`transfers/${transfer.id}/lines`]: updatedLines,
@@ -234,7 +265,7 @@ function RefillList({ products, registry, onPick }) {
             <span style={{ color: "#fff" }}>{nameFor(r.productId)} · {r.size} ×{r.qty || 1}</span>
             <span style={{ color: GRAY }}>→ {labelFor(r.requestingLocation, registry)}</span>
           </div>
-          <div style={{ fontSize: 11, color: GRAY, marginTop: 4 }}>Fulfil via the Dispatch tab (link the request there).</div>
+          <button onClick={() => onPick(r)} style={{ ...bGhost, width: "100%", marginTop: 8 }}>Fulfil → prefill Dispatch</button>
         </Card>
       ))}
     </div>

@@ -14,7 +14,9 @@ const STALE_MS = 2 * 24 * 60 * 60 * 1000; // 2 days
 
 function ageLabel(updatedAt) {
   if (!updatedAt) return { text: "—", stale: false };
-  const ms = Date.now() - new Date(updatedAt).getTime();
+  const t = new Date(updatedAt).getTime();
+  if (Number.isNaN(t)) return { text: "—", stale: false };
+  const ms = Date.now() - t;
   const stale = ms > STALE_MS;
   const h = Math.floor(ms / 3600000);
   const text = h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;

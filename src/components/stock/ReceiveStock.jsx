@@ -23,6 +23,12 @@ export default function ReceiveStock({ products, registry, actorRole }) {
 
   const receiveAll = async () => {
     if (!dest || !product) return flash("err", "Pick a destination and product.");
+    // Quantities must be whole numbers (the ledger stores integers).
+    for (const s of sizes) {
+      const raw = qtys[s];
+      if (raw != null && String(raw).trim() !== "" && !/^\d+$/.test(String(raw).trim()))
+        return flash("err", `Quantity for size ${s} must be a whole number.`);
+    }
     const entries = sizes.map(s => [s, parseInt(qtys[s], 10)]).filter(([, n]) => Number.isFinite(n) && n > 0);
     if (!entries.length) return flash("err", "Enter at least one quantity.");
     setBusy(true);

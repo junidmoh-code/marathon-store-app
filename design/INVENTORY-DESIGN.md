@@ -424,9 +424,9 @@ Scheduled Cloud Function (admin SDK, bypasses rules), nightly + on-demand:
 
 Makes any drift — bug, race rules missed, or tampering — detectable within 24h and re-derivable. Balances are a cache; the ledger is truth.
 
-### 5.5 Fallback primitive
+### 5.5 Write primitive — no non-atomic fallback
 
-For a rare embedded counter that can't use the multi-path pattern, `runTransaction` on the single cell is sanctioned (read-modify-write with retry), movement appended in `onComplete`. Prefer §1.4 everywhere.
+The **only** sanctioned write is the version-guarded multi-path `update()` of §1.4 (every affected cell **and** the movement in one atomic op). We deliberately do **NOT** use a `runTransaction`-then-append-movement pattern: appending the movement *after* the cell transaction commits would break **I1** — a crash or rejection between the two leaves a balance change with no ledger entry (silent drift). The implemented `applyMovement()` does read → compute → **single atomic multi-path write**, with bounded retries on version conflict (a rejected attempt writes nothing, so retry is safe). There is no code path that writes a balance separately from its movement.
 
 ### 5.6 Ship-before-go-live checklist (blocking)
 

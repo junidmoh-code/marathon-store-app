@@ -29,7 +29,9 @@ const TABS = [
 ];
 
 export default function StockView({ products = [], onExit }) {
-  const [tab, setTab] = usePersistedTab("stock", "grid");
+  const [tabRaw, setTab] = usePersistedTab("stock", "grid");
+  // Guard against a stale/unknown persisted tab key rendering blank content.
+  const tab = TABS.some(([k]) => k === tabRaw) ? tabRaw : "grid";
   const { permRecord, isSuperAdmin } = usePermissions();
   const registry = useLocations();
   const { pending, syncing } = useSyncStatus();
@@ -44,7 +46,7 @@ export default function StockView({ products = [], onExit }) {
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
       <div style={{ padding: "14px 16px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div onClick={onExit} style={{ color: BLUE_L, fontSize: 13, fontWeight: 500, cursor: "pointer" }}>← Exit</div>
+        <button onClick={onExit} style={{ background: "none", border: "none", padding: 0, color: BLUE_L, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: FONT }}>← Exit</button>
         <div style={{ fontSize: 15, fontWeight: 700 }}>Stock</div>
         <div style={{ fontSize: 11, color: syncing ? AMBER : GRAY, minWidth: 64, textAlign: "right" }}>
           {syncing ? `syncing ${pending}…` : ""}

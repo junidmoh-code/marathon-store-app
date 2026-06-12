@@ -57,14 +57,12 @@ export async function enqueueSale(sale) {
 
 export async function pendingCount() {
   const db = await openDb();
-  return tx(db, "readonly", (store) => store.count && store.count()).then(
-    () => new Promise((resolve) => {
-      const t = db.transaction(STORE, "readonly");
-      const r = t.objectStore(STORE).count();
-      r.onsuccess = () => resolve(r.result);
-      r.onerror = () => resolve(0);
-    })
-  );
+  return new Promise((resolve) => {
+    const t = db.transaction(STORE, "readonly");
+    const r = t.objectStore(STORE).count();
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => resolve(0);
+  });
 }
 
 async function allPending() {

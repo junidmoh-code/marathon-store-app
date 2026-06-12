@@ -31,9 +31,11 @@ export function labelFor(locationId, registry) {
   return _defaultById[locationId]?.label || locationId || "—";
 }
 
-// registry: the object map from useLocations() ({ id: {…} }) OR undefined (→ seed).
+// registry: the object map from useLocations() ({ id: {…} }) OR undefined/empty (→ seed).
+// useLocations() returns {} before /locations is seeded, so an empty object must fall
+// back to the seed — otherwise every picker would be empty pre-rollout.
 function asArray(registry) {
-  if (registry && typeof registry === "object") return Object.values(registry);
+  if (registry && typeof registry === "object" && Object.keys(registry).length > 0) return Object.values(registry);
   return DEFAULT_LOCATIONS;
 }
 

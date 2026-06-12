@@ -177,8 +177,13 @@ destination hub:
 
 ---
 
-## Retire before go-live (drift prevention)
+## Legacy quantity sources
 
 - **`/products/{id}/stock`** (legacy per-size object) — migrate values into `/stock`
   during seeding, then freeze read-only. Not a quantity source post-go-live.
-- **`/inventory`** (pre-declared, open, unused) — removed from rules entirely.
+- **`/inventory`** — ⚠️ **NOT unused. The POS app reads/writes it LIVE** (sales decrement
+  `/inventory/{storeId}/{productId}/{size}`). It is **KEPT** in the Phase-A rules (POS V1
+  depends on it) and marked legacy/deprecated. It retires entirely in **Phase B**, only
+  after the POS app reads/writes `/stock` exclusively (hard sequencing gate G1 —
+  INVENTORY-DESIGN.md §7.3). We never run `/inventory` and `/stock` as two quantity
+  sources for the same product. See INVENTORY-DESIGN.md §1.3 and RULES-PR.md §B2.

@@ -20,7 +20,9 @@ function usePath(path, enabled = true) {
   const authReady = useAuthReady();
   const [value, setValue] = useState(null);
   useEffect(() => {
-    if (!authReady || !enabled || !path) return;
+    // Drop any cached snapshot when we lose read permission (sign-out / auth loss),
+    // so a previous user's stock data can't linger on screen.
+    if (!authReady || !enabled || !path) { setValue(null); return; }
     const unsub = onValue(
       ref(database, path),
       (snap) => setValue(snap.val()),

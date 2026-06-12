@@ -32,6 +32,12 @@ export default function CountSession({ products, registry, actorRole }) {
 
   const commit = async () => {
     if (!loc || !product) return flash("err", "Pick a location and product.");
+    // Counts must be whole numbers (the ledger stores integers).
+    for (const s of sizes) {
+      const raw = counts[s];
+      if (raw != null && String(raw).trim() !== "" && !/^\d+$/.test(String(raw).trim()))
+        return flash("err", `Count for size ${s} must be a whole number.`);
+    }
     const entries = sizes
       .map(s => [s, parseInt(counts[s], 10)])
       .filter(([, n]) => Number.isFinite(n) && n >= 0);

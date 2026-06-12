@@ -7,9 +7,10 @@ import React, { useState, useMemo } from "react";
 import { useStockCells } from "./useStock";
 import { activeLocations, labelFor } from "./locations";
 import { Card, Field, ProductPicker, Empty } from "./widgets";
-import { GRAY, GREEN, RED, AMBER, BLUE_L, BORDER } from "./ui";
+import { GRAY, GREEN, RED, AMBER, BORDER } from "./ui";
 
 const STATE_COLOR = { live: GREEN, counting: AMBER, untracked: GRAY };
+const MISSING = "rgba(255,255,255,.3)";   // colour for a cell that doesn't exist yet (shared by grid + legend)
 
 export default function StockGrid({ products, registry }) {
   const [productId, setProductId] = useState("");
@@ -49,7 +50,7 @@ export default function StockGrid({ products, registry }) {
                   {sizes.map(s => {
                     const c = cellFor(loc.id, s);
                     const qty = c && typeof c.qty === "number" ? c.qty : null;
-                    const color = qty == null ? "rgba(255,255,255,.18)" : qty < 0 ? RED : qty === 0 ? GRAY : "#fff";
+                    const color = qty == null ? MISSING : qty < 0 ? RED : qty === 0 ? GRAY : "#fff";
                     return (
                       <td key={s} style={{ textAlign: "center", padding: "6px 6px", color, fontWeight: qty ? 600 : 400 }}>
                         {qty == null ? "·" : qty}
@@ -67,7 +68,7 @@ export default function StockGrid({ products, registry }) {
             <span><span style={{ color: RED }}>red</span> = negative (oversell/miscount)</span>
             <span><span style={{ color: AMBER }}>c</span> = counting</span>
             <span><span style={{ color: GRAY }}>u</span> = untracked</span>
-            <span style={{ color: BLUE_L }}>· = no cell yet</span>
+            <span style={{ color: MISSING }}>· = no cell yet</span>
           </div>
         </Card>
       )}

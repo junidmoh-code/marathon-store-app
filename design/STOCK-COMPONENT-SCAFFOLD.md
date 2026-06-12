@@ -69,26 +69,30 @@ src/components/stock/
 //
 //   movement: {
 //     type, productId, size, qty(>0),
-//     from|null, to|null, reason?, link?,
-//     ts (real event time), deviceId?
+//     from|null, to|null, reason?, link?, cellState?,
+//     ts (real event time), deviceId?,
+//     movementId?   // CALLER-SUPPLIED to make the call idempotent (offline queue
+//                   //   stamps one id per line at sale time; re-sync is a no-op)
 //   }
 //
-// For a movement that decrements a cell (sold, transfer_out) the AFFECTED cell is
-// `from`; for an incrementing movement (received, transfer_in, return) it is `to`;
-// `adjustment` uses whichever side is set. Exactly ONE cell changes per movement.
+// CELL EFFECTS: received/return → +to; sold → −from; adjustment → +to OR −from
+// (whichever side is set). RELOCATIONS (transfer_out / transfer_in) touch TWO cells
+// in one atomic op — −from AND +to — so stock moves through the real in_transit
+// holding and is never invisible.
 //
 // STEPS:
-//   1. movementId = push(stock_movements).key   // client-generated = idempotency key
-//   2. read current cell {qty, v} once (onValue/get).
-//   3. compute newQty = qty ± movement.qty   (sign from type)
-//   4. build ONE multi-path update object:
+//   1. movementId = movement.movementId || push(stock_movements).key  // idempotency key
+//   2. if get(stock_movements/{movementId}) EXISTS → return {ok,idempotent} (re-sync no-op)
+//   3. read each affected cell {qty, v} once; compute newQty (sign from type)
+//   4. build ONE multi-path update object (the movement + EVERY affected cell):
 //        updates["stock_movements/"+movementId]            = {…movement, actor, actorRole, appliedAt:now}
-//        updates["stock/{loc}/{pid}/{size}/qty"]           = newQty
-//        updates["stock/{loc}/{pid}/{size}/v"]             = (cell ? v+1 : 0)
-//        updates["stock/{loc}/{pid}/{size}/mv"]            = movementId
-//        updates["stock/{loc}/{pid}/{size}/lastType"]      = movement.type
-//        updates["stock/{loc}/{pid}/{size}/updatedAt"]     = now
-//        updates["stock/{loc}/{pid}/{size}/updatedBy"]     = uid
+//        for each affected cell:
+//          updates["stock/{loc}/{pid}/{size}/qty"]         = newQty
+//          updates["stock/{loc}/{pid}/{size}/v"]           = (cell ? v+1 : 0)
+//          updates["stock/{loc}/{pid}/{size}/mv"]          = movementId
+//          updates["stock/{loc}/{pid}/{size}/lastType"]    = movement.type
+//          updates["stock/{loc}/{pid}/{size}/updatedAt"]   = now
+//          updates["stock/{loc}/{pid}/{size}/updatedBy"]   = uid
 //        // optional same-op side effects (sale record, refill request, etc.)
 //   5. update(ref(database), updates)
 //   6. on failure where data.v advanced (version conflict): re-read, recompute, retry
@@ -180,8 +184,10 @@ InTransit({})                     // every in_transit cell with age; stale (> th
 MovementHistory({ productId })    // reverse-chron immutable ledger for a product; read-only.
 
 CountSession({ locations })       // seeding/recount: location → walk sizes → enter counted qty
-  // => applyMovement({ type:"adjustment", from:null, reason:"initial_count" }); sets state:"counting"
-  //    during, "live" on commit. Partial coverage is normal (per-cell state).
+  // => for each size, delta = counted − current; apply an adjustment that targets the
+  //    counted location (to=loc when delta>0, from=loc when delta<0, reason
+  //    "initial_count"/"recount", cellState:"live"). A zero delta flips state via
+  //    setCellState(loc,pid,size,"live") — no movement. Partial coverage is normal.
 ```
 
 ---

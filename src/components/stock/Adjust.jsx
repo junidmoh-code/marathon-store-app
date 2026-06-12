@@ -24,9 +24,10 @@ export default function Adjust({ products, registry, actorRole, isAdmin }) {
   if (!isAdmin) return <Empty>Adjustments are admin-only. Ask an admin to correct a count.</Empty>;
 
   const submit = async () => {
-    const n = parseInt(delta, 10);
     if (!loc || !product || !size) return flash("err", "Pick location, product and size.");
-    if (!Number.isFinite(n) || n === 0) return flash("err", "Enter a non-zero adjustment (e.g. -2 or 3).");
+    if (!/^-?\d+$/.test(String(delta).trim())) return flash("err", "Enter a whole number (e.g. -2 or 3).");
+    const n = parseInt(delta, 10);
+    if (n === 0) return flash("err", "Enter a non-zero adjustment.");
     if (!reason.trim()) return flash("err", "A reason is required for every adjustment.");
     setBusy(true);
     // Positive → credit `to`; negative → debit `from`. applyMovement takes a positive
