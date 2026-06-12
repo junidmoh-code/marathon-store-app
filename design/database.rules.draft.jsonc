@@ -1,0 +1,171 @@
+// =============================================================================
+// DRAFT — proposed database.rules.json (Phase A).  REVIEW ONLY. Not deployed.
+// Ships as its OWN PR + its OWN scheduled deploy window (NOT with the feature PR).
+//
+// Goals:
+//   1. Remove the root `.read` cascade (it grants wide-open read incl. ANONYMOUS).
+//      Grant read EXPLICITLY per path. Existing staff reads preserved.
+//   2. Lock ANONYMOUS auth (the TV display route) to `orders` ONLY — today it can
+//      read customers PII / users / pos / sales because anonymous is `auth != null`.
+//   3. Give the new inventory paths PER-ROLE write rules (not inherited).
+//
+// Cross-app read-path audit folded in (see design/RULES-PR.md for the full per-app
+// inventory). Paths kept because OTHER apps use them on the shared marathon-club RTDB:
+//   - marathon-pos-app  (PIN auth):  customers, customers_meta, inventory,
+//        inventory_meta, pos, pos_meta, products, users
+//   - marathon-ai (CLIENT SDK, NOT admin): products, insights_log, returns_log,
+//        insights, marketing
+//   - marathon-broadcast-service: NO RTDB (admin-SDK Firestore) — unaffected.
+//
+// IMPORTANT — `inventory` is KEPT (Phase A): the POS app reads/writes it LIVE. It is
+//   NOT "unused" as the v2 design assumed. Removing it is deferred to Phase B, AFTER
+//   the POS app migrates onto /stock + applyMovement (the /inventory↔/stock
+//   convergence — see RULES-PR.md "Open coordination").
+//
+// IMPORTANT — STALE COMMITTED RULES: pos_meta, inventory_meta, customers_meta,
+//   marketing, insights are used by POS/marathon-ai but are ABSENT from the live
+//   committed database.rules.json. Either deployed rules differ from the repo, or
+//   those features write under a different live ruleset. The authoritative ROLLBACK
+//   must be the ACTUALLY-DEPLOYED rules captured at deploy time, NOT the committed
+//   file. See RULES-PR.md go-live plan.
+//
+// Helper convention (RTDB rules have no functions, so inlined):
+//   STAFF  = auth != null && auth.token.firebase.sign_in_provider != 'anonymous'
+//   ANON-OK = auth != null   (includes the TV display)
+// =============================================================================
+{
+  "rules": {
+    // ---- root: NO blanket read/write. Everything explicit below. ----
+
+    // ANONYMOUS-WRITE PATHS (the TV display auto-collect, signed in anonymously,
+    // writes exactly these two — audited in src/App.jsx TvWithAutoCollect):
+    //   orders      ← updateOrder(..., status: collected)
+    //   restock_log ← logRestock(...) on a READY→collected auto-collect
+    // Every OTHER path below is non-anonymous write (STAFF), so the display
+    // account cannot mutate customers / pos / products / inventory / etc.
+    "orders": {
+      ".read":  "auth != null",                 // anonymous TV reads the queue
+      ".write": "auth != null"                  // anonymous TV writes collected status
+    },
+    "restock_log": {
+      ".read":  "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null"                  // anonymous TV logs the restock on auto-collect
+    },
+
+    // ===================== EXISTING STAFF PATHS (read AND write = STAFF, not anonymous) =====================
+    "broadcastHistory":        { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "broadcasts":              { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "customers":               { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "customers_meta":          { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "insights_log":            { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "insights":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" }, // written by analyzeReorderNeeds CF (admin SDK)
+    "inventory":               { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" }, // KEEP: POS uses live; deprecate in Phase B
+    "inventory_meta":          { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "marketing":               { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" }, // marathon-ai writes marketing/campaigns
+    "orderCounter":            { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "pos":                     { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "pos_meta":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "products":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "products_meta":           { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "restock_requests":        { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "returns_log":             { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "source_onhold_responses": { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+
+    "users": {
+      ".read":  "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth.token.email === 'gunidmoh@gmail.com'"
+      // HARDENING FOLLOW-UP (H1): scope read to own uid + super-admin (see design §10).
+    },
+
+    // ===================== NEW: INVENTORY (per-role) =====================
+
+    "locations": {
+      ".read":  "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+    },
+
+    "stock": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$loc": { "$pid": { "$size": {
+        // Restrict to ENUMERATED stockRoles (not existence-only). NOTE: rules cannot
+        // cross-reference the same-batch /stock_movements entry (RTDB `root` is pre-
+        // write), so a malicious stockRole holder could still write a cell without a
+        // matching movement. That residual is caught by the nightly reconciler (design
+        // §5.4) which re-derives every balance from the immutable ledger and alarms on
+        // mismatch — the layered guarantee, not this single rule. (Hardening H5.)
+        ".write": "auth != null && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|pos|admin)$/)",
+        // Two allowed write shapes:
+        //  (A) MOVEMENT write — qty changes via applyMovement: v advances by exactly 1,
+        //      mv changes, lastType is a real movement type, negativity gated to sold/return.
+        //  (B) METADATA write — setCellState() flip: qty/v/mv unchanged (existing cell),
+        //      OR a fresh counted-zero cell (qty:0, v:0). No movement, only `state` moves.
+        ".validate":
+          "newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && newData.child('mv').isString() && newData.child('lastType').isString() && ( ( (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && (!data.exists() || newData.child('mv').val() !== data.child('mv').val()) && newData.child('lastType').val().matches(/^(received|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val() === 'sold') ) || ( (!data.exists() && newData.child('qty').val() === 0 && newData.child('v').val() === 0) || (data.exists() && newData.child('qty').val() === data.child('qty').val() && newData.child('v').val() === data.child('v').val() && newData.child('mv').val() === data.child('mv').val()) ) )",
+        "qty":      { ".validate": "newData.isNumber()" },
+        "v":        { ".validate": "newData.isNumber()" },
+        "mv":       { ".validate": "newData.isString()" },
+        "lastType": { ".validate": "newData.isString()" },
+        "state":    { ".validate": "newData.val().matches(/^(untracked|counting|live)$/)" },
+        "$other":   { ".validate": "newData.parent().child('qty').exists()" }
+      }}}
+    },
+
+    "stock_movements": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".indexOn": ["productId", "ts"],
+      "$mvId": {
+        ".write": "!data.exists() && newData.exists() && auth != null",
+        // adjustment-reason is enforced HERE (at the movement node) so a movement that
+        // simply OMITS the `reason` child can't slip past the child-level rule below.
+        ".validate":
+          "newData.hasChildren(['type','productId','size','qty','actor','ts']) && newData.child('qty').isNumber() && newData.child('qty').val() > 0 && newData.child('actor').val() === auth.uid && (newData.child('type').val() !== 'adjustment' || (newData.child('reason').isString() && newData.child('reason').val().length > 0)) && root.child('products').child(newData.child('productId').val()).exists() && (!newData.child('from').exists() || newData.child('from').val() === null || root.child('locations').child(newData.child('from').val()).exists()) && (!newData.child('to').exists() || newData.child('to').val() === null || root.child('locations').child(newData.child('to').val()).exists())",
+        "type": {
+          ".validate":
+            "(newData.val() === 'received' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|admin)$/)) || (newData.val() === 'transfer_out' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)) || (newData.val() === 'transfer_in' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)) || (newData.val() === 'sold' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(pos|store|admin)$/)) || (newData.val() === 'return' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(pos|store|admin)$/)) || (newData.val() === 'adjustment' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin')"
+        },
+        "reason": { ".validate": "newData.parent().child('type').val() !== 'adjustment' || (newData.isString() && newData.val().length > 0)" }
+      }
+    },
+
+    "transfers": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$transferId": {
+        ".write": "root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)",
+        "status": { ".validate": "newData.val().matches(/^(dispatched|received|discrepancy)$/)" }
+      }
+    },
+
+    "refill_requests": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$refillId": {
+        ".write": "root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|pos|admin)$/)",
+        "status": { ".validate": "newData.val().matches(/^(open|fulfilled|cancelled)$/)" }
+      }
+    },
+
+    "sales": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$saleId": {
+        ".write": "!data.exists() && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(pos|store|admin)$/)",
+        ".validate": "newData.hasChildren(['ts','lines'])"
+      }
+    },
+
+    "stock_alerts": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$alertId": { ".write": "root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|pos|admin)$/)" }
+    },
+
+    "reports": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+    },
+
+    "config": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "posCutover": {
+        ".write": "root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+      }
+    }
+  }
+}

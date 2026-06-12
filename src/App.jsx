@@ -12,6 +12,7 @@ import { toAuthPassword } from "./utils/auth-utils";
 import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits } from "./utils/phone";
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
+import StockView from "./components/stock/StockView";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -99,7 +100,7 @@ function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,2
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", DEPLETED: "depleted" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", DEPLETED: "depleted", STOCK: "stock" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -118,6 +119,10 @@ const ROLE_TO_PERMISSION = {
   [ROLES.ADMIN]:            "product_admin",
   [ROLES.BROADCAST_GROUPS]: "broadcast",
   [ROLES.USER_MANAGEMENT]:  "user_management",
+  // Inventory & stock movements (Phase: per-size inventory). Dedicated permission;
+  // who can OPEN the section. The money-bearing writes are additionally gated by
+  // /users/{uid}/stockRole in the RTDB security rules (see design/INVENTORY-DESIGN.md §5).
+  [ROLES.STOCK]:            "stock_management",
 };
 // Depleted Products (Phase 15) is reachable by anyone who manages stock —
 // store assistant, warehouse, OR admin. Because it spans three permissions it
@@ -1418,6 +1423,11 @@ function CustomersView({ onExit }) {
 // ─── ROLE SELECTOR ────────────────────────────────────────────────────────────
 // ── Role icon SVGs (match HTML design exactly) ─────────────────────────────
 const RoleIcons = {
+  stock: (
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 9h18M3 15h18"/><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/>
+    </svg>
+  ),
   assistant: (
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/>
@@ -1640,6 +1650,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, products })
         const admin = [
           hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && <RoleCard key="customers" icon={RoleIcons.customers_db}     name="Customers"       desc="Customer database"       onClick={() => onSelect(ROLES.CUSTOMERS_DB)} />,
           hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && <RoleCard key="admin"     icon={RoleIcons.admin}            name="Admin"           desc="Manage products"         onClick={() => onSelect(ROLES.ADMIN)} />,
+          hasPermission(ROLE_TO_PERMISSION[ROLES.STOCK])            && <RoleCard key="stock"     icon={RoleIcons.stock}            name="Stock"           desc="Inventory & transfers"   onClick={() => onSelect(ROLES.STOCK)} />,
           hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && <RoleCard key="broadcast" icon={RoleIcons.broadcast_groups} name="Group Broadcast" desc="Send to WhatsApp groups" onClick={() => onSelect(ROLES.BROADCAST_GROUPS)} />,
           // User Management is hash-routed (not role-routed) — the screen mounts
           // on wantUserMgmt in the App view cascade. Tap → set hash → mount.
@@ -9201,6 +9212,7 @@ function AppInner() {
     view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} onExit={() => setRole(null)} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.STOCK)     view = guard(ROLES.STOCK,            <StockView     products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
   // Depleted Products: multi-permission view (assistant/warehouse/admin), so it
