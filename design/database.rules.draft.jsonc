@@ -100,7 +100,7 @@
         //  (B) METADATA write — setCellState() flip: qty/v/mv unchanged (existing cell),
         //      OR a fresh counted-zero cell (qty:0, v:0). No movement, only `state` moves.
         ".validate":
-          "newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && newData.child('mv').isString() && newData.child('lastType').isString() && ( ( (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && (!data.exists() || newData.child('mv').val() !== data.child('mv').val()) && newData.child('lastType').val().matches(/^(received|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val().matches(/^(sold|return)$/)) ) || ( (!data.exists() && newData.child('qty').val() === 0 && newData.child('v').val() === 0) || (data.exists() && newData.child('qty').val() === data.child('qty').val() && newData.child('v').val() === data.child('v').val() && newData.child('mv').val() === data.child('mv').val()) ) )",
+          "newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && newData.child('mv').isString() && newData.child('lastType').isString() && ( ( (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && (!data.exists() || newData.child('mv').val() !== data.child('mv').val()) && newData.child('lastType').val().matches(/^(received|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val() === 'sold') ) || ( (!data.exists() && newData.child('qty').val() === 0 && newData.child('v').val() === 0) || (data.exists() && newData.child('qty').val() === data.child('qty').val() && newData.child('v').val() === data.child('v').val() && newData.child('mv').val() === data.child('mv').val()) ) )",
         "qty":      { ".validate": "newData.isNumber()" },
         "v":        { ".validate": "newData.isNumber()" },
         "mv":       { ".validate": "newData.isString()" },
@@ -138,7 +138,7 @@
     "refill_requests": {
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "$refillId": {
-        ".write": "root.child('users').child(auth.uid).child('stockRole').exists()",
+        ".write": "root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|pos|admin)$/)",
         "status": { ".validate": "newData.val().matches(/^(open|fulfilled|cancelled)$/)" }
       }
     },
@@ -153,7 +153,7 @@
 
     "stock_alerts": {
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-      "$alertId": { ".write": "root.child('users').child(auth.uid).child('stockRole').exists()" }
+      "$alertId": { ".write": "root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|pos|admin)$/)" }
     },
 
     "reports": {

@@ -32,7 +32,7 @@ unit, so every movement touches exactly one cell. Cells are a CACHE; the ledger
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `qty` | number (integer) | yes | On-hand. ≥ 0 normally; may be negative **only** when set by a `sold`/`return` movement (offline oversell — alarmed, never hidden). |
+| `qty` | number (integer) | yes | On-hand. ≥ 0 normally; may be negative **only** when set by a `sold` movement (offline oversell — alarmed, never hidden). Returns add stock, so they get no negative allowance. |
 | `v` | number (integer) | yes | Version. **+1 on every write.** Optimistic-concurrency guard against lost updates; the security rule requires `newData.v === data.v + 1`. |
 | `mv` | string | yes | Push-id of the movement that produced this qty. Audit back-link; reconciler checksum. |
 | `lastType` | string | yes | `type` of that movement. Carried on the cell so the security rule can enforce the negative-allowance from `newData` (RTDB `root` is pre-write, so the just-written movement is not cross-path visible). |

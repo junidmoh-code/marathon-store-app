@@ -11,7 +11,7 @@
 - **Source-refill chain is first-class and ledger-aware** (§2.4), including explicit **return reversal** (return movement + refill-request cancellation, never a silent decrement).
 - Demand stream: extend `insights_log` with a `"sold"` action (O2-A).
 - New dedicated `stock_management` permission + `stockRole` (O3).
-- **Offline-first POS is mandatory** (§3.4) — sales never block on connectivity; idempotent sync via client-generated movement ids; negative balances allowed only for already-happened events (sold/return) and alarmed.
+- **Offline-first POS is mandatory** (§3.4) — sales never block on connectivity; idempotent sync via client-generated movement ids; negative balances allowed only for already-happened `sold` events and alarmed.
 - Promotion gate: 14 consecutive days, zero *unexplained* variance (O5).
 
 ---
@@ -88,7 +88,7 @@ The current quantity. **One cell = one (location, product, size)** — smallest 
 
 ```
 /stock/{locationId}/{productId}/{size}
-  qty:      number  # integer; ≥ 0 normally, may go negative ONLY via sold/return (§3.4, §5.3)
+  qty:      number  # integer; ≥ 0 normally, may go negative ONLY via a sold movement (§3.4, §5.3)
   v:        number  # version, +1 on every write (optimistic-concurrency guard)
   mv:       string  # push-id of the movement that produced this qty (audit back-link)
   lastType: string  # type of that movement (sold|return|received|transfer_in|transfer_out|adjustment)
@@ -297,7 +297,7 @@ Load shedding is routine; the till **must keep ringing sales with no internet**.
    - Else run the §1.4 version-guarded atomic update: read current `v`/`qty`, write `sold` movement (`ts` = real sale time, `appliedAt` = now) + decrement + `v+1`. On version conflict (another writer raced), retry with fresh read.
    - Write `sales/{saleId}` in the same atomic update (also idempotent via `saleId`).
 
-4. **Oversell handling (precision-preserving):** offline, the till cannot check stock, so concurrent tills may sell more than exists. On sync the true `sold` movement is still recorded (the sale *happened*). The cell qty is allowed to go **negative for `sold`/`return` movements only** (§5.3) — negative is a loud **inventory-accuracy alert** state, not a hidden clamp. This keeps **balance == ledger replay exactly** (I5 intact) and makes oversell *visible* (real signal: sold more than system believed). Deliberate online movements (`transfer_out`, `adjustment`) keep the hard `qty ≥ 0` floor.
+4. **Oversell handling (precision-preserving):** offline, the till cannot check stock, so concurrent tills may sell more than exists. On sync the true `sold` movement is still recorded (the sale *happened*). The cell qty is allowed to go **negative for `sold` movements only** (§5.3) — negative is a loud **inventory-accuracy alert** state, not a hidden clamp. This keeps **balance == ledger replay exactly** (I5 intact) and makes oversell *visible* (real signal: sold more than system believed). Deliberate online movements (`transfer_out`, `adjustment`) keep the hard `qty ≥ 0` floor.
 
 5. **Demand accuracy:** the demand series uses movement `ts` (real sale time), so load-shedding gaps never distort analytics even though `appliedAt` lags.
 
@@ -384,7 +384,7 @@ Maintained by the same super-admin user-management flow that already writes `/us
 
 Movements are immutable, `qty` strictly positive, `actor` can't be forged, `from`/`to` must exist in the registry, **adjustments are admin-only and require a reason**. Note: rules do **not** constrain which `from`→`to` pairs are allowed (flexible topology, §1.2) — only the *type* is role-gated.
 
-### 5.3 `/stock` rules — version-guarded, gated, sold/return may go negative (I1, I3, §3.4)
+### 5.3 `/stock` rules — version-guarded, gated, only `sold` may go negative (I1, I3, §3.4)
 
 ```jsonc
 "stock": {
@@ -401,7 +401,7 @@ Movements are immutable, `qty` strictly positive, `actor` can't be forged, `from
        newData.child('mv').val() !== data.child('mv').val() &&
        newData.child('lastType').val().matches(/^(received|sold|transfer_in|transfer_out|adjustment|return)$/) &&
        // non-negative EXCEPT when the producing movement is a real already-happened event
-       (newData.child('qty').val() >= 0 || newData.child('lastType').val().matches(/^(sold|return)$/))"
+       (newData.child('qty').val() >= 0 || newData.child('lastType').val() === 'sold')"
   }}}
 }
 ```
@@ -409,7 +409,7 @@ Movements are immutable, `qty` strictly positive, `actor` can't be forged, `from
 The clauses that prevent drift:
 - `newData.v === data.v + 1` → **lost-update protection** (I3).
 - `mv` must change on every write + `lastType` is required → no balance write without a movement back-link (paired-write discipline, I1).
-- Negative allowed **only** when `lastType ∈ {sold, return}` → offline oversell is recorded truthfully and alarmed, never hidden; deliberate movements keep the ≥0 floor (§3.4).
+- Negative allowed **only** when `lastType === 'sold'` → offline oversell is recorded truthfully and alarmed, never hidden. Returns add stock (always positive), so they get no negative allowance; deliberate movements keep the ≥0 floor (§3.4). (Rule and `applyMovement` agree: sold-only.)
 
 > **RTDB-correctness note:** the rule reads `lastType`/`mv` from `newData` (the cell's own write), **not** cross-path from `/stock_movements`. RTDB evaluates `root`/`data` as the *pre-write* state, so a movement created in the same atomic multi-path update is **not** visible to the cell's rule. Carrying `lastType` on the cell is what makes the negative-allowance and type checks enforceable at write time.
 >
@@ -553,7 +553,7 @@ Schema frozen before rollout; rollout itself phased.
 | Return silently reverses refill | Explicit `return` movement + `cancelled` record (§2.4c) |
 | Sale counted by both `ready` and POS at cutover | Per-location cutover timestamp, suppress `ready` (§3.3) |
 | Offline sale lost or double-applied | Client-gen `mvId` idempotency + existence check on sync (I6, §3.4) |
-| Offline oversell hidden by clamp | Negative allowed for sold/return only, alarmed; balance == ledger replay (§3.4, §5.3) |
+| Offline oversell hidden by clamp | Negative allowed for `sold` only, alarmed; balance == ledger replay (§3.4, §5.3) |
 | Demand under/over-counted across streams | Mutually exclusive timestamp boundary; `sold` action (§3.3, §4.1) |
 | Phantom stock (system says have, floor doesn't) | Stock-aware OOS accuracy alerts (§4.4) |
 | Any unanticipated divergence | Nightly reconciler re-derives balances from ledger (I5, §5.4) |
