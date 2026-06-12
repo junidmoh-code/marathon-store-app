@@ -1,0 +1,17 @@
+{
+  "rules": {
+    ".read": "auth !== null",
+    ".write": "auth !== null",
+    "users": {
+      "$uid": {
+        "posAccess": {
+          ".write": "auth.token.email === 'gunidmoh@gmail.com'",
+          "pin": { ".read": "auth.token.email === 'gunidmoh@gmail.com'" }
+        }
+      }
+    },
+    "pos": {
+      "pinAttempts": { ".read": false, ".write": false }
+    }
+  }
+}
