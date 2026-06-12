@@ -28,6 +28,7 @@ Everything rests on six invariants. Each later section maps back to these.
 | **I4** | A movement between locations conserves total quantity — stock is never invisible and never double-counted. | Transfers are **paired legs through an explicit `in_transit` location**; reconciler verifies conservation (§2). |
 | **I5** | Balances are **independently re-derivable** from the immutable ledger; any divergence is *detectable*. | Scheduled **reconciler** recomputes balances from `/stock_movements` and alerts on mismatch (§5.4, §7.4). |
 | **I6** | An offline sale is **never lost and never double-applied**. | Client-generated movement id = idempotency key; existence-check on sync (§3.4). |
+| **I7** | A product **never has two quantity sources at once**. | Hard sequencing gate G1 (§7.3): POS converges onto `/stock` before any cell goes `live`; `/inventory` retires only in Phase B. |
 
 The ledger is the source of truth; the balance is a fast cache provably reconstructable from it. That is what makes "money-bearing" defensible on RTDB.
 
@@ -103,7 +104,7 @@ The current quantity. **One cell = one (location, product, size)** — smallest 
 
 > **Legacy cleanup (drift trap):**
 > - `/products/{id}/stock` (per-size object "used by some clothing flows") — migrate values into `/stock` during seeding, then freeze read-only.
-> - `/inventory` — **CORRECTION (cross-app audit):** NOT unused. The **POS app reads/writes `/inventory/{storeId}/{productId}/{sizeKey}` LIVE** (sales decrement it). It is a competing inventory model with no ledger — two sources of truth, the exact drift this design prevents. It therefore **cannot be removed yet**: the Phase-A rules KEEP it; removal is **Phase B**, after the POS app migrates onto `/stock` + `applyMovement()`. See O8/O9 and `RULES-PR.md` §B2.
+> - `/inventory` — **CORRECTION (cross-app audit):** NOT unused. The **POS app reads/writes `/inventory/{storeId}/{productId}/{sizeKey}` LIVE** (sales decrement it). It is a competing inventory model with no ledger — two sources of truth, the exact drift this design prevents. It therefore **cannot be removed yet**: the Phase-A rules KEEP it (POS V1 depends on it). **Hard sequencing (gate G1, §7.3):** POS converges onto `/stock` *before* any of a product's cells reach `live`; we never run both sources for one product; `/inventory` retires in **Phase B** once POS uses `/stock` exclusively. See O8/O9 and `RULES-PR.md` §B2.
 
 ### 1.4 Movement ledger — `/stock_movements/{movementId}` (APPEND-ONLY)
 
@@ -493,9 +494,22 @@ Analytics-only until a cell goes live, then count-authoritative. The flip is per
 
 ### 7.3 Incremental rollout
 
-Schema frozen before rollout; rollout itself phased:
+Schema frozen before rollout; rollout itself phased.
 
-1. **R0 — one warehouse or category.** Seed e.g. `warehouse1` (or `hub1` sneakers) only; set those cells `live`. Everything else untracked.
+> **🚦 GATE G1 — single quantity source (HARD PRECONDITION, blocks every R-phase).**
+> A product's cells may reach `live` / enforcing state **only after** the POS app
+> reads *and* writes `/stock` (via `applyMovement()`) for that product — i.e. POS no
+> longer touches `/inventory` for it. **We never operate two quantity sources for the
+> same product.** Concretely:
+> - While POS still uses `/inventory` for a product, that product's `/stock` cells stay
+>   `untracked`/`counting` (analytics-only, no decrement, no enforcement) — §7.2.
+> - Flipping any of a product's cells to `live` is gated on POS-convergence for that product.
+> - `/inventory` retires entirely in **Phase B**, once POS reads/writes `/stock`
+>   exclusively across all products. Only then is it removed from the rules (H2).
+>
+> This makes the convergence ordering unambiguous: **POS-onto-`/stock` first, `live` second, `/inventory` removal last.**
+
+1. **R0 — one warehouse or category.** Seed e.g. `warehouse1` (or `hub1` sneakers) only; set those cells `live` **(only for products already past G1)**. Everything else untracked.
 2. **R1 — parallel-run / verification window.** Movements fire for the live subset but **inform, not enforce** — POS does not yet block sales on insufficient stock. Daily: reconciler output + manual physical recount vs system qty; investigate every variance.
 3. **R2 — enforce.** Promote a subset only after **14 consecutive days with every variance explained (zero unexplained variance)** (O5). Then enable hard rules (block negative on deliberate movements; require transfers for movement).
 4. **R3 — expand** location-by-location / category-by-category, repeating R1→R2. Per-location POS cutover (§3.3) flips as each store's stock goes live.
@@ -519,8 +533,8 @@ Schema frozen before rollout; rollout itself phased:
 | O5 | Promotion gate | **Resolved** — 14 consecutive days, zero unexplained variance. |
 | O6 | Source card: re-point to `/refill_requests` same phase, or dual-write first? | **Resolved** — dual-write to `/restock_log` first, migrate read later. |
 | O7 | Returning till: sync-before-sell, or background sync while selling? | **Resolved** — background sync while selling, small syncing indicator, never block. |
-| O8 | **POS `/inventory` ↔ `/stock` convergence:** does the POS app migrate onto `/stock` + `applyMovement()` (recommended — one source of truth), or keep `/inventory` with a sync bridge? | **Open** — blocks Phase-B `/inventory` removal; affects POS rework. |
-| O9 | Until convergence, do we run `/stock` and POS `/inventory` in parallel (dual-write bridge + reconcile) or hold `/stock` enforcement at the till until POS migrates? | **Open** — drift exposure during overlap. |
+| O8 | **POS `/inventory` ↔ `/stock` convergence.** | **Resolved** — POS migrates onto `/stock` + `applyMovement()`. `/inventory` is KEPT in the rules for now (POS V1 depends on it) and **retires in Phase B once POS reads/writes `/stock` exclusively.** |
+| O9 | Run `/stock` and POS `/inventory` in parallel, or gate? | **Resolved** — **NO parallel operation for the same products.** Hard sequencing gate (G1, §7.0): POS convergence onto `/stock` is a *precondition* for any cell of those products reaching `live`/enforcing. We never operate two quantity sources for one product. |
 
 ---
 
@@ -557,7 +571,7 @@ Deferred items that must NOT be lost. Each gets its own ticket/PR after go-live.
 | ID | Item | Why deferred | Trigger to do it |
 |---|---|---|---|
 | **H1** | Scope `/users` read to **own uid + super-admin**, and exclude anonymous auth. | Today read is `auth != null && !anonymous` (Phase-A) to avoid breaking AuthGate/UserManagement, but any staffer can still read all user records. | After confirming AuthGate only needs `users/{ownUid}` and UserManagement runs as super-admin. |
-| **H2** | Remove `/inventory` from rules (Phase B). | POS app reads/writes it live (O8). | After POS migrates onto `/stock` + `applyMovement()`. |
+| **H2** | Remove `/inventory` from rules (Phase B). | POS app reads/writes it live (O8); gate G1 keeps both apart until then. | After POS reads/writes `/stock` EXCLUSIVELY for ALL products (G1 fully satisfied system-wide). |
 | **H3** | Tighten existing legacy write rules (`orders`, `customers`, `pos`, …) from blanket `auth != null` to role-scoped. | Out of scope for the inventory go-live; broad change touching every app. | Dedicated security pass post-inventory. |
 | **H4** | Reconcile committed `database.rules.json` with the actually-deployed rules. | Committed file is stale (B1 / RULES-PR.md). | During the rules PR — capture deployed rules as rollback baseline. |
 | **H5** | Add cross-path movement↔delta verification (beyond what RTDB rules can express). | Rules can't read another path's `newData`; reconciler is the backstop. | If reconciler ever flags tampering, consider a CF-authoritative balance write model. |

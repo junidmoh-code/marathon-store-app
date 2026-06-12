@@ -68,7 +68,11 @@ Writes: `marketing/campaigns/{id}`.
 
 ## B. ⚠️ Two findings that must be resolved before the swap
 
-### B1. Committed rules are STALE vs deployed (blocking verification)
+### B1. Committed rules are STALE vs deployed (blocking verification) — ✅ APPROVED
+**Decision:** the authoritative rollback baseline is the **DEPLOYED rules captured at
+deploy time**, NOT the committed `rules-rollback.json`. Capture them in the deploy
+window and commit the capture as the rollback artifact before the swap.
+
 `pos_meta`, `inventory_meta`, `customers_meta`, `marketing`, `insights` are used by
 marathon-pos-app / marathon-ai but are **absent** from the committed
 `database.rules.json` (which relies on the root `.read` for reads and has no `.write`
@@ -83,13 +87,15 @@ Reconcile any deployed path not represented in the draft. `design/rules-rollback
 holds the *committed* version as a starting point, but the **deployed** capture is the
 authoritative rollback.
 
-### B2. `/inventory` ↔ `/stock` convergence (design + coordination)
-The POS app already implements a competing inventory model at `/inventory/{storeId}/...`
-that sales decrement directly — **no ledger, two sources of truth**, exactly the drift
-this design exists to prevent. The draft therefore **keeps `/inventory`** (Phase A) so the
-till keeps working. Removing it is **Phase B**, after the POS app migrates onto `/stock`
-+ `applyMovement()`. Until then, running both risks divergence.
-**Needs your direction (see questions O8/O9 in design §8).**
+### B2. `/inventory` ↔ `/stock` convergence — ✅ RESOLVED (hard sequencing gate)
+The POS app implements a competing inventory model at `/inventory/{storeId}/...` that
+sales decrement directly. **Decision:** keep `/inventory` in the rules for now (POS V1
+depends on it); POS converges onto `/stock` + `applyMovement()`, and that convergence is
+a **HARD PRECONDITION (gate G1, design §7.3)** for any of a product's cells reaching
+`live`/enforcing — **we never operate two quantity sources for the same product.**
+`/inventory` retires entirely in **Phase B** once POS reads/writes `/stock` exclusively
+(then removed from the rules, hardening H2). Ordering: **POS-onto-`/stock` → `live` →
+`/inventory` removal.**
 
 ---
 
