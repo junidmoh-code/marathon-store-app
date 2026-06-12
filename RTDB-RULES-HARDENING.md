@@ -132,9 +132,11 @@ change. (Control row in the smoke test.)
 
 ### 1.5 Consolidated grant matrix (what the new rules implement)
 
-- **Anonymous (TV):** read `orders`; write `orders/{id}` only when result
-  `status === 'collected'` and the order already exists; append-only to
-  `restock_log`. Denied everywhere else.
+- **Anonymous (TV):** read `orders`; on an *existing* order may write **only**
+  the `status` (to `collected`), `updatedAt`, and `collectedAt` child fields —
+  per-child `.write` rules, so `price`/`items`/`customer`/etc. cannot be touched,
+  and the order can't be created or deleted; append-only to `restock_log`. Denied
+  everywhere else.
 - **Staff (non-anonymous):** read + write on every legacy path above; read-only
   on `insights`; `users` write stays super-admin-only.
 - **New stock paths** (`locations, stock, stock_movements, transfers,
@@ -153,16 +155,18 @@ client-read path was found that I could not attribute to an owning app.**
 
 ## 2. Anonymous hardening (per the brief)
 
-- The anonymous TV gets exactly: `orders` read, the narrow `orders/{id}` collect
-  write, and append-only `restock_log`. This was an explicit product decision
-  ("scope it") to keep the TV auto-collect feature working while closing the
-  hole — the alternative (block all anon writes) would have stopped auto-collect
-  until it moved to a scheduled Cloud Function.
-- **Every other `.write` in the file** carries
-  `auth.token.firebase.sign_in_provider != 'anonymous'`. (`users` write is gated
-  on the super-admin email, which is inherently non-anonymous.) Verified
-  mechanically: 27/28 writes contain the guard; the 1 exception is `users`
-  (email gate).
+- The anonymous TV gets exactly: `orders` read, a **field-scoped** `orders/{id}`
+  collect write (per-child rules on `status`→`collected`, `updatedAt`,
+  `collectedAt` only — no other order field, and no create/delete), and
+  append-only `restock_log`. This was an explicit product decision ("scope it")
+  to keep the TV auto-collect feature working while closing the hole — the
+  alternative (block all anon writes) would have stopped auto-collect until it
+  moved to a scheduled Cloud Function.
+- **Every other `.write` in the file** requires
+  `auth.token.firebase.sign_in_provider != 'anonymous'`. The only writes that
+  intentionally permit anonymous are the three scoped `orders/{id}` child fields
+  and the append-only `restock_log` entry above. `users` write is gated on the
+  super-admin email, which is inherently non-anonymous.
 
 ---
 
@@ -204,19 +208,19 @@ Never bundled with feature code; never a bare `firebase deploy`.
 Pre-flight (do this in the window, immediately before swap):
 1. **Re-capture live rules** and diff against the committed `rules-rollback.json`
    to confirm nothing changed since 2026-06-12:
-   ```
+   ```bash
    TOKEN=$(gcloud auth print-access-token)
    curl -s "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app/.settings/rules.json?access_token=$TOKEN"
    ```
    If it differs, update `rules-rollback.json` first.
 
 Deploy (one command):
-```
+```bash
 firebase deploy --only database
 ```
 
-Rollback (one command, if any smoke check 1–6 fails):
-```
+Rollback (one command, if any smoke check 1–7 fails):
+```bash
 firebase deploy --only database   # after copying rules-rollback.json over database.rules.json
 ```
 i.e. restore `rules-rollback.json` → `database.rules.json`, redeploy, investigate,

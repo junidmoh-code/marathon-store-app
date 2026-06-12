@@ -3,7 +3,10 @@
     "orders": {
       ".read": "auth != null",
       "$id": {
-        ".write": "auth != null && (auth.token.firebase.sign_in_provider != 'anonymous' || (data.exists() && newData.exists() && newData.child('status').val() === 'collected'))"
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        "status":      { ".write": "auth != null && data.parent().exists() && newData.val() === 'collected'" },
+        "updatedAt":   { ".write": "auth != null && data.parent().exists() && newData.parent().child('status').val() === 'collected'" },
+        "collectedAt": { ".write": "auth != null && data.parent().exists() && newData.parent().child('status').val() === 'collected'" }
       }
     },
 
