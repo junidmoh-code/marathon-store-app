@@ -12,8 +12,13 @@ import aj1Chicago from "../assets/tv/aj1-chicago.png";
 import aj1Green  from "../assets/tv/aj1-green.png";
 import aj4Bred   from "../assets/tv/aj4-bred.png";
 import aj1Yellow from "../assets/tv/aj1-yellow.png";
+import { PULL_STATUS } from "./layby/contract";
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
+
+// Cap LB numbers shown in the TV layby strip so a long backlog can't overflow
+// the line; the remainder collapses into a "+N more" tail.
+const TV_LAYBY_MAX = 8;
 
 const COLORS = {
   bg:          "#0B0F1A",
@@ -504,7 +509,7 @@ const STATUS_MAP = {
   tomorrow: "coming_tomorrow",
 };
 
-export default function TvDisplayMockup({ orders: liveProp, onExit }) {
+export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onExit }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 10_000);
@@ -556,6 +561,13 @@ export default function TvDisplayMockup({ orders: liveProp, onExit }) {
         : tmpl.orders,
     }));
   }, [liveProp]);
+
+  // Pending layby pulls → invoice numbers for the discreet awareness strip. Not
+  // hub-scoped (the TV isn't either); soonest-due first. Empty in sandbox mode.
+  const pendingInvoiceNos = useMemo(() => (laybyPulls || [])
+    .filter(p => p && p.invoiceNo && (p.status || PULL_STATUS.PENDING) === PULL_STATUS.PENDING)
+    .sort((a, b) => (a.dueDate || "").localeCompare(b.dueDate || ""))
+    .map(p => p.invoiceNo), [laybyPulls]);
 
   return (
     <>
@@ -615,6 +627,30 @@ export default function TvDisplayMockup({ orders: liveProp, onExit }) {
 
       {/* SHOEBOX SCREENSAVER — position:fixed, so omitting it has no layout impact */}
       {sneakersOn && <ShoeboxFloat />}
+
+      {/* LAYBY PULLS — discreet awareness strip so warehouse staff spot a pending
+          pull (by LB number) without opening the phone. Additive + self-hiding:
+          renders only when pulls are pending, so the tuned layout is untouched
+          otherwise. */}
+      {pendingInvoiceNos.length > 0 && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: "1.2vw",
+          marginTop: "0.25vw", flexShrink: 0,
+          background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.35)",
+          borderRadius: 10, padding: "0.45vw 1vw",
+        }}>
+          <span style={{ color: COLORS.amber, fontWeight: 900, letterSpacing: 3,
+                         fontSize: "clamp(11px, 0.9vw, 16px)", whiteSpace: "nowrap" }}>
+            LAYBY PULLS
+          </span>
+          <span style={{ color: COLORS.white, fontWeight: 800, letterSpacing: 1,
+                         fontSize: "clamp(13px, 1.05vw, 20px)", whiteSpace: "nowrap",
+                         overflow: "hidden", textOverflow: "ellipsis" }}>
+            {pendingInvoiceNos.slice(0, TV_LAYBY_MAX).join("   ·   ")}
+            {pendingInvoiceNos.length > TV_LAYBY_MAX ? `   +${pendingInvoiceNos.length - TV_LAYBY_MAX} more` : ""}
+          </span>
+        </div>
+      )}
 
       {/* FOOTER */}
       <footer style={{

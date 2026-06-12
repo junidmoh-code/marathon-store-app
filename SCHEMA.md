@@ -193,6 +193,131 @@ The two `storeIds` values map to the existing Central/Pine `storeMode` toggle in
 
 ---
 
+# LAYBY CROSS-APP CONTRACT
+
+> **POS app writes pulls/creation; this app (warehouse) writes
+> receiving/sent/reject.** Field-level spec — the marathon-pos-app session
+> implements it verbatim, this app reads/writes it verbatim. Neither side invents
+> fields the other owns.
+>
+> **Identity.** A layby's single identity everywhere (contract fields, warehouse
+> cards, TV strip, QR payload, search) is the **invoice number** (`invoiceNo`,
+> existing `L-00045` format; migrated laybys keep their original old-POS invoice
+> numbers, which may not match `L-NNNNN`). The node key is the stable `laybyId`.
+> **There is no "LB number" field.**
+>
+> **Locations.** All location ids are the canonical `/locations` registry ids:
+> hubs `hub1`/`hub2`/`hub2b`/`hub3`/`hubC`/`warehouse1`; stores `marathon-pe`/
+> `marathon-pine`/`trophy` (see `src/components/stock/locations.js`). The POS side
+> **translates its informal `pine`/`pe`/`trophy` vocabulary to these canonical
+> ids before writing** `originStore`/`requestingStore`.
+>
+> **Money.** All amounts are integer **cents** (POS convention) — display as
+> `R{(cents / 100).toFixed(2)}`.
+>
+> **Status lifecycle** (on `/laybys/{laybyId}.status`), happy path then off-ramps:
+> `created → labelPrinted → inTransitToStorage → storedAtHub → pullRequested →
+> sentToStore → collected`, plus `expired` and `rejected`. Writers per transition
+> are marked below.
+>
+> **Rollout note.** At time of writing the POS writers are not yet committed and
+> these paths still need `database.rules.json` entries (out of scope for the
+> warehouse PR — `database.rules.json` is not touched here). Until both land, live
+> reads return permission-denied and the warehouse queues render **empty**, by
+> design (no crash).
+
+## `/laybys/{laybyId}` — layby record + parcel storage state (SHARED)
+
+One node per layby, keyed by the stable **`laybyId`**. `invoiceNo` is the display
+identity. The physical parcel is stored at a hub until the customer pays it off
+and a store requests it back.
+
+**POS-written** (warehouse reads — every reader must tolerate the field absent):
+
+| Field              | Type                              | Notes |
+|--------------------|-----------------------------------|-------|
+| `laybyId`          | string                            | Mirror of the node key (stable id). |
+| `invoiceNo`        | string                            | **Invoice number** — the layby's identity everywhere (`L-00045`; migrated laybys keep their old-POS number). Shown **big** on the warehouse cards + TV strip; the QR/search key. |
+| `saleId`           | string                            | FK → `/pos/sales/{saleId}` (the `type:'layby'` record). |
+| `customerName`     | string                            | Display name. Layby UI is customer-centric, not product/size-centric. |
+| `customerPhone`    | string \| null                    | |
+| `itemCount`        | number                            | Total units in the parcel. |
+| `balanceRemaining` | number (**cents**)                | Outstanding balance. Cents — divide by 100 for ZAR. |
+| `dueDate`          | string `YYYY-MM-DD`               | Local layby due date (from the POS `layby` block). Drives the expired-layby REJECT path. |
+| `createdAt`        | number (epoch ms) \| ISO string   | When the layby was created. |
+| `createdBy`        | string \| null                    | POS cashier who created the layby (display name or uid). Shown in the exceptions list so a missing-in-transit parcel can be chased to its creator. |
+| `originStore`      | canonical store id                | Store that created/dispatched the layby (`marathon-pe`/`marathon-pine`/`trophy`). POS translates its informal id before writing. |
+| `storageHub`       | canonical hub id                  | Storage hub the parcel is routed to (`hub1`/`hub2`/`hub2b`/`hub3`). **Default `hub1`.** The warehouse filters its queues by this against the selected hub. |
+| `scanDeadline`     | number (epoch ms) \| ISO string   | When a still-unreceived parcel becomes an **exception**. Set by POS at dispatch. |
+
+**POS-written status transitions:** `created`, `labelPrinted`,
+`inTransitToStorage` (at dispatch), `pullRequested` (when a store requests it),
+`collected`, and `expired`.
+
+**Warehouse-written** (this app):
+
+| Field              | Type        | Notes |
+|--------------------|-------------|-------|
+| `status`           | lifecycle   | Warehouse sets `storedAtHub` (scan-receive), `sentToStore` (pull fulfilled), `rejected` (pull rejected). |
+| `receivedAt`       | ISO string  | Stamped on scan-receive (→ `storedAtHub`). |
+| `receivedBy`       | string      | Receiving hub id. Anonymous auth has no email, so the hub is the meaningful signal — mirrors `depletedBy`/`displayRefilledBy`. |
+| `sentToStoreAt`    | ISO string  | Stamped when the parcel is pulled and sent (mirrors the pull's `sentAt`). |
+| `rejectedAt`       | ISO string  | Stamped on pull reject. |
+| `rejectionReason`  | string      | Mirror of the pull's reason on reject. |
+
+**Exceptions** = `status === "inTransitToStorage"` **and** now is past
+`scanDeadline` — the parcel left a store but was never scanned in, i.e.
+potentially missing. The warehouse surfaces these prominently so they get found
+the **same day**.
+
+## `/laybyPulls/{pullId}` — store→warehouse pull requests (SHARED)
+
+One node per pull request, keyed by Firebase push id. **POS-written** when a store
+needs a stored layby parcel pulled back (customer paying off / collecting). The
+warehouse writes only the resolution fields.
+
+**POS-written** (warehouse reads — tolerate absence):
+
+| Field              | Type                              | Notes |
+|--------------------|-----------------------------------|-------|
+| `pullId`           | string                            | Mirror of the node key. |
+| `laybyId`          | string                            | FK → `/laybys/{laybyId}` (the stable id; used to flip the parcel's status on fulfilment/reject). |
+| `invoiceNo`        | string                            | Invoice number — displayed **huge** so staff find the parcel on the shelf. |
+| `saleId`           | string                            | FK → `/pos/sales/{saleId}`. |
+| `customerName`     | string                            | |
+| `customerPhone`    | string \| null                    | |
+| `itemCount`        | number                            | |
+| `balanceRemaining` | number (**cents**)                | |
+| `dueDate`          | string `YYYY-MM-DD`               | Used to flag **expired** laybys (past due) for the REJECT path. |
+| `requestingStore`  | canonical store id                | Store that wants the parcel (`marathon-pe`/`marathon-pine`/`trophy`). |
+| `storageHub`       | canonical hub id                  | Hub holding the parcel (mirror of the layby's `storageHub`). Warehouse filters by this. Default `hub1`. |
+| `requestedAt`      | number (epoch ms) \| ISO string   | When the pull was requested. |
+
+**Warehouse-written** (this app):
+
+| Field             | Type                                          | Notes |
+|-------------------|-----------------------------------------------|-------|
+| `status`          | `"pending" \| "sentToStore" \| "rejected"`    | POS writes `"pending"`. Warehouse → `"sentToStore"` (Sent) or `"rejected"`. |
+| `sentAt`          | ISO string                                    | On Sent. |
+| `sentBy`          | string                                        | Acting hub id, on Sent. |
+| `rejectedAt`      | ISO string                                    | On Reject. |
+| `rejectedBy`      | string                                        | Acting hub id, on Reject. |
+| `rejectionReason` | string                                        | **Required** on reject; flows back to the POS so the store sees why (expired laybys past `dueDate`). |
+
+On **Sent** the warehouse atomically also patches `/laybys/{laybyId}` →
+`status: "sentToStore"` + `sentToStoreAt`. On **Reject** it atomically patches
+`/laybys/{laybyId}` → `status: "rejected"` + `rejectedAt` + `rejectionReason`.
+Pull and parcel state never diverge.
+
+### QR payload (parcel label)
+
+The parcel-label QR encodes JSON: `{ "v": 1, "laybyId": "...", "invoiceNo": "L-00045" }`.
+The warehouse scanner matches on `laybyId` first, then `invoiceNo`; manual entry
+accepts a typed invoice number. (`v` is the payload schema version for forward
+compat.)
+
+---
+
 ## `/marketing/campaigns/{campaignId}`
 
 > **Owned by marathon-ai, not this app.** The marathon-store-app PWA never reads
