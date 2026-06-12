@@ -316,6 +316,30 @@ The warehouse scanner matches on `laybyId` first, then `invoiceNo`; manual entry
 accepts a typed invoice number. (`v` is the payload schema version for forward
 compat.)
 
+## `/laybyPullsBoard/{pullId}` — anon-safe TV projection (SHARED, follow-up)
+
+> **Not yet implemented — separate follow-up PR (see `LAYBY-INTEGRATION-CHECKLIST.md`).**
+> `/laybyPulls` is **non-anonymous read** because it carries `customerName` /
+> `customerPhone`, which must never be anon-readable. But the hub TV strip runs
+> under the anonymous `#tv` session, so it cannot read `/laybyPulls`. This board
+> is the anon-safe projection the TV reads instead.
+
+One node per pull request, **keyed by the same `pullId`** as `/laybyPulls/{pullId}`.
+Written **atomically by the same writers** that maintain `/laybyPulls` (the POS
+creates/updates both in one multi-path write; the warehouse Sent/Reject updates
+both). Carries **only** non-PII display fields:
+
+| Field       | Type                                        | Notes |
+|-------------|---------------------------------------------|-------|
+| `invoiceNo` | string                                      | The invoice number shown on the TV strip. |
+| `status`    | `"pending" \| "sentToStore" \| "rejected"`  | TV shows `pending` only. Mirrors the pull's status. |
+
+**No customer name, phone, balance, or any other field** — that is the whole
+point, and the rules enforce it: `.read: auth != null` (anonymous allowed) on the
+board only; `.write` non-anonymous; `.validate` restricts children to exactly
+`invoiceNo` + `status` (any other field is rejected), so PII can never leak in.
+The TV strip switches from `/laybyPulls` to `/laybyPullsBoard` when this lands.
+
 ---
 
 ## `/marketing/campaigns/{campaignId}`

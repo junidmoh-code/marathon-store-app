@@ -27,7 +27,7 @@
     },
 
     "laybyPulls": {
-      ".read": "auth != null",
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "$pullId": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
         ".validate": "newData.hasChildren(['invoiceNo','laybyId','status'])",

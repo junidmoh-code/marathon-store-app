@@ -28,24 +28,25 @@ Remaining cross-app work: see `LAYBY-INTEGRATION-CHECKLIST.md`.
 The main app requires a **real, non-anonymous** user for every surface except the
 `#tv` kiosk (which signs in anonymously). So:
 
-| Path          | `.read`                                   | `.write`                                   |
-|---------------|-------------------------------------------|--------------------------------------------|
-| `/laybys`     | non-anonymous                             | non-anonymous (+ `.validate`)              |
-| `/laybyPulls` | **`auth != null`** (anonymous allowed)    | non-anonymous (+ `.validate`)              |
+| Path          | `.read`            | `.write`                          |
+|---------------|--------------------|-----------------------------------|
+| `/laybys`     | non-anonymous      | non-anonymous (+ `.validate`)     |
+| `/laybyPulls` | **non-anonymous**  | non-anonymous (+ `.validate`)     |
 
 - **Writes** — both POS and warehouse operate as non-anonymous users, so writes
   are gated on `auth.token.firebase.sign_in_provider != 'anonymous'`, consistent
   with the hardening.
-- **`/laybyPulls` anonymous read — the one anon-surface widening vs PR #57.** The
-  hub TV layby strip runs under the anonymous `#tv` session, so it needs anon read
-  of `/laybyPulls`. This grants anonymous clients read of pull records (incl.
-  `customerName`/`customerPhone`) — **the same exposure `/orders` already grants
-  the TV.** `/laybys` stays non-anon (only the warehouse reads it).
-  - **Decision point:** if anon-readable pull PII is not acceptable, the
-    alternative is a minimal public projection (e.g. `/laybyPullsPublic/{id}` =
-    `{invoiceNo, storageHub}` only) that the TV reads instead. Flag before deploy
-    if you want that — it's a small POS-writer + store-app change, not in scope
-    here.
+- **Reads are non-anonymous on both paths — no anon-surface widening vs PR #57.**
+  Pull records carry `customerName` / `customerPhone`, so they must **never** be
+  anon-readable. The anonymous `#tv` kiosk therefore **cannot** read `/laybyPulls`
+  — the hub TV layby strip reads defensively and simply shows **nothing** for now.
+  That is the accepted interim state.
+  - **Follow-up (separate PR, not tonight):** an anon-safe projection
+    `/laybyPullsBoard/{pullId}` carrying **only** `invoiceNo` + `status` (no PII),
+    maintained atomically by the same writers that write `/laybyPulls`. Anonymous
+    read is granted on the **board only**, and the TV strip switches to reading it.
+    See the **LAYBY CROSS-APP CONTRACT** in `SCHEMA.md` and
+    `LAYBY-INTEGRATION-CHECKLIST.md`.
 
 ## Ownership split — rules vs. convention
 
@@ -111,8 +112,9 @@ revert deploy, then put it back. The `cp` path is simplest.)
       layby `rejected`.
 - [ ] `.validate` rejects a bad `status` (e.g. write `status: "foo"` → denied).
 - [ ] Changing `invoiceNo` on an existing layby → denied.
-- [ ] Anonymous `#tv` session: `/laybyPulls` **read succeeds** (strip shows);
-      `/laybys` read **denied**; any layby/pull **write denied**.
+- [ ] Anonymous `#tv` session: `/laybyPulls` read **denied** (TV strip shows
+      nothing — expected until the board projection lands); `/laybys` read
+      **denied**; any layby/pull **write denied**.
 
 **Regression (confirm hardening intact):**
 - [ ] `/orders` anon read works (TV) and the collected-write path still works.
