@@ -82,6 +82,10 @@ All ids canonical; all money cents; `invoiceNo` is the displayed identity,
 
 ## 2. `database.rules.json` entries — **separate gated rules PR**
 
+> **Prepared** — see `LAYBY-RULES-DEPLOY.md` for the deploy runbook (access model,
+> ownership-split rationale + limitation, the `/laybyPulls` anon-read flag,
+> refreshed `rules-rollback.json`, and the post-deploy smoke test).
+
 > **This is a separate, gated rules PR + quiet-window deploy — the same procedure
 > as the RTDB hardening swap (PR #57).** It is **not** part of the warehouse
 > feature PR (#58 does not touch `database.rules.json`). The store-app feature
