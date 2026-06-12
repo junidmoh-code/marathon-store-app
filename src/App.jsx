@@ -13,6 +13,9 @@ import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits }
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import StockView from "./components/stock/StockView";
+import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
+import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
+import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -3657,6 +3660,15 @@ function WarehouseView({ products = [], orders, onExit }) {
     const id = setInterval(() => setNowTick(Date.now()), 30 * 1000);
     return () => clearInterval(id);
   }, []);
+  // ── Layby (warehouse side) ───────────────────────────────────────────────
+  // Live subscriptions to the shared /laybys + /laybyPulls nodes. Hoisted above
+  // the hub-selector early return like every other hook here (Rules of Hooks).
+  // Read-only until a hub is picked; LaybyTab/banner filter by selectedHub.
+  const laybys = useLaybys();
+  const laybyPulls = useLaybyPulls();
+  // Which layby sub-queue to open on next mount. The exceptions banner flips this
+  // to "exceptions" so a tap jumps straight there; keyed remount applies it.
+  const [laybySub, setLaybySub] = useState("pulls");
   const DISPLAY_REFILL_DELAY_MS = 15 * 60 * 1000;
   const RESOLVED_VISIBLE_MS     = 24 * 60 * 60 * 1000;
   const { dueRefills, completedRefills } = useMemo(() => {
@@ -3947,6 +3959,14 @@ function WarehouseView({ products = [], orders, onExit }) {
   // hooks — see the Rules-of-Hooks note above.
   const clothingBadge = clothingActiveBatches.length;
 
+  // ── Layby badges (warehouse side) ────────────────────────────────────────
+  // Tab badge = pending pull requests for this hub (the actionable queue).
+  // Missing-in-transit exceptions get the louder banner above the tabs.
+  const laybyHubOf = (x) => x?.storageHub || DEFAULT_STORAGE_HUB;
+  const laybyBadge = laybyPulls.filter(p =>
+    laybyHubOf(p) === selectedHub && (p.status || PULL_STATUS.PENDING) === PULL_STATUS.PENDING
+  ).length;
+
   // Resolve a batch — patch every item with the same status + timestamp.
   // Phase 12D: also writes one insights_log entry per item so historical
   // Insights (week/month/year/All Time) see the event in the immutable log.
@@ -4121,6 +4141,14 @@ function WarehouseView({ products = [], orders, onExit }) {
         </div>
       )}
 
+      {/* LAYBY EXCEPTIONS — loud banner above the tabs on every tab. Self-hides
+          when there are no missing-in-transit parcels. Tap → Layby tab,
+          Exceptions sub-queue. (hubC never stores laybys, so skip it there.) */}
+      {selectedHub !== "hubC" && (
+        <LaybyExceptionsBanner laybys={laybys} selectedHub={selectedHub} nowMs={nowTick}
+          onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
+      )}
+
       {/* TABS — middle slot is Restock Status on hub1/hub3, Clothing on hub2
           (Phase 12C / 14B). hub3 mirrors hub1's tab set; if a clothing tab is
           needed for Pine later, add it here. */}
@@ -4136,11 +4164,13 @@ function WarehouseView({ products = [], orders, onExit }) {
               ["queue",    "Order Queue",     null],
               ["clothing", "Clothing",        clothingBadge],
               ["refills",  "Display Refills", refillsBadge],
+              ["layby",    "Layby",           laybyBadge],
             ]
           : [
               ["queue",   "Order Queue",     null],
               ["restock", "Restock Status",  null],
               ["refills", "Display Refills", refillsBadge],
+              ["layby",   "Layby",           laybyBadge],
             ]
         ).map(([key, label, badge]) => (
           <div key={key} onClick={() => setMainTab(key)}
@@ -4152,6 +4182,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             {key === "restock"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>}
             {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
             {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
+            {key === "layby"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/></svg>}
             <span>{label}</span>
             {badge != null && badge > 0 && (
               <span style={{ background: mainTab===key ? "#F59E0B" : "rgba(245,158,11,.85)", color:"#000", fontSize:10, fontWeight:800, minWidth:18, height:18, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
@@ -4362,6 +4393,19 @@ function WarehouseView({ products = [], orders, onExit }) {
             selectedHub={selectedHub}
           />
         </div>
+      )}
+
+      {mainTab === "layby" && (
+        // Keyed on laybySub so the exceptions-banner tap remounts straight to the
+        // Exceptions sub-queue. nowTick (30s) drives age/exception recomputation.
+        <LaybyTab
+          key={`layby-${laybySub}`}
+          selectedHub={selectedHub}
+          laybys={laybys}
+          pulls={laybyPulls}
+          nowMs={nowTick}
+          initialSub={laybySub}
+        />
       )}
     </div>
   );
@@ -9260,6 +9304,8 @@ function TvWithAutoCollect({ orders, onExit }) {
   const expiredRef        = useRef(new Set());
   const hiddenTomorrowRef = useRef(new Set());
   const [tick, setTick]   = useState(0);
+  // Layby pulls for the discreet TV awareness strip (invoice numbers). Read-only.
+  const laybyPulls = useLaybyPulls();
 
   useEffect(() => {
     const check = () => {
@@ -9308,7 +9354,7 @@ function TvWithAutoCollect({ orders, onExit }) {
     [orders, tick]
   );
 
-  return <TvDisplayMockup orders={filteredOrders} onExit={onExit} />;
+  return <TvDisplayMockup orders={filteredOrders} laybyPulls={laybyPulls} onExit={onExit} />;
 }
 
 // ─── TV ONLY SHELL ────────────────────────────────────────────────────────────
