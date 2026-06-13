@@ -31,23 +31,23 @@ Each product is its own node. `productId` is generated client-side as
 | **`hasShoeBoxOption`** | **boolean**                  | **no**   | **POS Phase 2. True for footwear that ships with a shoebox add-on. Optional; treat missing as false. ALWAYS false for `productType === "clothing"` — admin write paths force it off and consumers must treat clothing as false regardless of the stored value.** |
 | **`barcode`**     | **string** (8-digit zero-padded)  | **no**   | **POS Phase 2 (scanner workflow). Auto-assigned at create time from `/products_meta/lastBarcode`. Format: `"00000001"`..`"99999999"`. Wider than `sku` to leave room for future per-(product, size) variants on the same counter.** |
 | **`sku`**         | **string** (4-digit zero-padded)  | **no**   | **POS Phase 2 (scanner workflow). Auto-assigned at create time from `/products_meta/lastSku`. Format: `"0001"`..`"9999"`. Always per-product (no size variants).** |
-| **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15. Product-level depletion flag. Absent/`null` = live & orderable. An ISO timestamp = depleted: blurred + un-orderable in the Store Assistant grid and listed in the Depleted Products tab. Set by `setDisplayRefillStatus` (inline atomic multi-path write); cleared by `clearProductDepleted` ("Bring Live"). WHOLE-product scope — depleted across every hub at once.** |
-| **`depletedBy`**  | **string \| null**                | **no**   | **Phase 15. Hub label (`"hub1"`/`"hub2"`/`"hub3"`/`"hubC"`) that depleted the product. Anonymous auth has no email, so the hub is the meaningful signal (mirrors `displayRefilledBy` on orders). Cleared alongside `depletedAt`.** |
+| **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15 — RETIRED. Was a product-level depletion flag (blurred + un-orderable + Depleted Products tab). The blocking feature is gone: writers no longer set it and readers ignore it; any legacy value is inert. Products are always live & orderable. Safe to ignore / backfill-clear later.** |
+| **`depletedBy`**  | **string \| null**                | **no**   | **Phase 15 — RETIRED (see `depletedAt`). Inert legacy field.** |
 
-### Product depletion (Phase 15)
+### Product depletion — RETIRED (was Phase 15)
 
-`depletedAt` is **whole-product** scope — one flag, depleted across every hub at
-once. It is distinct from the order-scoped `displayRefillStatus: "stockDepleted"`
-on `/orders/{orderId}` (which tracks a single partner-refill task and feeds
-Insights). A product is depleted when the Warehouse resolves a Display Refill
-task as **Stock Depleted**: `setDisplayRefillStatus` writes the order resolution
-fields and `products/{id}/depletedAt`+`depletedBy` together in a single atomic
-root-level multi-path `update()`, so the two can't diverge. The depleted state is only
-ever cleared by an explicit **Bring Live** (`clearProductDepleted`) from the
-Depleted Products tab — it is *not* auto-cleared when a later refill is marked
-refilled or undone, so the state stays under explicit human control. Both
-`warehouse` and `store_assistant` roles can view the Depleted Products tab and
-reactivate products.
+The product-level depletion **blocking** feature (`depletedAt`/`depletedBy`
+flagging a product blurred + un-orderable, the Depleted Products view + tile, and
+the "Bring Live" reactivation) has been **removed**. Products are always live and
+orderable in the Store Assistant grid.
+
+What remains is the **order-scoped** signal, untouched: when the Warehouse
+resolves a Display Refill task as **Stock Depleted**, `setDisplayRefillStatus`
+writes `displayRefillStatus: "stockDepleted"` on `/orders/{orderId}` and appends
+an `insights_log` entry with `action: "stock_depleted"`. That feeds the
+**Insights → Stock Depleted** tab (the "internal insight" record). It no longer
+touches the product. Legacy `depletedAt`/`depletedBy` values left on products from
+the old feature are inert and have no effect.
 
 ### Validation invariants (enforced client-side)
 
@@ -110,6 +110,12 @@ display-partner + clothing-refill resolution fields — see `placeOrders` /
 | `placedAtHub` | `"hub1" \| "hub2" \| "hub3" \| "hubC"`        | Source-of-truth fulfilment hub. `WarehouseView` filters hub3 + **hubC** by this field; hub1/hub2 by `hub`. |
 | `placedStore` | `"central" \| "pine"`                         | The operational store the order was placed from. Usually implied by the hub, but **clothing customer orders all route to `hubC`**, so the store is persisted explicitly for tracking. |
 | `intent`      | (cart-line only, not persisted)              | Assistant cart lines tag clothing as `"customer"` vs `"refill"` to pick the Checkout vs refill path; not written to the order. |
+| `displayRefillStatus` | `"stockDepleted" \| "refilled" \| null` | Display-partner refill resolution (Phase 9). `null` = active task; `"refilled"` = display replenished; `"stockDepleted"` = no inventory left. Written by `setDisplayRefillStatus`; the `stockDepleted` value is the **order-scoped depletion signal** that feeds Insights (`insights_log` `action:"stock_depleted"` + Insights → Stock Depleted tab). It is **order-scoped only** — it does NOT flag the product (product-level depletion blocking was retired; see `/products` `depletedAt`). |
+| `displayRefillScheduledAt` | ISO string \| null | When the refill task was scheduled (starts the 15-min window). Set on the order's READY transition for a display-partner order; cleared when it leaves READY. |
+| `displayRefillHub` | hub id \| null | Hub the refill task is routed to — the product's own hub (= `placedAtHub`). `null` when no task is active. |
+| `displayRefilledAt` | ISO string \| null | When the display was marked refilled. |
+| `displayRefillStockDepletedAt` | ISO string \| null | When the task was resolved Stock Depleted (the order-scoped depletion timestamp). |
+| `displayRefilledBy` | string (hub label) \| null | Hub that resolved the refill task (anonymous auth has no email — hub is the signal). |
 
 **Hub C (trial):** clothing ordered *for a customer* routes to the `hubC`
 destination regardless of store or the product's `hubs`. The Hub C warehouse view
