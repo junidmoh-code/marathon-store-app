@@ -193,6 +193,102 @@ The two `storeIds` values map to the existing Central/Pine `storeMode` toggle in
 
 ---
 
+# STOCK / INVENTORY
+
+> Per-size, per-location inventory on a ledger. **`/stock_movements` is the
+> append-only source of truth; `/stock` cells are a re-derivable cache.** The
+> ONLY writer to `/stock` is `applyMovement`
+> (`src/components/stock/applyMovement.js`) — never raw writes. Full design:
+> `design/INVENTORY-DESIGN.md`. Write authorization is keyed on
+> **`/users/{uid}/stockRole`** (below), NOT the app `role`.
+
+## `/locations/{locationId}` — canonical location registry
+
+Closed set of places stock can physically be. Seeded from `DEFAULT_LOCATIONS`
+(`src/components/stock/locations.js`); `useLocations()` reads it live and falls
+back to the seed. Write: `stockRole === "admin"` only.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | mirror of key |
+| `label` | string | display name — `warehouse1` is **"Warehouse One"**, `hub2b` "Hub 2B", `marathon-pe` "Marathon PE" |
+| `kind` | `"warehouse" \| "store" \| "transit"` | |
+| `sellable` | boolean | POS may ring a sale here |
+| `active` | boolean | |
+
+Registry: `warehouse1` (top-of-chain receiving), `hub1`, `hub2`, `hub2b`, `hub3`,
+`hubC`, `marathon-pe`, `marathon-pine`, `trophy`, `in_transit`.
+
+## `/stock/{locationId}/{productId}/{size}` — balance cell
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `qty` | number (int) | on-hand; **only a `sold` decrement may go negative** |
+| `v` | number | monotonic version (optimistic concurrency guard) |
+| `mv` | string | id of the last movement that touched the cell |
+| `lastType` | string | last movement type |
+| `state` | `"untracked" \| "counting" \| "live"` | rollout gate |
+| `updatedAt` / `updatedBy` | ISO / uid | |
+
+Written **only** by `applyMovement`, paired with the ledger entry in one atomic
+version-guarded `update()`. Fully re-derivable from `/stock_movements`.
+
+## `/stock_movements/{movementId}` — APPEND-ONLY ledger
+
+Create-only, immutable; `movementId` is the idempotency key. `actor` must equal
+`auth.uid`; `productId` must exist in `/products`; `from`/`to` must exist in
+`/locations`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `type` | `received \| sold \| return \| adjustment \| transfer_out \| transfer_in` | |
+| `productId` / `size` / `qty` | string / string / number (>0) | |
+| `from` / `to` | locationId \| null | |
+| `actor` / `actorRole` | uid / string | |
+| `ts` / `appliedAt` | ISO | real event time / when it hit RTDB |
+| `reason` / `link` | string / object | `link = {orderId,transferId,refillId,saleId,deviceId}` |
+
+Cell effects: `received +to`, `sold −from`, `return +to`, `adjustment ±`,
+`transfer_out`/`transfer_in` `−from,+to`. **Write authz by `stockRole`:**
+`received → warehouse|admin`; `transfer_* → warehouse|store|admin`;
+`sold|return → pos|store|admin`; `adjustment → admin`.
+
+### Receiving via the product-add form (rework)
+Opening stock is entered in the **admin product-add form** — an optional,
+collapsible per-size section, collapsed by default (collapsed = form unchanged).
+On save, entered quantities post as `received` movements into **`warehouse1`**.
+**Quantities are never required.** The receive requires the actor's `stockRole`
+to permit `received` (`warehouse|admin`); if not, the product still saves and the
+receive soft-warns. **The same optional per-size receive is also on the product
+EDIT page** (`AdminProductDetail`) as its own action, so re-orders for existing
+products post `received → warehouse1` too. The standalone Receive screen is
+retired.
+
+### One-step transfer (rework)
+A transfer is now a **single atomic `transfer_out`** movement carrying a real
+`from` + real `to` (no `in_transit` hop, no dispatch→confirm-receive ceremony).
+Totals still conserve via the paired `−from/+to`. **Conscious tradeoff: transit
+visibility is dropped** — goods in motion show as already at the destination.
+`transfer_in`, the `in_transit` location, and `/transfers` docs remain valid in
+the schema but are **unused by the reworked one-step flow**. A transfer that
+carries a `refillId` still closes its `/refill_requests/{id}` on success.
+
+## `/transfers`, `/refill_requests`, `/stock_alerts`
+Per `design/INVENTORY-DESIGN.md`. `/transfers` (dispatch/receive docs) is now
+optional — the one-step flow doesn't write it. `/refill_requests/{id}` (Source
+chain) is closed (`status:"fulfilled"`) when a transfer fulfils it.
+`/stock_alerts` holds reconciler/accuracy alerts.
+
+## `/users/{uid}/stockRole`
+`"admin" | "warehouse" | "store" | "pos"` (absent = **no** stock-write access).
+Distinct from the app `role`. Assigned in the super-admin **User Management →
+Stock Role** control. The super-admin signs in with Google and has **no `/users`
+record by default**, so stock writes would be denied — User Management shows a
+one-tap **self-grant** banner that materializes a minimal record with
+`stockRole:"admin"`.
+
+---
+
 # LAYBY CROSS-APP CONTRACT
 
 > **POS app writes pulls/creation; this app (warehouse) writes

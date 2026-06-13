@@ -10,7 +10,7 @@
 // the labels share one definition.
 
 export const DEFAULT_LOCATIONS = [
-  { id: "warehouse1",    label: "Warehouse 1",    kind: "warehouse", sellable: false, active: true },
+  { id: "warehouse1",    label: "Warehouse One",  kind: "warehouse", sellable: false, active: true },
   { id: "hub1",          label: "Hub 1",          kind: "warehouse", sellable: false, active: true },
   { id: "hub2",          label: "Hub 2",          kind: "warehouse", sellable: false, active: true },
   { id: "hub2b",         label: "Hub 2B",         kind: "warehouse", sellable: false, active: true },

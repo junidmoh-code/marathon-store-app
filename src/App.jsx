@@ -13,6 +13,7 @@ import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits }
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import StockView from "./components/stock/StockView";
+import { applyMovement } from "./components/stock/applyMovement";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
@@ -1718,6 +1719,11 @@ function AdminView({ products, orders, onExit }) {
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
   const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
+  // Optional opening-stock receiving (Stock rework). Collapsed by default — when
+  // collapsed the form behaves EXACTLY as before. Quantities are NEVER required;
+  // entered amounts write as `received` movements into warehouse1 on save.
+  const [recvOpen, setRecvOpen] = useState(false);
+  const [recvQtys, setRecvQtys] = useState({}); // { size: "n" }
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
@@ -1789,8 +1795,33 @@ function AdminView({ products, orders, onExit }) {
       newProduct.barcode = barcode;
       await addProductToFirebase(newProduct);
 
+      // Optional opening stock: if quantities were entered, write them as
+      // `received` movements into warehouse1 (main receiving warehouse) via
+      // applyMovement — ledger-paired, never raw. The product is already saved,
+      // so this NEVER blocks the save; a denied/failed movement (e.g. the user
+      // lacks stockRole) only soft-warns and can be entered later.
+      try {
+        const recvEntries = (form.sizes || [])
+          .map(s => [s, parseInt(recvQtys[s], 10)])
+          .filter(([, n]) => Number.isFinite(n) && n > 0);
+        if (recvEntries.length) {
+          let recOk = 0, recFail = 0;
+          for (const [size, n] of recvEntries) {
+            const res = await applyMovement({ type: "received", productId: id, size, qty: n, to: "warehouse1" });
+            res.ok ? recOk++ : recFail++;
+          }
+          if (recFail) {
+            alert(`Product saved. ${recOk} size(s) received into Warehouse One; ${recFail} could not be received — you may not have stock permission (stockRole). You can add these quantities later from Stock.`);
+          }
+        }
+      } catch (recErr) {
+        console.warn("opening-stock receive failed:", recErr);
+      }
+
       setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
       setShoeboxTouched(false);
+      setRecvQtys({});
+      setRecvOpen(false);
       setShowAdd(false);
     } catch (err) {
       console.error("addProduct failed:", err);
@@ -1989,6 +2020,40 @@ function AdminView({ products, orders, onExit }) {
                 {s}
               </button>
             ))}
+          </div>
+
+          {/* Opening stock (Stock rework) — OPTIONAL, collapsed by default. When
+              collapsed the form is unchanged. Expanded: a qty box arrow-linked
+              under each selected size. Quantities are never required. */}
+          <div style={{ marginBottom:"1.25rem" }}>
+            <button type="button" onClick={() => setRecvOpen(o => !o)}
+              style={{ display:"flex", alignItems:"center", gap:8, width:"100%", textAlign:"left", background:"rgba(60,110,255,.06)", border:"1px solid rgba(60,110,255,.2)", borderRadius:"10px", padding:"9px 12px", color:"#bbb", cursor:"pointer", fontSize:"0.85rem", fontWeight:600 }}>
+              <span style={{ color:BLUE_L, transform: recvOpen ? "rotate(90deg)" : "none", transition:"transform .15s", display:"inline-block" }}>▸</span>
+              Opening stock <span style={{ color:"#555", fontWeight:500, fontStyle:"italic" }}>· optional — leave blank if not counted yet</span>
+            </button>
+            {recvOpen && (
+              <div style={{ marginTop:"0.75rem", background:"rgba(12,16,30,.55)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:"1px solid rgba(120,150,255,.16)", borderRadius:RADIUS, padding:"1rem", boxShadow:"inset 0 1px 0 rgba(255,255,255,.05)" }}>
+                {form.sizes.length === 0 ? (
+                  <div style={{ color:"#666", fontSize:"0.82rem", textAlign:"center", padding:"0.5rem" }}>Select sizes above, then enter how many of each you're receiving.</div>
+                ) : (
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(64px, 1fr))", gap:"0.6rem" }}>
+                    {(form.productType === "clothing" ? CLOTHING_SIZES : SNEAKER_SIZES).filter(s => form.sizes.includes(s)).map(s => (
+                      <div key={s} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
+                        <div style={{ fontSize:"0.85rem", fontWeight:700, color:BLUE_L }}>{s}</div>
+                        <div style={{ color:"rgba(120,150,255,.5)", fontSize:"0.9rem", lineHeight:1 }}>↓</div>
+                        <input type="number" inputMode="numeric" min="0" placeholder="0"
+                          value={recvQtys[s] ?? ""}
+                          onChange={e => setRecvQtys(q => ({ ...q, [s]: e.target.value }))}
+                          style={{ ...inputStyle, width:"100%", boxSizing:"border-box", textAlign:"center", padding:"8px 4px" }} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ fontSize:"0.75rem", color:"#666", marginTop:"0.75rem" }}>
+                  Entered amounts are received into <span style={{ color:"#4ADE80" }}>Warehouse One</span> as ledger movements on save. Saving with no quantities works exactly as before.
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Hubs (select at least one)</div>
@@ -2291,6 +2356,33 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     return `${lastSoldLabel} · ${placed.length} order${placed.length === 1 ? "" : "s"} all-time`;
   }, [insightsLog, product.name]);
 
+  // Restock-existing (Stock rework): the same optional per-size receive as the
+  // product-add form, for a product already in the system (re-orders arrive
+  // constantly). Its own explicit action — independent of the edits above and
+  // never required. Posts `received` movements into warehouse1 via applyMovement;
+  // soft-warns (no block) if the user lacks the stockRole the rules require.
+  const [recvOpen, setRecvOpen] = useState(false);
+  const [recvQtys, setRecvQtys] = useState({});
+  const [recvBusy, setRecvBusy] = useState(false);
+  const [recvMsg,  setRecvMsg]  = useState(null);
+  const flashRecv = (ok, text) => { setRecvMsg({ ok, text }); setTimeout(() => setRecvMsg(null), 4000); };
+  const doReceive = async () => {
+    const entries = productSizes
+      .map(s => [s, parseInt(recvQtys[s], 10)])
+      .filter(([, n]) => Number.isFinite(n) && n > 0);
+    if (!entries.length) return;
+    setRecvBusy(true);
+    let ok = 0, fail = 0;
+    for (const [size, n] of entries) {
+      const res = await applyMovement({ type: "received", productId: product.id, size, qty: n, to: "warehouse1" });
+      res.ok ? ok++ : fail++;
+    }
+    setRecvBusy(false);
+    setRecvQtys({});
+    if (fail) flashRecv(false, `${ok} received, ${fail} failed — you may not have stock permission (stockRole).`);
+    else flashRecv(true, `Received ${ok} size${ok > 1 ? "s" : ""} into Warehouse One.`);
+  };
+
   const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding:"24px 18px 8px" };
   const card         = { background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, margin:"0 14px", overflow:"hidden" };
   const cardInner    = { padding:"14px 16px" };
@@ -2376,6 +2468,48 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
                       style={{ padding:"7px 14px", borderRadius:8, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.18)" : "rgba(255,255,255,.03)", color: on ? "#4A7FFF" : "rgba(255,255,255,.7)", cursor:"pointer", fontSize:13, fontWeight:600 }}>{s}</button>
             );
           })}
+        </div>
+      </div>
+
+      {/* RECEIVE STOCK (restock existing) — Stock rework. Optional per-size
+          receive into Warehouse One for a re-order; independent of the edits
+          above, never required. Mirrors the product-add opening-stock section. */}
+      <div style={sectionTitle}>Receive stock</div>
+      <div style={card}>
+        <div style={cardInner}>
+          <button onClick={() => setRecvOpen(o => !o)}
+            style={{ display:"flex", alignItems:"center", gap:8, width:"100%", textAlign:"left", background:"transparent", border:"none", color:"#bbb", cursor:"pointer", fontSize:13, fontWeight:600, padding:0 }}>
+            <span style={{ color:"#6A9FFF", transform: recvOpen ? "rotate(90deg)" : "none", transition:"transform .15s", display:"inline-block" }}>▸</span>
+            Add re-order quantities <span style={{ color:"#555", fontWeight:500, fontStyle:"italic" }}>· optional → Warehouse One</span>
+          </button>
+          {recvOpen && (
+            <div style={{ marginTop:14 }}>
+              {productSizes.length === 0 ? (
+                <div style={{ color:"#666", fontSize:13 }}>Add sizes above first.</div>
+              ) : (
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(64px, 1fr))", gap:10 }}>
+                  {sizeChoices.filter(s => productSizes.includes(s)).map(s => (
+                    <div key={s} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
+                      <div style={{ fontSize:13, fontWeight:700, color:"#6A9FFF" }}>{s}</div>
+                      <div style={{ color:"rgba(120,150,255,.5)", fontSize:14, lineHeight:1 }}>↓</div>
+                      <input type="number" inputMode="numeric" min="0" placeholder="0"
+                        value={recvQtys[s] ?? ""}
+                        onChange={e => setRecvQtys(q => ({ ...q, [s]: e.target.value }))}
+                        style={{ ...inputStyle, width:"100%", boxSizing:"border-box", textAlign:"center", padding:"8px 4px" }} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button onClick={doReceive} disabled={recvBusy}
+                style={{ ...bBlue, padding:"0.55rem 1.25rem", marginTop:14, opacity: recvBusy ? 0.5 : 1 }}>
+                {recvBusy ? "Receiving…" : "Receive into Warehouse One"}
+              </button>
+              {recvMsg && <div style={{ marginTop:10, fontSize:12.5, fontWeight:600, color: recvMsg.ok ? "#4ADE80" : "#FF9B9B" }}>{recvMsg.text}</div>}
+              <div style={{ fontSize:11, color:"#666", marginTop:8 }}>
+                Posts <span style={{ color:"#4ADE80" }}>received</span> movements; changes nothing else on this product.
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

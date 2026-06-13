@@ -1,273 +1,240 @@
-// ─── TRANSFER ─────────────────────────────────────────────────────────────────
-// Deliberate transfers (any location → any location — flexible topology) plus
-// fulfilment of Source refill requests. Each leg is an atomic movement through the
-// real in_transit holding (stock never invisible):
-//   Dispatch  → transfer_out  (from → in_transit)   per line, shares one transferId
-//   Receive   → transfer_in   (in_transit → dest)   per line; a received≠dispatched
-//               count is recorded as a signed `adjustment` (reason transfer_discrepancy),
-//               never silently absorbed.
-// A transfer carrying a refillId marks that Source refill request fulfilled on receive.
+// ─── TRANSFER (assistant-style, ONE-STEP) ─────────────────────────────────────
+// Reworked per Junid's operating model: a photo grid of products → tap to expand
+// sizes → build per-size quantities across multiple products → pick a destination
+// → confirm. Each basket line becomes ONE atomic `transfer_out` movement carrying
+// a REAL from + to (no in_transit hop).
+//
+// CONSCIOUS TRADEOFF: the dispatch → in-transit → confirm-receive ceremony is
+// dropped. A transfer is instantaneous in the ledger (totals still conserve via
+// applyMovement's paired −from/+to), so goods physically in a vehicle show as
+// already at the destination. Transit visibility is intentionally gone — see
+// design/INVENTORY-DESIGN.md §2 (I4 amendment).
+//
+// Source defaults to warehouse1 (where stock is received) but any location → any
+// location is allowed (flexible topology). Open Source refill requests can be
+// prefilled and are closed atomically on a successful transfer.
 
 import React, { useState, useMemo } from "react";
 import { ref, update, push, child } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
-import { useTransfers, useRefillRequests } from "./useStock";
-import { transferTargets, labelFor, IN_TRANSIT } from "./locations";
-import { Card, Field, ProductPicker, SizePicker, LocationPicker, NumberInput, Toast, Empty } from "./widgets";
-import { GRAY, GREEN, AMBER, BLUE_L, RED, BORDER, bGreen, bGhost, tabOn, tabOff } from "./ui";
+import { useRefillRequests } from "./useStock";
+import { transferTargets, labelFor, warehouseLocations } from "./locations";
+import { Toast, Empty } from "./widgets";
+import { GLASS, CARD, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, BORDER, RADIUS, FONT, input, bGreen, bGhost } from "./ui";
 
-export default function Transfer({ products, registry, actorRole }) {
-  const [mode, setMode] = useState("dispatch");
-  const [prefill, setPrefill] = useState(null);
+const keyOf = (pid, size) => `${pid}__${size}`;
 
-  // Picking an open refill request prefills a Dispatch (destination + line + the
-  // refillId link) and jumps to the Dispatch tab. On receive, that link closes
-  // the request (see Receive).
-  const pickRefill = (r) => {
-    setPrefill({
-      to: r.requestingLocation,
-      refillId: r.id,
-      lines: [{ productId: r.productId, productName: products.find(p => p.id === r.productId)?.name || r.productId, size: r.size, qty: r.qty || 1 }],
-    });
-    setMode("dispatch");
-  };
-
-  return (
-    <div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-        {[["dispatch", "Dispatch"], ["receive", "Receive"], ["refill", "Refill requests"]].map(([k, l]) => (
-          <button key={k} onClick={() => setMode(k)} style={mode === k ? tabOn : tabOff}>{l}</button>
-        ))}
-      </div>
-      {mode === "dispatch" && <Dispatch key={prefill?.refillId || "new"} products={products} registry={registry} actorRole={actorRole} prefill={prefill} onDone={() => setPrefill(null)} />}
-      {mode === "receive"  && <Receive  products={products} registry={registry} actorRole={actorRole} />}
-      {mode === "refill"   && <RefillList products={products} registry={registry} onPick={pickRefill} />}
-    </div>
-  );
+function Thumb({ product, size = 46 }) {
+  const url = product?.photoUrl;
+  if (url) return <img src={url} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: 10, flexShrink: 0 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />;
+  return <div style={{ width: size, height: size, borderRadius: 10, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.5, flexShrink: 0 }}>👟</div>;
 }
 
-// ── Dispatch ──────────────────────────────────────────────────────────────────
-function Dispatch({ products, registry, actorRole, prefill, onDone }) {
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState(prefill?.to || "");
-  const [refillId, setRefillId] = useState(prefill?.refillId || null);
-  const [lines, setLines] = useState(prefill?.lines || []);
-  const [pid, setPid] = useState("");
-  const [size, setSize] = useState("");
-  const [qty, setQty] = useState("");
+export default function Transfer({ products, registry, actorRole }) {
+  const [search, setSearch] = useState("");
+  const [openId, setOpenId] = useState(null);     // expanded product id
+  const [basket, setBasket] = useState({});       // { pid__size: { productId, productName, size, qty } }
+  const [refillId, setRefillId] = useState(null); // fulfilling a Source refill
+  const [from, setFrom] = useState("warehouse1");
+  const [to, setTo] = useState("");
+  const [picking, setPicking] = useState(false);  // destination sheet open
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+  const openRefills = useRefillRequests("open");
 
-  const product = useMemo(() => products.find(p => p.id === pid), [products, pid]);
-  const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 2800); };
+  const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3000); };
 
-  const addLine = () => {
-    const n = parseInt(qty, 10);
-    if (!product || !size || !Number.isFinite(n) || n <= 0) return flash("err", "Pick product, size and a positive quantity.");
-    setLines(ls => [...ls, { productId: product.id, productName: product.name, size, qty: n }]);
-    setSize(""); setQty("");
+  const lines = useMemo(() => Object.values(basket).filter(l => l.qty > 0), [basket]);
+  const totalUnits = lines.reduce((s, l) => s + l.qty, 0);
+
+  const setQty = (product, size, qty) => {
+    const n = Math.max(0, parseInt(qty, 10) || 0);
+    setBasket(b => {
+      const next = { ...b };
+      const k = keyOf(product.id, size);
+      if (n <= 0) delete next[k];
+      else next[k] = { productId: product.id, productName: product.name, size, qty: n };
+      return next;
+    });
+  };
+  const bump = (product, size, delta) => {
+    const k = keyOf(product.id, size);
+    const cur = basket[k]?.qty || 0;
+    setQty(product, size, cur + delta);
+  };
+  const clearBasket = () => { setBasket({}); setRefillId(null); };
+
+  const prefillRefill = (r) => {
+    const p = products.find(x => x.id === r.productId);
+    setBasket({ [keyOf(r.productId, r.size)]: { productId: r.productId, productName: p?.name || r.productId, size: r.size, qty: r.qty || 1 } });
+    setRefillId(r.id);
+    setTo(r.requestingLocation || "");
+    setOpenId(r.productId);
+    flash("ok", "Prefilled from refill request — pick a source and confirm.");
   };
 
-  const dispatch = async () => {
-    if (!from || !to) return flash("err", "Pick a from and to location.");
-    if (from === to) return flash("err", "From and to must differ.");
-    if (!lines.length) return flash("err", "Add at least one line.");
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return [...(products || [])]
+      .filter(p => p && p.id && p.name && (!q || p.name.toLowerCase().includes(q)))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [products, search]);
+
+  const doTransfer = async () => {
+    if (!from || !to) return flash("err", "Pick a source and destination.");
+    if (from === to) return flash("err", "Source and destination must differ.");
+    if (!lines.length) return flash("err", "Add at least one quantity.");
     setBusy(true);
     const transferId = push(child(ref(database), "transfers")).key;
-    const done = [];
-    let fail = 0;
+    let ok = 0, fail = 0;
     for (const ln of lines) {
       const res = await applyMovement({
         type: "transfer_out", productId: ln.productId, size: ln.size, qty: ln.qty,
-        from, to: IN_TRANSIT, actorRole, link: { transferId, refillId: refillId || null },
+        from, to, actorRole, link: { transferId, refillId: refillId || null },
       });
-      if (res.ok) done.push(ln); else fail++;
+      res.ok ? ok++ : fail++;
     }
-    // If NOTHING moved, don't create a transfer doc — there is no transfer.
-    if (!done.length) {
-      setBusy(false);
-      return flash("err", `Nothing dispatched — check stock at ${labelFor(from, registry)}`);
-    }
-    // Persist the transfer doc reflecting ONLY the lines that actually moved, so the
-    // record never claims more in transit than was decremented from the source.
-    let docErr = false;
-    await update(ref(database), {
-      [`transfers/${transferId}`]: {
-        status: "dispatched",
-        from, to, refillId: refillId || null,
-        lines: done.map(l => ({ productId: l.productId, size: l.size, qtyDispatched: l.qty, qtyReceived: null })),
-        createdBy: auth.currentUser?.uid || null,
-        createdAt: new Date().toISOString(),
-      },
-    }).catch(() => { docErr = true; });
-    setBusy(false);
-    if (docErr) return flash("err", "Dispatched, but the transfer record failed to save — see In-Transit.");
-    setLines([]); setRefillId(null);
-    onDone && onDone();
-    flash(fail ? "err" : "ok", fail ? `Dispatched ${done.length}, ${fail} failed (insufficient stock)` : `Dispatched ${done.length} line(s) → in transit`);
-  };
-
-  return (
-    <div>
-      <Card>
-        <Field label="From"><LocationPicker registry={registry} value={from} onChange={setFrom} filter={transferTargets} exclude={to} /></Field>
-        <Field label="To"><LocationPicker registry={registry} value={to} onChange={setTo} filter={transferTargets} exclude={from} /></Field>
-        {refillId && <div style={{ fontSize: 11, color: BLUE_L, marginBottom: 8 }}>Fulfilling refill request {refillId.slice(-6)}</div>}
-      </Card>
-
-      <Card>
-        <div style={{ fontSize: 11, color: GRAY, marginBottom: 8, textTransform: "uppercase", letterSpacing: ".04em" }}>Add line</div>
-        <Field label="Product"><ProductPicker products={products} value={pid} onChange={(v) => { setPid(v); setSize(""); }} /></Field>
-        <div style={{ display: "flex", gap: 8 }}>
-          <div style={{ flex: 1 }}><Field label="Size"><SizePicker product={product} value={size} onChange={setSize} /></Field></div>
-          <div style={{ width: 90 }}><Field label="Qty"><NumberInput value={qty} onChange={setQty} placeholder="0" /></Field></div>
-        </div>
-        <button onClick={addLine} style={{ ...bGhost, width: "100%" }}>+ Add line</button>
-      </Card>
-
-      {lines.length > 0 && (
-        <Card>
-          {lines.map((l, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 2px", borderTop: i ? BORDER : "none", fontSize: 13 }}>
-              <span style={{ color: "#fff" }}>{l.productName || l.productId} · {l.size}</span>
-              <span style={{ display: "flex", gap: 10 }}>
-                <span style={{ color: GREEN }}>×{l.qty}</span>
-                <span onClick={() => setLines(ls => ls.filter((_, j) => j !== i))} style={{ color: RED, cursor: "pointer" }}>✕</span>
-              </span>
-            </div>
-          ))}
-          <button onClick={dispatch} disabled={busy} style={{ ...bGreen, width: "100%", marginTop: 12, opacity: busy ? 0.6 : 1 }}>
-            {busy ? "Dispatching…" : `Dispatch ${lines.length} line(s)`}
-          </button>
-        </Card>
-      )}
-      <Toast msg={toast} />
-    </div>
-  );
-}
-
-// ── Receive ───────────────────────────────────────────────────────────────────
-function Receive({ products, registry, actorRole }) {
-  const dispatched = useTransfers("dispatched");
-  const [sel, setSel] = useState(null);          // transferId
-  const [recv, setRecv] = useState({});          // { lineIdx: "n" }
-  const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState(null);
-  const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 2800); };
-
-  const transfer = dispatched.find(t => t.id === sel);
-  const nameFor = (pid) => products.find(p => p.id === pid)?.name || pid;
-
-  const confirm = async () => {
-    if (!transfer) return;
-    setBusy(true);
-    let discrepancy = false, fail = 0;
-    const updatedLines = [];
-    for (let i = 0; i < (transfer.lines || []).length; i++) {
-      const ln = transfer.lines[i];
-      const received = recv[i] != null && recv[i] !== "" ? parseInt(recv[i], 10) : ln.qtyDispatched;
-      if (received > 0) {
-        const res = await applyMovement({
-          type: "transfer_in", productId: ln.productId, size: ln.size, qty: received,
-          from: IN_TRANSIT, to: transfer.to, actorRole, link: { transferId: transfer.id, refillId: transfer.refillId || null },
-        });
-        if (!res.ok) fail++;
-      }
-      const diff = ln.qtyDispatched - received;
-      if (diff !== 0) {
-        discrepancy = true;
-        // diff>0 → short: remove the stuck remainder from in_transit. diff<0 → over.
-        const res = await applyMovement({
-          type: "adjustment", productId: ln.productId, size: ln.size, qty: Math.abs(diff),
-          from: diff > 0 ? IN_TRANSIT : null, to: diff < 0 ? IN_TRANSIT : null,
-          reason: "transfer_discrepancy", actorRole, link: { transferId: transfer.id },
-        });
-        if (!res.ok) fail++;
-      }
-      updatedLines.push({ ...ln, qtyReceived: received });
-    }
-    // If any leg failed, leave the transfer OPEN (dispatched) — don't mark it received
-    // or fulfil the refill on a partial receive. The successful legs are already in the
-    // ledger and visible; the operator reviews In-Transit and retries the rest.
-    if (fail > 0) {
-      setBusy(false);
-      return flash("err", `${fail} leg(s) failed — transfer left open. Review In-Transit before retrying.`);
-    }
-    await update(ref(database), {
-      [`transfers/${transfer.id}/status`]: discrepancy ? "discrepancy" : "received",
-      [`transfers/${transfer.id}/lines`]: updatedLines,
-      [`transfers/${transfer.id}/receivedBy`]: auth.currentUser?.uid || null,
-      [`transfers/${transfer.id}/receivedAt`]: new Date().toISOString(),
-    }).catch(() => { fail++; });
-    // If this transfer fulfils a refill request, close it.
-    if (transfer.refillId) {
+    // Close the Source refill request on a successful one-step transfer.
+    if (refillId && ok > 0) {
       await update(ref(database), {
-        [`refill_requests/${transfer.refillId}/status`]: "fulfilled",
-        [`refill_requests/${transfer.refillId}/fulfilledBy`]: { transferId: transfer.id },
-        [`refill_requests/${transfer.refillId}/resolvedAt`]: new Date().toISOString(),
+        [`refill_requests/${refillId}/status`]: "fulfilled",
+        [`refill_requests/${refillId}/fulfilledBy`]: { transferId },
+        [`refill_requests/${refillId}/resolvedAt`]: new Date().toISOString(),
       }).catch(() => {});
     }
-    setBusy(false); setSel(null); setRecv({});
-    flash(fail ? "err" : "ok", fail ? `Received with ${fail} error(s)` : discrepancy ? "Received — discrepancy logged" : "Received in full");
+    setBusy(false);
+    setPicking(false);
+    if (ok > 0) { clearBasket(); setTo(""); }
+    flash(fail ? "err" : "ok",
+      fail ? `${ok} moved, ${fail} failed (insufficient stock at ${labelFor(from, registry)} or no permission)`
+           : `Transferred ${ok} line(s) → ${labelFor(to, registry)}`);
   };
-
-  if (!dispatched.length) return <Empty>No transfers in transit to receive.</Empty>;
 
   return (
     <div>
-      {!transfer && dispatched.map(t => (
-        <div key={t.id} onClick={() => setSel(t.id)} style={{ cursor: "pointer" }}>
-          <Card>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-              <span style={{ color: "#fff" }}>{labelFor(t.from, registry)} → {labelFor(t.to, registry)}</span>
-              <span style={{ color: BLUE_L }}>{(t.lines || []).length} line(s) ›</span>
-            </div>
-            {t.refillId && <div style={{ fontSize: 11, color: BLUE_L, marginTop: 4 }}>refill {String(t.refillId).slice(-6)}</div>}
-          </Card>
+      {/* Open refill requests (Source chain) — prefill a transfer */}
+      {openRefills.length > 0 && (
+        <div style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>Open refill requests</div>
+          {openRefills.map(r => {
+            const nm = products.find(p => p.id === r.productId)?.name || r.productId;
+            return (
+              <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderTop: BORDER, fontSize: 13 }}>
+                <span style={{ color: "#fff" }}>{nm} · {r.size} ×{r.qty || 1}<span style={{ color: GRAY }}> → {labelFor(r.requestingLocation, registry)}</span></span>
+                <button onClick={() => prefillRefill(r)} style={{ ...bGhost, padding: "5px 10px", fontSize: 12 }}>Prefill</button>
+              </div>
+            );
+          })}
         </div>
-      ))}
-
-      {transfer && (
-        <Card>
-          <div style={{ fontSize: 13, color: "#fff", marginBottom: 10 }}>{labelFor(transfer.from, registry)} → {labelFor(transfer.to, registry)}</div>
-          {(transfer.lines || []).map((ln, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderTop: i ? BORDER : "none" }}>
-              <div style={{ fontSize: 13, color: "#fff" }}>{nameFor(ln.productId)} · {ln.size}<div style={{ fontSize: 11, color: GRAY }}>sent {ln.qtyDispatched}</div></div>
-              <div style={{ width: 84 }}><NumberInput value={recv[i] ?? String(ln.qtyDispatched)} onChange={(v) => setRecv(r => ({ ...r, [i]: v }))} /></div>
-            </div>
-          ))}
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button onClick={() => { setSel(null); setRecv({}); }} style={{ ...bGhost, flex: 1 }}>Back</button>
-            <button onClick={confirm} disabled={busy} style={{ ...bGreen, flex: 2, opacity: busy ? 0.6 : 1 }}>{busy ? "Receiving…" : "Confirm receive"}</button>
-          </div>
-          <div style={{ fontSize: 11, color: AMBER, marginTop: 8 }}>A received count ≠ dispatched is logged as a discrepancy adjustment.</div>
-        </Card>
       )}
+
+      {/* Search */}
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"
+             style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 12 }} />
+
+      {/* Product grid (tap to expand sizes) */}
+      {filtered.length === 0 ? <Empty>No products match.</Empty> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: lines.length ? 84 : 8 }}>
+          {filtered.map(p => {
+            const expanded = openId === p.id;
+            const sizes = Array.isArray(p.sizes) ? p.sizes : [];
+            const inBasket = sizes.reduce((s, sz) => s + (basket[keyOf(p.id, sz)]?.qty || 0), 0);
+            return (
+              <div key={p.id} style={{ ...GLASS, padding: 0, overflow: "hidden" }}>
+                <div onClick={() => setOpenId(expanded ? null : p.id)}
+                     style={{ display: "flex", alignItems: "center", gap: 11, padding: 11, cursor: "pointer" }}>
+                  <Thumb product={p} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+                    <div style={{ fontSize: 11, color: GRAY }}>{sizes.length} size{sizes.length === 1 ? "" : "s"}</div>
+                  </div>
+                  {inBasket > 0 && <span style={{ background: "rgba(74,222,128,.16)", color: GREEN, border: "1px solid rgba(74,222,128,.4)", borderRadius: 20, padding: "2px 9px", fontSize: 12, fontWeight: 700 }}>{inBasket}</span>}
+                  <span style={{ color: BLUE_L, transform: expanded ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▸</span>
+                </div>
+                {expanded && (
+                  <div style={{ padding: "0 11px 12px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))", gap: 8 }}>
+                    {sizes.map(sz => {
+                      const qty = basket[keyOf(p.id, sz)]?.qty || 0;
+                      return (
+                        <div key={sz} style={{ background: CARD, border: qty ? "1px solid rgba(74,222,128,.4)" : BORDER, borderRadius: 10, padding: "7px 8px" }}>
+                          <div style={{ fontSize: 12, color: BLUE_L, fontWeight: 700, textAlign: "center", marginBottom: 5 }}>{sz}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <button onClick={() => bump(p, sz, -1)} style={stepBtn}>−</button>
+                            <input type="number" inputMode="numeric" min="0" value={qty || ""} placeholder="0"
+                                   onChange={e => setQty(p, sz, e.target.value)}
+                                   style={{ ...input, width: "100%", minWidth: 0, boxSizing: "border-box", textAlign: "center", padding: "6px 2px" }} />
+                            <button onClick={() => bump(p, sz, +1)} style={stepBtn}>+</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {sizes.length === 0 && <div style={{ color: GRAY, fontSize: 12 }}>No sizes on this product.</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Sticky transfer bar */}
+      {lines.length > 0 && (
+        <div style={{ position: "fixed", left: 12, right: 12, bottom: 14, zIndex: 40, ...GLASS, padding: 10, display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{lines.length} line(s) · {totalUnits} unit(s)</div>
+            <div style={{ fontSize: 11, color: GRAY }}>{refillId ? "fulfilling refill" : "ready to transfer"}</div>
+          </div>
+          <button onClick={clearBasket} style={{ ...bGhost, padding: "8px 12px", fontSize: 12 }}>Clear</button>
+          <button onClick={() => setPicking(true)} style={{ ...bGreen, padding: "10px 18px" }}>Transfer</button>
+        </div>
+      )}
+
+      {/* Destination sheet */}
+      {picking && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+             onClick={() => !busy && setPicking(false)}>
+          <div onClick={e => e.stopPropagation()} style={{ ...GLASS, width: "100%", maxWidth: 520, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: 16, maxHeight: "80vh", overflowY: "auto" }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", marginBottom: 12 }}>Transfer {totalUnits} unit(s)</div>
+
+            <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 6 }}>From</div>
+            <select value={from} onChange={e => setFrom(e.target.value)} style={{ ...input, width: "100%", appearance: "none", marginBottom: 14 }}>
+              {warehouseLocations(registry).map(l => <option key={l.id} value={l.id}>{labelFor(l.id, registry)}</option>)}
+            </select>
+
+            <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 6 }}>To</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8, marginBottom: 16 }}>
+              {transferTargets(registry).filter(l => l.id !== from).map(l => {
+                const on = to === l.id;
+                return (
+                  <button key={l.id} onClick={() => setTo(l.id)}
+                          style={{ padding: "11px 8px", borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 600,
+                                   background: on ? "rgba(60,110,255,.2)" : "rgba(255,255,255,.04)",
+                                   border: on ? "1px solid rgba(60,110,255,.6)" : BORDER, color: on ? "#fff" : GRAY }}>
+                    {labelFor(l.id, registry)}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setPicking(false)} disabled={busy} style={{ ...bGhost, flex: 1 }}>Back</button>
+              <button onClick={doTransfer} disabled={busy || !to} style={{ ...bGreen, flex: 2, opacity: (busy || !to) ? 0.5 : 1 }}>
+                {busy ? "Transferring…" : `Confirm → ${to ? labelFor(to, registry) : "…"}`}
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: AMBER, marginTop: 10 }}>One-step transfer — moves immediately (no in-transit confirm step).</div>
+          </div>
+        </div>
+      )}
+
       <Toast msg={toast} />
     </div>
   );
 }
 
-// ── Refill request list (prefill a dispatch) ──────────────────────────────────
-function RefillList({ products, registry, onPick }) {
-  const open = useRefillRequests("open");
-  const nameFor = (pid) => products.find(p => p.id === pid)?.name || pid;
-  if (!open.length) return <Empty>No open refill requests. They are auto-created when a hub sends a pair.</Empty>;
-  return (
-    <div>
-      <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>
-        Open requests. Fulfil one by dispatching from any upstream location — it confirms when received.
-      </div>
-      {open.map(r => (
-        <Card key={r.id}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-            <span style={{ color: "#fff" }}>{nameFor(r.productId)} · {r.size} ×{r.qty || 1}</span>
-            <span style={{ color: GRAY }}>→ {labelFor(r.requestingLocation, registry)}</span>
-          </div>
-          <button onClick={() => onPick(r)} style={{ ...bGhost, width: "100%", marginTop: 8 }}>Fulfil → prefill Dispatch</button>
-        </Card>
-      ))}
-    </div>
-  );
-}
+const stepBtn = {
+  width: 26, height: 30, flexShrink: 0, borderRadius: 8, border: "1px solid rgba(60,110,255,.3)",
+  background: "rgba(60,110,255,.1)", color: "#9CB8FF", fontSize: 16, fontWeight: 700, cursor: "pointer",
+  fontFamily: FONT, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
+};
