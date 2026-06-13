@@ -10,6 +10,40 @@
       }
     },
 
+    "laybys": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$laybyId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        ".validate": "newData.hasChildren(['invoiceNo','status'])",
+        "laybyId":          { ".validate": "newData.isString() && newData.val() === $laybyId" },
+        "invoiceNo":        { ".validate": "newData.isString() && newData.val().length > 0 && (!data.exists() || newData.val() === data.val())" },
+        "saleId":           { ".validate": "newData.isString() && (!data.exists() || newData.val() === data.val())" },
+        "status":           { ".validate": "newData.isString() && newData.val().matches(/^(created|labelPrinted|inTransitToStorage|storedAtHub|pullRequested|sentToStore|collected|expired|rejected)$/)" },
+        "balanceRemaining": { ".validate": "newData.isNumber()" },
+        "itemCount":        { ".validate": "newData.isNumber()" },
+        "storageHub":       { ".validate": "newData.isString()" },
+        "$other":           { ".validate": true }
+      }
+    },
+
+    "laybyPulls": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$pullId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        ".validate": "newData.hasChildren(['invoiceNo','laybyId','status'])",
+        "pullId":           { ".validate": "newData.isString() && newData.val() === $pullId" },
+        "laybyId":          { ".validate": "newData.isString() && newData.val().length > 0 && (!data.exists() || newData.val() === data.val())" },
+        "invoiceNo":        { ".validate": "newData.isString() && newData.val().length > 0 && (!data.exists() || newData.val() === data.val())" },
+        "saleId":           { ".validate": "newData.isString() && (!data.exists() || newData.val() === data.val())" },
+        "status":           { ".validate": "newData.isString() && newData.val().matches(/^(pending|sentToStore|rejected)$/)" },
+        "balanceRemaining": { ".validate": "newData.isNumber()" },
+        "itemCount":        { ".validate": "newData.isNumber()" },
+        "storageHub":       { ".validate": "newData.isString()" },
+        "rejectionReason":  { ".validate": "newData.isString()" },
+        "$other":           { ".validate": true }
+      }
+    },
+
     "restock_log": {
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "$date": {

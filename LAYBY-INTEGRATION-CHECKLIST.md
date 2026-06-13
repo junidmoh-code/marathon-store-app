@@ -82,6 +82,10 @@ All ids canonical; all money cents; `invoiceNo` is the displayed identity,
 
 ## 2. `database.rules.json` entries — **separate gated rules PR**
 
+> **Prepared** — see `LAYBY-RULES-DEPLOY.md` for the deploy runbook (access model,
+> ownership-split rationale + limitation, the `/laybyPulls` anon-read flag,
+> refreshed `rules-rollback.json`, and the post-deploy smoke test).
+
 > **This is a separate, gated rules PR + quiet-window deploy — the same procedure
 > as the RTDB hardening swap (PR #57).** It is **not** part of the warehouse
 > feature PR (#58 does not touch `database.rules.json`). The store-app feature
@@ -153,6 +157,27 @@ node + both apps' UIs at each step.
 ### Regression
 - ⬜ Re-run the existing RTDB rules smoke test (orders read/write, products, etc.)
   to confirm the new rules didn't narrow anything previously allowed.
+
+---
+
+## 4. Anon-safe TV board projection (follow-up PR — NOT tonight)
+
+`/laybyPulls` is **non-anonymous read** (it carries `customerName`/`customerPhone`
+— never anon-readable). The hub TV strip runs under the anonymous `#tv` session,
+so it currently reads `/laybyPulls`, gets permission-denied, and shows **nothing**
+(accepted interim state). This follow-up restores the TV strip via a PII-free
+projection. Spec: **`/laybyPullsBoard/{pullId}`** in `SCHEMA.md`.
+
+- ⬜ **POS + warehouse writers** maintain `/laybyPullsBoard/{pullId}`
+  **atomically** alongside every `/laybyPulls/{pullId}` write — same `pullId` key,
+  carrying **only** `invoiceNo` + `status`. (POS create → board `pending`;
+  warehouse Sent/Reject → board `status` updated, in the same multi-path update.)
+- ⬜ **Rules:** `/laybyPullsBoard` `.read: auth != null` (anonymous allowed, board
+  only); `.write` non-anonymous; `.validate` restricts children to exactly
+  `invoiceNo` + `status` so no PII can ever be added.
+- ⬜ **Store-app:** switch the TV strip (`TvDisplayMockup`/`useLaybyPulls`) to read
+  `/laybyPullsBoard` instead of `/laybyPulls`.
+- ⬜ Keep `/laybyPulls` read **non-anonymous** (unchanged).
 
 ---
 
