@@ -18,8 +18,8 @@
 - **Receiving moved into the admin product-add flow.** Opening stock is an
   optional, collapsed-by-default per-size section on the product-add form; on save
   it posts `received` movements into `warehouse1`. Quantities are never required.
-  The standalone Receive screen is retired (restocking an existing product is a
-  noted follow-up → product edit page).
+  The **same optional per-size receive is also on the product edit page** (for
+  re-orders of existing products), so the standalone Receive screen is retired.
 - **Transfers are ONE-STEP and direct (amends I4 / §2).** A transfer is now a
   single atomic `transfer_out` carrying a real `from` + real `to` — the
   dispatch → `in_transit` → confirm-receive ceremony is dropped. Conservation

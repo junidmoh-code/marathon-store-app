@@ -259,8 +259,10 @@ collapsible per-size section, collapsed by default (collapsed = form unchanged).
 On save, entered quantities post as `received` movements into **`warehouse1`**.
 **Quantities are never required.** The receive requires the actor's `stockRole`
 to permit `received` (`warehouse|admin`); if not, the product still saves and the
-receive soft-warns. *(Restocking an EXISTING product is a noted follow-up — it
-would live on the product edit page; the standalone Receive screen was retired.)*
+receive soft-warns. **The same optional per-size receive is also on the product
+EDIT page** (`AdminProductDetail`) as its own action, so re-orders for existing
+products post `received → warehouse1` too. The standalone Receive screen is
+retired.
 
 ### One-step transfer (rework)
 A transfer is now a **single atomic `transfer_out`** movement carrying a real
