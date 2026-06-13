@@ -58,6 +58,18 @@ const ROLES = [
   { key: "warehouse",       label: "Warehouse" },
 ];
 
+// Stock role (/users/{uid}/stockRole) — gates inventory writes in the RTDB rules,
+// SEPARATE from the app `role` above. Receiving needs warehouse|admin; transfers
+// need store|warehouse|admin; POS sales need pos|store|admin; adjustments admin.
+// "None" clears the field (no stock-write access).
+const STOCK_ROLES = [
+  { key: "",          label: "None" },
+  { key: "store",     label: "Store" },
+  { key: "warehouse", label: "Warehouse" },
+  { key: "pos",       label: "POS" },
+  { key: "admin",     label: "Admin" },
+];
+
 // Defaults for the Add Staff form when role changes. Matches scripts/seedUsers.cjs.
 const ROLE_DEFAULT_PERMS = {
   admin:           ["store_assistant", "warehouse", "display_refills", "place_orders", "product_admin", "source"],
@@ -106,6 +118,7 @@ export default function UserManagement({ authUser, onExit }) {
   const [loading,   setLoading]   = useState(true);
   const [route,     setRoute]     = useState(() => parseHash() || { view: "list", uid: null });
   const [showAdd,   setShowAdd]   = useState(false);
+  const [granting,  setGranting]  = useState(false);
   const listScrollRef = useRef(0);
 
   // /users subscription
@@ -168,8 +181,43 @@ export default function UserManagement({ authUser, onExit }) {
   const isDetail = route.view === "detail";
   const selectedUser = isDetail ? users.find((u) => u.uid === route.uid) : null;
 
+  // The super-admin signs in with Google and has NO /users record (AuthGate
+  // bypasses permissions by email). But stock-write RTDB rules read
+  // /users/{uid}/stockRole — so without a record, even the super-admin can't
+  // receive/transfer. Offer a one-tap self-grant that materializes a minimal
+  // admin record with stockRole:"admin". Only shown until it exists.
+  const selfRecord = users.find((u) => u.uid === authUser.uid);
+  const selfNeedsStock = !loading && (!selfRecord || !selfRecord.stockRole);
+  const grantSelfStock = async () => {
+    setGranting(true);
+    try {
+      const local = (authUser.email || "").split("@")[0] || "admin";
+      const patch = selfRecord
+        ? { stockRole: "admin" }
+        : { displayName: authUser.displayName || "Super Admin", username: local, role: "admin", stockRole: "admin", permissions: [] };
+      await update(ref(database, `users/${authUser.uid}`), patch);
+    } catch (e) {
+      console.warn("grant self stock failed:", e);
+    } finally {
+      setGranting(false);
+    }
+  };
+
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, paddingBottom: 60 }}>
+      {!isDetail && selfNeedsStock && (
+        <div style={{ margin: "8px 16px 0", background: "rgba(60,110,255,.10)", border: "1px solid rgba(60,110,255,.35)",
+                      borderRadius: 12, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: "#cfe0ff", lineHeight: 1.5 }}>
+            You have no <b>stock role</b>, so receiving/transfers will be denied for your account. Grant yourself Admin stock access?
+          </div>
+          <button onClick={grantSelfStock} disabled={granting}
+                  style={{ background: "rgba(60,110,255,.25)", border: "1px solid rgba(60,110,255,.5)", color: "#fff",
+                           borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", opacity: granting ? 0.6 : 1 }}>
+            {granting ? "Granting…" : "Grant Admin"}
+          </button>
+        </div>
+      )}
       {!isDetail && (
         <UserListView
           users={users}
@@ -386,6 +434,12 @@ function UserDetailView({ user, onBack }) {
     if (role === user.role) return;
     await saveField("role", role);
   }
+  async function setStockRole(stockRole) {
+    const current = user.stockRole || "";
+    if (stockRole === current) return;
+    // Empty selection clears the field entirely (RTDB drops null) → no stock access.
+    await saveField("stockRole", stockRole === "" ? null : stockRole);
+  }
   async function setDisplayName(displayName) {
     if (displayName === user.displayName || displayName.trim().length === 0) return;
     await saveField("displayName", displayName.trim());
@@ -468,6 +522,28 @@ function UserDetailView({ user, onBack }) {
               {r.label}
             </button>
           ))}
+        </div>
+
+        <SectionLabel>Stock Role</SectionLabel>
+        <div style={{ background: CARD, borderRadius: 12, padding: 4, marginBottom: 6,
+                      display: "flex", gap: 2 }}>
+          {STOCK_ROLES.map((r) => {
+            const cur = user.stockRole || "";
+            return (
+              <button key={r.key || "none"}
+                      onClick={() => setStockRole(r.key)}
+                      style={{ flex: 1, padding: "8px 4px", border: "none",
+                               background: cur === r.key ? "#48484a" : "transparent",
+                               color: cur === r.key ? "#fff" : TEXT_2,
+                               borderRadius: 9, fontSize: 12.5, fontWeight: 500, cursor: "pointer",
+                               transition: "all 120ms" }}>
+                {r.label}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11, color: TEXT_2, padding: "0 4px", marginBottom: 22, lineHeight: 1.5 }}>
+          Gates inventory writes. <span style={{ color: "#fff" }}>Receiving</span> (incl. opening stock on product-add) needs <b>Warehouse</b> or <b>Admin</b>; <span style={{ color: "#fff" }}>transfers</span> need Store, Warehouse, or Admin.
         </div>
 
         <SectionLabel>Permissions</SectionLabel>

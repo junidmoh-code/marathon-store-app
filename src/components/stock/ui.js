@@ -15,6 +15,17 @@ export const BORDER_BRIGHT = "1px solid rgba(60,110,255,.6)";
 export const RADIUS = "14px";
 export const GLOW   = "0 0 12px rgba(60,110,255,.15)";
 
+// Glass finish — translucent + blurred surface for the reworked Stock screens.
+// Falls back gracefully where backdrop-filter is unsupported (still a dark card).
+export const GLASS = {
+  background: "rgba(12,16,30,.55)",
+  backdropFilter: "blur(14px)",
+  WebkitBackdropFilter: "blur(14px)",
+  border: "1px solid rgba(120,150,255,.16)",
+  borderRadius: RADIUS,
+  boxShadow: "0 8px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05)",
+};
+
 export const GREEN = "#4ADE80";
 export const RED   = "#F87171";
 export const GRAY  = "#9CA3AF";

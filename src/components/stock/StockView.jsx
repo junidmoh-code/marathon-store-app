@@ -10,28 +10,25 @@ import { useLocations } from "./useStock";
 import { useSyncStatus } from "./offlineQueue";
 import { FONT, BG, BLUE_L, GRAY, GREEN, AMBER, tabOn, tabOff } from "./ui";
 
-import StockGrid from "./StockGrid";
-import ReceiveStock from "./ReceiveStock";
 import Transfer from "./Transfer";
-import InTransit from "./InTransit";
+import Locator from "./Locator";
 import Adjust from "./Adjust";
 import MovementHistory from "./MovementHistory";
 import CountSession from "./CountSession";
 
-const TABS = [
-  ["grid",      "Stock"],
-  ["receive",   "Receive"],
+// Stock rework: Transfer (assistant-style, one-step) + Locator are primary;
+// History/Adjust/Count retained. Receiving moved into the admin product-add
+// form; the standalone Receive + In-Transit screens are retired. Locator is
+// admin-only for now (gated below).
+const BASE_TABS = [
   ["transfer",  "Transfer"],
-  ["transit",   "In Transit"],
-  ["adjust",    "Adjust"],
+  ["locate",    "Where is it"],
   ["history",   "History"],
+  ["adjust",    "Adjust"],
   ["count",     "Count"],
 ];
 
 export default function StockView({ products = [], onExit }) {
-  const [tabRaw, setTab] = usePersistedTab("stock", "grid");
-  // Guard against a stale/unknown persisted tab key rendering blank content.
-  const tab = TABS.some(([k]) => k === tabRaw) ? tabRaw : "grid";
   const { permRecord, isSuperAdmin } = usePermissions();
   const registry = useLocations();
   const { pending, syncing } = useSyncStatus();
@@ -40,6 +37,14 @@ export default function StockView({ products = [], onExit }) {
   // /users/{uid}/stockRole). Super-admin acts as admin for stock purposes.
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const isAdmin = actorRole === "admin";
+
+  // Locator is admin-only for now (expands later). Filter the tab set first so
+  // the default/clamp logic operates on the visible tabs.
+  const TABS = isAdmin ? BASE_TABS : BASE_TABS.filter(([k]) => k !== "locate");
+
+  const [tabRaw, setTab] = usePersistedTab("stock", "transfer");
+  // Guard against a stale/unknown persisted tab key rendering blank content.
+  const tab = TABS.some(([k]) => k === tabRaw) ? tabRaw : "transfer";
 
   const shared = { products, registry, actorRole };
 
@@ -60,10 +65,8 @@ export default function StockView({ products = [], onExit }) {
       </div>
 
       <div style={{ padding: "4px 12px 40px" }}>
-        {tab === "grid"     && <StockGrid {...shared} />}
-        {tab === "receive"  && <ReceiveStock {...shared} />}
         {tab === "transfer" && <Transfer {...shared} />}
-        {tab === "transit"  && <InTransit {...shared} />}
+        {tab === "locate"   && isAdmin && <Locator {...shared} />}
         {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}
         {tab === "history"  && <MovementHistory {...shared} />}
         {tab === "count"    && <CountSession {...shared} />}

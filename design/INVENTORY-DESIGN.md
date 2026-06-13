@@ -14,6 +14,29 @@
 - **Offline-first POS is mandatory** (§3.4) — sales never block on connectivity; idempotent sync via client-generated movement ids; negative balances allowed only for already-happened `sold` events and alarmed.
 - Promotion gate: 14 consecutive days, zero *unexplained* variance (O5).
 
+**v3 changes (operating-model rework — matches how Junid actually works):**
+- **Receiving moved into the admin product-add flow.** Opening stock is an
+  optional, collapsed-by-default per-size section on the product-add form; on save
+  it posts `received` movements into `warehouse1`. Quantities are never required.
+  The standalone Receive screen is retired (restocking an existing product is a
+  noted follow-up → product edit page).
+- **Transfers are ONE-STEP and direct (amends I4 / §2).** A transfer is now a
+  single atomic `transfer_out` carrying a real `from` + real `to` — the
+  dispatch → `in_transit` → confirm-receive ceremony is dropped. Conservation
+  still holds (paired `−from/+to` in one `update()`), but **I4's "stock is never
+  invisible via an explicit in_transit holding" no longer applies to deliberate
+  transfers: transit visibility is intentionally traded away** per Junid's
+  explicit call. Goods physically in motion appear already at the destination.
+  `transfer_in` + `in_transit` + `/transfers` docs remain in the schema for
+  compatibility but are unused by the one-step flow; the In-Transit screen is
+  retired.
+- **Stock UI = Transfer (assistant-style photo grid → expand → per-size steppers
+  → destination) + a "Where is it" Locator**, plus History/Adjust/Count. Glass
+  finish throughout.
+- **`stockRole` is now assignable in the UI** (User Management → Stock Role),
+  with a super-admin self-grant. No rules change — authz still keys on
+  `/users/{uid}/stockRole` exactly as in §5.
+
 ---
 
 ## 0. Drift-prevention thesis (read this first)

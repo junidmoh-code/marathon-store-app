@@ -13,6 +13,7 @@ import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits }
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import StockView from "./components/stock/StockView";
+import { applyMovement } from "./components/stock/applyMovement";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
@@ -1718,6 +1719,11 @@ function AdminView({ products, orders, onExit }) {
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
   const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
+  // Optional opening-stock receiving (Stock rework). Collapsed by default — when
+  // collapsed the form behaves EXACTLY as before. Quantities are NEVER required;
+  // entered amounts write as `received` movements into warehouse1 on save.
+  const [recvOpen, setRecvOpen] = useState(false);
+  const [recvQtys, setRecvQtys] = useState({}); // { size: "n" }
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
@@ -1789,8 +1795,33 @@ function AdminView({ products, orders, onExit }) {
       newProduct.barcode = barcode;
       await addProductToFirebase(newProduct);
 
+      // Optional opening stock: if quantities were entered, write them as
+      // `received` movements into warehouse1 (main receiving warehouse) via
+      // applyMovement — ledger-paired, never raw. The product is already saved,
+      // so this NEVER blocks the save; a denied/failed movement (e.g. the user
+      // lacks stockRole) only soft-warns and can be entered later.
+      try {
+        const recvEntries = (form.sizes || [])
+          .map(s => [s, parseInt(recvQtys[s], 10)])
+          .filter(([, n]) => Number.isFinite(n) && n > 0);
+        if (recvEntries.length) {
+          let recOk = 0, recFail = 0;
+          for (const [size, n] of recvEntries) {
+            const res = await applyMovement({ type: "received", productId: id, size, qty: n, to: "warehouse1" });
+            res.ok ? recOk++ : recFail++;
+          }
+          if (recFail) {
+            alert(`Product saved. ${recOk} size(s) received into Warehouse One; ${recFail} could not be received — you may not have stock permission (stockRole). You can add these quantities later from Stock.`);
+          }
+        }
+      } catch (recErr) {
+        console.warn("opening-stock receive failed:", recErr);
+      }
+
       setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
       setShoeboxTouched(false);
+      setRecvQtys({});
+      setRecvOpen(false);
       setShowAdd(false);
     } catch (err) {
       console.error("addProduct failed:", err);
@@ -1989,6 +2020,40 @@ function AdminView({ products, orders, onExit }) {
                 {s}
               </button>
             ))}
+          </div>
+
+          {/* Opening stock (Stock rework) — OPTIONAL, collapsed by default. When
+              collapsed the form is unchanged. Expanded: a qty box arrow-linked
+              under each selected size. Quantities are never required. */}
+          <div style={{ marginBottom:"1.25rem" }}>
+            <button type="button" onClick={() => setRecvOpen(o => !o)}
+              style={{ display:"flex", alignItems:"center", gap:8, width:"100%", textAlign:"left", background:"rgba(60,110,255,.06)", border:"1px solid rgba(60,110,255,.2)", borderRadius:"10px", padding:"9px 12px", color:"#bbb", cursor:"pointer", fontSize:"0.85rem", fontWeight:600 }}>
+              <span style={{ color:BLUE_L, transform: recvOpen ? "rotate(90deg)" : "none", transition:"transform .15s", display:"inline-block" }}>▸</span>
+              Opening stock <span style={{ color:"#555", fontWeight:500, fontStyle:"italic" }}>· optional — leave blank if not counted yet</span>
+            </button>
+            {recvOpen && (
+              <div style={{ marginTop:"0.75rem", background:"rgba(12,16,30,.55)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:"1px solid rgba(120,150,255,.16)", borderRadius:RADIUS, padding:"1rem", boxShadow:"inset 0 1px 0 rgba(255,255,255,.05)" }}>
+                {form.sizes.length === 0 ? (
+                  <div style={{ color:"#666", fontSize:"0.82rem", textAlign:"center", padding:"0.5rem" }}>Select sizes above, then enter how many of each you're receiving.</div>
+                ) : (
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(64px, 1fr))", gap:"0.6rem" }}>
+                    {(form.productType === "clothing" ? CLOTHING_SIZES : SNEAKER_SIZES).filter(s => form.sizes.includes(s)).map(s => (
+                      <div key={s} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
+                        <div style={{ fontSize:"0.85rem", fontWeight:700, color:BLUE_L }}>{s}</div>
+                        <div style={{ color:"rgba(120,150,255,.5)", fontSize:"0.9rem", lineHeight:1 }}>↓</div>
+                        <input type="number" inputMode="numeric" min="0" placeholder="0"
+                          value={recvQtys[s] ?? ""}
+                          onChange={e => setRecvQtys(q => ({ ...q, [s]: e.target.value }))}
+                          style={{ ...inputStyle, width:"100%", boxSizing:"border-box", textAlign:"center", padding:"8px 4px" }} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ fontSize:"0.75rem", color:"#666", marginTop:"0.75rem" }}>
+                  Entered amounts are received into <span style={{ color:"#4ADE80" }}>Warehouse One</span> as ledger movements on save. Saving with no quantities works exactly as before.
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Hubs (select at least one)</div>
