@@ -63,21 +63,34 @@ export function excludeReturnedOrderNumbers(events, returnsSet) {
   return events.filter(e => !returnsSet.has(eventCompositeKey(e)));
 }
 
-// SINGLE source of truth for the "out-of-stock events in a period" list, shared
-// by the Insights Overview "Out of Stock" card and the OOS Tracker tab. Reads
-// the immutable insights_log (action === "out_of_stock") within
-// [filterStart, filterEnd), category-filtered, deduped by (date, orderNumber),
-// with returned orders excluded. Caller takes `.length` for the headline count.
-//
-// This replaces a former live-orders/current-status path that undercounted
-// "today": the 8-min auto-collect sweep flips OOS→collected, draining the count
-// (e.g. ~60 events → 1, then → 0). insights_log keeps every transition, so today
-// reconciles with the historical days.
-export function oosEventsForPeriod({ log, returnsLog, filterStart, filterEnd, category = "both" }) {
+// SINGLE source of truth for "insights_log events of one `action` in a period":
+// reads the immutable log within [filterStart, filterEnd), category-filtered,
+// deduped by (date, orderNumber), with returned orders excluded. Callers take
+// `.length` for a headline count. Reading the log for EVERY period (incl. today)
+// is the point — a former live-orders/current-status "today" path drifted from
+// the historical days.
+function eventsForPeriod(action, { log, returnsLog, filterStart, filterEnd, category = "both" }) {
   const catMatch = (e) => category === "both" || inferProductType(e) === category;
   const raw = (log || []).filter(
-    (e) => e.action === "out_of_stock" && e.timestamp >= filterStart && e.timestamp < filterEnd && catMatch(e)
+    (e) => e.action === action && e.timestamp >= filterStart && e.timestamp < filterEnd && catMatch(e)
   );
   const returnedNums = returnedOrderNumberSet(returnsLog, filterStart, filterEnd, catMatch);
   return excludeReturnedOrderNumbers(dedupeByOrderNumber(raw), returnedNums);
+}
+
+// OOS events — shared by the Overview "Out of Stock" card and the OOS Tracker tab.
+// Fixes the today UNDERCOUNT: the old live-orders path filtered status===
+// OUT_OF_STOCK, which the 8-min auto-collect sweep drained (OOS→collected), so
+// ~60 events showed as ~1 then 0. The log keeps every transition.
+export function oosEventsForPeriod(args) {
+  return eventsForPeriod("out_of_stock", args);
+}
+
+// "Ready" (net-sale) events — shared by the Overview Net Sales card and the Sales
+// Summary tab. Fixes the today OVERCOUNT: the old live-orders path counted
+// status===READY||COLLECTED, so an auto-collected OOS order (OUT_OF_STOCK→
+// COLLECTED) was miscounted as a sale, inflating today vs the historical days.
+// "ready" is only ever logged on a genuine ready transition, never for OOS.
+export function readyEventsForPeriod(args) {
+  return eventsForPeriod("ready", args);
 }
