@@ -6541,35 +6541,26 @@ function InsightProductSearchTab({ log, productPhotoMap, filterStart, filterEnd,
 }
 
 // ─── INSIGHTS: OOS TRACKER TAB ────────────────────────────────────────────────
-function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, filterEnd, filterLabel, orders, filterMode, filterDate, category = "both" }) {
-  // Today (day mode anchored on today): derive from live orders so the
-  // count tracks real-time state. Historical days + week/month/year/all-time
-  // read from insights_log (immutable). Both branches → dedupe-by-orderNumber
-  // (an order flapped through OOS more than once still counts as one event)
-  // and exclude returned orderNumbers (if the order was ultimately returned,
-  // its OOS transitions don't count either — same rule as Net Sales).
-  // Phase 12D: also include clothing OOS events. Sneaker OOS lives on the
-  // order status itself (status===OUT_OF_STOCK with outOfStockAt); clothing
-  // OOS lives in clothingRefillStatus==='outOfStock' with clothingOutOfStockAt.
+function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, filterEnd, filterLabel, category = "both" }) {
+  // OOS count for EVERY period (incl. today) reads the immutable insights_log
+  // (action==="out_of_stock") within [filterStart, filterEnd).
+  //
+  // This replaces a former today-only branch that derived from LIVE orders
+  // filtered by *current* status===OUT_OF_STOCK. That undercounted today: the
+  // 8-min TV auto-collect sweep flips OOS→collected, so most of the day's OOS
+  // orders had already left OUT_OF_STOCK and dropped out of the count (e.g. 60
+  // events → 1 shown). insights_log records every OOS transition (sneaker AND
+  // clothing — clothing OOS is logged with action "out_of_stock" by
+  // setClothingRefillStatus), so today now matches the historical days exactly.
+  // dedupe-by-orderNumber (a flapped order counts once) + exclude returned
+  // orderNumbers (if ultimately returned, its OOS transitions don't count —
+  // same rule as Net Sales).
   const oosLog = useMemo(() => {
     const catMatch = (entry) => category === "both" || inferProductType(entry) === category;
-    let raw;
-    if (filterMode === "day" && filterDate === getSADateString()) {
-      const sneakerOOS = (orders || [])
-        .filter(o => o.status === STATUS.OUT_OF_STOCK && orderOOSDate(o) === filterDate)
-        .map(o => ({ orderNumber: o.id, productName: o.productName, size: o.size, timestamp: o.outOfStockAt, productType: o.productType || "sneaker" }));
-      const clothingOOS = (orders || [])
-        .filter(o => o.productType === "clothing" && o.clothingRefillStatus === "outOfStock" && o.clothingOutOfStockAt &&
-          new Date(new Date(o.clothingOutOfStockAt).getTime() + 2*60*60*1000).toISOString().slice(0,10) === filterDate)
-        .map(o => ({ orderNumber: o.id, productName: o.productName, size: o.size, timestamp: o.clothingOutOfStockAt, productType: "clothing" }));
-      raw = [...sneakerOOS, ...clothingOOS].filter(catMatch);
-    } else {
-      raw = log.filter(e => e.action === "out_of_stock" && e.timestamp >= filterStart && e.timestamp < filterEnd && catMatch(e));
-    }
+    const raw = log.filter(e => e.action === "out_of_stock" && e.timestamp >= filterStart && e.timestamp < filterEnd && catMatch(e));
     const returnedNums = returnedOrderNumberSet(returnsLog, filterStart, filterEnd, catMatch);
     return excludeReturnedOrderNumbers(dedupeByOrderNumber(raw), returnedNums);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [log, returnsLog, filterStart, filterEnd, orders, filterMode, filterDate, category]);
+  }, [log, returnsLog, filterStart, filterEnd, category]);
   const [openProduct, setOpenProduct] = useState(null);
 
   // Group OOS events by product, then by size
@@ -8048,7 +8039,7 @@ function InsightsView({ onExit }) {
         {tab==="overview"         && <InsightOverviewTab        log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
         {tab==="sales"            && <InsightSalesSummaryTab    log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
         {tab==="search"           && <InsightProductSearchTab   log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} category={category} />}
-        {tab==="oos"              && <InsightOOSTrackerTab      log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+        {tab==="oos"              && <InsightOOSTrackerTab      log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
         {tab==="sizes"            && <InsightSizePopularityTab  log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
         {tab==="times"            && <InsightBusiestTimesTab    log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
         {tab==="returns"          && <InsightReturnsTab         returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
