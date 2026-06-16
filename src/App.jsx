@@ -17,7 +17,7 @@ import { applyMovement } from "./components/stock/applyMovement";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
-import { inferProductType, dedupeByOrderNumber, returnedOrderNumberSet, excludeReturnedOrderNumbers, oosEventsForPeriod } from "./utils/insights";
+import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod } from "./utils/insights";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -6216,48 +6216,18 @@ function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, fil
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [returnsLog, filterStart, filterEnd, category]
   );
-  const returnedNums = useMemo(() => {
-    const s = new Set();
-    filteredReturns.forEach(r => r.orderNumber && s.add(r.orderNumber));
-    return s;
-  }, [filteredReturns]);
-
-  // Net Sales / OOS use the live orders collection ONLY when the chosen day
-  // is today — that keeps the headline aligned with Source's "Today's
-  // Request" in real time. For any historical day (yesterday and earlier)
-  // and for week/month/year/all-time, we read from insights_log, because
-  // live-order state mutates over time (status changes, edits) and would
-  // otherwise rewrite history. Both branches are then passed through the
-  // same dedupe-by-orderNumber + exclude-returned pipeline so the live and
-  // historical paths agree (today/sum of daily/All Time all reconcile).
   const isToday = filterMode === "day" && filterDate === getSADateString();
 
-  const dayReadyOrCollected = useMemo(() => {
-    if (!isToday) return [];
-    return (orders || []).filter(o =>
-      o.status !== STATUS.OUT_OF_STOCK &&
-      (o.status === STATUS.READY || o.status === STATUS.COLLECTED) &&
-      orderSaleDate(o) === filterDate &&
-      catMatch(o)
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isToday, orders, filterDate, category]);
-
-  // Net Sales = ready/collected orders for the period, minus returns.
-  // Today (day mode, anchored on today): live orders. Historical / longer
-  // periods: insights_log "ready" events. Both branches → dedupe + exclude.
-  const readyLogRaw = useMemo(
-    () => isToday
-      ? dayReadyOrCollected.map(o => ({ orderNumber: o.id, productName: o.productName, size: o.size, timestamp: o.readyAt || o.collectedAt }))
-      : periodLog.filter(e => e.action === "ready"),
-    [isToday, dayReadyOrCollected, periodLog]
+  // Net Sales + OOS both read insights_log for EVERY period (incl. today) via the
+  // shared helpers, so today reconciles with the historical days. The former
+  // live-orders "today" paths drifted: OOS undercounted (auto-collect drained
+  // status===OUT_OF_STOCK) and Net Sales OVER-counted (an auto-collected OOS
+  // order flips to COLLECTED and was wrongly counted as a sale). "ready" /
+  // "out_of_stock" log events are immutable and never cross over.
+  const netSales = useMemo(
+    () => readyEventsForPeriod({ log, returnsLog, filterStart, filterEnd, category }),
+    [log, returnsLog, filterStart, filterEnd, category]
   );
-  const readyLog = useMemo(() => dedupeByOrderNumber(readyLogRaw), [readyLogRaw]);
-  const netSales = useMemo(() => excludeReturnedOrderNumbers(readyLog, returnedNums), [readyLog, returnedNums]);
-  // OOS count: shared with the OOS Tracker tab via oosEventsForPeriod — reads
-  // insights_log for EVERY period (incl. today), so it no longer decays as the
-  // auto-collect sweep flips OOS→collected. (Net Sales above keeps its live-order
-  // today path — `collected` is terminal, so it doesn't decay.)
   const oosLog = useMemo(
     () => oosEventsForPeriod({ log, returnsLog, filterStart, filterEnd, category }),
     [log, returnsLog, filterStart, filterEnd, category]
@@ -7123,40 +7093,20 @@ function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, fi
 // a size breakdown for that product.
 function InsightSalesSummaryTab({ log, returnsLog, productPhotoMap, filterStart, filterEnd, filterLabel, orders, filterMode, filterDate, category = "both" }) {
   const [expanded, setExpanded] = useState(new Set());
-  const catMatch = (entry) => category === "both" || inferProductType(entry) === category;
 
   // Today (day mode anchored on today's date): derive from live orders so the
   // headline matches Source's "Today's Request" in real time. Historical
   // days + week/month/year/all-time read from insights_log (immutable). Both
   // branches → dedupe by orderNumber + exclude returned orderNumbers so this
   // tab's totals reconcile exactly with Overview · Net Sales.
-  const readyLogRaw = useMemo(() => {
-    if (filterMode === "day" && filterDate === getSADateString()) {
-      return (orders || [])
-        .filter(o =>
-          o.status !== STATUS.OUT_OF_STOCK &&
-          (o.status === STATUS.READY || o.status === STATUS.COLLECTED) &&
-          orderSaleDate(o) === filterDate &&
-          catMatch(o)
-        )
-        .map(o => ({ orderNumber: o.id, productName: o.productName, size: o.size, timestamp: o.readyAt || o.collectedAt }));
-    }
-    return log.filter(e => e.action === "ready" && e.timestamp >= filterStart && e.timestamp < filterEnd && catMatch(e));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [log, filterStart, filterEnd, orders, filterMode, filterDate, category]);
-
-  const returnedNums = useMemo(
-    () => returnedOrderNumberSet(returnsLog, filterStart, filterEnd, catMatch),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [returnsLog, filterStart, filterEnd, category]
-  );
-
-  // Net entries = ready transitions with status-flap dedupe applied, then
-  // every entry whose orderNumber was returned removed in one pass. Counted
-  // per product / per size below — same denominator as Overview · Net Sales.
+  // Net entries = "ready" log events for the period (incl. today), deduped by
+  // orderNumber with returns excluded — shared with Overview · Net Sales via
+  // readyEventsForPeriod, so the two reconcile exactly. The former live-orders
+  // "today" path over-counted auto-collected OOS orders (OUT_OF_STOCK→COLLECTED)
+  // as sales; "ready" log events never include those.
   const readyLog = useMemo(
-    () => excludeReturnedOrderNumbers(dedupeByOrderNumber(readyLogRaw), returnedNums),
-    [readyLogRaw, returnedNums]
+    () => readyEventsForPeriod({ log, returnsLog, filterStart, filterEnd, category }),
+    [log, returnsLog, filterStart, filterEnd, category]
   );
 
   const netByProduct = useMemo(() => {

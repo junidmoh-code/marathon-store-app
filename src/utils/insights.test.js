@@ -5,6 +5,7 @@ import {
   returnedOrderNumberSet,
   excludeReturnedOrderNumbers,
   oosEventsForPeriod,
+  readyEventsForPeriod,
 } from "./insights";
 
 // A one-day window. Timestamps use mid-day UTC so the +2h SA shift never crosses
@@ -90,3 +91,38 @@ describe("oosEventsForPeriod (shared by Overview card + OOS Tracker)", () => {
     expect(oosEventsForPeriod({ log: null, returnsLog: null, filterStart: START, filterEnd: END })).toEqual([]);
   });
 });
+
+const ready = (orderNumber, t, extra = {}) => ({ action: "ready", orderNumber, timestamp: `2026-06-16T${t}:00:00.000Z`, size: "7", productType: "sneaker", ...extra });
+
+describe("readyEventsForPeriod (shared by Overview Net Sales + Sales Summary)", () => {
+  it("counts in-window ready events, deduping flapped orders", () => {
+    const log = [ready("001", "08"), ready("001", "09"), ready("002", "10"), ready("003", "10", { timestamp: "2026-06-15T10:00:00.000Z" })];
+    expect(oosLen(readyEventsForPeriod({ log, returnsLog: [], filterStart: START, filterEnd: END, category: "both" }))).toBe(2);
+  });
+
+  it("counts ONLY ready events — never out_of_stock (the inflation fix)", () => {
+    // An auto-collected OOS order logs `out_of_stock`, never `ready`, so it must
+    // not be counted as a sale. Mixed log:
+    const log = [
+      ready("001", "08"),
+      oos("900", "08"), oos("901", "09"), oos("902", "10"), // 3 OOS — must NOT count as sales
+    ];
+    const out = readyEventsForPeriod({ log, returnsLog: [], filterStart: START, filterEnd: END, category: "both" });
+    expect(out.map(e => e.orderNumber)).toEqual(["001"]);
+  });
+
+  it("excludes returned orders", () => {
+    const log = [ready("001", "08"), ready("002", "10")];
+    const returnsLog = [{ orderNumber: "002", timestamp: "2026-06-16T11:00:00.000Z" }];
+    expect(readyEventsForPeriod({ log, returnsLog, filterStart: START, filterEnd: END, category: "both" }).map(e => e.orderNumber)).toEqual(["001"]);
+  });
+
+  it("respects the category filter", () => {
+    const log = [ready("001", "08", { productType: "sneaker" }), ready("002", "10", { productType: "clothing", size: "L" })];
+    expect(readyEventsForPeriod({ log, returnsLog: [], filterStart: START, filterEnd: END, category: "sneaker" })).toHaveLength(1);
+    expect(readyEventsForPeriod({ log, returnsLog: [], filterStart: START, filterEnd: END, category: "both" })).toHaveLength(2);
+  });
+});
+
+// tiny helper to read length (keeps assertions terse)
+function oosLen(arr) { return arr.length; }
