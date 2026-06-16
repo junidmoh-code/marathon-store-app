@@ -12,7 +12,7 @@ import aj1Chicago from "../assets/tv/aj1-chicago.png";
 import aj1Green  from "../assets/tv/aj1-green.png";
 import aj4Bred   from "../assets/tv/aj4-bred.png";
 import aj1Yellow from "../assets/tv/aj1-yellow.png";
-import { PULL_STATUS } from "./layby/contract";
+import { PULL_STATUS, DISPOSITION, dispositionOf } from "./layby/contract";
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 
@@ -564,8 +564,12 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
 
   // Pending layby pulls → invoice numbers for the discreet awareness strip. Not
   // hub-scoped (the TV isn't either); soonest-due first. Empty in sandbox mode.
+  // return_to_stock pulls are internal returns (cancelled laybys), NOT customer
+  // collections — exclude them from the customer-facing strip.
   const pendingInvoiceNos = useMemo(() => (laybyPulls || [])
-    .filter(p => p && p.invoiceNo && (p.status || PULL_STATUS.PENDING) === PULL_STATUS.PENDING)
+    .filter(p => p && p.invoiceNo
+              && (p.status || PULL_STATUS.PENDING) === PULL_STATUS.PENDING
+              && dispositionOf(p) !== DISPOSITION.RETURN_TO_STOCK)
     .sort((a, b) => (a.dueDate || "").localeCompare(b.dueDate || ""))
     .map(p => p.invoiceNo), [laybyPulls]);
 

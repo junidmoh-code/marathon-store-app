@@ -18,10 +18,10 @@
 
 import { useMemo, useState } from "react";
 import QrScanner from "./QrScanner";
-import { receiveLayby, markPullSent, rejectPull } from "./useLayby";
+import { receiveLayby, markPullSent, rejectPull, returnPullToStock } from "./useLayby";
 import { labelFor } from "../stock/locations";
 import {
-  LAYBY_STATUS, PULL_STATUS, DEFAULT_STORAGE_HUB,
+  LAYBY_STATUS, PULL_STATUS, DEFAULT_STORAGE_HUB, DISPOSITION, dispositionOf,
   formatLaybyMoney, isLaybyException, isPullExpired, ageLabel, parseLaybyScan, normalizeInvoiceNo,
 } from "./contract";
 
@@ -30,6 +30,7 @@ const CARD   = "rgba(4,5,10,1)";
 const BLUE   = "#4A7FFF";
 const RED    = "#FF6B6B";
 const GREEN  = "#4ACA7A";
+const AMBER  = "#F59E0B";
 const MUTED  = "rgba(255,255,255,.4)";
 
 const hubOf = (x) => x?.storageHub || DEFAULT_STORAGE_HUB;
@@ -91,12 +92,20 @@ function Field({ label, value, strong, danger }) {
 }
 
 // ── Pull request card — invoice number dominant ────────────────────────────────
-function PullCard({ pull, selectedHub, nowMs, onSent, onReject }) {
+function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
-  const expired = isPullExpired(pull.dueDate, nowMs);
+  const isReturn = dispositionOf(pull) === DISPOSITION.RETURN_TO_STOCK;
+  // "expired"/reject is a collect-only concept — a return_to_stock pull is the
+  // resolution of a cancellation, never rejectable.
+  const expired = !isReturn && isPullExpired(pull.dueDate, nowMs);
 
+  const doReturn = async () => {
+    setBusy(true);
+    try { await returnPullToStock(pull, selectedHub); onReturn?.(pull); }
+    catch (e) { console.warn("returnPullToStock failed:", e); setBusy(false); }
+  };
   const doSent = async () => {
     setBusy(true);
     try { await markPullSent(pull, selectedHub); onSent?.(pull); }
@@ -111,8 +120,8 @@ function PullCard({ pull, selectedHub, nowMs, onSent, onReject }) {
 
   return (
     <div style={{ borderRadius:14, overflow:"hidden", position:"relative", background:CARD,
-                  border:"1px solid " + (expired ? "rgba(220,60,60,.4)" : "rgba(60,110,255,.2)") }}>
-      <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background: expired ? RED : BLUE }}/>
+                  border:"1px solid " + (isReturn ? "rgba(245,158,11,.4)" : expired ? "rgba(220,60,60,.4)" : "rgba(60,110,255,.2)") }}>
+      <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background: isReturn ? AMBER : expired ? RED : BLUE }}/>
       <div style={{ padding:"14px 14px 12px 18px" }}>
         {/* INVOICE NUMBER — huge + unmistakable */}
         <div style={{ display:"flex", alignItems:"flex-start", gap:12 }}>
@@ -121,9 +130,11 @@ function PullCard({ pull, selectedHub, nowMs, onSent, onReject }) {
             <div style={{ fontSize:34, fontWeight:900, color:"#fff", lineHeight:1.05, letterSpacing:".02em", wordBreak:"break-all" }}>{invOf(pull)}</div>
           </div>
           <div style={{ textAlign:"right", flexShrink:0 }}>
-            {expired && (
+            {isReturn ? (
+              <span style={{ background:"rgba(245,158,11,.16)", color:AMBER, border:"1px solid rgba(245,158,11,.4)", borderRadius:10, padding:"3px 9px", fontSize:10.5, fontWeight:800 }}>RETURN TO STOCK</span>
+            ) : expired ? (
               <span style={{ background:"rgba(220,60,60,.18)", color:RED, border:"1px solid rgba(220,60,60,.4)", borderRadius:10, padding:"3px 9px", fontSize:10.5, fontWeight:800 }}>EXPIRED</span>
-            )}
+            ) : null}
             <div style={{ fontSize:11, color:MUTED, marginTop:6 }}>{ageLabel(pull.requestedAt, nowMs)} ago</div>
           </div>
         </div>
@@ -134,12 +145,21 @@ function PullCard({ pull, selectedHub, nowMs, onSent, onReject }) {
           <Field label="Phone" value={pull.customerPhone || "—"}/>
           <Field label="Items" value={typeof pull.itemCount === "number" ? String(pull.itemCount) : "—"}/>
           <Field label="Balance" value={formatLaybyMoney(pull.balanceRemaining)}/>
-          <Field label="Due" value={pull.dueDate || "—"} danger={expired}/>
+          {!isReturn && <Field label="Due" value={pull.dueDate || "—"} danger={expired}/>}
           <Field label="For store" value={labelFor(pull.requestingStore)}/>
         </div>
       </div>
 
-      {!rejecting ? (
+      {isReturn ? (
+        <div style={{ padding:"0 14px 12px 18px" }}>
+          <button onClick={doReturn} disabled={busy}
+                  style={{ width:"100%", padding:"12px 8px", borderRadius:10, fontSize:13, fontWeight:800, cursor: busy ? "default" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(245,158,11,.16)", border:"1px solid rgba(245,158,11,.4)", color:AMBER, opacity: busy ? .6 : 1 }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+            Return to stock
+          </button>
+          <div style={{ fontSize:11, color:MUTED, marginTop:8 }}>Layby cancelled at the store — pull it, remove the label, return the units to stock.</div>
+        </div>
+      ) : !rejecting ? (
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, padding:"0 14px 12px 18px" }}>
           <button onClick={doSent} disabled={busy}
                   style={{ padding:"12px 8px", borderRadius:10, fontSize:13, fontWeight:800, cursor: busy ? "default" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.35)", color:GREEN, opacity: busy ? .6 : 1 }}>
@@ -295,7 +315,8 @@ export default function LaybyTab({ selectedHub, laybys = [], pulls = [], nowMs, 
               {pendingPulls.map(p => (
                 <PullCard key={p.key} pull={p} selectedHub={selectedHub} nowMs={nowMs}
                           onSent={() => setFlash({ ok:true, text:`${invOf(p)} marked sent.` })}
-                          onReject={() => setFlash({ ok:true, text:`${invOf(p)} rejected — store notified.` })}/>
+                          onReject={() => setFlash({ ok:true, text:`${invOf(p)} rejected — store notified.` })}
+                          onReturn={() => setFlash({ ok:true, text:`${invOf(p)} returned to stock.` })}/>
               ))}
             </div>
       )}

@@ -28,14 +28,38 @@ export const LAYBY_STATUS = {
   COLLECTED:      "collected",          // POS: customer collected
   EXPIRED:        "expired",            // past due date / forfeited
   REJECTED:       "rejected",           // WAREHOUSE: pull rejected (expired layby)
+  RETURNED:       "returned",           // POS: layby cancelled → return-to-stock requested.
+                                        // The warehouse RTS action resolves the PULL only and
+                                        // deliberately leaves /laybys at "returned".
 };
 
 // Pull request state, on /laybyPulls/{pullId}.status.
 export const PULL_STATUS = {
-  PENDING:  "pending",
-  SENT:     "sentToStore",
-  REJECTED: "rejected",
+  PENDING:           "pending",
+  SENT:              "sentToStore",
+  REJECTED:          "rejected",
+  RETURNED_TO_STOCK: "returnedToStock", // WAREHOUSE: a return_to_stock pull resolved (pulled,
+                                        // label removed, units returned to stock).
 };
+
+// Pull disposition, on /laybyPulls/{pullId}.disposition (POS-written).
+//   collect          → customer is collecting (default path: Sent / Reject).
+//   return_to_stock  → layby cancelled; warehouse pulls, removes the label, and
+//                      returns units to stock. Absent ⇒ collect (backward-compat).
+export const DISPOSITION = {
+  COLLECT:         "collect",
+  RETURN_TO_STOCK: "return_to_stock",
+};
+
+// Resolve a pull's disposition, defaulting to COLLECT when the field is absent
+// or anything other than the explicit return_to_stock value. This is the single
+// backward-compat gate: legacy pulls (no field) and "collect" both take the
+// existing collect path; only "return_to_stock" branches to the new path.
+export function dispositionOf(pull) {
+  return pull?.disposition === DISPOSITION.RETURN_TO_STOCK
+    ? DISPOSITION.RETURN_TO_STOCK
+    : DISPOSITION.COLLECT;
+}
 
 export const DEFAULT_STORAGE_HUB = "hub1";
 
