@@ -6560,7 +6560,6 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
     const raw = log.filter(e => e.action === "out_of_stock" && e.timestamp >= filterStart && e.timestamp < filterEnd && catMatch(e));
     const returnedNums = returnedOrderNumberSet(returnsLog, filterStart, filterEnd, catMatch);
     return excludeReturnedOrderNumbers(dedupeByOrderNumber(raw), returnedNums);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [log, returnsLog, filterStart, filterEnd, category]);
   const [openProduct, setOpenProduct] = useState(null);
 
