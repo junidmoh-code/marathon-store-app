@@ -17,6 +17,7 @@ import { applyMovement } from "./components/stock/applyMovement";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
+import { inferProductType, dedupeByOrderNumber, returnedOrderNumberSet, excludeReturnedOrderNumbers, oosEventsForPeriod } from "./utils/insights";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -396,17 +397,9 @@ function getProductHubs(product) {
   return product?.hubs || (product?.hub ? [product.hub] : []);
 }
 
-// Phase 12D: classify an insights_log entry or order as sneaker/clothing.
-// Prefers explicit productType (added on writes after Phase 12D ships) and
-// falls back to a size-letter heuristic for historical entries: the two size
-// systems don't overlap (numeric 3..11 vs letters S..XXXL), so checking size
-// is deterministic.
-function inferProductType(entry) {
-  if (entry && entry.productType) return entry.productType;
-  const sz = entry && entry.size;
-  if (sz && /^(S|M|L|XL|XXL|XXXL)$/i.test(sz)) return "clothing";
-  return "sneaker";
-}
+// inferProductType, dedupeByOrderNumber, returnedOrderNumberSet,
+// excludeReturnedOrderNumbers + oosEventsForPeriod now live in ./utils/insights
+// (single definition, unit-testable). Imported at the top of this file.
 
 function updateProductHubs(id, hubs) {
   if (!id) return Promise.resolve();
@@ -566,46 +559,8 @@ function toKey(str) {
 // still calls dedupeByOrderNumber so multi-fire placed events (rare but
 // possible) don't inflate the histogram.
 
-// SA-timezone date slice — matches the convention used by DayCollapsible and
-// orderSaleDate / orderOOSDate elsewhere in the file.
-const saDateOf = (iso) => {
-  if (!iso) return "";
-  return new Date(new Date(iso).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
-};
-
-// Composite keys: (SA-date, orderNumber).
-const eventCompositeKey  = (e) => `${saDateOf(e.timestamp)}::${e.orderNumber}`;
-const returnCompositeKey = (r) => `${r.date || saDateOf(r.timestamp)}::${r.orderNumber}`;
-
-function dedupeByOrderNumber(events) {
-  const earliest = new Map();
-  for (const e of events) {
-    if (!e || e.orderNumber == null) continue;
-    const key = eventCompositeKey(e);
-    const ex = earliest.get(key);
-    if (!ex || (e.timestamp || "") < (ex.timestamp || "")) {
-      earliest.set(key, e);
-    }
-  }
-  return Array.from(earliest.values());
-}
-
-function returnedOrderNumberSet(returnsLog, filterStart, filterEnd, catMatch) {
-  const s = new Set();
-  for (const r of (returnsLog || [])) {
-    if (!r || !r.orderNumber) continue;
-    const ts = r.timestamp || "";
-    if (ts < filterStart || ts >= filterEnd) continue;
-    if (catMatch && !catMatch(r)) continue;
-    s.add(returnCompositeKey(r));
-  }
-  return s;
-}
-
-function excludeReturnedOrderNumbers(events, returnsSet) {
-  if (!returnsSet || returnsSet.size === 0) return events;
-  return events.filter(e => !returnsSet.has(eventCompositeKey(e)));
-}
+// saDateOf / composite-key / dedupeByOrderNumber / returnedOrderNumberSet /
+// excludeReturnedOrderNumbers moved to ./utils/insights (imported above).
 
 // ─── DAY-GROUPED COLLAPSIBLE (Phase 10) ───────────────────────────────────────
 // Reusable across Warehouse queue / Display Refills / Returns. Buckets items
@@ -874,11 +829,9 @@ function orderSaleDate(order) {
   return new Date(ts + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-// Canonical OOS day — SA-time YYYY-MM-DD of order.outOfStockAt. Null if missing.
-function orderOOSDate(order) {
-  if (!order.outOfStockAt) return null;
-  return new Date(new Date(order.outOfStockAt).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
+// (orderOOSDate removed — its only callers were the live-orders "today" OOS
+// branches in the Overview card + OOS Tracker, now replaced by oosEventsForPeriod
+// which counts from insights_log. orderSaleDate above stays — Net Sales uses it.)
 
 // Set of orderNumbers returned on a specific SA day. Used by Source to net
 // out returns from its restock pull list, mirroring the same-period
@@ -6290,15 +6243,6 @@ function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, fil
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isToday, orders, filterDate, category]);
 
-  const dayOOSOrders = useMemo(() => {
-    if (!isToday) return [];
-    return (orders || []).filter(o =>
-      o.status === STATUS.OUT_OF_STOCK && orderOOSDate(o) === filterDate &&
-      catMatch(o)
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isToday, orders, filterDate, category]);
-
   // Net Sales = ready/collected orders for the period, minus returns.
   // Today (day mode, anchored on today): live orders. Historical / longer
   // periods: insights_log "ready" events. Both branches → dedupe + exclude.
@@ -6310,13 +6254,14 @@ function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, fil
   );
   const readyLog = useMemo(() => dedupeByOrderNumber(readyLogRaw), [readyLogRaw]);
   const netSales = useMemo(() => excludeReturnedOrderNumbers(readyLog, returnedNums), [readyLog, returnedNums]);
-  const oosLogRaw = useMemo(
-    () => isToday
-      ? dayOOSOrders.map(o => ({ orderNumber: o.id, productName: o.productName, size: o.size, timestamp: o.outOfStockAt }))
-      : periodLog.filter(e => e.action === "out_of_stock"),
-    [isToday, dayOOSOrders, periodLog]
+  // OOS count: shared with the OOS Tracker tab via oosEventsForPeriod — reads
+  // insights_log for EVERY period (incl. today), so it no longer decays as the
+  // auto-collect sweep flips OOS→collected. (Net Sales above keeps its live-order
+  // today path — `collected` is terminal, so it doesn't decay.)
+  const oosLog = useMemo(
+    () => oosEventsForPeriod({ log, returnsLog, filterStart, filterEnd, category }),
+    [log, returnsLog, filterStart, filterEnd, category]
   );
-  const oosLog = useMemo(() => excludeReturnedOrderNumbers(dedupeByOrderNumber(oosLogRaw), returnedNums), [oosLogRaw, returnedNums]);
   const topProd  = useMemo(() => groupCount(netSales, e => e.productName)[0], [netSales]);
   const hourData = useMemo(() => {
     const counts = {};
@@ -6555,12 +6500,10 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
   // dedupe-by-orderNumber (a flapped order counts once) + exclude returned
   // orderNumbers (if ultimately returned, its OOS transitions don't count —
   // same rule as Net Sales).
-  const oosLog = useMemo(() => {
-    const catMatch = (entry) => category === "both" || inferProductType(entry) === category;
-    const raw = log.filter(e => e.action === "out_of_stock" && e.timestamp >= filterStart && e.timestamp < filterEnd && catMatch(e));
-    const returnedNums = returnedOrderNumberSet(returnsLog, filterStart, filterEnd, catMatch);
-    return excludeReturnedOrderNumbers(dedupeByOrderNumber(raw), returnedNums);
-  }, [log, returnsLog, filterStart, filterEnd, category]);
+  const oosLog = useMemo(
+    () => oosEventsForPeriod({ log, returnsLog, filterStart, filterEnd, category }),
+    [log, returnsLog, filterStart, filterEnd, category]
+  );
   const [openProduct, setOpenProduct] = useState(null);
 
   // Group OOS events by product, then by size
