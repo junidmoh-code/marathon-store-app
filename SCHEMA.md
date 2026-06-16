@@ -319,14 +319,22 @@ one-tap **self-grant** banner that materializes a minimal record with
 >
 > **Status lifecycle** (on `/laybys/{laybyId}.status`), happy path then off-ramps:
 > `created → labelPrinted → inTransitToStorage → storedAtHub → pullRequested →
-> sentToStore → collected`, plus `expired` and `rejected`. Writers per transition
-> are marked below.
+> sentToStore → collected`, plus `expired`, `rejected`, and **`returned`**
+> (cancelled → return-to-stock). Writers per transition are marked below.
 >
 > **Rollout note.** At time of writing the POS writers are not yet committed and
 > these paths still need `database.rules.json` entries (out of scope for the
 > warehouse PR — `database.rules.json` is not touched here). Until both land, live
 > reads return permission-denied and the warehouse queues render **empty**, by
 > design (no crash).
+>
+> **Rules to publish (separately, via console — NOT in this PR):** the
+> `disposition` field is already permitted by the `/laybyPulls/$pullId`
+> `"$other"` catch-all, so no rule change is strictly required for it. To enable
+> the new statuses, two enum validates must be widened: `/laybys` `status` →
+> add `returned`; `/laybyPulls` `status` → add `returnedToStock`. (Optional
+> hardening: an explicit `disposition` enum validate.) These are published with
+> the live rules, separate from this code PR.
 
 ## `/laybys/{laybyId}` — layby record + parcel storage state (SHARED)
 
@@ -354,7 +362,10 @@ and a store requests it back.
 
 **POS-written status transitions:** `created`, `labelPrinted`,
 `inTransitToStorage` (at dispatch), `pullRequested` (when a store requests it),
-`collected`, and `expired`.
+`collected`, `expired`, and **`returned`** (set when the store **cancels** a
+stored layby — the POS also creates a `return_to_stock` pull, below). The
+warehouse's return-to-stock action resolves that pull but **does NOT** change
+this `status` — it stays `returned`.
 
 **Warehouse-written** (this app):
 
@@ -394,22 +405,35 @@ warehouse writes only the resolution fields.
 | `requestingStore`  | canonical store id                | Store that wants the parcel (`marathon-pe`/`marathon-pine`/`trophy`). |
 | `storageHub`       | canonical hub id                  | Hub holding the parcel (mirror of the layby's `storageHub`). Warehouse filters by this. Default `hub1`. |
 | `requestedAt`      | number (epoch ms) \| ISO string   | When the pull was requested. |
+| `disposition`      | `"collect" \| "return_to_stock"`  | Why the parcel is being pulled. `collect` (or **absent** ⇒ collect, backward-compat) = customer collecting → the Sent/Reject path. `return_to_stock` = layby cancelled → the warehouse returns the units to stock (path below). |
 
 **Warehouse-written** (this app):
 
-| Field             | Type                                          | Notes |
-|-------------------|-----------------------------------------------|-------|
-| `status`          | `"pending" \| "sentToStore" \| "rejected"`    | POS writes `"pending"`. Warehouse → `"sentToStore"` (Sent) or `"rejected"`. |
-| `sentAt`          | ISO string                                    | On Sent. |
-| `sentBy`          | string                                        | Acting hub id, on Sent. |
-| `rejectedAt`      | ISO string                                    | On Reject. |
-| `rejectedBy`      | string                                        | Acting hub id, on Reject. |
-| `rejectionReason` | string                                        | **Required** on reject; flows back to the POS so the store sees why (expired laybys past `dueDate`). |
+| Field             | Type                                                            | Notes |
+|-------------------|----------------------------------------------------------------|-------|
+| `status`          | `"pending" \| "sentToStore" \| "rejected" \| "returnedToStock"` | POS writes `"pending"`. Warehouse → `"sentToStore"` (Sent), `"rejected"` (Reject), or `"returnedToStock"` (Return to stock). |
+| `sentAt`          | ISO string                                                     | On Sent. |
+| `sentBy`          | string                                                         | Acting hub id, on Sent. |
+| `rejectedAt`      | ISO string                                                     | On Reject. |
+| `rejectedBy`      | string                                                         | Acting hub id, on Reject. |
+| `rejectionReason` | string                                                         | **Required** on reject; flows back to the POS so the store sees why (expired laybys past `dueDate`). |
+| `returnedAt`      | ISO string                                                     | On Return to stock. |
+| `returnedBy`      | string                                                         | Acting hub id, on Return to stock. |
 
 On **Sent** the warehouse atomically also patches `/laybys/{laybyId}` →
 `status: "sentToStore"` + `sentToStoreAt`. On **Reject** it atomically patches
 `/laybys/{laybyId}` → `status: "rejected"` + `rejectedAt` + `rejectionReason`.
 Pull and parcel state never diverge.
+
+**Return to stock** (`disposition: "return_to_stock"`): the store cancelled the
+layby. The warehouse pulls the parcel, removes the label, and returns the units to
+stock, then resolves the **pull only** → `status: "returnedToStock"` +
+`returnedAt`/`returnedBy`. **Unlike Sent/Reject, this does NOT touch
+`/laybys`** — the POS already set `/laybys/{laybyId}.status = "returned"` on
+cancellation, and it stays there. (The pull carries no per-size lines, so the
+units are returned to sellable stock as a manual shelf step — nothing is posted to
+the `/stock` ledger.) `disposition` absent or `"collect"` ⇒ the existing Sent/Reject
+collect path, unchanged (backward-compatible).
 
 ### QR payload (parcel label)
 

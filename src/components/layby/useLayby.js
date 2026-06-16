@@ -103,6 +103,22 @@ export function markPullSent(pull, hubLabel) {
   return update(ref(database), patch);
 }
 
+// Resolve a return-to-stock pull (the layby was cancelled at the POS). The
+// warehouse pulled it, removed the label, and returned the units to stock. This
+// writes ONLY the pull record — it deliberately does NOT touch /laybys, which the
+// POS already set to "returned" on cancellation (contrast markPullSent, which
+// flips /laybys → sentToStore for the collect path).
+export function returnPullToStock(pull, hubLabel) {
+  const pullId = pull?.pullId || pull?.key;
+  if (!pullId) return Promise.reject(new Error("returnPullToStock: missing pullId"));
+  const now = new Date().toISOString();
+  return update(ref(database, `laybyPulls/${pullId}`), {
+    status:     PULL_STATUS.RETURNED_TO_STOCK,
+    returnedAt: now,
+    returnedBy: hubLabel,
+  });
+}
+
 // Reject a pull (expired layby past dueDate). Reason is required and flows back
 // to the POS so the store sees why. Also flips the layby record to `rejected`
 // (single atomic update) so its lifecycle reflects the outcome.
