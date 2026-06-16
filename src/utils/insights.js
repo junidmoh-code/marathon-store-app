@@ -94,3 +94,27 @@ export function oosEventsForPeriod(args) {
 export function readyEventsForPeriod(args) {
   return eventsForPeriod("ready", args);
 }
+
+// Clothing-REFILL demand events for a period (excludes Hub C customer clothing).
+// Each event: { orderNumber, productName, size, qty, timestamp }.
+//   • TODAY: from live /orders (real-time, qty present), bucketed by createdAt.
+//   • PAST: from insights_log action==="placed" clothing events (deduped by
+//     orderNumber). These carry `qty` going forward; legacy events predate the
+//     field, so qty falls back to 1 (a slight historical under-count of units
+//     that ages out). Past MUST use the log because /orders rolls over daily and
+//     would otherwise undercount closed windows.
+export function clothingRefillEventsForPeriod({ isToday, orders, log, filterStart, filterEnd }) {
+  if (isToday) {
+    return (orders || [])
+      .filter(o => o.productType === "clothing" && o.placedAtHub !== "hubC"
+                && o.createdAt && o.createdAt >= filterStart && o.createdAt < filterEnd)
+      .map(o => ({ orderNumber: o.id, productName: o.productName || "Unknown", size: o.size, qty: o.qty || 1, timestamp: o.createdAt }));
+  }
+  const raw = (log || []).filter(
+    e => e.action === "placed" && inferProductType(e) === "clothing" && e.placedAtHub !== "hubC"
+      && e.timestamp >= filterStart && e.timestamp < filterEnd
+  );
+  return dedupeByOrderNumber(raw).map(
+    e => ({ orderNumber: e.orderNumber, productName: e.productName || "Unknown", size: e.size, qty: e.qty || 1, timestamp: e.timestamp })
+  );
+}

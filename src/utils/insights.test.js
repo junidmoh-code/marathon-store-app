@@ -6,6 +6,7 @@ import {
   excludeReturnedOrderNumbers,
   oosEventsForPeriod,
   readyEventsForPeriod,
+  clothingRefillEventsForPeriod,
 } from "./insights";
 
 // A one-day window. Timestamps use mid-day UTC so the +2h SA shift never crosses
@@ -126,3 +127,58 @@ describe("readyEventsForPeriod (shared by Overview Net Sales + Sales Summary)", 
 
 // tiny helper to read length (keeps assertions terse)
 function oosLen(arr) { return arr.length; }
+
+const sumQty = (arr) => arr.reduce((n, e) => n + e.qty, 0);
+const placed = (orderNumber, t, extra = {}) => ({ action: "placed", orderNumber, timestamp: `2026-06-16T${t}:00:00.000Z`, productType: "clothing", size: "M", placedAtHub: "hub2", ...extra });
+
+describe("clothingRefillEventsForPeriod", () => {
+  describe("past windows (from insights_log)", () => {
+    const base = { isToday: false, orders: [], filterStart: START, filterEnd: END };
+    it("sums UNITS from qty, falling back to 1 for legacy events with no qty", () => {
+      const log = [
+        placed("001", "08", { qty: 3 }),   // 3 units
+        placed("002", "09"),               // legacy, no qty → 1
+      ];
+      const out = clothingRefillEventsForPeriod({ ...base, log });
+      expect(out).toHaveLength(2);
+      expect(sumQty(out)).toBe(4);
+    });
+    it("excludes Hub C (customer clothing), non-placed, non-clothing, and out-of-window", () => {
+      const log = [
+        placed("001", "08", { qty: 2 }),
+        placed("900", "08", { qty: 5, placedAtHub: "hubC" }),                 // customer clothing
+        placed("901", "08", { qty: 5, productType: "sneaker", size: "8" }),   // not clothing
+        { action: "ready", orderNumber: "902", productType: "clothing", size: "M", placedAtHub: "hub2", timestamp: "2026-06-16T08:00:00.000Z", qty: 5 }, // not placed
+        placed("903", "10", { qty: 5, timestamp: "2026-06-15T10:00:00.000Z" }), // out of window
+      ];
+      const out = clothingRefillEventsForPeriod({ ...base, log });
+      expect(out.map(e => e.orderNumber)).toEqual(["001"]);
+      expect(sumQty(out)).toBe(2);
+    });
+    it("dedupes a re-fired placed event by orderNumber (counts once)", () => {
+      const log = [placed("001", "08", { qty: 3 }), placed("001", "09", { qty: 3 })];
+      expect(clothingRefillEventsForPeriod({ ...base, log })).toHaveLength(1);
+      expect(sumQty(clothingRefillEventsForPeriod({ ...base, log }))).toBe(3);
+    });
+  });
+
+  describe("today (from live orders)", () => {
+    const ord = (id, t, extra = {}) => ({ id, productType: "clothing", placedAtHub: "hub2", createdAt: `2026-06-16T${t}:00:00.000Z`, size: "M", qty: 1, ...extra });
+    const base = { isToday: true, log: [], filterStart: START, filterEnd: END };
+    it("sums qty from live orders, excluding Hub C / non-clothing / out-of-window", () => {
+      const orders = [
+        ord("001", "08", { qty: 3 }),
+        ord("900", "08", { qty: 5, placedAtHub: "hubC" }),                 // customer
+        ord("901", "08", { qty: 5, productType: "sneaker" }),              // not clothing
+        ord("902", "10", { qty: 5, createdAt: "2026-06-15T10:00:00.000Z" }), // out of window
+      ];
+      const out = clothingRefillEventsForPeriod({ ...base, orders });
+      expect(out.map(e => e.orderNumber)).toEqual(["001"]);
+      expect(sumQty(out)).toBe(3);
+    });
+    it("defaults qty to 1 when absent on an order", () => {
+      const orders = [{ id: "001", productType: "clothing", placedAtHub: "hub2", createdAt: "2026-06-16T08:00:00.000Z", size: "M" }];
+      expect(sumQty(clothingRefillEventsForPeriod({ ...base, orders }))).toBe(1);
+    });
+  });
+});

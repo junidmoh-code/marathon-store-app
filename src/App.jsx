@@ -17,7 +17,7 @@ import { applyMovement } from "./components/stock/applyMovement";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
-import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod } from "./utils/insights";
+import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod } from "./utils/insights";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -2997,6 +2997,11 @@ function AssistantView({ products, onExit, orders = [] }) {
           productCategory: item.product.category || "",
           productType: "clothing",
           size: item.size,
+          // qty on the event so the Clothing Refills tab can sum UNITS from the
+          // log for past windows (a refill line is one event with qty>1, unlike
+          // sneaker checkout which expands qty into one event per unit). Legacy
+          // events predate this field — readers fall back to 1.
+          qty: item.qty || 1,
           customerName: "Shop Refill",
           customerPhone: null,
           orderNumber: orderNum,
@@ -6851,31 +6856,32 @@ function InsightReturnsTab({ returnsLog, productPhotoMap, filterStart, filterEnd
 // immutable — so historical periods aren't affected by later resolutions or
 // undos. Aggregates by (productId, productName); each row shows total units
 // requested, per-size breakdown, and last-requested timestamp.
-function InsightClothingRefillsTab({ orders, productPhotoMap, filterStart, filterEnd, filterLabel }) {
+function InsightClothingRefillsTab({ orders, log, productPhotoMap, filterStart, filterEnd, filterLabel, filterMode, filterDate }) {
+  // TODAY reads live /orders (real-time, qty present); past windows read
+  // insights_log "placed" clothing events — /orders rolls over daily, so the old
+  // all-live-orders path undercounted closed windows. Both branches normalise to
+  // { productName, size, qty, timestamp } via the shared helper.
+  const isToday = filterMode === "day" && filterDate === getSADateString();
+  const refillEvents = useMemo(
+    () => clothingRefillEventsForPeriod({ isToday, orders, log, filterStart, filterEnd }),
+    [isToday, orders, log, filterStart, filterEnd]
+  );
+
   const rows = useMemo(() => {
     const map = {};
-    (orders || []).forEach(o => {
-      if (o.productType !== "clothing") return;
-      // Trial: this tab measures store REFILL demand — exclude clothing
-      // customer orders (routed to Hub C), which aren't refills.
-      if (o.placedAtHub === "hubC") return;
-      if (!(o.createdAt && o.createdAt >= filterStart && o.createdAt < filterEnd)) return;
-      const key = o.productName || "Unknown";
+    refillEvents.forEach(e => {
+      const key = e.productName || "Unknown";
       if (!map[key]) map[key] = { productName: key, total: 0, sizes: {}, lastAt: "" };
-      const qty = o.qty || 1;
-      map[key].total += qty;
-      const sz = o.size || "—";
-      map[key].sizes[sz] = (map[key].sizes[sz] || 0) + qty;
-      if (o.createdAt > map[key].lastAt) map[key].lastAt = o.createdAt;
+      map[key].total += e.qty;
+      const sz = e.size || "—";
+      map[key].sizes[sz] = (map[key].sizes[sz] || 0) + e.qty;
+      if ((e.timestamp || "") > map[key].lastAt) map[key].lastAt = e.timestamp || "";
     });
     return Object.values(map).sort((a, b) => b.total - a.total || b.lastAt.localeCompare(a.lastAt));
-  }, [orders, filterStart, filterEnd]);
+  }, [refillEvents]);
 
   const totalUnits     = rows.reduce((n, r) => n + r.total, 0);
-  const totalRequests  = useMemo(() =>
-    (orders || []).filter(o => o.productType === "clothing" && o.placedAtHub !== "hubC" && o.createdAt && o.createdAt >= filterStart && o.createdAt < filterEnd).length,
-    [orders, filterStart, filterEnd]
-  );
+  const totalRequests  = refillEvents.length;
   const distinctProducts = rows.length;
 
   const fmtAgo = (iso) => {
@@ -7936,7 +7942,7 @@ function InsightsView({ onExit }) {
         {tab==="sizes"            && <InsightSizePopularityTab  log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
         {tab==="times"            && <InsightBusiestTimesTab    log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
         {tab==="returns"          && <InsightReturnsTab         returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="clothing-refills" && <InsightClothingRefillsTab orders={filteredOrders} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} />}
+        {tab==="clothing-refills" && <InsightClothingRefillsTab orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
         {tab==="depleted"         && <InsightStockDepletedTab   orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
         {tab==="reorder"          && <InsightReorderTab          productPhotoMap={productPhotoMap} />}
       </div>

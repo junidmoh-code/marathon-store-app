@@ -146,6 +146,7 @@ durable record of past-day activity.
 | `orderNumber`     | string                                                                        | The daily 3-digit order id (`/orders` key); **not globally unique** — dedupe with a composite `${SA-date}::${orderNumber}` key. |
 | `action`          | `"placed" \| "ready" \| "out_of_stock" \| "tomorrow" \| "collected" \| "stock_depleted"` | The lifecycle transition. |
 | `placedAtHub`     | `"hub1" \| "hub2" \| "hub3" \| "hubC"`                                        | Fulfilment hub. |
+| `qty`             | number \| **absent**                                                          | Units on this event. Written on **clothing-refill `placed`** events (one refill line carries `qty>1`, unlike sneaker checkout which expands qty into one event per unit). **Absent** on events written before this field and on non-refill events — consumers fall back to `1` (e.g. the Insights Clothing Refills tab sums `qty ?? 1`). |
 | `displayRefilledBy` | string                                                                       | `stock_depleted` events only — the resolving hub label. |
 
 > **`productId` is the join key going forward.** Every new event carries the
