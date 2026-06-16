@@ -162,6 +162,56 @@ durable record of past-day activity.
 
 ---
 
+## `/insights/reorderPlan/{status,latest}`
+
+Written by the `analyzeReorderNeeds` Cloud Function (`functions/index.js`); read
+by the marathon-ai dashboard (`src/Dashboard.jsx`). The UI fire-and-forgets the
+callable (a run can exceed the 70 s callable client timeout) and renders from
+these two nodes instead of awaiting the return value.
+
+- **`/insights/reorderPlan/status`** — `{ state: "idle" | "running" | "error",
+  startedAt, startedBy, completedAt? | erroredAt?, errorMessage? }`. The
+  running-lock is acquired via an RTDB transaction (concurrent-run protection).
+- **`/insights/reorderPlan/latest`** — `{ plan, meta, generatedAt, generatedBy,
+  durationMs }`. `plan` = `{ summary, recommendations[], topSellers[],
+  sleepers[], dataQualityNotes[] }`; each recommendation is
+  `{ productId, productName, action: "reorder"|"review"|"skip"|"slow_mover",
+  priority: "high"|"medium"|"low", suggestedQuantity: {size→qty}, totalSuggested,
+  reasoning }`. `meta.source` is `"demand-engine"` (Phase 3 pure-reasoner path)
+  or `"legacy-internal"` (fallback). Keys with `.`/`#`/`$`/`/`/`[`/`]` (e.g.
+  sneaker size `"5.5"`) are sanitised to `_` at write time.
+
+### `analyzeReorderNeeds` input contract — `request.data.demand` (Phase 3)
+
+Since Phase 3 the function is a **pure reasoner**: TRUE DEMAND (sold +
+out-of-stock, per product **and** per size) is computed client-side by
+marathon-ai's shared demand engine (`src/lib/demand.js` → `computeDemand`),
+slimmed by `buildReorderPayload` (`src/lib/reorderPayload.js`), and passed in
+under `request.data.demand`. The function does **not** re-aggregate sales when it
+is present.
+
+| Field           | Type        | Notes |
+|-----------------|-------------|-------|
+| `schemaVersion` | number      | Must equal `REORDER_DEMAND_SCHEMA_VERSION` (currently `1`); other values fall back to the legacy path. Branch on it. |
+| `window`        | string      | Demand window label (`"all"` \| `"30"` \| `"60"` …). |
+| `windowDays`    | number\|null| `null` = all-time. |
+| `recentDays`    | number      | Width of the recent slice for `recentSold`/`recentOos`. |
+| `nowMs`         | number      | Client clock when computed (ms epoch). |
+| `cycleDays`     | number      | Reorder horizon = span earliest-sale → now (the **real** catalog window, not a hardcoded 45). |
+| `coverage`      | object      | Honest name-match report (`catalogTotal`, `coveragePct`, `matchedProducts`, `unmatchedEvents`, `nameCollisions`, `productIdOnEvents:false`, …). |
+| `totals`        | object      | Attributable aggregate `{ sold, oos, placed, returns, trueDemand }` (`trueDemand = sold + oos`). |
+| `rows[]`        | object[]    | **One entry per catalog product, UNCAPPED.** Each: `{ id, name, sold, oos, placed, trueDemand, velocityPerWeek, trueDemandPerWeek, recentSold, recentOos, bySize:{[size]:{sold,oos,placed,trueDemand}}, ageDays, sizes[], stores[], lastSaleDate, depleted, retailPrice }`. |
+
+`bySize` keys are the size string exactly as it appears in `/insights_log`
+(`"9"`, `"10"`, `"S"`); `suggestedQuantity[size]` is built from
+`bySize[size].trueDemand` (OOS included), never from `sold` alone. The full
+contract and reasoning live in `functions/lib/reorder-demand.cjs`. The function
+still runs when `demand` is **absent** (cron / old client) via the legacy
+internal-discovery fallback. Authoritative client-side spec:
+`marathon-ai/docs/PHASE3-REORDER-FUNCTION-SPEC.md`.
+
+---
+
 ## `/users/{uid}`
 
 One node per staff account, keyed by Firebase Auth UID. Written by the
