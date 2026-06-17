@@ -66,9 +66,17 @@ const REORDER_DEMAND_SCHEMA_VERSION = 1;
 // How many product rows go into a single Claude call. The catalog is analysed in
 // full (no TOP_N) by chunking into batches and merging — output token budget, not
 // catalog size, is the binding constraint, so we bound per-call output instead of
-// dropping the long tail. ~60 recommendations/batch sits well under the per-call
-// max_tokens with margin for reasoning strings.
-const DEMAND_BATCH_SIZE = 60;
+// dropping the long tail.
+//
+// SIZING: each recommendation costs ~400 output tokens; the per-call cap is
+// REORDER_MAX_TOKENS = 24000 (index.js). 60×400 = 24000 sat RIGHT AT the cap,
+// which is exactly what invited within-batch truncation (the model dropping the
+// tail to keep the JSON valid). 40×400 = 16000 ≈ 67% of budget — comfortable
+// headroom so a batch's worst-case output fits, leaving the in-prompt
+// "truncate the array" rule as a last-resort parse-safety net, not the normal
+// path. (Dropped products are also now detected — see unanalyzedFromBatches — so
+// even an over-budget batch can't silently lose products.)
+const DEMAND_BATCH_SIZE = 40;
 
 // ── Row partitioning ─────────────────────────────────────────────────────────
 // Every catalog row lands in exactly one bucket:
@@ -305,6 +313,32 @@ function mergeRecommendations(batchResults) {
   return out;
 }
 
+// Within-batch truncation guard. Given the slim rows actually dispatched to the
+// model (`sentRows` — the flattened batches) and the merged `recommendations`,
+// return every sent productId that came back WITHOUT a recommendation. That
+// covers two cases the per-batch error handling alone misses:
+//   • a batch that failed / was unparseable (no output at all), and
+//   • a batch that PARSED but returned fewer recs than its inputs — the model
+//     dropping the tail to stay within the token budget (silent truncation).
+// Diffing the full sent set against the merged recs is the single authoritative
+// source, so the caller can push these into unanalyzedProductIds and surface them
+// in buildDataQualityNotes — nothing is silently dropped. Order-preserving, deduped.
+function unanalyzedFromBatches(sentRows, recommendations) {
+  const returned = new Set();
+  for (const r of (recommendations || [])) {
+    if (r && r.productId != null) returned.add(String(r.productId));
+  }
+  const missing = [];
+  const seen = new Set();
+  for (const row of (sentRows || [])) {
+    const id = row && row.productId != null ? String(row.productId) : null;
+    if (!id || returned.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    missing.push(id);
+  }
+  return missing;
+}
+
 // ── Prompts ──────────────────────────────────────────────────────────────────
 // One system prompt covers both active and dormant rows (a given batch is
 // homogeneous, but the rules for both live here). The model returns ONLY a
@@ -383,6 +417,7 @@ module.exports = {
   buildDataQualityNotes,
   normalizeRecommendation,
   mergeRecommendations,
+  unanalyzedFromBatches,
   demandSystemPrompt,
   buildBatchUserPayload,
 };

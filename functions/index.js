@@ -1138,7 +1138,6 @@ async function buildDemandDrivenPlan({ client, demand, businessContext }) {
 
   let usage = { input_tokens: 0, output_tokens: 0 };
   let parseRetries = 0;
-  const unanalyzedProductIds = [];
 
   const batchOutputs = await reorderDemand.mapWithConcurrency(
     batches,
@@ -1156,15 +1155,14 @@ async function buildDemandDrivenPlan({ client, demand, businessContext }) {
         };
         if (retried) parseRetries += 1;
         if (!parsed) {
-          for (const r of batchRows) unanalyzedProductIds.push(r.productId);
-          console.warn(`analyzeReorderNeeds(demand): batch ${i} unparseable after retry (${batchRows.length} products)`);
+          console.warn(`analyzeReorderNeeds(demand): batch ${i} unparseable after retry (${batchRows.length} products) — flagged via post-merge diff`);
           return null;
         }
         return parsed;
       } catch (err) {
-        // API error on this batch — record its products as unanalysed and keep
-        // going. Never silently drop: this surfaces in dataQualityNotes.
-        for (const r of batchRows) unanalyzedProductIds.push(r.productId);
+        // API error on this batch — keep going. Its products surface as
+        // unanalysed via the post-merge diff (unanalyzedFromBatches), never
+        // silently dropped.
         console.warn(`analyzeReorderNeeds(demand): batch ${i} failed (${err && err.message}); ${batchRows.length} products unanalysed`);
         return null;
       }
@@ -1172,6 +1170,14 @@ async function buildDemandDrivenPlan({ client, demand, businessContext }) {
   );
 
   const recommendations = reorderDemand.mergeRecommendations(batchOutputs.filter(Boolean));
+
+  // Within-batch truncation guard: surface EVERY sent product that came back
+  // without a recommendation — a failed/unparsed batch OR a batch that parsed but
+  // returned fewer recs than its inputs (the model dropping the tail to fit the
+  // token budget). Diffing the full sent set against the merged recs is the single
+  // authoritative source, so the tail can never be silently dropped; it flows into
+  // dataQualityNotes below.
+  const unanalyzedProductIds = reorderDemand.unanalyzedFromBatches(batches.flat(), recommendations);
 
   // If every batch failed (e.g. provider outage) and there was work to do, treat
   // it as a hard failure so status flips to error rather than persisting an empty

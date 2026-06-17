@@ -203,3 +203,45 @@ test("buildBatchUserPayload is valid JSON carrying the cycle and rows", () => {
 test("schema version is exported and an integer", () => {
   assert.ok(Number.isInteger(R.REORDER_DEMAND_SCHEMA_VERSION));
 });
+
+test("unanalyzedFromBatches flags sent products with no recommendation (deduped, order-preserving)", () => {
+  const sent = [
+    { productId: "p1" }, { productId: "p2" }, { productId: "p3" },
+    { productId: "p4" }, { productId: "p4" }, // dup sent id
+  ];
+  const recs = [{ productId: "p1" }, { productId: "p3" }];
+  assert.deepEqual(R.unanalyzedFromBatches(sent, recs), ["p2", "p4"]);
+});
+
+test("unanalyzedFromBatches: nothing missing when every sent product is recommended", () => {
+  const sent = [{ productId: "p1" }, { productId: "p2" }];
+  const recs = [{ productId: "p2" }, { productId: "p1" }];
+  assert.deepEqual(R.unanalyzedFromBatches(sent, recs), []);
+});
+
+test("within-batch truncation: a batch that parses but returns FEWER recs than inputs surfaces the missing ids in dataQualityNotes", () => {
+  // Batch sent 3 products; the model returned only 1 (dropped the tail to fit the
+  // token budget). The two dropped products MUST be flagged — no silent drop.
+  const sent = [{ productId: "p1" }, { productId: "p2" }, { productId: "p3" }];
+  const merged = R.mergeRecommendations([
+    { recommendations: [{ productId: "p1", action: "reorder", priority: "high", suggestedQuantity: { "9": 2 } }] },
+  ]);
+  const unanalyzedProductIds = R.unanalyzedFromBatches(sent, merged);
+  assert.deepEqual(unanalyzedProductIds, ["p2", "p3"]);
+
+  const notes = R.buildDataQualityNotes({
+    coverage: {}, ignoredCount: 0, unanalyzedProductIds, window: "all",
+  });
+  assert.match(notes.join(" | "), /2 products could not be analysed/);
+});
+
+test("DEMAND_BATCH_SIZE leaves token headroom (worst-case output well under the per-call cap)", () => {
+  // ~400 output tokens/recommendation; REORDER_MAX_TOKENS = 24000 (index.js).
+  // 60 sat at the cap (truncation bait); target ≤70% of budget.
+  const PER_PRODUCT_TOKENS = 400;
+  const REORDER_MAX_TOKENS = 24000;
+  assert.ok(
+    R.DEMAND_BATCH_SIZE * PER_PRODUCT_TOKENS <= 0.7 * REORDER_MAX_TOKENS,
+    `DEMAND_BATCH_SIZE ${R.DEMAND_BATCH_SIZE} → ${R.DEMAND_BATCH_SIZE * PER_PRODUCT_TOKENS} tokens exceeds 70% of ${REORDER_MAX_TOKENS}`
+  );
+});
