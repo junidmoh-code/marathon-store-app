@@ -31,6 +31,7 @@ Each product is its own node. `productId` is generated client-side as
 | **`hasShoeBoxOption`** | **boolean**                  | **no**   | **POS Phase 2. True for footwear that ships with a shoebox add-on. Optional; treat missing as false. ALWAYS false for `productType === "clothing"` — admin write paths force it off and consumers must treat clothing as false regardless of the stored value.** |
 | **`barcode`**     | **string** (8-digit zero-padded)  | **no**   | **POS Phase 2 (scanner workflow). Auto-assigned at create time from `/products_meta/lastBarcode`. Format: `"00000001"`..`"99999999"`. Wider than `sku` to leave room for future per-(product, size) variants on the same counter.** |
 | **`sku`**         | **string** (4-digit zero-padded)  | **no**   | **POS Phase 2 (scanner workflow). Auto-assigned at create time from `/products_meta/lastSku`. Format: `"0001"`..`"9999"`. Always per-product (no size variants).** |
+| **`barcodes`**    | **`{ [sizeKey]: "00000001" }`**   | **no**   | **Per-(product, size) barcode codes (the size-variant expansion the `barcode` field reserved space for). Each value is an 8-digit code reserved from the SAME `/products_meta/lastBarcode` counter the first time that product+size needs a label, then PERMANENT — reused on every reprint, never regenerated/overwritten. Key is the size with Firebase-illegal chars encoded (`barcodeSizeKey`: `"5.5"` → `"5-5"`); the raw size is preserved in `/barcodes/{code}`. Reserved/stored by `src/components/stock/barcodeStore.js#ensureBarcode`. Rendered as Code 128.** |
 | **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15 — RETIRED. Was a product-level depletion flag (blurred + un-orderable + Depleted Products tab). The blocking feature is gone: writers no longer set it and readers ignore it; any legacy value is inert. Products are always live & orderable. Safe to ignore / backfill-clear later.** |
 | **`depletedBy`**  | **string \| null**                | **no**   | **Phase 15 — RETIRED (see `depletedAt`). Inert legacy field.** |
 
@@ -89,9 +90,29 @@ add-product calls can't collide on the same number.
 
 **Lifecycle:** Both counters start at `0` (or whatever the backfill script lands at). Each new product *reserves* the next values by reading and incrementing both counters in a single `runTransaction` on `/products_meta`. The reservation transaction serializes cleanly across concurrent adds. The new product node is then written to `/products/{id}` in a **separate follow-up write** (not inside the transaction handler). If that follow-up write fails, the reserved pair is "burned" — the counter has advanced but no product exists at that number. We do **not** roll back the counter on failure: decrementing after another writer has already incremented would silently reassign their reservation. Gaps in the sequence are acceptable.
 
-**Today** the two counters advance in lockstep (product 0001 → barcode 00000001, product 0002 → barcode 00000002, …). **Future per-(product, size) barcode expansion** will advance `lastBarcode` once per size variant while `lastSku` continues to advance once per product, so the two values drift apart over time — that's why `barcode` has 10000× the address space of `sku`. The schema accommodates that today; no further migration needed when the size-variant work lands.
+**The two counters now drift apart by design.** Product creation still reserves both in lockstep; additionally, the **per-(product, size) barcode feature** advances `lastBarcode` once per size variant via `reserveNextBarcode` (`src/components/stock/barcodeStore.js`) — `lastSku` is untouched there. That's why `barcode` has 10000× the address space of `sku`. Same atomicity model: the number is reserved in a `runTransaction` on `/products_meta`; if the follow-up slot/index write is lost (or a concurrent printer already claimed the same product+size), the reserved number is "burned" — gaps are acceptable.
 
-**Overflow:** If `lastSku` would exceed `9999` or `lastBarcode` would exceed `99999999`, the reservation transaction aborts and `addProduct` surfaces a "counter exhausted" error to the admin. SKU runs out first (current product count is ~1026, ~9× runway remaining).
+**Overflow:** If `lastSku` would exceed `9999` or `lastBarcode` would exceed `99999999`, the reservation transaction aborts and the caller surfaces a "counter exhausted" error. SKU runs out first (current product count is ~1026, ~9× runway remaining).
+
+---
+
+## `/barcodes/{code}` — barcode reverse index (POS scan-to-sell)
+
+Maps a scanned barcode value back to the product+size it identifies. Written by
+`barcodeStore.ensureBarcode` the first time a product+size barcode is reserved (the
+inverse of `/products/{id}/barcodes/{sizeKey}`).
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `productId` | string | the `/products` key |
+| `size` | string | the **raw** size (e.g. `"5.5"`, `"M"`) — not the encoded storage key |
+| `at` | ISO string | when the code was first reserved |
+
+`code` (the key) is the 8-digit value. **POS resolution:** scan → read
+`/barcodes/{code}` → `{ productId, size }` → sell + deduct the `/stock/{loc}/{pid}/{size}`
+cell (a `sold` movement via `applyMovement`). The codes are opaque (sequential), so
+this lookup — not parsing — is the resolution path. **The scan-to-sell lookup is a
+separate POS build; this app writes the index so it will work.**
 
 ---
 
@@ -291,6 +312,16 @@ only raise a count; a decrease is refused with a prompt to use Correction),
 (plus an optional note); every write records delta + before/after old→new. This is
 how stock is received (pick a receiving warehouse) and how one-time opening balances
 are entered. NOTE: the `opening` type requires the rules deploy below.
+
+**Inline barcode printing:** after a save, Set Qty offers a **Print barcodes** sheet
+(`BarcodePrint.jsx`) for the saved sizes. Opening it ENSURES a permanent code per
+size (`barcodeStore.ensureBarcode` — reserve-if-missing / reuse-if-present), previews
+each as Code 128 (`BarcodeView.jsx` / pure `barcode.js`), and prints. Copy count
+per size defaults to the **units just added** (positive delta) and is overridable.
+Transport is a self-contained module (`printers/`): Phomemo M110 (Web Bluetooth,
+proven) and Xprinter XP-350B (WebUSB/TSPL, **unproven — pending hardware test**); a
+print failure is isolated and blocks nothing (codes are still reserved/stored/indexed
+and the on-screen barcode is scannable).
 
 ### One-step transfer (rework)
 A transfer is now a **single atomic `transfer_out`** movement carrying a real
