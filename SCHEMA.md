@@ -250,8 +250,10 @@ holds its own per-size count — the same product+size can differ across locatio
 | `state` | `"untracked" \| "counting" \| "live"` | rollout gate |
 | `updatedAt` / `updatedBy` | ISO / uid | |
 
-Written **only** by `applyMovement`, paired with the ledger entry in one atomic
-version-guarded `update()`. Fully re-derivable from `/stock_movements`.
+Written **only** from the `applyMovement` module — `applyMovement` itself (paired
+with the ledger entry in one atomic version-guarded `update()`) and its sibling
+`setCellState` (state-only flips, no qty change). Both build the cell key via
+`stockCellPath` (encoded size). Fully re-derivable from `/stock_movements`.
 
 ## `/stock_movements/{movementId}` — APPEND-ONLY ledger
 

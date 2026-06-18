@@ -18,6 +18,11 @@
 const ILLEGAL_RTDB_CHARS = /[.#$[\]/\s]/g;
 
 export function encodeSizeKey(size) {
+  // Coerce numeric sizes (e.g. 5.5) to a string first — otherwise a number would
+  // pass through unencoded and "." would still reach the RTDB key. (Superset of
+  // the POS encoder, which is only ever called with strings; the string-encoding
+  // result is byte-identical.)
+  if (typeof size === "number") size = String(size);
   if (typeof size !== "string") return size;
   return size.replace(ILLEGAL_RTDB_CHARS, "_");
 }

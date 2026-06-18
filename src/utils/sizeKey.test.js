@@ -28,7 +28,13 @@ describe("encodeSizeKey — identical to the POS encoder", () => {
       expect(encodeSizeKey(s)).not.toMatch(/\./);
     }
   });
-  it("passes non-strings through untouched (defensive)", () => {
+  it("coerces a NUMERIC half-size before encoding (no '.' leaks via a number)", () => {
+    expect(encodeSizeKey(5.5)).toBe("5_5");
+    expect(encodeSizeKey(10.5)).toBe("10_5");
+    expect(encodeSizeKey(12)).toBe("12");
+    expect(encodeSizeKey(5.5)).not.toMatch(/\./);
+  });
+  it("passes null/undefined through untouched (defensive)", () => {
     expect(encodeSizeKey(undefined)).toBe(undefined);
     expect(encodeSizeKey(null)).toBe(null);
   });
@@ -62,5 +68,8 @@ describe("stockCellPath — half-size /stock key is dot-free", () => {
     const path = stockCellPath("hub1", "pX", "12.5");
     expect(path.split("/").pop()).toBe("12_5");
     expect(path.split("/").pop()).not.toMatch(/\./);
+  });
+  it("encodes a numeric half-size too", () => {
+    expect(stockCellPath("hub1", "pX", 5.5)).toBe("stock/hub1/pX/5_5");
   });
 });
