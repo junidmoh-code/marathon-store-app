@@ -10,7 +10,7 @@
 // already at the destination. Transit visibility is intentionally gone — see
 // design/INVENTORY-DESIGN.md §2 (I4 amendment).
 //
-// Source defaults to warehouse1 (where stock is received) but any location → any
+// Source defaults to the main receiving warehouse but any location → any
 // location is allowed (flexible topology). Open Source refill requests can be
 // prefilled and are closed atomically on a successful transfer.
 
@@ -19,7 +19,7 @@ import { ref, update, push, child } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { useRefillRequests } from "./useStock";
-import { transferTargets, labelFor, warehouseLocations } from "./locations";
+import { transferTargets, labelFor, warehouseLocations, RECEIVING_DEFAULT } from "./locations";
 import { Toast, Empty } from "./widgets";
 import { GLASS, CARD, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, BORDER, RADIUS, FONT, input, bGreen, bGhost } from "./ui";
 
@@ -36,7 +36,7 @@ export default function Transfer({ products, registry, actorRole }) {
   const [openId, setOpenId] = useState(null);     // expanded product id
   const [basket, setBasket] = useState({});       // { pid__size: { productId, productName, size, qty } }
   const [refillId, setRefillId] = useState(null); // fulfilling a Source refill
-  const [from, setFrom] = useState("warehouse1");
+  const [from, setFrom] = useState(RECEIVING_DEFAULT);
   const [to, setTo] = useState("");
   const [picking, setPicking] = useState(false);  // destination sheet open
   const [busy, setBusy] = useState(false);

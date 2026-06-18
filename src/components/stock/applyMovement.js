@@ -7,6 +7,7 @@
 // CELL EFFECTS by movement type (a "relocation" touches TWO cells in one atomic op
 // so stock is never invisible — in-transit is a real holding, not a gap):
 //   received     → +to
+//   opening      → +to   (one-time opening balance; additive into the cell)
 //   sold         → −from
 //   return       → +to
 //   adjustment   → +to (positive) OR −from (negative)
@@ -33,7 +34,7 @@
 import { ref, child, get, update, push } from "firebase/database";
 import { database, auth } from "../../firebase";
 
-const VALID_TYPES = new Set(["received", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
+const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
 
 function emptyLink(link) {
   return { orderId: null, transferId: null, refillId: null, saleId: null, deviceId: null, ...(link || {}) };
@@ -45,6 +46,7 @@ function cellDeltas(m) {
   const q = Number(m.qty);
   switch (m.type) {
     case "received":     return m.to   ? [{ loc: m.to,   delta: +q }] : null;
+    case "opening":      return m.to   ? [{ loc: m.to,   delta: +q }] : null;
     case "return":       return m.to   ? [{ loc: m.to,   delta: +q }] : null;
     case "sold":         return m.from ? [{ loc: m.from, delta: -q }] : null;
     case "adjustment":   return m.to ? [{ loc: m.to, delta: +q }] : (m.from ? [{ loc: m.from, delta: -q }] : null);
@@ -97,6 +99,16 @@ export async function applyMovement(movement, opts = {}) {
       cells.push({ path, cell, newQty });
     }
 
+    // Per-cell old→new snapshot for the audit trail, keyed by location so a two-cell
+    // relocation (transfer) is unambiguous. Derived from the SAME reads that compute
+    // the write, so the ledger's before/after can never disagree with the qty it wrote.
+    const before = {}, after = {};
+    cells.forEach((c, i) => {
+      const loc = deltas[i].loc;
+      before[loc] = c.cell && typeof c.cell.qty === "number" ? c.cell.qty : 0;
+      after[loc]  = c.newQty;
+    });
+
     const now = new Date().toISOString();
     const mv = {
       type: movement.type,
@@ -105,6 +117,8 @@ export async function applyMovement(movement, opts = {}) {
       qty: Number(movement.qty),
       from: movement.from ?? null,
       to: movement.to ?? null,
+      before,                            // { loc: qty before } — old→new audit trail
+      after,                             // { loc: qty after  }
       actor: user.uid,
       actorRole: movement.actorRole ?? null,
       ts: movement.ts || now,            // REAL event time (offline sale time, not sync time)

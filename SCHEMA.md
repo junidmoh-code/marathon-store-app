@@ -218,13 +218,17 @@ back to the seed. Write: `stockRole === "admin"` only.
 | Field | Type | Notes |
 |-------|------|-------|
 | `id` | string | mirror of key |
-| `label` | string | display name — `warehouse1` is **"Warehouse One"**, `hub2b` "Hub 2B", `marathon-pe` "Marathon PE" |
+| `label` | string | display name — e.g. `studio` "Studio", `marathon-pe` "Marathon PE", `marathon-pine` "Pine" |
 | `kind` | `"warehouse" \| "store" \| "transit"` | |
 | `sellable` | boolean | POS may ring a sale here |
 | `active` | boolean | |
 
-Registry: `warehouse1` (top-of-chain receiving), `hub1`, `hub2`, `hub2b`, `hub3`,
-`hubC`, `marathon-pe`, `marathon-pine`, `trophy`, `in_transit`.
+Registry (`DEFAULT_LOCATIONS`): receiving warehouses `studio`, `central`, `base`;
+hubs `hub1`, `hub2`, `hub3`; shops `marathon-pe` ("Marathon PE"), `trophy`,
+`marathon-pine` ("Pine"); plus `in_transit` (transfer backward-compat, excluded
+from the entry/transfer-target pickers). `RECEIVING_DEFAULT = "studio"` is the
+default for the inline product receive and the transfer source. Each location
+holds its own per-size count — the same product+size can differ across locations.
 
 ## `/stock/{locationId}/{productId}/{size}` — balance cell
 
@@ -248,17 +252,19 @@ Create-only, immutable; `movementId` is the idempotency key. `actor` must equal
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `type` | `received \| sold \| return \| adjustment \| transfer_out \| transfer_in` | |
+| `type` | `received \| opening \| sold \| return \| adjustment \| transfer_out \| transfer_in` | `opening` = one-time opening balance (additive, like `received`) |
 | `productId` / `size` / `qty` | string / string / number (>0) | |
 | `from` / `to` | locationId \| null | |
+| `before` / `after` | `{ locationId: qty }` | old→new on-hand per affected cell (one loc for most movements; both cells for a transfer). Recorded by `applyMovement` from the same reads that compute the write, so the audit never disagrees with the cell. Absent on legacy entries written before this field. |
 | `actor` / `actorRole` | uid / string | |
 | `ts` / `appliedAt` | ISO | real event time / when it hit RTDB |
 | `reason` / `link` | string / object | `link = {orderId,transferId,refillId,saleId,deviceId}` |
 
-Cell effects: `received +to`, `sold −from`, `return +to`, `adjustment ±`,
-`transfer_out`/`transfer_in` `−from,+to`. **Write authz by `stockRole`:**
-`received → warehouse|admin`; `transfer_* → warehouse|store|admin`;
-`sold|return → pos|store|admin`; `adjustment → admin`.
+Cell effects: `received +to`, `opening +to`, `sold −from`, `return +to`,
+`adjustment ±`, `transfer_out`/`transfer_in` `−from,+to`. **Write authz by
+`stockRole`:** `received → warehouse|admin`; `opening → warehouse|admin`;
+`transfer_* → warehouse|store|admin`; `sold|return → pos|store|admin`;
+`adjustment → admin`.
 
 ### Receiving via the product-add form (rework)
 Opening stock is entered in the **admin product-add form** — an optional,
@@ -268,8 +274,23 @@ On save, entered quantities post as `received` movements into **`warehouse1`**.
 to permit `received` (`warehouse|admin`); if not, the product still saves and the
 receive soft-warns. **The same optional per-size receive is also on the product
 EDIT page** (`AdminProductDetail`) as its own action, so re-orders for existing
-products post `received → warehouse1` too. The standalone Receive screen is
+products post `received → RECEIVING_DEFAULT` too. The standalone Receive screen is
 retired.
+
+### Set Qty (admin, location-aware on-hand entry)
+The **Set Qty** Stock tab (`src/components/stock/SetQuantity.jsx`, admin-only) is
+the one screen for setting per-size on-hand: pick a product + **location**, see each
+size's current count at that location, type the new count. It writes the single
+`/stock/{loc}/{pid}/{size}` cell through `applyMovement` — same one writer and same
+cell every other screen (Locator, Count, POS, barcode card) reads — so
+entry/overview/detail can never disagree, and setting a count touches only the
+chosen location (each location keeps its own number). A **chip selects the movement
+type**: *Received* → `received`, *Opening balance* → `opening` (both additive — may
+only raise a count; a decrease is refused with a prompt to use Correction),
+*Stock-take* / *Correction* → `adjustment` (signed). The chip is the ledger reason
+(plus an optional note); every write records delta + before/after old→new. This is
+how stock is received (pick a receiving warehouse) and how one-time opening balances
+are entered. NOTE: the `opening` type requires the rules deploy below.
 
 ### One-step transfer (rework)
 A transfer is now a **single atomic `transfer_out`** movement carrying a real

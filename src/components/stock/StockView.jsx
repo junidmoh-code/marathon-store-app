@@ -15,6 +15,7 @@ import Locator from "./Locator";
 import Adjust from "./Adjust";
 import MovementHistory from "./MovementHistory";
 import CountSession from "./CountSession";
+import SetQuantity from "./SetQuantity";
 
 // Stock rework: Transfer (assistant-style, one-step) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
@@ -23,10 +24,14 @@ import CountSession from "./CountSession";
 const BASE_TABS = [
   ["transfer",  "Transfer"],
   ["locate",    "Where is it"],
+  ["setqty",    "Set Qty"],
   ["history",   "History"],
   ["adjust",    "Adjust"],
   ["count",     "Count"],
 ];
+
+// Tabs only an admin sees (writes gated by stockRole==admin at the rule layer too).
+const ADMIN_ONLY_TABS = new Set(["locate", "setqty"]);
 
 export default function StockView({ products = [], onExit }) {
   const { permRecord, isSuperAdmin } = usePermissions();
@@ -38,9 +43,9 @@ export default function StockView({ products = [], onExit }) {
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const isAdmin = actorRole === "admin";
 
-  // Locator is admin-only for now (expands later). Filter the tab set first so
-  // the default/clamp logic operates on the visible tabs.
-  const TABS = isAdmin ? BASE_TABS : BASE_TABS.filter(([k]) => k !== "locate");
+  // Drop admin-only tabs for non-admins. Filter the tab set first so the
+  // default/clamp logic operates on the visible tabs.
+  const TABS = isAdmin ? BASE_TABS : BASE_TABS.filter(([k]) => !ADMIN_ONLY_TABS.has(k));
 
   const [tabRaw, setTab] = usePersistedTab("stock", "transfer");
   // Guard against a stale/unknown persisted tab key rendering blank content.
@@ -67,6 +72,7 @@ export default function StockView({ products = [], onExit }) {
       <div style={{ padding: "4px 12px 40px" }}>
         {tab === "transfer" && <Transfer {...shared} />}
         {tab === "locate"   && isAdmin && <Locator {...shared} />}
+        {tab === "setqty"   && isAdmin && <SetQuantity {...shared} isAdmin={isAdmin} />}
         {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}
         {tab === "history"  && <MovementHistory {...shared} />}
         {tab === "count"    && <CountSession {...shared} />}

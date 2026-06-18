@@ -9,13 +9,25 @@ import { labelFor } from "./locations";
 import { Card, Field, ProductPicker, Empty } from "./widgets";
 import { GRAY, GREEN, RED, BLUE_L, BORDER } from "./ui";
 
-const SIGN = { received: "+", transfer_in: "+", return: "+", sold: "−", transfer_out: "−" };
-const COLOR = { received: GREEN, transfer_in: GREEN, return: GREEN, sold: RED, transfer_out: RED, adjustment: BLUE_L };
+const SIGN = { received: "+", opening: "+", transfer_in: "+", return: "+", sold: "−", transfer_out: "−" };
+const COLOR = { received: GREEN, opening: GREEN, transfer_in: GREEN, return: GREEN, sold: RED, transfer_out: RED, adjustment: BLUE_L };
 
 function when(ts) {
   if (!ts) return "";
   try { return new Date(ts).toLocaleString("en-ZA", { dateStyle: "short", timeStyle: "short" }); }
   catch { return ts; }
+}
+
+// old→new per affected location, from the before/after the writer records. One loc
+// for most movements; both cells for a transfer. Returns "" for legacy entries
+// written before before/after existed.
+function oldNew(m, registry) {
+  if (!m.before || !m.after) return "";
+  const locs = Object.keys(m.after);
+  if (!locs.length) return "";
+  return locs
+    .map(loc => `${labelFor(loc, registry)} ${m.before?.[loc] ?? "?"}→${m.after[loc]}`)
+    .join(" · ");
 }
 
 export default function MovementHistory({ products, registry }) {
@@ -47,6 +59,7 @@ export default function MovementHistory({ products, registry }) {
                 <span style={{ color: GRAY, marginLeft: 6 }}>size {m.size}</span>
               </div>
               <div style={{ fontSize: 11, color: GRAY, marginTop: 2 }}>{route}</div>
+              {oldNew(m, registry) && <div style={{ fontSize: 11, color: GRAY, marginTop: 2 }}>{oldNew(m, registry)}</div>}
               {m.reason && <div style={{ fontSize: 11, color: BLUE_L, marginTop: 2 }}>“{m.reason}”</div>}
               <div style={{ fontSize: 10, color: "rgba(255,255,255,.4)", marginTop: 2 }}>{when(m.ts)}</div>
             </div>
