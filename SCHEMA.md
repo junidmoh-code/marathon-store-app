@@ -251,6 +251,7 @@ Create-only, immutable; `movementId` is the idempotency key. `actor` must equal
 | `type` | `received \| sold \| return \| adjustment \| transfer_out \| transfer_in` | |
 | `productId` / `size` / `qty` | string / string / number (>0) | |
 | `from` / `to` | locationId \| null | |
+| `before` / `after` | `{ locationId: qty }` | old→new on-hand per affected cell (one loc for most movements; both cells for a transfer). Recorded by `applyMovement` from the same reads that compute the write, so the audit never disagrees with the cell. Absent on legacy entries written before this field. |
 | `actor` / `actorRole` | uid / string | |
 | `ts` / `appliedAt` | ISO | real event time / when it hit RTDB |
 | `reason` / `link` | string / object | `link = {orderId,transferId,refillId,saleId,deviceId}` |
@@ -270,6 +271,14 @@ receive soft-warns. **The same optional per-size receive is also on the product
 EDIT page** (`AdminProductDetail`) as its own action, so re-orders for existing
 products post `received → warehouse1` too. The standalone Receive screen is
 retired.
+
+### Set Qty (admin direct on-hand entry)
+The **Set Qty** Stock tab (`src/components/stock/SetQuantity.jsx`, admin-only) lets
+an admin type the target on-hand per size for a product at a location. Each changed
+size posts an `adjustment` (delta = target − current) through `applyMovement` — the
+same one writer and same `/stock/{loc}/{pid}/{size}` cell every other screen reads,
+so entry/overview/detail can never disagree. Current on-hand shown is the live
+cell. A reason is required (the `adjustment` rule also enforces `stockRole==admin`).
 
 ### One-step transfer (rework)
 A transfer is now a **single atomic `transfer_out`** movement carrying a real

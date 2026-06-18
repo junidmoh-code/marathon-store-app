@@ -97,6 +97,16 @@ export async function applyMovement(movement, opts = {}) {
       cells.push({ path, cell, newQty });
     }
 
+    // Per-cell old→new snapshot for the audit trail, keyed by location so a two-cell
+    // relocation (transfer) is unambiguous. Derived from the SAME reads that compute
+    // the write, so the ledger's before/after can never disagree with the qty it wrote.
+    const before = {}, after = {};
+    cells.forEach((c, i) => {
+      const loc = deltas[i].loc;
+      before[loc] = c.cell && typeof c.cell.qty === "number" ? c.cell.qty : 0;
+      after[loc]  = c.newQty;
+    });
+
     const now = new Date().toISOString();
     const mv = {
       type: movement.type,
@@ -105,6 +115,8 @@ export async function applyMovement(movement, opts = {}) {
       qty: Number(movement.qty),
       from: movement.from ?? null,
       to: movement.to ?? null,
+      before,                            // { loc: qty before } — old→new audit trail
+      after,                             // { loc: qty after  }
       actor: user.uid,
       actorRole: movement.actorRole ?? null,
       ts: movement.ts || now,            // REAL event time (offline sale time, not sync time)
