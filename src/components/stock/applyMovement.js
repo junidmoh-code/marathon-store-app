@@ -33,6 +33,7 @@
 
 import { ref, child, get, update, push } from "firebase/database";
 import { database, auth } from "../../firebase";
+import { stockCellPath } from "../../utils/sizeKey";
 
 const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
 
@@ -87,7 +88,10 @@ export async function applyMovement(movement, opts = {}) {
     // Read every involved cell.
     const cells = [];
     for (const d of deltas) {
-      const path = `stock/${d.loc}/${movement.productId}/${movement.size}`;
+      // Encode the size into the cell key — "." (half-sizes) is illegal in RTDB
+      // keys and would reject the write. Same path for the read here and the write
+      // below (c.path). Matches the POS encoding so both apps key /stock alike.
+      const path = stockCellPath(d.loc, movement.productId, movement.size);
       const snap = await get(child(ref(database), path));
       const cell = snap.val();
       const curQty = cell && typeof cell.qty === "number" ? cell.qty : 0;
@@ -163,7 +167,7 @@ export async function setCellState(loc, productId, size, state) {
   const user = auth.currentUser;
   if (!user) return { ok: false, reason: "not_authenticated" };
   if (!["untracked", "counting", "live"].includes(state)) return { ok: false, reason: "invalid_state" };
-  const cellPath = `stock/${loc}/${productId}/${size}`;
+  const cellPath = stockCellPath(loc, productId, size);   // encoded size key (half-size safe)
   const now = new Date().toISOString();
   const snap = await get(child(ref(database), cellPath));
   const updates = {};

@@ -232,6 +232,15 @@ holds its own per-size count — the same product+size can differ across locatio
 
 ## `/stock/{locationId}/{productId}/{size}` — balance cell
 
+> **`{size}` is the ENCODED, dot-free size key** (`encodeSizeKey`, `src/utils/sizeKey.js`):
+> `"."`, `"#"`, `"$"`, `"/"`, `"["`, `"]"` and whitespace → `"_"`, so a half-size
+> shoe keys as `…/5_5` (RTDB rejects a `"."` in a key). This is the SAME encoding
+> marathon-pos-app uses for `/inventory` (its `src/shared/sizeKey.js`, PR #36), so
+> both apps key per-size stock identically. `applyMovement`/`setCellState` encode on
+> write (via `stockCellPath`); `useStockCells` decodes back to the raw size on read,
+> so callers index by the real size (`"5.5"`). The `/stock_movements` ledger keeps
+> the RAW size (it's a value there, not a key).
+
 | Field | Type | Notes |
 |-------|------|-------|
 | `qty` | number (int) | on-hand; **only a `sold` decrement may go negative** |

@@ -4,10 +4,11 @@
 // rules require auth != null — a listener registered before sign-in is rejected
 // and does NOT auto-retry on permission errors.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ref, onValue } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
+import { decodeSizeKey } from "../../utils/sizeKey";
 
 function useAuthReady() {
   const [ready, setReady] = useState(() => !!auth.currentUser);
@@ -38,12 +39,33 @@ export function useLocations() {
   return usePath("locations") || {};
 }
 
-// /stock -> nested { loc: { productId: { size: cell } } }. Optionally scope to a
-// single location to keep the payload small.
+// Decode the size-level keys of a { productId: { sizeKey: cell } } map back to raw
+// sizes, so callers index by the real size ("5.5"), not the stored encoded key
+// ("5_5"). The write side (applyMovement) encodes; this is the matching decode so
+// every display consumer keeps working unchanged.
+function decodeByProduct(byProduct) {
+  const out = {};
+  for (const pid of Object.keys(byProduct || {})) {
+    const bySize = byProduct[pid] || {};
+    const dec = {};
+    for (const k of Object.keys(bySize)) dec[decodeSizeKey(k)] = bySize[k];
+    out[pid] = dec;
+  }
+  return out;
+}
+
+// /stock -> nested { loc: { productId: { size: cell } } } with size keys DECODED to
+// raw sizes. Optionally scope to a single location to keep the payload small.
 export function useStockCells(locationId) {
   const path = locationId ? `stock/${locationId}` : "stock";
   const val = usePath(path);
-  return val || {};
+  return useMemo(() => {
+    if (!val) return {};
+    if (locationId) return decodeByProduct(val);                 // { pid: { size: cell } }
+    const out = {};                                             // { loc: { pid: { size: cell } } }
+    for (const loc of Object.keys(val)) out[loc] = decodeByProduct(val[loc]);
+    return out;
+  }, [val, locationId]);
 }
 
 // /stock_movements -> array sorted newest-first. Optionally filter by productId.
