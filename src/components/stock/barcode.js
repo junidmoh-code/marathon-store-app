@@ -22,6 +22,8 @@
 // number is NEVER reserved for a size that already has one, and a stored code is
 // NEVER overwritten. See barcodeStore.ensureBarcode for the transaction guards.
 
+import { encodeSizeKey } from "../../utils/sizeKey";
+
 export const BARCODE_DIGITS = 8;
 export const BARCODE_MAX = 99999999; // 8-digit zero-padded ceiling (mirrors App.jsx)
 
@@ -54,11 +56,15 @@ export function nextBarcodeFromMeta(currentMeta) {
   return { next, code: formatBarcode(next) };
 }
 
-// Firebase keys cannot contain . $ # [ ] / — sizes can ("5.5"). The STORED VALUE
-// and the reverse index keep the RAW size; only the per-size storage KEY under
-// /products/{id}/barcodes/{KEY} is encoded (dots → "-", e.g. "5.5" -> "5-5").
+// Firebase keys cannot contain . $ # [ ] / (or whitespace) — sizes can ("5.5").
+// The STORED VALUE and the reverse index keep the RAW size; only the per-size
+// storage KEY under /products/{id}/barcodes/{KEY} is encoded. Uses the ONE
+// canonical encoder (encodeSizeKey, shared with /stock and the POS): "5.5" → "5_5".
+// One-size / null / empty → the "_" sentinel (same as /stock's stockSizeKey), so
+// per-size barcode keys can never disagree with the /stock cell they belong to.
 export function barcodeSizeKey(size) {
-  return String(size).replace(/[.$#[\]/]/g, "-");
+  if (size == null || size === "") return "_";
+  return encodeSizeKey(size);
 }
 
 // ─── Code 128 (subset B) encoder ──────────────────────────────────────────────

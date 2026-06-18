@@ -74,15 +74,21 @@ describe("nextBarcodeFromMeta — shared sequential counter", () => {
   });
 });
 
-describe("barcodeSizeKey — Firebase-safe storage key (raw size kept in value/index)", () => {
+describe("barcodeSizeKey — canonical encoder, shared with /stock + POS", () => {
   it("leaves dot-free sizes untouched", () => {
     expect(barcodeSizeKey("M")).toBe("M");
     expect(barcodeSizeKey("XXL")).toBe("XXL");
     expect(barcodeSizeKey("10")).toBe("10");
   });
-  it("encodes the illegal '.' (decimal sneaker sizes)", () => {
-    expect(barcodeSizeKey("5.5")).toBe("5-5");
-    expect(barcodeSizeKey("10.5")).toBe("10-5");
+  it("encodes the illegal '.' as '_' (half-sizes) — matches /stock + POS, NOT the old '-'", () => {
+    expect(barcodeSizeKey("5.5")).toBe("5_5");
+    expect(barcodeSizeKey("10.5")).toBe("10_5");
+    expect(barcodeSizeKey("5.5")).not.toMatch(/-/);
+  });
+  it("maps one-size / null / empty to the '_' sentinel (cell parity with /stock)", () => {
+    expect(barcodeSizeKey(null)).toBe("_");
+    expect(barcodeSizeKey(undefined)).toBe("_");
+    expect(barcodeSizeKey("")).toBe("_");
   });
 });
 
