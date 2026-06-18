@@ -14,7 +14,8 @@ import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import StockView from "./components/stock/StockView";
 import { applyMovement } from "./components/stock/applyMovement";
-import { RECEIVING_DEFAULT } from "./components/stock/locations";
+import { RECEIVING_DEFAULT, sellableLocations, labelFor } from "./components/stock/locations";
+import { useStockCells, useLocations } from "./components/stock/useStock";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
@@ -2626,6 +2627,104 @@ function ClothingCard({ product, onAdd, onViewPhoto }) {
   );
 }
 
+// ─── SHOP STOCK (read-only) ───────────────────────────────────────────────────
+// Splits the old single shop view into the three physical shops — Marathon PE,
+// Trophy, Pine — each reading its OWN /stock/{shopId} location (the sellable
+// store locations from the registry: marathon-pe / trophy / marathon-pine). This
+// is visibility ONLY: per-size on-hand per shop, no writes, no movement logic,
+// and entirely separate from the Central/Pine order-routing toggle (which is
+// unchanged). Reads the same /stock cells the Set Qty / Locator / POS use, so the
+// numbers can't disagree.
+function ShopStockList({ shopId, products, registry }) {
+  const cells = useStockCells(shopId);   // /stock/{shopId} → { pid: { size: cell } }
+  const rows = useMemo(() => {
+    return [...(products || [])]
+      .filter(p => p && p.id && p.name && cells?.[p.id])
+      .map(p => {
+        const bySize = cells[p.id] || {};
+        const sizes = Object.keys(bySize)
+          .map(sz => ({ sz, qty: typeof bySize[sz]?.qty === "number" ? bySize[sz].qty : 0 }))
+          .sort((a, b) => String(a.sz).localeCompare(String(b.sz), undefined, { numeric: true }));
+        return { id: p.id, name: p.name, sizes, total: sizes.reduce((s, x) => s + x.qty, 0) };
+      })
+      .filter(r => r.sizes.length > 0)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [cells, products]);
+
+  if (!rows.length) {
+    return (
+      <div style={{ color:"rgba(255,255,255,.4)", fontSize:12.5, textAlign:"center", padding:"16px 8px" }}>
+        No stock recorded at {labelFor(shopId, registry)} yet.
+      </div>
+    );
+  }
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+      {rows.map(r => (
+        <div key={r.id} style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(60,110,255,.15)", borderRadius:10, padding:"9px 11px" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:5 }}>
+            <span style={{ color:"#fff", fontSize:13, fontWeight:600 }}>{r.name}</span>
+            <span style={{ color:"rgba(255,255,255,.45)", fontSize:11 }}>{r.total} on hand</span>
+          </div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+            {r.sizes.map(({ sz, qty }) => (
+              <span key={sz} style={{ fontSize:11, color: qty > 0 ? "#fff" : "rgba(255,255,255,.35)",
+                background: qty > 0 ? "rgba(60,110,255,.12)" : "rgba(255,255,255,.03)",
+                border:"1px solid rgba(60,110,255,.18)", borderRadius:7, padding:"2px 7px" }}>
+                {sz}: {qty}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ShopStockPanel({ products }) {
+  const [open, setOpen] = useState(false);
+  const registry = useLocations();
+  const shops = sellableLocations(registry);   // marathon-pe, trophy, marathon-pine
+  const [shopId, setShopId] = useState(() => shops[0]?.id || "marathon-pe");
+  useEffect(() => {
+    if (shops.length && !shops.some(s => s.id === shopId)) setShopId(shops[0].id);
+  }, [shops, shopId]);
+
+  return (
+    <div style={{ padding:"0 14px 8px" }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
+                 background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12,
+                 padding:"10px 14px", color:"#fff", cursor:"pointer", fontSize:12.5, fontWeight:700 }}>
+        <span>Shop stock <span style={{ color:"rgba(255,255,255,.4)", fontWeight:500 }}>· view only</span></span>
+        <span style={{ color:"#6A9FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s" }}>▸</span>
+      </button>
+      {open && (
+        <div style={{ marginTop:8 }}>
+          {/* Three shops — the split of the old single combined view. Each reads
+              its own /stock location below. */}
+          <div style={{ display:"flex", justifyContent:"center", marginBottom:10 }}>
+            <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
+              {shops.map(s => {
+                const on = shopId === s.id;
+                return (
+                  <button key={s.id} onClick={() => setShopId(s.id)}
+                    style={{ padding:"6px 16px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
+                             background: on ? "rgba(60,110,255,.25)" : "transparent",
+                             color: on ? "#fff" : "rgba(255,255,255,.5)" }}>
+                    {labelFor(s.id, registry)}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <ShopStockList shopId={shopId} products={products} registry={registry} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AssistantView({ products, onExit, orders = [] }) {
   const [search, setSearch]                             = useState("");
   // Single 3-way mode selector (replaces the old Sneakers/Clothing toggle +
@@ -3127,6 +3226,10 @@ function AssistantView({ products, onExit, orders = [] }) {
           Store refill — set quantities per size
         </div>
       )}
+
+      {/* Read-only per-shop stock (Marathon PE / Trophy / Pine) — visibility only,
+          separate from the Central/Pine order toggle above. */}
+      <ShopStockPanel products={products} />
 
       {/* PLACE ORDER HERO */}
       <div style={{ position:"relative", width:"100%", height:160, overflow:"hidden", marginBottom:4 }}>
