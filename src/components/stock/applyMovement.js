@@ -7,6 +7,7 @@
 // CELL EFFECTS by movement type (a "relocation" touches TWO cells in one atomic op
 // so stock is never invisible — in-transit is a real holding, not a gap):
 //   received     → +to
+//   opening      → +to   (one-time opening balance; additive into the cell)
 //   sold         → −from
 //   return       → +to
 //   adjustment   → +to (positive) OR −from (negative)
@@ -33,7 +34,7 @@
 import { ref, child, get, update, push } from "firebase/database";
 import { database, auth } from "../../firebase";
 
-const VALID_TYPES = new Set(["received", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
+const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
 
 function emptyLink(link) {
   return { orderId: null, transferId: null, refillId: null, saleId: null, deviceId: null, ...(link || {}) };
@@ -45,6 +46,7 @@ function cellDeltas(m) {
   const q = Number(m.qty);
   switch (m.type) {
     case "received":     return m.to   ? [{ loc: m.to,   delta: +q }] : null;
+    case "opening":      return m.to   ? [{ loc: m.to,   delta: +q }] : null;
     case "return":       return m.to   ? [{ loc: m.to,   delta: +q }] : null;
     case "sold":         return m.from ? [{ loc: m.from, delta: -q }] : null;
     case "adjustment":   return m.to ? [{ loc: m.to, delta: +q }] : (m.from ? [{ loc: m.from, delta: -q }] : null);

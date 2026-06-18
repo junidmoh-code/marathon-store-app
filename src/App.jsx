@@ -14,6 +14,7 @@ import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import StockView from "./components/stock/StockView";
 import { applyMovement } from "./components/stock/applyMovement";
+import { RECEIVING_DEFAULT } from "./components/stock/locations";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
@@ -1627,7 +1628,8 @@ function AdminView({ products, orders, onExit }) {
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   // Optional opening-stock receiving (Stock rework). Collapsed by default — when
   // collapsed the form behaves EXACTLY as before. Quantities are NEVER required;
-  // entered amounts write as `received` movements into warehouse1 on save.
+  // entered amounts write as `received` movements into the default receiving
+  // warehouse on save (the Stock → Set Qty screen can receive at any location).
   const [recvOpen, setRecvOpen] = useState(false);
   const [recvQtys, setRecvQtys] = useState({}); // { size: "n" }
   const [saving, setSaving] = useState(false);
@@ -1702,7 +1704,7 @@ function AdminView({ products, orders, onExit }) {
       await addProductToFirebase(newProduct);
 
       // Optional opening stock: if quantities were entered, write them as
-      // `received` movements into warehouse1 (main receiving warehouse) via
+      // `received` movements into the default receiving warehouse via
       // applyMovement — ledger-paired, never raw. The product is already saved,
       // so this NEVER blocks the save; a denied/failed movement (e.g. the user
       // lacks stockRole) only soft-warns and can be entered later.
@@ -1713,7 +1715,7 @@ function AdminView({ products, orders, onExit }) {
         if (recvEntries.length) {
           let recOk = 0, recFail = 0;
           for (const [size, n] of recvEntries) {
-            const res = await applyMovement({ type: "received", productId: id, size, qty: n, to: "warehouse1" });
+            const res = await applyMovement({ type: "received", productId: id, size, qty: n, to: RECEIVING_DEFAULT });
             res.ok ? recOk++ : recFail++;
           }
           if (recFail) {
@@ -2265,8 +2267,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   // Restock-existing (Stock rework): the same optional per-size receive as the
   // product-add form, for a product already in the system (re-orders arrive
   // constantly). Its own explicit action — independent of the edits above and
-  // never required. Posts `received` movements into warehouse1 via applyMovement;
-  // soft-warns (no block) if the user lacks the stockRole the rules require.
+  // never required. Posts `received` movements into the default receiving
+  // warehouse via applyMovement; soft-warns (no block) if the user lacks the
+  // stockRole the rules require.
   const [recvOpen, setRecvOpen] = useState(false);
   const [recvQtys, setRecvQtys] = useState({});
   const [recvBusy, setRecvBusy] = useState(false);
@@ -2280,7 +2283,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     setRecvBusy(true);
     let ok = 0, fail = 0;
     for (const [size, n] of entries) {
-      const res = await applyMovement({ type: "received", productId: product.id, size, qty: n, to: "warehouse1" });
+      const res = await applyMovement({ type: "received", productId: product.id, size, qty: n, to: RECEIVING_DEFAULT });
       res.ok ? ok++ : fail++;
     }
     setRecvBusy(false);

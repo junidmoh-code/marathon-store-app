@@ -9,8 +9,8 @@ import { labelFor } from "./locations";
 import { Card, Field, ProductPicker, Empty } from "./widgets";
 import { GRAY, GREEN, RED, BLUE_L, BORDER } from "./ui";
 
-const SIGN = { received: "+", transfer_in: "+", return: "+", sold: "−", transfer_out: "−" };
-const COLOR = { received: GREEN, transfer_in: GREEN, return: GREEN, sold: RED, transfer_out: RED, adjustment: BLUE_L };
+const SIGN = { received: "+", opening: "+", transfer_in: "+", return: "+", sold: "−", transfer_out: "−" };
+const COLOR = { received: GREEN, opening: GREEN, transfer_in: GREEN, return: GREEN, sold: RED, transfer_out: RED, adjustment: BLUE_L };
 
 function when(ts) {
   if (!ts) return "";

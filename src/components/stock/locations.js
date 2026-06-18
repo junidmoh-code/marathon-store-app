@@ -9,16 +9,21 @@
 // source of truth; useLocations() reads /locations live. Kept here so the seed and
 // the labels share one definition.
 
+// The physical location set. Receiving warehouses (Studio/Central/Base) take
+// inbound stock; hubs (1–3) are storage; shops are sellable. Each location holds
+// its own per-size count under /stock/{id}/{productId}/{size} — independent numbers
+// for the same product+size across locations. `in_transit` is kept for transfer
+// backward-compat (excluded from the entry/transfer-target pickers).
 export const DEFAULT_LOCATIONS = [
-  { id: "warehouse1",    label: "Warehouse One",  kind: "warehouse", sellable: false, active: true },
+  { id: "studio",        label: "Studio",         kind: "warehouse", sellable: false, active: true },
+  { id: "central",       label: "Central",        kind: "warehouse", sellable: false, active: true },
+  { id: "base",          label: "Base",           kind: "warehouse", sellable: false, active: true },
   { id: "hub1",          label: "Hub 1",          kind: "warehouse", sellable: false, active: true },
   { id: "hub2",          label: "Hub 2",          kind: "warehouse", sellable: false, active: true },
-  { id: "hub2b",         label: "Hub 2B",         kind: "warehouse", sellable: false, active: true },
   { id: "hub3",          label: "Hub 3",          kind: "warehouse", sellable: false, active: true },
-  { id: "hubC",          label: "Hub C",          kind: "warehouse", sellable: false, active: true },
   { id: "marathon-pe",   label: "Marathon PE",    kind: "store",     sellable: true,  active: true },
-  { id: "marathon-pine", label: "Marathon Pine",  kind: "store",     sellable: true,  active: true },
   { id: "trophy",        label: "Trophy",         kind: "store",     sellable: true,  active: true },
+  { id: "marathon-pine", label: "Pine",           kind: "store",     sellable: true,  active: true },
   { id: "in_transit",    label: "In Transit",     kind: "transit",   sellable: false, active: true },
 ];
 
@@ -47,3 +52,7 @@ export const warehouseLocations = (registry) => activeLocations(registry).filter
 export const transferTargets    = (registry) => activeLocations(registry).filter(l => l.id !== "in_transit");
 
 export const IN_TRANSIT = "in_transit";
+
+// Default receiving warehouse for the inline product-add/edit receive and the
+// transfer source default. The Set Qty screen lets the admin pick any location.
+export const RECEIVING_DEFAULT = "studio";
