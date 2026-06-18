@@ -19,7 +19,7 @@
 
 import { ref, get, set, runTransaction } from "firebase/database";
 import { database } from "../../firebase";
-import { isValidBarcode, nextBarcodeFromMeta, barcodeSizeKey } from "./barcode";
+import { isValidBarcode, nextBarcodeFromMeta, barcodeSizeKey, barcodeIndexRecord } from "./barcode";
 
 // Reserve the next 8-digit code from /products_meta.lastBarcode, atomically.
 // Only advances lastBarcode (sku is per-product, reserved elsewhere).
@@ -43,7 +43,8 @@ async function writeIndexIfMissing(code, productId, size) {
   if (!snap.exists()) {
     // Create-only at the rules layer (!data.exists()) — a concurrent winner's
     // write makes ours a rejected no-op; that's fine, the index already exists.
-    await set(idxRef, { productId, size, at: new Date().toISOString() });
+    // Unsized items omit the size field (see barcodeIndexRecord).
+    await set(idxRef, barcodeIndexRecord(productId, size, new Date().toISOString()));
   }
 }
 
@@ -57,11 +58,13 @@ async function tryWriteIndex(code, productId, size) {
 }
 
 // Returns { code, reused }. Permanent once assigned; safe under concurrency.
+// `size` may be null/empty for a one-size / unsized product — the slot keys at "_"
+// (barcodeSizeKey(null) → "_") and the reverse index omits the size field.
 export async function ensureBarcode(productId, size) {
-  if (!productId || size == null || size === "") {
-    throw new Error("ensureBarcode requires productId and size");
+  if (!productId) {
+    throw new Error("ensureBarcode requires productId");
   }
-  const sizeKey = barcodeSizeKey(size);
+  const sizeKey = barcodeSizeKey(size);   // "_" for unsized
   const slotPath = `products/${productId}/barcodes/${sizeKey}`;
 
   // 1. Reuse-if-present (no number burned, no overwrite). Index write is

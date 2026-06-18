@@ -12,6 +12,7 @@ import {
   reuseOrNull,
   nextBarcodeFromMeta,
   barcodeSizeKey,
+  barcodeIndexRecord,
   code128Symbols,
   code128Modules,
 } from "./barcode";
@@ -89,6 +90,36 @@ describe("barcodeSizeKey — canonical encoder, shared with /stock + POS", () =>
     expect(barcodeSizeKey(null)).toBe("_");
     expect(barcodeSizeKey(undefined)).toBe("_");
     expect(barcodeSizeKey("")).toBe("_");
+  });
+});
+
+describe("barcodeIndexRecord — /barcodes/{code} reverse-index shape", () => {
+  it("sized: carries the RAW size value (half-size + S–XXL)", () => {
+    expect(barcodeIndexRecord("p1", "5.5", "T")).toEqual({ productId: "p1", at: "T", size: "5.5" });
+    expect(barcodeIndexRecord("p1", "M", "T")).toEqual({ productId: "p1", at: "T", size: "M" });
+    expect(barcodeIndexRecord("p1", "XXL", "T")).toEqual({ productId: "p1", at: "T", size: "XXL" });
+  });
+  it("unsized: OMITS the size field entirely (not null, not '')", () => {
+    for (const unsized of [null, undefined, ""]) {
+      const rec = barcodeIndexRecord("cap-1", unsized, "T");
+      expect(rec).toEqual({ productId: "cap-1", at: "T" });
+      expect("size" in rec).toBe(false);   // resolver reads missing size as null
+    }
+  });
+});
+
+describe("unsized barcode end-to-end key+record contract", () => {
+  it("one-size product → slot keys at '_' AND index omits size (POS resolves to null)", () => {
+    // forward slot key
+    expect(barcodeSizeKey(null)).toBe("_");
+    // reverse index record the POS reads: no size → `barcode.size ?? null` → null,
+    // valid for a sizes:[] product (sizes.length === 0 ? size == null).
+    const rec = barcodeIndexRecord("cap-1", null, "T");
+    expect(rec.size).toBeUndefined();
+  });
+  it("sized product → encoded slot key, raw size in the record", () => {
+    expect(barcodeSizeKey("5.5")).toBe("5_5");
+    expect(barcodeIndexRecord("shoe-1", "5.5", "T").size).toBe("5.5");
   });
 });
 
