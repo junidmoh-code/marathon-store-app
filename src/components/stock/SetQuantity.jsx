@@ -23,7 +23,8 @@ import { applyMovement } from "./applyMovement";
 import { useStockCells } from "./useStock";
 import { transferTargets, RECEIVING_DEFAULT } from "./locations";
 import { Card, Field, ProductPicker, LocationPicker, NumberInput, TextInput, Toast, Empty } from "./widgets";
-import { GRAY, GREEN, RED, BLUE_L, bGreen, tabOn, tabOff } from "./ui";
+import { GRAY, GREEN, RED, BLUE_L, bGreen, bGhost, tabOn, tabOff } from "./ui";
+import BarcodePrint from "./BarcodePrint";
 
 // The chip IS the movement type + the ledger reason. `additive` types may only
 // raise a count (a receipt/opening can't reduce stock).
@@ -42,6 +43,8 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin }) 
   const [note, setNote] = useState("");            // optional detail appended to the chip reason
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+  const [lastSaved, setLastSaved] = useState(null); // { productId, productName, items:[{size,added}] }
+  const [printOpen, setPrintOpen] = useState(false);
 
   const intent = INTENTS.find(i => i.key === intentKey) || INTENTS[0];
   const product = useMemo(() => products.find(p => p.id === productId), [products, productId]);
@@ -89,7 +92,7 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin }) 
     const effReason = note.trim() ? `${intent.reason} — ${note.trim()}` : intent.reason;
 
     setBusy(true);
-    let ok = 0, fail = 0; const failed = [];
+    let ok = 0, fail = 0; const failed = []; const savedItems = [];
     try {
       for (const { size, delta } of pendingChanges) {
         // Additive (received/opening): always credit `to`; delta>0 is guaranteed by
@@ -108,7 +111,7 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin }) 
             cellState: "live",
             actorRole,
           });
-          if (res.ok) ok++;
+          if (res.ok) { ok++; savedItems.push({ size, added: Math.max(0, delta) }); }
           else { fail++; failed.push(`${size}: ${res.reason === "insufficient_stock" ? `only ${res.available} on hand` : res.reason}`); }
         } catch (err) {
           fail++; failed.push(`${size}: ${String(err?.message || err)}`);
@@ -117,7 +120,9 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin }) 
     } finally {
       setBusy(false);   // always reset, even if the loop throws unexpectedly
     }
-    if (!fail) { setTargets({}); setNote(""); flash("ok", `${intent.label}: ${ok} size${ok > 1 ? "s" : ""} updated`); }
+    // Offer barcode printing for the sizes that saved (count defaults to units added).
+    if (savedItems.length) setLastSaved({ productId: product.id, productName: product.name, items: savedItems });
+    if (!fail) { setTargets({}); setNote(""); flash("ok", `${intent.label}: ${ok} size${ok > 1 ? "s" : ""} updated — print barcodes below`); }
     else flash("err", `${ok} done, ${fail} failed — ${failed.join("; ")}`);
   };
 
@@ -127,7 +132,7 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin }) 
     <div>
       <Card>
         <Field label="Product">
-          <ProductPicker products={products} value={productId} onChange={(v) => { setProductId(v); setTargets({}); }} />
+          <ProductPicker products={products} value={productId} onChange={(v) => { setProductId(v); setTargets({}); setLastSaved(null); }} />
         </Field>
         <Field label="Location">
           <LocationPicker registry={registry} value={loc} onChange={(v) => { setLoc(v); setTargets({}); }} filter={transferTargets} />
@@ -191,7 +196,21 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin }) 
             “now” = current on-hand at this location only (the one source of truth). Each change is recorded with
             old→new and the reason as a <span style={{ color: BLUE_L }}>{intent.type}</span> movement.
           </div>
+
+          {lastSaved && product && lastSaved.productId === product.id && (
+            <button onClick={() => setPrintOpen(true)} style={{ ...bGhost, width: "100%", marginTop: 10 }}>
+              🏷️ Print barcodes — {lastSaved.items.length} size{lastSaved.items.length > 1 ? "s" : ""} just saved
+            </button>
+          )}
         </Card>
+      )}
+
+      {printOpen && lastSaved && (
+        <BarcodePrint
+          product={{ id: lastSaved.productId, name: lastSaved.productName }}
+          items={lastSaved.items}
+          onClose={() => setPrintOpen(false)}
+        />
       )}
 
       <Toast msg={toast} />
