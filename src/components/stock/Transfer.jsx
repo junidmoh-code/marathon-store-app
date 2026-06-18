@@ -10,16 +10,18 @@
 // already at the destination. Transit visibility is intentionally gone — see
 // design/INVENTORY-DESIGN.md §2 (I4 amendment).
 //
-// Source defaults to the main receiving warehouse but any location → any
-// location is allowed (flexible topology). Open Source refill requests can be
-// prefilled and are closed atomically on a successful transfer.
+// Source defaults to the main receiving warehouse, but BOTH source and
+// destination can be any of the 9 stock locations (warehouses, hubs, shops) —
+// warehouse→hub, hub→shop, warehouse→shop direct, any→any (flexible topology, no
+// routing constraints). Open Source refill requests can be prefilled and are
+// closed atomically on a successful transfer.
 
 import React, { useState, useMemo } from "react";
 import { ref, update, push, child } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { useRefillRequests } from "./useStock";
-import { transferTargets, labelFor, warehouseLocations, RECEIVING_DEFAULT } from "./locations";
+import { transferTargets, labelFor, RECEIVING_DEFAULT } from "./locations";
 import { Toast, Empty } from "./widgets";
 import { GLASS, CARD, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, BORDER, RADIUS, FONT, input, bGreen, bGhost } from "./ui";
 
@@ -198,8 +200,10 @@ export default function Transfer({ products, registry, actorRole }) {
             <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", marginBottom: 12 }}>Transfer {totalUnits} unit(s)</div>
 
             <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 6 }}>From</div>
+            {/* Any of the 9 locations may be a source (shops included), except the
+                chosen destination. To excludes the source below — so from ≠ to. */}
             <select value={from} onChange={e => setFrom(e.target.value)} style={{ ...input, width: "100%", appearance: "none", marginBottom: 14 }}>
-              {warehouseLocations(registry).map(l => <option key={l.id} value={l.id}>{labelFor(l.id, registry)}</option>)}
+              {transferTargets(registry).filter(l => l.id !== to).map(l => <option key={l.id} value={l.id}>{labelFor(l.id, registry)}</option>)}
             </select>
 
             <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 6 }}>To</div>
