@@ -67,6 +67,18 @@ export function barcodeSizeKey(size) {
   return encodeSizeKey(size);
 }
 
+// Reverse-index record for /barcodes/{code}. Sized items carry the RAW size value
+// (matching products.sizes exactly, e.g. "5.5"/"M"); UNSIZED items (one-size /
+// accessories) OMIT the size field entirely — NOT null (RTDB drops null children)
+// and NOT "" — so the POS resolver reads a missing size as unsized
+// (`barcode.size ?? null` → null, valid for a sizes:[] product). `at` is passed in
+// to keep this pure/testable.
+export function barcodeIndexRecord(productId, size, at) {
+  const rec = { productId, at };
+  if (size != null && size !== "") rec.size = size;   // RAW size; omitted for unsized
+  return rec;
+}
+
 // ─── Code 128 (subset B) encoder ──────────────────────────────────────────────
 // Standard 107-pattern table (indices 0–102 data, 103 StartA, 104 StartB,
 // 105 StartC, 106 Stop). Each entry is the 6 (Stop: 7) module widths, alternating

@@ -71,7 +71,8 @@
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "$code": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && !data.exists()",
-        ".validate": "newData.hasChildren(['productId','size']) && root.child('products').child(newData.child('productId').val()).exists()"
+        ".validate": "newData.hasChildren(['productId']) && root.child('products').child(newData.child('productId').val()).exists()",
+        "size": { ".validate": "newData.isString() && newData.val().length > 0" }
       }
     },
     "restock_requests":        { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },

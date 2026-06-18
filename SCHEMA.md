@@ -105,11 +105,11 @@ inverse of `/products/{id}/barcodes/{sizeKey}`).
 | Field | Type | Notes |
 |-------|------|-------|
 | `productId` | string | the `/products` key |
-| `size` | string | the **raw** size (e.g. `"5.5"`, `"M"`) — not the encoded storage key |
+| `size` | string \| **absent** | the **raw** size (e.g. `"5.5"`, `"M"`) — not the encoded storage key. **OMITTED for one-size/unsized items** (NOT `null` — RTDB drops null children — and NOT `""`). The resolver reads a missing size as unsized: `barcode.size ?? null` → `null`, valid for a `sizes: []` product. |
 | `at` | ISO string | when the code was first reserved |
 
 `code` (the key) is the 8-digit value. **POS resolution:** scan → read
-`/barcodes/{code}` → `{ productId, size }` → sell + deduct the `/stock/{loc}/{pid}/{size}`
+`/barcodes/{code}` → `{ productId, size? }` → sell + deduct the `/stock/{loc}/{pid}/{size}`
 cell (a `sold` movement via `applyMovement`). The codes are opaque (sequential), so
 this lookup — not parsing — is the resolution path. **The scan-to-sell lookup is a
 separate POS build; this app writes the index so it will work.**
@@ -120,10 +120,12 @@ resolve here.
 
 **Rules:** create-only (`!data.exists()` → a code can never be re-pointed), write
 gated on `stockRole` existing, readable by any authed non-anon user (so the POS can
-resolve a scan), validated to require `productId`+`size` and an existing product.
-The index write is **best-effort off the reserve path**: a failure costs only POS
-resolvability (heals on the next ensure) and never blocks reserving/storing the code
-or the label/preview workflow.
+resolve a scan), validated to require **`productId` + an existing product** with
+`size` **optional** (a per-child `.validate` enforces a non-empty string only when
+`size` IS present — so a sized record validates fully while an unsized record omits
+it). The index write is **best-effort off the reserve path**: a failure costs only
+POS resolvability (heals on the next ensure) and never blocks reserving/storing the
+code or the label/preview workflow.
 
 ---
 
