@@ -114,6 +114,17 @@ cell (a `sold` movement via `applyMovement`). The codes are opaque (sequential),
 this lookup — not parsing — is the resolution path. **The scan-to-sell lookup is a
 separate POS build; this app writes the index so it will work.**
 
+**Only per-size codes are indexed** — the product-level `barcode` field is NOT
+written to `/barcodes`, so the POS build must not expect product-level codes to
+resolve here.
+
+**Rules:** create-only (`!data.exists()` → a code can never be re-pointed), write
+gated on `stockRole` existing, readable by any authed non-anon user (so the POS can
+resolve a scan), validated to require `productId`+`size` and an existing product.
+The index write is **best-effort off the reserve path**: a failure costs only POS
+resolvability (heals on the next ensure) and never blocks reserving/storing the code
+or the label/preview workflow.
+
 ---
 
 ## `/orders/{orderId}`

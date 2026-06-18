@@ -34,12 +34,26 @@ export async function reserveNextBarcode() {
   return code;
 }
 
+// NIT: only PER-SIZE codes are indexed here. The product-level `barcode` field
+// (App.jsx reservation) is NOT written to /barcodes — per-size is the scan target,
+// so a POS scan resolves only per-size codes via this index.
 async function writeIndexIfMissing(code, productId, size) {
   const idxRef = ref(database, `barcodes/${code}`);
   const snap = await get(idxRef);
   if (!snap.exists()) {
+    // Create-only at the rules layer (!data.exists()) — a concurrent winner's
+    // write makes ours a rejected no-op; that's fine, the index already exists.
     await set(idxRef, { productId, size, at: new Date().toISOString() });
   }
+}
+
+// Best-effort reverse-index write: NEVER on the ensure critical path. A failure
+// (rules reject / network / outage) costs only POS resolvability, which self-heals
+// on the next ensure (writeIndexIfMissing re-runs); it must never lose the
+// reserved/stored code or block the label/preview workflow.
+async function tryWriteIndex(code, productId, size) {
+  try { await writeIndexIfMissing(code, productId, size); }
+  catch { /* slot saved; index heals on next open */ }
 }
 
 // Returns { code, reused }. Permanent once assigned; safe under concurrency.
@@ -50,28 +64,33 @@ export async function ensureBarcode(productId, size) {
   const sizeKey = barcodeSizeKey(size);
   const slotPath = `products/${productId}/barcodes/${sizeKey}`;
 
-  // 1. Reuse-if-present (no number burned, no overwrite).
+  // 1. Reuse-if-present (no number burned, no overwrite). Index write is
+  //    best-effort — the stored code returns regardless.
   const existing = (await get(ref(database, slotPath))).val();
   if (isValidBarcode(existing)) {
-    await writeIndexIfMissing(existing, productId, size); // heal index if ever absent
+    await tryWriteIndex(existing, productId, size); // heal index if ever absent
     return { code: existing, reused: true };
   }
 
   // 2. Reserve a fresh number from the shared counter.
   const reserved = await reserveNextBarcode();
 
-  // 3. Claim the slot — abort (keep existing) if someone wrote it meanwhile.
-  const claim = await runTransaction(ref(database, slotPath), (cur) => (cur != null ? undefined : reserved));
+  // 3. Claim the slot — abort only if a VALID code already exists (matches the
+  //    reuse guard). A non-null-but-invalid/corrupt slot is claimable, so it
+  //    self-corrects instead of throwing forever.
+  const claim = await runTransaction(ref(database, slotPath), (cur) => (isValidBarcode(cur) ? undefined : reserved));
   const finalCode = claim.snapshot.val();
 
   if (claim.committed && finalCode === reserved) {
-    await writeIndexIfMissing(reserved, productId, size);
+    // We won the slot → the code is saved. Index write is best-effort: an outage
+    // costs only POS resolvability (heals next open), never the label/preview.
+    await tryWriteIndex(reserved, productId, size);
     return { code: reserved, reused: false };
   }
 
   // 4. Lost the claim → our `reserved` is burned (gap, OK). Reuse the winner's.
   if (isValidBarcode(finalCode)) {
-    await writeIndexIfMissing(finalCode, productId, size);
+    await tryWriteIndex(finalCode, productId, size);
     return { code: finalCode, reused: true };
   }
   throw new Error("Barcode slot claim failed unexpectedly");
