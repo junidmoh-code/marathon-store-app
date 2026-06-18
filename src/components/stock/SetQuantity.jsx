@@ -64,22 +64,32 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin }) 
 
     setBusy(true);
     let ok = 0, fail = 0; const failed = [];
-    for (const { size, delta } of pendingChanges) {
-      // delta>0 credits this location, delta<0 debits it — applyMovement takes a
-      // positive magnitude + a side. before/after old→new is recorded by the writer.
-      const res = await applyMovement({
-        type: "adjustment",
-        productId: product.id, size, qty: Math.abs(delta),
-        to: delta > 0 ? loc : null,
-        from: delta < 0 ? loc : null,
-        reason: reason.trim(),
-        cellState: "live",
-        actorRole,
-      });
-      if (res.ok) ok++;
-      else { fail++; failed.push(`${size}: ${res.reason === "insufficient_stock" ? `only ${res.available} on hand` : res.reason}`); }
+    try {
+      for (const { size, delta } of pendingChanges) {
+        // delta>0 credits this location, delta<0 debits it — applyMovement takes a
+        // positive magnitude + a side. before/after old→new is recorded by the writer.
+        // Per-size try/catch: applyMovement returns {ok:false} for handled failures,
+        // but its pre-write reads can still reject (permission/network) — a throw on
+        // one size must not abort the rest or strand the busy state.
+        try {
+          const res = await applyMovement({
+            type: "adjustment",
+            productId: product.id, size, qty: Math.abs(delta),
+            to: delta > 0 ? loc : null,
+            from: delta < 0 ? loc : null,
+            reason: reason.trim(),
+            cellState: "live",
+            actorRole,
+          });
+          if (res.ok) ok++;
+          else { fail++; failed.push(`${size}: ${res.reason === "insufficient_stock" ? `only ${res.available} on hand` : res.reason}`); }
+        } catch (err) {
+          fail++; failed.push(`${size}: ${String(err?.message || err)}`);
+        }
+      }
+    } finally {
+      setBusy(false);   // always reset, even if the loop throws unexpectedly
     }
-    setBusy(false);
     if (!fail) { setTargets({}); setReason(""); flash("ok", `Set ${ok} size${ok > 1 ? "s" : ""} — on-hand updated`); }
     else flash("err", `${ok} set, ${fail} failed — ${failed.join("; ")}`);
   };
