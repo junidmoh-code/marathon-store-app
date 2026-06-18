@@ -5,7 +5,7 @@
 // the same. Vectors below mirror the POS test suite exactly.
 
 import { describe, it, expect } from "vitest";
-import { encodeSizeKey, decodeSizeKey, stockCellPath } from "./sizeKey";
+import { encodeSizeKey, decodeSizeKey, stockSizeKey, stockCellPath } from "./sizeKey";
 
 describe("encodeSizeKey — identical to the POS encoder", () => {
   it("encodes half-sizes dot-free (the bug): '.' → '_'", () => {
@@ -57,7 +57,24 @@ describe("decodeSizeKey — round-trips real sizes", () => {
   });
 });
 
+describe("stockSizeKey — one-size / null / empty → '_' (cross-app sentinel)", () => {
+  it("maps null/undefined/empty to the '_' no-size sentinel (matches the POS)", () => {
+    expect(stockSizeKey(null)).toBe("_");
+    expect(stockSizeKey(undefined)).toBe("_");
+    expect(stockSizeKey("")).toBe("_");
+  });
+  it("encodes real sizes normally", () => {
+    expect(stockSizeKey("M")).toBe("M");
+    expect(stockSizeKey("5.5")).toBe("5_5");
+    expect(stockSizeKey(5.5)).toBe("5_5");
+  });
+});
+
 describe("stockCellPath — half-size /stock key is dot-free", () => {
+  it("keys a one-size item at the '_' sentinel (same cell the POS sale hits)", () => {
+    expect(stockCellPath("marathon-pe", "pONE", null)).toBe("stock/marathon-pe/pONE/_");
+    expect(stockCellPath("marathon-pe", "pONE", "")).toBe("stock/marathon-pe/pONE/_");
+  });
   it("encodes the size segment of the /stock path", () => {
     expect(stockCellPath("studio", "p1700000000000", "5.5")).toBe("stock/studio/p1700000000000/5_5");
   });

@@ -34,9 +34,19 @@ export function decodeSizeKey(key) {
   return key.replace(/(\d)_(\d)/g, "$1.$2");
 }
 
+// The /stock cell size key. A one-size / null / empty size maps to the "_"
+// sentinel — byte-identical to the POS (engineBuild.js: `size == null ? "_" :
+// encodeSizeKey(size)`), so a one-size item's POS sale and the store-app Set Qty
+// hit the SAME cell. Empty string is also folded to "_" (an empty RTDB key is
+// invalid). Everything else is dot-free-encoded.
+export function stockSizeKey(size) {
+  if (size == null || size === "") return "_";
+  return encodeSizeKey(size);
+}
+
 // The single construction point for a /stock balance-cell path. Every writer and
 // the read-modify path in applyMovement build the key through here, so a half-size
-// can never reach RTDB un-encoded.
+// or one-size can never reach RTDB un-encoded.
 export function stockCellPath(loc, productId, size) {
-  return `stock/${loc}/${productId}/${encodeSizeKey(size)}`;
+  return `stock/${loc}/${productId}/${stockSizeKey(size)}`;
 }
