@@ -4,6 +4,7 @@ const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
 const { toAuthPassword, usernameToEmail } = require("./lib/auth-utils.cjs");
+const reorderDemand = require("./lib/reorder-demand.cjs");
 
 // Initialise the admin SDK once at module scope. Required for Phase 13A's
 // analyzeReorderNeeds, which reads /products, /orders, /insights_log and writes
@@ -465,11 +466,23 @@ exports.sendBroadcast = onCall(
 // ─────────────────────────────────────────────────────────────────────────────
 // AI Reorder Planner — backend (Phase 13A + Phase 1 UI prep)
 // ─────────────────────────────────────────────────────────────────────────────
-// analyzeReorderNeeds is a Gen 2 admin-only callable that ingests the store's
-// full operational history (every product, every order, every insights_log
-// entry) and asks Claude Sonnet 4.6 to produce a structured reorder plan for
-// the upcoming 45-day cycle. The flow:
+// analyzeReorderNeeds is a Gen 2 admin-only callable that produces a structured
+// reorder plan and writes it to /insights/reorderPlan for the dashboard. Since
+// Phase 3 it runs in one of two modes:
 //
+//   • DEMAND-DRIVEN (primary, pure reasoner) — the client sends
+//     request.data.demand: TRUE DEMAND (sold + out-of-stock, per product AND per
+//     size) pre-computed by marathon-ai's shared demand engine and slimmed by
+//     buildReorderPayload. The function reasons over those aggregates and never
+//     re-derives demand. No catalog cap, OOS counted in every quantity, cycle =
+//     the real catalog window (demand.cycleDays). See lib/reorder-demand.cjs for
+//     the input contract and buildDemandDrivenPlan above.
+//   • LEGACY (fallback) — no `demand` supplied (cron / old client / unknown
+//     schema). The function reads /products, /orders, /insights_log itself and
+//     runs the old internal aggregation (aggregatePerProduct), capped at
+//     REORDER_TOP_N. Kept only as a safety net during rollout.
+//
+// Shared by both modes:
 //   1. Gate the call:
 //      a) /insights/reorderPlan/status — reject if state === "running" within
 //         REORDER_CONCURRENT_LOCK_MS (concurrent-run protection).
@@ -477,30 +490,20 @@ exports.sendBroadcast = onCall(
 //         REORDER_RATE_LIMIT_MS, unless the super-admin passes { force: true }.
 //   2. Write state = "running" to /insights/reorderPlan/status so the UI can
 //      reflect progress without holding the callable open for the full run.
-//   3. Read /products, /orders, /insights_log in parallel — no time filter.
-//   4. Aggregate per-product lifetime stats AND a recent-60-day slice so the
-//      model can weight recent trends without losing all-time signal. Also
-//      surface SLOW MOVERS — stocked products with little/no sales activity.
-//   5. Pre-filter out products with zero activity ever. If more than 200
-//      remain, sort by composite activity score and cap at the top 200,
-//      surfacing the pagination state in dataQualityNotes.
-//   6. Read the admin's businessContext memory (manually seeded via the
-//      Firebase console) and include it in the system prompt.
-//   7. Call Claude with a strict-JSON instruction and parse the response.
-//      One retry on parse failure with a tightening prompt.
-//   8. Write the full { plan, meta } to /insights/reorderPlan/latest so the
-//      UI can render from cache between runs (and survive 70 s callable
-//      client-timeouts — the UI fire-and-forgets the call and polls RTDB).
-//   9. Log token counts, cost estimate, and pagination state to
-//      /aiAssistant/usage/{YYYY-MM-DD}/{pushKey} — no API key, no full prompt.
-//  10. Write state = "idle" (or "error") to /insights/reorderPlan/status in a
-//      finally block so the UI is never left thinking a run is still active.
+//   3. Read the admin's businessContext memory and include it in the prompt.
+//   4. Call Claude (strict JSON, one parse retry per call/batch).
+//   5. persistReorderPlan → /insights/reorderPlan/latest (UI renders from cache,
+//      survives the 70 s callable client-timeout: fire-and-forget + poll RTDB).
+//   6. logReorderUsage → /aiAssistant/usage/{YYYY-MM-DD}/{pushKey}: token counts
+//      + cost only, no API key, no prompt.
+//   7. Write state = "idle" (or "error") to status in a finally block so the UI
+//      is never left thinking a run is still active.
 //
-// The callable still returns { plan, meta } on success for the rare case a
-// caller actually awaits — the UI doesn't, but the contract is preserved.
+// The callable still returns { plan, meta } on success for the rare awaited
+// caller — the UI doesn't await, but the contract is preserved.
 //
-// Sizing: this is a heavy-compute, owner-triggered tool. 1 GiB memory and
-// 900 s timeout cover full-history aggregation for typical catalog sizes.
+// Sizing: heavy-compute, owner-triggered. 1 GiB memory and 900 s timeout cover
+// batched demand reasoning / full-history aggregation for typical catalogs.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const anthropicApiKey = defineSecret("anthropic-api-key");
@@ -1031,6 +1034,187 @@ function extractJSON(text) {
   return null;
 }
 
+// ── Shared persist / usage-log helpers (used by BOTH the demand-driven and the
+//    legacy paths so the /latest cache and /aiAssistant/usage writes have one
+//    implementation). persistReorderPlan returns the persistFailed flag the
+//    finally block reads to choose status idle vs error.
+async function persistReorderPlan(db, { plan, meta, callerUid, durationMs }) {
+  try {
+    await db.ref(REORDER_LATEST_PATH).set({
+      plan: deepSanitizeRtdbKeys(plan),
+      meta,
+      generatedAt: Date.now(),
+      generatedBy: callerUid,
+      durationMs,
+    });
+    console.log(`analyzeReorderNeeds: Result cache written to /${REORDER_LATEST_PATH}`);
+    return { persistFailed: false, persistError: null };
+  } catch (err) {
+    const persistError = (err && err.message) || String(err);
+    console.warn("analyzeReorderNeeds: result cache write failed:", persistError);
+    return { persistFailed: true, persistError };
+  }
+}
+
+async function logReorderUsage(db, today, payload) {
+  try {
+    await db.ref(`aiAssistant/usage/${today}`).push(payload);
+  } catch (err) {
+    console.warn("analyzeReorderNeeds: usage log write failed:", err.message);
+  }
+}
+
+function estimateCostUSD(usage) {
+  const inputTokens  = (usage && usage.input_tokens)  || 0;
+  const outputTokens = (usage && usage.output_tokens) || 0;
+  return +(
+    (inputTokens  / 1e6) * PRICE_INPUT_PER_MTOK +
+    (outputTokens / 1e6) * PRICE_OUTPUT_PER_MTOK
+  ).toFixed(6);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEMAND-DRIVEN reasoner (Phase 3). Invoked when the client supplies
+// request.data.demand (schema v1, built by marathon-ai's buildReorderPayload).
+// This is the PURE-REASONER path: it never re-aggregates sales — it reasons over
+// the supplied true demand. The legacy internal-discovery path below remains as
+// the fallback for callers that don't send `demand` (cron, old client).
+//
+// Flow:
+//   1. Partition the supplied rows: active (has demand) / dormant (listed, no
+//      demand) / ignored (no demand, no sizes).
+//   2. Batch active+dormant across the WHOLE catalog (no TOP_N) and ask Claude
+//      for per-product recommendations only — quantities built from per-size
+//      true demand (OOS included), projected over demand.cycleDays.
+//   3. Compute summary / topSellers / sleepers / dataQualityNotes
+//      deterministically from the aggregates (never re-derived by the model).
+//   4. Merge → the same plan shape the dashboard already renders.
+// ─────────────────────────────────────────────────────────────────────────────
+const DEMAND_BATCH_CONCURRENCY = 3;
+
+// One Claude call for a batch, with a single parse-retry (mirrors the legacy
+// path's discipline). Returns { parsed, usage, retried }. Throws on API error so
+// the caller can record the batch as unanalysed without killing the whole run.
+async function callDemandBatch({ client, system, user }) {
+  let resp = await callClaude({ client, system, user });
+  let usage = resp.usage || { input_tokens: 0, output_tokens: 0 };
+  let parsed = extractJSON((resp.content || []).map(c => c.text || "").join(""));
+  let retried = false;
+  if (!parsed) {
+    retried = true;
+    const retryHint = "Your previous response was not valid JSON. Re-emit the entire response as a single JSON object with a `recommendations` array. No prose, no markdown, no code fences.";
+    resp = await callClaude({ client, system, user, retryHint });
+    const u2 = resp.usage || { input_tokens: 0, output_tokens: 0 };
+    usage = {
+      input_tokens:  (usage.input_tokens  || 0) + (u2.input_tokens  || 0),
+      output_tokens: (usage.output_tokens || 0) + (u2.output_tokens || 0),
+    };
+    parsed = extractJSON((resp.content || []).map(c => c.text || "").join(""));
+  }
+  return { parsed, usage, retried };
+}
+
+async function buildDemandDrivenPlan({ client, demand, businessContext }) {
+  const rows       = Array.isArray(demand.rows) ? demand.rows : [];
+  const coverage   = demand.coverage || {};
+  const totals     = demand.totals   || {};
+  const window     = demand.window ?? "all";
+  // cycleDays is the real catalog window from the engine; fall back defensively.
+  const cycleDays  = Number(demand.cycleDays)  > 0 ? Number(demand.cycleDays)  : REORDER_CYCLE_DAYS;
+  const recentDays = Number(demand.recentDays) > 0 ? Number(demand.recentDays) : REORDER_RECENT_DAYS;
+
+  const { active, dormant, ignored } = reorderDemand.partitionDemandRows(rows);
+
+  // Build homogeneous batches: all active first, then all dormant. Whole catalog,
+  // no cap — output token budget is bounded per batch, not by dropping the tail.
+  const activeSlim  = active.map(reorderDemand.slimActiveRow);
+  const dormantSlim = dormant.map(reorderDemand.slimDormantRow);
+  const batches = [
+    ...reorderDemand.chunk(activeSlim,  reorderDemand.DEMAND_BATCH_SIZE),
+    ...reorderDemand.chunk(dormantSlim, reorderDemand.DEMAND_BATCH_SIZE),
+  ];
+
+  const system = reorderDemand.demandSystemPrompt({ businessContext, cycleDays, recentDays, window });
+
+  let usage = { input_tokens: 0, output_tokens: 0 };
+  let parseRetries = 0;
+
+  const batchOutputs = await reorderDemand.mapWithConcurrency(
+    batches,
+    DEMAND_BATCH_CONCURRENCY,
+    async (batchRows, i) => {
+      const user = reorderDemand.buildBatchUserPayload({
+        cycleDays, recentDays, window,
+        batchIndex: i, batchCount: batches.length, rows: batchRows,
+      });
+      try {
+        const { parsed, usage: u, retried } = await callDemandBatch({ client, system, user });
+        usage = {
+          input_tokens:  usage.input_tokens  + (u.input_tokens  || 0),
+          output_tokens: usage.output_tokens + (u.output_tokens || 0),
+        };
+        if (retried) parseRetries += 1;
+        if (!parsed) {
+          console.warn(`analyzeReorderNeeds(demand): batch ${i} unparseable after retry (${batchRows.length} products) — flagged via post-merge diff`);
+          return null;
+        }
+        return parsed;
+      } catch (err) {
+        // API error on this batch — keep going. Its products surface as
+        // unanalysed via the post-merge diff (unanalyzedFromBatches), never
+        // silently dropped.
+        console.warn(`analyzeReorderNeeds(demand): batch ${i} failed (${err && err.message}); ${batchRows.length} products unanalysed`);
+        return null;
+      }
+    }
+  );
+
+  const recommendations = reorderDemand.mergeRecommendations(batchOutputs.filter(Boolean));
+
+  // Within-batch truncation guard: surface EVERY sent product that came back
+  // without a recommendation — a failed/unparsed batch OR a batch that parsed but
+  // returned fewer recs than its inputs (the model dropping the tail to fit the
+  // token budget). Diffing the full sent set against the merged recs is the single
+  // authoritative source, so the tail can never be silently dropped; it flows into
+  // dataQualityNotes below.
+  const unanalyzedProductIds = reorderDemand.unanalyzedFromBatches(batches.flat(), recommendations);
+
+  // If every batch failed (e.g. provider outage) and there was work to do, treat
+  // it as a hard failure so status flips to error rather than persisting an empty
+  // plan over a previously-good one.
+  if (batches.length > 0 && recommendations.length === 0) {
+    throw new HttpsError("internal", "Reorder analysis produced no recommendations (all batches failed).");
+  }
+
+  const plan = {
+    summary: reorderDemand.buildSummary({
+      totals, coverage, cycleDays,
+      activeCount: active.length, dormantCount: dormant.length,
+    }),
+    recommendations,
+    topSellers: reorderDemand.buildTopSellers(active),
+    sleepers:   reorderDemand.buildSleepers(active, recentDays),
+    dataQualityNotes: reorderDemand.buildDataQualityNotes({
+      coverage, ignoredCount: ignored.length, unanalyzedProductIds, window,
+    }),
+  };
+
+  return {
+    plan,
+    usage,
+    parseRetries,
+    cycleDays,
+    counts: {
+      catalogTotal:         coverage.catalogTotal ?? rows.length,
+      activeProductsTotal:  active.length,
+      dormantProductsTotal: dormant.length,
+      productsAnalyzed:     recommendations.length,
+      ignored:              ignored.length,
+      unanalyzed:           unanalyzedProductIds.length,
+    },
+  };
+}
+
 /**
  * analyzeReorderNeeds — AI-powered reorder analysis Cloud Function.
  *
@@ -1161,6 +1345,87 @@ exports.analyzeReorderNeeds = onCall(
     let persistFailed = false;
     let persistError  = null;
     try {
+      // ── Phase 3 branch: demand-driven (pure reasoner) vs legacy discovery.
+      //     When the client supplies request.data.demand at the recognised
+      //     schema version, reason over that true demand and skip ALL internal
+      //     aggregation. Otherwise fall through to the legacy path below
+      //     (cron / old client / unknown schema) — unchanged.
+      const suppliedDemand = request.data && request.data.demand;
+      const useDemand =
+        suppliedDemand &&
+        suppliedDemand.schemaVersion === reorderDemand.REORDER_DEMAND_SCHEMA_VERSION;
+
+      if (useDemand) {
+        // Only one RTDB read here (owner business context) — demand itself is
+        // supplied, so /products /orders /insights_log /returns_log are NOT read.
+        let businessContext = null;
+        try {
+          const ctxSnap = await db.ref("aiAssistant/memory/gunidmoh/businessContext").once("value");
+          businessContext = ctxSnap.val() || null;
+        } catch (err) {
+          console.warn("analyzeReorderNeeds(demand): businessContext read failed:", err.message);
+        }
+
+        const AnthropicCtor = Anthropic.default || Anthropic;
+        const client = new AnthropicCtor({ apiKey: anthropicApiKey.value() });
+
+        const { plan, usage, parseRetries, cycleDays, counts } =
+          await buildDemandDrivenPlan({ client, demand: suppliedDemand, businessContext });
+
+        const durationMs = Date.now() - startedAt;
+        const today = saDateStringFromMs(Date.now());
+        const inputTokens  = usage.input_tokens  || 0;
+        const outputTokens = usage.output_tokens || 0;
+        const estimatedCostUSD = estimateCostUSD(usage);
+
+        await logReorderUsage(db, today, {
+          timestamp: new Date().toISOString(),
+          callerEmail,
+          model: REORDER_MODEL,
+          source: "demand-engine",
+          demandSchemaVersion: reorderDemand.REORDER_DEMAND_SCHEMA_VERSION,
+          inputTokens,
+          outputTokens,
+          estimatedCostUSD,
+          productsAnalyzed: counts.productsAnalyzed,
+          activeProductsTotal: counts.activeProductsTotal,
+          dormantProductsTotal: counts.dormantProductsTotal,
+          catalogTotal: counts.catalogTotal,
+          unanalyzed: counts.unanalyzed,
+          parseRetries,
+          durationMs,
+        });
+
+        const meta = {
+          reportDate: today,
+          source: "demand-engine",
+          demandSchemaVersion: reorderDemand.REORDER_DEMAND_SCHEMA_VERSION,
+          cycleDays,
+          window: suppliedDemand.window ?? "all",
+          catalogTotal: counts.catalogTotal,
+          activeProductsTotal: counts.activeProductsTotal,
+          dormantProductsTotal: counts.dormantProductsTotal,
+          productsAnalyzed: counts.productsAnalyzed,
+          // No TOP_N cap anymore — the whole catalog is analysed. Kept (false) so
+          // the dashboard's existing meta reads stay defined.
+          paginatedActive: false,
+          paginatedDormant: false,
+          unanalyzedProducts: counts.unanalyzed,
+          coveragePct: (suppliedDemand.coverage && suppliedDemand.coverage.coveragePct) ?? null,
+          parseRetries,
+          durationMs,
+          inputTokens,
+          outputTokens,
+          estimatedCostUSD,
+        };
+
+        const pr = await persistReorderPlan(db, { plan, meta, callerUid, durationMs });
+        persistFailed = pr.persistFailed;
+        persistError  = pr.persistError;
+
+        return { plan, meta };
+      }
+
       // ── 2. Load full operational history in parallel.
       let productsSnap, ordersSnap, logsSnap, returnsSnap, contextSnap;
       try {
@@ -1325,36 +1590,31 @@ exports.analyzeReorderNeeds = onCall(
       // ── 5. Log usage (token counts + cost only — never the prompt or key).
       const inputTokens  = usage.input_tokens  || 0;
       const outputTokens = usage.output_tokens || 0;
-      const estimatedCostUSD = +(
-        (inputTokens  / 1e6) * PRICE_INPUT_PER_MTOK +
-        (outputTokens / 1e6) * PRICE_OUTPUT_PER_MTOK
-      ).toFixed(6);
+      const estimatedCostUSD = estimateCostUSD(usage);
 
       const durationMs = Date.now() - startedAt;
       const today = saDateStringFromMs(Date.now());
-      try {
-        await db.ref(`aiAssistant/usage/${today}`).push({
-          timestamp: new Date().toISOString(),
-          callerEmail,
-          model: REORDER_MODEL,
-          inputTokens,
-          outputTokens,
-          estimatedCostUSD,
-          productsAnalyzed: productPayload.length,
-          activeProductsTotal: activeAll,
-          dormantProductsTotal: dormantAll,
-          catalogTotal: products.length,
-          paginatedActive,
-          paginatedDormant,
-          parseRetries,
-          durationMs,
-        });
-      } catch (err) {
-        console.warn("analyzeReorderNeeds: usage log write failed:", err.message);
-      }
+      await logReorderUsage(db, today, {
+        timestamp: new Date().toISOString(),
+        callerEmail,
+        model: REORDER_MODEL,
+        source: "legacy-internal",
+        inputTokens,
+        outputTokens,
+        estimatedCostUSD,
+        productsAnalyzed: productPayload.length,
+        activeProductsTotal: activeAll,
+        dormantProductsTotal: dormantAll,
+        catalogTotal: products.length,
+        paginatedActive,
+        paginatedDormant,
+        parseRetries,
+        durationMs,
+      });
 
       const meta = {
         reportDate: today,
+        source: "legacy-internal",
         cycleDays: REORDER_CYCLE_DAYS,
         catalogTotal: products.length,
         activeProductsTotal: activeAll,
@@ -1372,25 +1632,13 @@ exports.analyzeReorderNeeds = onCall(
 
       // ── 6. Cache the result BEFORE the finally block flips status to idle.
       //     The UI polls status and reads latest, so writing latest first
-      //     means the reader never sees idle without a fresh result.
-      try {
-        await db.ref(REORDER_LATEST_PATH).set({
-          plan: deepSanitizeRtdbKeys(parsed),
-          meta,
-          generatedAt: Date.now(),
-          generatedBy: callerUid,
-          durationMs,
-        });
-        console.log(`analyzeReorderNeeds: Result cache written to /${REORDER_LATEST_PATH}`);
-      } catch (err) {
-        // Persist failure is recorded but NOT rethrown here — the caller
-        // still gets { plan, meta } from this run. The finally block reads
-        // persistFailed and writes status:"error" instead of "idle" so the
-        // polling UI doesn't read stale /latest after seeing idle.
-        persistFailed = true;
-        persistError  = (err && err.message) || String(err);
-        console.warn("analyzeReorderNeeds: result cache write failed:", persistError);
-      }
+      //     means the reader never sees idle without a fresh result. Persist
+      //     failure is recorded (not rethrown) so the finally block can write
+      //     status:"error" instead of "idle" and the polling UI never reads
+      //     stale /latest after seeing idle.
+      const pr = await persistReorderPlan(db, { plan: parsed, meta, callerUid, durationMs });
+      persistFailed = pr.persistFailed;
+      persistError  = pr.persistError;
 
       // ── 7. Return the parsed plan + meta. UI uses /insights/reorderPlan
       //     for the long-running case; this direct return covers awaited
