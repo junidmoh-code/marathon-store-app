@@ -84,7 +84,10 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     }
     const res = await printLabels({ items, transport });
     setBusy(false);
-    const extra = noCode ? ` · ${noCode} had no code` : "";
+    const skipped = [];
+    if (noCode) skipped.push(`${noCode} had no code`);
+    if (failReserve) skipped.push(`${failReserve} failed`);
+    const extra = skipped.length ? ` · ${skipped.join(", ")}` : "";
     if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${TRANSPORTS.find(t => t.id === transport)?.label}${extra}.`);
     else flash("err", `Print failed: ${res.error} — codes are saved; retry.`);
   };

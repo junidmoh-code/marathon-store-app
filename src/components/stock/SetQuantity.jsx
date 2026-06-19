@@ -89,7 +89,7 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
     // and let the admin switch to Correction.
     if (intent.additive) {
       const dec = pendingChanges.find(r => r.delta < 0);
-      if (dec) return flash("err", `${intent.label} can't reduce stock (size ${dec.size}: ${dec.cur}→${dec.target}). Switch to Correction to lower a count.`);
+      if (dec) return flash("err", `${intent.label} can't reduce stock (size ${dec.size}: ${dec.cur}→${dec.target}). ${isAdmin ? "Switch to Correction to lower a count." : "Ask an admin to correct a count down."}`);
     }
 
     const effReason = note.trim() ? `${intent.reason} — ${note.trim()}` : intent.reason;
