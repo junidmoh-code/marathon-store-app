@@ -58,16 +58,24 @@ function rasterCommand({ bytesPerRow, height, mono }) {
   return out;
 }
 
+// Connect handle for the connect-first flow — MUST be called inside the user gesture
+// (requestDevice needs transient activation, which async work before it consumes).
+export async function connectPhomemo() {
+  if (!isPhomemoSupported()) throw new Error("Web Bluetooth not available in this browser.");
+  return await connect();
+}
+
 // labels: [{ code, productName, size }] already expanded to one entry per copy.
-export async function printPhomemo(labels) {
+// `conn` (optional) is a pre-established connection from connectPhomemo().
+export async function printPhomemo(labels, conn = null) {
   if (!isPhomemoSupported()) return { ok: false, error: "Web Bluetooth not available in this browser." };
-  let device;
+  let c = conn, device;
   try {
-    const conn = await connect();
-    device = conn.device;
+    if (!c) c = await connect();
+    device = c.device;
     for (const label of labels) {
       const bmp = renderLabelBitmap(label, LABEL);
-      await writeChunked(conn.characteristic, rasterCommand(bmp));
+      await writeChunked(c.characteristic, rasterCommand(bmp));
     }
     return { ok: true, printed: labels.length };
   } catch (err) {

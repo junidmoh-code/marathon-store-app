@@ -9,8 +9,8 @@
 // A failed transport blocks nothing else: the value model, storage, reverse index
 // and on-screen barcode all work regardless of whether a printer is reachable.
 
-import { printPhomemo, isPhomemoSupported } from "./phomemo";
-import { printXprinter, isXprinterSupported } from "./xprinter";
+import { printPhomemo, connectPhomemo, isPhomemoSupported } from "./phomemo";
+import { printXprinter, connectXprinter, isXprinterSupported } from "./xprinter";
 
 export const TRANSPORTS = [
   { id: "phomemo",  label: "Phomemo M110 (Bluetooth)", proven: true,  supported: isPhomemoSupported },
@@ -27,12 +27,20 @@ function expand(items) {
   return labels;
 }
 
-export async function printLabels({ items, transport }) {
+// Open the printer connection. MUST be called inside the user gesture (the device
+// picker needs transient activation) — then do any async work, then printLabels(conn).
+export async function connectTransport(transport) {
+  if (transport === "phomemo") return await connectPhomemo();
+  if (transport === "xprinter") return await connectXprinter();
+  throw new Error(`Unknown transport "${transport}".`);
+}
+
+export async function printLabels({ items, transport, conn = null }) {
   const labels = expand(items);
   if (!labels.length) return { ok: false, error: "Nothing to print (all counts are 0)." };
   try {
-    if (transport === "phomemo") return await printPhomemo(labels);
-    if (transport === "xprinter") return await printXprinter(labels);
+    if (transport === "phomemo") return await printPhomemo(labels, conn);
+    if (transport === "xprinter") return await printXprinter(labels, conn);
     return { ok: false, error: `Unknown transport "${transport}".` };
   } catch (err) {
     // Belt-and-suspenders — drivers already catch, but never let the flow break.

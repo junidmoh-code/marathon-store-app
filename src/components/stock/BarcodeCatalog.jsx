@@ -13,7 +13,7 @@
 import React, { useState, useMemo } from "react";
 import { useStockCells } from "./useStock";
 import { ensureBarcode, getBarcode } from "./barcodeStore";
-import { TRANSPORTS, printLabels } from "./printers";
+import { TRANSPORTS, printLabels, connectTransport } from "./printers";
 import { Toast, Empty } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGhost, input } from "./ui";
 
@@ -65,6 +65,11 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   const doPrint = async () => {
     if (!selList.length) return flash("err", "Select at least one size to print.");
     setBusy(true);
+    // Connect FIRST — the printer picker needs the user-tap activation, which the
+    // async barcode reservations below would otherwise consume (Android Chrome).
+    let conn;
+    try { conn = await connectTransport(transport); }
+    catch (e) { setBusy(false); return flash("err", `Couldn't connect to the printer: ${String(e?.message || e)}`); }
     const items = []; let failReserve = 0, noCode = 0;
     for (const [, it] of selList) {
       try {
@@ -82,7 +87,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
       return flash("err", noCode ? `No printable labels — ${noCode} size(s) have no barcode yet (a warehouse/admin user must create them first).`
                                  : `Nothing to print${failReserve ? ` (${failReserve} failed)` : " (all counts 0)"}.`);
     }
-    const res = await printLabels({ items, transport });
+    const res = await printLabels({ items, transport, conn });
     setBusy(false);
     const skipped = [];
     if (noCode) skipped.push(`${noCode} had no code`);
