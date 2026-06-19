@@ -16,7 +16,6 @@ import Adjust from "./Adjust";
 import MovementHistory from "./MovementHistory";
 import CountSession from "./CountSession";
 import SetQuantity from "./SetQuantity";
-import BarcodeCatalog from "./BarcodeCatalog";
 
 // Stock rework: Transfer (assistant-style, one-step) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
@@ -26,17 +25,18 @@ const BASE_TABS = [
   ["transfer",  "Transfer"],
   ["locate",    "Where is it"],
   ["setqty",    "Set Qty"],
-  ["barcodes",  "Barcodes"],
   ["history",   "History"],
   ["adjust",    "Adjust"],
   ["count",     "Count"],
 ];
 
-// Tabs only an admin sees (writes gated by stockRole==admin at the rule layer too).
-const ADMIN_ONLY_TABS = new Set(["locate", "setqty", "barcodes"]);
+// Tabs only an ADMIN sees — they write `adjustment` movements, which the rule layer
+// permits for stockRole==admin only. Everything else (transfer/locate/setqty[received,
+// opening]/history) is available to warehouse|admin. (Barcodes moved to the home page.)
+const ADMIN_ONLY_TABS = new Set(["adjust", "count"]);
 
 export default function StockView({ products = [], onExit }) {
-  const { permRecord, isSuperAdmin } = usePermissions();
+  const { permRecord, isSuperAdmin, hasPermission } = usePermissions();
   const registry = useLocations();
   const { pending, syncing } = useSyncStatus();
 
@@ -44,6 +44,9 @@ export default function StockView({ products = [], onExit }) {
   // /users/{uid}/stockRole). Super-admin acts as admin for stock purposes.
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const isAdmin = actorRole === "admin";
+  // Set-Qty access: warehouse|admin stockRole OR the "stock_add" permission. (Writes
+  // still need a stockRole at the rule layer — surfaced as a soft error if missing.)
+  const canStock = isAdmin || actorRole === "warehouse" || hasPermission("stock_add");
 
   // Drop admin-only tabs for non-admins. Filter the tab set first so the
   // default/clamp logic operates on the visible tabs.
@@ -73,12 +76,11 @@ export default function StockView({ products = [], onExit }) {
 
       <div style={{ padding: "4px 12px 40px" }}>
         {tab === "transfer" && <Transfer {...shared} />}
-        {tab === "locate"   && isAdmin && <Locator {...shared} />}
-        {tab === "setqty"   && isAdmin && <SetQuantity {...shared} isAdmin={isAdmin} />}
-        {tab === "barcodes" && isAdmin && <BarcodeCatalog {...shared} isAdmin={isAdmin} />}
+        {tab === "locate"   && <Locator {...shared} />}
+        {tab === "setqty"   && canStock && <SetQuantity {...shared} canStock={canStock} isAdmin={isAdmin} />}
         {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}
         {tab === "history"  && <MovementHistory {...shared} />}
-        {tab === "count"    && <CountSession {...shared} />}
+        {tab === "count"    && isAdmin && <CountSession {...shared} />}
       </div>
     </div>
   );

@@ -50,15 +50,21 @@ async function connect() {
   return { device, iface, endpointOut };
 }
 
-export async function printXprinter(labels) {
+// Connect handle for the connect-first flow — call inside the user gesture.
+export async function connectXprinter() {
+  if (!isXprinterSupported()) throw new Error("WebUSB not available in this browser.");
+  return await connect();
+}
+
+export async function printXprinter(labels, conn = null) {
   if (!isXprinterSupported()) return { ok: false, error: "WebUSB not available in this browser." };
   if (!ENCODER) return { ok: false, error: "TextEncoder unavailable." };
-  let device, iface;
+  let c = conn, device, iface;
   try {
-    const conn = await connect();
-    device = conn.device; iface = conn.iface;
+    if (!c) c = await connect();
+    device = c.device; iface = c.iface;
     const bytes = ENCODER.encode(tsplProgram(labels));
-    await device.transferOut(conn.endpointOut, bytes);
+    await device.transferOut(c.endpointOut, bytes);
     return { ok: true, printed: labels.length };
   } catch (err) {
     return { ok: false, error: String(err?.message || err) };

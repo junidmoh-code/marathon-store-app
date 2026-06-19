@@ -26,6 +26,10 @@ export const GLASS = {
   boxShadow: "0 8px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05)",
 };
 
+// OPAQUE variant for floating overlays/sheets — the translucent GLASS lets the list
+// behind bleed through and become unreadable. Same finish, solid background.
+export const GLASS_SOLID = { ...GLASS, background: "#0b0f1e", backdropFilter: "none", WebkitBackdropFilter: "none" };
+
 export const GREEN = "#4ADE80";
 export const RED   = "#F87171";
 export const GRAY  = "#9CA3AF";

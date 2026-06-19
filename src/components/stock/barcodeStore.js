@@ -99,6 +99,19 @@ export async function ensureBarcode(productId, size) {
   throw new Error("Barcode slot claim failed unexpectedly");
 }
 
+// READ-ONLY: return the existing code for a product+size, or null if none — NEVER
+// reserves or writes. This is the reprint path for users WITHOUT a stockRole: they
+// can re-print codes that already exist (reads /products, allowed for any authed
+// non-anon user) but cannot mint new ones (which would write /barcodes, stockRole-
+// gated). Minting stays via ensureBarcode for stockRole users only.
+export async function getBarcode(productId, size) {
+  if (!productId) return null;
+  const sizeKey = barcodeSizeKey(size);
+  const snap = await get(ref(database, `products/${productId}/barcodes/${sizeKey}`));
+  const v = snap.val();
+  return isValidBarcode(v) ? v : null;
+}
+
 // Ensure barcodes for several sizes of one product. Sequential (not parallel) so
 // the shared-counter transactions don't thrash. Returns { [size]: { code, reused } }.
 export async function ensureBarcodes(productId, sizes) {
