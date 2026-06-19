@@ -1635,7 +1635,7 @@ function AdminView({ products, orders, onExit }) {
   // warehouse on save (the Stock → Set Qty screen can receive at any location).
   const [recvOpen, setRecvOpen] = useState(false);
   const [recvQtys, setRecvQtys] = useState({}); // { size: "n" }
-  const [recvLoc, setRecvLoc] = useState(RECEIVING_DEFAULT); // chosen destination (all 9 locations)
+  const [recvLoc, setRecvLoc] = useState(""); // destination — NO default; the admin must pick each save
   const [saving, setSaving] = useState(false);
   // After a save with opening stock, surface the inline Print-barcodes sheet for the
   // sizes just received (count defaults to units added). Lives at the view level so
@@ -1664,6 +1664,9 @@ function AdminView({ products, orders, onExit }) {
 
   const addProduct = async () => {
     if (!form.name || form.sizes.length === 0) return;
+    // Opening stock requires an explicitly-picked destination — no default location.
+    const hasOpeningQty = (form.sizes || []).some(s => { const n = parseInt(recvQtys[s], 10); return Number.isFinite(n) && n > 0; });
+    if (hasOpeningQty && !recvLoc) { alert("Pick a location for the opening stock (or clear the quantities) before saving."); return; }
     setSaving(true);
     try {
       const id = "p" + Date.now();
