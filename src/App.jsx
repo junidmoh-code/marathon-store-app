@@ -14,8 +14,10 @@ import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import StockView from "./components/stock/StockView";
 import { applyMovement } from "./components/stock/applyMovement";
-import { RECEIVING_DEFAULT, sellableLocations, labelFor } from "./components/stock/locations";
+import { RECEIVING_DEFAULT, sellableLocations, labelFor, transferTargets } from "./components/stock/locations";
 import { useStockCells, useLocations } from "./components/stock/useStock";
+import { LocationPicker } from "./components/stock/widgets";
+import BarcodePrint from "./components/stock/BarcodePrint";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
@@ -1633,7 +1635,14 @@ function AdminView({ products, orders, onExit }) {
   // warehouse on save (the Stock → Set Qty screen can receive at any location).
   const [recvOpen, setRecvOpen] = useState(false);
   const [recvQtys, setRecvQtys] = useState({}); // { size: "n" }
+  const [recvLoc, setRecvLoc] = useState(""); // destination — NO default; the admin must pick each save
   const [saving, setSaving] = useState(false);
+  // After a save with opening stock, surface the inline Print-barcodes sheet for the
+  // sizes just received (count defaults to units added). Lives at the view level so
+  // it survives the New Product form unmounting on save.
+  const [lastReceived, setLastReceived] = useState(null); // { productId, productName, items:[{size,added}] }
+  const [printOpen, setPrintOpen] = useState(false);
+  const recvRegistry = useLocations();
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
   const [productSearch, setProductSearch] = useState("");
@@ -1655,6 +1664,9 @@ function AdminView({ products, orders, onExit }) {
 
   const addProduct = async () => {
     if (!form.name || form.sizes.length === 0) return;
+    // Opening stock requires an explicitly-picked destination — no default location.
+    const hasOpeningQty = (form.sizes || []).some(s => { const n = parseInt(recvQtys[s], 10); return Number.isFinite(n) && n > 0; });
+    if (hasOpeningQty && !recvLoc) { alert("Pick a location for the opening stock (or clear the quantities) before saving."); return; }
     setSaving(true);
     try {
       const id = "p" + Date.now();
@@ -1714,13 +1726,20 @@ function AdminView({ products, orders, onExit }) {
           .map(s => [s, parseInt(recvQtys[s], 10)])
           .filter(([, n]) => Number.isFinite(n) && n > 0);
         if (recvEntries.length) {
-          let recOk = 0, recFail = 0;
+          const locLabel = labelFor(recvLoc, recvRegistry);
+          let recOk = 0, recFail = 0; const savedItems = [];
           for (const [size, n] of recvEntries) {
-            const res = await applyMovement({ type: "received", productId: id, size, qty: n, to: RECEIVING_DEFAULT });
-            res.ok ? recOk++ : recFail++;
+            const res = await applyMovement({ type: "received", productId: id, size, qty: n, to: recvLoc });
+            if (res.ok) { recOk++; savedItems.push({ size, added: n }); }
+            else recFail++;
           }
           if (recFail) {
-            alert(`Product saved. ${recOk} size(s) received into Warehouse One; ${recFail} could not be received — you may not have stock permission (stockRole). You can add these quantities later from Stock.`);
+            alert(`Product saved. ${recOk} size(s) received into ${locLabel}; ${recFail} could not be received — you may not have stock permission (stockRole). You can add these quantities later from Stock.`);
+          }
+          // Surface the inline Print-barcodes sheet for the sizes that saved.
+          if (savedItems.length) {
+            setLastReceived({ productId: id, productName: newProduct.name, items: savedItems });
+            setPrintOpen(true);
           }
         }
       } catch (recErr) {
@@ -1942,6 +1961,11 @@ function AdminView({ products, orders, onExit }) {
             </button>
             {recvOpen && (
               <div style={{ marginTop:"0.75rem", background:"rgba(12,16,30,.55)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:"1px solid rgba(120,150,255,.16)", borderRadius:RADIUS, padding:"1rem", boxShadow:"inset 0 1px 0 rgba(255,255,255,.05)" }}>
+                {/* Destination — any of the 9 stock locations (default Central). */}
+                <div style={{ marginBottom:"0.85rem" }}>
+                  <div style={{ fontSize:"0.7rem", color:"#888", textTransform:"uppercase", letterSpacing:".04em", marginBottom:4 }}>Receive into</div>
+                  <LocationPicker registry={recvRegistry} value={recvLoc} onChange={setRecvLoc} filter={transferTargets} />
+                </div>
                 {form.sizes.length === 0 ? (
                   <div style={{ color:"#666", fontSize:"0.82rem", textAlign:"center", padding:"0.5rem" }}>Select sizes above, then enter how many of each you're receiving.</div>
                 ) : (
@@ -1959,7 +1983,7 @@ function AdminView({ products, orders, onExit }) {
                   </div>
                 )}
                 <div style={{ fontSize:"0.75rem", color:"#666", marginTop:"0.75rem" }}>
-                  Entered amounts are received into <span style={{ color:"#4ADE80" }}>Warehouse One</span> as ledger movements on save. Saving with no quantities works exactly as before.
+                  Entered amounts are received into <span style={{ color:"#4ADE80" }}>{labelFor(recvLoc, recvRegistry)}</span> as ledger movements on save. Saving with no quantities works exactly as before.
                 </div>
               </div>
             )}
@@ -2057,6 +2081,16 @@ function AdminView({ products, orders, onExit }) {
       <div style={{ height:20 }}/>
         </div>
       </div>
+
+      {/* Inline Print-barcodes sheet (#73), surfaced after a save with opening
+          stock. Lives here (not in the unmounting New Product form) so it persists. */}
+      {printOpen && lastReceived && (
+        <BarcodePrint
+          product={{ id: lastReceived.productId, name: lastReceived.productName }}
+          items={lastReceived.items}
+          onClose={() => setPrintOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -2273,8 +2307,12 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   // stockRole the rules require.
   const [recvOpen, setRecvOpen] = useState(false);
   const [recvQtys, setRecvQtys] = useState({});
+  const [recvLoc, setRecvLoc] = useState(RECEIVING_DEFAULT); // chosen destination (all 9 locations)
   const [recvBusy, setRecvBusy] = useState(false);
   const [recvMsg,  setRecvMsg]  = useState(null);
+  const [lastReceived, setLastReceived] = useState(null); // { productId, productName, items:[{size,added}] }
+  const [printOpen, setPrintOpen] = useState(false);
+  const recvRegistry = useLocations();
   const flashRecv = (ok, text) => { setRecvMsg({ ok, text }); setTimeout(() => setRecvMsg(null), 4000); };
   const doReceive = async () => {
     const entries = productSizes
@@ -2282,15 +2320,18 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       .filter(([, n]) => Number.isFinite(n) && n > 0);
     if (!entries.length) return;
     setRecvBusy(true);
-    let ok = 0, fail = 0;
+    let ok = 0, fail = 0; const savedItems = [];
     for (const [size, n] of entries) {
-      const res = await applyMovement({ type: "received", productId: product.id, size, qty: n, to: RECEIVING_DEFAULT });
-      res.ok ? ok++ : fail++;
+      const res = await applyMovement({ type: "received", productId: product.id, size, qty: n, to: recvLoc });
+      if (res.ok) { ok++; savedItems.push({ size, added: n }); }
+      else fail++;
     }
     setRecvBusy(false);
     setRecvQtys({});
+    const locLabel = labelFor(recvLoc, recvRegistry);
     if (fail) flashRecv(false, `${ok} received, ${fail} failed — you may not have stock permission (stockRole).`);
-    else flashRecv(true, `Received ${ok} size${ok > 1 ? "s" : ""} into Warehouse One.`);
+    else flashRecv(true, `Received ${ok} size${ok > 1 ? "s" : ""} into ${locLabel}.`);
+    if (savedItems.length) { setLastReceived({ productId: product.id, productName: product.name, items: savedItems }); setPrintOpen(true); }
   };
 
   const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding:"24px 18px 8px" };
@@ -2382,7 +2423,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       </div>
 
       {/* RECEIVE STOCK (restock existing) — Stock rework. Optional per-size
-          receive into Warehouse One for a re-order; independent of the edits
+          receive into a chosen location for a re-order; independent of the edits
           above, never required. Mirrors the product-add opening-stock section. */}
       <div style={sectionTitle}>Receive stock</div>
       <div style={card}>
@@ -2390,10 +2431,15 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           <button onClick={() => setRecvOpen(o => !o)}
             style={{ display:"flex", alignItems:"center", gap:8, width:"100%", textAlign:"left", background:"transparent", border:"none", color:"#bbb", cursor:"pointer", fontSize:13, fontWeight:600, padding:0 }}>
             <span style={{ color:"#6A9FFF", transform: recvOpen ? "rotate(90deg)" : "none", transition:"transform .15s", display:"inline-block" }}>▸</span>
-            Add re-order quantities <span style={{ color:"#555", fontWeight:500, fontStyle:"italic" }}>· optional → Warehouse One</span>
+            Add re-order quantities <span style={{ color:"#555", fontWeight:500, fontStyle:"italic" }}>· optional</span>
           </button>
           {recvOpen && (
             <div style={{ marginTop:14 }}>
+              {/* Destination — any of the 9 stock locations (default Central). */}
+              <div style={{ marginBottom:12 }}>
+                <div style={{ fontSize:11, color:"#888", textTransform:"uppercase", letterSpacing:".04em", marginBottom:4 }}>Receive into</div>
+                <LocationPicker registry={recvRegistry} value={recvLoc} onChange={setRecvLoc} filter={transferTargets} />
+              </div>
               {productSizes.length === 0 ? (
                 <div style={{ color:"#666", fontSize:13 }}>Add sizes above first.</div>
               ) : (
@@ -2412,7 +2458,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
               )}
               <button onClick={doReceive} disabled={recvBusy}
                 style={{ ...bBlue, padding:"0.55rem 1.25rem", marginTop:14, opacity: recvBusy ? 0.5 : 1 }}>
-                {recvBusy ? "Receiving…" : "Receive into Warehouse One"}
+                {recvBusy ? "Receiving…" : `Receive into ${labelFor(recvLoc, recvRegistry)}`}
               </button>
               {recvMsg && <div style={{ marginTop:10, fontSize:12.5, fontWeight:600, color: recvMsg.ok ? "#4ADE80" : "#FF9B9B" }}>{recvMsg.text}</div>}
               <div style={{ fontSize:11, color:"#666", marginTop:8 }}>
@@ -2540,6 +2586,15 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           Delete product
         </button>
       </div>
+
+      {/* Inline Print-barcodes sheet (#73), surfaced after a re-order receive. */}
+      {printOpen && lastReceived && (
+        <BarcodePrint
+          product={{ id: lastReceived.productId, name: lastReceived.productName }}
+          items={lastReceived.items}
+          onClose={() => setPrintOpen(false)}
+        />
+      )}
     </div>
   );
 }

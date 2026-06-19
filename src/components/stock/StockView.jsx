@@ -16,6 +16,7 @@ import Adjust from "./Adjust";
 import MovementHistory from "./MovementHistory";
 import CountSession from "./CountSession";
 import SetQuantity from "./SetQuantity";
+import BarcodeCatalog from "./BarcodeCatalog";
 
 // Stock rework: Transfer (assistant-style, one-step) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
@@ -25,13 +26,14 @@ const BASE_TABS = [
   ["transfer",  "Transfer"],
   ["locate",    "Where is it"],
   ["setqty",    "Set Qty"],
+  ["barcodes",  "Barcodes"],
   ["history",   "History"],
   ["adjust",    "Adjust"],
   ["count",     "Count"],
 ];
 
 // Tabs only an admin sees (writes gated by stockRole==admin at the rule layer too).
-const ADMIN_ONLY_TABS = new Set(["locate", "setqty"]);
+const ADMIN_ONLY_TABS = new Set(["locate", "setqty", "barcodes"]);
 
 export default function StockView({ products = [], onExit }) {
   const { permRecord, isSuperAdmin } = usePermissions();
@@ -73,6 +75,7 @@ export default function StockView({ products = [], onExit }) {
         {tab === "transfer" && <Transfer {...shared} />}
         {tab === "locate"   && isAdmin && <Locator {...shared} />}
         {tab === "setqty"   && isAdmin && <SetQuantity {...shared} isAdmin={isAdmin} />}
+        {tab === "barcodes" && isAdmin && <BarcodeCatalog {...shared} isAdmin={isAdmin} />}
         {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}
         {tab === "history"  && <MovementHistory {...shared} />}
         {tab === "count"    && <CountSession {...shared} />}
