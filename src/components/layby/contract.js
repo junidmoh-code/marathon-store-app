@@ -11,9 +11,10 @@
 // invoice numbers, which may not follow the L-NNNNN shape). The node key is the
 // stable `laybyId`. There is no "LB number".
 //
-// LOCATIONS: ids are the canonical /locations registry ids (hub1/hub2/hub2b/
-// hub3/hubC/warehouse1 + stores marathon-pe/marathon-pine/trophy). The POS side
-// translates its informal pine|pe|trophy vocabulary to these before writing.
+// LOCATIONS: ids are the canonical /locations registry ids (warehouses
+// studio/central/base, hubs hub1/hub2/hub3 + stores marathon-pe/marathon-pine/
+// trophy). The POS side translates its informal pine|pe|trophy vocabulary to these
+// before writing.
 // Money is in CENTS (POS convention); divide by 100 for ZAR display.
 
 // Full layby lifecycle, on /laybys/{laybyId}.status. Happy path is linear;

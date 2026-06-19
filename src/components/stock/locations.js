@@ -53,6 +53,7 @@ export const transferTargets    = (registry) => activeLocations(registry).filter
 
 export const IN_TRANSIT = "in_transit";
 
-// Default receiving warehouse for the inline product-add/edit receive and the
-// transfer source default. The Set Qty screen lets the admin pick any location.
-export const RECEIVING_DEFAULT = "studio";
+// Default receiving warehouse: the pre-selected destination for the New Product /
+// edit-page receive pickers and the transfer source default (any can be changed in
+// the picker). "central" is a real seeded /locations id.
+export const RECEIVING_DEFAULT = "central";
