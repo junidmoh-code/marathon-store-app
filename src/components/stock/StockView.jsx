@@ -36,7 +36,7 @@ const BASE_TABS = [
 const ADMIN_ONLY_TABS = new Set(["adjust", "count"]);
 
 export default function StockView({ products = [], onExit }) {
-  const { permRecord, isSuperAdmin } = usePermissions();
+  const { permRecord, isSuperAdmin, hasPermission } = usePermissions();
   const registry = useLocations();
   const { pending, syncing } = useSyncStatus();
 
@@ -44,7 +44,9 @@ export default function StockView({ products = [], onExit }) {
   // /users/{uid}/stockRole). Super-admin acts as admin for stock purposes.
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const isAdmin = actorRole === "admin";
-  const canStock = isAdmin || actorRole === "warehouse"; // warehouse|admin (the seed counters)
+  // Set-Qty access: warehouse|admin stockRole OR the "stock_add" permission. (Writes
+  // still need a stockRole at the rule layer — surfaced as a soft error if missing.)
+  const canStock = isAdmin || actorRole === "warehouse" || hasPermission("stock_add");
 
   // Drop admin-only tabs for non-admins. Filter the tab set first so the
   // default/clamp logic operates on the visible tabs.

@@ -49,6 +49,13 @@ const ALL_PERMISSIONS = [
   { key: "insights",        label: "Insights",            desc: "Business analytics" },
   { key: "broadcast",       label: "Group Broadcast",     desc: "Send WhatsApp broadcasts" },
   { key: "customer_data",   label: "Customer Database",   desc: "View customer records" },
+  // Stock & barcode UI access. NOTE: actual stock/barcode WRITES are additionally
+  // gated by /users/{uid}/stockRole in the RTDB rules — grant a Stock Role below for
+  // write capability. These permissions open the screens; warehouse|admin stockRole
+  // also opens them (so seed counters keep access without a permission).
+  { key: "stock_management", label: "Stock",            desc: "Open the Stock section (transfers, Locator, history)" },
+  { key: "stock_add",        label: "Stock Adding",     desc: "Set / add on-hand stock (needs a Stock Role to write)" },
+  { key: "barcode",          label: "Barcode Printing", desc: "Create & print product barcodes" },
   { key: "user_management", label: "User Management",     desc: "Create / edit / delete staff", warn: true },
 ];
 
@@ -72,9 +79,9 @@ const STOCK_ROLES = [
 
 // Defaults for the Add Staff form when role changes. Matches scripts/seedUsers.cjs.
 const ROLE_DEFAULT_PERMS = {
-  admin:           ["store_assistant", "warehouse", "display_refills", "place_orders", "product_admin", "source"],
+  admin:           ["store_assistant", "warehouse", "display_refills", "place_orders", "product_admin", "source", "stock_management", "stock_add", "barcode"],
   store_assistant: ["store_assistant", "display_refills", "place_orders"],
-  warehouse:       ["warehouse", "display_refills", "source"],
+  warehouse:       ["warehouse", "display_refills", "source", "stock_management", "stock_add", "barcode"],
 };
 
 // ─── Cloud Function refs (region = europe-west1 via firebase.js `functions`) ─

@@ -2812,9 +2812,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // show both. Keep storeMode clamped to an allowed value so a stale per-device
   // localStorage choice (e.g. a Pine-only user on a tablet last left on
   // "central") can't route orders to a store they aren't assigned to.
-  const { storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin } = usePermissions();
-  // Shop-stock visibility is stockRole-gated (warehouse|admin), like the Stock section.
-  const canAccessStock = stockIsSuperAdmin || ["warehouse", "admin"].includes(stockPermRecord?.stockRole);
+  const { storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin, hasPermission: stockHasPermission } = usePermissions();
+  // Shop-stock visibility: stock permission OR a stock-capable stockRole (mirrors the
+  // Stock section gate).
+  const canAccessStock = stockIsSuperAdmin || ["warehouse", "admin"].includes(stockPermRecord?.stockRole) || stockHasPermission("stock_management");
   const noStoreAccess = allowedStores.length === 0;
   const singleStore   = allowedStores.length === 1;
   useEffect(() => {
@@ -8976,8 +8977,11 @@ function AppInner() {
   // counters keep it. canMint = may create NEW barcodes (writes /barcodes — any
   // stockRole); everyone else can still reprint EXISTING codes (read-only).
   const stockRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
-  const canAccessStock = stockRole === "admin" || stockRole === "warehouse";
-  const canMint = isSuperAdmin || !!permRecord?.stockRole;
+  // UI access = a stock PERMISSION (granted in User Management) OR a stock-capable
+  // stockRole (so seed counters with stockRole=warehouse keep access without a
+  // permission). Actual WRITES are still gated by stockRole in the RTDB rules.
+  const canAccessStock = stockRole === "admin" || stockRole === "warehouse" || hasPermission("stock_management");
+  const canMint = isSuperAdmin || !!permRecord?.stockRole || hasPermission("barcode");
 
   // hash tracks the URL fragment for the #admin sign-in trigger and any
   // future client-side routing.
