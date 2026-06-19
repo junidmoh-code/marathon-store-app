@@ -31,11 +31,11 @@ import BarcodePrint from "./BarcodePrint";
 const INTENTS = [
   { key: "received",   label: "Received",        type: "received",   reason: "received",        additive: true  },
   { key: "opening",    label: "Opening balance", type: "opening",    reason: "opening balance", additive: true  },
-  { key: "stocktake",  label: "Stock-take",      type: "adjustment", reason: "stock-take",      additive: false },
-  { key: "correction", label: "Correction",      type: "adjustment", reason: "correction",      additive: false },
+  { key: "stocktake",  label: "Stock-take",      type: "adjustment", reason: "stock-take",      additive: false, adminOnly: true },
+  { key: "correction", label: "Correction",      type: "adjustment", reason: "correction",      additive: false, adminOnly: true },
 ];
 
-export default function SetQuantity({ products, registry, actorRole, isAdmin }) {
+export default function SetQuantity({ products, registry, actorRole, isAdmin, canStock = isAdmin }) {
   const [productId, setProductId] = useState("");
   const [loc, setLoc] = useState(RECEIVING_DEFAULT);
   const [targets, setTargets] = useState({});      // { size: "n" }
@@ -46,7 +46,10 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin }) 
   const [lastSaved, setLastSaved] = useState(null); // { productId, productName, items:[{size,added}] }
   const [printOpen, setPrintOpen] = useState(false);
 
-  const intent = INTENTS.find(i => i.key === intentKey) || INTENTS[0];
+  // Adjustment intents (Stock-take/Correction) are admin-only — the rule layer
+  // permits `adjustment` for stockRole==admin only. Warehouse keeps Received/Opening.
+  const intents = INTENTS.filter(i => isAdmin || !i.adminOnly);
+  const intent = intents.find(i => i.key === intentKey) || intents[0];
   const product = useMemo(() => products.find(p => p.id === productId), [products, productId]);
   const sizes = (product && Array.isArray(product.sizes)) ? product.sizes : [];
 
@@ -126,7 +129,7 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin }) 
     else flash("err", `${ok} done, ${fail} failed — ${failed.join("; ")}`);
   };
 
-  if (!isAdmin) return <Empty>Setting on-hand quantity is admin-only. Ask an admin to correct a count.</Empty>;
+  if (!canStock) return <Empty>Setting on-hand quantity needs a stock role (warehouse or admin).</Empty>;
 
   return (
     <div>
@@ -147,7 +150,7 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin }) 
         <Card>
           <Field label="How is this change recorded?">
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {INTENTS.map(i => (
+              {intents.map(i => (
                 <button key={i.key} type="button" onClick={() => setIntentKey(i.key)} style={intentKey === i.key ? tabOn : tabOff}>
                   {i.label}
                 </button>

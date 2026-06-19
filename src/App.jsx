@@ -13,6 +13,7 @@ import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits }
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import StockView from "./components/stock/StockView";
+import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { RECEIVING_DEFAULT, sellableLocations, labelFor, transferTargets } from "./components/stock/locations";
 import { useStockCells, useLocations } from "./components/stock/useStock";
@@ -109,7 +110,7 @@ function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,2
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", BARCODES: "barcodes" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -128,10 +129,10 @@ const ROLE_TO_PERMISSION = {
   [ROLES.ADMIN]:            "product_admin",
   [ROLES.BROADCAST_GROUPS]: "broadcast",
   [ROLES.USER_MANAGEMENT]:  "user_management",
-  // Inventory & stock movements (Phase: per-size inventory). Dedicated permission;
-  // who can OPEN the section. The money-bearing writes are additionally gated by
-  // /users/{uid}/stockRole in the RTDB security rules (see design/INVENTORY-DESIGN.md §5).
-  [ROLES.STOCK]:            "stock_management",
+  // NOTE: ROLES.STOCK is intentionally NOT permission-mapped here — opening the Stock
+  // section is gated by /users/{uid}/stockRole (warehouse|admin), computed as
+  // canAccessStock, NOT by an app permission, so the seed counters (stockRole
+  // warehouse) keep access. ROLES.BARCODES is open to everyone (reprint is read-only).
 };
 const STATUS = { INCOMING: "incoming", READY: "ready", OUT_OF_STOCK: "out_of_stock", COLLECTED: "collected", COMING_TOMORROW: "coming_tomorrow" };
 
@@ -1503,7 +1504,7 @@ function GroupSection({ label, children }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, hasPermission }) {
+function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessStock }) {
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
   // Source badge = today's restock requests + on-hold (Tomorrow), excluding OOS.
@@ -1555,6 +1556,9 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission }) {
           hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) && <RoleCard key="warehouse" icon={RoleIcons.warehouse} name="Warehouse"        desc="Manage order queue"   badge={incoming}        onClick={() => onSelect(ROLES.WAREHOUSE)} />,
           hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])    && <RoleCard key="source"    icon={RoleIcons.source}    name="Source"           desc="Restock requests"     badge={sourceBadge}     onClick={() => onSelect(ROLES.SOURCE)} />,
           hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && <RoleCard key="returns"   icon={RoleIcons.returns}   name="Returns"          desc="Log returned items"   onClick={() => onSelect(ROLES.RETURNS)} />,
+          // Open to everyone — reprinting an existing barcode is read-only. Minting
+          // a NEW code is gated by stockRole inside the screen.
+          <RoleCard key="barcodes" icon={RoleIcons.stock} name="Barcodes" desc="Print product barcodes" onClick={() => onSelect(ROLES.BARCODES)} />,
         ].filter(Boolean);
         const insightsDisplay = [
           hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && <RoleCard key="insights" icon={RoleIcons.insights} name="Internal Insights" desc="Business analytics"    onClick={() => onSelect(ROLES.INSIGHTS)} />,
@@ -1564,7 +1568,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission }) {
         const admin = [
           hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && <RoleCard key="customers" icon={RoleIcons.customers_db}     name="Customers"       desc="Customer database"       onClick={() => onSelect(ROLES.CUSTOMERS_DB)} />,
           hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && <RoleCard key="admin"     icon={RoleIcons.admin}            name="Admin"           desc="Manage products"         onClick={() => onSelect(ROLES.ADMIN)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.STOCK])            && <RoleCard key="stock"     icon={RoleIcons.stock}            name="Stock"           desc="Inventory & transfers"   onClick={() => onSelect(ROLES.STOCK)} />,
+          canAccessStock                                           && <RoleCard key="stock"     icon={RoleIcons.stock}            name="Stock"           desc="Inventory & transfers"   onClick={() => onSelect(ROLES.STOCK)} />,
           hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && <RoleCard key="broadcast" icon={RoleIcons.broadcast_groups} name="Group Broadcast" desc="Send to WhatsApp groups" onClick={() => onSelect(ROLES.BROADCAST_GROUPS)} />,
           // User Management is hash-routed (not role-routed) — the screen mounts
           // on wantUserMgmt in the App view cascade. Tap → set hash → mount.
@@ -2808,7 +2812,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // show both. Keep storeMode clamped to an allowed value so a stale per-device
   // localStorage choice (e.g. a Pine-only user on a tablet last left on
   // "central") can't route orders to a store they aren't assigned to.
-  const { storeIds: allowedStores } = usePermissions();
+  const { storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin } = usePermissions();
+  // Shop-stock visibility is stockRole-gated (warehouse|admin), like the Stock section.
+  const canAccessStock = stockIsSuperAdmin || ["warehouse", "admin"].includes(stockPermRecord?.stockRole);
   const noStoreAccess = allowedStores.length === 0;
   const singleStore   = allowedStores.length === 1;
   useEffect(() => {
@@ -3283,8 +3289,8 @@ function AssistantView({ products, onExit, orders = [] }) {
       )}
 
       {/* Read-only per-shop stock (Marathon PE / Trophy / Pine) — visibility only,
-          separate from the Central/Pine order toggle above. */}
-      <ShopStockPanel products={products} />
+          separate from the Central/Pine order toggle above. Locked to stockRole. */}
+      {canAccessStock && <ShopStockPanel products={products} />}
 
       {/* PLACE ORDER HERO */}
       <div style={{ position:"relative", width:"100%", height:160, overflow:"hidden", marginBottom:4 }}>
@@ -8966,6 +8972,12 @@ function UserIndicator({ label, onSignOut }) {
 // AuthGate's perspective, e.g. signed out from the Google session).
 function AppInner() {
   const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut } = usePermissions();
+  // Stock access is gated by stockRole, NOT an app permission, so warehouse seed
+  // counters keep it. canMint = may create NEW barcodes (writes /barcodes — any
+  // stockRole); everyone else can still reprint EXISTING codes (read-only).
+  const stockRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
+  const canAccessStock = stockRole === "admin" || stockRole === "warehouse";
+  const canMint = isSuperAdmin || !!permRecord?.stockRole;
 
   // hash tracks the URL fragment for the #admin sign-in trigger and any
   // future client-side routing.
@@ -9002,9 +9014,11 @@ function AppInner() {
   // user shouldn't see.
   useEffect(() => {
     if (!role) return;
+    // Stock is stockRole-gated (not permission-mapped) — drop non-stock users back home.
+    if (role === ROLES.STOCK && !canAccessStock) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission]);
+  }, [role, hasPermission, canAccessStock]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -9203,7 +9217,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} canAccessStock={canAccessStock} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
@@ -9214,7 +9228,8 @@ function AppInner() {
     view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} onExit={() => setRole(null)} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
-  else if (role === ROLES.STOCK)     view = guard(ROLES.STOCK,            <StockView     products={products} onExit={() => setRole(null)} />);
+  else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={orders} onExit={() => setRole(null)} />);

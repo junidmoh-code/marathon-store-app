@@ -23,7 +23,7 @@ import { applyMovement } from "./applyMovement";
 import { useRefillRequests } from "./useStock";
 import { transferTargets, labelFor, RECEIVING_DEFAULT } from "./locations";
 import { Toast, Empty } from "./widgets";
-import { GLASS, CARD, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, BORDER, RADIUS, FONT, input, bGreen, bGhost } from "./ui";
+import { GLASS, GLASS_SOLID, CARD, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, BORDER, RADIUS, FONT, input, bGreen, bGhost } from "./ui";
 
 const keyOf = (pid, size) => `${pid}__${size}`;
 
@@ -196,7 +196,7 @@ export default function Transfer({ products, registry, actorRole }) {
       {picking && (
         <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}
              onClick={() => !busy && setPicking(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ ...GLASS, width: "100%", maxWidth: 520, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: 16, maxHeight: "80vh", overflowY: "auto" }}>
+          <div onClick={e => e.stopPropagation()} style={{ ...GLASS_SOLID, width: "100%", maxWidth: 520, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: 16, maxHeight: "80vh", overflowY: "auto" }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", marginBottom: 12 }}>Transfer {totalUnits} unit(s)</div>
 
             <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 6 }}>From</div>

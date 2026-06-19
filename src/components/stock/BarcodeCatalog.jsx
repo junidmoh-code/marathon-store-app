@@ -12,14 +12,21 @@
 
 import React, { useState, useMemo } from "react";
 import { useStockCells } from "./useStock";
-import { ensureBarcode } from "./barcodeStore";
+import { ensureBarcode, getBarcode } from "./barcodeStore";
 import { TRANSPORTS, printLabels } from "./printers";
 import { Toast, Empty } from "./widgets";
-import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, bGreen, bGhost, input } from "./ui";
+import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGhost, input } from "./ui";
 
 const keyOf = (pid, size) => `${pid}|${size}`;
 
-export default function BarcodeCatalog({ products, isAdmin }) {
+// Product thumbnail — same pattern as Transfer/Locator (product.photoUrl).
+function Thumb({ product, size = 40 }) {
+  const url = product?.photoUrl;
+  if (url) return <img src={url} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: 9, flexShrink: 0 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />;
+  return <div style={{ width: size, height: size, borderRadius: 9, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.5, flexShrink: 0 }}>👟</div>;
+}
+
+export default function BarcodeCatalog({ products, canMint, onExit }) {
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState(null);
   const [sel, setSel] = useState({});   // { "pid|size": { productId, productName, size, count } }
@@ -58,25 +65,39 @@ export default function BarcodeCatalog({ products, isAdmin }) {
   const doPrint = async () => {
     if (!selList.length) return flash("err", "Select at least one size to print.");
     setBusy(true);
-    const items = []; let failReserve = 0;
+    const items = []; let failReserve = 0, noCode = 0;
     for (const [, it] of selList) {
       try {
-        const { code } = await ensureBarcode(it.productId, it.size);   // reuse-if-present
+        // canMint (stockRole): reserve-if-missing / reuse. Otherwise reprint-only:
+        // read the existing code, never mint (which would hit the stockRole-gated
+        // /barcodes write). Sizes with no code yet are skipped with a message.
+        const code = canMint ? (await ensureBarcode(it.productId, it.size)).code : await getBarcode(it.productId, it.size);
         const c = parseInt(it.count, 10) || 0;
-        if (code && c > 0) items.push({ code, productName: it.productName, size: it.size, count: c });
+        if (!code) { noCode++; continue; }
+        if (c > 0) items.push({ code, productName: it.productName, size: it.size, count: c });
       } catch { failReserve++; }
     }
-    if (!items.length) { setBusy(false); return flash("err", `Nothing to print${failReserve ? ` (${failReserve} failed to reserve)` : " (all counts 0)"}.`); }
+    if (!items.length) {
+      setBusy(false);
+      return flash("err", noCode ? `No printable labels — ${noCode} size(s) have no barcode yet (a warehouse/admin user must create them first).`
+                                 : `Nothing to print${failReserve ? ` (${failReserve} failed)` : " (all counts 0)"}.`);
+    }
     const res = await printLabels({ items, transport });
     setBusy(false);
-    if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${TRANSPORTS.find(t => t.id === transport)?.label}${failReserve ? ` · ${failReserve} skipped` : ""}.`);
-    else flash("err", `Print failed: ${res.error} — codes are still reserved; retry.`);
+    const extra = noCode ? ` · ${noCode} had no code` : "";
+    if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${TRANSPORTS.find(t => t.id === transport)?.label}${extra}.`);
+    else flash("err", `Print failed: ${res.error} — codes are saved; retry.`);
   };
 
-  if (!isAdmin) return <Empty>Barcode printing is admin-only.</Empty>;
-
   return (
-    <div>
+    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
+      <div style={{ padding: "14px 16px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <button onClick={onExit} style={{ background: "none", border: "none", padding: 0, color: BLUE_L, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: FONT }}>← Home</button>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>Barcodes</div>
+        <div style={{ minWidth: 48 }} />
+      </div>
+      <div style={{ padding: "4px 14px 40px" }}>
+      {!canMint && <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>Re-print existing labels — new barcodes are created by warehouse/admin.</div>}
       <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"
         style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 10 }} />
 
@@ -103,6 +124,7 @@ export default function BarcodeCatalog({ products, isAdmin }) {
             return (
               <div key={p.id} style={{ ...GLASS, padding: 0, overflow: "hidden" }}>
                 <div onClick={() => setOpenId(expanded ? null : p.id)} style={{ display: "flex", alignItems: "center", gap: 11, padding: 11, cursor: "pointer" }}>
+                  <Thumb product={p} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
                     <div style={{ fontSize: 11, color: GRAY }}>{p.sizes.length} size{p.sizes.length === 1 ? "" : "s"}</div>
@@ -149,6 +171,7 @@ export default function BarcodeCatalog({ products, isAdmin }) {
           </button>
         </div>
       )}
+      </div>
       <Toast msg={toast} />
     </div>
   );

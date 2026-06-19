@@ -12,7 +12,7 @@ import { ensureBarcodes } from "./barcodeStore";
 import Barcode from "./BarcodeView";
 import { TRANSPORTS, printLabels } from "./printers";
 import { Toast } from "./widgets";
-import { GLASS, bGreen, bGhost, GRAY, GREEN, AMBER, BLUE_L, input } from "./ui";
+import { GLASS_SOLID, bGreen, bGhost, GRAY, GREEN, AMBER, BLUE_L, input } from "./ui";
 
 export default function BarcodePrint({ product, items, onClose }) {
   // items: [{ size, added }] — the sizes just saved, and units added per size.
@@ -56,7 +56,7 @@ export default function BarcodePrint({ product, items, onClose }) {
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}
          onClick={() => !busy && onClose()}>
-      <div onClick={e => e.stopPropagation()} style={{ ...GLASS, width: "100%", maxWidth: 560, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: 16, maxHeight: "86vh", overflowY: "auto" }}>
+      <div onClick={e => e.stopPropagation()} style={{ ...GLASS_SOLID, width: "100%", maxWidth: 560, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: 16, maxHeight: "86vh", overflowY: "auto" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>Print barcodes — {product.name}</div>
           <button onClick={() => !busy && onClose()} style={{ background: "none", border: "none", color: GRAY, fontSize: 18, cursor: "pointer" }}>✕</button>
