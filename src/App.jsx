@@ -19,6 +19,7 @@ import { RECEIVING_DEFAULT, sellableLocations, labelFor, transferTargets } from 
 import { useStockCells, useLocations } from "./components/stock/useStock";
 import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
+import { ensureBarcodes } from "./components/stock/barcodeStore";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
@@ -1720,6 +1721,12 @@ function AdminView({ products, orders, onExit }) {
       newProduct.barcode = barcode;
       await addProductToFirebase(newProduct);
 
+      // GUARANTEE ON SAVE: mint a barcode for every size now so the catalog never
+      // has gaps (a sizeless/one-size product mints the "_" slot). Best-effort —
+      // a creator without stockRole still saves the product; the index heals on
+      // the next mint and the backfill covers anything missed.
+      ensureBarcodes(id, (form.sizes && form.sizes.length) ? form.sizes : [null]).catch(() => {});
+
       // Optional opening stock: if quantities were entered, write them as
       // `received` movements into the default receiving warehouse via
       // applyMovement — ledger-paired, never raw. The product is already saved,
@@ -2225,6 +2232,10 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       ? productSizes.filter(x => x !== s)
       : [...productSizes, s];
     updateProductSizes(product.id, next);
+    // GUARANTEE ON EDIT: mint barcodes for the (possibly new) size set so editing
+    // a product never leaves a size without a code. Best-effort; idempotent
+    // (ensureBarcode reuses any existing slot, only newly-added sizes get a code).
+    ensureBarcodes(product.id, next.length ? next : [null]).catch(() => {});
   };
 
   const toggleHub = (h) => {

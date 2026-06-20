@@ -40,18 +40,27 @@ export function isPhomemoSupported() {
   return typeof navigator !== "undefined" && !!navigator.bluetooth;
 }
 
-// First writable characteristic across the candidate services.
+// Writable characteristic across the candidate services. Prefer a WITH-RESPONSE
+// (ACK'd) char — the M110 hangs on "Feeding…" if any chunk of the declared raster
+// is dropped, and acknowledged writes guarantee every chunk lands. Fall back to a
+// write-without-response char only if that's all the printer exposes.
 async function discoverChar(server) {
   const services = await server.getPrimaryServices();
   console.log("[phomemo] services:", services.map(s => s.uuid));
+  let fallback = null;
   for (const svc of services) {
     const chars = await svc.getCharacteristics().catch(() => []);
     for (const ch of chars) {
-      if (ch.properties.write || ch.properties.writeWithoutResponse) {
-        console.log("[phomemo] writable char:", ch.uuid, "in service", svc.uuid, ch.properties);
+      if (ch.properties.write) {
+        console.log("[phomemo] writable (with-response) char:", ch.uuid, "in service", svc.uuid, ch.properties);
         return ch;
       }
+      if (ch.properties.writeWithoutResponse && !fallback) fallback = ch;
     }
+  }
+  if (fallback) {
+    console.log("[phomemo] writable (no-response) char:", fallback.uuid, "in service", fallback.service?.uuid, fallback.properties);
+    return fallback;
   }
   const seen = services.map(s => s.uuid).join(", ") || "none in the candidate list";
   throw new Error(`Connected but found no writable characteristic. Services seen: ${seen}. Send these UUIDs to the dev.`);
@@ -90,11 +99,21 @@ async function getConnection() {
   return await pickAndConnect();
 }
 
+// Stream the whole job in MTU-safe chunks, AWAITING each so the GS v 0 line-count
+// the printer is told to expect always equals the bytes that actually arrive — a
+// dropped tail is exactly what hangs it on "Feeding…". With-response writes are
+// ACK'd (reliable); the no-response fallback adds a short drain delay per chunk so
+// the BLE buffer can't overflow and silently drop the tail.
 async function writeChunked(characteristic, bytes) {
+  const ack = !!characteristic.properties?.write;
   for (let i = 0; i < bytes.length; i += CHUNK) {
     const slice = bytes.slice(i, i + CHUNK);
-    if (characteristic.writeValueWithoutResponse) await characteristic.writeValueWithoutResponse(slice);
-    else await characteristic.writeValue(slice);
+    if (ack) {
+      await characteristic.writeValue(slice);
+    } else {
+      await characteristic.writeValueWithoutResponse(slice);
+      await new Promise((r) => setTimeout(r, 12));
+    }
   }
 }
 
