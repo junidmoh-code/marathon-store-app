@@ -1,15 +1,23 @@
 // ─── PHOMEMO M110 — Web Bluetooth ─────────────────────────────────────────────
-// Connects over BLE GATT and prints each label as an ESC/POS raster bitmap
-// (GS v 0). Self-contained: every entry point is wrapped so a Bluetooth failure
-// surfaces as a returned error and never throws into the print flow.
+// Connects over BLE GATT and prints each label as a Phomemo raster bitmap.
+// Self-contained: every entry point is wrapped so a Bluetooth failure surfaces as
+// a returned error and never throws into the print flow.
 //
-// ENCODE (M110, 384-dot / ~48mm head → 48 bytes per line):
-//   ESC @ (init) → ESC a 1 (center) → one or more GS v 0 raster blocks
-//   (1D 76 30 00, bytesPerLine LE16, lineCount LE16, then the 1bpp rows; MSB-first,
-//   1=black) split at 255 lines per block → ESC d 3 (feed to tear bar).
-// SEND: BLE writes are MTU-limited, so the whole job is streamed in sequential
-//   ~180-byte writeValueWithoutResponse chunks, awaiting each. (One big write is
-//   why it fed but printed nothing.)
+// ENCODE — the M110 is NOT a plain ESC/POS printer. It needs its own (reverse-
+// engineered) command frame; sending only "ESC @ → GS v 0 → ESC d" makes it eject
+// a BLANK label and keep feeding because it was never told the media is gapped
+// labels and never given its real print/feed terminator. The working M110 frame
+// (vivier/phomemo-tools + bdm-k "Print images on the Phomemo M110" gist) is:
+//   INIT:     1B 4E 0D <speed 1..5>      print speed
+//             1B 4E 04 <darkness 1..15>  print density
+//             1F 11 <0x0A>               media type = LABEL WITH GAPS  ← the key bit
+//   RASTER:   1D 76 30 00 bplLE16 linesLE16 + 1bpp rows (MSB-first, 1=black),
+//             split into ≤240-line GS v 0 blocks (M110 block ceiling).
+//   FINALIZE: 1F F0 05 00  1F F0 03 00   print + feed to the gap (NOT ESC d).
+// Width is 40 bytes / 320 dots (the 40mm M110 label); the bitmap is rendered to
+// that width so there's no centering command and nothing falls off the label edge.
+// SEND: BLE writes are MTU-limited, so the whole frame is streamed in sequential
+//   ~180-byte chunks, awaiting each.
 // LIFECYCLE: the connected device + characteristic are cached and REUSED across
 //   prints; on gattserverdisconnected we mark it stale and silently reconnect to
 //   the SAME device (device.gatt.connect()) on the next print — never re-prompting
@@ -27,10 +35,14 @@ const CANDIDATE_SERVICES = [
   "6e400001-b5a3-f393-e0a9-e50e24dcca9e", // Nordic UART Service — write 6e400002
   "e7810a71-73ae-499d-8c15-faa9aef0c3f2", // misc Phomemo / serial variant
 ];
-const CHUNK = 180;            // BLE write size (MTU-safe; the job is streamed in these)
-const MAX_BLOCK_LINES = 255;  // lines per GS v 0 block (split taller bitmaps)
-// 384-dot head → 48 bytes per line. Height ≈ 30mm label @ 203dpi. Barcode centered.
-const LABEL = { widthDots: 384, heightDots: 240, moduleWidth: 2 };
+const CHUNK = 180;            // BLE write size (MTU-safe; the frame is streamed in these)
+const MAX_BLOCK_LINES = 240;  // lines per GS v 0 block on the M110 (split taller bitmaps)
+const PRINT_SPEED = 0x05;     // 1..5 (5 = fastest the firmware allows)
+const PRINT_DARKNESS = 0x0f;  // 1..15 (15 = darkest)
+const MEDIA_GAP_LABELS = 0x0a; // 1F 11 nn — 0x0a = "label with gaps" (the M110 default roll)
+// 320-dot / 40mm M110 label → 40 bytes per line. Height ≈ 30mm @ 203dpi. The bitmap
+// is rendered full-width so no centering command is needed.
+const LABEL = { widthDots: 320, heightDots: 240, moduleWidth: 2 };
 
 // Cached connection (BUG 2 — reuse across prints; don't reconnect every time).
 let cachedDevice = null;
@@ -40,10 +52,12 @@ export function isPhomemoSupported() {
   return typeof navigator !== "undefined" && !!navigator.bluetooth;
 }
 
-// Writable characteristic across the candidate services. Prefer a WITH-RESPONSE
-// (ACK'd) char — the M110 hangs on "Feeding…" if any chunk of the declared raster
-// is dropped, and acknowledged writes guarantee every chunk lands. Fall back to a
-// write-without-response char only if that's all the printer exposes.
+// Writable characteristic across the candidate services. Prefer a WRITE-WITHOUT-
+// RESPONSE char — that's what the M110's data characteristic (0xFF02) is, and it's
+// the transport every working M110 implementation uses. A with-response writeValue
+// to these cheap printers can stall waiting for an ATT ACK that never comes, which
+// itself hangs the print on "Feeding…". Fall back to a with-response char only if
+// that's all the printer exposes.
 async function discoverChar(server) {
   const services = await server.getPrimaryServices();
   console.log("[phomemo] services:", services.map(s => s.uuid));
@@ -51,15 +65,15 @@ async function discoverChar(server) {
   for (const svc of services) {
     const chars = await svc.getCharacteristics().catch(() => []);
     for (const ch of chars) {
-      if (ch.properties.write) {
-        console.log("[phomemo] writable (with-response) char:", ch.uuid, "in service", svc.uuid, ch.properties);
+      if (ch.properties.writeWithoutResponse) {
+        console.log("[phomemo] writable (no-response) char:", ch.uuid, "in service", svc.uuid, ch.properties);
         return ch;
       }
-      if (ch.properties.writeWithoutResponse && !fallback) fallback = ch;
+      if (ch.properties.write && !fallback) fallback = ch;
     }
   }
   if (fallback) {
-    console.log("[phomemo] writable (no-response) char:", fallback.uuid, "in service", fallback.service?.uuid, fallback.properties);
+    console.log("[phomemo] writable (with-response) char:", fallback.uuid, "in service", fallback.service?.uuid, fallback.properties);
     return fallback;
   }
   const seen = services.map(s => s.uuid).join(", ") || "none in the candidate list";
@@ -99,30 +113,33 @@ async function getConnection() {
   return await pickAndConnect();
 }
 
-// Stream the whole job in MTU-safe chunks, AWAITING each so the GS v 0 line-count
-// the printer is told to expect always equals the bytes that actually arrive — a
-// dropped tail is exactly what hangs it on "Feeding…". With-response writes are
-// ACK'd (reliable); the no-response fallback adds a short drain delay per chunk so
-// the BLE buffer can't overflow and silently drop the tail.
+// Stream the whole frame in MTU-safe chunks, AWAITING each. Prefer write-without-
+// response (the M110 data char) with a short per-chunk pause — timing matters on
+// these printers (bdm-k: "timing is critical"), and the pause lets the BLE buffer
+// drain so no chunk is dropped. Only use with-response writeValue if the char has
+// no writeWithoutResponse, since a missing ATT ACK there can stall the whole print.
 async function writeChunked(characteristic, bytes) {
-  const ack = !!characteristic.properties?.write;
+  const noResp = !!characteristic.properties?.writeWithoutResponse;
   for (let i = 0; i < bytes.length; i += CHUNK) {
     const slice = bytes.slice(i, i + CHUNK);
-    if (ack) {
-      await characteristic.writeValue(slice);
-    } else {
+    if (noResp) {
       await characteristic.writeValueWithoutResponse(slice);
-      await new Promise((r) => setTimeout(r, 12));
+      await new Promise((r) => setTimeout(r, 18));
+    } else {
+      await characteristic.writeValue(slice);
     }
   }
 }
 
-// Full ESC/POS job for one 1bpp bitmap: init + center + GS v 0 block(s) (≤255
-// lines each) + feed.
+// Full Phomemo M110 frame for one 1bpp bitmap: INIT (speed/darkness/media) →
+// GS v 0 block(s) (≤240 lines each) → FINALIZE (print + feed to gap). See the
+// file header for the byte-level rationale — this is the M110's own protocol, not
+// generic ESC/POS, which is why a plain "ESC @ / GS v 0 / ESC d" fed blank.
 function buildPrintJob({ bytesPerRow, height, mono }) {
   const parts = [
-    new Uint8Array([0x1b, 0x40]),       // ESC @  — init
-    new Uint8Array([0x1b, 0x61, 0x01]), // ESC a 1 — center
+    new Uint8Array([0x1b, 0x4e, 0x0d, PRINT_SPEED]),       // print speed
+    new Uint8Array([0x1b, 0x4e, 0x04, PRINT_DARKNESS]),    // print density
+    new Uint8Array([0x1f, 0x11, MEDIA_GAP_LABELS]),        // media = label with gaps
   ];
   for (let y = 0; y < height; y += MAX_BLOCK_LINES) {
     const lines = Math.min(MAX_BLOCK_LINES, height - y);
@@ -133,7 +150,8 @@ function buildPrintJob({ bytesPerRow, height, mono }) {
     ]));
     parts.push(mono.subarray(y * bytesPerRow, (y + lines) * bytesPerRow));
   }
-  parts.push(new Uint8Array([0x1b, 0x64, 0x03]));     // ESC d 3 — feed to tear bar
+  parts.push(new Uint8Array([0x1f, 0xf0, 0x05, 0x00]));  // finalize — print
+  parts.push(new Uint8Array([0x1f, 0xf0, 0x03, 0x00]));  // finalize — feed to gap
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);
   let off = 0;
