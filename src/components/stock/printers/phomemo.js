@@ -1,24 +1,25 @@
 // ─── PHOMEMO M110 — Web Bluetooth ─────────────────────────────────────────────
-// Proven transport (Code128/EAN/QR). Connects over BLE GATT and sends each label
-// as an ESC/POS raster bitmap (GS v 0). Self-contained: every entry point is
-// wrapped so a Bluetooth failure surfaces as a returned error and never throws
-// into the print flow.
+// Connects over BLE GATT and prints each label as an ESC/POS raster bitmap
+// (GS v 0). Self-contained: every entry point is wrapped so a Bluetooth failure
+// surfaces as a returned error and never throws into the print flow.
 //
-// HARDWARE NOTE: written to spec; on-device verification is pending (no tablet
-// today). The M110 BLE service/characteristic UUIDs below are the community-known
-// values; if a label prints blank/offset on tomorrow's test, tune moduleWidth /
-// widthDots and confirm the write characteristic — nothing else depends on this.
+// ENCODE (M110, 384-dot / ~48mm head → 48 bytes per line):
+//   ESC @ (init) → ESC a 1 (center) → one or more GS v 0 raster blocks
+//   (1D 76 30 00, bytesPerLine LE16, lineCount LE16, then the 1bpp rows; MSB-first,
+//   1=black) split at 255 lines per block → ESC d 3 (feed to tear bar).
+// SEND: BLE writes are MTU-limited, so the whole job is streamed in sequential
+//   ~180-byte writeValueWithoutResponse chunks, awaiting each. (One big write is
+//   why it fed but printed nothing.)
+// LIFECYCLE: the connected device + characteristic are cached and REUSED across
+//   prints; on gattserverdisconnected we mark it stale and silently reconnect to
+//   the SAME device (device.gatt.connect()) on the next print — never re-prompting
+//   the chooser unless the device object is lost.
 
 import { renderLabelBitmap } from "./labelBitmap";
 
-// Candidate GATT services to access after connect. The M110 advertises by NAME
-// only (NOT its service UUID), so a service-based requestDevice FILTER screened it
-// out entirely — that was the "printer never appears" bug. We now show ALL nearby
-// BLE devices (acceptAllDevices) and list these candidates in optionalServices so
-// getPrimaryServices() can reach them once the user picks the printer. We then
-// auto-pick the first WRITABLE characteristic, so we don't depend on one exact
-// UUID. Phomemo 0xFF00 (write 0xFF02) is primary; the rest are common BLE-printer
-// serial services as fallbacks.
+// Candidate GATT services accessed after connect. The M110 advertises by NAME only
+// (not its service UUID), so we acceptAllDevices in the chooser and list these so
+// getPrimaryServices() can reach them, then auto-pick the first WRITABLE char.
 const CANDIDATE_SERVICES = [
   "0000ff00-0000-1000-8000-00805f9b34fb", // Phomemo (M110/M120/M200) — write 0xFF02
   "000018f0-0000-1000-8000-00805f9b34fb", // 0x18F0 thermal SPP — write 0x2AF1
@@ -26,92 +27,122 @@ const CANDIDATE_SERVICES = [
   "6e400001-b5a3-f393-e0a9-e50e24dcca9e", // Nordic UART Service — write 6e400002
   "e7810a71-73ae-499d-8c15-faa9aef0c3f2", // misc Phomemo / serial variant
 ];
-const CHUNK = 200;          // BLE MTU-safe write size
-const LABEL = { widthDots: 320, heightDots: 160, moduleWidth: 2 }; // 40mm @ 203dpi
+const CHUNK = 180;            // BLE write size (MTU-safe; the job is streamed in these)
+const MAX_BLOCK_LINES = 255;  // lines per GS v 0 block (split taller bitmaps)
+// 384-dot head → 48 bytes per line. Height ≈ 30mm label @ 203dpi. Barcode centered.
+const LABEL = { widthDots: 384, heightDots: 240, moduleWidth: 2 };
+
+// Cached connection (BUG 2 — reuse across prints; don't reconnect every time).
+let cachedDevice = null;
+let cachedChar = null;
 
 export function isPhomemoSupported() {
   return typeof navigator !== "undefined" && !!navigator.bluetooth;
 }
 
-// Prompts the chooser (must run in a user gesture). Lists EVERY nearby BLE device,
-// then discovers a writable characteristic. Logs the device name + service/char
-// UUIDs so we can tighten the filter once we see the real values.
-async function connect() {
+// First writable characteristic across the candidate services.
+async function discoverChar(server) {
+  const services = await server.getPrimaryServices();
+  console.log("[phomemo] services:", services.map(s => s.uuid));
+  for (const svc of services) {
+    const chars = await svc.getCharacteristics().catch(() => []);
+    for (const ch of chars) {
+      if (ch.properties.write || ch.properties.writeWithoutResponse) {
+        console.log("[phomemo] writable char:", ch.uuid, "in service", svc.uuid, ch.properties);
+        return ch;
+      }
+    }
+  }
+  const seen = services.map(s => s.uuid).join(", ") || "none in the candidate list";
+  throw new Error(`Connected but found no writable characteristic. Services seen: ${seen}. Send these UUIDs to the dev.`);
+}
+
+// First-time pick (chooser — must run in a user gesture). Lists EVERY nearby BLE
+// device; caches the device + characteristic and wires silent reconnect.
+async function pickAndConnect() {
   const device = await navigator.bluetooth.requestDevice({
     acceptAllDevices: true,
     optionalServices: CANDIDATE_SERVICES,
   });
   console.log("[phomemo] picked:", device.name || "(no name)", "id:", device.id);
+  device.addEventListener("gattserverdisconnected", () => {
+    console.log("[phomemo] disconnected — will silently reconnect to the same device on next print");
+    cachedChar = null; // keep cachedDevice so we reconnect WITHOUT the chooser
+  });
   const server = await device.gatt.connect();
-  const services = await server.getPrimaryServices();
-  console.log("[phomemo] services:", services.map(s => s.uuid));
-  let characteristic = null;
-  for (const svc of services) {
-    const chars = await svc.getCharacteristics().catch(() => []);
-    for (const ch of chars) {
-      if (ch.properties.write || ch.properties.writeWithoutResponse) {
-        characteristic = ch;
-        console.log("[phomemo] writable char:", ch.uuid, "in service", svc.uuid, ch.properties);
-        break;
-      }
-    }
-    if (characteristic) break;
+  cachedDevice = device;
+  cachedChar = await discoverChar(server);
+  return { device, characteristic: cachedChar };
+}
+
+// Reuse the live connection; else silently reconnect the SAME device (no chooser);
+// else prompt the chooser. The reconnect/pick run inside the caller's gesture.
+async function getConnection() {
+  if (cachedDevice && cachedDevice.gatt?.connected && cachedChar) {
+    return { device: cachedDevice, characteristic: cachedChar };
   }
-  if (!characteristic) {
-    const seen = services.map(s => s.uuid).join(", ") || "none in the candidate list";
-    throw new Error(`Connected to "${device.name || "device"}" but found no writable characteristic. Services seen: ${seen}. Send these UUIDs to the dev to whitelist.`);
+  if (cachedDevice) {
+    console.log("[phomemo] reconnecting to cached device:", cachedDevice.name || cachedDevice.id);
+    const server = await cachedDevice.gatt.connect();
+    cachedChar = await discoverChar(server);
+    return { device: cachedDevice, characteristic: cachedChar };
   }
-  return { device, characteristic };
+  return await pickAndConnect();
 }
 
 async function writeChunked(characteristic, bytes) {
   for (let i = 0; i < bytes.length; i += CHUNK) {
     const slice = bytes.slice(i, i + CHUNK);
-    // writeValueWithoutResponse is faster but not always supported; fall back.
     if (characteristic.writeValueWithoutResponse) await characteristic.writeValueWithoutResponse(slice);
     else await characteristic.writeValue(slice);
   }
 }
 
-// ESC/POS raster command (GS v 0) for one 1bpp bitmap.
-function rasterCommand({ bytesPerRow, height, mono }) {
-  const header = new Uint8Array([
-    0x1b, 0x40,                                            // ESC @ — init
-    0x1d, 0x76, 0x30, 0x00,                                // GS v 0, mode 0
-    bytesPerRow & 0xff, (bytesPerRow >> 8) & 0xff,         // xL xH (bytes/row)
-    height & 0xff, (height >> 8) & 0xff,                   // yL yH (rows)
-  ]);
-  const feed = new Uint8Array([0x1b, 0x64, 0x02]);        // ESC d 2 — feed 2 lines
-  const out = new Uint8Array(header.length + mono.length + feed.length);
-  out.set(header, 0);
-  out.set(mono, header.length);
-  out.set(feed, header.length + mono.length);
+// Full ESC/POS job for one 1bpp bitmap: init + center + GS v 0 block(s) (≤255
+// lines each) + feed.
+function buildPrintJob({ bytesPerRow, height, mono }) {
+  const parts = [
+    new Uint8Array([0x1b, 0x40]),       // ESC @  — init
+    new Uint8Array([0x1b, 0x61, 0x01]), // ESC a 1 — center
+  ];
+  for (let y = 0; y < height; y += MAX_BLOCK_LINES) {
+    const lines = Math.min(MAX_BLOCK_LINES, height - y);
+    parts.push(new Uint8Array([
+      0x1d, 0x76, 0x30, 0x00,                          // GS v 0, mode 0
+      bytesPerRow & 0xff, (bytesPerRow >> 8) & 0xff,   // bytes-per-line LE16
+      lines & 0xff, (lines >> 8) & 0xff,               // line-count LE16
+    ]));
+    parts.push(mono.subarray(y * bytesPerRow, (y + lines) * bytesPerRow));
+  }
+  parts.push(new Uint8Array([0x1b, 0x64, 0x03]));     // ESC d 3 — feed to tear bar
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { out.set(p, off); off += p.length; }
   return out;
 }
 
-// Connect handle for the connect-first flow — MUST be called inside the user gesture
-// (requestDevice needs transient activation, which async work before it consumes).
+// Connect handle for the connect-first flow — MUST run in the user gesture the
+// FIRST time (requestDevice needs activation). Reconnects need no gesture.
 export async function connectPhomemo() {
   if (!isPhomemoSupported()) throw new Error("Web Bluetooth not available in this browser.");
-  return await connect();
+  return await getConnection();
 }
 
 // labels: [{ code, productName, size }] already expanded to one entry per copy.
 // `conn` (optional) is a pre-established connection from connectPhomemo().
 export async function printPhomemo(labels, conn = null) {
   if (!isPhomemoSupported()) return { ok: false, error: "Web Bluetooth not available in this browser." };
-  let c = conn, device;
   try {
-    if (!c) c = await connect();
-    device = c.device;
+    const c = conn || await getConnection();
     for (const label of labels) {
-      const bmp = renderLabelBitmap(label, LABEL);
-      await writeChunked(c.characteristic, rasterCommand(bmp));
+      const bmp = renderLabelBitmap(label, LABEL);          // { width, height, bytesPerRow, mono }
+      await writeChunked(c.characteristic, buildPrintJob(bmp));
     }
     return { ok: true, printed: labels.length };
   } catch (err) {
     return { ok: false, error: String(err?.message || err) };
-  } finally {
-    try { device?.gatt?.connected && device.gatt.disconnect(); } catch { /* ignore */ }
   }
+  // NOTE: intentionally NO disconnect — the GATT link is kept alive and reused for
+  // the next print (BUG 2); it silently reconnects via getConnection() if dropped.
 }
