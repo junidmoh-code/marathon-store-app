@@ -15,7 +15,7 @@ import { ref, set } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells } from "./useStock";
 import { ensureBarcode, getBarcode } from "./barcodeStore";
-import { TRANSPORTS, printLabels, printTest, connectTransport } from "./printers";
+import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag } from "./printers";
 import { Toast, Empty } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGhost, input } from "./ui";
 
@@ -95,9 +95,24 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     setBusy(true);
     // Connect FIRST — the printer picker needs the user-tap activation, which the
     // async barcode reservations below would otherwise consume (Android Chrome).
+    // Best-effort: persist the Xprinter's USB identity (VID/PID + iface/endpoints) to
+    // RTDB so it can be read server-side — captured pre-claim, so even a claim failure
+    // records it. Shown on screen too. Only for the Xprinter transport.
+    const recordXprinterDiag = async (error) => {
+      if (transport !== "xprinter") return;
+      const d = getXprinterDiag();
+      if (d) setDiagText(`XP-350B ${d.vendorId}/${d.productId}${error ? ` — ${error}` : ""}`);
+      try { await set(ref(database, "printer_diag/xprinter"), { ...(d || {}), error: error || null }); }
+      catch { /* diagnostic only */ }
+    };
     let conn;
     try { conn = await connectTransport(transport); }
-    catch (e) { setBusy(false); return flash("err", `Couldn't connect to the printer: ${String(e?.message || e)}`); }
+    catch (e) {
+      setBusy(false);
+      await recordXprinterDiag(String(e?.message || e));
+      return flash("err", `Couldn't connect to the printer: ${String(e?.message || e)}`);
+    }
+    await recordXprinterDiag(null);
     const items = []; let failReserve = 0, noCode = 0;
     for (const [, it] of selList) {
       try {

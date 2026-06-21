@@ -10,7 +10,9 @@
 // and on-screen barcode all work regardless of whether a printer is reachable.
 
 import { printPhomemo, printPhomemoTest, connectPhomemo, isPhomemoSupported } from "./phomemo";
-import { printXprinter, connectXprinter, isXprinterSupported } from "./xprinter";
+import { printXprinter, connectXprinter, isXprinterSupported, getXprinterDiag } from "./xprinter";
+
+export { getXprinterDiag };
 
 export const TRANSPORTS = [
   { id: "phomemo",  label: "Phomemo M110 (Bluetooth)", proven: true,  supported: isPhomemoSupported },

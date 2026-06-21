@@ -32,6 +32,13 @@ const TX_CHUNK = 8192;       // transferOut chunk so large batches don't choke
 let cachedDevice = null, cachedIface = null, cachedEndpoint = null;
 let disconnectWired = false;
 
+// Last selected device's identity + interface/endpoint map. Captured BEFORE claim so
+// we keep the VID/PID even if claimInterface fails. Surfaced to RTDB by the caller so
+// we can set a precise filter later (the chooser currently lists ALL devices).
+let lastXprinterDiag = null;
+export function getXprinterDiag() { return lastXprinterDiag; }
+const hex4 = (n) => (typeof n === "number" ? "0x" + n.toString(16).padStart(4, "0") : String(n));
+
 export function isXprinterSupported() {
   return typeof navigator !== "undefined" && !!navigator.usb;
 }
@@ -119,11 +126,37 @@ async function openDevice(device) {
     iface = cfgIface.interfaceNumber; endpointOut = out.endpointNumber;
     if (alt.interfaceClass === PRINTER_CLASS) break;   // prefer the printer interface
   }
+  // Capture the device's real identity + interface/endpoint map BEFORE claiming, so a
+  // claim failure still records the VID/PID we need to build a proper filter later.
+  lastXprinterDiag = {
+    at: new Date().toISOString(),
+    name: device.productName || "",
+    manufacturer: device.manufacturerName || "",
+    serial: device.serialNumber || "",
+    vendorId: hex4(device.vendorId),
+    productId: hex4(device.productId),
+    interfaces: (device.configuration?.interfaces || []).map(ci => ({
+      number: ci.interfaceNumber,
+      class: ci.alternate?.interfaceClass,
+      subclass: ci.alternate?.interfaceSubclass,
+      protocol: ci.alternate?.interfaceProtocol,
+      endpoints: (ci.alternate?.endpoints || []).map(e => ({ number: e.endpointNumber, direction: e.direction, type: e.type })),
+    })),
+    chosen: { iface, endpointOut },
+  };
+  console.log("[xprinter] device:", JSON.stringify(lastXprinterDiag));
+
   if (iface === null) throw new Error("No bulk OUT endpoint found on the selected USB device — is this the label printer?");
   try {
     await device.claimInterface(iface);
   } catch (e) {
-    throw new Error(`Couldn't claim the printer (${e?.message || e}). On macOS the system may own it — remove the XP-350B from System Settings ▸ Printers & Scanners (or quit apps using it), then retry.`);
+    const msg = String(e?.message || e);
+    const inUse = /in use|claim|access|denied|busy/i.test(msg);
+    throw new Error(
+      `Couldn't claim the printer${inUse ? " — the interface is in use" : ""} (${msg}). ` +
+      `On macOS the system usually owns the printer: remove the XP-350B from System Settings ▸ Printers & Scanners ` +
+      `(and quit any app using it), then retry. VID/PID ${lastXprinterDiag.vendorId}/${lastXprinterDiag.productId}.`
+    );
   }
   cachedDevice = device; cachedIface = iface; cachedEndpoint = endpointOut;
   return { device, iface, endpointOut };
@@ -142,7 +175,10 @@ async function getConnection() {
   const known = (await navigator.usb.getDevices());
   const pick = known.find(isPrinterLike) || known[0];
   if (pick) return await openDevice(pick);
-  const device = await navigator.usb.requestDevice({ filters: [{ classCode: PRINTER_CLASS }] });
+  // Empty filters → list ALL USB devices, so the XP-350B always appears even if it
+  // presents a vendor-specific class (the classCode 0x07 filter was hiding it). Once
+  // we log the real VID/PID we can narrow this back down.
+  const device = await navigator.usb.requestDevice({ filters: [] });
   return await openDevice(device);
 }
 
