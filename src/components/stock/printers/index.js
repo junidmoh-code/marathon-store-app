@@ -36,11 +36,19 @@ export async function connectTransport(transport) {
 }
 
 export async function printLabels({ items, transport, conn = null }) {
-  const labels = expand(items);
-  if (!labels.length) return { ok: false, error: "Nothing to print (all counts are 0)." };
   try {
-    if (transport === "phomemo") return await printPhomemo(labels, conn);
-    if (transport === "xprinter") return await printXprinter(labels, conn);
+    if (transport === "phomemo") {
+      // Phomemo rasterises one bitmap per physical copy → expand counts to entries.
+      const labels = expand(items);
+      if (!labels.length) return { ok: false, error: "Nothing to print (all counts are 0)." };
+      return await printPhomemo(labels, conn);
+    }
+    if (transport === "xprinter") {
+      // Xprinter renders TSPL natively with PRINT n → pass items WITH their counts.
+      const valid = (items || []).filter(it => it && it.code);
+      if (!valid.length) return { ok: false, error: "Nothing to print." };
+      return await printXprinter(valid, conn);
+    }
     return { ok: false, error: `Unknown transport "${transport}".` };
   } catch (err) {
     // Belt-and-suspenders — drivers already catch, but never let the flow break.
