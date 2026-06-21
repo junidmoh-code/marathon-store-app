@@ -8,6 +8,8 @@ import {
   nextStoreIds,
   placesOrders,
   shouldWarnNoStore,
+  SHOP_TO_UNIVERSE,
+  shopUniverse,
 } from "./stores";
 
 describe("effectiveStoreIds — order placement gate", () => {
@@ -46,6 +48,28 @@ describe("effectiveStoreIds — order placement gate", () => {
   it("returns a copy, not the canonical STORE_IDS reference", () => {
     const out = effectiveStoreIds({}, true);
     expect(out).not.toBe(STORE_IDS);
+  });
+});
+
+describe("shopUniverse — shop → routing-universe bridge", () => {
+  it("Marathon PE and Trophy both map to the central universe", () => {
+    expect(shopUniverse("marathon-pe")).toBe("central");
+    expect(shopUniverse("trophy")).toBe("central");
+  });
+
+  it("Pine maps to the pine universe", () => {
+    expect(shopUniverse("marathon-pine")).toBe("pine");
+  });
+
+  it("unknown/unmapped shop defaults to central (never accidentally pine)", () => {
+    expect(shopUniverse("future-shop")).toBe("central");
+    expect(shopUniverse(undefined)).toBe("central");
+  });
+
+  it("every mapped shop resolves to a real STORE_ID", () => {
+    for (const universe of Object.values(SHOP_TO_UNIVERSE)) {
+      expect(STORE_IDS).toContain(universe);
+    }
   });
 });
 

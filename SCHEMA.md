@@ -143,6 +143,7 @@ display-partner + clothing-refill resolution fields — see `placeOrders` /
 | `hub`         | `"hub1" \| "hub2" \| "hub3" \| "hubC"`        | Legacy fulfilment-hub field. Double-written with `placedAtHub`. |
 | `placedAtHub` | `"hub1" \| "hub2" \| "hub3" \| "hubC"`        | Source-of-truth fulfilment hub. `WarehouseView` filters hub3 + **hubC** by this field; hub1/hub2 by `hub`. |
 | `placedStore` | `"central" \| "pine"`                         | The operational store the order was placed from. Usually implied by the hub, but **clothing customer orders all route to `hubC`**, so the store is persisted explicitly for tracking. |
+| `destShop`    | `"marathon-pe" \| "trophy" \| "marathon-pine"` | The physical **shop** the order is for (the assistant store toggle now picks a shop, not a universe). On dispatch (`markSentAndPrint`) this is the **TO** location of the recorded warehouse→shop `transfer_out`; `placedAtHub` is the **FROM**. Absent on legacy orders (pre-shop-toggle) — legacy pine orders infer `marathon-pine`, legacy central orders skip the transfer (shop unknown). |
 | `intent`      | (cart-line only, not persisted)              | Assistant cart lines tag clothing as `"customer"` vs `"refill"` to pick the Checkout vs refill path; not written to the order. |
 | `displayRefillStatus` | `"stockDepleted" \| "refilled" \| null` | Display-partner refill resolution (Phase 9). `null` = active task; `"refilled"` = display replenished; `"stockDepleted"` = no inventory left. Written by `setDisplayRefillStatus`; the `stockDepleted` value is the **order-scoped depletion signal** that feeds Insights (`insights_log` `action:"stock_depleted"` + Insights → Stock Depleted tab). It is **order-scoped only** — it does NOT flag the product (product-level depletion blocking was retired; see `/products` `depletedAt`). |
 | `displayRefillScheduledAt` | ISO string \| null | When the refill task was scheduled (starts the 15-min window). Set on the order's READY transition for a display-partner order; cleared when it leaves READY. |
@@ -396,6 +397,20 @@ Transport is a self-contained module (`printers/`): Phomemo M110 (Web Bluetooth,
 proven) and Xprinter XP-350B (WebUSB/TSPL, **unproven — pending hardware test**); a
 print failure is isolated and blocks nothing (codes are still reserved/stored/indexed
 and the on-screen barcode is scannable).
+
+### Dispatch transfer (warehouse → shop on "Mark as Sent")
+When the warehouse marks an order **Sent** (`markSentAndPrint` → `recordDispatchTransfer`),
+the app records a `transfer_out` from the order's source hub (`placedAtHub`) to the
+order's destination shop (`destShop`), so each shop's on-hand is the running total of
+its own recorded transfers. Properties:
+- **FROM** = `order.placedAtHub` (`hub1`/`hub2`/`hub3`); **TO** = `order.destShop`
+  (or `marathon-pine` for legacy pine orders). `hubC` (clothing-customer trials) and
+  legacy central orders (shop unknown) are skipped.
+- **Idempotent** via a date-scoped `movementId` (`disp_<id>_<createdAt>`) — re-taps
+  collapse to one movement (`order.id` alone is the reused daily counter).
+- **Non-blocking**: the send (status + label) always completes; an insufficient-hub-stock
+  or write failure only raises a non-blocking toast (stock not deducted).
+- Reuses `applyMovement` — no parallel write path.
 
 ### One-step transfer (rework)
 A transfer is now a **single atomic `transfer_out`** movement carrying a real
