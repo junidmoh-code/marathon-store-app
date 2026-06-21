@@ -11,6 +11,8 @@
 // barcode reservation at print, via the shared barcodeStore.
 
 import React, { useState, useMemo } from "react";
+import { ref, set } from "firebase/database";
+import { database } from "../../firebase";
 import { useStockCells } from "./useStock";
 import { ensureBarcode, getBarcode } from "./barcodeStore";
 import { TRANSPORTS, printLabels, printTest, connectTransport } from "./printers";
@@ -49,6 +51,17 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     const res = await printTest({ transport, conn });
     setBusy(false);
     setDiagText(`${res.ok ? "Test sent ✓" : "Test FAILED ✗"} — ${res.diag || res.error || "no info"}`);
+    // Write the full GATT dump to RTDB so it can be read server-side (the operator
+    // doesn't have to transcribe anything). Best-effort — never blocks the UI.
+    try {
+      await set(ref(database, "printer_diag/latest"), {
+        at: new Date().toISOString(),
+        ok: !!res.ok,
+        diag: res.diag || null,
+        error: res.error || null,
+        dump: res.dump || null,
+      });
+    } catch (e) { /* diagnostic only */ }
   };
 
   // On-hand for a product+size, summed across every location (the one source of truth).

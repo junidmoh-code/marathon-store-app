@@ -78,6 +78,7 @@
     "restock_requests":        { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "returns_log":             { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "source_onhold_responses": { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "printer_diag":            { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
 
     "users": {
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
