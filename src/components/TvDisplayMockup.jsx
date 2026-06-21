@@ -269,6 +269,9 @@ function NikeShoeBox() {
 }
 
 // ─── SHOEBOX SCREENSAVER ──────────────────────────────────────────────────────
+// The DVD-logo-style bouncing Nike shoebox. Disabled for now — flip to true to
+// bring it back exactly as before (it then shows whenever sneaker visuals are on).
+const SHOW_DVD_BOX = false;
 function ShoeboxFloat() {
   const elRef = useRef(null);
   const BOX_W = 180;
@@ -516,25 +519,22 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
     return () => clearInterval(t);
   }, []);
 
-  // Hidden top-right corner: a DOUBLE tap/click exits TV mode (back to the view
-  // picker). TV mode is otherwise chrome-free, so without this there's no way
-  // off the screen. Double-tap (not single) so a customer brushing the corner
-  // can't accidentally drop the kiosk out of TV mode. First tap "arms" it for
-  // 2s and shows a faint ✕; the second tap within that window exits.
-  const [exitArmed, setExitArmed] = useState(false);
-  const exitTimerRef = useRef(null);
-  useEffect(() => () => clearTimeout(exitTimerRef.current), []);
-  const handleExitTap = () => {
+  // Exit TV mode: drop out of browser fullscreen if we're in it, then leave the TV
+  // view (onExit clears the #tv hash / returns to the picker). Reachable by the
+  // discreet ✕ in the top-right corner (below) AND by the Esc key. We never call
+  // requestFullscreen, so there's no re-request loop and Esc is free to work.
+  const exitTv = () => {
     if (!onExit) return;
-    if (exitArmed) {
-      clearTimeout(exitTimerRef.current);
-      setExitArmed(false);
-      onExit();
-    } else {
-      setExitArmed(true);
-      exitTimerRef.current = setTimeout(() => setExitArmed(false), 2000);
-    }
+    try { if (document.fullscreenElement) document.exitFullscreen?.(); } catch { /* ignore */ }
+    onExit();
   };
+  useEffect(() => {
+    if (!onExit) return;
+    const onKey = (e) => { if (e.key === "Escape") exitTv(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onExit]);
 
   // Sneaker visuals (sliding conveyor, header shoe, floating shoebox) can be
   // toggled off via a hidden bottom-left tap zone. Preference persists in
@@ -629,8 +629,9 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
           area below the main grid never grows/shifts. */}
       {sneakersOn ? <ShoeConveyor /> : <div style={{ height: 160, flexShrink: 0 }} />}
 
-      {/* SHOEBOX SCREENSAVER — position:fixed, so omitting it has no layout impact */}
-      {sneakersOn && <ShoeboxFloat />}
+      {/* SHOEBOX SCREENSAVER — position:fixed, so omitting it has no layout impact.
+          Behind SHOW_DVD_BOX (off for now); the sneakers toggle is unchanged. */}
+      {SHOW_DVD_BOX && sneakersOn && <ShoeboxFloat />}
 
       {/* LAYBY PULLS — discreet awareness strip so warehouse staff spot a pending
           pull (by LB number) without opening the phone. Additive + self-hiding:
@@ -690,28 +691,28 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
         )}
       </button>
 
-      {/* Hidden ~64×64 tap/click zone in the top-right corner. DOUBLE tap to
-          exit TV mode. Invisible until armed; the first tap shows a faint ✕ for
-          2s so staff know the second tap will exit. Only rendered when an
-          onExit handler is wired (in-app DISPLAY role / #tv shell). */}
+      {/* Discreet but ALWAYS-visible exit in the top-right corner. Single click/tap
+          exits TV mode (also leaves browser fullscreen). Semi-transparent so it
+          doesn't intrude on a wall TV, but always findable; brightens on hover.
+          Only rendered when an onExit handler is wired (in-app DISPLAY role / #tv). */}
       {onExit && (
         <button
           type="button"
-          onClick={handleExitTap}
-          aria-label="Exit TV display (double-tap)"
-          title={exitArmed ? "Tap again to exit" : "Exit TV display (double-tap)"}
+          onClick={exitTv}
+          aria-label="Exit TV display"
+          title="Exit TV display (Esc)"
+          onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.95"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.28"; }}
           style={{
-            position: "fixed", right: 0, top: 0,
-            width: 64, height: 64,
+            position: "fixed", right: 14, top: 14,
+            width: 40, height: 40, borderRadius: "50%",
             display: "flex", alignItems: "center", justifyContent: "center",
-            cursor: "pointer", zIndex: 300,
+            cursor: "pointer", zIndex: 300, opacity: 0.28, transition: "opacity .15s",
             WebkitTapHighlightColor: "transparent",
-            background: "transparent", border: 0, padding: 0,
+            background: "rgba(0,0,0,0.45)", border: "1px solid rgba(255,255,255,0.35)", padding: 0,
           }}
         >
-          {exitArmed && (
-            <span style={{ color: "rgba(255,255,255,0.4)", fontSize: 22, lineHeight: 1, fontWeight: 300 }}>✕</span>
-          )}
+          <span style={{ color: "#fff", fontSize: 20, lineHeight: 1, fontWeight: 300 }}>✕</span>
         </button>
       )}
     </div>
