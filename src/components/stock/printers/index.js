@@ -9,7 +9,7 @@
 // A failed transport blocks nothing else: the value model, storage, reverse index
 // and on-screen barcode all work regardless of whether a printer is reachable.
 
-import { printPhomemo, connectPhomemo, isPhomemoSupported } from "./phomemo";
+import { printPhomemo, printPhomemoTest, connectPhomemo, isPhomemoSupported } from "./phomemo";
 import { printXprinter, connectXprinter, isXprinterSupported } from "./xprinter";
 
 export const TRANSPORTS = [
@@ -46,4 +46,11 @@ export async function printLabels({ items, transport, conn = null }) {
     // Belt-and-suspenders — drivers already catch, but never let the flow break.
     return { ok: false, error: String(err?.message || err) };
   }
+}
+
+// Diagnostic: print a canvas-free test pattern (solid + stripes) to prove the
+// protocol + BLE delivery work independently of label content. Phomemo only.
+export async function printTest({ transport, conn = null }) {
+  if (transport === "phomemo") return await printPhomemoTest(conn);
+  return { ok: false, error: `Test print not supported for "${transport}".` };
 }
