@@ -13,9 +13,11 @@
 //             1F 11 <0x0A>               media type = LABEL WITH GAPS  ← the key bit
 //   RASTER:   1D 76 30 00 bplLE16 linesLE16 + 1bpp rows (MSB-first, 1=black),
 //             split into ≤240-line GS v 0 blocks (M110 block ceiling).
-//   FINALIZE: 1F F0 05 00  1F F0 03 00   print + feed to the gap (NOT ESC d).
-// Width is 40 bytes / 320 dots (the 40mm M110 label); the bitmap is rendered to
-// that width so there's no centering command and nothing falls off the label edge.
+//   FINALIZE: 1F F0 05 00   print + feed to the gap (NOT ESC d). We send ONLY this —
+//             the extra 1F F0 03 00 was advancing a second blank label every print.
+// Width is the FULL head (48 bytes / 384 dots); the bitmap centres the content within
+// it so it lands centred on the label, which sits centred under the head. See
+// labelBitmap.js + the LABEL SIZE constants below.
 // SEND: the whole frame is streamed in chunks, awaiting each. With an acknowledged
 //   (`write`) characteristic each write is flow-controlled, so the raster tail can't
 //   drop (the "reacts but prints nothing" symptom); a write-without-response char
@@ -46,12 +48,21 @@ const MAX_BLOCK_LINES = 240;  // lines per GS v 0 block on the M110 (split talle
 const PRINT_SPEED = 0x05;     // 1..5 (5 = fastest the firmware allows)
 const PRINT_DARKNESS = 0x0f;  // 1..15 (15 = darkest)
 const MEDIA_GAP_LABELS = 0x0a; // 1F 11 nn — 0x0a = "label with gaps" (the M110 default roll)
-// Loaded label is 40 × 20 mm. Width 320 dots = 40mm (40 bytes/line); height 152 dots
-// ≈ 19mm @ 203dpi — deliberately ~1mm UNDER the 20mm (160-dot) label so the print
-// stays within one label and the finalize feed-to-gap advances exactly one sticker.
-// Printing the full label height makes the feed eject a second blank label.
-// (If a different roll is loaded, change heightDots to mm×8, a touch under the label.)
-const LABEL = { widthDots: 320, heightDots: 152, moduleWidth: 2 };
+
+// ── LABEL SIZE (the only knobs to change for a different roll) ────────────────
+// The physical sticker. Confirmed loaded roll is 40 × 20 mm (set 30 for 40×30 rolls).
+const DOTS_PER_MM   = 8;      // 203 dpi ≈ 8 dots/mm
+const LABEL_WIDTH_MM  = 40;
+const LABEL_HEIGHT_MM = 20;
+const HEAD_DOTS     = 384;    // M110 print-head width (48mm). The raster is the FULL head
+                             // so content can be CENTRED — the label sits centred under it.
+const LABEL_WIDTH_DOTS  = LABEL_WIDTH_MM  * DOTS_PER_MM;            // 320 — printable width
+const LABEL_HEIGHT_DOTS = LABEL_HEIGHT_MM * DOTS_PER_MM;           // 160 — one label tall
+// Render ~1mm under the label height so we never print into the inter-label gap.
+const RASTER_HEIGHT     = LABEL_HEIGHT_DOTS - DOTS_PER_MM;         // 152
+// widthDots = full head (centring canvas); contentWidthDots = the label's printable
+// width, centred under the head; height = one label.
+const LABEL = { widthDots: HEAD_DOTS, heightDots: RASTER_HEIGHT, contentWidthDots: LABEL_WIDTH_DOTS, moduleWidth: 2 };
 
 // Cached connection (BUG 2 — reuse across prints; don't reconnect every time).
 let cachedDevice = null;
@@ -214,8 +225,10 @@ function buildPrintJob({ bytesPerRow, height, mono }) {
     ]));
     parts.push(mono.subarray(y * bytesPerRow, (y + lines) * bytesPerRow));
   }
-  parts.push(new Uint8Array([0x1f, 0xf0, 0x05, 0x00]));  // finalize — print
-  parts.push(new Uint8Array([0x1f, 0xf0, 0x03, 0x00]));  // finalize — feed to gap
+  // Finalize: print + feed to the gap. We send ONLY 1F F0 05 00 — the extra
+  // 1F F0 03 00 feed was advancing a SECOND, full, blank label every print (two feed
+  // commands = two label advances). One command presents exactly one label.
+  parts.push(new Uint8Array([0x1f, 0xf0, 0x05, 0x00]));  // finalize — print + feed to gap
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);
   let off = 0;
@@ -235,7 +248,7 @@ export async function connectPhomemo() {
 // so a successful print proves the protocol + BLE delivery work and isolates the
 // label content (canvas) as the only other variable. Same 40×240 geometry as a label.
 function buildTestBitmap() {
-  const bytesPerRow = 40, height = 152; // match LABEL height (40×20mm) so the test is one label too
+  const bytesPerRow = HEAD_DOTS / 8, height = RASTER_HEIGHT; // full head width × one label tall
   const mono = new Uint8Array(bytesPerRow * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < bytesPerRow; x++) {
