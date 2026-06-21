@@ -3941,9 +3941,10 @@ function WarehouseView({ products = [], orders, onExit }) {
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
     printDispatchLabel({ ...order, sentSize })
       .then((res) => {
-        if (res?.ok) setPrintToast({ kind: "ok", text: `Dispatch label printed for #${order.id}.` });
-        else setPrintToast({ kind: "err", text: `Label didn't print (${res?.error || "unknown"}). Order sent — retry print.` });
-        setTimeout(() => setPrintToast(null), 4200);
+        const diag = res?.diag ? ` [${res.diag}]` : "";
+        if (res?.ok) setPrintToast({ kind: "ok", text: `Dispatch label printed for #${order.id}.${diag}` });
+        else setPrintToast({ kind: "err", text: `Label didn't print (${res?.error || "unknown"}). Order sent — retry print.${diag}` });
+        setTimeout(() => setPrintToast(null), 7000);
       })
       .catch(() => {
         setPrintToast({ kind: "err", text: "Label didn't print. Order sent — retry print." });

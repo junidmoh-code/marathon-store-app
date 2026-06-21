@@ -93,8 +93,9 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     if (noCode) skipped.push(`${noCode} had no code`);
     if (failReserve) skipped.push(`${failReserve} failed`);
     const extra = skipped.length ? ` · ${skipped.join(", ")}` : "";
-    if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${TRANSPORTS.find(t => t.id === transport)?.label}${extra}.`);
-    else flash("err", `Print failed: ${res.error} — codes are saved; retry.`);
+    const diag = res.diag ? ` [${res.diag}]` : "";
+    if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${TRANSPORTS.find(t => t.id === transport)?.label}${extra}.${diag}`);
+    else flash("err", `Print failed: ${res.error} — codes are saved; retry.${diag}`);
   };
 
   return (
