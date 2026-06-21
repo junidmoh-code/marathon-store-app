@@ -536,6 +536,23 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onExit]);
 
+  // Exit ✕ is INVISIBLE at rest (customer-facing board) and fades in only while the
+  // cursor moves, fading back out ~2.5s after the last movement. On a wall TV with no
+  // mouse it never shows. The click target stays live regardless (opacity 0 still
+  // clicks), so a tap/click in the corner always exits even while invisible.
+  const [exitVisible, setExitVisible] = useState(false);
+  useEffect(() => {
+    if (!onExit) return;
+    let timer;
+    const onMove = () => {
+      setExitVisible(true);
+      clearTimeout(timer);
+      timer = setTimeout(() => setExitVisible(false), 2500);
+    };
+    window.addEventListener("mousemove", onMove);
+    return () => { clearTimeout(timer); window.removeEventListener("mousemove", onMove); };
+  }, [onExit]);
+
   // Sneaker visuals (sliding conveyor, header shoe, floating shoebox) can be
   // toggled off via a hidden bottom-left tap zone. Preference persists in
   // localStorage so a TV refresh remembers the last state. Default: shown.
@@ -691,23 +708,23 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
         )}
       </button>
 
-      {/* Discreet but ALWAYS-visible exit in the top-right corner. Single click/tap
-          exits TV mode (also leaves browser fullscreen). Semi-transparent so it
-          doesn't intrude on a wall TV, but always findable; brightens on hover.
-          Only rendered when an onExit handler is wired (in-app DISPLAY role / #tv). */}
+      {/* Exit in the top-right corner. INVISIBLE at rest on the customer board; fades
+          in only while the cursor moves (exitVisible) and back out after ~2.5s idle.
+          The click/tap target stays live at all times (opacity 0 still clicks), so a
+          tap there always exits even while invisible; Esc also exits. Only rendered
+          when an onExit handler is wired (in-app DISPLAY role / #tv). */}
       {onExit && (
         <button
           type="button"
           onClick={exitTv}
           aria-label="Exit TV display"
           title="Exit TV display (Esc)"
-          onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.95"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.28"; }}
           style={{
             position: "fixed", right: 14, top: 14,
             width: 40, height: 40, borderRadius: "50%",
             display: "flex", alignItems: "center", justifyContent: "center",
-            cursor: "pointer", zIndex: 300, opacity: 0.28, transition: "opacity .15s",
+            cursor: "pointer", zIndex: 300,
+            opacity: exitVisible ? 0.95 : 0, transition: "opacity .3s",
             WebkitTapHighlightColor: "transparent",
             background: "rgba(0,0,0,0.45)", border: "1px solid rgba(255,255,255,0.35)", padding: 0,
           }}
