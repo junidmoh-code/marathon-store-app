@@ -46,9 +46,12 @@ const MAX_BLOCK_LINES = 240;  // lines per GS v 0 block on the M110 (split talle
 const PRINT_SPEED = 0x05;     // 1..5 (5 = fastest the firmware allows)
 const PRINT_DARKNESS = 0x0f;  // 1..15 (15 = darkest)
 const MEDIA_GAP_LABELS = 0x0a; // 1F 11 nn — 0x0a = "label with gaps" (the M110 default roll)
-// 320-dot / 40mm M110 label → 40 bytes per line. Height ≈ 30mm @ 203dpi. The bitmap
-// is rendered full-width so no centering command is needed.
-const LABEL = { widthDots: 320, heightDots: 240, moduleWidth: 2 };
+// Loaded label is 40 × 20 mm. Width 320 dots = 40mm (40 bytes/line); height 152 dots
+// ≈ 19mm @ 203dpi — deliberately ~1mm UNDER the 20mm (160-dot) label so the print
+// stays within one label and the finalize feed-to-gap advances exactly one sticker.
+// Printing the full label height makes the feed eject a second blank label.
+// (If a different roll is loaded, change heightDots to mm×8, a touch under the label.)
+const LABEL = { widthDots: 320, heightDots: 152, moduleWidth: 2 };
 
 // Cached connection (BUG 2 — reuse across prints; don't reconnect every time).
 let cachedDevice = null;
@@ -232,7 +235,7 @@ export async function connectPhomemo() {
 // so a successful print proves the protocol + BLE delivery work and isolates the
 // label content (canvas) as the only other variable. Same 40×240 geometry as a label.
 function buildTestBitmap() {
-  const bytesPerRow = 40, height = 240;
+  const bytesPerRow = 40, height = 152; // match LABEL height (40×20mm) so the test is one label too
   const mono = new Uint8Array(bytesPerRow * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < bytesPerRow; x++) {
