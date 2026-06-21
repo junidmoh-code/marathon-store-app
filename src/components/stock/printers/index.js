@@ -22,7 +22,7 @@ function expand(items) {
   const labels = [];
   for (const it of items || []) {
     const n = Math.max(0, Math.floor(Number(it.count) || 0));
-    for (let i = 0; i < n; i++) labels.push({ code: it.code, productName: it.productName, size: it.size });
+    for (let i = 0; i < n; i++) labels.push({ code: it.code, productName: it.productName, size: it.size, header: it.header });
   }
   return labels;
 }

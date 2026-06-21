@@ -20,6 +20,7 @@ import { useStockCells, useLocations } from "./components/stock/useStock";
 import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
+import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
@@ -3713,6 +3714,8 @@ function WarehouseView({ products = [], orders, onExit }) {
   // refresh was the only way to realign them. dueRefills short-circuits
   // when selectedHub is null so the landing-screen pass is harmless.
   const [pickerOpenId, setPickerOpenId] = useState(null);
+  // Dispatch-label print toast (non-blocking — Send never waits on the printer).
+  const [printToast, setPrintToast] = useState(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNowTick(Date.now()), 30 * 1000);
@@ -3928,6 +3931,27 @@ function WarehouseView({ products = [], orders, onExit }) {
       sendWhatsAppTemplate(order.customerPhone, "order_tomorrow", [order.id]);
   };
 
+  // Mark an order Sent AND auto-print its dispatch label. The print is kicked off
+  // FIRST (synchronously, so the BLE chooser still has the Send click's user-gesture
+  // activation) but is NOT awaited — updateStatus runs exactly as before and a print
+  // failure only raises a non-blocking toast; the Send always completes.
+  // extraPatch.sentSize carries a warehouse size substitution → the label barcodes
+  // the size physically shipping.
+  const markSentAndPrint = (order, extraPatch = {}) => {
+    const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
+    printDispatchLabel({ ...order, sentSize })
+      .then((res) => {
+        if (res?.ok) setPrintToast({ kind: "ok", text: `Dispatch label printed for #${order.id}.` });
+        else setPrintToast({ kind: "err", text: `Label didn't print (${res?.error || "unknown"}). Order sent — retry print.` });
+        setTimeout(() => setPrintToast(null), 4200);
+      })
+      .catch(() => {
+        setPrintToast({ kind: "err", text: "Label didn't print. Order sent — retry print." });
+        setTimeout(() => setPrintToast(null), 4200);
+      });
+    updateStatus(order, STATUS.READY, extraPatch);
+  };
+
   // ── Display refill helpers (Phase 9 / 9.5) ───────────────────────────────
   // Resolve a partner-order refill task to one of two terminal states:
   // 'refilled' (display replenished) or 'stockDepleted' (no inventory left,
@@ -4092,6 +4116,15 @@ function WarehouseView({ products = [], orders, onExit }) {
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      {/* Dispatch-label print toast — auto-print result on "Mark as Sent" (non-blocking). */}
+      {printToast && (
+        <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
+                      padding:"11px 14px", borderRadius:10, fontSize:12, fontWeight:600, textAlign:"center",
+                      background: printToast.kind === "ok" ? "rgba(0,150,70,.92)" : "rgba(150,30,30,.94)",
+                      color:"#fff", border:"1px solid rgba(255,255,255,.18)", boxShadow:"0 6px 24px rgba(0,0,0,.4)" }}>
+          {printToast.text}
+        </div>
+      )}
       {/* TOP BAR */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
         <div onClick={onExit}
@@ -4177,7 +4210,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                     <div style={{ color:"#555", fontSize:11 }}>{order.customerName}</div>
                   </div>
                   <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                    <button onClick={() => updateStatus(order, STATUS.READY)} style={{ background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.3)", color:"#4ACA7A", borderRadius:8, padding:"6px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>Available</button>
+                    <button onClick={() => markSentAndPrint(order)} style={{ background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.3)", color:"#4ACA7A", borderRadius:8, padding:"6px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>Available</button>
                     <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)} style={{ background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B", borderRadius:8, padding:"6px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>Still OOS</button>
                   </div>
                 </div>
@@ -4322,14 +4355,14 @@ function WarehouseView({ products = [], orders, onExit }) {
                   const pickerOpen = pickerOpenId === order.id;
                   const commitSub = (chosen) => {
                     setPickerOpenId(null);
-                    updateStatus(order, STATUS.READY, { sentSize: chosen });
+                    markSentAndPrint(order, { sentSize: chosen });
                   };
                   return (
                     <div style={{ padding:"0 12px 10px 16px" }}>
                       {!pickerOpen ? (
                         // 2×2 action grid — Sent / OOS on top row, Tomorrow / Substitute on bottom.
                         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-                          <button onClick={() => updateStatus(order, STATUS.READY)}
+                          <button onClick={() => markSentAndPrint(order)}
                                   style={{ padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.3)", color:"#4ACA7A" }}>
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                             Mark as Sent

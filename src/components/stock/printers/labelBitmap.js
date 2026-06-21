@@ -8,23 +8,34 @@
 import { code128Modules } from "../barcode";
 
 // Draw the barcode bars + text onto a canvas 2D context.
-function drawLabel(ctx, { code, productName, size }, widthDots, heightDots, moduleWidth) {
+// `header` (optional) is a bold top line used by dispatch labels (order # + customer);
+// when absent the layout is identical to the original catalog label.
+function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDots, moduleWidth) {
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, widthDots, heightDots);
   ctx.fillStyle = "#000";
-
-  // Top line: product name + size (truncated to fit).
-  const title = `${productName || ""}${size ? "  ·  " + size : ""}`.trim();
-  ctx.font = "bold 20px monospace";
   ctx.textBaseline = "top";
-  ctx.fillText(title.slice(0, 28), 8, 6, widthDots - 16);
 
-  // Barcode: center the bars horizontally with a quiet zone.
+  // Optional dispatch header (order # + customer) — pushes everything else down.
+  let topY = 6;
+  if (header) {
+    ctx.font = "bold 19px monospace";
+    ctx.fillText(String(header).slice(0, 30), 8, topY, widthDots - 16);
+    topY += 24;
+  }
+
+  // Product line: name + size (truncated to fit).
+  const title = `${productName || ""}${size ? "  ·  " + size : ""}`.trim();
+  ctx.font = header ? "16px monospace" : "bold 20px monospace";
+  ctx.fillText(title.slice(0, header ? 30 : 28), 8, topY, widthDots - 16);
+
+  // Barcode: center the bars horizontally with a quiet zone. With no header the
+  // bar geometry is unchanged (barTop=34); with a header it sits below both lines.
   const modules = code128Modules(code);
   const totalModules = modules.reduce((s, m) => s + m.width, 0);
   const barWidth = totalModules * moduleWidth;
   const startX = Math.max(8, Math.floor((widthDots - barWidth) / 2));
-  const barTop = 34;
+  const barTop = header ? topY + 24 : 34;
   const barHeight = heightDots - barTop - 26;
   let x = startX;
   for (const m of modules) {
