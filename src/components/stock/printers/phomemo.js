@@ -32,11 +32,14 @@ import { renderLabelBitmap } from "./labelBitmap";
 // (not its service UUID), so we acceptAllDevices in the chooser and list these so
 // getPrimaryServices() can reach them, then auto-pick the first WRITABLE char.
 const CANDIDATE_SERVICES = [
-  "0000ff00-0000-1000-8000-00805f9b34fb", // Phomemo (M110/M120/M200) — write 0xFF02
-  "000018f0-0000-1000-8000-00805f9b34fb", // 0x18F0 thermal SPP — write 0x2AF1
+  "0000ff00-0000-1000-8000-00805f9b34fb", // Phomemo (M110/M120/M200) — write 0xFF02, notify 0xFF01
+  "000018f0-0000-1000-8000-00805f9b34fb", // 0x18F0 thermal SPP — write 0x2AF1, notify 0x2AF0
   "49535343-fe7d-4ae5-8fa9-9fafd205e455", // ISSC / Microchip transparent UART
   "6e400001-b5a3-f393-e0a9-e50e24dcca9e", // Nordic UART Service — write 6e400002
   "e7810a71-73ae-499d-8c15-faa9aef0c3f2", // misc Phomemo / serial variant
+  "0000ae30-0000-1000-8000-00805f9b34fb", // some Phomemo/iDPRT variants — write 0xAE01
+  "0000fee7-0000-1000-8000-00805f9b34fb", // common thermal-printer service
+  "0000ffe0-0000-1000-8000-00805f9b34fb", // HM-10-style serial — write 0xFFE1
 ];
 const CHUNK = 180;            // BLE write size (MTU-safe; the frame is streamed in these)
 const MAX_BLOCK_LINES = 240;  // lines per GS v 0 block on the M110 (split taller bitmaps)
@@ -57,6 +60,13 @@ let cachedChar = null;
 let lastDiag = "";
 export function getPhomemoDiag() { return lastDiag; }
 
+// Full structured GATT dump from the last connect (every service + char + props +
+// the device name) plus any bytes the printer sent back on its notify channel.
+// Written to RTDB by the Test Print so it can be read server-side — the reliable way
+// to see what THIS printer exposes without the operator transcribing anything.
+let lastDump = null;
+export function getPhomemoDump() { return lastDump; }
+
 // "0000ff02-0000-1000-8000-00805f9b34fb" → "ff02" (16-bit) else the full uuid.
 function shortUuid(uuid) {
   const m = /^0000([0-9a-f]{4})-0000-1000-8000-00805f9b34fb$/i.exec(uuid || "");
@@ -70,33 +80,57 @@ export function isPhomemoSupported() {
   return typeof navigator !== "undefined" && !!navigator.bluetooth;
 }
 
-// Writable characteristic across the candidate services. Prefer a WITH-RESPONSE
-// (`write`) char now that the command frame is correct: acknowledged writes give
-// real flow control, so the long raster stream can't overrun the printer's BLE
-// buffer and lose its tail (the "reacts but prints nothing" symptom). Fall back to
-// a write-without-response char if that's all the printer exposes. The chosen char
-// + every service seen are recorded in lastDiag for the on-screen readout.
-async function discoverChar(server) {
+// Enumerate the FULL GATT (every reachable service + characteristic + its props),
+// pick the data char (prefer the canonical Phomemo write 0xFF02, else any `write`,
+// else write-without-response), and subscribe to a notify char if present — some
+// Phomemo units won't process a job until the notify channel is open (the official
+// app keeps it subscribed). Everything is recorded in lastDump/lastDiag.
+async function discoverChar(server, deviceName) {
   const services = await server.getPrimaryServices();
-  const svcList = services.map(s => shortUuid(s.uuid)).join(",");
-  console.log("[phomemo] services:", services.map(s => s.uuid));
-  let chosen = null, fallback = null;
+  const dump = { at: new Date().toISOString(), device: deviceName || "(no name)", services: [] };
+  let chosen = null, write = null, writeNR = null, notify = null;
+
   for (const svc of services) {
     const chars = await svc.getCharacteristics().catch(() => []);
+    const svcEntry = { uuid: shortUuid(svc.uuid), chars: [] };
     for (const ch of chars) {
-      if (ch.properties.write) { chosen = ch; break; }
-      if (ch.properties.writeWithoutResponse && !fallback) fallback = ch;
+      svcEntry.chars.push({ uuid: shortUuid(ch.uuid), props: propsLabel(ch.properties) });
+      const isPhomemoWrite = shortUuid(ch.uuid) === "ff02";
+      if (isPhomemoWrite && ch.properties.write) chosen = ch;        // canonical, best
+      if (!write && ch.properties.write) write = ch;
+      if (!writeNR && ch.properties.writeWithoutResponse) writeNR = ch;
+      if (!notify && ch.properties.notify) notify = ch;
     }
-    if (chosen) break;
+    dump.services.push(svcEntry);
   }
-  const ch = chosen || fallback;
+
+  const ch = chosen || write || writeNR;
+  // Open the notify channel (best-effort) and capture whatever the printer reports —
+  // both a potential fix and a strong diagnostic signal.
+  if (notify) {
+    try {
+      await notify.startNotifications();
+      dump.notifyChar = shortUuid(notify.uuid);
+      notify.addEventListener("characteristicvaluechanged", (e) => {
+        const v = e.target.value, b = [];
+        for (let i = 0; i < v.byteLength; i++) b.push(v.getUint8(i).toString(16).padStart(2, "0"));
+        if (lastDump) lastDump.notifyData = b.join(" ");
+      });
+    } catch (err) { dump.notifyError = String(err?.message || err); }
+  }
+
+  dump.chosenChar = ch ? shortUuid(ch.uuid) : null;
+  dump.chosenProps = ch ? propsLabel(ch.properties) : null;
+  lastDump = dump;
+  const svcList = dump.services.map(s => s.uuid).join(",");
+
   if (ch) {
-    console.log("[phomemo] chosen char:", ch.uuid, "in service", ch.service?.uuid, ch.properties);
-    lastDiag = `svc[${svcList}] char ${shortUuid(ch.uuid)} (${propsLabel(ch.properties)})`;
+    console.log("[phomemo] GATT dump:", JSON.stringify(dump));
+    lastDiag = `svc[${svcList}] char ${shortUuid(ch.uuid)} (${propsLabel(ch.properties)})${notify ? " +notify" : ""}`;
     return ch;
   }
   lastDiag = `no writable char; svc[${svcList || "none"}]`;
-  throw new Error(`Connected but found no writable characteristic. Services seen: ${svcList || "none"}. Send these to the dev.`);
+  throw new Error(`Connected but found no writable characteristic. Services seen: ${svcList || "none"}.`);
 }
 
 // First-time pick (chooser — must run in a user gesture). Lists EVERY nearby BLE
@@ -113,7 +147,7 @@ async function pickAndConnect() {
   });
   const server = await device.gatt.connect();
   cachedDevice = device;
-  cachedChar = await discoverChar(server);
+  cachedChar = await discoverChar(server, device.name);
   return { device, characteristic: cachedChar };
 }
 
@@ -126,7 +160,7 @@ async function getConnection() {
   if (cachedDevice) {
     console.log("[phomemo] reconnecting to cached device:", cachedDevice.name || cachedDevice.id);
     const server = await cachedDevice.gatt.connect();
-    cachedChar = await discoverChar(server);
+    cachedChar = await discoverChar(server, cachedDevice.name);
     return { device: cachedDevice, characteristic: cachedChar };
   }
   return await pickAndConnect();
@@ -209,17 +243,20 @@ function buildTestBitmap() {
   return { bytesPerRow, height, mono };
 }
 
-// Print the canvas-free test pattern. Returns { ok, diag, error } like printPhomemo.
+// Print the canvas-free test pattern. Returns { ok, diag, dump, error }. `dump` is the
+// full GATT structure (written to RTDB by the caller for server-side diagnosis).
 export async function printPhomemoTest(conn = null) {
-  if (!isPhomemoSupported()) return { ok: false, error: "Web Bluetooth not available in this browser." };
+  if (!isPhomemoSupported()) return { ok: false, error: "Web Bluetooth not available in this browser.", dump: null };
   try {
     const c = conn || await getConnection();
     const last = await writeChunked(c.characteristic, buildPrintJob(buildTestBitmap()));
     const diag = `${lastDiag} · ${last.mode} ${(last.bytes / 1024).toFixed(1)}KB/${last.chunks}`;
     lastDiag = diag;
-    return { ok: true, diag };
+    // Give the printer a beat to emit any status notification before we report.
+    await new Promise((r) => setTimeout(r, 400));
+    return { ok: true, diag, dump: lastDump ? { ...lastDump, send: { ...last } } : null };
   } catch (err) {
-    return { ok: false, error: String(err?.message || err), diag: lastDiag };
+    return { ok: false, error: String(err?.message || err), diag: lastDiag, dump: lastDump };
   }
 }
 
