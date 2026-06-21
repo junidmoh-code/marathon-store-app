@@ -16,8 +16,11 @@
 //   FINALIZE: 1F F0 05 00  1F F0 03 00   print + feed to the gap (NOT ESC d).
 // Width is 40 bytes / 320 dots (the 40mm M110 label); the bitmap is rendered to
 // that width so there's no centering command and nothing falls off the label edge.
-// SEND: BLE writes are MTU-limited, so the whole frame is streamed in sequential
-//   ~180-byte chunks, awaiting each.
+// SEND: the whole frame is streamed in chunks, awaiting each. With an acknowledged
+//   (`write`) characteristic each write is flow-controlled, so the raster tail can't
+//   drop (the "reacts but prints nothing" symptom); a write-without-response char
+//   falls back to paced unacknowledged writes. A short diagnostic (service/char/
+//   props/bytes) is surfaced in the print toast for blind hardware debugging.
 // LIFECYCLE: the connected device + characteristic are cached and REUSED across
 //   prints; on gattserverdisconnected we mark it stale and silently reconnect to
 //   the SAME device (device.gatt.connect()) on the next print — never re-prompting
@@ -48,36 +51,52 @@ const LABEL = { widthDots: 320, heightDots: 240, moduleWidth: 2 };
 let cachedDevice = null;
 let cachedChar = null;
 
+// Last-print diagnostic, surfaced in the print toast so a non-technical operator can
+// read back what the printer actually exposed (service/char/props/bytes) — turns a
+// blind "nothing prints" into an exact, fixable signal.
+let lastDiag = "";
+export function getPhomemoDiag() { return lastDiag; }
+
+// "0000ff02-0000-1000-8000-00805f9b34fb" → "ff02" (16-bit) else the full uuid.
+function shortUuid(uuid) {
+  const m = /^0000([0-9a-f]{4})-0000-1000-8000-00805f9b34fb$/i.exec(uuid || "");
+  return m ? m[1] : (uuid || "?");
+}
+function propsLabel(p = {}) {
+  return [p.write && "w", p.writeWithoutResponse && "wNR", p.notify && "n"].filter(Boolean).join("+") || "none";
+}
+
 export function isPhomemoSupported() {
   return typeof navigator !== "undefined" && !!navigator.bluetooth;
 }
 
-// Writable characteristic across the candidate services. Prefer a WRITE-WITHOUT-
-// RESPONSE char — that's what the M110's data characteristic (0xFF02) is, and it's
-// the transport every working M110 implementation uses. A with-response writeValue
-// to these cheap printers can stall waiting for an ATT ACK that never comes, which
-// itself hangs the print on "Feeding…". Fall back to a with-response char only if
-// that's all the printer exposes.
+// Writable characteristic across the candidate services. Prefer a WITH-RESPONSE
+// (`write`) char now that the command frame is correct: acknowledged writes give
+// real flow control, so the long raster stream can't overrun the printer's BLE
+// buffer and lose its tail (the "reacts but prints nothing" symptom). Fall back to
+// a write-without-response char if that's all the printer exposes. The chosen char
+// + every service seen are recorded in lastDiag for the on-screen readout.
 async function discoverChar(server) {
   const services = await server.getPrimaryServices();
+  const svcList = services.map(s => shortUuid(s.uuid)).join(",");
   console.log("[phomemo] services:", services.map(s => s.uuid));
-  let fallback = null;
+  let chosen = null, fallback = null;
   for (const svc of services) {
     const chars = await svc.getCharacteristics().catch(() => []);
     for (const ch of chars) {
-      if (ch.properties.writeWithoutResponse) {
-        console.log("[phomemo] writable (no-response) char:", ch.uuid, "in service", svc.uuid, ch.properties);
-        return ch;
-      }
-      if (ch.properties.write && !fallback) fallback = ch;
+      if (ch.properties.write) { chosen = ch; break; }
+      if (ch.properties.writeWithoutResponse && !fallback) fallback = ch;
     }
+    if (chosen) break;
   }
-  if (fallback) {
-    console.log("[phomemo] writable (with-response) char:", fallback.uuid, "in service", fallback.service?.uuid, fallback.properties);
-    return fallback;
+  const ch = chosen || fallback;
+  if (ch) {
+    console.log("[phomemo] chosen char:", ch.uuid, "in service", ch.service?.uuid, ch.properties);
+    lastDiag = `svc[${svcList}] char ${shortUuid(ch.uuid)} (${propsLabel(ch.properties)})`;
+    return ch;
   }
-  const seen = services.map(s => s.uuid).join(", ") || "none in the candidate list";
-  throw new Error(`Connected but found no writable characteristic. Services seen: ${seen}. Send these UUIDs to the dev.`);
+  lastDiag = `no writable char; svc[${svcList || "none"}]`;
+  throw new Error(`Connected but found no writable characteristic. Services seen: ${svcList || "none"}. Send these to the dev.`);
 }
 
 // First-time pick (chooser — must run in a user gesture). Lists EVERY nearby BLE
@@ -113,22 +132,27 @@ async function getConnection() {
   return await pickAndConnect();
 }
 
-// Stream the whole frame in MTU-safe chunks, AWAITING each. Prefer write-without-
-// response (the M110 data char) with a short per-chunk pause — timing matters on
-// these printers (bdm-k: "timing is critical"), and the pause lets the BLE buffer
-// drain so no chunk is dropped. Only use with-response writeValue if the char has
-// no writeWithoutResponse, since a missing ATT ACK there can stall the whole print.
+// Stream the whole frame in chunks, AWAITING each. When the char supports `write`,
+// use acknowledged writes (writeValue): each resolves only once the printer has the
+// data, so the stream is naturally flow-controlled and the raster tail can't drop.
+// Only when the char is write-WITHOUT-response do we fall back to unacknowledged
+// writes paced by a per-chunk delay (the best we can do without ACKs). Returns the
+// mode + byte/chunk counts for the diagnostic.
 async function writeChunked(characteristic, bytes) {
-  const noResp = !!characteristic.properties?.writeWithoutResponse;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    const slice = bytes.slice(i, i + CHUNK);
-    if (noResp) {
-      await characteristic.writeValueWithoutResponse(slice);
-      await new Promise((r) => setTimeout(r, 18));
-    } else {
+  const useResp = !!characteristic.properties?.write;
+  const size = useResp ? 512 : CHUNK; // ack'd long-writes can be bigger; no-resp stays MTU-safe
+  let chunks = 0;
+  for (let i = 0; i < bytes.length; i += size) {
+    const slice = bytes.slice(i, i + size);
+    if (useResp) {
       await characteristic.writeValue(slice);
+    } else {
+      await characteristic.writeValueWithoutResponse(slice);
+      await new Promise((r) => setTimeout(r, 20));
     }
+    chunks++;
   }
+  return { mode: useResp ? "wResp" : "wNR", bytes: bytes.length, chunks };
 }
 
 // Full Phomemo M110 frame for one 1bpp bitmap: INIT (speed/darkness/media) →
@@ -172,13 +196,18 @@ export async function printPhomemo(labels, conn = null) {
   if (!isPhomemoSupported()) return { ok: false, error: "Web Bluetooth not available in this browser." };
   try {
     const c = conn || await getConnection();
+    let last = null;
     for (const label of labels) {
       const bmp = renderLabelBitmap(label, LABEL);          // { width, height, bytesPerRow, mono }
-      await writeChunked(c.characteristic, buildPrintJob(bmp));
+      last = await writeChunked(c.characteristic, buildPrintJob(bmp));
     }
-    return { ok: true, printed: labels.length };
+    // e.g. "svc[ff00] char ff02 (w+wNR) · wResp 9.6KB/19" — read this back if it
+    // reacts but nothing prints.
+    const diag = `${lastDiag}${last ? ` · ${last.mode} ${(last.bytes / 1024).toFixed(1)}KB/${last.chunks}` : ""}`;
+    lastDiag = diag;
+    return { ok: true, printed: labels.length, diag };
   } catch (err) {
-    return { ok: false, error: String(err?.message || err) };
+    return { ok: false, error: String(err?.message || err), diag: lastDiag };
   }
   // NOTE: intentionally NO disconnect — the GATT link is kept alive and reused for
   // the next print (BUG 2); it silently reconnects via getConnection() if dropped.
