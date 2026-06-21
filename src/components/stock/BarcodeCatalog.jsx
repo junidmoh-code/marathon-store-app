@@ -13,7 +13,7 @@
 import React, { useState, useMemo } from "react";
 import { useStockCells } from "./useStock";
 import { ensureBarcode, getBarcode } from "./barcodeStore";
-import { TRANSPORTS, printLabels, connectTransport } from "./printers";
+import { TRANSPORTS, printLabels, printTest, connectTransport } from "./printers";
 import { Toast, Empty } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGhost, input } from "./ui";
 
@@ -33,8 +33,23 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   const [transport, setTransport] = useState(() => (TRANSPORTS.find(t => t.supported())?.id) || TRANSPORTS[0].id);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+  const [diagText, setDiagText] = useState(null);   // persistent printer diagnostic (manual dismiss)
   const cells = useStockCells();        // { loc: { pid: { size: cell } } } — all locations
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3400); };
+
+  // Diagnostic test print: connect (inside this tap's gesture) and send a canvas-free
+  // pattern (solid + stripes). If THIS prints but real labels don't, the issue is the
+  // label content; if it also fails, it's protocol/BLE delivery. The result line is
+  // shown in a PERSISTENT box so it can be read/screenshotted (service/char/props/bytes).
+  const doTest = async () => {
+    setBusy(true); setDiagText("Connecting…");
+    let conn;
+    try { conn = await connectTransport(transport); }
+    catch (e) { setBusy(false); return setDiagText(`Connect failed: ${String(e?.message || e)}`); }
+    const res = await printTest({ transport, conn });
+    setBusy(false);
+    setDiagText(`${res.ok ? "Test sent ✓" : "Test FAILED ✗"} — ${res.diag || res.error || "no info"}`);
+  };
 
   // On-hand for a product+size, summed across every location (the one source of truth).
   const onHand = (pid, size) => {
@@ -123,7 +138,23 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
             </button>
           );
         })}
+        {transport === "phomemo" && (
+          <button onClick={doTest} disabled={busy}
+            style={{ padding: "7px 11px", borderRadius: 9, cursor: busy ? "default" : "pointer", fontSize: 11.5, fontWeight: 600,
+                     background: "rgba(245,158,11,.14)", border: "1px solid rgba(245,158,11,.4)", color: AMBER }}>
+            🔧 Test print
+          </button>
+        )}
       </div>
+
+      {/* Persistent printer diagnostic — read this back if printing misbehaves. */}
+      {diagText && (
+        <div style={{ marginBottom: 12, padding: "9px 11px", borderRadius: 9, background: "rgba(255,255,255,.06)", border: BORDER,
+                      fontSize: 11, color: "#fff", wordBreak: "break-word", display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <span style={{ flex: 1, fontFamily: "monospace" }}>{diagText}</span>
+          <button onClick={() => setDiagText(null)} style={{ background: "none", border: "none", color: GRAY, cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0 }}>✕</button>
+        </div>
+      )}
 
       {filtered.length === 0 ? <Empty>No products match.</Empty> : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: selList.length ? 84 : 8 }}>

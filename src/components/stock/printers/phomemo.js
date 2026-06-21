@@ -140,10 +140,13 @@ async function getConnection() {
 // mode + byte/chunk counts for the diagnostic.
 async function writeChunked(characteristic, bytes) {
   const useResp = !!characteristic.properties?.write;
-  const size = useResp ? 512 : CHUNK; // ack'd long-writes can be bigger; no-resp stays MTU-safe
+  // Keep chunks ≤ CHUNK for BOTH modes: a larger acknowledged write triggers the
+  // BLE "long-write" (prepare/execute) procedure that many cheap printers don't
+  // implement → silently dropped. CHUNK (180) is proven to be accepted by this
+  // printer (it reacts to the init/finalize sent at this size).
   let chunks = 0;
-  for (let i = 0; i < bytes.length; i += size) {
-    const slice = bytes.slice(i, i + size);
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const slice = bytes.slice(i, i + CHUNK);
     if (useResp) {
       await characteristic.writeValue(slice);
     } else {
@@ -188,6 +191,36 @@ function buildPrintJob({ bytesPerRow, height, mono }) {
 export async function connectPhomemo() {
   if (!isPhomemoSupported()) throw new Error("Web Bluetooth not available in this browser.");
   return await getConnection();
+}
+
+// A canvas-free test bitmap: top third solid black, middle vertical stripes, bottom
+// solid black. Built directly as packed 1bpp bytes (NO renderLabelBitmap / canvas),
+// so a successful print proves the protocol + BLE delivery work and isolates the
+// label content (canvas) as the only other variable. Same 40×240 geometry as a label.
+function buildTestBitmap() {
+  const bytesPerRow = 40, height = 240;
+  const mono = new Uint8Array(bytesPerRow * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < bytesPerRow; x++) {
+      const solid = y < height / 3 || y >= (2 * height) / 3; // black top & bottom thirds
+      mono[y * bytesPerRow + x] = solid ? 0xff : (x % 2 ? 0xff : 0x00); // stripes in the middle
+    }
+  }
+  return { bytesPerRow, height, mono };
+}
+
+// Print the canvas-free test pattern. Returns { ok, diag, error } like printPhomemo.
+export async function printPhomemoTest(conn = null) {
+  if (!isPhomemoSupported()) return { ok: false, error: "Web Bluetooth not available in this browser." };
+  try {
+    const c = conn || await getConnection();
+    const last = await writeChunked(c.characteristic, buildPrintJob(buildTestBitmap()));
+    const diag = `${lastDiag} · ${last.mode} ${(last.bytes / 1024).toFixed(1)}KB/${last.chunks}`;
+    lastDiag = diag;
+    return { ok: true, diag };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err), diag: lastDiag };
+  }
 }
 
 // labels: [{ code, productName, size }] already expanded to one entry per copy.
