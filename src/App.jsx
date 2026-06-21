@@ -17,6 +17,7 @@ import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { RECEIVING_DEFAULT, sellableLocations, labelFor, transferTargets } from "./components/stock/locations";
 import { useStockCells, useLocations } from "./components/stock/useStock";
+import { shopUniverse } from "./utils/stores";
 import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
@@ -2809,37 +2810,51 @@ function AssistantView({ products, onExit, orders = [] }) {
   const [mode, setMode]                                 = useState("sneaker");
   const wantsClothing = mode === "clothing" || mode === "cr"; // product-type filter
   const isRefillMode  = mode === "cr";                        // bulk refill card UX
-  // Phase 14B: Central / Pine universe toggle. Persists per device so the
-  // Pine iPad stays Pine across reloads. "central" sees hub1/hub2 products
-  // and routes orders to those hubs; "pine" sees hub3 products and routes
-  // every order to hub3.
-  const [storeMode, setStoreMode] = useState(() => localStorage.getItem("storeAssistantMode") || "central");
-  const selectStoreMode = (next) => {
-    localStorage.setItem("storeAssistantMode", next);
-    setStoreMode(next);
+  // SHOP toggle (was the Central/Pine universe toggle). The assistant now picks a
+  // physical SHOP — Marathon PE / Trophy / Pine — so each order records WHICH shop
+  // it's for (order.destShop), which is what lets dispatch record a real
+  // warehouse→shop stock transfer. The central/pine ROUTING universe is derived
+  // from the chosen shop via shopUniverse(), so every downstream consumer (product
+  // filter, computeHubForItem, placedHub/placedStore) is unchanged. Persists per
+  // device so the Pine iPad stays Pine across reloads.
+  const shopRegistry = useLocations();
+  const allShops = sellableLocations(shopRegistry);  // marathon-pe, trophy, marathon-pine
+  const [selectedShop, setSelectedShop] = useState(() => {
+    const saved = localStorage.getItem("storeAssistantShop");
+    if (saved) return saved;
+    // One-time migration from the old central/pine universe key.
+    return localStorage.getItem("storeAssistantMode") === "pine" ? "marathon-pine" : "marathon-pe";
+  });
+  const selectShop = (next) => {
+    localStorage.setItem("storeAssistantShop", next);
+    setSelectedShop(next);
   };
-  // Phase 15: per-user store assignment. `allowedStores` is the set this user
-  // may place orders against (super-admin / legacy users → both). Drives the
-  // store toggle below: 0 → block screen, 1 → auto-select + hide toggle, 2 →
-  // show both. Keep storeMode clamped to an allowed value so a stale per-device
-  // localStorage choice (e.g. a Pine-only user on a tablet last left on
-  // "central") can't route orders to a store they aren't assigned to.
+  // Phase 15: per-user store assignment stays at central/pine granularity
+  // (STORE_IDS / storeIds / UserManagement / POS posAccess are untouched).
+  // `availableShops` expands that assignment into the physical shops the user may
+  // pick: a "central" user → Marathon PE + Trophy; "pine" → Pine. Drives the
+  // toggle below: 0 → block screen, 1 → auto-select + hide toggle, ≥2 → show.
   const { storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin, hasPermission: stockHasPermission } = usePermissions();
   // Shop-stock visibility: stock permission OR a stock-capable stockRole (mirrors the
   // Stock section gate).
   const canAccessStock = stockIsSuperAdmin || ["warehouse", "admin"].includes(stockPermRecord?.stockRole) || stockHasPermission("stock_management");
-  const noStoreAccess = allowedStores.length === 0;
-  const singleStore   = allowedStores.length === 1;
+  const availableShops = allShops.filter(s => allowedStores.includes(shopUniverse(s.id)));
+  const noStoreAccess = availableShops.length === 0;
+  const singleShop    = availableShops.length === 1;
   useEffect(() => {
-    if (allowedStores.length === 0) return;        // block screen handles this
-    if (!allowedStores.includes(storeMode)) selectStoreMode(allowedStores[0]);
-  }, [allowedStores, storeMode]);
+    if (availableShops.length === 0) return;        // block screen handles this
+    if (!availableShops.some(s => s.id === selectedShop)) selectShop(availableShops[0].id);
+  }, [availableShops, selectedShop]);
   // Clamp at RENDER too: the effect above persists the correction but only runs
-  // after commit, so the very first paint (and any product filtering / order
-  // routing it drives) must use this derived value — never a stale localStorage
-  // store the user isn't assigned to. Falls back to storeMode only when there
-  // are zero allowed stores, in which case the block screen renders anyway.
-  const effectiveStoreMode = allowedStores.includes(storeMode) ? storeMode : (allowedStores[0] || storeMode);
+  // after commit, so the first paint (and the product filtering / order routing it
+  // drives) must use this derived value — never a stale per-device shop the user
+  // isn't assigned to.
+  const effectiveShop = availableShops.some(s => s.id === selectedShop)
+    ? selectedShop
+    : (availableShops[0]?.id || selectedShop);
+  // Routing universe derived from the chosen shop. THIS keeps every downstream
+  // consumer keyed on central/pine unchanged.
+  const effectiveStoreMode = shopUniverse(effectiveShop);
   const [selected, setSelected]                         = useState(null);   // product in size picker
   // Tapping a product photo opens a full-screen lightbox so staff can see the
   // complete (uncropped) image. Holds the photo URL to show, or null.
@@ -3045,6 +3060,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           // from. The hub usually implies it, but clothing customer orders all
           // route to Hub C, so persist the store explicitly for tracking.
           placedStore: effectiveStoreMode,
+          // The physical shop the order is for (marathon-pe / trophy / marathon-pine).
+          // Drives the warehouse→shop stock transfer recorded on dispatch.
+          destShop: effectiveShop,
           requestDisplay: item.requestDisplay || false,
           requestDisplayPartner: item.requestDisplayPartner || false,
           status: STATUS.INCOMING,
@@ -3138,6 +3156,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           hub: placedHub,
           placedAtHub: placedHub,
           placedStore: effectiveStoreMode,
+          // Physical shop this refill is for — drives the warehouse→shop transfer
+          // recorded on dispatch.
+          destShop: effectiveShop,
           productType: "clothing",
           requestDisplay: false,
           requestDisplayPartner: false,
@@ -3265,23 +3286,24 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       </div>
 
-      {/* Phase 14B: Central / Pine universe toggle. Per-device localStorage —
-          Pine's iPad once flipped stays Pine forever.
-          Phase 15: only render stores this user is assigned to, and hide the
-          toggle entirely when they have exactly one (it's auto-selected by the
-          clamp effect) so there's zero chance of picking the wrong store. */}
-      {!singleStore && (
+      {/* SHOP toggle — the assistant picks which physical shop (Marathon PE /
+          Trophy / Pine) the order is for; this is recorded as order.destShop and
+          drives the warehouse→shop transfer on dispatch. Per-device localStorage.
+          Only renders shops this user is assigned to (expanded from their
+          central/pine assignment); hidden entirely when they have exactly one
+          (auto-selected by the clamp effect) so there's zero chance of mis-picking. */}
+      {!singleShop && (
       <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
         <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
-          {[["central","Central"],["pine","Pine"]].filter(([val]) => allowedStores.includes(val)).map(([val, label]) => {
-            const on = effectiveStoreMode === val;
+          {availableShops.map((s) => {
+            const on = effectiveShop === s.id;
             return (
-              <button key={val} onClick={() => selectStoreMode(val)}
+              <button key={s.id} onClick={() => selectShop(s.id)}
                 style={{ padding:"6px 22px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
                          background: on ? "rgba(60,110,255,.25)" : "transparent",
                          color: on ? "#fff" : "rgba(255,255,255,.5)",
                          boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
-                {label}
+                {labelFor(s.id, shopRegistry)}
               </button>
             );
           })}
@@ -3951,6 +3973,47 @@ function WarehouseView({ products = [], orders, onExit }) {
         setTimeout(() => setPrintToast(null), 4200);
       });
     updateStatus(order, STATUS.READY, extraPatch);
+    recordDispatchTransfer(order, sentSize);
+  };
+
+  // Record the physical move of stock OUT of the source warehouse hub and INTO the
+  // destination shop, so each shop's on-hand is the running total of its own
+  // recorded transfers (reuses the existing ledger — applyMovement writes the
+  // /stock_movements audit row + both balance cells atomically). Best-effort and
+  // NON-BLOCKING: the send (status + label) always completes; a failed or
+  // insufficient-stock ledger write only raises a non-blocking toast.
+  const recordDispatchTransfer = (order, sentSize) => {
+    // New orders carry destShop; legacy pine orders infer marathon-pine; legacy
+    // central orders can't be disambiguated (Marathon PE vs Trophy) → skip.
+    const toShop = order.destShop || (order.placedStore === "pine" ? "marathon-pine" : null);
+    const fromHub = order.placedAtHub;
+    // hubC (clothing-customer trials) isn't a stock location — only real hub→shop
+    // sends are recorded.
+    const VALID_HUBS = ["hub1", "hub2", "hub3"];
+    if (!toShop || !VALID_HUBS.includes(fromHub)) return;
+    // Idempotent + date-unique movementId: order.id is the DAILY counter (reused
+    // across days), so scope by createdAt — a re-tap is a no-op, but #042 on two
+    // different days stay distinct movements. Strip RTDB-illegal key chars.
+    const movementId = `disp_${order.id}_${order.createdAt || ""}`.replace(/[.#$[\]/\s:]/g, "_");
+    applyMovement({
+      type: "transfer_out",            // ledger's from→to type (−from, +to)
+      productId: order.productId,
+      size: sentSize ?? order.size ?? null,  // applyMovement encodes via stockCellPath
+      qty: order.qty || 1,
+      from: fromHub,
+      to: toShop,
+      actorRole: "warehouse",
+      link: { orderId: order.id },
+      ts: new Date().toISOString(),
+      movementId,
+    }).then((res) => {
+      // A repeat send returns ok:true (idempotent), so only a genuine failure
+      // (insufficient hub stock, write error) raises the non-blocking warning.
+      if (res && res.ok === false) {
+        setPrintToast({ kind: "err", text: `Sent — but stock not deducted (${res.reason || "hub count low"}).` });
+        setTimeout(() => setPrintToast(null), 7000);
+      }
+    }).catch(() => { /* never block the send on a ledger error */ });
   };
 
   // ── Display refill helpers (Phase 9 / 9.5) ───────────────────────────────

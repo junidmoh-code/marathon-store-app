@@ -17,6 +17,30 @@ export const STORE_IDS = ["central", "pine"];
 
 export const STORE_LABELS = { central: "Central", pine: "Pine" };
 
+// ─── SHOP ↔ ROUTING-UNIVERSE BRIDGE ──────────────────────────────────────────
+// Two separate vocabularies meet here:
+//   • SHOP ids (the /locations stock registry): marathon-pe, trophy, marathon-pine
+//     — the physical shops staff actually stand in and that hold sellable stock.
+//   • ROUTING UNIVERSE (STORE_IDS above): central, pine — the order-routing buckets
+//     that map to hubs (central → hub1/hub2, pine → hub3).
+//
+// "Central" contains TWO physical shops (Marathon PE + Trophy); "pine" is one
+// (Pine / marathon-pine). The assistant store toggle now speaks the SHOP
+// vocabulary (so an order records WHICH shop it's for, enabling warehouse→shop
+// transfer recording on dispatch), while ALL routing/filtering downstream keeps
+// keying on the universe via shopUniverse() — so order routing is unchanged and
+// the per-user assignment model (STORE_IDS / storeIds / UserManagement / POS
+// posAccess) stays at central/pine granularity, untouched.
+export const SHOP_TO_UNIVERSE = {
+  "marathon-pe":   "central",
+  "trophy":        "central",
+  "marathon-pine": "pine",
+};
+
+// Map a physical shop id to its routing universe (central/pine). Unknown shops
+// default to central so a future/unmapped shop can't accidentally route to Pine.
+export const shopUniverse = (shopId) => SHOP_TO_UNIVERSE[shopId] || "central";
+
 // Resolve the stores a user may actually place orders against.
 //   • super-admin               → all stores (bypass, per ADMIN_EMAIL)
 //   • no storeIds field (legacy) → all stores (backward-compatible)
