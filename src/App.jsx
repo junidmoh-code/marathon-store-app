@@ -4211,7 +4211,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                     <div style={{ color:"#555", fontSize:11 }}>{order.customerName}</div>
                   </div>
                   <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                    <button onClick={() => markSentAndPrint(order)} style={{ background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.3)", color:"#4ACA7A", borderRadius:8, padding:"6px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>Available</button>
+                    <button onClick={() => updateStatus(order, STATUS.READY)} style={{ background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.3)", color:"#4ACA7A", borderRadius:8, padding:"6px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>Available</button>
                     <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)} style={{ background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B", borderRadius:8, padding:"6px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>Still OOS</button>
                   </div>
                 </div>
