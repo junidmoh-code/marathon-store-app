@@ -43,6 +43,7 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
   const [note, setNote] = useState("");            // optional detail appended to the chip reason
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+  const [saveError, setSaveError] = useState(null); // persistent banner when a save is rejected
   const [lastSaved, setLastSaved] = useState(null); // { productId, productName, items:[{size,added}] }
   const [printOpen, setPrintOpen] = useState(false);
 
@@ -95,7 +96,8 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
     const effReason = note.trim() ? `${intent.reason} — ${note.trim()}` : intent.reason;
 
     setBusy(true);
-    let ok = 0, fail = 0; const failed = []; const savedItems = [];
+    setSaveError(null);
+    let ok = 0, fail = 0, denied = false; const failed = []; const savedItems = [];
     try {
       for (const { size, delta } of pendingChanges) {
         // Additive (received/opening): always credit `to`; delta>0 is guaranteed by
@@ -115,9 +117,18 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
             actorRole,
           });
           if (res.ok) { ok++; savedItems.push({ size, added: Math.max(0, delta) }); }
-          else { fail++; failed.push(`${size}: ${res.reason === "insufficient_stock" ? `only ${res.available} on hand` : res.reason}`); }
+          else {
+            fail++;
+            // A rejected write (no stockRole / hardened rules) surfaces as a
+            // PERMISSION_DENIED swallowed into write_failed — flag it so the guard
+            // below explains it instead of looking like a silent revert.
+            if (res.reason === "not_authenticated" || /permission/i.test(String(res.error || ""))) denied = true;
+            failed.push(`${size}: ${res.reason === "insufficient_stock" ? `only ${res.available} on hand` : res.reason}`);
+          }
         } catch (err) {
-          fail++; failed.push(`${size}: ${String(err?.message || err)}`);
+          fail++;
+          if (/permission/i.test(String(err?.message || err))) denied = true;
+          failed.push(`${size}: ${String(err?.message || err)}`);
         }
       }
     } finally {
@@ -125,8 +136,17 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
     }
     // Offer barcode printing for the sizes that saved (count defaults to units added).
     if (savedItems.length) setLastSaved({ productId: product.id, productName: product.name, items: savedItems });
-    if (!fail) { setTargets({}); setNote(""); flash("ok", `${intent.label}: ${ok} size${ok > 1 ? "s" : ""} updated — print barcodes below`); }
-    else flash("err", `${ok} done, ${fail} failed — ${failed.join("; ")}`);
+    if (!fail) {
+      setTargets({}); setNote(""); setSaveError(null);
+      flash("ok", `${intent.label}: ${ok} size${ok > 1 ? "s" : ""} updated — print barcodes below`);
+    } else {
+      // Persistent banner (not just a 3.6s toast) so a rejected save can NEVER look
+      // like a silent revert to 0. Entered values are left in place for a retry.
+      setSaveError(denied
+        ? `Save rejected — you don't have permission to write stock here (stockRole). ${ok ? `${ok} size(s) saved; ` : "Nothing was saved; "}your entered counts are kept so you can retry once access is granted.`
+        : `${ok} saved, ${fail} failed — ${failed.join("; ")}. Entered counts are kept; fix and retry.`);
+      flash("err", denied ? "Save rejected — no stock-write permission." : `${ok} done, ${fail} failed.`);
+    }
   };
 
   if (!canStock) return <Empty>Setting on-hand quantity needs a stock role (warehouse or admin).</Empty>;
@@ -190,6 +210,13 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
           <Field label="Note (optional)">
             <TextInput value={note} onChange={setNote} placeholder="PO #, found in back, damaged …" />
           </Field>
+
+          {saveError && (
+            <div role="alert" style={{ marginTop: 10, padding: "9px 11px", borderRadius: 8, background: "rgba(248,113,113,.12)",
+                                       border: "1px solid rgba(248,113,113,.5)", color: "#FCA5A5", fontSize: 12, lineHeight: 1.45 }}>
+              ⚠️ {saveError}
+            </div>
+          )}
 
           <button onClick={commit} disabled={busy || !pendingChanges.length} style={{ ...bGreen, width: "100%", marginTop: 6, opacity: (busy || !pendingChanges.length) ? 0.55 : 1 }}>
             {busy ? "Saving…" : pendingChanges.length ? `${intent.label} — ${pendingChanges.length} size${pendingChanges.length > 1 ? "s" : ""}` : "Enter a new count"}
