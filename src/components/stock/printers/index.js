@@ -11,12 +11,16 @@
 
 import { printPhomemo, printPhomemoTest, connectPhomemo, isPhomemoSupported } from "./phomemo";
 import { printXprinter, connectXprinter, isXprinterSupported, getXprinterDiag } from "./xprinter";
+import { printBrowser, isBrowserPrintSupported } from "./browserPrint";
 
 export { getXprinterDiag };
 
 export const TRANSPORTS = [
   { id: "phomemo",  label: "Phomemo M110 (Bluetooth)", proven: true,  supported: isPhomemoSupported },
   { id: "xprinter", label: "Xprinter XP-350B (USB)",   proven: false, supported: isXprinterSupported },
+  // Windows-friendly: prints via the OS print dialog (the XP-350B's own Windows driver),
+  // sidestepping the WebUSB "Access denied" that blocks USB on Windows. Works on any OS.
+  { id: "browserprint", label: "System printer (Windows)", proven: true, supported: isBrowserPrintSupported },
 ];
 
 // items: [{ code, productName, size, count }] — count copies of each.
@@ -34,6 +38,7 @@ function expand(items) {
 export async function connectTransport(transport) {
   if (transport === "phomemo") return await connectPhomemo();
   if (transport === "xprinter") return await connectXprinter();
+  if (transport === "browserprint") return null;   // no device handle — uses the OS dialog
   throw new Error(`Unknown transport "${transport}".`);
 }
 
@@ -50,6 +55,12 @@ export async function printLabels({ items, transport, conn = null }) {
       const valid = (items || []).filter(it => it && it.code);
       if (!valid.length) return { ok: false, error: "Nothing to print." };
       return await printXprinter(valid, conn);
+    }
+    if (transport === "browserprint") {
+      // One rasterised label per physical copy → expand counts to entries (like Phomemo).
+      const labels = expand(items);
+      if (!labels.length) return { ok: false, error: "Nothing to print (all counts are 0)." };
+      return await printBrowser(labels);
     }
     return { ok: false, error: `Unknown transport "${transport}".` };
   } catch (err) {
