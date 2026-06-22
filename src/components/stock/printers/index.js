@@ -23,6 +23,31 @@ export const TRANSPORTS = [
   { id: "browserprint", label: "System printer (Windows)", proven: true, supported: isBrowserPrintSupported },
 ];
 
+// True on Windows, where WebUSB can't open a printer the OS driver owns (the Xprinter
+// USB transport always fails with "Access denied"). Used to steer the UI to the
+// system-print path instead.
+export function isWindowsPlatform() {
+  if (typeof navigator === "undefined") return false;
+  const p = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || "";
+  return /win/i.test(p);
+}
+
+// The Xprinter USB transport can't work on Windows — flag it so the UI disables it
+// there and points the operator at the system-print path.
+export function isTransportUsable(id) {
+  const t = TRANSPORTS.find(x => x.id === id);
+  if (!t || !t.supported()) return false;
+  if (id === "xprinter" && isWindowsPlatform()) return false;   // WebUSB blocked on Windows
+  return true;
+}
+
+// Initial transport choice: on Windows prefer the system-print path (the only one that
+// reaches the Xprinter there); otherwise the first usable transport.
+export function defaultTransportId() {
+  if (isWindowsPlatform() && isBrowserPrintSupported()) return "browserprint";
+  return TRANSPORTS.find(t => isTransportUsable(t.id))?.id || TRANSPORTS[0].id;
+}
+
 // items: [{ code, productName, size, count }] — count copies of each.
 function expand(items) {
   const labels = [];
