@@ -11,24 +11,29 @@
 
 import { renderLabelBitmap } from "./labelBitmap";
 
-// Physical label + render geometry. 40×30 mm at 203 dpi = 320×240 dots; we render at
-// native dot resolution and let the printer driver scale to its head, with the image
-// pixelated so the Code 128 bars stay crisp/scannable.
-const PAGE = { wMm: 40, hMm: 30 };
+// Physical label + render geometry. The label content is authored landscape (40 mm
+// wide × 30 mm tall = 320×240 dots @203 dpi). The XP-350B feeds the label rotated, so
+// at a 40×30 page the content prints SIDEWAYS — we rotate the rendered label 90° and
+// emit a portrait 30×40 page so it lands upright on the physical label.
+// ROTATE_DEG: 90 (clockwise) or 270 (counter-clockwise) — flip this if it's upside down.
+const ROTATE_DEG = 90;
+const ROTATED = ROTATE_DEG === 90 || ROTATE_DEG === 270;
+const PAGE = ROTATED ? { wMm: 30, hMm: 40 } : { wMm: 40, hMm: 30 };
 const RENDER = { widthDots: 320, heightDots: 240, contentWidthDots: 320, moduleWidth: 2 };
 
 export function isBrowserPrintSupported() {
   return typeof window !== "undefined" && typeof window.print === "function" && typeof document !== "undefined";
 }
 
-// One label → a PNG data URL (paint the 1-bpp mono buffer onto a canvas; bit=1 → black).
+// One label → a PNG data URL (paint the 1-bpp mono buffer onto a canvas; bit=1 → black),
+// rotated by ROTATE_DEG so it lands upright on the printer's feed orientation.
 function labelDataUrl(label) {
   const bmp = renderLabelBitmap(label, RENDER);
-  const canvas = document.createElement("canvas");
-  canvas.width = bmp.width;
-  canvas.height = bmp.height;
-  const ctx = canvas.getContext("2d");
-  const img = ctx.createImageData(bmp.width, bmp.height);
+  const base = document.createElement("canvas");
+  base.width = bmp.width;
+  base.height = bmp.height;
+  const bctx = base.getContext("2d");
+  const img = bctx.createImageData(bmp.width, bmp.height);
   for (let y = 0; y < bmp.height; y++) {
     for (let x = 0; x < bmp.width; x++) {
       const bit = (bmp.mono[y * bmp.bytesPerRow + (x >> 3)] >> (7 - (x & 7))) & 1;
@@ -37,8 +42,20 @@ function labelDataUrl(label) {
       img.data[i] = v; img.data[i + 1] = v; img.data[i + 2] = v; img.data[i + 3] = 255;
     }
   }
-  ctx.putImageData(img, 0, 0);
-  return canvas.toDataURL("image/png");
+  bctx.putImageData(img, 0, 0);
+  if (!ROTATE_DEG) return base.toDataURL("image/png");
+
+  // Rotate onto a fresh canvas (dims swap for 90/270).
+  const out = document.createElement("canvas");
+  out.width = ROTATED ? base.height : base.width;
+  out.height = ROTATED ? base.width : base.height;
+  const octx = out.getContext("2d");
+  octx.fillStyle = "#fff";
+  octx.fillRect(0, 0, out.width, out.height);
+  octx.translate(out.width / 2, out.height / 2);
+  octx.rotate((ROTATE_DEG * Math.PI) / 180);
+  octx.drawImage(base, -base.width / 2, -base.height / 2);
+  return out.toDataURL("image/png");
 }
 
 // labels: [{ code, productName, size }] already expanded to one entry per copy.
