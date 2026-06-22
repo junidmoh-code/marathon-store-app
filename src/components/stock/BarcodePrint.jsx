@@ -21,6 +21,13 @@ export default function BarcodePrint({ product, items, onClose }) {
   const [sel, setSel] = useState(() => Object.fromEntries(items.map(it => [it.size, true])));
   const [counts, setCounts] = useState(() => Object.fromEntries(items.map(it => [it.size, String(Math.max(0, it.added || 0))])));
   const [transport, setTransport] = useState(defaultTransportId);
+  // System-print rotation (label printers differ in feed orientation) — operator-set,
+  // persisted. 90° = portrait, the common case for these 40×30 rolls.
+  const [rotate, setRotateRaw] = useState(() => {
+    const v = parseInt(localStorage.getItem("labelPrintRotate"), 10);
+    return [0, 90, 180, 270].includes(v) ? v : 90;
+  });
+  const setRotate = (v) => { try { localStorage.setItem("labelPrintRotate", String(v)); } catch { /* ignore */ } setRotateRaw(v); };
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3800); };
@@ -47,7 +54,7 @@ export default function BarcodePrint({ product, items, onClose }) {
       .filter(it => it.code && it.count > 0);
     if (!toPrint.length) return flash("err", "Select at least one size with a count above 0.");
     setBusy(true);
-    const res = await printLabels({ items: toPrint, transport });
+    const res = await printLabels({ items: toPrint, transport, rotate });
     setBusy(false);
     if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${TRANSPORTS.find(t => t.id === transport)?.label}.`);
     else flash("err", `Print failed: ${res.error} — codes are saved; you can retry or scan on screen.`);
@@ -85,6 +92,29 @@ export default function BarcodePrint({ product, items, onClose }) {
             );
           })}
         </div>
+
+        {/* System-print label rotation — flip if the label prints sideways/upside-down. */}
+        {transport === "browserprint" && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 6 }}>
+              Label rotation <span style={{ textTransform: "none", letterSpacing: 0 }}>· change if it prints sideways / upside-down</span>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {[0, 90, 180, 270].map(deg => {
+                const on = rotate === deg;
+                return (
+                  <button key={deg} onClick={() => setRotate(deg)}
+                    style={{ padding: "8px 12px", borderRadius: 10, cursor: "pointer", fontSize: 12, fontWeight: 600,
+                             background: on ? "rgba(60,110,255,.2)" : "rgba(255,255,255,.04)",
+                             border: on ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(60,110,255,.15)",
+                             color: on ? "#fff" : GRAY }}>
+                    {deg}°
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Per-size rows */}
         {err && <div style={{ color: "#F87171", fontSize: 12.5, padding: "10px 0" }}>Could not reserve barcodes: {err}</div>}

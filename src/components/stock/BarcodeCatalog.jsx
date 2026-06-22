@@ -33,6 +33,13 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   const [openId, setOpenId] = useState(null);
   const [sel, setSel] = useState({});   // { "pid|size": { productId, productName, size, count } }
   const [transport, setTransport] = useState(defaultTransportId);
+  // System-print label rotation (operator-set, persisted) — printers differ in feed
+  // orientation. 90° = portrait, the common case for the 40×30 rolls.
+  const [rotate, setRotateRaw] = useState(() => {
+    const v = parseInt(localStorage.getItem("labelPrintRotate"), 10);
+    return [0, 90, 180, 270].includes(v) ? v : 90;
+  });
+  const setRotate = (v) => { try { localStorage.setItem("labelPrintRotate", String(v)); } catch { /* ignore */ } setRotateRaw(v); };
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [diagText, setDiagText] = useState(null);   // persistent printer diagnostic (manual dismiss)
@@ -147,7 +154,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
       return flash("err", noCode ? `No printable labels — ${noCode} size(s) have no barcode yet (a warehouse/admin user must create them first).`
                                  : `Nothing to print${failReserve ? ` (${failReserve} failed)` : " (all counts 0)"}.`);
     }
-    const res = await printLabels({ items, transport, conn });
+    const res = await printLabels({ items, transport, conn, rotate });
     setBusy(false);
     const skipped = [];
     if (noCode) skipped.push(`${noCode} had no code`);
@@ -195,6 +202,26 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
           </button>
         )}
       </div>
+
+      {/* System-print label rotation — flip if the label prints sideways / upside-down. */}
+      {transport === "browserprint" && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: GRAY, marginBottom: 6 }}>Label rotation · change if it prints sideways / upside-down</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {[0, 90, 180, 270].map(deg => {
+              const on = rotate === deg;
+              return (
+                <button key={deg} onClick={() => setRotate(deg)}
+                  style={{ padding: "7px 11px", borderRadius: 9, cursor: "pointer", fontSize: 11.5, fontWeight: 600,
+                           background: on ? "rgba(60,110,255,.2)" : "rgba(255,255,255,.04)", border: on ? "1px solid rgba(60,110,255,.6)" : BORDER,
+                           color: on ? "#fff" : GRAY }}>
+                  {deg}°
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Persistent printer diagnostic — read this back if printing misbehaves. */}
       {diagText && (

@@ -3,7 +3,7 @@
 // assets. Existing clients will fetch the new SW (uncached per firebase.json
 // header), activate it (skipWaiting + clients.claim), and the page will
 // show the "Update available" banner via a message dispatched from here.
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const STATIC_CACHE  = `mc-static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `mc-runtime-${CACHE_VERSION}`;
 
