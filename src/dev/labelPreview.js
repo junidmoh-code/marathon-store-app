@@ -6,13 +6,14 @@
 import { renderLabelBitmap } from "../components/stock/printers/labelBitmap.js";
 
 // Same geometry the Phomemo transport uses (see printers/phomemo.js): full head
-// width raster (384), one 40×20 mm label tall (152), 320-dot printable content.
-const LABEL = { widthDots: 384, heightDots: 152, contentWidthDots: 320, moduleWidth: 2 };
-const SCALE = 2.4;
+// width raster (384), one 40×30 mm label tall (232), 320-dot printable content.
+const LABEL = { widthDots: 384, heightDots: 232, contentWidthDots: 320, moduleWidth: 2 };
+const SCALE = 2.0;
 
 const SAMPLES = [
   { title: "Short name · numeric size", label: { code: "12345678", productName: "Nike Air Max", size: "9" } },
-  { title: "Long name (fits / ellipsis)", label: { code: "23456789", productName: "Adidas Ultraboost Light Running Shoe Special Edition", size: "10.5" } },
+  { title: "Long name (wraps, full)", label: { code: "23456789", productName: "Adidas Ultraboost Light Running Shoe Special Edition", size: "10.5" } },
+  { title: "Very long name (wraps 3 lines, no cut)", label: { code: "78901234", productName: "Nike Air Jordan 1 Retro High OG Chicago Lost and Found Reimagined Special Box", size: "11" } },
   { title: "Letter size (clothing)", label: { code: "34567890", productName: "Marathon Performance Hoodie", size: "M" } },
   { title: "No size (falls back cleanly)", label: { code: "45678901", productName: "Generic Accessory", size: "" } },
   { title: "Dispatch label (with header)", label: { code: "56789012", productName: "Jordan 1 Retro High OG", size: "8", header: "Order #1042  ·  Jane M." } },

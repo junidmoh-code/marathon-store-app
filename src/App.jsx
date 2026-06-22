@@ -2939,14 +2939,32 @@ function AssistantView({ products, onExit, orders = [] }) {
   const filtered = useMemo(() => {
     const q = search.trim();
     if (!q) return base;
+    // BARCODE / SKU match — typing or SCANNING a product code finds the product
+    // directly, not just its name. Matches the product-level barcode + sku and any
+    // per-size code (products/{id}/barcodes/{sizeKey}, carried on the product). Exact
+    // match for a full scan; 3+ digit substring for partial typing. Code hits come
+    // first so a scan jumps straight to the product.
+    const codeHits = /\d/.test(q) ? base.filter(p => {
+      const codes = [];
+      if (p.barcode != null) codes.push(String(p.barcode));
+      if (p.sku != null) codes.push(String(p.sku));
+      if (p.barcodes && typeof p.barcodes === "object")
+        for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
+      return codes.some(c => c === q || (q.length >= 3 && c.includes(q)));
+    }) : [];
+    const merge = (rest) => {
+      if (!codeHits.length) return rest;
+      const seen = new Set(codeHits.map(p => p.id));
+      return [...codeHits, ...rest.filter(p => !seen.has(p.id))];
+    };
     // 1-char queries: Fuse's minMatchCharLength would return nothing, so fall
     // back to a plain case-insensitive substring match for the first letter.
     if (q.length < 2) {
       const lc = q.toLowerCase();
-      return base.filter(p =>
-        p.name.toLowerCase().includes(lc) || (p.category || "").toLowerCase().includes(lc));
+      return merge(base.filter(p =>
+        p.name.toLowerCase().includes(lc) || (p.category || "").toLowerCase().includes(lc)));
     }
-    return fuse.search(q).map(r => r.item);
+    return merge(fuse.search(q).map(r => r.item));
   }, [search, base, fuse]);
 
   // Compute the hub an order placed right now should land in. Single source
