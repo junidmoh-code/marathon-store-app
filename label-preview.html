@@ -1,0 +1,36 @@
+<!doctype html>
+<!--
+  DEV-ONLY label preview. Served by Vite in `npm run dev` at /label-preview.html.
+  NOT a build input (vite builds only index.html), so it never ships to production.
+  Renders the REAL Phomemo label bitmap (renderLabelBitmap) across name lengths,
+  numeric/letter sizes, and the dispatch (header) variant so the new layout — size on
+  its own bold line, fitted name, minimised barcode — can be eyeballed without a printer.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Label preview (dev)</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #1c2030; color: #e8ecf5; margin: 0; padding: 24px; }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      .sub { color: #9aa3b8; font-size: 13px; margin-bottom: 20px; }
+      .grid { display: flex; flex-wrap: wrap; gap: 22px; }
+      .card { background: #262b3d; border: 1px solid #39405a; border-radius: 12px; padding: 14px; }
+      .card h2 { font-size: 13px; margin: 0 0 10px; color: #cdd5ea; font-weight: 600; }
+      canvas { background: #fff; border-radius: 4px; image-rendering: pixelated; display: block; }
+      .note { color: #f5c451; font-size: 12px; margin-top: 18px; max-width: 720px; line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <h1>Product label preview <span style="color:#7c8bb0;font-weight:400">(dev only)</span></h1>
+    <div class="sub">Actual Phomemo bitmap output (40&times;20&nbsp;mm @ 203&nbsp;dpi), scaled up. Reload after edits.</div>
+    <div id="app" class="grid"></div>
+    <div class="note">
+      This previews the Phomemo raster — the real <code>renderLabelBitmap</code> output. The Xprinter (TSPL) path
+      renders on-device with the same layout (name line → <b>Size:</b> line → minimised barcode → 8-digit code);
+      confirm it on a physical print.
+    </div>
+    <script type="module" src="/src/dev/labelPreview.js"></script>
+  </body>
+</html>
