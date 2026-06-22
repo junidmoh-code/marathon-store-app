@@ -10,7 +10,7 @@
 import React, { useState, useEffect } from "react";
 import { ensureBarcodes } from "./barcodeStore";
 import Barcode from "./BarcodeView";
-import { TRANSPORTS, printLabels } from "./printers";
+import { TRANSPORTS, printLabels, defaultTransportId, isTransportUsable, isWindowsPlatform } from "./printers";
 import { Toast } from "./widgets";
 import { GLASS_SOLID, bGreen, bGhost, GRAY, GREEN, AMBER, BLUE_L, input } from "./ui";
 
@@ -20,7 +20,7 @@ export default function BarcodePrint({ product, items, onClose }) {
   const [err, setErr] = useState(null);
   const [sel, setSel] = useState(() => Object.fromEntries(items.map(it => [it.size, true])));
   const [counts, setCounts] = useState(() => Object.fromEntries(items.map(it => [it.size, String(Math.max(0, it.added || 0))])));
-  const [transport, setTransport] = useState(() => (TRANSPORTS.find(t => t.supported())?.id) || TRANSPORTS[0].id);
+  const [transport, setTransport] = useState(defaultTransportId);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3800); };
@@ -69,15 +69,18 @@ export default function BarcodePrint({ product, items, onClose }) {
         <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 6 }}>Printer</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
           {TRANSPORTS.map(t => {
-            const supported = t.supported();
+            const usable = isTransportUsable(t.id);
+            const blockedOnWindows = t.id === "xprinter" && isWindowsPlatform();
             const on = transport === t.id;
             return (
-              <button key={t.id} onClick={() => supported && setTransport(t.id)} disabled={!supported}
-                style={{ padding: "8px 12px", borderRadius: 10, cursor: supported ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 600,
+              <button key={t.id} onClick={() => usable && setTransport(t.id)} disabled={!usable}
+                style={{ padding: "8px 12px", borderRadius: 10, cursor: usable ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 600,
                          background: on ? "rgba(60,110,255,.2)" : "rgba(255,255,255,.04)",
                          border: on ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(60,110,255,.15)",
-                         color: supported ? (on ? "#fff" : GRAY) : "rgba(255,255,255,.25)" }}>
-                {t.label}{!t.proven && <span style={{ color: AMBER, marginLeft: 6 }}>· untested</span>}{!supported && <span style={{ color: GRAY, marginLeft: 6 }}>· n/a</span>}
+                         color: usable ? (on ? "#fff" : GRAY) : "rgba(255,255,255,.25)" }}>
+                {t.label}{!t.proven && <span style={{ color: AMBER, marginLeft: 6 }}>· untested</span>}
+                {blockedOnWindows ? <span style={{ color: GRAY, marginLeft: 6 }}>· use System printer</span>
+                  : (!usable && <span style={{ color: GRAY, marginLeft: 6 }}>· n/a</span>)}
               </button>
             );
           })}

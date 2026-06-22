@@ -15,7 +15,7 @@ import { ref, set } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells } from "./useStock";
 import { ensureBarcode, getBarcode } from "./barcodeStore";
-import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag } from "./printers";
+import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag, defaultTransportId, isTransportUsable, isWindowsPlatform } from "./printers";
 import { Toast, Empty } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGhost, input } from "./ui";
 
@@ -32,7 +32,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState(null);
   const [sel, setSel] = useState({});   // { "pid|size": { productId, productName, size, count } }
-  const [transport, setTransport] = useState(() => (TRANSPORTS.find(t => t.supported())?.id) || TRANSPORTS[0].id);
+  const [transport, setTransport] = useState(defaultTransportId);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [diagText, setDiagText] = useState(null);   // persistent printer diagnostic (manual dismiss)
@@ -173,13 +173,17 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
       {/* Transport */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         {TRANSPORTS.map(t => {
-          const supported = t.supported(); const on = transport === t.id;
+          const usable = isTransportUsable(t.id);
+          const blockedOnWindows = t.id === "xprinter" && isWindowsPlatform();
+          const on = transport === t.id;
           return (
-            <button key={t.id} onClick={() => supported && setTransport(t.id)} disabled={!supported}
-              style={{ padding: "7px 11px", borderRadius: 9, cursor: supported ? "pointer" : "not-allowed", fontSize: 11.5, fontWeight: 600,
+            <button key={t.id} onClick={() => usable && setTransport(t.id)} disabled={!usable}
+              style={{ padding: "7px 11px", borderRadius: 9, cursor: usable ? "pointer" : "not-allowed", fontSize: 11.5, fontWeight: 600,
                        background: on ? "rgba(60,110,255,.2)" : "rgba(255,255,255,.04)", border: on ? "1px solid rgba(60,110,255,.6)" : BORDER,
-                       color: supported ? (on ? "#fff" : GRAY) : "rgba(255,255,255,.25)" }}>
-              {t.label}{!t.proven && <span style={{ color: AMBER, marginLeft: 5 }}>· untested</span>}{!supported && <span style={{ color: GRAY, marginLeft: 5 }}>· n/a</span>}
+                       color: usable ? (on ? "#fff" : GRAY) : "rgba(255,255,255,.25)" }}>
+              {t.label}{!t.proven && <span style={{ color: AMBER, marginLeft: 5 }}>· untested</span>}
+              {blockedOnWindows ? <span style={{ color: GRAY, marginLeft: 5 }}>· use System printer</span>
+                : (!usable && <span style={{ color: GRAY, marginLeft: 5 }}>· n/a</span>)}
             </button>
           );
         })}
