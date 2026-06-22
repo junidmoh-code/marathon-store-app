@@ -388,8 +388,18 @@ function updateProductSizes(id, sizes) {
 }
 
 // Canonical clothing size order. Clothing products use the same `sizes`
-// array shape as sneakers — values are S / M / L / XL / XXL / XXXL.
-const CLOTHING_SIZES = ["S", "M", "L", "XL", "XXL", "XXXL"];
+// array shape as sneakers — letter sizes for tops, numeric WAIST sizes for bottoms.
+const CLOTHING_SIZES = ["S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
+// Bottoms/pants breakdown — numeric waist sizes. A SECOND clothing size set: bottoms
+// are still productType "clothing" (same routing/hubs/no-shoebox), they just use this
+// waist breakdown instead of letters. The two sets are DISJOINT, so a product's size
+// family is inferable from its stored sizes (see clothingChoicesFor).
+const BOTTOMS_SIZES = ["28", "30", "32", "34", "36", "38", "40"];
+// True when every stored size is a waist size → this clothing product is bottoms.
+const isWaistSizeSet = (sizes) =>
+  Array.isArray(sizes) && sizes.length > 0 && sizes.every(s => BOTTOMS_SIZES.includes(String(s)));
+// The size choices for a CLOTHING product: waist set for bottoms, letters otherwise.
+const clothingChoicesFor = (sizes) => (isWaistSizeSet(sizes) ? BOTTOMS_SIZES : CLOTHING_SIZES);
 
 // Phase 14A: products can belong to multiple hubs. New shape is `hubs: [...]`,
 // values from { "hub1", "hub2", "hub3" }. Legacy products only have a single
@@ -1634,7 +1644,10 @@ function AdminView({ products, orders, onExit }) {
   // true we stop auto-syncing it from category/productType.
   // sku + barcode are NOT in form state — they auto-generate at save time via
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
-  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+  // sizeStyle picks the size breakdown shown: "shoe" (sneaker), "letters" (clothing
+  // tops S–4XL), or "waist" (bottoms 28–40). Bottoms still save as productType
+  // "clothing"; sizeStyle only drives which size buttons appear.
+  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", sizeStyle:"shoe", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   // Optional opening-stock receiving (Stock rework). Collapsed by default — when
   // collapsed the form behaves EXACTLY as before. Quantities are NEVER required;
@@ -1759,7 +1772,7 @@ function AdminView({ products, orders, onExit }) {
         console.warn("opening-stock receive failed:", recErr);
       }
 
-      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", sizeStyle:"shoe", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
       setShoeboxTouched(false);
       setRecvQtys({});
       setRecvOpen(false);
@@ -1801,6 +1814,24 @@ function AdminView({ products, orders, onExit }) {
     const shoeboxPatch = shoeboxTouched ? {} : { hasShoeBoxOption: true };
     return { ...f, productType: nextType, ...shoeboxPatch };
   });
+  // The three selectable size breakdowns. "Bottoms" is a CLOTHING product (same
+  // routing/hubs/no-shoebox) that uses the waist size set instead of letters — so it
+  // maps to productType "clothing" with sizeStyle "waist".
+  const SIZE_TYPE_OPTIONS = [
+    { key: "shoe",    label: "Sneaker",  productType: "sneaker"  },
+    { key: "letters", label: "Clothing", productType: "clothing" },
+    { key: "waist",   label: "Bottoms",  productType: "clothing" },
+  ];
+  const selectSizeType = (opt) => {
+    if (opt.key === form.sizeStyle) return;       // already active
+    setProductType(opt.productType);              // applies clothing hub/shoebox rules
+    // A different size family invalidates the currently-selected sizes + their qtys.
+    setForm(f => ({ ...f, sizeStyle: opt.key, sizes: [] }));
+    setRecvQtys({});
+  };
+  // Size buttons for the form, driven by the chosen breakdown.
+  const formSizeChoices = form.sizeStyle === "shoe" ? SNEAKER_SIZES
+    : form.sizeStyle === "waist" ? BOTTOMS_SIZES : CLOTHING_SIZES;
   // POS Phase 2: category onChange handler. Auto-sets the shoebox flag based
   // on category text (footwear / shoe / sneaker → true; everything else →
   // false), unless the user has manually toggled it. Clothing always stays
@@ -1944,18 +1975,21 @@ function AdminView({ products, orders, onExit }) {
           {/* Product type toggle (Phase 12A) */}
           <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Product Type</div>
           <div style={{ display:"flex", gap:"0.5rem", marginBottom:"1.25rem" }}>
-            {[["sneaker","Sneaker"],["clothing","Clothing"]].map(([val, label]) => (
-              <button key={val} onClick={() => setProductType(val)}
-                style={{ padding:"6px 20px", borderRadius:"8px", border:"2px solid", borderColor: form.productType===val?BLUE:"rgba(60,110,255,.15)", background: form.productType===val?"rgba(60,110,255,.12)":"transparent", color: form.productType===val?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.9rem" }}>
-                {label}
-              </button>
-            ))}
+            {SIZE_TYPE_OPTIONS.map(opt => {
+              const on = form.sizeStyle === opt.key;
+              return (
+                <button key={opt.key} onClick={() => selectSizeType(opt)}
+                  style={{ padding:"6px 20px", borderRadius:"8px", border:"2px solid", borderColor: on?BLUE:"rgba(60,110,255,.15)", background: on?"rgba(60,110,255,.12)":"transparent", color: on?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.9rem" }}>
+                  {opt.label}
+                </button>
+              );
+            })}
           </div>
 
-          {/* Size toggles — same toggle UX for both types, different option lists. */}
+          {/* Size toggles — same toggle UX for every breakdown, different option lists. */}
           <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Available Sizes</div>
           <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
-            {(form.productType === "clothing" ? CLOTHING_SIZES : SNEAKER_SIZES).map(s => (
+            {formSizeChoices.map(s => (
               <button key={s} onClick={() => toggleSize(s)}
                 style={{ padding:"6px 14px", borderRadius:"8px", border:"2px solid", borderColor: form.sizes.includes(s)?BLUE:"rgba(60,110,255,.15)", background: form.sizes.includes(s)?"rgba(60,110,255,.12)":"transparent", color: form.sizes.includes(s)?BLUE_L:"#666", cursor:"pointer", fontWeight:"600" }}>
                 {s}
@@ -1983,7 +2017,7 @@ function AdminView({ products, orders, onExit }) {
                   <div style={{ color:"#666", fontSize:"0.82rem", textAlign:"center", padding:"0.5rem" }}>Select sizes above, then enter how many of each you're receiving.</div>
                 ) : (
                   <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(64px, 1fr))", gap:"0.6rem" }}>
-                    {(form.productType === "clothing" ? CLOTHING_SIZES : SNEAKER_SIZES).filter(s => form.sizes.includes(s)).map(s => (
+                    {formSizeChoices.filter(s => form.sizes.includes(s)).map(s => (
                       <div key={s} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
                         <div style={{ fontSize:"0.85rem", fontWeight:700, color:BLUE_L }}>{s}</div>
                         <div style={{ color:"rgba(120,150,255,.5)", fontSize:"0.9rem", lineHeight:1 }}>↓</div>
@@ -2152,7 +2186,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     ? product.sizes
     : (isClothing && product.stock ? Object.keys(product.stock) : []);
   const productHubs = getProductHubs(product);
-  const sizeChoices = isClothing ? CLOTHING_SIZES : SNEAKER_SIZES;
+  // Clothing products may use letters (tops) or the waist set (bottoms) — infer which
+  // from the product's own sizes so editing shows the right breakdown.
+  const sizeChoices = isClothing ? clothingChoicesFor(productSizes) : SNEAKER_SIZES;
 
   // Name — local draft synced from RTDB, write on blur.
   const [nameDraft, setNameDraft] = useState(product.name);
@@ -3800,7 +3836,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     return { dueRefills: due, completedRefills: completed };
   }, [orders, selectedHub, nowTick]);
   const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
-  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","S","M","L","XL","XXL","XXXL"];
+  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","S","M","L","XL","XXL","XXXL","4XL","28","30","32","34","36","38","40"];
   const sizeRank = (s) => {
     const i = CANONICAL_SIZE_ORDER.indexOf(s);
     return i === -1 ? 999 : i;
