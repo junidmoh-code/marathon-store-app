@@ -4,16 +4,20 @@
 // Pure-ish: given a label, returns { width, height, bytesPerRow, mono } with mono a
 // packed 1bpp buffer (bit=1 → black dot), MSB first, rows padded to whole bytes.
 //
-// LAYOUT CONTRACT (fixes the three render bugs):
+// LAYOUT CONTRACT:
 //  • The raster is the FULL print-head width (widthDots, 384 dots). The printable
 //    label is contentWidthDots wide and sits CENTRED under the head, so centring
 //    content in the 384-dot raster lands it centred on the physical label (the old
 //    320-wide raster printed from the head's left edge → left-bias).
 //  • Everything is centred horizontally with an edge margin so nothing touches the
 //    label edge.
-//  • The product name AUTO-FITS so it can never overflow: shrink the font; if it's
-//    still too wide and two lines are allowed (catalog labels, which have the room),
-//    word-wrap to 2 lines; final fallback truncates with "…".
+//  • Vertical order: [optional header] → product NAME → SIZE → barcode → 8-digit code.
+//  • SIZE is on its OWN bold, prominent line ("Size: 9") — separated from the name so
+//    it is ALWAYS visible no matter how long the name is (size is the key pick-info).
+//  • The product NAME auto-fits on ONE line: shrink the font, then truncate with "…"
+//    so it can never overflow or steal the size's space.
+//  • The barcode is MINIMISED (capped height) to make room for the size while keeping
+//    Code 128 at a scannable module width.
 //  • Height is exactly one label tall (caller sizes it), so the declared GS v 0
 //    line-count matches the content — no oversized canvas, no spill.
 
@@ -33,33 +37,6 @@ function fitLine(ctx, text, maxWidth, maxPx, minPx, bold = true) {
   let t = String(text);
   while (t.length > 1 && ctx.measureText(t + "…").width > maxWidth) t = t.slice(0, -1);
   return { px: minPx, lines: [t + "…"] };
-}
-
-// Split text into two width-fitting lines on a word boundary, or null if impossible.
-function wrapTwo(ctx, text, maxWidth) {
-  const words = String(text).trim().split(/\s+/);
-  if (words.length < 2) return null;
-  for (let i = 1; i < words.length; i++) {
-    const a = words.slice(0, i).join(" "), b = words.slice(i).join(" ");
-    if (ctx.measureText(a).width <= maxWidth && ctx.measureText(b).width <= maxWidth) return [a, b];
-  }
-  return null;
-}
-
-// Name auto-fit: one shrunk line; else (if allowed) wrap to two; else truncate.
-function fitName(ctx, text, maxWidth, maxPx, minPx, allowTwoLines) {
-  for (let px = maxPx; px >= minPx; px--) {
-    setFont(ctx, px, true);
-    if (ctx.measureText(text).width <= maxWidth) return { px, lines: [text] };
-  }
-  if (allowTwoLines) {
-    for (let px = maxPx; px >= minPx; px--) {
-      setFont(ctx, px, true);
-      const w = wrapTwo(ctx, text, maxWidth);
-      if (w) return { px, lines: w };
-    }
-  }
-  return fitLine(ctx, text, maxWidth, minPx, minPx, true);
 }
 
 function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDots, moduleWidth, contentWidthDots) {
@@ -82,16 +59,29 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
     y += f.px + 3;
   }
 
-  // Product name + size — auto-fit (2 lines allowed only on header-less catalog labels).
-  const title = `${productName || ""}${size ? "  ·  " + size : ""}`.trim();
-  if (title) {
-    const f = fitName(ctx, title, maxW, header ? 16 : 20, 11, !header);
-    for (const line of f.lines) { setFont(ctx, f.px, true); ctx.fillText(line, cx, y); y += f.px + 2; }
+  // Product NAME — its own line, auto-fit (shrink → ellipsis); never merged with the
+  // size, so a long name can't push the size off the label.
+  if (productName) {
+    const f = fitLine(ctx, String(productName), maxW, header ? 15 : 20, 11, true);
+    setFont(ctx, f.px, true);
+    ctx.fillText(f.lines[0], cx, y);
+    y += f.px + 2;
   }
-  y += 4;
 
-  // Barcode — shrink module width until it fits the content area, centre, and fill the
-  // remaining height (leaving room for the human-readable code at the bottom).
+  // SIZE — its own bold, prominent line. Always shown when present, at a glance.
+  const sizeStr = (size != null && String(size).trim() !== "") ? `Size: ${String(size).trim()}` : "";
+  if (sizeStr) {
+    const f = fitLine(ctx, sizeStr, maxW, header ? 17 : 24, 12, true);
+    setFont(ctx, f.px, true);
+    ctx.fillText(f.lines[0], cx, y);
+    y += f.px + 4;
+  } else {
+    y += 2;
+  }
+
+  // Barcode — shrink module width until it fits the content width, then MINIMISE the
+  // height (capped) so the size stays prominent. Module width stays ≥ a scannable
+  // density; centred; the 8-digit code sits below.
   const modules = code128Modules(code);
   const totalModules = modules.reduce((s, m) => s + m.width, 0);
   let mw = moduleWidth;
@@ -99,14 +89,15 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
   const barWidth = totalModules * mw;
   const CODE_PX = 16;
   const barTop = y;
-  const barHeight = Math.max(28, heightDots - (CODE_PX + 5) - barTop);
+  const avail = heightDots - (CODE_PX + 5) - barTop;
+  const barHeight = Math.max(34, Math.min(avail, 60));  // minimised, still scannable
   let x = Math.round(cx - barWidth / 2);
   for (const m of modules) {
     if (m.bar) ctx.fillRect(x, barTop, m.width * mw, barHeight);
     x += m.width * mw;
   }
 
-  // Human-readable code, centred under the bars.
+  // 8-digit human-readable code, centred under the bars.
   setFont(ctx, CODE_PX, false);
   ctx.fillText(code, cx, barTop + barHeight + 3);
 }

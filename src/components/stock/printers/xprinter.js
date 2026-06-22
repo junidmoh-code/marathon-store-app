@@ -67,39 +67,55 @@ function fitText(name, maxWidthDots) {
   return { font: f.id, w: f.w, text: clean.slice(0, maxChars) };
 }
 
-// One label's TSPL. Centres the name and the barcode horizontally; the printer
-// advances exactly one label via SIZE+GAP auto-detection.
+// One label's TSPL. Vertical order: NAME → SIZE → barcode (with the 8-digit code the
+// printer renders below the bars). NAME and SIZE are on SEPARATE lines so a long name
+// can never push the size off the label. Everything centred; the printer advances
+// exactly one label via SIZE+GAP auto-detection.
 function tsplLabel({ code, productName, size }, copies) {
   const margin = 16;                                   // ~2mm edge margin
   const maxW = LABEL_WIDTH_DOTS - margin * 2;
-  const title = `${productName || ""}${size ? "  " + size : ""}`;
-  const fit = fitText(title, maxW);
-  const textW = fit.text.length * fit.w;
-  const textX = Math.max(margin, Math.round((LABEL_WIDTH_DOTS - textW) / 2));
+  // Centre an element of width w within the label.
+  const at = (w) => Math.max(margin, Math.round((LABEL_WIDTH_DOTS - w) / 2));
 
-  // Code 128 width = total modules × narrow-bar dots; shrink narrow to fit if needed.
+  // Product NAME — own line, auto-fit (shrink font, then hard-truncate so it can never
+  // overflow or steal the size's line).
+  const nameFit = fitText(productName, maxW);
+  const nameX = at(nameFit.text.length * nameFit.w);
+  const nameY = 18;
+  const nameLH = Math.round(nameFit.w * 1.6);
+
+  // SIZE — own prominent line ("Size: 9"), the largest internal font so it's spotted
+  // at a glance. Sanitised like the name (no quotes/newlines to break TSPL).
+  const sizeStr = (size != null && String(size).trim() !== "") ? `Size: ${String(size).trim()}` : "";
+  const sizeFont = TSPL_FONTS[0];                      // font "3" (largest)
+  const sizeText = sizeStr.replace(/["\\\n\r]/g, " ");
+  const sizeX = at(sizeText.length * sizeFont.w);
+  const sizeY = nameY + nameLH + 6;
+  const sizeLH = sizeStr ? Math.round(sizeFont.w * 1.6) : 0;
+
+  // Code 128 width = total modules × narrow-bar dots; shrink narrow only if needed
+  // (kept ≥ a scannable density). Height is MINIMISED (capped) to keep the size prominent.
   const totalModules = code128Modules(code).reduce((s, m) => s + m.width, 0);
   let narrow = 2;
   while (totalModules * narrow > maxW && narrow > 1) narrow--;
   const barW = totalModules * narrow;
-  const barX = Math.max(margin, Math.round((LABEL_WIDTH_DOTS - barW) / 2));
+  const barX = at(barW);
+  const barY = sizeY + sizeLH + 10;
+  const avail = LABEL_HEIGHT_MM * DOTS_PER_MM - barY - 30;  // leave ~30 dots for the digits
+  const barH = Math.max(48, Math.min(avail, 96));          // minimised, still scannable
 
-  const textY = 16;
-  const barY = textY + Math.round(fit.w * 1.6) + 8;    // below the name
-  // Bar height fills the label, leaving room for the human-readable digits (~30 dots).
-  const barH = Math.max(40, LABEL_HEIGHT_MM * DOTS_PER_MM - barY - 30);
-
-  return [
+  const lines = [
     `SIZE ${LABEL_WIDTH_MM} mm,${LABEL_HEIGHT_MM} mm`,
     `GAP ${GAP_MM} mm,0 mm`,
     "DIRECTION 1",
     "CLS",
-    `TEXT ${textX},${textY},"${fit.font}",0,1,1,"${fit.text}"`,
-    // BARCODE x,y,"128",height,human-readable(1=below),rotation,narrow,wide,"data"
-    `BARCODE ${barX},${barY},"128",${barH},1,0,${narrow},${narrow},"${code}"`,
-    `PRINT 1,${copies}`,
-    "",
-  ].join("\r\n");
+    `TEXT ${nameX},${nameY},"${nameFit.font}",0,1,1,"${nameFit.text}"`,
+  ];
+  if (sizeStr) lines.push(`TEXT ${sizeX},${sizeY},"${sizeFont.id}",0,1,1,"${sizeText}"`);
+  // BARCODE x,y,"128",height,human-readable(1=below),rotation,narrow,wide,"data"
+  lines.push(`BARCODE ${barX},${barY},"128",${barH},1,0,${narrow},${narrow},"${code}"`);
+  lines.push(`PRINT 1,${copies}`, "");
+  return lines.join("\r\n");
 }
 
 // ── USB plumbing ─────────────────────────────────────────────────────────────
