@@ -67,7 +67,7 @@ export async function connectTransport(transport) {
   throw new Error(`Unknown transport "${transport}".`);
 }
 
-export async function printLabels({ items, transport, conn = null }) {
+export async function printLabels({ items, transport, conn = null, rotate = 0 }) {
   try {
     if (transport === "phomemo") {
       // Phomemo rasterises one bitmap per physical copy → expand counts to entries.
@@ -85,7 +85,7 @@ export async function printLabels({ items, transport, conn = null }) {
       // One rasterised label per physical copy → expand counts to entries (like Phomemo).
       const labels = expand(items);
       if (!labels.length) return { ok: false, error: "Nothing to print (all counts are 0)." };
-      return await printBrowser(labels);
+      return await printBrowser(labels, { rotate });
     }
     return { ok: false, error: `Unknown transport "${transport}".` };
   } catch (err) {

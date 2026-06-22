@@ -15,19 +15,16 @@ import { renderLabelBitmap } from "./labelBitmap";
 // wide × 30 mm tall = 320×240 dots @203 dpi). The XP-350B feeds the label rotated, so
 // at a 40×30 page the content prints SIDEWAYS — we rotate the rendered label 90° and
 // emit a portrait 30×40 page so it lands upright on the physical label.
-// ROTATE_DEG: 90 (clockwise) or 270 (counter-clockwise) — flip this if it's upside down.
-const ROTATE_DEG = 90;
-const ROTATED = ROTATE_DEG === 90 || ROTATE_DEG === 270;
-const PAGE = ROTATED ? { wMm: 30, hMm: 40 } : { wMm: 40, hMm: 30 };
 const RENDER = { widthDots: 320, heightDots: 240, contentWidthDots: 320, moduleWidth: 2 };
+const norm = (deg) => ((Number(deg) % 360) + 360) % 360;   // 0/90/180/270
 
 export function isBrowserPrintSupported() {
   return typeof window !== "undefined" && typeof window.print === "function" && typeof document !== "undefined";
 }
 
 // One label → a PNG data URL (paint the 1-bpp mono buffer onto a canvas; bit=1 → black),
-// rotated by ROTATE_DEG so it lands upright on the printer's feed orientation.
-function labelDataUrl(label) {
+// rotated by `rotate` degrees so it lands upright in the printer's feed orientation.
+function labelDataUrl(label, rotate) {
   const bmp = renderLabelBitmap(label, RENDER);
   const base = document.createElement("canvas");
   base.width = bmp.width;
@@ -43,35 +40,41 @@ function labelDataUrl(label) {
     }
   }
   bctx.putImageData(img, 0, 0);
-  if (!ROTATE_DEG) return base.toDataURL("image/png");
+  if (!rotate) return base.toDataURL("image/png");
 
   // Rotate onto a fresh canvas (dims swap for 90/270).
+  const swap = rotate === 90 || rotate === 270;
   const out = document.createElement("canvas");
-  out.width = ROTATED ? base.height : base.width;
-  out.height = ROTATED ? base.width : base.height;
+  out.width = swap ? base.height : base.width;
+  out.height = swap ? base.width : base.height;
   const octx = out.getContext("2d");
   octx.fillStyle = "#fff";
   octx.fillRect(0, 0, out.width, out.height);
   octx.translate(out.width / 2, out.height / 2);
-  octx.rotate((ROTATE_DEG * Math.PI) / 180);
+  octx.rotate((rotate * Math.PI) / 180);
   octx.drawImage(base, -base.width / 2, -base.height / 2);
   return out.toDataURL("image/png");
 }
 
 // labels: [{ code, productName, size }] already expanded to one entry per copy.
+// opts.rotate (0/90/180/270) spins each label so it lands upright in the printer's feed
+// orientation — operator-selectable (printers differ). The page aspect follows the
+// rotation: portrait 30×40 for 90/270, landscape 40×30 for 0/180.
 // Builds a one-label-per-page document in a hidden iframe and opens the print dialog.
-export async function printBrowser(labels) {
+export async function printBrowser(labels, opts = {}) {
   if (!isBrowserPrintSupported()) return { ok: false, error: "Printing isn't available in this browser." };
   if (!labels || !labels.length) return { ok: false, error: "Nothing to print." };
+  const rotate = norm(opts.rotate);
+  const page = (rotate === 90 || rotate === 270) ? { wMm: 30, hMm: 40 } : { wMm: 40, hMm: 30 };
   let iframe = null;
   try {
-    const body = labels.map(l => `<div class="lbl"><img src="${labelDataUrl(l)}" /></div>`).join("");
+    const body = labels.map(l => `<div class="lbl"><img src="${labelDataUrl(l, rotate)}" /></div>`).join("");
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Labels</title><style>
-      @page { size: ${PAGE.wMm}mm ${PAGE.hMm}mm; margin: 0; }
+      @page { size: ${page.wMm}mm ${page.hMm}mm; margin: 0; }
       html, body { margin: 0; padding: 0; }
-      .lbl { width: ${PAGE.wMm}mm; height: ${PAGE.hMm}mm; overflow: hidden; page-break-after: always; }
+      .lbl { width: ${page.wMm}mm; height: ${page.hMm}mm; overflow: hidden; page-break-after: always; }
       .lbl:last-child { page-break-after: auto; }
-      .lbl img { width: ${PAGE.wMm}mm; height: ${PAGE.hMm}mm; display: block; image-rendering: pixelated; }
+      .lbl img { width: ${page.wMm}mm; height: ${page.hMm}mm; display: block; image-rendering: pixelated; }
     </style></head><body>${body}</body></html>`;
 
     iframe = document.createElement("iframe");
