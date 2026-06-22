@@ -64,10 +64,16 @@ function fitName(ctx, text, maxWidth, maxPx, minPx, maxLines) {
       return { px, lines };
     }
   }
-  // Last resort: smallest font; keep maxLines lines, ellipsis only an over-wide line.
+  // Last resort: smallest font. Keep maxLines lines; ellipsis an over-wide line, AND
+  // mark the last line with "…" if wrapping produced MORE lines than we can show — so a
+  // forced cut is always SIGNALLED, never silent.
   setFont(ctx, minPx, true);
-  const lines = wrapLines(ctx, text, maxWidth).slice(0, maxLines).map(l => {
-    if (ctx.measureText(l).width <= maxWidth) return l;
+  const all = wrapLines(ctx, text, maxWidth);
+  const kept = all.slice(0, maxLines);
+  const dropped = all.length > maxLines;
+  const lines = kept.map((l, i) => {
+    const overflow = ctx.measureText(l).width > maxWidth || (dropped && i === kept.length - 1);
+    if (!overflow) return l;
     let t = l;
     while (t.length > 1 && ctx.measureText(t + "…").width > maxWidth) t = t.slice(0, -1);
     return t + "…";

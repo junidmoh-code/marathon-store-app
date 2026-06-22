@@ -80,7 +80,14 @@ function fitNameLines(name, maxWidthDots, maxLines = 3) {
   }
   const f = TSPL_FONTS[TSPL_FONTS.length - 1];
   const maxChars = Math.max(1, Math.floor(maxWidthDots / f.w));
-  return { font: f.id, w: f.w, lines: wrapByChars(clean, maxChars).slice(0, maxLines) };
+  const all = wrapByChars(clean, maxChars);
+  const kept = all.slice(0, maxLines);
+  // Signal a forced cut rather than dropping the tail silently.
+  if (all.length > maxLines && kept.length) {
+    const last = kept[kept.length - 1];
+    kept[kept.length - 1] = (last.length >= maxChars ? last.slice(0, maxChars - 1) : last) + "…";
+  }
+  return { font: f.id, w: f.w, lines: kept };
 }
 
 // One label's TSPL. Vertical order: NAME → SIZE → barcode (with the 8-digit code the

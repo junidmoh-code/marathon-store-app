@@ -77,23 +77,25 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   const filtered = useMemo(() => {
     const q = search.trim();
     const lc = q.toLowerCase();
+    // A product matches by CODE when a digit query equals (full scan) or, for 3+ digits,
+    // is contained in its barcode / sku / any per-size code. product.barcodes is keyed by
+    // size (RTDB may surface it as an array), so Object.values covers both shapes.
+    const matchesCode = (p) => {
+      if (!/\d/.test(q)) return false;
+      const codes = [];
+      if (p.barcode != null) codes.push(String(p.barcode));
+      if (p.sku != null) codes.push(String(p.sku));
+      if (p.barcodes && typeof p.barcodes === "object")
+        for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
+      return codes.some(c => c === q || (q.length >= 3 && c.includes(q)));
+    };
     return [...(products || [])]
-      .filter(p => {
-        if (!p || !p.id || !p.name || !Array.isArray(p.sizes) || !p.sizes.length) return false;
-        if (!q) return true;
-        if (p.name.toLowerCase().includes(lc)) return true;
-        // BARCODE / SKU / per-size code match — type or SCAN a code to find the product.
-        // product.barcodes is stored as a map keyed by size (RTDB may surface it as an
-        // array), so Object.values covers both. Exact match for a full scan; 3+ digit
-        // substring for partial typing.
-        const codes = [];
-        if (p.barcode != null) codes.push(String(p.barcode));
-        if (p.sku != null) codes.push(String(p.sku));
-        if (p.barcodes && typeof p.barcodes === "object")
-          for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
-        return codes.some(c => c === q || (q.length >= 3 && c.includes(q)));
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .filter(p => p && p.id && p.name && Array.isArray(p.sizes) && p.sizes.length)
+      .map(p => ({ p, code: q ? matchesCode(p) : false, name: !q || p.name.toLowerCase().includes(lc) }))
+      .filter(m => !q || m.code || m.name)
+      // Code hits first (a scan jumps straight to the product), then by name.
+      .sort((a, b) => (b.code - a.code) || a.p.name.localeCompare(b.p.name))
+      .map(m => m.p);
   }, [products, search]);
 
   const toggle = (p, size) => setSel(s => {
