@@ -39,6 +39,42 @@ function fitLine(ctx, text, maxWidth, maxPx, minPx, bold = true) {
   return { px: minPx, lines: [t + "…"] };
 }
 
+// Greedy word-wrap `text` into lines that each fit maxWidth at the CURRENT font.
+function wrapLines(ctx, text, maxWidth) {
+  const words = String(text).trim().split(/\s+/);
+  const lines = []; let cur = "";
+  for (const w of words) {
+    const trial = cur ? cur + " " + w : w;
+    if (ctx.measureText(trial).width <= maxWidth) cur = trial;
+    else { if (cur) lines.push(cur); cur = w; }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+// Product-name fit: pick the LARGEST font (maxPx→minPx) whose word-wrap fits within
+// `maxLines` lines AND every line fits the width — so the FULL name always shows,
+// NEVER truncated. Only the pathological case (a single word wider than the label
+// even at minPx) ellipsises just that overflowing line.
+function fitName(ctx, text, maxWidth, maxPx, minPx, maxLines) {
+  for (let px = maxPx; px >= minPx; px--) {
+    setFont(ctx, px, true);
+    const lines = wrapLines(ctx, text, maxWidth);
+    if (lines.length <= maxLines && lines.every(l => ctx.measureText(l).width <= maxWidth)) {
+      return { px, lines };
+    }
+  }
+  // Last resort: smallest font; keep maxLines lines, ellipsis only an over-wide line.
+  setFont(ctx, minPx, true);
+  const lines = wrapLines(ctx, text, maxWidth).slice(0, maxLines).map(l => {
+    if (ctx.measureText(l).width <= maxWidth) return l;
+    let t = l;
+    while (t.length > 1 && ctx.measureText(t + "…").width > maxWidth) t = t.slice(0, -1);
+    return t + "…";
+  });
+  return { px: minPx, lines };
+}
+
 function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDots, moduleWidth, contentWidthDots) {
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, widthDots, heightDots);
@@ -59,13 +95,12 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
     y += f.px + 3;
   }
 
-  // Product NAME — its own line, auto-fit (shrink → ellipsis); never merged with the
-  // size, so a long name can't push the size off the label.
+  // Product NAME — its own block: wraps across up to 2 (dispatch) / 3 (catalog) lines,
+  // shrinking the font, so the FULL name always shows and is never truncated.
   if (productName) {
-    const f = fitLine(ctx, String(productName), maxW, header ? 15 : 20, 11, true);
+    const f = fitName(ctx, String(productName), maxW, header ? 16 : 22, 10, header ? 2 : 3);
     setFont(ctx, f.px, true);
-    ctx.fillText(f.lines[0], cx, y);
-    y += f.px + 2;
+    for (const line of f.lines) { ctx.fillText(line, cx, y); y += f.px + 2; }
   }
 
   // SIZE — its own bold, prominent line. Always shown when present, at a glance.
@@ -90,7 +125,7 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
   const CODE_PX = 16;
   const barTop = y;
   const avail = heightDots - (CODE_PX + 5) - barTop;
-  const barHeight = Math.max(34, Math.min(avail, 60));  // minimised, still scannable
+  const barHeight = Math.max(40, Math.min(avail, header ? 80 : 96));  // shrunk but scannable
   let x = Math.round(cx - barWidth / 2);
   for (const m of modules) {
     if (m.bar) ctx.fillRect(x, barTop, m.width * mw, barHeight);

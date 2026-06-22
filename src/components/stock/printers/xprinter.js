@@ -55,16 +55,32 @@ function wireDisconnect() {
 // auto-fit / centre text without a canvas.
 const TSPL_FONTS = [{ id: "3", w: 16 }, { id: "2", w: 12 }, { id: "1", w: 8 }];
 
-// Auto-fit the name: pick the largest font whose rendered width fits, else use the
-// smallest and hard-truncate so it can NEVER overflow the label width.
-function fitText(name, maxWidthDots) {
+// Greedy word-wrap into lines of at most maxChars characters.
+function wrapByChars(text, maxChars) {
+  const words = String(text).split(/\s+/);
+  const lines = []; let cur = "";
+  for (const w of words) {
+    const trial = cur ? cur + " " + w : w;
+    if (trial.length <= maxChars) cur = trial;
+    else { if (cur) lines.push(cur); cur = w.length > maxChars ? w.slice(0, maxChars) : w; }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+// Auto-fit the name: pick the LARGEST font whose word-wrap fits within `maxLines`
+// lines, so the FULL name shows across multiple lines — never truncated. Only when
+// even the smallest font overflows maxLines is the tail dropped (pathological).
+function fitNameLines(name, maxWidthDots, maxLines = 3) {
   const clean = String(name || "").replace(/["\\\n\r]/g, " ").trim();
   for (const f of TSPL_FONTS) {
-    if (clean.length * f.w <= maxWidthDots) return { font: f.id, w: f.w, text: clean };
+    const maxChars = Math.max(1, Math.floor(maxWidthDots / f.w));
+    const lines = wrapByChars(clean, maxChars);
+    if (lines.length <= maxLines) return { font: f.id, w: f.w, lines };
   }
   const f = TSPL_FONTS[TSPL_FONTS.length - 1];
   const maxChars = Math.max(1, Math.floor(maxWidthDots / f.w));
-  return { font: f.id, w: f.w, text: clean.slice(0, maxChars) };
+  return { font: f.id, w: f.w, lines: wrapByChars(clean, maxChars).slice(0, maxLines) };
 }
 
 // One label's TSPL. Vertical order: NAME → SIZE → barcode (with the 8-digit code the
@@ -77,12 +93,13 @@ function tsplLabel({ code, productName, size }, copies) {
   // Centre an element of width w within the label.
   const at = (w) => Math.max(margin, Math.round((LABEL_WIDTH_DOTS - w) / 2));
 
-  // Product NAME — own line, auto-fit (shrink font, then hard-truncate so it can never
-  // overflow or steal the size's line).
-  const nameFit = fitText(productName, maxW);
-  const nameX = at(nameFit.text.length * nameFit.w);
+  // Product NAME — own block, auto-fit; wraps to TWO lines (full name) rather than
+  // truncating. Each line is its own TEXT command.
+  const nameFit = fitNameLines(productName, maxW);
   const nameY = 18;
   const nameLH = Math.round(nameFit.w * 1.6);
+  const nameCmds = nameFit.lines.map((ln, i) =>
+    `TEXT ${at(ln.length * nameFit.w)},${nameY + i * nameLH},"${nameFit.font}",0,1,1,"${ln}"`);
 
   // SIZE — own prominent line ("Size: 9"), the largest internal font so it's spotted
   // at a glance. Sanitised like the name (no quotes/newlines to break TSPL).
@@ -90,7 +107,7 @@ function tsplLabel({ code, productName, size }, copies) {
   const sizeFont = TSPL_FONTS[0];                      // font "3" (largest)
   const sizeText = sizeStr.replace(/["\\\n\r]/g, " ");
   const sizeX = at(sizeText.length * sizeFont.w);
-  const sizeY = nameY + nameLH + 6;
+  const sizeY = nameY + nameFit.lines.length * nameLH + 6;
   const sizeLH = sizeStr ? Math.round(sizeFont.w * 1.6) : 0;
 
   // Code 128 width = total modules × narrow-bar dots; shrink narrow only if needed
@@ -109,7 +126,7 @@ function tsplLabel({ code, productName, size }, copies) {
     `GAP ${GAP_MM} mm,0 mm`,
     "DIRECTION 1",
     "CLS",
-    `TEXT ${nameX},${nameY},"${nameFit.font}",0,1,1,"${nameFit.text}"`,
+    ...nameCmds,
   ];
   if (sizeStr) lines.push(`TEXT ${sizeX},${sizeY},"${sizeFont.id}",0,1,1,"${sizeText}"`);
   // BARCODE x,y,"128",height,human-readable(1=below),rotation,narrow,wide,"data"

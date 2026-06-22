@@ -75,9 +75,24 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   };
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = search.trim();
+    const lc = q.toLowerCase();
     return [...(products || [])]
-      .filter(p => p && p.id && p.name && Array.isArray(p.sizes) && p.sizes.length && (!q || p.name.toLowerCase().includes(q)))
+      .filter(p => {
+        if (!p || !p.id || !p.name || !Array.isArray(p.sizes) || !p.sizes.length) return false;
+        if (!q) return true;
+        if (p.name.toLowerCase().includes(lc)) return true;
+        // BARCODE / SKU / per-size code match — type or SCAN a code to find the product.
+        // product.barcodes is stored as a map keyed by size (RTDB may surface it as an
+        // array), so Object.values covers both. Exact match for a full scan; 3+ digit
+        // substring for partial typing.
+        const codes = [];
+        if (p.barcode != null) codes.push(String(p.barcode));
+        if (p.sku != null) codes.push(String(p.sku));
+        if (p.barcodes && typeof p.barcodes === "object")
+          for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
+        return codes.some(c => c === q || (q.length >= 3 && c.includes(q)));
+      })
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [products, search]);
 
