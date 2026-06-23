@@ -15,7 +15,7 @@ import TvDisplayMockup from "./components/TvDisplayMockup";
 import StockView from "./components/stock/StockView";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
-import { RECEIVING_DEFAULT, sellableLocations, labelFor, transferTargets } from "./components/stock/locations";
+import { sellableLocations, labelFor, transferTargets } from "./components/stock/locations";
 import { useStockCells, useLocations } from "./components/stock/useStock";
 import { shopUniverse } from "./utils/stores";
 import { LocationPicker } from "./components/stock/widgets";
@@ -1655,7 +1655,7 @@ function AdminView({ products, orders, onExit }) {
   // warehouse on save (the Stock → Set Qty screen can receive at any location).
   const [recvOpen, setRecvOpen] = useState(false);
   const [recvQtys, setRecvQtys] = useState({}); // { size: "n" }
-  const [recvLoc, setRecvLoc] = useState(""); // destination — NO default; the admin must pick each save
+  const [recvLoc, setRecvLoc] = useState(""); // destination — NO default; admin must pick each save
   const [saving, setSaving] = useState(false);
   // After a save with opening stock, surface the inline Print-barcodes sheet for the
   // sizes just received (count defaults to units added). Lives at the view level so
@@ -1953,6 +1953,7 @@ function AdminView({ products, orders, onExit }) {
           </div>
         </div>
 
+
         <div style={{ padding:"0 14px" }}>
 
       {showAdd && (
@@ -2008,9 +2009,9 @@ function AdminView({ products, orders, onExit }) {
             </button>
             {recvOpen && (
               <div style={{ marginTop:"0.75rem", background:"rgba(12,16,30,.55)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:"1px solid rgba(120,150,255,.16)", borderRadius:RADIUS, padding:"1rem", boxShadow:"inset 0 1px 0 rgba(255,255,255,.05)" }}>
-                {/* Destination — any of the 9 stock locations (default Central). */}
+                {/* Destination — required, no default. */}
                 <div style={{ marginBottom:"0.85rem" }}>
-                  <div style={{ fontSize:"0.7rem", color:"#888", textTransform:"uppercase", letterSpacing:".04em", marginBottom:4 }}>Receive into</div>
+                  <div style={{ fontSize:"0.7rem", color:"#888", textTransform:"uppercase", letterSpacing:".04em", marginBottom:4 }}>Receive into <span style={{ color:"#F87171" }}>*required</span></div>
                   <LocationPicker registry={recvRegistry} value={recvLoc} onChange={setRecvLoc} filter={transferTargets} />
                 </div>
                 {form.sizes.length === 0 ? (
@@ -2360,7 +2361,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   // stockRole the rules require.
   const [recvOpen, setRecvOpen] = useState(false);
   const [recvQtys, setRecvQtys] = useState({});
-  const [recvLoc, setRecvLoc] = useState(RECEIVING_DEFAULT); // chosen destination (all 9 locations)
+  const [recvLoc, setRecvLoc] = useState(""); // destination — NO default; must be picked before receiving
   const [recvBusy, setRecvBusy] = useState(false);
   const [recvMsg,  setRecvMsg]  = useState(null);
   const [lastReceived, setLastReceived] = useState(null); // { productId, productName, items:[{size,added}] }
@@ -2372,6 +2373,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       .map(s => [s, parseInt(recvQtys[s], 10)])
       .filter(([, n]) => Number.isFinite(n) && n > 0);
     if (!entries.length) return;
+    if (!recvLoc) return flashRecv(false, "Choose a destination location to receive into first.");
     setRecvBusy(true);
     let ok = 0, fail = 0; const savedItems = [];
     for (const [size, n] of entries) {
@@ -2488,9 +2490,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           </button>
           {recvOpen && (
             <div style={{ marginTop:14 }}>
-              {/* Destination — any of the 9 stock locations (default Central). */}
+              {/* Destination — required, no default. Must be picked before receiving. */}
               <div style={{ marginBottom:12 }}>
-                <div style={{ fontSize:11, color:"#888", textTransform:"uppercase", letterSpacing:".04em", marginBottom:4 }}>Receive into</div>
+                <div style={{ fontSize:11, color:"#888", textTransform:"uppercase", letterSpacing:".04em", marginBottom:4 }}>Receive into <span style={{ color:"#F87171" }}>*required</span></div>
                 <LocationPicker registry={recvRegistry} value={recvLoc} onChange={setRecvLoc} filter={transferTargets} />
               </div>
               {productSizes.length === 0 ? (
@@ -2509,9 +2511,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
                   ))}
                 </div>
               )}
-              <button onClick={doReceive} disabled={recvBusy}
-                style={{ ...bBlue, padding:"0.55rem 1.25rem", marginTop:14, opacity: recvBusy ? 0.5 : 1 }}>
-                {recvBusy ? "Receiving…" : `Receive into ${labelFor(recvLoc, recvRegistry)}`}
+              <button onClick={doReceive} disabled={recvBusy || !recvLoc}
+                style={{ ...bBlue, padding:"0.55rem 1.25rem", marginTop:14, opacity: (recvBusy || !recvLoc) ? 0.5 : 1 }}>
+                {recvBusy ? "Receiving…" : recvLoc ? `Receive into ${labelFor(recvLoc, recvRegistry)}` : "Pick a destination first"}
               </button>
               {recvMsg && <div style={{ marginTop:10, fontSize:12.5, fontWeight:600, color: recvMsg.ok ? "#4ADE80" : "#FF9B9B" }}>{recvMsg.text}</div>}
               <div style={{ fontSize:11, color:"#666", marginTop:8 }}>
