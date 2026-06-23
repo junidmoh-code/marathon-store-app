@@ -3,49 +3,37 @@
 // failures (drivers already return {ok,error}; this also guards against a throw),
 // and expands per-size copy counts into one label entry per physical label.
 //
-// Transports:
-//   phomemo  — Phomemo M110 via Web Bluetooth (proven; raster).
-//   xprinter — Xprinter XP-350B via WebUSB (TSPL; UNPROVEN — tomorrow's test).
+// Transports (both render on-device, so orientation + one-label sizing are handled by
+// the printer, NOT the browser/OS driver):
+//   phomemo  — Phomemo M110 via Web Bluetooth (raster).
+//   xprinter — Xprinter XP-350B via WebUSB + TSPL. WebUSB works in Chrome on BOTH macOS
+//              and Windows, so this is the SAME direct path on every platform — no
+//              window.print(), no OS print dialog, no driver page-setup, no headers.
 // A failed transport blocks nothing else: the value model, storage, reverse index
 // and on-screen barcode all work regardless of whether a printer is reachable.
 
 import { printPhomemo, printPhomemoTest, connectPhomemo, isPhomemoSupported } from "./phomemo";
 import { printXprinter, connectXprinter, isXprinterSupported, getXprinterDiag } from "./xprinter";
-import { printBrowser, isBrowserPrintSupported } from "./browserPrint";
 
 export { getXprinterDiag };
 
 export const TRANSPORTS = [
-  { id: "phomemo",  label: "Phomemo M110 (Bluetooth)", proven: true,  supported: isPhomemoSupported },
-  { id: "xprinter", label: "Xprinter XP-350B (USB)",   proven: false, supported: isXprinterSupported },
-  // Windows-friendly: prints via the OS print dialog (the XP-350B's own Windows driver),
-  // sidestepping the WebUSB "Access denied" that blocks USB on Windows. Works on any OS.
-  { id: "browserprint", label: "System printer (Windows)", proven: true, supported: isBrowserPrintSupported },
+  { id: "phomemo",  label: "Phomemo M110 (Bluetooth)", proven: true, supported: isPhomemoSupported },
+  { id: "xprinter", label: "Xprinter XP-350B (USB)",   proven: true, supported: isXprinterSupported },
 ];
 
-// True on Windows, where WebUSB can't open a printer the OS driver owns (the Xprinter
-// USB transport always fails with "Access denied"). Used to steer the UI to the
-// system-print path instead.
 export function isWindowsPlatform() {
   if (typeof navigator === "undefined") return false;
   const p = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || "";
   return /win/i.test(p);
 }
 
-// The Xprinter USB transport can't work on Windows — flag it so the UI disables it
-// there and points the operator at the system-print path.
-export function isTransportUsable(id) {
-  const t = TRANSPORTS.find(x => x.id === id);
-  if (!t || !t.supported()) return false;
-  if (id === "xprinter" && isWindowsPlatform()) return false;   // WebUSB blocked on Windows
-  return true;
-}
-
-// Initial transport choice: on Windows prefer the system-print path (the only one that
-// reaches the Xprinter there); otherwise the first usable transport.
+// Initial transport: on Windows default to the Xprinter (direct WebUSB+TSPL — the bulk
+// barcode-label printer there); elsewhere keep the first supported transport (Phomemo),
+// unchanged. The Xprinter stays selectable on every platform.
 export function defaultTransportId() {
-  if (isWindowsPlatform() && isBrowserPrintSupported()) return "browserprint";
-  return TRANSPORTS.find(t => isTransportUsable(t.id))?.id || TRANSPORTS[0].id;
+  if (isWindowsPlatform() && isXprinterSupported()) return "xprinter";
+  return TRANSPORTS.find(t => t.supported())?.id || TRANSPORTS[0].id;
 }
 
 // items: [{ code, productName, size, count }] — count copies of each.
@@ -63,11 +51,10 @@ function expand(items) {
 export async function connectTransport(transport) {
   if (transport === "phomemo") return await connectPhomemo();
   if (transport === "xprinter") return await connectXprinter();
-  if (transport === "browserprint") return null;   // no device handle — uses the OS dialog
   throw new Error(`Unknown transport "${transport}".`);
 }
 
-export async function printLabels({ items, transport, conn = null, rotate = 0 }) {
+export async function printLabels({ items, transport, conn = null }) {
   try {
     if (transport === "phomemo") {
       // Phomemo rasterises one bitmap per physical copy → expand counts to entries.
@@ -80,12 +67,6 @@ export async function printLabels({ items, transport, conn = null, rotate = 0 })
       const valid = (items || []).filter(it => it && it.code);
       if (!valid.length) return { ok: false, error: "Nothing to print." };
       return await printXprinter(valid, conn);
-    }
-    if (transport === "browserprint") {
-      // One rasterised label per physical copy → expand counts to entries (like Phomemo).
-      const labels = expand(items);
-      if (!labels.length) return { ok: false, error: "Nothing to print (all counts are 0)." };
-      return await printBrowser(labels, { rotate });
     }
     return { ok: false, error: `Unknown transport "${transport}".` };
   } catch (err) {
