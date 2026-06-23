@@ -151,8 +151,11 @@ export default function CountedStockReview({ products = [], registry, actorRole 
   };
 
   // Relocate a product's counted stock to another location (e.g. counted at Marathon PE
-  // but it belongs at Hub 1). Moves each size's quantity via a transfer (from → to) so
-  // counts are preserved and the destination is marked counted (live). Barcodes untouched.
+  // but it belongs at Hub 1). Each size moves via a transfer (from → to). cellState
+  // "live" marks BOTH touched cells counted — the source as a confirmed 0 and the
+  // destination with the moved qty. (Intentional: a move means the source is genuinely
+  // empty now, NOT awaiting re-count — unlike Clear, which marks "untracked".) Counts
+  // and barcodes are preserved.
   const moveProduct = async () => {
     const g = moveGroup, to = moveLoc;
     if (!g || !to || to === g.loc || busyKey) return;
@@ -169,7 +172,11 @@ export default function CountedStockReview({ products = [], registry, actorRole 
       } catch { fail++; }
     }
     setBusyKey(null); setMoveGroup(null); setMoveLoc("");
-    flash(fail ? "err" : "ok", `Moved ${ok} size(s) of ${g.name} → ${labelFor(to, registry)}${fail ? ` · ${fail} failed` : ""}.`);
+    if (ok === 0) { flash("err", fail ? `Move failed (${fail}).` : `Nothing to move — ${g.name} has no positive counted stock.`); return; }
+    // Jump the view to the destination so the moved product is visible where it landed
+    // (it left the previous location's filtered list — it isn't lost).
+    setLocFilter(to);
+    flash(fail ? "err" : "ok", `Moved ${ok} size(s) of ${g.name} → ${labelFor(to, registry)}${fail ? ` · ${fail} failed` : ""}. Now showing ${labelFor(to, registry)}.`);
   };
 
   // Undo a clear within the 30s window — restore each size's prior quantity (live).
