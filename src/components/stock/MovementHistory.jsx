@@ -27,7 +27,7 @@ function useUserNames() {
       const v = snap.val() || {}, m = {};
       for (const uid of Object.keys(v)) {
         const u = v[uid] || {};
-        m[uid] = u.displayName || u.username || u.name || u.email || uid.slice(0, 6);
+        m[uid] = u.displayName || u.username || u.name || uid.slice(0, 6);   // no email — avoid PII in the ledger
       }
       setMap(m);
     }, () => {});

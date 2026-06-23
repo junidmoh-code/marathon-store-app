@@ -53,7 +53,7 @@ export default function Adjust({ products, registry, actorRole, isAdmin }) {
       return codes.some(c => c === term || (term.length >= 3 && c.toLowerCase().includes(term)));
     };
     return [...(products || [])]
-      .filter(p => p && p.id && p.name && (p.name.toLowerCase().includes(term) || codeMatch(p)))
+      .filter(p => p && p.id && p.name && Array.isArray(p.sizes) && p.sizes.length && (p.name.toLowerCase().includes(term) || codeMatch(p)))
       .sort((a, b) => a.name.localeCompare(b.name))
       .slice(0, 20);
   }, [products, q]);

@@ -15,7 +15,7 @@ import { applyMovement } from "./applyMovement";
 import { useStockCells } from "./useStock";
 import { labelFor, transferTargets } from "./locations";
 import { barcodeSizeKey } from "./barcode";
-import { Toast, Empty } from "./widgets";
+import { Toast, Empty, LocationPicker } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, RED, BLUE_L, AMBER, BORDER, bGreen, bGhost, input } from "./ui";
 
 const DEFAULT_LOCATION = "marathon-pe";   // counts happen at Marathon PE by default
@@ -39,7 +39,9 @@ export default function CountedStockReview({ products = [], registry, actorRole 
   const [busyKey, setBusyKey] = useState(null);   // cell key being cleared/edited, or "prod:…"
   const [editKey, setEditKey] = useState(null);   // size-cell key whose qty is being edited
   const [editVal, setEditVal] = useState("");
-  const [confirmClear, setConfirmClear] = useState(null);   // product key awaiting clear confirmation
+  const [confirmClear, setConfirmClear] = useState(null);   // group awaiting clear confirmation
+  const [moveGroup, setMoveGroup] = useState(null);  // group being relocated to another location
+  const [moveLoc, setMoveLoc] = useState("");        // chosen destination for the move
   const [undo, setUndo] = useState(null);          // { label, items:[{loc,pid,size,qty}] } — 30s window
   const [lightbox, setLightbox] = useState(null);  // full-screen photo url
   const [toast, setToast] = useState(null);
@@ -116,14 +118,19 @@ export default function CountedStockReview({ products = [], registry, actorRole 
     const delta = target - s.qty;
     if (delta === 0) return cancelEdit();
     setBusyKey(keyOf(g.loc, g.pid, s.size));
-    const res = await applyMovement({
-      type: "adjustment", productId: g.pid, size: s.size, qty: Math.abs(delta),
-      to: delta > 0 ? g.loc : null, from: delta < 0 ? g.loc : null,
-      reason: "recount: corrected on the spot", cellState: "live", actorRole,
-    });
-    setBusyKey(null); cancelEdit();
-    if (res.ok) flash("ok", `Set ${g.name} · ${s.size} @ ${labelFor(g.loc, registry)} → ${target}.`);
-    else flash("err", `Couldn't update: ${res.reason || res.error || "unknown"}`);
+    try {
+      const res = await applyMovement({
+        type: "adjustment", productId: g.pid, size: s.size, qty: Math.abs(delta),
+        to: delta > 0 ? g.loc : null, from: delta < 0 ? g.loc : null,
+        reason: "recount: corrected on the spot", cellState: "live", actorRole,
+      });
+      if (res.ok) flash("ok", `Set ${g.name} · ${s.size} @ ${labelFor(g.loc, registry)} → ${target}.`);
+      else flash("err", `Couldn't update: ${res.reason || res.error || "unknown"}`);
+    } catch (e) {
+      flash("err", `Couldn't update: ${String(e?.message || e)}`);
+    } finally {
+      setBusyKey(null); cancelEdit();
+    }
   };
 
   // Clear ALL sizes of one product (at its location) → uncounted, so it's re-counted.
@@ -133,14 +140,36 @@ export default function CountedStockReview({ products = [], registry, actorRole 
     if (busyKey) return;
     const items = g.sizes.map(s => ({ loc: g.loc, pid: g.pid, size: s.size, qty: s.qty })).filter(i => i.qty !== 0);
     setBusyKey(`prod:${g.loc}|${g.pid}`);
-    let ok = 0, fail = 0;
+    let fail = 0; const cleared = [];   // only the sizes that actually zeroed → safe to undo
     for (const it of items) {
-      try { (await zeroCell(it.loc, it.pid, it.size, it.qty, "recount: product cleared")).ok ? ok++ : fail++; }
+      try { (await zeroCell(it.loc, it.pid, it.size, it.qty, "recount: product cleared")).ok ? cleared.push(it) : fail++; }
       catch { fail++; }
     }
     setBusyKey(null);
-    if (ok) setUndo({ label: `${g.name} @ ${labelFor(g.loc, registry)}`, items });
-    flash(fail ? "err" : "ok", `${g.name}: cleared ${ok}${fail ? `, ${fail} failed` : ""} → uncounted.`);
+    if (cleared.length) setUndo({ label: `${g.name} @ ${labelFor(g.loc, registry)}`, items: cleared });
+    flash(fail ? "err" : "ok", `${g.name}: cleared ${cleared.length}${fail ? `, ${fail} failed` : ""} → uncounted.`);
+  };
+
+  // Relocate a product's counted stock to another location (e.g. counted at Marathon PE
+  // but it belongs at Hub 1). Moves each size's quantity via a transfer (from → to) so
+  // counts are preserved and the destination is marked counted (live). Barcodes untouched.
+  const moveProduct = async () => {
+    const g = moveGroup, to = moveLoc;
+    if (!g || !to || to === g.loc || busyKey) return;
+    setBusyKey(`move:${g.loc}|${g.pid}`);
+    let ok = 0, fail = 0;
+    for (const s of g.sizes) {
+      if (!(s.qty > 0)) continue;   // only positive counted stock can be moved
+      try {
+        const res = await applyMovement({
+          type: "transfer_out", productId: g.pid, size: s.size, qty: s.qty,
+          from: g.loc, to, cellState: "live", actorRole, link: { reason: "recount: relocated" },
+        });
+        res.ok ? ok++ : fail++;
+      } catch { fail++; }
+    }
+    setBusyKey(null); setMoveGroup(null); setMoveLoc("");
+    flash(fail ? "err" : "ok", `Moved ${ok} size(s) of ${g.name} → ${labelFor(to, registry)}${fail ? ` · ${fail} failed` : ""}.`);
   };
 
   // Undo a clear within the 30s window — restore each size's prior quantity (live).
@@ -246,6 +275,11 @@ export default function CountedStockReview({ products = [], registry, actorRole 
                         <span style={{ color: BLUE_L }}>{labelFor(g.loc, registry)}</span> · {g.sizes.length} size(s) · {g.sizes.reduce((s, x) => s + x.qty, 0)} units
                       </div>
                     </div>
+                    {/* Move — relocate this product's counted stock to another location. */}
+                    <button onClick={() => { setMoveGroup(g); setMoveLoc(""); }} disabled={!!busyKey} title="Move counted stock to another location"
+                      style={{ ...bGhost, padding: "6px 11px", fontSize: 11.5, color: BLUE_L, borderColor: "rgba(60,110,255,.45)", opacity: (busyKey === `move:${gk}`) ? 0.6 : 1 }}>
+                      {busyKey === `move:${gk}` ? "Moving…" : "Move"}
+                    </button>
                     {/* Clear — opens a red confirmation popup before wiping anything. */}
                     <button onClick={() => setConfirmClear(g)} disabled={!!busyKey} title="Zero all sizes → uncounted (re-count this product)"
                       style={{ ...bGhost, padding: "6px 11px", fontSize: 11.5, color: RED, borderColor: "rgba(248,113,113,.45)", opacity: prodBusy ? 0.6 : 1 }}>
@@ -291,6 +325,32 @@ export default function CountedStockReview({ products = [], registry, actorRole 
             })}
           </div>
         </>
+      )}
+
+      {/* Move counted stock to another location (e.g. Marathon PE → Hub 1). */}
+      {moveGroup && (
+        <div onClick={() => !busyKey && setMoveGroup(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ width: "100%", maxWidth: 380, background: "#0d1426", border: "1px solid rgba(60,110,255,.5)", borderRadius: 14, padding: 20, boxShadow: "0 0 40px rgba(60,110,255,.35)" }}>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", textAlign: "center" }}>Move counted stock</div>
+            <div style={{ fontSize: 13, color: "#fff", textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
+              Move all counted quantities of<br /><b>{moveGroup.name}</b><br />
+              from <b style={{ color: BLUE_L }}>{labelFor(moveGroup.loc, registry)}</b> to:
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <LocationPicker registry={registry} value={moveLoc} onChange={setMoveLoc} filter={transferTargets} exclude={moveGroup.loc} />
+            </div>
+            <div style={{ fontSize: 11, color: "#86efac", textAlign: "center", marginTop: 10 }}>✓ Counts &amp; barcodes are kept — just relocated.</div>
+            <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+              <button onClick={() => setMoveGroup(null)} disabled={!!busyKey} style={{ ...bGhost, flex: 1, padding: "11px 0", fontSize: 13 }}>Cancel</button>
+              <button onClick={moveProduct} disabled={!moveLoc || !!busyKey}
+                style={{ ...bGreen, flex: 1, padding: "11px 0", fontSize: 13, fontWeight: 800, opacity: (!moveLoc || busyKey) ? 0.5 : 1 }}>
+                {busyKey ? "Moving…" : "Move"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Scary red confirmation — on top of everything — before wiping a product's counts. */}
