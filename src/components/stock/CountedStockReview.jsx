@@ -94,6 +94,9 @@ export default function CountedStockReview({ products = [], registry, actorRole 
   }, [cells, prodById]);
 
   const countByLoc = (loc) => groups.filter(g => g.loc === loc).reduce((n, g) => n + g.sizes.length, 0);
+  // Locations that actually hold counts — the quick-switch chips at the top.
+  const locsWithCounts = useMemo(() => [...new Set(groups.map(g => g.loc))]
+    .sort((a, b) => labelFor(a, registry).localeCompare(labelFor(b, registry))), [groups, registry]);
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -220,18 +223,23 @@ export default function CountedStockReview({ products = [], registry, actorRole 
         </div>
       </div>
 
-      {/* Filters: location (default Marathon PE, switchable), product type, search. */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <select value={locFilter} onChange={e => { setLocFilter(e.target.value); cancelEdit(); }}
-          style={{ ...input, flex: "0 0 auto", appearance: "none" }}>
-          <option value="all">All locations ({totalCells})</option>
-          {transferTargets(registry).map(l => (
-            <option key={l.id} value={l.id}>{labelFor(l.id, registry)} ({countByLoc(l.id)})</option>
-          ))}
-        </select>
-        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search product or barcode…"
-          style={{ ...input, flex: 1, minWidth: 160, boxSizing: "border-box" }} />
+      {/* Location quick-switch — tap "All" to see everything, or a location to focus it. */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+        {[["all", `All (${totalCells})`], ...locsWithCounts.map(loc => [loc, `${labelFor(loc, registry)} (${countByLoc(loc)})`])].map(([val, lbl]) => {
+          const on = locFilter === val;
+          return (
+            <button key={val} onClick={() => { setLocFilter(val); cancelEdit(); }}
+              style={{ padding: "6px 13px", borderRadius: 9, cursor: "pointer", fontSize: 12, fontWeight: 700,
+                       background: on ? "rgba(60,110,255,.25)" : "rgba(255,255,255,.04)",
+                       border: on ? "1px solid rgba(60,110,255,.6)" : BORDER, color: on ? "#fff" : GRAY }}>
+              {lbl}
+            </button>
+          );
+        })}
       </div>
+
+      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search product or barcode…"
+        style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 8 }} />
 
       {/* Sneakers vs Clothing */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
