@@ -16,6 +16,8 @@ import Adjust from "./Adjust";
 import MovementHistory from "./MovementHistory";
 import CountSession from "./CountSession";
 import SetQuantity from "./SetQuantity";
+import CountedStockReview from "./CountedStockReview";
+import StockErrorBoundary from "./StockErrorBoundary";
 
 // Stock rework: Transfer (assistant-style, one-step) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
@@ -28,12 +30,13 @@ const BASE_TABS = [
   ["history",   "History"],
   ["adjust",    "Adjust"],
   ["count",     "Count"],
+  ["recount",   "Counted ⚠"],   // TEMPORARY recount tool (admin-only)
 ];
 
 // Tabs only an ADMIN sees — they write `adjustment` movements, which the rule layer
 // permits for stockRole==admin only. Everything else (transfer/locate/setqty[received,
 // opening]/history) is available to warehouse|admin. (Barcodes moved to the home page.)
-const ADMIN_ONLY_TABS = new Set(["adjust", "count"]);
+const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount"]);
 
 export default function StockView({ products = [], onExit }) {
   const { permRecord, isSuperAdmin, hasPermission } = usePermissions();
@@ -81,6 +84,7 @@ export default function StockView({ products = [], onExit }) {
         {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}
         {tab === "history"  && <MovementHistory {...shared} />}
         {tab === "count"    && isAdmin && <CountSession {...shared} />}
+        {tab === "recount"  && isAdmin && <StockErrorBoundary><CountedStockReview {...shared} /></StockErrorBoundary>}
       </div>
     </div>
   );
