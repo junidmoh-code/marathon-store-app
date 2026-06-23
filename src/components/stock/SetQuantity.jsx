@@ -22,9 +22,15 @@ import React, { useState, useMemo } from "react";
 import { applyMovement } from "./applyMovement";
 import { useStockCells } from "./useStock";
 import { transferTargets, RECEIVING_DEFAULT } from "./locations";
-import { Card, Field, ProductPicker, LocationPicker, NumberInput, TextInput, Toast, Empty } from "./widgets";
-import { GRAY, GREEN, RED, BLUE_L, bGreen, bGhost, tabOn, tabOff } from "./ui";
+import { Card, Field, LocationPicker, NumberInput, TextInput, Toast, Empty } from "./widgets";
+import { GRAY, GREEN, RED, BLUE_L, BORDER, CARD, bGreen, bGhost, tabOn, tabOff, input } from "./ui";
 import BarcodePrint from "./BarcodePrint";
+
+function Thumb({ url }) {
+  if (url) return <img src={url} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }}
+    style={{ width: 34, height: 34, objectFit: "cover", borderRadius: 7, flexShrink: 0 }} />;
+  return <div style={{ width: 34, height: 34, borderRadius: 7, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>👟</div>;
+}
 
 // The chip IS the movement type + the ledger reason. `additive` types may only
 // raise a count (a receipt/opening can't reduce stock).
@@ -37,6 +43,7 @@ const INTENTS = [
 
 export default function SetQuantity({ products, registry, actorRole, isAdmin, canStock = isAdmin }) {
   const [productId, setProductId] = useState("");
+  const [q, setQ] = useState("");
   const [loc, setLoc] = useState(RECEIVING_DEFAULT);
   const [targets, setTargets] = useState({});      // { size: "n" }
   const [intentKey, setIntentKey] = useState("received");
@@ -52,6 +59,24 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
   const intent = intents.find(i => i.key === intentKey) || intents[0];
   const product = useMemo(() => products.find(p => p.id === productId), [products, productId]);
   const sizes = (product && Array.isArray(product.sizes)) ? product.sizes : [];
+
+  // Product search (name OR barcode/sku/per-size code); capped for speed.
+  const matches = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    if (!term) return [];
+    const codeMatch = (p) => {
+      if (!/\d/.test(term)) return false;
+      const codes = [];
+      if (p.barcode != null) codes.push(String(p.barcode));
+      if (p.sku != null) codes.push(String(p.sku));
+      if (p.barcodes && typeof p.barcodes === "object") for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
+      return codes.some(c => c === term || (term.length >= 3 && c.toLowerCase().includes(term)));
+    };
+    return [...(products || [])]
+      .filter(p => p && p.id && p.name && Array.isArray(p.sizes) && p.sizes.length && (p.name.toLowerCase().includes(term) || codeMatch(p)))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .slice(0, 20);
+  }, [products, q]);
 
   // SAME live read as Locator / Count — the single source of truth for on-hand,
   // scoped to the chosen location only.
@@ -135,7 +160,35 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
     <div>
       <Card>
         <Field label="Product">
-          <ProductPicker products={products} value={productId} onChange={(v) => { setProductId(v); setTargets({}); setLastSaved(null); }} />
+          {product ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, background: CARD, border: BORDER, borderRadius: 9, padding: "7px 10px" }}>
+              <Thumb url={product.photoUrl} />
+              <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{product.name}</div>
+              <button onClick={() => { setProductId(""); setTargets({}); setLastSaved(null); setQ(""); }}
+                style={{ background: "transparent", border: "1px solid rgba(60,110,255,.3)", borderRadius: 8, padding: "5px 10px", color: BLUE_L, fontSize: 11.5, cursor: "pointer" }}>Change</button>
+            </div>
+          ) : (
+            <>
+              <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search product or barcode…"
+                style={{ ...input, width: "100%", boxSizing: "border-box" }} />
+              {q.trim() && (
+                <div style={{ marginTop: 6, maxHeight: 240, overflowY: "auto", display: "flex", flexDirection: "column", gap: 5 }}>
+                  {matches.length === 0 ? (
+                    <div style={{ fontSize: 12, color: GRAY, padding: "6px 2px" }}>No products match “{q.trim()}”.</div>
+                  ) : matches.map(p => (
+                    <button key={p.id} onClick={() => { setProductId(p.id); setTargets({}); setLastSaved(null); setQ(""); }}
+                      style={{ display: "flex", alignItems: "center", gap: 9, textAlign: "left", background: CARD, border: BORDER, borderRadius: 9, padding: "6px 9px", cursor: "pointer" }}>
+                      <Thumb url={p.photoUrl} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+                        {p.category && <div style={{ fontSize: 10, color: GRAY }}>{p.category}</div>}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </Field>
         <Field label="Location">
           <LocationPicker registry={registry} value={loc} onChange={(v) => { setLoc(v); setTargets({}); }} filter={transferTargets} />
