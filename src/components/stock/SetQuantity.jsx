@@ -149,7 +149,7 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
       setBusy(false);   // always reset, even if the loop throws unexpectedly
     }
     // Offer barcode printing for the sizes that saved (count defaults to units added).
-    if (savedItems.length) setLastSaved({ productId: product.id, productName: product.name, items: savedItems });
+    if (savedItems.length) setLastSaved({ productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems });
     if (!fail) { setTargets({}); setNote(""); flash("ok", `${intent.label}: ${ok} size${ok > 1 ? "s" : ""} updated — print barcodes below`); }
     else flash("err", `${ok} done, ${fail} failed — ${failed.join("; ")}`);
   };
@@ -263,7 +263,7 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
 
       {printOpen && lastSaved && (
         <BarcodePrint
-          product={{ id: lastSaved.productId, name: lastSaved.productName }}
+          product={{ id: lastSaved.productId, name: lastSaved.productName, photoUrl: lastSaved.photoUrl }}
           items={lastSaved.items}
           onClose={() => setPrintOpen(false)}
         />

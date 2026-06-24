@@ -23,6 +23,7 @@ export default function BarcodePrint({ product, items, onClose }) {
   const [transport, setTransport] = useState(defaultTransportId);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+  const [lightbox, setLightbox] = useState(false);   // full-screen product photo
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3800); };
 
   useEffect(() => {
@@ -57,9 +58,15 @@ export default function BarcodePrint({ product, items, onClose }) {
     <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}
          onClick={() => !busy && onClose()}>
       <div onClick={e => e.stopPropagation()} style={{ ...GLASS_SOLID, width: "100%", maxWidth: 560, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: 16, maxHeight: "86vh", overflowY: "auto" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>Print barcodes — {product.name}</div>
-          <button onClick={() => !busy && onClose()} style={{ background: "none", border: "none", color: GRAY, fontSize: 18, cursor: "pointer" }}>✕</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+          {/* Product photo — tap to view full. */}
+          {product.photoUrl
+            ? <img src={product.photoUrl} alt="" onClick={() => setLightbox(true)}
+                onError={(e) => { e.currentTarget.style.display = "none"; }}
+                style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 8, flexShrink: 0, cursor: "zoom-in" }} />
+            : <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>👟</div>}
+          <div style={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Print barcodes — {product.name}</div>
+          <button onClick={() => !busy && onClose()} style={{ background: "none", border: "none", color: GRAY, fontSize: 18, cursor: "pointer", flexShrink: 0 }}>✕</button>
         </div>
         <div style={{ fontSize: 11, color: GRAY, marginBottom: 12 }}>
           One permanent barcode per size (reused on every reprint). Count defaults to the units you just added.
@@ -125,6 +132,13 @@ export default function BarcodePrint({ product, items, onClose }) {
           barcode above is scannable and reprinting reuses the same code. {TRANSPORTS.some(t => !t.proven) && <span style={{ color: AMBER }}>USB (Xprinter) is untested until hardware is available.</span>}
         </div>
       </div>
+      {/* Full-screen product photo — tap anywhere to close. */}
+      {lightbox && product.photoUrl && (
+        <div onClick={(e) => { e.stopPropagation(); setLightbox(false); }}
+          style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(0,0,0,.85)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, cursor: "zoom-out" }}>
+          <img src={product.photoUrl} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 10 }} />
+        </div>
+      )}
       <Toast msg={toast} />
     </div>
   );

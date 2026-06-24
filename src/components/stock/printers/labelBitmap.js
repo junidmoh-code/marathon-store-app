@@ -88,10 +88,15 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
 
-  const cx = Math.floor(widthDots / 2);
-  const EDGE = 10;                                     // keep content off the label edge
-  const maxW = (contentWidthDots || widthDots) - 2 * EDGE;
-  let y = 4;
+  // Centre on the LABEL (loaded left-aligned under the wider print head), not the head
+  // centre — otherwise content sits right-of-centre and the right edge clips. The raster
+  // is full-head wide; the label occupies its left `contentWidthDots`.
+  const labelW = contentWidthDots || widthDots;
+  const cx = Math.floor(labelW / 2);
+  const EDGE = 14;                                     // keep content off the left/right edge
+  const TOP_PAD = 14, BOTTOM_PAD = 14;                 // top + bottom clear of the edges
+  const maxW = labelW - 2 * EDGE;
+  let y = TOP_PAD;
 
   // Optional dispatch header (order # · customer) — one fitted line.
   if (header) {
@@ -130,8 +135,9 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
   const barWidth = totalModules * mw;
   const CODE_PX = 16;
   const barTop = y;
-  const avail = heightDots - (CODE_PX + 5) - barTop;
-  const barHeight = Math.max(40, Math.min(avail, header ? 80 : 96));  // shrunk but scannable
+  // Reserve the bottom padding so the 8-digit code never reaches the label edge/gap.
+  const avail = heightDots - (CODE_PX + 5) - barTop - BOTTOM_PAD;
+  const barHeight = Math.max(36, Math.min(avail, header ? 70 : 84));  // shrunk but scannable
   let x = Math.round(cx - barWidth / 2);
   for (const m of modules) {
     if (m.bar) ctx.fillRect(x, barTop, m.width * mw, barHeight);

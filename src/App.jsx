@@ -1764,7 +1764,7 @@ function AdminView({ products, orders, onExit }) {
           }
           // Surface the inline Print-barcodes sheet for the sizes that saved.
           if (savedItems.length) {
-            setLastReceived({ productId: id, productName: newProduct.name, items: savedItems });
+            setLastReceived({ productId: id, productName: newProduct.name, photoUrl: newProduct.photoUrl ?? null, items: savedItems });
             setPrintOpen(true);
           }
         }
@@ -2134,7 +2134,7 @@ function AdminView({ products, orders, onExit }) {
           stock. Lives here (not in the unmounting New Product form) so it persists. */}
       {printOpen && lastReceived && (
         <BarcodePrint
-          product={{ id: lastReceived.productId, name: lastReceived.productName }}
+          product={{ id: lastReceived.productId, name: lastReceived.productName, photoUrl: lastReceived.photoUrl }}
           items={lastReceived.items}
           onClose={() => setPrintOpen(false)}
         />
@@ -2386,7 +2386,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     const locLabel = labelFor(recvLoc, recvRegistry);
     if (fail) flashRecv(false, `${ok} received, ${fail} failed — you may not have stock permission (stockRole).`);
     else flashRecv(true, `Received ${ok} size${ok > 1 ? "s" : ""} into ${locLabel}.`);
-    if (savedItems.length) { setLastReceived({ productId: product.id, productName: product.name, items: savedItems }); setPrintOpen(true); }
+    if (savedItems.length) { setLastReceived({ productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems }); setPrintOpen(true); }
   };
 
   const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding:"24px 18px 8px" };
@@ -2645,7 +2645,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       {/* Inline Print-barcodes sheet (#73), surfaced after a re-order receive. */}
       {printOpen && lastReceived && (
         <BarcodePrint
-          product={{ id: lastReceived.productId, name: lastReceived.productName }}
+          product={{ id: lastReceived.productId, name: lastReceived.productName, photoUrl: lastReceived.photoUrl }}
           items={lastReceived.items}
           onClose={() => setPrintOpen(false)}
         />

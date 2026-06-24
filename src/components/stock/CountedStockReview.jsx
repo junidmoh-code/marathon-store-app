@@ -64,36 +64,35 @@ export default function CountedStockReview({ products = [], registry, actorRole 
     return b[barcodeSizeKey(size)] ?? b[size] ?? null;
   };
 
-  // Group counted cells (qty !== 0) by product × location: ONE card per product at a
-  // location, listing all its sizes.
+  // Group by product × location: ONE card per product that has at least one counted
+  // size at a location. The card lists the product's FULL size set — sizes that were
+  // never counted show as 0 so they can be added/adjusted right there.
   const groups = useMemo(() => {
-    const map = new Map();   // "loc|pid" → group
+    const arr = [];
     for (const loc of Object.keys(cells || {})) {
       const byPid = cells[loc] || {};
       for (const pid of Object.keys(byPid)) {
         const bySize = byPid[pid] || {};
-        for (const size of Object.keys(bySize)) {
-          const cell = bySize[size];
-          const qty = cell && typeof cell.qty === "number" ? cell.qty : 0;
-          if (!qty) continue;                 // only cells that hold a quantity
-          const gk = `${loc}|${pid}`;
-          let g = map.get(gk);
-          if (!g) {
-            const p = prodById[pid];
-            g = { loc, pid, name: p?.name || pid, photoUrl: p?.photoUrl || null, product: p,
-                  type: (p?.productType === "clothing" ? "clothing" : "sneaker"), sizes: [] };
-            map.set(gk, g);
-          }
-          g.sizes.push({ size, qty, barcode: barcodeFor(g.product, size) });
-        }
+        const qtyOf = (s) => { const c = bySize[s]; return c && typeof c.qty === "number" ? c.qty : 0; };
+        // Only products with at least one COUNTED size at this location.
+        const countedSizes = Object.keys(bySize).filter(s => qtyOf(s) !== 0);
+        if (!countedSizes.length) continue;
+        const p = prodById[pid];
+        // Full size set = the product's configured sizes ∪ any sizes that have a cell,
+        // so nothing is hidden and missing sizes appear (as 0) to be added.
+        const productSizes = (p && Array.isArray(p.sizes)) ? p.sizes.map(String) : [];
+        const allSizes = [...new Set([...productSizes, ...Object.keys(bySize)])];
+        const sizes = allSizes.map(size => ({ size, qty: qtyOf(size), barcode: barcodeFor(p, size) }))
+          .sort((a, b) => String(a.size).localeCompare(String(b.size), undefined, { numeric: true }));
+        arr.push({ loc, pid, name: p?.name || pid, photoUrl: p?.photoUrl || null, product: p,
+                   type: (p?.productType === "clothing" ? "clothing" : "sneaker"), sizes });
       }
     }
-    const arr = [...map.values()];
-    for (const g of arr) g.sizes.sort((a, b) => String(a.size).localeCompare(String(b.size), undefined, { numeric: true }));
     return arr.sort((a, b) => a.loc.localeCompare(b.loc) || a.name.localeCompare(b.name));
   }, [cells, prodById]);
 
-  const countByLoc = (loc) => groups.filter(g => g.loc === loc).reduce((n, g) => n + g.sizes.length, 0);
+  // Counts reflect COUNTED sizes only (qty !== 0), not the 0-placeholders.
+  const countByLoc = (loc) => groups.filter(g => g.loc === loc).reduce((n, g) => n + g.sizes.filter(s => s.qty !== 0).length, 0);
   // Locations that actually hold counts — the quick-switch chips at the top.
   const locsWithCounts = useMemo(() => [...new Set(groups.map(g => g.loc))]
     .sort((a, b) => labelFor(a, registry).localeCompare(labelFor(b, registry))), [groups, registry]);
@@ -106,9 +105,9 @@ export default function CountedStockReview({ products = [], registry, actorRole 
       (!term || g.name.toLowerCase().includes(term) || g.sizes.some(s => String(s.barcode || "").includes(term))));
   }, [groups, locFilter, typeFilter, q]);
 
-  const shownCells = filtered.reduce((n, g) => n + g.sizes.length, 0);
+  const shownCells = filtered.reduce((n, g) => n + g.sizes.filter(s => s.qty !== 0).length, 0);
   const shownUnits = filtered.reduce((n, g) => n + g.sizes.reduce((s, x) => s + x.qty, 0), 0);
-  const totalCells = groups.reduce((n, g) => n + g.sizes.length, 0);
+  const totalCells = groups.reduce((n, g) => n + g.sizes.filter(s => s.qty !== 0).length, 0);
   const keyOf = (loc, pid, size) => `${loc}|${pid}|${size}`;
 
   // Inline qty correction — SET a size to the typed value (reconcile to the real count)
@@ -287,7 +286,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
                     <div onClick={() => toggleExpand(gk)} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
                       <div style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.name}</div>
                       <div style={{ fontSize: 11, color: GRAY }}>
-                        <span style={{ color: BLUE_L }}>{labelFor(g.loc, registry)}</span> · {g.sizes.length} size(s) · {g.sizes.reduce((s, x) => s + x.qty, 0)} units
+                        <span style={{ color: BLUE_L }}>{labelFor(g.loc, registry)}</span> · {g.sizes.filter(s => s.qty !== 0).length} counted · {g.sizes.reduce((s, x) => s + x.qty, 0)} units
                       </div>
                     </div>
                     {/* Move — relocate this product's counted stock to another location. */}
@@ -310,7 +309,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
                       const k = keyOf(g.loc, g.pid, s.size);
                       const busy = busyKey === k;
                       return (
-                        <div key={k} style={{ background: "rgba(255,255,255,.03)", border: BORDER, borderRadius: 10, padding: "7px 7px" }}>
+                        <div key={k} style={{ background: s.qty === 0 ? "rgba(255,255,255,.015)" : "rgba(255,255,255,.03)", border: BORDER, borderRadius: 10, padding: "7px 7px", opacity: s.qty === 0 ? 0.7 : 1 }}>
                           <div style={{ fontSize: 12, fontWeight: 700, color: BLUE_L, textAlign: "center" }}>{s.size}</div>
                           {editKey === k ? (
                             <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
@@ -324,9 +323,9 @@ export default function CountedStockReview({ products = [], registry, actorRole 
                               </div>
                             </div>
                           ) : (
-                            <button onClick={() => startEdit(g.loc, g.pid, s.size, s.qty)} disabled={!!busyKey} title="Tap to correct"
-                              style={{ width: "100%", marginTop: 3, background: "transparent", border: "1px solid rgba(60,110,255,.3)", borderRadius: 8, padding: "5px 0", cursor: "pointer" }}>
-                              <span style={{ fontSize: 17, fontWeight: 800, color: s.qty < 0 ? RED : GREEN }}>{s.qty}</span>
+                            <button onClick={() => startEdit(g.loc, g.pid, s.size, s.qty)} disabled={!!busyKey} title={s.qty === 0 ? "Not counted — tap to add" : "Tap to correct"}
+                              style={{ width: "100%", marginTop: 3, background: "transparent", border: s.qty === 0 ? "1px dashed rgba(120,150,255,.35)" : "1px solid rgba(60,110,255,.3)", borderRadius: 8, padding: "5px 0", cursor: "pointer" }}>
+                              <span style={{ fontSize: 17, fontWeight: 800, color: s.qty === 0 ? GRAY : (s.qty < 0 ? RED : GREEN) }}>{s.qty}</span>
                             </button>
                           )}
                           {s.barcode && <div style={{ fontSize: 8, color: GRAY, fontFamily: "monospace", textAlign: "center", marginTop: 3 }}>{s.barcode}</div>}
@@ -379,7 +378,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
               Clear counted stock?
             </div>
             <div style={{ fontSize: 13, color: "#fff", textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
-              This will <b style={{ color: "#fca5a5" }}>WIPE all {confirmClear.sizes.length} counted {confirmClear.sizes.length === 1 ? "quantity" : "quantities"}</b> for<br />
+              This will <b style={{ color: "#fca5a5" }}>WIPE all {confirmClear.sizes.filter(s => s.qty !== 0).length} counted {confirmClear.sizes.filter(s => s.qty !== 0).length === 1 ? "quantity" : "quantities"}</b> for<br />
               <b>{confirmClear.name}</b> at <b>{labelFor(confirmClear.loc, registry)}</b><br />
               and mark them <b style={{ color: "#fca5a5" }}>UNCOUNTED</b>.
             </div>
@@ -393,7 +392,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
               <button onClick={() => clearProduct(confirmClear)} disabled={!!busyKey}
                 style={{ flex: 1, padding: "11px 0", fontSize: 13, fontWeight: 800, borderRadius: 10, cursor: "pointer",
                          background: "#ef4444", color: "#fff", border: "none", opacity: busyKey ? 0.6 : 1 }}>
-                {busyKey ? "Clearing…" : `Yes, clear ${confirmClear.sizes.length}`}
+                {busyKey ? "Clearing…" : `Yes, clear ${confirmClear.sizes.filter(s => s.qty !== 0).length}`}
               </button>
             </div>
           </div>
