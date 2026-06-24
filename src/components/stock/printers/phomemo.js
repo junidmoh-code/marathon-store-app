@@ -62,8 +62,12 @@ const HEAD_DOTS     = 384;    // M110 print-head width (48mm). The raster is the
                              // so content can be CENTRED — the label sits centred under it.
 const LABEL_WIDTH_DOTS  = LABEL_WIDTH_MM  * DOTS_PER_MM;            // 320 — printable width
 const LABEL_HEIGHT_DOTS = LABEL_HEIGHT_MM * DOTS_PER_MM;           // 240 — one label tall
-// Render ~1mm under the label height so we never print into the inter-label gap.
-const RASTER_HEIGHT     = LABEL_HEIGHT_DOTS - DOTS_PER_MM;         // 232
+// Render EXACTLY one physical label tall so the print ends right at the inter-label
+// gap and NO extra blank label is fed. Top/bottom safe margins live INSIDE the bitmap
+// (labelBitmap TOP_PAD/BOTTOM_PAD), so content never reaches the gap while the raster
+// still equals one whole label (a shorter raster makes the feed-to-gap overshoot →
+// a wasted blank label).
+const RASTER_HEIGHT     = LABEL_HEIGHT_DOTS;                       // 240 — exactly one 30mm label
 // widthDots = full head (centring canvas); contentWidthDots = the label's printable
 // width, centred under the head; height = one label.
 const LABEL = { widthDots: HEAD_DOTS, heightDots: RASTER_HEIGHT, contentWidthDots: LABEL_WIDTH_DOTS, moduleWidth: 2 };

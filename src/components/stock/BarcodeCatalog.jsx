@@ -21,10 +21,12 @@ import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGho
 
 const keyOf = (pid, size) => `${pid}|${size}`;
 
-// Product thumbnail — same pattern as Transfer/Locator (product.photoUrl).
-function Thumb({ product, size = 40 }) {
+// Product thumbnail — same pattern as Transfer/Locator (product.photoUrl). Tap to open full.
+function Thumb({ product, size = 40, onOpen }) {
   const url = product?.photoUrl;
-  if (url) return <img src={url} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: 9, flexShrink: 0 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />;
+  if (url) return <img src={url} alt="" onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(); } : undefined}
+    style={{ width: size, height: size, objectFit: "cover", borderRadius: 9, flexShrink: 0, cursor: onOpen ? "zoom-in" : "default" }}
+    onError={(e) => { e.currentTarget.style.display = "none"; }} />;
   return <div style={{ width: size, height: size, borderRadius: 9, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.5, flexShrink: 0 }}>👟</div>;
 }
 
@@ -36,6 +38,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [diagText, setDiagText] = useState(null);   // persistent printer diagnostic (manual dismiss)
+  const [lightbox, setLightbox] = useState(null);   // full-screen product photo url
   const cells = useStockCells();        // { loc: { pid: { size: cell } } } — all locations
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3400); };
 
@@ -209,7 +212,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
             return (
               <div key={p.id} style={{ ...GLASS, padding: 0, overflow: "hidden" }}>
                 <div onClick={() => setOpenId(expanded ? null : p.id)} style={{ display: "flex", alignItems: "center", gap: 11, padding: 11, cursor: "pointer" }}>
-                  <Thumb product={p} />
+                  <Thumb product={p} onOpen={p.photoUrl ? () => setLightbox(p.photoUrl) : undefined} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
                     <div style={{ fontSize: 11, color: GRAY }}>{p.sizes.length} size{p.sizes.length === 1 ? "" : "s"}</div>
@@ -257,6 +260,13 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
         </div>
       )}
       </div>
+      {/* Full-screen product photo — tap anywhere to close. */}
+      {lightbox && (
+        <div onClick={() => setLightbox(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(0,0,0,.85)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, cursor: "zoom-out" }}>
+          <img src={lightbox} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 10 }} />
+        </div>
+      )}
       <Toast msg={toast} />
     </div>
   );
