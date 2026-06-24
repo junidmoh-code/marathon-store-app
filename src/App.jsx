@@ -3792,6 +3792,9 @@ function WarehouseView({ products = [], orders, onExit }) {
   // refresh was the only way to realign them. dueRefills short-circuits
   // when selectedHub is null so the landing-screen pass is harmless.
   const [pickerOpenId, setPickerOpenId] = useState(null);
+  // Which Ready-tab row's ⋮ action menu is open (one at a time). A dispatched
+  // order lives in the Ready tab — there is no separate "Sent" tab.
+  const [menuOpenId, setMenuOpenId] = useState(null);
   // Dispatch-label print toast (non-blocking — Send never waits on the printer).
   const [printToast, setPrintToast] = useState(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
@@ -4036,6 +4039,29 @@ function WarehouseView({ products = [], orders, onExit }) {
       })
       .catch(() => {
         setPrintToast({ kind: "err", text: "Label didn't print. Order sent — retry print." });
+        setTimeout(() => setPrintToast(null), 4200);
+      });
+  };
+
+  // Reprint a dispatched order's label on demand — these sit in the Ready tab — for when
+  // the original auto-print (the Mark-as-Sent gate, #109) was lost to a printer trip.
+  // PRINT-ONLY: it reuses the exact same printDispatchLabel path/transport/layout,
+  // barcoding the SENT size from the order's saved data, but deliberately does NOT call
+  // recordDispatchTransfer — the stock already moved on the original send, so a reprint
+  // must never write the ledger or double-deduct. Fired straight from the ⋮ menu click
+  // (no await before connect) so the BLE chooser keeps its user-gesture, like the original.
+  const reprintDispatchLabel = (order) => {
+    setMenuOpenId(null);
+    const sentSize = order.sentSize ?? order.size ?? null;
+    printDispatchLabel({ ...order, sentSize })
+      .then((res) => {
+        const diag = res?.diag ? ` [${res.diag}]` : "";
+        if (res?.ok) setPrintToast({ kind: "ok", text: `Label reprinted for #${order.id}.${diag}` });
+        else setPrintToast({ kind: "err", text: `Reprint failed (${res?.error || "unknown"}). Try again.${diag}` });
+        setTimeout(() => setPrintToast(null), 7000);
+      })
+      .catch(() => {
+        setPrintToast({ kind: "err", text: "Reprint failed. Try again." });
         setTimeout(() => setPrintToast(null), 4200);
       });
   };
@@ -4478,7 +4504,31 @@ function WarehouseView({ products = [], orders, onExit }) {
                         {incoming && <span style={{ width:5, height:5, borderRadius:"50%", background:"#4A7FFF", boxShadow:"0 0 3px #4A7FFF", display:"inline-block" }}/>}
                         {chipLabel}
                       </div>
-                      <div style={{ marginLeft:"auto", color:"rgba(255,255,255,.2)", fontSize:16 }}>···</div>
+                      {ready ? (
+                        // Ready-tab ⋮ menu — reprint the dispatch label if the original
+                        // auto-print was lost to a printer trip (print-only; no re-deduct).
+                        // Styled as a clearly tappable bordered control, not a faint dot.
+                        <div style={{ marginLeft:"auto", position:"relative" }}>
+                          <button onClick={() => setMenuOpenId(menuOpenId === order.id ? null : order.id)}
+                                  aria-label="Order actions"
+                                  style={{ display:"flex", alignItems:"center", justifyContent:"center", minWidth:34, height:28, background:"rgba(74,202,128,.14)", border:"1px solid rgba(74,202,128,.45)", borderRadius:8, color:"#4ACA7A", fontSize:18, fontWeight:800, lineHeight:1, cursor:"pointer", padding:"0 8px" }}>⋮</button>
+                          {menuOpenId === order.id && (
+                            <>
+                              {/* click-away backdrop */}
+                              <div onClick={() => setMenuOpenId(null)} style={{ position:"fixed", inset:0, zIndex:40 }}/>
+                              <div style={{ position:"absolute", right:0, top:32, zIndex:50, minWidth:160, background:"#0d1322", border:"1px solid rgba(255,255,255,.14)", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.5)", overflow:"hidden" }}>
+                                <button onClick={() => reprintDispatchLabel(order)}
+                                        style={{ display:"flex", alignItems:"center", gap:8, width:"100%", padding:"11px 13px", background:"none", border:"none", color:"#fff", fontSize:12.5, fontWeight:600, textAlign:"left", cursor:"pointer" }}>
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                                  Reprint label
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ marginLeft:"auto", color:"rgba(255,255,255,.2)", fontSize:16 }}>···</div>
+                      )}
                     </div>
                     <div style={{ fontSize:15, fontWeight:600, color:"#fff" }}>{order.productName}{order.size ? ` — Size ${order.size}` : ""}{order.qty > 1 ? ` × ${order.qty}` : ""}</div>
                     <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginTop:3, display:"flex", alignItems:"center", gap:4 }}>
@@ -5106,11 +5156,12 @@ function CustomerView({ orders, onExit }) {
 // TV_PAGE_FADE_MS opacity fade. Sections cycle independently from a shared
 // pageTick.
 //
-// Side effects: Ready/OOS orders past TV_EXPIRY_MS are auto-moved to
-// COLLECTED (with restock log for READY). Coming Tomorrow rows past
-// TV_COMING_TOMORROW_VISIBLE_MS are display-only hidden (no RTDB mutation).
-// Both use ref-Sets to dedupe across multiple TV screens and prune entries
-// when orders disappear (daily counter reset).
+// Side effects: only IN-STOCK READY orders past TV_EXPIRY_MS are auto-moved to
+// COLLECTED (with restock log). OUT-OF-STOCK orders are NEVER auto-collected and
+// write no restock (we only restock what we have) — they stay OOS as kept demand
+// and are merely display-hidden from the customer screen past TV_EXPIRY_MS, like
+// Coming Tomorrow rows past TV_COMING_TOMORROW_VISIBLE_MS (no RTDB mutation).
+// Ref-Sets dedupe across multiple TV screens and prune entries on daily reset.
 const TV_HERO_PAGE_SIZE             = 36;
 const TV_SECONDARY_PAGE_SIZE        = 18;
 const TV_PAGE_ROTATE_MS             = 120 * 1000;
@@ -5146,10 +5197,15 @@ function DisplayView({ orders }) {
   const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
   const dateStr = `${TV_DAY_NAMES[now.getDay()]} ${now.getDate()} ${TV_MONTH_NAMES[now.getMonth()]}`;
 
-  // Background sweep: auto-collect Ready/OOS past 8 min, hide Coming Tomorrow
-  // past 10 min. Ref-Sets dedupe across multiple TV screens. Stale entries
-  // get pruned when orders disappear (daily orderNumber-counter reset).
-  const expiredRef           = useRef(new Set());
+  // Background sweep. IN-STOCK READY past 8 min → auto-collect + restock (the real
+  // "order done" event — mutates RTDB). OUT-OF-STOCK is EXCLUDED from auto-collect:
+  // we only restock what we HAVE, so an OOS order gets no restock and is never
+  // collected — it stays OOS (unfulfilled-demand data, already logged to insights_log
+  // at mark-OOS time) and remains in the warehouse OOS tab. OOS + Coming Tomorrow are
+  // only DISPLAY-hidden from the customer TV after their windows (no RTDB write).
+  // Ref-Sets dedupe across multiple TV screens; stale entries pruned on daily reset.
+  const expiredRef           = useRef(new Set());  // READY orders already auto-collected
+  const hiddenOos            = useRef(new Set());  // OOS hidden from the TV (display-only)
   const hiddenComingTomorrow = useRef(new Set());
   useEffect(() => {
     const check = () => {
@@ -5157,30 +5213,36 @@ function DisplayView({ orders }) {
       const liveIds = new Set(orders.map(o => o.id));
       // Prune refs of orders no longer present (daily counter reset, etc.)
       for (const id of expiredRef.current)           if (!liveIds.has(id)) expiredRef.current.delete(id);
+      for (const id of hiddenOos.current)            if (!liveIds.has(id)) hiddenOos.current.delete(id);
       for (const id of hiddenComingTomorrow.current) if (!liveIds.has(id)) hiddenComingTomorrow.current.delete(id);
 
       orders.forEach(o => {
-        // Ready / OOS → auto-collect (mutates RTDB)
-        if (!expiredRef.current.has(o.id)) {
-          const ts = o.status === STATUS.READY        ? (o.readyAt || o.updatedAt)
-                   : o.status === STATUS.OUT_OF_STOCK ? (o.outOfStockAt || o.updatedAt)
-                   : null;
+        // IN-STOCK READY → auto-collect + restock (mutates RTDB). OOS is NOT swept.
+        if (o.status === STATUS.READY && !expiredRef.current.has(o.id)) {
+          const ts = o.readyAt || o.updatedAt;
           if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
             expiredRef.current.add(o.id);
             const iso = new Date().toISOString();
             updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
-            if (o.status === STATUS.READY) {
-              logRestock({
-                timestamp:   iso,
-                date:        getSADateString(),
-                productName: o.productName,
-                photoUrl:    o.productPhotoUrl || null,
-                photo:       o.productPhoto || "",
-                size:        o.size,
-                orderNumber: o.id,
-                hub:         o.hub || "hub1",
-              }).catch(err => console.warn("logRestock failed:", err));
-            }
+            logRestock({
+              timestamp:   iso,
+              date:        getSADateString(),
+              productName: o.productName,
+              photoUrl:    o.productPhotoUrl || null,
+              photo:       o.productPhoto || "",
+              size:        o.size,
+              orderNumber: o.id,
+              hub:         o.hub || "hub1",
+              placedAtHub: o.placedAtHub || o.hub || "hub1",
+            }).catch(err => console.warn("logRestock failed:", err));
+          }
+        }
+        // OUT-OF-STOCK → display-only hide from the customer TV (NO RTDB write; the
+        // order stays OOS as kept demand). Same expiry window as Ready.
+        if (o.status === STATUS.OUT_OF_STOCK && !hiddenOos.current.has(o.id)) {
+          const ts = o.outOfStockAt || o.updatedAt;
+          if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
+            hiddenOos.current.add(o.id);
           }
         }
         // Coming Tomorrow → display-only hide
@@ -5199,7 +5261,7 @@ function DisplayView({ orders }) {
 
   const incoming       = orders.filter(o => o.status === STATUS.INCOMING);
   const ready          = orders.filter(o => o.status === STATUS.READY);
-  const outOfStock     = orders.filter(o => o.status === STATUS.OUT_OF_STOCK);
+  const outOfStock     = orders.filter(o => o.status === STATUS.OUT_OF_STOCK && !hiddenOos.current.has(o.id));
   const comingTomorrow = orders.filter(o =>
     o.status === STATUS.COMING_TOMORROW && !hiddenComingTomorrow.current.has(o.id)
   );
@@ -9449,12 +9511,14 @@ function AppInner() {
 
 // ─── TV AUTO-COLLECT WRAPPER ──────────────────────────────────────────────────
 // Side-effects layer around <TvDisplayMockup>. Watches the live orders list:
-// • READY / OOS → auto-collected (writes STATUS.COLLECTED back to RTDB and
-//   logs a restock entry if it was READY) after TV_EXPIRY_MS = 8 min.
+// • IN-STOCK READY → auto-collected after TV_EXPIRY_MS = 8 min (writes
+//   STATUS.COLLECTED back to RTDB + logs a restock entry).
+// • OUT-OF-STOCK → NEVER auto-collected and NO restock (we only restock what we
+//   have); it stays OOS as kept demand and is only display-hidden from the TV
+//   after TV_EXPIRY_MS (no DB write).
 // • COMING_TOMORROW → display-only hidden after TV_TOMORROW_HIDE_MS = 15 min
 //   (no DB write — the row just vanishes from the TV until it changes status).
-// Both use ref-Sets to dedupe across multiple TV screens and prune entries
-// when the underlying order disappears.
+// Ref-Sets dedupe across multiple TV screens and prune entries on order removal.
 const TV_TOMORROW_HIDE_MS = 15 * 60 * 1000;
 
 function TvWithAutoCollect({ orders, onExit }) {
@@ -9465,7 +9529,8 @@ function TvWithAutoCollect({ orders, onExit }) {
   // carry over to today's brand-new "001" and either auto-collect it the
   // instant it appears or hide it forever from COMING_TOMORROW.
   const orderKey = (o) => `${o.id}:${o.createdAt || ""}`;
-  const expiredRef        = useRef(new Set());
+  const expiredRef        = useRef(new Set());  // READY orders already auto-collected
+  const hiddenOosRef      = useRef(new Set());  // OOS hidden from the TV (display-only)
   const hiddenTomorrowRef = useRef(new Set());
   const [tick, setTick]   = useState(0);
   // Layby pulls for the discreet TV awareness strip (invoice numbers). Read-only.
@@ -9476,24 +9541,35 @@ function TvWithAutoCollect({ orders, onExit }) {
       const nowMs    = Date.now();
       const liveKeys = new Set(orders.map(orderKey));
       for (const k of expiredRef.current)        if (!liveKeys.has(k)) expiredRef.current.delete(k);
+      for (const k of hiddenOosRef.current)      if (!liveKeys.has(k)) hiddenOosRef.current.delete(k);
       for (const k of hiddenTomorrowRef.current) if (!liveKeys.has(k)) hiddenTomorrowRef.current.delete(k);
 
       let changed = false;
       orders.forEach(o => {
         const key = orderKey(o);
-        // Auto-collect READY / OOS after 8 min
-        if ((o.status === STATUS.READY || o.status === STATUS.OUT_OF_STOCK) && !expiredRef.current.has(key)) {
-          const ts = o.status === STATUS.READY ? (o.readyAt || o.updatedAt) : (o.outOfStockAt || o.updatedAt);
+        // IN-STOCK READY → auto-collect + restock after 8 min (mutates RTDB).
+        // OUT-OF-STOCK is EXCLUDED — we only restock what we have, so OOS is never
+        // collected and writes no restock; it stays OOS as kept demand.
+        if (o.status === STATUS.READY && !expiredRef.current.has(key)) {
+          const ts = o.readyAt || o.updatedAt;
           if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
             expiredRef.current.add(key);
             const iso = new Date().toISOString();
             updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
-            if (o.status === STATUS.READY) {
-              logRestock({ timestamp: iso, date: getSADateString(), productName: o.productName,
-                photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
-                size: o.size, orderNumber: o.id, hub: o.hub || "hub1",
-              }).catch(err => console.warn("logRestock failed:", err));
-            }
+            logRestock({ timestamp: iso, date: getSADateString(), productName: o.productName,
+              photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
+              size: o.size, orderNumber: o.id, hub: o.hub || "hub1",
+              placedAtHub: o.placedAtHub || o.hub || "hub1",
+            }).catch(err => console.warn("logRestock failed:", err));
+          }
+        }
+        // OUT-OF-STOCK → display-only hide from the customer TV after 8 min (NO RTDB
+        // write; the order stays OOS in /orders as unfulfilled-demand data).
+        if (o.status === STATUS.OUT_OF_STOCK && !hiddenOosRef.current.has(key)) {
+          const ts = o.outOfStockAt || o.updatedAt;
+          if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
+            hiddenOosRef.current.add(key);
+            changed = true;
           }
         }
         // Hide COMING_TOMORROW after 15 min (display-only)
@@ -9514,7 +9590,10 @@ function TvWithAutoCollect({ orders, onExit }) {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const filteredOrders = useMemo(
-    () => orders.filter(o => o.status !== STATUS.COMING_TOMORROW || !hiddenTomorrowRef.current.has(orderKey(o))),
+    () => orders.filter(o =>
+      (o.status !== STATUS.COMING_TOMORROW || !hiddenTomorrowRef.current.has(orderKey(o))) &&
+      (o.status !== STATUS.OUT_OF_STOCK    || !hiddenOosRef.current.has(orderKey(o)))
+    ),
     [orders, tick]
   );
 
