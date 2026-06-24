@@ -4052,7 +4052,10 @@ function WarehouseView({ products = [], orders, onExit }) {
     // New orders carry destShop; legacy pine orders infer marathon-pine; legacy
     // central orders can't be disambiguated (Marathon PE vs Trophy) → not recordable.
     const toShop = order.destShop || (order.placedStore === "pine" ? "marathon-pine" : null);
-    const fromHub = order.placedAtHub;
+    // Prefer placedAtHub, but fall back to order.hub — legacy orders in this component
+    // are routed by order.hub, and (now that the label is gated on the transfer) an
+    // unrecognised hub would wrongly suppress the label. VALID_HUBS still filters it.
+    const fromHub = order.placedAtHub || order.hub;
     // hubC (clothing-customer trials) isn't a stock location — only real hub→shop
     // sends are recorded.
     const VALID_HUBS = ["hub1", "hub2", "hub3"];
