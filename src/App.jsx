@@ -4009,14 +4009,24 @@ function WarehouseView({ products = [], orders, onExit }) {
       sendWhatsAppTemplate(order.customerPhone, "order_tomorrow", [order.id]);
   };
 
-  // Mark an order Sent AND auto-print its dispatch label. The print is kicked off
-  // FIRST (synchronously, so the BLE chooser still has the Send click's user-gesture
-  // activation) but is NOT awaited — updateStatus runs exactly as before and a print
-  // failure only raises a non-blocking toast; the Send always completes.
+  // Mark an order Sent AND auto-print its dispatch label — but ONLY when the hub→shop
+  // transfer actually moves stock. The label is the physical signal that the transfer
+  // succeeded (the item is counted & in-system): if no stock moved (uncounted hub /
+  // insufficient stock / not recordable) there is NO label, so the picker knows to
+  // route the item through Lightspeed instead. The order is still marked Sent either
+  // way — only the label is gated.
+  // GESTURE NOTE: connectTransport (inside printDispatchLabel) only needs the click's
+  // user-gesture for the FIRST device pairing; reconnects need none. We await the
+  // (sub-second) transfer before printing, so the first pairing's chooser still opens
+  // well within the browser's ~5s transient-activation window.
   // extraPatch.sentSize carries a warehouse size substitution → the label barcodes
   // the size physically shipping.
-  const markSentAndPrint = (order, extraPatch = {}) => {
+  const markSentAndPrint = async (order, extraPatch = {}) => {
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
+    updateStatus(order, STATUS.READY, extraPatch);
+    // Gate the label on the transfer: print ONLY if stock genuinely moved.
+    const moved = await recordDispatchTransfer(order, sentSize);
+    if (!moved) return;  // recordDispatchTransfer already raised the explaining toast
     printDispatchLabel({ ...order, sentSize })
       .then((res) => {
         const diag = res?.diag ? ` [${res.diag}]` : "";
@@ -4028,48 +4038,64 @@ function WarehouseView({ products = [], orders, onExit }) {
         setPrintToast({ kind: "err", text: "Label didn't print. Order sent — retry print." });
         setTimeout(() => setPrintToast(null), 4200);
       });
-    updateStatus(order, STATUS.READY, extraPatch);
-    recordDispatchTransfer(order, sentSize);
   };
 
   // Record the physical move of stock OUT of the source warehouse hub and INTO the
   // destination shop, so each shop's on-hand is the running total of its own
   // recorded transfers (reuses the existing ledger — applyMovement writes the
-  // /stock_movements audit row + both balance cells atomically). Best-effort and
-  // NON-BLOCKING: the send (status + label) always completes; a failed or
-  // insufficient-stock ledger write only raises a non-blocking toast.
-  const recordDispatchTransfer = (order, sentSize) => {
+  // /stock_movements audit row + both balance cells atomically). The transfer call
+  // itself is UNCHANGED; this now RETURNS whether stock actually moved so the caller
+  // can gate the dispatch label on it. Returns true only when stock moved (incl. an
+  // idempotent re-send); returns false — with a non-blocking toast telling the picker
+  // to route via Lightspeed — when the move isn't recordable or the hub is short.
+  const recordDispatchTransfer = async (order, sentSize) => {
     // New orders carry destShop; legacy pine orders infer marathon-pine; legacy
-    // central orders can't be disambiguated (Marathon PE vs Trophy) → skip.
+    // central orders can't be disambiguated (Marathon PE vs Trophy) → not recordable.
     const toShop = order.destShop || (order.placedStore === "pine" ? "marathon-pine" : null);
-    const fromHub = order.placedAtHub;
+    // Prefer placedAtHub, but fall back to order.hub — legacy orders in this component
+    // are routed by order.hub, and (now that the label is gated on the transfer) an
+    // unrecognised hub would wrongly suppress the label. VALID_HUBS still filters it.
+    const fromHub = order.placedAtHub || order.hub;
     // hubC (clothing-customer trials) isn't a stock location — only real hub→shop
     // sends are recorded.
     const VALID_HUBS = ["hub1", "hub2", "hub3"];
-    if (!toShop || !VALID_HUBS.includes(fromHub)) return;
+    if (!toShop || !VALID_HUBS.includes(fromHub)) {
+      // No recordable hub→shop transfer → no stock moved → no label.
+      setPrintToast({ kind: "err", text: `Sent — no hub→shop transfer recorded for #${order.id}. No label — route via Lightspeed.` });
+      setTimeout(() => setPrintToast(null), 7000);
+      return false;
+    }
     // Idempotent + date-unique movementId: order.id is the DAILY counter (reused
     // across days), so scope by createdAt — a re-tap is a no-op, but #042 on two
     // different days stay distinct movements. Strip RTDB-illegal key chars.
     const movementId = `disp_${order.id}_${order.createdAt || ""}`.replace(/[.#$[\]/\s:]/g, "_");
-    applyMovement({
-      type: "transfer_out",            // ledger's from→to type (−from, +to)
-      productId: order.productId,
-      size: sentSize ?? order.size ?? null,  // applyMovement encodes via stockCellPath
-      qty: order.qty || 1,
-      from: fromHub,
-      to: toShop,
-      actorRole: "warehouse",
-      link: { orderId: order.id },
-      ts: new Date().toISOString(),
-      movementId,
-    }).then((res) => {
-      // A repeat send returns ok:true (idempotent), so only a genuine failure
-      // (insufficient hub stock, write error) raises the non-blocking warning.
+    try {
+      const res = await applyMovement({
+        type: "transfer_out",            // ledger's from→to type (−from, +to)
+        productId: order.productId,
+        size: sentSize ?? order.size ?? null,  // applyMovement encodes via stockCellPath
+        qty: order.qty || 1,
+        from: fromHub,
+        to: toShop,
+        actorRole: "warehouse",
+        link: { orderId: order.id },
+        ts: new Date().toISOString(),
+        movementId,
+      });
+      // A repeat send returns ok:true (idempotent). Only a genuine failure
+      // (insufficient hub stock) is a no-move → no label.
       if (res && res.ok === false) {
-        setPrintToast({ kind: "err", text: `Sent — but stock not deducted (${res.reason || "hub count low"}).` });
+        setPrintToast({ kind: "err", text: `Sent — but stock not deducted (${res.reason || "hub count low"}). No label — route via Lightspeed.` });
         setTimeout(() => setPrintToast(null), 7000);
+        return false;
       }
-    }).catch(() => { /* never block the send on a ledger error */ });
+      return true;
+    } catch {
+      // Ledger write error — we can't confirm stock moved, so withhold the label.
+      setPrintToast({ kind: "err", text: `Sent — but stock not deducted (write error). No label — route via Lightspeed.` });
+      setTimeout(() => setPrintToast(null), 7000);
+      return false;
+    }
   };
 
   // ── Display refill helpers (Phase 9 / 9.5) ───────────────────────────────
