@@ -50,24 +50,27 @@ const PRINT_DARKNESS = 0x0f;  // 1..15 (15 = darkest)
 const MEDIA_GAP_LABELS = 0x0a; // 1F 11 nn — 0x0a = "label with gaps" (the M110 default roll)
 
 // ── LABEL SIZE (the only knobs to change for a different roll) ────────────────
-// The physical sticker. Confirmed loaded roll is 40 × 30 mm (set 20 for 40×20 rolls).
-// CRITICAL: this MUST match the physical label. When it was set to 20 mm on a 30 mm
-// roll the raster (152 dots) was shorter than the label, so the print + feed-to-gap
-// straddled the inter-label gap → a half-cut barcode and a blank second label. Sizing
-// the raster to exactly one label (one GS v 0 block, lines = data sent) fixes both.
+// The physical sticker is a 40 × 30 mm roll, but it feeds with the 30 mm edge ACROSS
+// the print head and the 40 mm edge along the FEED. So in raster terms:
+//   • WIDTH  (across the head)  = 30 mm  → content must fit this, or it overflows/cuts
+//   • HEIGHT (along the feed)   = 40 mm  → raster must be this tall, or the feed-to-gap
+//                                          straddles the gap → a blank second label
+// Having these swapped (40 across / 30 feed) printed the content rotated, cut on the
+// side, and ejected a blank label every time (proven by the test-pattern print, which
+// only covered a narrow band). DOTS_PER_MM = 8 (203 dpi).
 const DOTS_PER_MM   = 8;      // 203 dpi ≈ 8 dots/mm
-const LABEL_WIDTH_MM  = 40;
-const LABEL_HEIGHT_MM = 30;
+const LABEL_WIDTH_MM  = 30;   // ACROSS the head (the 30 mm edge feeds under the head)
+const LABEL_HEIGHT_MM = 40;   // ALONG the feed (the 40 mm edge is the print length)
 const HEAD_DOTS     = 384;    // M110 print-head width (48mm). The raster is the FULL head
                              // so content can be CENTRED — the label sits centred under it.
-const LABEL_WIDTH_DOTS  = LABEL_WIDTH_MM  * DOTS_PER_MM;            // 320 — printable width
-const LABEL_HEIGHT_DOTS = LABEL_HEIGHT_MM * DOTS_PER_MM;           // 240 — one label tall
+const LABEL_WIDTH_DOTS  = LABEL_WIDTH_MM  * DOTS_PER_MM;            // 240 — printable width (across head)
+const LABEL_HEIGHT_DOTS = LABEL_HEIGHT_MM * DOTS_PER_MM;           // 320 — one label tall (feed)
 // Render EXACTLY one physical label tall so the print ends right at the inter-label
 // gap and NO extra blank label is fed. Top/bottom safe margins live INSIDE the bitmap
 // (labelBitmap TOP_PAD/BOTTOM_PAD), so content never reaches the gap while the raster
 // still equals one whole label (a shorter raster makes the feed-to-gap overshoot →
 // a wasted blank label).
-const RASTER_HEIGHT     = LABEL_HEIGHT_DOTS;                       // 240 — exactly one 30mm label
+const RASTER_HEIGHT     = LABEL_HEIGHT_DOTS;                       // 320 — exactly one 40mm label (feed)
 // widthDots = full head (centring canvas); contentWidthDots = the label's printable
 // width, centred under the head; height = one label.
 const LABEL = { widthDots: HEAD_DOTS, heightDots: RASTER_HEIGHT, contentWidthDots: LABEL_WIDTH_DOTS, moduleWidth: 2 };
