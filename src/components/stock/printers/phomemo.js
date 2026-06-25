@@ -70,7 +70,12 @@ const LABEL_HEIGHT_DOTS = LABEL_HEIGHT_MM * DOTS_PER_MM;           // 320 — on
 // (labelBitmap TOP_PAD/BOTTOM_PAD), so content never reaches the gap while the raster
 // still equals one whole label (a shorter raster makes the feed-to-gap overshoot →
 // a wasted blank label).
-const RASTER_HEIGHT     = LABEL_HEIGHT_DOTS;                       // 320 — exactly one 40mm label (feed)
+// Print only ~30mm of the 40mm label. Empirically the M110's feed-to-gap OVER-advances
+// the taller the raster is: 240 dots (30mm) → 1 blank, but 296/320 (37–40mm) → 3 blanks.
+// 30mm fits all the content and leaves a clean ~10mm bottom margin; the shorter raster
+// is what keeps the feed from ejecting extra blank labels.
+const PRINT_HEIGHT_MM   = 30;
+const RASTER_HEIGHT     = PRINT_HEIGHT_MM * DOTS_PER_MM;           // 240 — print 30mm (fewest blanks)
 // widthDots = full head (centring canvas); contentWidthDots = the label's printable
 // width, centred under the head; height = one label.
 const LABEL = { widthDots: HEAD_DOTS, heightDots: RASTER_HEIGHT, contentWidthDots: LABEL_WIDTH_DOTS, moduleWidth: 2 };
