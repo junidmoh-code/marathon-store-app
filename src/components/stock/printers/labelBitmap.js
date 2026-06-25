@@ -88,11 +88,13 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
 
-  // Centre on the LABEL (loaded left-aligned under the wider print head), not the head
-  // centre — otherwise content sits right-of-centre and the right edge clips. The raster
-  // is full-head wide; the label occupies its left `contentWidthDots`.
-  const labelW = contentWidthDots || widthDots;
-  const cx = Math.floor(labelW / 2);
+  // Centre on the HEAD, not the label-left. The physical label sits CENTRED under the
+  // wider print head (see phomemo.js geometry), so content centred at the head centre
+  // (widthDots/2) lands centred on the label. Centring on labelW/2 instead pushed
+  // content ~32 dots LEFT of the label centre, clipping the left edge. Content width is
+  // still capped to the LABEL's printable width (labelW) so the right edge never clips.
+  const labelW = contentWidthDots || widthDots;       // label's printable width (caps content)
+  const cx = Math.floor(widthDots / 2);               // head centre = centred-label centre
   const EDGE = 14;                                     // keep content off the left/right edge
   const TOP_PAD = 14, BOTTOM_PAD = 14;                 // top + bottom clear of the edges
   const maxW = labelW - 2 * EDGE;
