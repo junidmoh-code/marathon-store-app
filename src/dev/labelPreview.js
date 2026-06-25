@@ -6,8 +6,9 @@
 import { renderLabelBitmap } from "../components/stock/printers/labelBitmap.js";
 
 // Same geometry the Phomemo transport uses (see printers/phomemo.js): full head
-// width raster (384), one 40×30 mm label tall (232), 320-dot printable content.
-const LABEL = { widthDots: 384, heightDots: 240, contentWidthDots: 320, moduleWidth: 2 };
+// width raster (384); the 40×30 roll feeds 30 mm across the head and 40 mm along
+// the feed, so the printable content is 240 dots wide and the raster 320 dots tall.
+const LABEL = { widthDots: 384, heightDots: 320, contentWidthDots: 240, moduleWidth: 2 };
 const SCALE = 2.0;
 
 const SAMPLES = [
