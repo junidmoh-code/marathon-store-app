@@ -70,12 +70,7 @@ const LABEL_HEIGHT_DOTS = LABEL_HEIGHT_MM * DOTS_PER_MM;           // 320 — on
 // (labelBitmap TOP_PAD/BOTTOM_PAD), so content never reaches the gap while the raster
 // still equals one whole label (a shorter raster makes the feed-to-gap overshoot →
 // a wasted blank label).
-// End the raster a few mm BEFORE the inter-label gap. If the raster runs the FULL
-// label length the print ends right at the gap, so the single "feed to gap" finalize
-// seeks the NEXT gap and ejects a blank label. Stopping ~3mm short lets feed-to-gap
-// advance just that remainder to the real gap → exactly one label, no blank.
-const GAP_FEED_DOTS = 24;                                          // ~3mm short of the gap
-const RASTER_HEIGHT  = LABEL_HEIGHT_DOTS - GAP_FEED_DOTS;          // 296 — 40mm label minus the gap
+const RASTER_HEIGHT     = LABEL_HEIGHT_DOTS;                       // 320 — exactly one 40mm label (feed)
 // widthDots = full head (centring canvas); contentWidthDots = the label's printable
 // width, centred under the head; height = one label.
 const LABEL = { widthDots: HEAD_DOTS, heightDots: RASTER_HEIGHT, contentWidthDots: LABEL_WIDTH_DOTS, moduleWidth: 2 };
