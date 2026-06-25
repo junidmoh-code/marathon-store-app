@@ -350,9 +350,15 @@ const SHOE_SLOT      = 260; // px per shoe: ~222px natural + 38px breathing room
 const CONVEYOR_BASE  = CONVEYOR_SHOES.length * SHOE_SLOT; // 4 × 260 = 1040px loop unit
 
 function ShoeConveyor({ wcSkin = false }) {
-  // TEMPORARY World Cup skin swaps the 4 shoes for trophy + 3 SA photos (same
-  // length=4, so CONVEYOR_BASE is unchanged). Reverts to shoes after expiry.
+  // TEMPORARY World Cup skin swaps the 4 shoes for trophy + 3 SA photos AND runs a
+  // SMALLER conveyor so the order columns keep their height on the TV (the 100vh cap
+  // would otherwise squeeze them, making the slider look oversized). All dims revert
+  // to the ground-truth sneaker conveyor after the skin expires.
   const items = wcSkin ? WC_CONVEYOR : CONVEYOR_SHOES;
+  const slot  = wcSkin ? 200 : SHOE_SLOT;   // narrower slot → tighter packing
+  const rowH  = wcSkin ? 116 : 160;         // shorter conveyor band
+  const imgH  = wcSkin ? 104 : 148;         // smaller images
+  const base  = items.length * slot;        // loop unit for this dim set
   const containerRef = useRef(null);
   const stripRef     = useRef(null);
   // Enough copies to fill 2× screen width — calculated once on mount.
@@ -360,10 +366,10 @@ function ShoeConveyor({ wcSkin = false }) {
 
   useEffect(() => {
     const W = containerRef.current?.offsetWidth || window.innerWidth;
-    // Need at least ⌈(2×W) / CONVEYOR_BASE⌉ + 1 full sets, minimum 2 sets.
-    const sets = Math.max(2, Math.ceil((2 * W) / CONVEYOR_BASE) + 1);
+    // Need at least ⌈(2×W) / base⌉ + 1 full sets, minimum 2 sets.
+    const sets = Math.max(2, Math.ceil((2 * W) / base) + 1);
     setCopies(sets);
-  }, []);
+  }, [base]);
 
   useEffect(() => {
     const el = stripRef.current;
@@ -374,13 +380,13 @@ function ShoeConveyor({ wcSkin = false }) {
       pos -= CONVEYOR_SPEED;
       // Advance by one base unit instead of resetting to 0 — preserves the
       // sub-pixel fraction so there is never a 1-frame jump.
-      if (pos <= -CONVEYOR_BASE) pos += CONVEYOR_BASE;
+      if (pos <= -base) pos += base;
       el.style.transform = `translateX(${pos}px)`;
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [copies]); // restart rAF after copies recalculate
+  }, [copies, base]); // restart rAF after copies/dims recalculate
 
   // Flatten: copies × 4 items, each src cycling through the active list.
   const shoeList = Array.from(
@@ -390,7 +396,7 @@ function ShoeConveyor({ wcSkin = false }) {
 
   return (
     <div ref={containerRef} style={{
-      width: "100%", overflow: "hidden", height: 160, flexShrink: 0,
+      width: "100%", overflow: "hidden", height: rowH, flexShrink: 0,
     }}>
       <div ref={stripRef} style={{
         display: "flex", flexShrink: 0,
@@ -398,13 +404,13 @@ function ShoeConveyor({ wcSkin = false }) {
       }}>
         {shoeList.map((src, i) => (
           <div key={i} style={{
-            width: SHOE_SLOT, flexShrink: 0,
-            height: 160,
+            width: slot, flexShrink: 0,
+            height: rowH,
             display: "flex", alignItems: "flex-end", justifyContent: "center",
             padding: "0 10px",
           }}>
             <img src={src} alt=""
-              style={{ height: 148, width: "auto",
+              style={{ height: imgH, width: "auto",
                        filter: "drop-shadow(0 8px 24px rgba(0,0,0,0.8))" }}/>
           </div>
         ))}
@@ -683,7 +689,7 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
 
       {/* SHOE CONVEYOR — keep an equal-height spacer when hidden so the column
           area below the main grid never grows/shifts. */}
-      {sneakersOn ? <ShoeConveyor wcSkin={wcSkin} /> : <div style={{ height: 160, flexShrink: 0 }} />}
+      {sneakersOn ? <ShoeConveyor wcSkin={wcSkin} /> : <div style={{ height: wcSkin ? 116 : 160, flexShrink: 0 }} />}
 
       {/* SHOEBOX SCREENSAVER — position:fixed, so omitting it has no layout impact.
           Behind SHOW_DVD_BOX (off for now); the sneakers toggle is unchanged. */}
