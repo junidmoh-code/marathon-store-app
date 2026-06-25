@@ -622,7 +622,9 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
     <link rel="preconnect" href="https://fonts.googleapis.com"/>
     <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap" rel="stylesheet"/>
     <div style={{
-      minHeight: "100vh", width: "100%",
+      // Fill EXACTLY the viewport (not minHeight) so the board can't grow past the
+      // TV screen and force a scroll — overflow:hidden then keeps it pinned to 100vh.
+      height: "100vh", maxHeight: "100vh", width: "100%",
       // TEMPORARY World Cup skin: SA flag / Cape Town background behind the board,
       // with a dark scrim (the layered gradient) so the order text stays readable.
       // Reverts to the plain navy COLORS.bg automatically after WC_SKIN_UNTIL.
