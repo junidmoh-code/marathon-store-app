@@ -26,7 +26,7 @@ import wcBackground from "../assets/tv/worldcup-bg.png";
 import wcConvA      from "../assets/tv/worldcup-conv-a.png";
 import wcConvB      from "../assets/tv/worldcup-conv-b.png";
 import wcConvC      from "../assets/tv/worldcup-conv-c.png";
-const WC_SKIN_UNTIL = new Date("2026-06-27T12:00:00+02:00").getTime(); // ~48h: noon SAST, 27 Jun 2026
+const WC_SKIN_UNTIL = new Date("2026-06-28T20:00:00+02:00").getTime(); // Sunday evening (8pm SAST, 28 Jun 2026)
 const worldCupSkinActive = () => Date.now() < WC_SKIN_UNTIL;
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -421,7 +421,7 @@ function ShoeConveyor({ wcSkin = false }) {
 
 const VISIBLE_ORDERS = 5;
 
-function Column({ section, sneakersOn = true }) {
+function Column({ section, sneakersOn = true, wcSkin = false }) {
   const { Icon } = section;
   const needsScroll = section.orders.length > VISIBLE_ORDERS;
   // Duplicate list so the CSS animation loops seamlessly (scroll to -50% = back to start)
@@ -438,7 +438,10 @@ function Column({ section, sneakersOn = true }) {
     <div style={{
       position: "relative",
       flex: "1 1 0", minWidth: 0,
-      background: COLORS.card,
+      // TEMPORARY World Cup skin: keep the box exactly as before (same border + glow)
+      // but make its dark fill SLIGHTLY transparent so a hint of the SA-flag background
+      // shows through. Reverts to the solid card after the skin expires.
+      background: wcSkin ? "rgba(14,20,33,0.78)" : COLORS.card,
       border: `1px solid ${section.accent}30`,
       borderRadius: 14,
       padding: "0.7vw 1.1vw 0.5vw",
@@ -447,13 +450,18 @@ function Column({ section, sneakersOn = true }) {
       overflow: "hidden",
       minHeight: 0,
     }}>
-      {/* faded backdrop sneaker (decorative) — hidden in "no sneakers" mode.
-          position:absolute + pointerEvents:none, so omitting it has no layout impact. */}
-      {sneakersOn && (
+      {/* faded backdrop image (decorative). World Cup skin: the trophy CENTRED in every
+          box. Otherwise the section's sneaker, off to the right (hidden in "no sneakers"
+          mode). position:absolute + pointerEvents:none → no layout impact either way. */}
+      {wcSkin ? (
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.12, pointerEvents: "none" }}>
+          <img src={wcTrophy} alt="" style={{ width: "98%", objectFit: "contain" }}/>
+        </div>
+      ) : sneakersOn ? (
         <div style={{ position: "absolute", right: "-8%", top: "22%", opacity: 0.12, pointerEvents: "none" }}>
           <img src={section.shoeImg} alt="" width={340} style={{ display: "block", objectFit: "contain" }}/>
         </div>
-      )}
+      ) : null}
 
       {/* header */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: 10, position: "relative", zIndex: 1 }}>
@@ -684,7 +692,7 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
 
       {/* COLUMNS */}
       <main style={{ display: "flex", gap: "0.9vw", flex: 1, minHeight: 0, marginTop: "0.35vw" }}>
-        {SECTIONS.map((s) => <Column key={s.id} section={s} sneakersOn={sneakersOn}/>)}
+        {SECTIONS.map((s) => <Column key={s.id} section={s} sneakersOn={sneakersOn} wcSkin={wcSkin}/>)}
       </main>
 
       {/* SHOE CONVEYOR — keep an equal-height spacer when hidden so the column
