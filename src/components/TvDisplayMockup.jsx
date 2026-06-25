@@ -14,6 +14,22 @@ import aj4Bred   from "../assets/tv/aj4-bred.png";
 import aj1Yellow from "../assets/tv/aj1-yellow.png";
 import { PULL_STATUS, DISPOSITION, dispositionOf } from "./layby/contract";
 
+// ─── TEMPORARY · WORLD CUP TV SKIN (SA round-of-32 celebration) ════════════════
+// Swaps ONLY the TV pickup board's top-left logo (→ World Cup trophy) and the
+// background (→ SA flag / Cape Town) for ~48h. Auto-reverts to the normal Jordan
+// logo + navy background after WC_SKIN_UNTIL — NO deploy needed. The board
+// re-renders on its 10s clock tick, so the revert lands within 10s of expiry.
+// ONE-STEP REMOVAL: delete this block + the two `wcSkin` usages in the render
+// (the header <img> src/blend and the root <div> background) to fully restore.
+import wcTrophy     from "../assets/tv/worldcup-trophy.png";
+import wcBackground from "../assets/tv/worldcup-bg.png";
+import wcConvA      from "../assets/tv/worldcup-conv-a.png";
+import wcConvB      from "../assets/tv/worldcup-conv-b.png";
+import wcConvC      from "../assets/tv/worldcup-conv-c.png";
+const WC_SKIN_UNTIL = new Date("2026-06-27T12:00:00+02:00").getTime(); // ~48h: noon SAST, 27 Jun 2026
+const worldCupSkinActive = () => Date.now() < WC_SKIN_UNTIL;
+// ═══════════════════════════════════════════════════════════════════════════════
+
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 
 // Cap LB numbers shown in the TV layby strip so a long backlog can't overflow
@@ -325,11 +341,18 @@ function ShoeboxFloat() {
 // Strip moves left continuously; pos += CONVEYOR_BASE (not reset to 0) so
 // the sub-pixel fraction is preserved — no 1-frame jump on loop.
 const CONVEYOR_SHOES = [aj1Chicago, yeezy, aj4Bred, aj1Yellow];
+// TEMPORARY World Cup skin: the 4 sliding shoes become the trophy + 3 SA photos.
+// All are 1536×1024 (same 3:2 as the shoes), so they render at the identical size
+// under the existing height:148/width:auto rule. Reverts with the skin.
+const WC_CONVEYOR = [wcTrophy, wcConvA, wcConvB, wcConvC];
 const CONVEYOR_SPEED = 0.7; // px per frame at 60 fps
 const SHOE_SLOT      = 260; // px per shoe: ~222px natural + 38px breathing room
 const CONVEYOR_BASE  = CONVEYOR_SHOES.length * SHOE_SLOT; // 4 × 260 = 1040px loop unit
 
-function ShoeConveyor() {
+function ShoeConveyor({ wcSkin = false }) {
+  // TEMPORARY World Cup skin swaps the 4 shoes for trophy + 3 SA photos (same
+  // length=4, so CONVEYOR_BASE is unchanged). Reverts to shoes after expiry.
+  const items = wcSkin ? WC_CONVEYOR : CONVEYOR_SHOES;
   const containerRef = useRef(null);
   const stripRef     = useRef(null);
   // Enough copies to fill 2× screen width — calculated once on mount.
@@ -359,10 +382,10 @@ function ShoeConveyor() {
     return () => cancelAnimationFrame(raf);
   }, [copies]); // restart rAF after copies recalculate
 
-  // Flatten: copies × 4 shoes, each src cycling through CONVEYOR_SHOES
+  // Flatten: copies × 4 items, each src cycling through the active list.
   const shoeList = Array.from(
-    { length: copies * CONVEYOR_SHOES.length },
-    (_, i) => CONVEYOR_SHOES[i % CONVEYOR_SHOES.length]
+    { length: copies * items.length },
+    (_, i) => items[i % items.length]
   );
 
   return (
@@ -519,6 +542,10 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
     return () => clearInterval(t);
   }, []);
 
+  // TEMPORARY World Cup skin — re-evaluated each render (10s clock tick) so it
+  // auto-reverts to the normal logo + background within 10s of WC_SKIN_UNTIL.
+  const wcSkin = worldCupSkinActive();
+
   // Exit TV mode: drop out of browser fullscreen if we're in it, then leave the TV
   // view (onExit clears the #tv hash / returns to the picker). Reachable by the
   // discreet ✕ in the top-right corner (below) AND by the Esc key. We never call
@@ -596,7 +623,12 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
     <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap" rel="stylesheet"/>
     <div style={{
       minHeight: "100vh", width: "100%",
-      background: COLORS.bg,
+      // TEMPORARY World Cup skin: SA flag / Cape Town background behind the board,
+      // with a dark scrim (the layered gradient) so the order text stays readable.
+      // Reverts to the plain navy COLORS.bg automatically after WC_SKIN_UNTIL.
+      background: wcSkin
+        ? `linear-gradient(rgba(5,8,16,0.40), rgba(5,8,16,0.40)), url(${wcBackground}) center / cover no-repeat`
+        : COLORS.bg,
       color: COLORS.white,
       fontFamily: FONT,
       padding: "0.6vw 1.4vw 0.4vw",
@@ -609,11 +641,16 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
         {/* Jumpman: mix-blend-mode:screen makes the black background transparent
             on the dark navy canvas (screen: black+bg=bg, red+bg≈red) */}
         <img
-          src={jumpman}
-          alt="Jordan"
-          width={80}
-          height={80}
-          style={{ width: 80, height: 80, objectFit: "contain", mixBlendMode: "screen",
+          src={wcSkin ? wcTrophy : jumpman}
+          alt={wcSkin ? "World Cup" : "Jordan"}
+          width={wcSkin ? 168 : 80}
+          height={wcSkin ? 112 : 80}
+          // TEMPORARY World Cup skin: show the trophy in the logo slot, larger (its
+          // 3:2 source fills a 168×112 box with no letterboxing). Renders normally
+          // (no screen blend — that's only to drop the jumpman's black backing on the
+          // navy canvas). Reverts to the 80×80 jumpman after expiry.
+          style={{ width: wcSkin ? 168 : 80, height: wcSkin ? 112 : 80, objectFit: "contain",
+                   mixBlendMode: wcSkin ? "normal" : "screen",
                    visibility: sneakersOn ? "visible" : "hidden" }}
         />
         <div style={{
@@ -644,7 +681,7 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
 
       {/* SHOE CONVEYOR — keep an equal-height spacer when hidden so the column
           area below the main grid never grows/shifts. */}
-      {sneakersOn ? <ShoeConveyor /> : <div style={{ height: 160, flexShrink: 0 }} />}
+      {sneakersOn ? <ShoeConveyor wcSkin={wcSkin} /> : <div style={{ height: 160, flexShrink: 0 }} />}
 
       {/* SHOEBOX SCREENSAVER — position:fixed, so omitting it has no layout impact.
           Behind SHOW_DVD_BOX (off for now); the sneakers toggle is unchanged. */}
@@ -674,15 +711,24 @@ export default function TvDisplayMockup({ orders: liveProp, laybyPulls = [], onE
         </div>
       )}
 
-      {/* FOOTER */}
+      {/* FOOTER — TEMPORARY World Cup skin swaps the tagline for a SA round-of-32
+          celebration line (SA-flag gold) and reverts to the normal red tagline
+          after expiry. */}
       <footer style={{
         display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
         marginTop: "0.25vw",
-        color: COLORS.red,
+        color: wcSkin ? "#FFB81C" : COLORS.red,
         fontSize: "clamp(11px, 0.85vw, 14px)", fontWeight: 800, letterSpacing: 5,
+        textShadow: wcSkin ? "0 2px 8px rgba(0,0,0,0.9)" : "none",
       }}>
-        <Sneaker size={22} accent={COLORS.red}/>
-        <span>MARATHON. KEEP MOVING.</span>
+        {wcSkin ? (
+          <span>🇿🇦 SOUTH AFRICA · ROUND OF 32 · WORLD CUP 🏆</span>
+        ) : (
+          <>
+            <Sneaker size={22} accent={COLORS.red}/>
+            <span>MARATHON. KEEP MOVING.</span>
+          </>
+        )}
       </footer>
 
       {/* Hidden ~60×60 tap/click zone in the bottom-left corner. Single tap
