@@ -111,7 +111,7 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
   // Product NAME — its own block: wraps across up to 2 (dispatch) / 3 (catalog) lines,
   // shrinking the font, so the FULL name always shows and is never truncated.
   if (productName) {
-    const f = fitName(ctx, String(productName), maxW, header ? 16 : 22, 10, header ? 2 : 3);
+    const f = fitName(ctx, String(productName), maxW, header ? 16 : 30, 10, header ? 2 : 3);
     setFont(ctx, f.px, true);
     for (const line of f.lines) { ctx.fillText(line, cx, y); y += f.px + 2; }
   }
@@ -119,7 +119,7 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
   // SIZE — its own bold, prominent line. Always shown when present, at a glance.
   const sizeStr = (size != null && String(size).trim() !== "") ? `Size: ${String(size).trim()}` : "";
   if (sizeStr) {
-    const f = fitLine(ctx, sizeStr, maxW, header ? 17 : 24, 12, true);
+    const f = fitLine(ctx, sizeStr, maxW, header ? 17 : 34, 12, true);
     setFont(ctx, f.px, true);
     ctx.fillText(f.lines[0], cx, y);
     y += f.px + 4;
@@ -135,11 +135,13 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
   let mw = moduleWidth;
   while (totalModules * mw > maxW && mw > 1) mw--;
   const barWidth = totalModules * mw;
-  const CODE_PX = 16;
+  const CODE_PX = header ? 16 : 22;
   const barTop = y;
   // Reserve the bottom padding so the 8-digit code never reaches the label edge/gap.
   const avail = heightDots - (CODE_PX + 5) - barTop - BOTTOM_PAD;
-  const barHeight = Math.max(36, Math.min(avail, header ? 70 : 84));  // shrunk but scannable
+  // Let the barcode GROW to use the label's height (it was capped tiny). Bigger bars =
+  // easier scan + the content fills the 40mm label instead of sitting small at the top.
+  const barHeight = Math.max(48, Math.min(avail, header ? 90 : 200));
   let x = Math.round(cx - barWidth / 2);
   for (const m of modules) {
     if (m.bar) ctx.fillRect(x, barTop, m.width * mw, barHeight);
