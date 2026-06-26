@@ -10,6 +10,7 @@ import { useStockCells } from "./useStock";
 import { labelFor } from "./locations";
 import { Card, Field, SizePicker, LocationPicker, NumberInput, TextInput, Toast, Empty } from "./widgets";
 import { GRAY, GREEN, RED, BLUE_L, BORDER, CARD, bGreen, input } from "./ui";
+import { searchProducts } from "../../utils/productSearch";
 
 function Thumb({ url }) {
   if (url) return <img src={url} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }}
@@ -41,22 +42,11 @@ export default function Adjust({ products, registry, actorRole, isAdmin }) {
   const deltaN = /^-?\d+$/.test(String(delta).trim()) ? parseInt(delta, 10) : null;
 
   // Search products by name OR any code (barcode / sku / per-size); capped for speed.
-  const matches = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return [];
-    const codeMatch = (p) => {
-      if (!/\d/.test(term)) return false;
-      const codes = [];
-      if (p.barcode != null) codes.push(String(p.barcode));
-      if (p.sku != null) codes.push(String(p.sku));
-      if (p.barcodes && typeof p.barcodes === "object") for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
-      return codes.some(c => c === term || (term.length >= 3 && c.toLowerCase().includes(term)));
-    };
-    return [...(products || [])]
-      .filter(p => p && p.id && p.name && Array.isArray(p.sizes) && p.sizes.length && (p.name.toLowerCase().includes(term) || codeMatch(p)))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .slice(0, 20);
-  }, [products, q]);
+  // Forgiving search: fuzzy name + barcode/sku/per-size codes (see productSearch.js).
+  const matches = useMemo(
+    () => searchProducts(products, q, { limit: 20, predicate: (p) => Array.isArray(p.sizes) && p.sizes.length }),
+    [products, q]
+  );
 
   if (!isAdmin) return <Empty>Adjustments are admin-only. Ask an admin to correct a count.</Empty>;
 

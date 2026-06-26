@@ -24,6 +24,7 @@ import { useRefillRequests } from "./useStock";
 import { transferTargets, labelFor, RECEIVING_DEFAULT } from "./locations";
 import { Toast, Empty } from "./widgets";
 import { GLASS, GLASS_SOLID, CARD, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, BORDER, RADIUS, FONT, input, bGreen, bGhost } from "./ui";
+import { searchProducts } from "../../utils/productSearch";
 
 const keyOf = (pid, size) => `${pid}__${size}`;
 
@@ -76,11 +77,14 @@ export default function Transfer({ products, registry, actorRole }) {
     flash("ok", "Prefilled from refill request — pick a source and confirm.");
   };
 
+  // Forgiving search (fuzzy name + codes); empty query shows the full product grid.
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return [...(products || [])]
-      .filter(p => p && p.id && p.name && (!q || p.name.toLowerCase().includes(q)))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    if (!search.trim()) {
+      return [...(products || [])]
+        .filter(p => p && p.id && p.name)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return searchProducts(products, search, { limit: 300 });
   }, [products, search]);
 
   const doTransfer = async () => {

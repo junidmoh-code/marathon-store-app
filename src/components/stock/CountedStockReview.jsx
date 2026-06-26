@@ -17,6 +17,7 @@ import { labelFor, transferTargets } from "./locations";
 import { barcodeSizeKey } from "./barcode";
 import { Toast, Empty, LocationPicker } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, RED, BLUE_L, AMBER, BORDER, bGreen, bGhost, input } from "./ui";
+import { productMatchesQuery } from "../../utils/productSearch";
 
 const DEFAULT_LOCATION = "marathon-pe";   // counts happen at Marathon PE by default
 
@@ -97,12 +98,13 @@ export default function CountedStockReview({ products = [], registry, actorRole 
   const locsWithCounts = useMemo(() => [...new Set(groups.map(g => g.loc))]
     .sort((a, b) => labelFor(a, registry).localeCompare(labelFor(b, registry))), [groups, registry]);
 
+  // Forgiving search on the grouped rows: fuzzy name + per-size barcodes (productSearch.js).
   const filtered = useMemo(() => {
-    const term = q.trim().toLowerCase();
+    const term = q.trim();
     return groups.filter(g =>
       (locFilter === "all" || g.loc === locFilter) &&
       (typeFilter === "all" || g.type === typeFilter) &&
-      (!term || g.name.toLowerCase().includes(term) || g.sizes.some(s => String(s.barcode || "").includes(term))));
+      (!term || productMatchesQuery({ name: g.name, barcodes: g.sizes.map(s => s.barcode).filter(Boolean) }, term)));
   }, [groups, locFilter, typeFilter, q]);
 
   const shownCells = filtered.reduce((n, g) => n + g.sizes.filter(s => s.qty !== 0).length, 0);

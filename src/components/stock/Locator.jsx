@@ -9,6 +9,7 @@ import { useStockCells } from "./useStock";
 import { activeLocations, labelFor } from "./locations";
 import { Empty } from "./widgets";
 import { GLASS, CARD, BLUE_L, GREEN, RED, GRAY, BORDER, RADIUS, input } from "./ui";
+import { searchProducts } from "../../utils/productSearch";
 
 function Thumb({ product, size = 42 }) {
   const url = product?.photoUrl;
@@ -22,14 +23,8 @@ export default function Locator({ products, registry }) {
   const allCells = useStockCells();   // { loc: { pid: { size: cell } } }
 
   const product = useMemo(() => products.find(p => p.id === productId), [products, productId]);
-  const matches = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return [];
-    return [...(products || [])]
-      .filter(p => p && p.id && p.name && p.name.toLowerCase().includes(q))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .slice(0, 12);
-  }, [products, search]);
+  // Forgiving search: fuzzy name + barcode/sku/per-size codes (see productSearch.js).
+  const matches = useMemo(() => searchProducts(products, search, { limit: 12 }), [products, search]);
 
   const locs = activeLocations(registry);
 
