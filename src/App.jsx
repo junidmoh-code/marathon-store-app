@@ -1631,6 +1631,145 @@ function parseProductHash() {
   return m ? m[1] : null;
 }
 
+// ─── AI NAME CLEANUP — REVIEW & APPROVE ───────────────────────────────────────
+// Live view of /aiAssistant/nameProposals (written by the cleanProductNames Cloud
+// Function — a vision + typed-name merge). The catalogue name changes ONLY when an
+// admin approves a row here; nothing auto-applies. Approve writes the (optionally
+// edited) suggested name to /products/{id}.name and marks the proposal approved;
+// Reject marks it rejected; both decisions stop the row reappearing on a re-run.
+function useNameProposals() {
+  const [proposals, setProposals] = useState({});
+  useEffect(() => {
+    const unsub = onValue(ref(database, "aiAssistant/nameProposals"), snap => setProposals(snap.val() || {}));
+    return () => unsub();
+  }, []);
+  return proposals;
+}
+
+const NAME_HIGH_CONFIDENCE = 0.85;
+const confColor = (c) => (c >= NAME_HIGH_CONFIDENCE ? "#4ACA7A" : c >= 0.6 ? "#F59E0B" : "#FF6B6B");
+
+function AdminReviewNamesTab({ products }) {
+  const proposals = useNameProposals();
+  const [edits, setEdits]   = useState({});     // id → edited name (overrides the suggestion)
+  const [busyId, setBusyId] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [runN, setRunN]     = useState(20);
+  const [runBusy, setRunBusy] = useState(false);
+  const [runMsg, setRunMsg] = useState(null);
+
+  // Pending rows (undecided), highest-confidence first.
+  const pending = useMemo(() => Object.entries(proposals || {})
+    .filter(([, v]) => v && v.status !== "approved" && v.status !== "rejected")
+    .map(([id, v]) => ({ id, ...v }))
+    .sort((a, b) => (b.confidence || 0) - (a.confidence || 0)), [proposals]);
+  const decidedCount = useMemo(() => Object.values(proposals || {}).filter(v => v && (v.status === "approved" || v.status === "rejected")).length, [proposals]);
+  const highCount = pending.filter(r => (r.confidence || 0) >= NAME_HIGH_CONFIDENCE).length;
+
+  const finalName = (row) => (edits[row.id] ?? row.suggested ?? "").trim();
+
+  const approve = async (row) => {
+    const name = finalName(row);
+    if (!name) return;
+    setBusyId(row.id);
+    try {
+      await updateProductName(row.id, name);
+      await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "approved", appliedName: name, decidedAt: Date.now() });
+    } finally { setBusyId(null); }
+  };
+  const reject = async (row) => {
+    setBusyId(row.id);
+    try { await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "rejected", decidedAt: Date.now() }); }
+    finally { setBusyId(null); }
+  };
+  const approveAllHigh = async () => {
+    setBulkBusy(true);
+    try { for (const r of pending.filter(r => (r.confidence || 0) >= NAME_HIGH_CONFIDENCE)) await approve(r); }
+    finally { setBulkBusy(false); }
+  };
+  const runAI = async () => {
+    setRunBusy(true); setRunMsg(`Running AI on the next ${runN} products…`);
+    try {
+      const res = await httpsCallable(functions, "cleanProductNames")({ limit: Number(runN) || 20 });
+      const d = res?.data || {};
+      setRunMsg(`Done — ${d.processed} suggested, ${d.failed} failed (≈ $${Number(d.totalCostUSD || 0).toFixed(4)}).`);
+    } catch (e) {
+      const m = String(e?.message || e);
+      setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("not-found") || m.toLowerCase().includes("internal") ? " — is cleanProductNames deployed?" : ""}`);
+    } finally { setRunBusy(false); }
+  };
+
+  return (
+    <div style={{ padding:"0 14px 30px" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0 12px" }}>
+        <span style={{ fontSize:18, fontWeight:700, color:"#fff" }}>AI Name Cleanup</span>
+        <span style={{ background:"rgba(74,202,122,.15)", border:"1px solid rgba(74,202,122,.35)", color:"#4ACA7A", fontSize:12, fontWeight:700, padding:"3px 10px", borderRadius:12 }}>{pending.length} to review</span>
+      </div>
+
+      {/* Generate suggestions (calls the cleanProductNames function once deployed). */}
+      <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+        <span style={{ fontSize:12, color:"rgba(255,255,255,.6)" }}>Run AI on next</span>
+        <input type="number" min={1} max={500} value={runN} onChange={e => setRunN(e.target.value)}
+               style={{ width:64, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13 }}/>
+        <button onClick={runAI} disabled={runBusy}
+                style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: runBusy ? "wait" : "pointer", opacity: runBusy ? .6 : 1 }}>
+          {runBusy ? "Running…" : "Generate suggestions"}
+        </button>
+        {highCount > 0 && (
+          <button onClick={approveAllHigh} disabled={bulkBusy}
+                  style={{ background:"rgba(74,202,122,.16)", color:"#4ACA7A", border:"1px solid rgba(74,202,122,.4)", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: bulkBusy ? "wait" : "pointer", opacity: bulkBusy ? .6 : 1 }}>
+            {bulkBusy ? "Approving…" : `Approve ${highCount} high-confidence (≥85%)`}
+          </button>
+        )}
+      </div>
+      {runMsg && <div style={{ fontSize:11.5, color:"rgba(255,255,255,.6)", marginBottom:10 }}>{runMsg}</div>}
+      {decidedCount > 0 && <div style={{ fontSize:11, color:"rgba(255,255,255,.35)", marginBottom:10 }}>{decidedCount} already decided (hidden).</div>}
+
+      {pending.length === 0 && (
+        <div style={{ textAlign:"center", color:"#555", padding:"2.5rem 1rem", fontSize:"0.9rem" }}>
+          No name suggestions to review. Use “Generate suggestions” to run the AI over products that don’t have a proposal yet.
+        </div>
+      )}
+
+      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+        {pending.map(row => {
+          const busy = busyId === row.id;
+          const pct = Math.round((row.confidence || 0) * 100);
+          const changed = (row.suggested || "") !== (row.current || "");
+          return (
+            <div key={row.id} style={{ display:"flex", gap:11, background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:11 }}>
+              <ProductPhoto url={row.photoUrl} size={64} radius={10}/>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+                  <span style={{ fontSize:10, fontWeight:800, color: confColor(row.confidence || 0), background:"rgba(255,255,255,.05)", border:`1px solid ${confColor(row.confidence || 0)}55`, borderRadius:10, padding:"2px 8px" }}>{pct}% sure</span>
+                  {!changed && <span style={{ fontSize:10, color:"rgba(255,255,255,.35)" }}>no change suggested</span>}
+                </div>
+                <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", textDecoration: changed ? "line-through" : "none", marginBottom:4 }}>{row.current || "(no name)"}</div>
+                <input
+                  value={edits[row.id] ?? row.suggested ?? ""}
+                  onChange={e => setEdits(s => ({ ...s, [row.id]: e.target.value }))}
+                  style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(74,127,255,.35)", borderRadius:8, color:"#fff", padding:"8px 10px", fontSize:13.5, fontWeight:600, marginBottom:8 }}
+                  aria-label="Suggested name (editable)"
+                />
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={() => approve(row)} disabled={busy || !finalName(row)}
+                          style={{ flex:1, background:"rgba(0,150,70,.22)", border:"1px solid rgba(0,180,80,.4)", color:"#4ACA7A", borderRadius:9, padding:"9px 0", fontSize:12.5, fontWeight:700, cursor: busy ? "wait" : "pointer", opacity: busy ? .6 : 1 }}>
+                    {busy ? "…" : "Approve"}
+                  </button>
+                  <button onClick={() => reject(row)} disabled={busy}
+                          style={{ flex:1, background:"rgba(150,30,30,.18)", border:"1px solid rgba(200,60,60,.35)", color:"#FF6B6B", borderRadius:9, padding:"9px 0", fontSize:12.5, fontWeight:700, cursor: busy ? "wait" : "pointer", opacity: busy ? .6 : 1 }}>
+                    Reject
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AdminView({ products, orders, onExit }) {
   // ── Add Product form state (collapsible at top of list) ─────────────────
   const [showAdd, setShowAdd] = useState(false);
@@ -1670,6 +1809,10 @@ function AdminView({ products, orders, onExit }) {
   // Admin product list is split by product type so sneakers and clothing are
   // managed separately. Defaults to sneakers (the bulk of the catalogue).
   const [typeFilter, setTypeFilter] = useState("sneaker"); // "sneaker" | "clothing"
+  // Admin section: the product list vs the AI name-cleanup review screen.
+  const [adminSection, setAdminSection] = useState("products"); // "products" | "review-names"
+  const nameProposals = useNameProposals();
+  const pendingNameCount = useMemo(() => Object.values(nameProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [nameProposals]);
   // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
   //    browser back clears it. Listener stays mounted for the whole view. ──
   const [detailId, setDetailId] = useState(() => parseProductHash());
@@ -1922,6 +2065,40 @@ function AdminView({ products, orders, onExit }) {
     );
   }
 
+  // Section toggle (Products ↔ Review Names), shown at the top of both sections.
+  const sectionToggle = (
+    <div style={{ display:"flex", gap:8, padding:"0 14px 4px" }}>
+      {[["products","Products"],["review-names","Review Names"]].map(([val, label]) => {
+        const on = adminSection === val;
+        return (
+          <button key={val} onClick={() => setAdminSection(val)}
+            style={{ flex:1, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 0", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+            {label}{val === "review-names" && pendingNameCount > 0 && <span style={{ background:"#4ACA7A", color:"#063", fontSize:11, fontWeight:800, borderRadius:9, padding:"0 7px" }}>{pendingNameCount}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  if (adminSection === "review-names") {
+    return (
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
+          <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
+            <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
+          </div>
+          <div style={{ width:90 }}/>
+        </div>
+        <div style={{ height:6 }}/>
+        {sectionToggle}
+        <div style={{ height:10 }}/>
+        <AdminReviewNamesTab products={products} />
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
       {/* TOP BAR with Switch View */}
@@ -1939,6 +2116,9 @@ function AdminView({ products, orders, onExit }) {
         <img src="/hero/admin.jpg" alt="Admin Panel" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"left center" }}/>
         <div style={{ position:"absolute", bottom:0, left:0, right:0, height:70, background:"linear-gradient(transparent,#000)" }}/>
       </div>
+
+      <div style={{ height:12 }}/>
+      {sectionToggle}
 
       <div>
         {/* PRODUCTS HEADER ROW */}
