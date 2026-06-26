@@ -1687,6 +1687,13 @@ function AdminReviewNamesTab({ products }) {
     try { for (const r of pending.filter(r => (r.confidence || 0) >= NAME_HIGH_CONFIDENCE)) await approve(r); }
     finally { setBulkBusy(false); }
   };
+  const approveAll = async () => {
+    if (!pending.length) return;
+    if (!window.confirm(`Approve ALL ${pending.length} suggestions? This renames those products to the suggested names.`)) return;
+    setBulkBusy(true);
+    try { for (const r of pending) await approve(r); }
+    finally { setBulkBusy(false); }
+  };
   const runAI = async () => {
     setRunBusy(true); setRunMsg(`Running AI on the next ${runN} products…`);
     try {
@@ -1719,6 +1726,12 @@ function AdminReviewNamesTab({ products }) {
           <button onClick={approveAllHigh} disabled={bulkBusy}
                   style={{ background:"rgba(74,202,122,.16)", color:"#4ACA7A", border:"1px solid rgba(74,202,122,.4)", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: bulkBusy ? "wait" : "pointer", opacity: bulkBusy ? .6 : 1 }}>
             {bulkBusy ? "Approving…" : `Approve ${highCount} high-confidence (≥85%)`}
+          </button>
+        )}
+        {pending.length > 0 && (
+          <button onClick={approveAll} disabled={bulkBusy}
+                  style={{ background:"rgba(0,150,70,.22)", color:"#4ACA7A", border:"1px solid rgba(0,180,80,.45)", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:800, cursor: bulkBusy ? "wait" : "pointer", opacity: bulkBusy ? .6 : 1 }}>
+            {bulkBusy ? "Approving…" : `Approve all (${pending.length})`}
           </button>
         )}
       </div>
