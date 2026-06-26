@@ -24,6 +24,7 @@ import { useStockCells } from "./useStock";
 import { transferTargets, RECEIVING_DEFAULT } from "./locations";
 import { Card, Field, LocationPicker, NumberInput, TextInput, Toast, Empty } from "./widgets";
 import { GRAY, GREEN, RED, BLUE_L, BORDER, CARD, bGreen, bGhost, tabOn, tabOff, input } from "./ui";
+import { searchProducts } from "../../utils/productSearch";
 import BarcodePrint from "./BarcodePrint";
 
 function Thumb({ url }) {
@@ -61,22 +62,11 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
   const sizes = (product && Array.isArray(product.sizes)) ? product.sizes : [];
 
   // Product search (name OR barcode/sku/per-size code); capped for speed.
-  const matches = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return [];
-    const codeMatch = (p) => {
-      if (!/\d/.test(term)) return false;
-      const codes = [];
-      if (p.barcode != null) codes.push(String(p.barcode));
-      if (p.sku != null) codes.push(String(p.sku));
-      if (p.barcodes && typeof p.barcodes === "object") for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
-      return codes.some(c => c === term || (term.length >= 3 && c.toLowerCase().includes(term)));
-    };
-    return [...(products || [])]
-      .filter(p => p && p.id && p.name && Array.isArray(p.sizes) && p.sizes.length && (p.name.toLowerCase().includes(term) || codeMatch(p)))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .slice(0, 20);
-  }, [products, q]);
+  // Forgiving search: fuzzy name + barcode/sku/per-size codes (see productSearch.js).
+  const matches = useMemo(
+    () => searchProducts(products, q, { limit: 20, predicate: (p) => Array.isArray(p.sizes) && p.sizes.length }),
+    [products, q]
+  );
 
   // SAME live read as Locator / Count — the single source of truth for on-hand,
   // scoped to the chosen location only.

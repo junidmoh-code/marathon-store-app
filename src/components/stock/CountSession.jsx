@@ -11,6 +11,7 @@ import { useStockCells } from "./useStock";
 import { activeLocations } from "./locations";
 import { Card, Field, LocationPicker, NumberInput, Toast, Empty } from "./widgets";
 import { GRAY, GREEN, AMBER, BLUE_L, BORDER, CARD, bGreen, input } from "./ui";
+import { searchProducts } from "../../utils/productSearch";
 
 function Thumb({ url }) {
   if (url) return <img src={url} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }}
@@ -30,22 +31,11 @@ export default function CountSession({ products, registry, actorRole }) {
   const sizes = (product && Array.isArray(product.sizes)) ? product.sizes : [];
 
   // Product search (name OR barcode/sku/per-size code); capped for speed.
-  const matches = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return [];
-    const codeMatch = (p) => {
-      if (!/\d/.test(term)) return false;
-      const codes = [];
-      if (p.barcode != null) codes.push(String(p.barcode));
-      if (p.sku != null) codes.push(String(p.sku));
-      if (p.barcodes && typeof p.barcodes === "object") for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
-      return codes.some(c => c === term || (term.length >= 3 && c.toLowerCase().includes(term)));
-    };
-    return [...(products || [])]
-      .filter(p => p && p.id && p.name && Array.isArray(p.sizes) && p.sizes.length && (p.name.toLowerCase().includes(term) || codeMatch(p)))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .slice(0, 20);
-  }, [products, q]);
+  // Forgiving search: fuzzy name + barcode/sku/per-size codes (see productSearch.js).
+  const matches = useMemo(
+    () => searchProducts(products, q, { limit: 20, predicate: (p) => Array.isArray(p.sizes) && p.sizes.length }),
+    [products, q]
+  );
   const cells = useStockCells(loc || undefined);   // { pid: { size: cell } } for this loc
   const curQty = (size) => {
     const c = loc ? cells?.[productId]?.[size] : null;

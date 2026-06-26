@@ -5,6 +5,7 @@ import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from 
 import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
+import { productMatchesQuery } from "./utils/productSearch";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -1853,10 +1854,11 @@ function AdminView({ products, orders, onExit }) {
   // bar (substring, case-insensitive). Products without productType are treated
   // as sneakers.
   const filteredProducts = useMemo(() => {
-    const q = productSearch.trim().toLowerCase();
+    const q = productSearch.trim();
     return products.filter(p => {
       if ((p.productType || "sneaker") !== typeFilter) return false;
-      if (q && !(p.name || "").toLowerCase().includes(q)) return false;
+      // Forgiving search: fuzzy name + barcode/sku/per-size codes (see productSearch.js).
+      if (q && !productMatchesQuery(p, q)) return false;
       return true;
     });
   }, [products, productSearch, typeFilter]);

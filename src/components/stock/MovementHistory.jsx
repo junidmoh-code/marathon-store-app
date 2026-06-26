@@ -9,6 +9,7 @@ import { database } from "../../firebase";
 import { useMovements } from "./useStock";
 import { labelFor } from "./locations";
 import { Empty } from "./widgets";
+import { searchProducts } from "../../utils/productSearch";
 import { GRAY, GREEN, RED, BLUE_L, BORDER, CARD, input } from "./ui";
 
 // Product thumbnail — tap target in search results / selected header.
@@ -68,23 +69,8 @@ export default function MovementHistory({ products, registry }) {
     return name || m.actorRole || (m.actor ? m.actor.slice(0, 6) : "—");
   };
 
-  // Search products by name OR any code (barcode / sku / per-size). Capped for speed.
-  const matches = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return [];
-    const codeMatch = (p) => {
-      if (!/\d/.test(term)) return false;
-      const codes = [];
-      if (p.barcode != null) codes.push(String(p.barcode));
-      if (p.sku != null) codes.push(String(p.sku));
-      if (p.barcodes && typeof p.barcodes === "object") for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
-      return codes.some(c => c === term || (term.length >= 3 && c.toLowerCase().includes(term)));
-    };
-    return [...(products || [])]
-      .filter(p => p && p.id && p.name && (p.name.toLowerCase().includes(term) || codeMatch(p)))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .slice(0, 40);
-  }, [products, q]);
+  // Forgiving search: fuzzy name + barcode/sku/per-size codes (see productSearch.js).
+  const matches = useMemo(() => searchProducts(products, q, { limit: 40 }), [products, q]);
 
   return (
     <div>
