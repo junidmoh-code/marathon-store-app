@@ -14,10 +14,6 @@
 function normWords(s) {
   return String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
-// Same, but with NO separators at all — for whole-span substring checks.
-function squash(s) {
-  return normWords(s).replace(/\s+/g, "");
-}
 
 // Bounded edit distance: returns the true distance, or max+1 as soon as the whole
 // in-progress row exceeds `max` (so near-misses are cheap and far-misses bail early).
