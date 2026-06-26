@@ -1694,6 +1694,188 @@ exports.analyzeReorderNeeds = onCall(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AI PHOTO-NAMING (cleanProductNames)
+// ─────────────────────────────────────────────────────────────────────────────
+// Merges a product's PHOTO (vision) with its staff-typed name into ONE clean
+// "[Brand] [Model] [Colorway]" name. Reuses the SAME Anthropic Claude connection as
+// the reorder planner (claude-haiku-4-5, vision-capable) — no new model/provider.
+//
+// SAFETY: writes PROPOSALS to /aiAssistant/nameProposals/{id} ONLY; it NEVER edits
+// /products/{id}.name. The catalogue name changes solely when an admin approves in the
+// review screen. Admin-gated, batched (bounded concurrency), and cost-logged to
+// /aiAssistant/usage exactly like analyzeReorderNeeds.
+//
+// request.data (all optional): { limit=20, productIds:[...], all:false, reprocess:false }
+//   - productIds → process exactly these ids (ignores limit/all).
+//   - all:true   → every photo'd product still missing a proposal (ignores limit).
+//   - limit      → otherwise the first `limit` photo'd products missing a proposal
+//                  (default 20 — a small sample to eyeball quality before the full run).
+//   - reprocess  → also include products that already have a proposal.
+// Returns { processed, failed, total, totalCostUSD, sample:[{id,current,suggested,confidence}] }.
+
+const NAMING_MODEL          = REORDER_MODEL;        // claude-haiku-4-5 — vision-capable, cheap
+const NAMING_MAX_TOKENS     = 300;                  // one short name + a confidence number
+const NAMING_CONCURRENCY    = 6;                    // photo'd products processed in parallel
+const NAMING_DEFAULT_LIMIT  = 20;                   // default sample size
+const NAMING_PROPOSALS_PATH = "aiAssistant/nameProposals";
+
+const NAMING_SYSTEM = [
+  "You clean up product names for a sneaker & clothing store catalogue.",
+  "You are given a PRODUCT PHOTO and the staff-typed name. Identify the product from the",
+  "photo and merge it with the typed name into ONE clean, consistent name.",
+  "",
+  'FORMAT (exact): "[Brand] [Model] [Colorway]"',
+  '- Brand ALWAYS first, full and correctly spelled, NO abbreviations ("Jordan" not "J",',
+  '  "Nike" not "Nke", "Air Force 1" not "AF1").',
+  "- Use the PHOTO to fix/confirm the brand and the model.",
+  "- Use the TYPED NAME to preserve the colorway and any detail the photo can't confirm.",
+  "- If unsure of a detail, KEEP the typed wording rather than invent it.",
+  "- If you CANNOT confidently identify the brand/model from the photo, DO NOT guess and DO NOT",
+  '  write any placeholder ("Unable to determine", "Insufficient information", "Unknown", etc.).',
+  "  Instead return the staff-typed name as the suggestion (tidy the capitalization only) with a",
+  "  LOW confidence (<= 0.3).",
+  '- State the brand ONCE only — never repeat it ("Jordan Air Jordan 4" is WRONG; use',
+  '  "Air Jordan 4" or "Jordan 4").',
+  "- Keep model codes and acronyms UPPERCASE (FG, SG, TF, AG, IC, OG, SE, GS, TD, SL, XXV, etc.)",
+  '  — do not Title-Case them to "Fg".',
+  "- Title Case the rest. No size, price, quantity, SKU, barcode, emoji or extra words.",
+  "",
+  "Respond with STRICT JSON ONLY (no markdown, no commentary):",
+  '{"suggested":"<one clean name>","confidence":<number 0-1>}',
+  "confidence = how sure you are the suggested name is correct (1 = brand/model clearly visible).",
+].join("\n");
+
+// Belt-and-suspenders: if the model still emits a refusal/placeholder instead of a name,
+// we keep the typed name at low confidence (never store these strings as a product name).
+const NAMING_REFUSAL_RE = /unable to (?:determine|identify)|insufficient|cannot (?:determine|identify)|can'?t (?:determine|identify)|not enough info|unidentif|unknown product|indeterminate|no (?:clear )?product|placeholder|^n\/?a$/i;
+
+// Fetch a product image and return { base64, mediaType } for an Anthropic image block.
+async function fetchImageAsBase64(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`image fetch HTTP ${res.status}`);
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  const mediaType =
+    ct.includes("png")  ? "image/png"  :
+    ct.includes("webp") ? "image/webp" :
+    ct.includes("gif")  ? "image/gif"  : "image/jpeg";
+  const buf = Buffer.from(await res.arrayBuffer());
+  return { base64: buf.toString("base64"), mediaType };
+}
+
+// One product → { suggested, confidence, usage }. Falls back to the typed name if the
+// model returns nothing usable (so a parse miss never blanks a name).
+async function proposeOneName(client, product) {
+  const { base64, mediaType } = await fetchImageAsBase64(product.photoUrl);
+  const resp = await client.messages.create({
+    model: NAMING_MODEL,
+    max_tokens: NAMING_MAX_TOKENS,
+    system: NAMING_SYSTEM,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+        { type: "text", text: `Staff-typed name: "${product.name || ""}".\nProduct type: ${product.productType || "unknown"}.\nIdentify the product from the photo and return the cleaned name as JSON.` },
+      ],
+    }],
+  });
+  const text = (resp.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+  const parsed = extractJSON(text) || {};
+  let suggested = typeof parsed.suggested === "string" ? parsed.suggested.trim() : "";
+  let confidence = Number(parsed.confidence);
+  if (!Number.isFinite(confidence)) confidence = 0;
+  confidence = Math.max(0, Math.min(1, confidence));
+  // Never store a blank or a refusal/placeholder — keep the typed name, low confidence.
+  if (!suggested || NAMING_REFUSAL_RE.test(suggested)) {
+    suggested = (product.name || "").trim();
+    confidence = Math.min(confidence, 0.2);
+  }
+  return { suggested, confidence, usage: resp.usage || {} };
+}
+
+exports.cleanProductNames = onCall(
+  {
+    region: "europe-west1",
+    secrets: [anthropicApiKey],
+    memory: "512MiB",
+    timeoutSeconds: 540,
+  },
+  async (request) => {
+    assertAdmin(request);
+    const db = admin.database();
+    const data = request.data || {};
+    const limit = Number.isFinite(+data.limit) && +data.limit > 0 ? Math.floor(+data.limit) : NAMING_DEFAULT_LIMIT;
+
+    const [prodSnap, propSnap] = await Promise.all([
+      db.ref("products").once("value"),
+      db.ref(NAMING_PROPOSALS_PATH).once("value"),
+    ]);
+    const products = prodSnap.val() || {};
+    const existing = propSnap.val() || {};
+
+    // Build the work list.
+    let ids;
+    if (Array.isArray(data.productIds) && data.productIds.length) {
+      ids = data.productIds.filter((id) => products[id] && products[id].photoUrl);
+    } else {
+      ids = Object.keys(products).filter((id) => {
+        const p = products[id];
+        if (!p || !p.photoUrl) return false;
+        if (!data.reprocess && existing[id]) return false;
+        return true;
+      });
+      ids.sort(); // stable order so repeated sample runs advance through the catalogue
+      if (!data.all) ids = ids.slice(0, limit);
+    }
+
+    const AnthropicCtor = Anthropic.default || Anthropic;
+    const client = new AnthropicCtor({ apiKey: anthropicApiKey.value() });
+
+    let processed = 0, failed = 0, totalIn = 0, totalOut = 0;
+    const sample = [];
+
+    // Bounded-concurrency pass over the work list.
+    let cursor = 0;
+    async function worker() {
+      while (cursor < ids.length) {
+        const id = ids[cursor++];
+        const p = products[id];
+        try {
+          const { suggested, confidence, usage } = await proposeOneName(client, p);
+          totalIn  += usage.input_tokens  || 0;
+          totalOut += usage.output_tokens || 0;
+          await db.ref(`${NAMING_PROPOSALS_PATH}/${id}`).set({
+            current: p.name || "",
+            suggested,
+            confidence,
+            photoUrl: p.photoUrl,
+            productType: p.productType || null,
+            status: "pending",         // pending | approved | rejected (set by the review UI)
+            at: Date.now(),
+            by: request.auth.uid,
+          });
+          processed++;
+          if (sample.length < 25) sample.push({ id, current: p.name || "", suggested, confidence });
+        } catch (err) {
+          failed++;
+          console.warn(`cleanProductNames: ${id} failed:`, err && err.message);
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(NAMING_CONCURRENCY, ids.length || 1) }, worker));
+
+    const usage = { input_tokens: totalIn, output_tokens: totalOut };
+    const totalCostUSD = estimateCostUSD(usage);
+    const today = new Date().toISOString().slice(0, 10);
+    await logReorderUsage(db, today, {
+      at: Date.now(), kind: "cleanProductNames", by: request.auth.uid,
+      productsProcessed: processed, failed, usage, estimatedCostUSD: totalCostUSD,
+    });
+
+    return { processed, failed, total: ids.length, totalCostUSD, sample };
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Chat proxy (marathon-ai frontend → Anthropic) — Phase 3 backend
 // ─────────────────────────────────────────────────────────────────────────────
 // chatStream is the server-side proxy for marathon-ai's chat view. The
