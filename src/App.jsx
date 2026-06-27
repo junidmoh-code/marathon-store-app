@@ -1646,6 +1646,142 @@ function useNameProposals() {
   return proposals;
 }
 
+// ─── AI PHOTO CLEANUP — REVIEW & APPROVE ──────────────────────────────────────
+// Side-by-side original vs AI white-background re-shoot (written by the
+// generateProductPhotos function to /aiAssistant/photoProposals). Approve swaps the
+// product's photoUrl to the white-bg version but KEEPS the original (stored in
+// photoUrlOriginal; the original file at products/{id}/photo.jpg is never touched).
+// Reject discards. Nothing auto-applies.
+function usePhotoProposals() {
+  const [proposals, setProposals] = useState({});
+  useEffect(() => {
+    const unsub = onValue(ref(database, "aiAssistant/photoProposals"), snap => setProposals(snap.val() || {}));
+    return () => unsub();
+  }, []);
+  return proposals;
+}
+
+function AdminReviewPhotosTab() {
+  const proposals = usePhotoProposals();
+  const [busyId, setBusyId]   = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [runN, setRunN]       = useState(12);
+  const [runBusy, setRunBusy] = useState(false);
+  const [runMsg, setRunMsg]   = useState(null);
+  const [lightbox, setLightbox] = useState(null);
+
+  const pending = useMemo(() => Object.entries(proposals || {})
+    .filter(([, v]) => v && v.status !== "approved" && v.status !== "rejected")
+    .map(([id, v]) => ({ id, ...v })), [proposals]);
+  const decidedCount = useMemo(() => Object.values(proposals || {}).filter(v => v && (v.status === "approved" || v.status === "rejected")).length, [proposals]);
+
+  const approve = async (row) => {
+    setBusyId(row.id);
+    try {
+      await update(ref(database, `products/${row.id}`), { photoUrl: row.proposedUrl, photoUrlOriginal: row.originalUrl });
+      await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "approved", decidedAt: Date.now() });
+      return true;
+    } catch (e) { setRunMsg(`Approve failed for “${row.name || row.id}”: ${e?.message || e}`); return false; }
+    finally { setBusyId(null); }
+  };
+  const reject = async (row) => {
+    setBusyId(row.id);
+    try { await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "rejected", decidedAt: Date.now() }); }
+    catch (e) { setRunMsg(`Reject failed for “${row.name || row.id}”: ${e?.message || e}`); }
+    finally { setBusyId(null); }
+  };
+  const approveAll = async () => {
+    if (!pending.length) return;
+    if (!window.confirm(`Approve ALL ${pending.length} photos? This swaps those products to the white-bg version (originals are kept).`)) return;
+    setBulkBusy(true);
+    let okN = 0, failN = 0;
+    try { for (const r of pending) { (await approve(r)) ? okN++ : failN++; } }
+    finally { setBulkBusy(false); setRunMsg(`Approved ${okN}${failN ? `, ${failN} failed (see above)` : ""}.`); }
+  };
+  const runAI = async () => {
+    setRunBusy(true); setRunMsg(`Generating ${runN} clothing photos… (slow — image generation)`);
+    try {
+      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing" });
+      const d = res?.data || {};
+      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est).`);
+    } catch (e) {
+      const m = String(e?.message || e);
+      setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
+    } finally { setRunBusy(false); }
+  };
+
+  const imgBox = { width:"100%", aspectRatio:"1", objectFit:"contain", background:"rgba(255,255,255,.08)", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", cursor:"zoom-in", display:"block" };
+
+  return (
+    <div style={{ padding:"0 14px 30px" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0 12px" }}>
+        <span style={{ fontSize:18, fontWeight:700, color:"#fff" }}>AI Photo Cleanup</span>
+        <span style={{ background:"rgba(74,202,122,.15)", border:"1px solid rgba(74,202,122,.35)", color:"#4ACA7A", fontSize:12, fontWeight:700, padding:"3px 10px", borderRadius:12 }}>{pending.length} to review</span>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+        <span style={{ fontSize:12, color:"rgba(255,255,255,.6)" }}>Generate</span>
+        <input type="number" min={1} max={200} value={runN} onChange={e => setRunN(e.target.value)}
+               style={{ width:60, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13 }}/>
+        <button onClick={runAI} disabled={runBusy}
+                style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: runBusy ? "wait" : "pointer", opacity: runBusy ? .6 : 1 }}>
+          {runBusy ? "Generating…" : "Generate clothing photos"}
+        </button>
+        {pending.length > 0 && (
+          <button onClick={approveAll} disabled={bulkBusy}
+                  style={{ background:"rgba(0,150,70,.22)", color:"#4ACA7A", border:"1px solid rgba(0,180,80,.45)", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:800, cursor: bulkBusy ? "wait" : "pointer", opacity: bulkBusy ? .6 : 1 }}>
+            {bulkBusy ? "Approving…" : `Approve all (${pending.length})`}
+          </button>
+        )}
+      </div>
+      {runMsg && <div style={{ fontSize:11.5, color:"rgba(255,255,255,.6)", marginBottom:10 }}>{runMsg}</div>}
+      {decidedCount > 0 && <div style={{ fontSize:11, color:"rgba(255,255,255,.35)", marginBottom:10 }}>{decidedCount} already decided (hidden).</div>}
+
+      {pending.length === 0 && (
+        <div style={{ textAlign:"center", color:"#555", padding:"2.5rem 1rem", fontSize:"0.9rem" }}>
+          No photo proposals to review. Use “Generate clothing photos” to re-shoot a batch on a white background.
+        </div>
+      )}
+
+      <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+        {pending.map(row => {
+          const busy = busyId === row.id;
+          return (
+            <div key={row.id} style={{ background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:12 }}>
+              <div style={{ fontSize:13.5, fontWeight:600, color:"#fff", marginBottom:8 }}>{row.name || "(no name)"}</div>
+              <div style={{ display:"flex", gap:10, marginBottom:10 }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", marginBottom:4, letterSpacing:.5 }}>ORIGINAL</div>
+                  <img src={row.originalUrl} alt="" onClick={() => setLightbox(row.originalUrl)} style={imgBox}/>
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:"#4ACA7A", marginBottom:4, letterSpacing:.5 }}>WHITE BACKGROUND</div>
+                  <img src={row.proposedUrl} alt="" onClick={() => setLightbox(row.proposedUrl)} style={imgBox}/>
+                </div>
+              </div>
+              <div style={{ display:"flex", gap:8 }}>
+                <button onClick={() => approve(row)} disabled={busy}
+                        style={{ flex:1, background:"rgba(0,150,70,.22)", border:"1px solid rgba(0,180,80,.4)", color:"#4ACA7A", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: busy ? "wait" : "pointer", opacity: busy ? .6 : 1 }}>
+                  {busy ? "…" : "Approve"}
+                </button>
+                <button onClick={() => reject(row)} disabled={busy}
+                        style={{ flex:1, background:"rgba(150,30,30,.18)", border:"1px solid rgba(200,60,60,.35)", color:"#FF6B6B", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: busy ? "wait" : "pointer", opacity: busy ? .6 : 1 }}>
+                  Reject
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {lightbox && (
+        <div onClick={() => setLightbox(null)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.9)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+          <img src={lightbox} alt="" style={{ maxWidth:"100%", maxHeight:"100%", objectFit:"contain", borderRadius:10 }}/>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const NAME_HIGH_CONFIDENCE = 0.85;
 const confColor = (c) => (c >= NAME_HIGH_CONFIDENCE ? "#4ACA7A" : c >= 0.6 ? "#F59E0B" : "#FF6B6B");
 
@@ -1670,29 +1806,34 @@ function AdminReviewNamesTab({ products }) {
 
   const approve = async (row) => {
     const name = finalName(row);
-    if (!name) return;
+    if (!name) return false;
     setBusyId(row.id);
     try {
       await updateProductName(row.id, name);
       await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "approved", appliedName: name, decidedAt: Date.now() });
-    } finally { setBusyId(null); }
+      return true;
+    } catch (e) { setRunMsg(`Approve failed for “${row.current || row.id}”: ${e?.message || e}`); return false; }
+    finally { setBusyId(null); }
   };
   const reject = async (row) => {
     setBusyId(row.id);
     try { await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "rejected", decidedAt: Date.now() }); }
+    catch (e) { setRunMsg(`Reject failed for “${row.current || row.id}”: ${e?.message || e}`); }
     finally { setBusyId(null); }
   };
   const approveAllHigh = async () => {
     setBulkBusy(true);
-    try { for (const r of pending.filter(r => (r.confidence || 0) >= NAME_HIGH_CONFIDENCE)) await approve(r); }
-    finally { setBulkBusy(false); }
+    let okN = 0, failN = 0;
+    try { for (const r of pending.filter(r => (r.confidence || 0) >= NAME_HIGH_CONFIDENCE)) { (await approve(r)) ? okN++ : failN++; } }
+    finally { setBulkBusy(false); setRunMsg(`Approved ${okN}${failN ? `, ${failN} failed (see above)` : ""}.`); }
   };
   const approveAll = async () => {
     if (!pending.length) return;
     if (!window.confirm(`Approve ALL ${pending.length} suggestions? This renames those products to the suggested names.`)) return;
     setBulkBusy(true);
-    try { for (const r of pending) await approve(r); }
-    finally { setBulkBusy(false); }
+    let okN = 0, failN = 0;
+    try { for (const r of pending) { (await approve(r)) ? okN++ : failN++; } }
+    finally { setBulkBusy(false); setRunMsg(`Approved ${okN}${failN ? `, ${failN} failed (see above)` : ""}.`); }
   };
   const runAI = async () => {
     setRunBusy(true); setRunMsg(`Running AI on the next ${runN} products…`);
@@ -1826,6 +1967,8 @@ function AdminView({ products, orders, onExit }) {
   const [adminSection, setAdminSection] = useState("products"); // "products" | "review-names"
   const nameProposals = useNameProposals();
   const pendingNameCount = useMemo(() => Object.values(nameProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [nameProposals]);
+  const photoProposals = usePhotoProposals();
+  const pendingPhotoCount = useMemo(() => Object.values(photoProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [photoProposals]);
   // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
   //    browser back clears it. Listener stays mounted for the whole view. ──
   const [detailId, setDetailId] = useState(() => parseProductHash());
@@ -2081,12 +2224,13 @@ function AdminView({ products, orders, onExit }) {
   // Section toggle (Products ↔ Review Names), shown at the top of both sections.
   const sectionToggle = (
     <div style={{ display:"flex", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["review-names","Review Names"]].map(([val, label]) => {
+      {[["products","Products"],["review-names","Names"],["review-photos","Photos"]].map(([val, label]) => {
         const on = adminSection === val;
+        const badge = val === "review-names" ? pendingNameCount : val === "review-photos" ? pendingPhotoCount : 0;
         return (
           <button key={val} onClick={() => setAdminSection(val)}
             style={{ flex:1, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 0", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-            {label}{val === "review-names" && pendingNameCount > 0 && <span style={{ background:"#4ACA7A", color:"#063", fontSize:11, fontWeight:800, borderRadius:9, padding:"0 7px" }}>{pendingNameCount}</span>}
+            {label}{badge > 0 && <span style={{ background:"#4ACA7A", color:"#063", fontSize:11, fontWeight:800, borderRadius:9, padding:"0 7px" }}>{badge}</span>}
           </button>
         );
       })}
@@ -2108,6 +2252,25 @@ function AdminView({ products, orders, onExit }) {
         {sectionToggle}
         <div style={{ height:10 }}/>
         <AdminReviewNamesTab products={products} />
+      </div>
+    );
+  }
+
+  if (adminSection === "review-photos") {
+    return (
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
+          <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
+            <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
+          </div>
+          <div style={{ width:90 }}/>
+        </div>
+        <div style={{ height:6 }}/>
+        {sectionToggle}
+        <div style={{ height:10 }}/>
+        <AdminReviewPhotosTab />
       </div>
     );
   }
