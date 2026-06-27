@@ -1903,6 +1903,7 @@ const PHOTO_SIZE           = "1024x1024";     // square seamless catalogue frame
 const PHOTO_QUALITY        = "high";          // low|medium|high — high = catalogue quality (tune for cost)
 const PHOTO_CONCURRENCY    = 3;               // image gen is slow + heavy → keep it low
 const PHOTO_DEFAULT_LIMIT  = 12;              // small first batch to eyeball quality + cost
+const PHOTO_MAX_BATCH      = 200;            // hard ceiling per call (cost / timeout safety)
 const PHOTO_PROPOSALS_PATH = "aiAssistant/photoProposals";
 const STORAGE_BUCKET       = "marathon-club.firebasestorage.app";
 
@@ -1933,6 +1934,7 @@ async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType) 
     prompt: PHOTO_PROMPT,
     size: PHOTO_SIZE,
     quality: PHOTO_QUALITY,
+    output_format: "jpeg",   // match the .jpg/image-jpeg upload (gpt-image-1 defaults to PNG)
   });
   const b64 = res && res.data && res.data[0] && res.data[0].b64_json;
   if (!b64) throw new Error("image model returned no image");
@@ -1951,17 +1953,28 @@ function estimateImageCostUSD(usage) {
   ).toFixed(6);
 }
 
+const PHOTO_MAX_BYTES = 15 * 1024 * 1024; // 15 MB cap on a product image
 async function fetchImageBuffer(url) {
-  const res = await fetch(url);
+  let u;
+  try { u = new URL(String(url)); } catch { throw new Error("invalid image url"); }
+  // SSRF guard: only https Google Storage hosts (where our photoUrls live); no redirects.
+  if (u.protocol !== "https:" || !/\.googleapis\.com$/.test(u.hostname)) throw new Error("untrusted image host");
+  const res = await fetch(url, { redirect: "error" });
   if (!res.ok) throw new Error(`image fetch HTTP ${res.status}`);
+  const declared = Number(res.headers.get("content-length") || 0);
+  if (declared && declared > PHOTO_MAX_BYTES) throw new Error("image too large");
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length > PHOTO_MAX_BYTES) throw new Error("image too large");
   const ct = (res.headers.get("content-type") || "image/jpeg").toLowerCase();
-  return { buffer: Buffer.from(await res.arrayBuffer()), contentType: ct.startsWith("image/") ? ct : "image/jpeg" };
+  return { buffer, contentType: ct.startsWith("image/") ? ct : "image/jpeg" };
 }
 
 // Upload a buffer to Storage with a Firebase download token; return the public-style URL.
 async function uploadProposalImage(id, buffer) {
   const token = require("crypto").randomUUID();
-  const path = `products/${id}/photo_proposal.jpg`;
+  // Unique per generation so a later reprocess can't mutate an already-approved live
+  // image (which points at this object) before its own approval.
+  const path = `products/${id}/photo_proposal_${token}.jpg`;
   await admin.storage().bucket(STORAGE_BUCKET).file(path).save(buffer, {
     resumable: false,
     contentType: "image/jpeg",
@@ -1981,7 +1994,9 @@ exports.generateProductPhotos = onCall(
     assertAdmin(request);
     const db = admin.database();
     const data = request.data || {};
-    const limit = Number.isFinite(+data.limit) && +data.limit > 0 ? Math.floor(+data.limit) : PHOTO_DEFAULT_LIMIT;
+    // Hard cap so a large/duplicated request can't fan out a huge, expensive run.
+    const wanted = Number.isFinite(+data.limit) && +data.limit > 0 ? Math.floor(+data.limit) : PHOTO_DEFAULT_LIMIT;
+    const limit = Math.min(wanted, PHOTO_MAX_BATCH);
 
     const [prodSnap, propSnap] = await Promise.all([
       db.ref("products").once("value"),
@@ -1992,7 +2007,7 @@ exports.generateProductPhotos = onCall(
 
     let ids;
     if (Array.isArray(data.productIds) && data.productIds.length) {
-      ids = data.productIds.filter((id) => products[id] && products[id].photoUrl);
+      ids = [...new Set(data.productIds)].filter((id) => products[id] && products[id].photoUrl).slice(0, PHOTO_MAX_BATCH);
     } else {
       ids = Object.keys(products).filter((id) => {
         const p = products[id];
@@ -2023,7 +2038,9 @@ exports.generateProductPhotos = onCall(
           const proposedUrl = await uploadProposalImage(id, outBuf);
           estCostUSD += estimateImageCostUSD(usage);
           await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
-            originalUrl: p.photoUrl,
+            // Prefer the TRUE original: if this product was already approved once,
+            // p.photoUrl is a generated image — keep the real original from photoUrlOriginal.
+            originalUrl: p.photoUrlOriginal || p.photoUrl,
             proposedUrl,
             name: p.name || "",
             productType: p.productType || null,

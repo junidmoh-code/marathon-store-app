@@ -1680,19 +1680,23 @@ function AdminReviewPhotosTab() {
     try {
       await update(ref(database, `products/${row.id}`), { photoUrl: row.proposedUrl, photoUrlOriginal: row.originalUrl });
       await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "approved", decidedAt: Date.now() });
-    } finally { setBusyId(null); }
+      return true;
+    } catch (e) { setRunMsg(`Approve failed for “${row.name || row.id}”: ${e?.message || e}`); return false; }
+    finally { setBusyId(null); }
   };
   const reject = async (row) => {
     setBusyId(row.id);
     try { await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "rejected", decidedAt: Date.now() }); }
+    catch (e) { setRunMsg(`Reject failed for “${row.name || row.id}”: ${e?.message || e}`); }
     finally { setBusyId(null); }
   };
   const approveAll = async () => {
     if (!pending.length) return;
     if (!window.confirm(`Approve ALL ${pending.length} photos? This swaps those products to the white-bg version (originals are kept).`)) return;
     setBulkBusy(true);
-    try { for (const r of pending) await approve(r); }
-    finally { setBulkBusy(false); }
+    let okN = 0, failN = 0;
+    try { for (const r of pending) { (await approve(r)) ? okN++ : failN++; } }
+    finally { setBulkBusy(false); setRunMsg(`Approved ${okN}${failN ? `, ${failN} failed (see above)` : ""}.`); }
   };
   const runAI = async () => {
     setRunBusy(true); setRunMsg(`Generating ${runN} clothing photos… (slow — image generation)`);
@@ -1802,29 +1806,34 @@ function AdminReviewNamesTab({ products }) {
 
   const approve = async (row) => {
     const name = finalName(row);
-    if (!name) return;
+    if (!name) return false;
     setBusyId(row.id);
     try {
       await updateProductName(row.id, name);
       await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "approved", appliedName: name, decidedAt: Date.now() });
-    } finally { setBusyId(null); }
+      return true;
+    } catch (e) { setRunMsg(`Approve failed for “${row.current || row.id}”: ${e?.message || e}`); return false; }
+    finally { setBusyId(null); }
   };
   const reject = async (row) => {
     setBusyId(row.id);
     try { await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "rejected", decidedAt: Date.now() }); }
+    catch (e) { setRunMsg(`Reject failed for “${row.current || row.id}”: ${e?.message || e}`); }
     finally { setBusyId(null); }
   };
   const approveAllHigh = async () => {
     setBulkBusy(true);
-    try { for (const r of pending.filter(r => (r.confidence || 0) >= NAME_HIGH_CONFIDENCE)) await approve(r); }
-    finally { setBulkBusy(false); }
+    let okN = 0, failN = 0;
+    try { for (const r of pending.filter(r => (r.confidence || 0) >= NAME_HIGH_CONFIDENCE)) { (await approve(r)) ? okN++ : failN++; } }
+    finally { setBulkBusy(false); setRunMsg(`Approved ${okN}${failN ? `, ${failN} failed (see above)` : ""}.`); }
   };
   const approveAll = async () => {
     if (!pending.length) return;
     if (!window.confirm(`Approve ALL ${pending.length} suggestions? This renames those products to the suggested names.`)) return;
     setBulkBusy(true);
-    try { for (const r of pending) await approve(r); }
-    finally { setBulkBusy(false); }
+    let okN = 0, failN = 0;
+    try { for (const r of pending) { (await approve(r)) ? okN++ : failN++; } }
+    finally { setBulkBusy(false); setRunMsg(`Approved ${okN}${failN ? `, ${failN} failed (see above)` : ""}.`); }
   };
   const runAI = async () => {
     setRunBusy(true); setRunMsg(`Running AI on the next ${runN} products…`);
