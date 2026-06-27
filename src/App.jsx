@@ -1676,13 +1676,17 @@ function AdminReviewPhotosTab({ products = [] }) {
   const [pickSearch, setPickSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
+  // Products already generated (pending/approved) are excluded so you don't re-pick
+  // them; rejected ones stay available to retry.
+  const handledIds = useMemo(() => new Set(
+    Object.entries(proposals || {}).filter(([, v]) => v && v.status !== "rejected").map(([id]) => id)
+  ), [proposals]);
   const pickList = useMemo(() => {
-    const withPhoto = (products || []).filter(p => p && p.id && p.name && p.photoUrl);
+    const avail = (products || []).filter(p => p && p.id && p.name && p.photoUrl && !handledIds.has(p.id));
     const q = pickSearch.trim();
-    const base = q ? withPhoto.filter(p => productMatchesQuery(p, q))
-                   : withPhoto.filter(p => (p.productType || "") === "clothing");
-    return base.slice(0, 150);
-  }, [products, pickSearch]);
+    return q ? avail.filter(p => productMatchesQuery(p, q))
+             : avail.sort((a, b) => a.name.localeCompare(b.name));
+  }, [products, pickSearch, handledIds]);
   const toggleSel = (id) => setSelectedIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const generateSelected = async () => {
     const ids = [...selectedIds];
@@ -1793,23 +1797,25 @@ function AdminReviewPhotosTab({ products = [] }) {
           <input value={pickSearch} onChange={e => setPickSearch(e.target.value)} placeholder="Search products by name or barcode…"
                  style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"9px 11px", fontSize:13.5, marginBottom:10 }}/>
           <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginBottom:8 }}>
-            {pickSearch.trim() ? `${pickList.length} match${pickList.length===1?"":"es"}` : `Clothing (${pickList.length}) — search to find any product`}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}
+            {pickList.length} product{pickList.length===1?"":"s"} not yet done{handledIds.size ? ` · ${handledIds.size} already generated (hidden)` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}
           </div>
-          <div style={{ maxHeight:340, overflowY:"auto", display:"flex", flexDirection:"column", gap:6 }}>
+          <div style={{ maxHeight:380, overflowY:"auto", display:"flex", flexDirection:"column", gap:6 }}>
             {pickList.map(p => {
               const on = selectedIds.has(p.id);
               return (
                 <div key={p.id} onClick={() => toggleSel(p.id)}
                      style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 8px", borderRadius:9, cursor:"pointer",
                               background: on ? "rgba(74,202,122,.16)" : "rgba(255,255,255,.03)", border:"1px solid "+(on ? "rgba(74,202,122,.5)" : "rgba(255,255,255,.07)") }}>
-                  <ProductPhoto url={p.photoUrl} size={38} radius={7}/>
+                  <img src={p.photoUrl} alt="" loading="lazy"
+                       style={{ width:38, height:38, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
                   <span style={{ flex:1, minWidth:0, fontSize:12.5, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</span>
                   <span style={{ fontSize:15, color: on ? "#4ACA7A" : "rgba(255,255,255,.25)" }}>{on ? "✓" : "+"}</span>
                 </div>
               );
             })}
-            {pickList.length === 0 && <div style={{ color:"#555", fontSize:12, padding:"12px 4px" }}>No products match.</div>}
+            {pickList.length === 0 && <div style={{ color:"#555", fontSize:12, padding:"12px 4px" }}>{pickSearch.trim() ? "No products match." : "All products already generated 🎉"}</div>}
           </div>
+          <div style={{ fontSize:10.5, color:"rgba(255,255,255,.3)", marginTop:6 }}>Tip: each batch caps at 200; for a big run, select in groups.</div>
           <div style={{ display:"flex", gap:8, marginTop:10 }}>
             <button onClick={generateSelected} disabled={!selectedIds.size || runBusy}
                     style={{ flex:1, background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:800, cursor: (!selectedIds.size||runBusy) ? "not-allowed" : "pointer", opacity: (!selectedIds.size||runBusy) ? .5 : 1 }}>
