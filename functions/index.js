@@ -1914,19 +1914,21 @@ const OAI_IMAGE_IN_PER_MTOK = 10;
 const OAI_IMAGE_OUT_PER_MTOK = 40;
 
 const PHOTO_PROMPT = [
-  "Place this EXACT product on a pure white #FFFFFF seamless studio background with soft,",
-  "even lighting and a subtle, natural drop shadow under the product.",
+  "Place the COMPLETE product on a pure white #FFFFFF seamless studio background.",
+  "CRITICAL: the ENTIRE product must be fully visible with GENEROUS white margin on ALL FOUR",
+  "sides — nothing may be cropped, cut off, or touch any edge of the frame. The product should",
+  "fill at most ~80% of the frame, comfortably inside it. If the item hangs on a hanger, include",
+  "the ENTIRE hanger and hook.",
   "Keep the product EXACTLY as-is — identical design, shape, proportions, colour, materials,",
   "patterns, logos and text. Do NOT redesign, restyle, recolour or invent any detail.",
+  "Soft, even lighting with a subtle natural drop shadow.",
   "Remove any clutter, hands, mannequins, tags, props, reflections or busy background.",
-  "The ENTIRE product MUST be fully visible — do NOT crop or cut off any part (top, bottom",
-  "or sides); leave clear white space around it. Centre it. Photorealistic e-commerce",
-  "catalogue quality.",
+  "Photorealistic e-commerce catalogue quality.",
 ].join(" ");
 
 // PROVIDER BOUNDARY: given image bytes, return { buffer, usage } of a white-bg re-shoot.
 // Swap the body to change image providers; callers stay unchanged.
-async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType, quality) {
+async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType, quality, size) {
   const toFile = OpenAINS.toFile || (OpenAINS.default && OpenAINS.default.toFile);
   const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
   const file = await toFile(imageBuffer, `product.${ext}`, { type: contentType });
@@ -1934,7 +1936,7 @@ async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType, 
     model: PHOTO_MODEL,
     image: file,
     prompt: PHOTO_PROMPT,
-    size: PHOTO_SIZE,
+    size: size || PHOTO_SIZE,
     quality,
     output_format: "jpeg",   // match the .jpg/image-jpeg upload (gpt-image-1 defaults to PNG)
   });
@@ -2000,6 +2002,9 @@ exports.generateProductPhotos = onCall(
     const wanted = Number.isFinite(+data.limit) && +data.limit > 0 ? Math.floor(+data.limit) : PHOTO_DEFAULT_LIMIT;
     const limit = Math.min(wanted, PHOTO_MAX_BATCH);
     const quality = ["low", "medium", "high"].includes(data.quality) ? data.quality : PHOTO_DEFAULT_QUALITY;
+    // Clothing is tall → a portrait frame keeps the whole garment (incl. its hanger) in shot
+    // with margins; "auto" was producing near-square crops. Other categories stay "auto".
+    const size = data.category === "clothing" ? "1024x1536" : PHOTO_SIZE;
 
     const [prodSnap, propSnap] = await Promise.all([
       db.ref("products").once("value"),
@@ -2037,7 +2042,7 @@ exports.generateProductPhotos = onCall(
         const p = products[id];
         try {
           const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
-          const { buffer: outBuf, usage } = await generateWhiteBgImage(client, OpenAINS, buffer, contentType, quality);
+          const { buffer: outBuf, usage } = await generateWhiteBgImage(client, OpenAINS, buffer, contentType, quality, size);
           const proposedUrl = await uploadProposalImage(id, outBuf);
           estCostUSD += estimateImageCostUSD(usage);
           await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
