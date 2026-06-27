@@ -1879,6 +1879,180 @@ exports.cleanProductNames = onCall(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AI PRODUCT PHOTOS (generateProductPhotos)
+// ─────────────────────────────────────────────────────────────────────────────
+// Re-shoots each product photo on a pure-white studio background via an image-EDIT
+// model (keeps the REAL product), and saves it as a PROPOSAL — it NEVER overwrites
+// the product's real photoUrl. Separate from cleanProductNames / analyzeReorderNeeds /
+// chatStream. Admin-gated, bounded concurrency, cost-logged to /aiAssistant/usage.
+//
+// Provider is isolated behind generateWhiteBgImage() so the image model can be swapped
+// later without touching the orchestration. Today: OpenAI gpt-image-1 (images.edit).
+//
+// Per product: server-fetch photoUrl → image edit → upload to
+// products/{id}/photo_proposal.jpg (with a Firebase download token) → write
+// /aiAssistant/photoProposals/{id} = { originalUrl, proposedUrl, status:"pending", ... }.
+//
+// request.data (all optional): { limit=12, productIds:[...], category, reprocess=false }.
+// Returns { processed, failed, total, estCostUSD, sample }.
+
+const openaiApiKey = defineSecret("OPENAI_API_KEY");
+
+const PHOTO_MODEL          = "gpt-image-1";   // OpenAI image-edit model (vision in/out)
+const PHOTO_SIZE           = "1024x1024";     // square seamless catalogue frame
+const PHOTO_QUALITY        = "high";          // low|medium|high — high = catalogue quality (tune for cost)
+const PHOTO_CONCURRENCY    = 3;               // image gen is slow + heavy → keep it low
+const PHOTO_DEFAULT_LIMIT  = 12;              // small first batch to eyeball quality + cost
+const PHOTO_PROPOSALS_PATH = "aiAssistant/photoProposals";
+const STORAGE_BUCKET       = "marathon-club.firebasestorage.app";
+
+// gpt-image-1 token pricing (USD per 1M tokens) — used only for an ESTIMATE; the
+// authoritative number is the OpenAI bill.
+const OAI_TEXT_IN_PER_MTOK  = 5;
+const OAI_IMAGE_IN_PER_MTOK = 10;
+const OAI_IMAGE_OUT_PER_MTOK = 40;
+
+const PHOTO_PROMPT = [
+  "Place this EXACT product on a pure white #FFFFFF seamless studio background with soft,",
+  "even lighting and a subtle, natural drop shadow under the product.",
+  "Keep the product EXACTLY as-is — identical design, shape, proportions, colour, materials,",
+  "patterns, logos and text. Do NOT redesign, restyle, recolour or invent any detail.",
+  "Remove any clutter, hands, mannequins, tags, props, reflections or busy background.",
+  "Centre the product, fully visible, photorealistic e-commerce catalogue quality.",
+].join(" ");
+
+// PROVIDER BOUNDARY: given image bytes, return { buffer, usage } of a white-bg re-shoot.
+// Swap the body to change image providers; callers stay unchanged.
+async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType) {
+  const toFile = OpenAINS.toFile || (OpenAINS.default && OpenAINS.default.toFile);
+  const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+  const file = await toFile(imageBuffer, `product.${ext}`, { type: contentType });
+  const res = await client.images.edit({
+    model: PHOTO_MODEL,
+    image: file,
+    prompt: PHOTO_PROMPT,
+    size: PHOTO_SIZE,
+    quality: PHOTO_QUALITY,
+  });
+  const b64 = res && res.data && res.data[0] && res.data[0].b64_json;
+  if (!b64) throw new Error("image model returned no image");
+  return { buffer: Buffer.from(b64, "base64"), usage: res.usage || {} };
+}
+
+function estimateImageCostUSD(usage) {
+  const d = (usage && usage.input_tokens_details) || {};
+  const textIn  = d.text_tokens  || 0;
+  const imageIn = d.image_tokens || ((usage && usage.input_tokens) || 0); // fall back to total input
+  const out     = (usage && usage.output_tokens) || 0;
+  return +(
+    (textIn  / 1e6) * OAI_TEXT_IN_PER_MTOK +
+    (imageIn / 1e6) * OAI_IMAGE_IN_PER_MTOK +
+    (out     / 1e6) * OAI_IMAGE_OUT_PER_MTOK
+  ).toFixed(6);
+}
+
+async function fetchImageBuffer(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`image fetch HTTP ${res.status}`);
+  const ct = (res.headers.get("content-type") || "image/jpeg").toLowerCase();
+  return { buffer: Buffer.from(await res.arrayBuffer()), contentType: ct.startsWith("image/") ? ct : "image/jpeg" };
+}
+
+// Upload a buffer to Storage with a Firebase download token; return the public-style URL.
+async function uploadProposalImage(id, buffer) {
+  const token = require("crypto").randomUUID();
+  const path = `products/${id}/photo_proposal.jpg`;
+  await admin.storage().bucket(STORAGE_BUCKET).file(path).save(buffer, {
+    resumable: false,
+    contentType: "image/jpeg",
+    metadata: { metadata: { firebaseStorageDownloadTokens: token } },
+  });
+  return `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+}
+
+exports.generateProductPhotos = onCall(
+  {
+    region: "europe-west1",
+    secrets: [openaiApiKey],
+    memory: "1GiB",
+    timeoutSeconds: 540,
+  },
+  async (request) => {
+    assertAdmin(request);
+    const db = admin.database();
+    const data = request.data || {};
+    const limit = Number.isFinite(+data.limit) && +data.limit > 0 ? Math.floor(+data.limit) : PHOTO_DEFAULT_LIMIT;
+
+    const [prodSnap, propSnap] = await Promise.all([
+      db.ref("products").once("value"),
+      db.ref(PHOTO_PROPOSALS_PATH).once("value"),
+    ]);
+    const products = prodSnap.val() || {};
+    const existing = propSnap.val() || {};
+
+    let ids;
+    if (Array.isArray(data.productIds) && data.productIds.length) {
+      ids = data.productIds.filter((id) => products[id] && products[id].photoUrl);
+    } else {
+      ids = Object.keys(products).filter((id) => {
+        const p = products[id];
+        if (!p || !p.photoUrl) return false;
+        if (data.category && (p.productType || "") !== data.category) return false;
+        if (!data.reprocess && existing[id]) return false;
+        return true;
+      });
+      ids.sort();
+      ids = ids.slice(0, limit);
+    }
+
+    const OpenAINS = require("openai");
+    const OpenAI = OpenAINS.default || OpenAINS;
+    const client = new OpenAI({ apiKey: openaiApiKey.value() });
+
+    let processed = 0, failed = 0, estCostUSD = 0;
+    const sample = [];
+
+    let cursor = 0;
+    async function worker() {
+      while (cursor < ids.length) {
+        const id = ids[cursor++];
+        const p = products[id];
+        try {
+          const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
+          const { buffer: outBuf, usage } = await generateWhiteBgImage(client, OpenAINS, buffer, contentType);
+          const proposedUrl = await uploadProposalImage(id, outBuf);
+          estCostUSD += estimateImageCostUSD(usage);
+          await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
+            originalUrl: p.photoUrl,
+            proposedUrl,
+            name: p.name || "",
+            productType: p.productType || null,
+            status: "pending",          // pending | approved | rejected (set by the review UI)
+            at: Date.now(),
+            by: request.auth.uid,
+          });
+          processed++;
+          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl });
+        } catch (err) {
+          failed++;
+          console.warn(`generateProductPhotos: ${id} failed:`, err && err.message);
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(PHOTO_CONCURRENCY, ids.length || 1) }, worker));
+
+    estCostUSD = +estCostUSD.toFixed(4);
+    const today = new Date().toISOString().slice(0, 10);
+    await logReorderUsage(db, today, {
+      at: Date.now(), kind: "generateProductPhotos", by: request.auth.uid,
+      imagesGenerated: processed, failed, model: PHOTO_MODEL, quality: PHOTO_QUALITY, estimatedCostUSD: estCostUSD,
+    });
+
+    return { processed, failed, total: ids.length, estCostUSD, sample };
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Chat proxy (marathon-ai frontend → Anthropic) — Phase 3 backend
 // ─────────────────────────────────────────────────────────────────────────────
 // chatStream is the server-side proxy for marathon-ai's chat view. The
