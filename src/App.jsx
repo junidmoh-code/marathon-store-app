@@ -1666,6 +1666,7 @@ function AdminReviewPhotosTab() {
   const [busyId, setBusyId]   = useState(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [runN, setRunN]       = useState(12);
+  const [quality, setQuality] = useState("medium");
   const [runBusy, setRunBusy] = useState(false);
   const [runMsg, setRunMsg]   = useState(null);
   const [lightbox, setLightbox] = useState(null);
@@ -1701,7 +1702,7 @@ function AdminReviewPhotosTab() {
   const runAI = async () => {
     setRunBusy(true); setRunMsg(`Generating ${runN} clothing photos… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing" });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality });
       const d = res?.data || {};
       setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est).`);
     } catch (e) {
@@ -1722,6 +1723,12 @@ function AdminReviewPhotosTab() {
         <span style={{ fontSize:12, color:"rgba(255,255,255,.6)" }}>Generate</span>
         <input type="number" min={1} max={200} value={runN} onChange={e => setRunN(e.target.value)}
                style={{ width:60, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13 }}/>
+        <select value={quality} onChange={e => setQuality(e.target.value)} title="Image quality (cost rises with quality)"
+                style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13 }}>
+          <option value="low">low (~$0.01)</option>
+          <option value="medium">medium (~$0.04)</option>
+          <option value="high">high (~$0.17)</option>
+        </select>
         <button onClick={runAI} disabled={runBusy}
                 style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: runBusy ? "wait" : "pointer", opacity: runBusy ? .6 : 1 }}>
           {runBusy ? "Generating…" : "Generate clothing photos"}

@@ -1899,8 +1899,8 @@ exports.cleanProductNames = onCall(
 const openaiApiKey = defineSecret("OPENAI_API_KEY");
 
 const PHOTO_MODEL          = "gpt-image-1";   // OpenAI image-edit model (vision in/out)
-const PHOTO_SIZE           = "1024x1024";     // square seamless catalogue frame
-const PHOTO_QUALITY        = "high";          // low|medium|high — high = catalogue quality (tune for cost)
+const PHOTO_SIZE           = "auto";          // match each product's aspect → no top/bottom crop
+const PHOTO_DEFAULT_QUALITY = "medium";       // low|medium|high (request param overrides); cost ↑ with quality
 const PHOTO_CONCURRENCY    = 3;               // image gen is slow + heavy → keep it low
 const PHOTO_DEFAULT_LIMIT  = 12;              // small first batch to eyeball quality + cost
 const PHOTO_MAX_BATCH      = 200;            // hard ceiling per call (cost / timeout safety)
@@ -1919,12 +1919,14 @@ const PHOTO_PROMPT = [
   "Keep the product EXACTLY as-is — identical design, shape, proportions, colour, materials,",
   "patterns, logos and text. Do NOT redesign, restyle, recolour or invent any detail.",
   "Remove any clutter, hands, mannequins, tags, props, reflections or busy background.",
-  "Centre the product, fully visible, photorealistic e-commerce catalogue quality.",
+  "The ENTIRE product MUST be fully visible — do NOT crop or cut off any part (top, bottom",
+  "or sides); leave clear white space around it. Centre it. Photorealistic e-commerce",
+  "catalogue quality.",
 ].join(" ");
 
 // PROVIDER BOUNDARY: given image bytes, return { buffer, usage } of a white-bg re-shoot.
 // Swap the body to change image providers; callers stay unchanged.
-async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType) {
+async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType, quality) {
   const toFile = OpenAINS.toFile || (OpenAINS.default && OpenAINS.default.toFile);
   const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
   const file = await toFile(imageBuffer, `product.${ext}`, { type: contentType });
@@ -1933,7 +1935,7 @@ async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType) 
     image: file,
     prompt: PHOTO_PROMPT,
     size: PHOTO_SIZE,
-    quality: PHOTO_QUALITY,
+    quality,
     output_format: "jpeg",   // match the .jpg/image-jpeg upload (gpt-image-1 defaults to PNG)
   });
   const b64 = res && res.data && res.data[0] && res.data[0].b64_json;
@@ -1997,6 +1999,7 @@ exports.generateProductPhotos = onCall(
     // Hard cap so a large/duplicated request can't fan out a huge, expensive run.
     const wanted = Number.isFinite(+data.limit) && +data.limit > 0 ? Math.floor(+data.limit) : PHOTO_DEFAULT_LIMIT;
     const limit = Math.min(wanted, PHOTO_MAX_BATCH);
+    const quality = ["low", "medium", "high"].includes(data.quality) ? data.quality : PHOTO_DEFAULT_QUALITY;
 
     const [prodSnap, propSnap] = await Promise.all([
       db.ref("products").once("value"),
@@ -2034,7 +2037,7 @@ exports.generateProductPhotos = onCall(
         const p = products[id];
         try {
           const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
-          const { buffer: outBuf, usage } = await generateWhiteBgImage(client, OpenAINS, buffer, contentType);
+          const { buffer: outBuf, usage } = await generateWhiteBgImage(client, OpenAINS, buffer, contentType, quality);
           const proposedUrl = await uploadProposalImage(id, outBuf);
           estCostUSD += estimateImageCostUSD(usage);
           await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
@@ -2062,7 +2065,7 @@ exports.generateProductPhotos = onCall(
     const today = new Date().toISOString().slice(0, 10);
     await logReorderUsage(db, today, {
       at: Date.now(), kind: "generateProductPhotos", by: request.auth.uid,
-      imagesGenerated: processed, failed, model: PHOTO_MODEL, quality: PHOTO_QUALITY, estimatedCostUSD: estCostUSD,
+      imagesGenerated: processed, failed, model: PHOTO_MODEL, quality, estimatedCostUSD: estCostUSD,
     });
 
     return { processed, failed, total: ids.length, estCostUSD, sample };
