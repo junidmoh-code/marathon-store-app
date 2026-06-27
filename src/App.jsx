@@ -1664,6 +1664,7 @@ function usePhotoProposals() {
 function AdminReviewPhotosTab() {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
+  const [regenId, setRegenId] = useState(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [runN, setRunN]       = useState(12);
   const [quality, setQuality] = useState("medium");
@@ -1710,6 +1711,18 @@ function AdminReviewPhotosTab() {
       setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
     } finally { setRunBusy(false); }
   };
+  // Re-shoot THIS one product at the currently-selected quality (e.g. bump to high for
+  // tricky branding). Overwrites its proposal in place; the row updates when it returns.
+  const regenerate = async (row) => {
+    setRegenId(row.id);
+    setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}…`);
+    try {
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality });
+      const d = res?.data || {};
+      setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)}).` : `Regenerate failed for “${row.name || row.id}”.`);
+    } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }
+    finally { setRegenId(null); }
+  };
 
   const imgBox = { width:"100%", aspectRatio:"1", objectFit:"contain", background:"rgba(255,255,255,.08)", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", cursor:"zoom-in", display:"block" };
 
@@ -1752,6 +1765,7 @@ function AdminReviewPhotosTab() {
       <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
         {pending.map(row => {
           const busy = busyId === row.id;
+          const regen = regenId === row.id;
           return (
             <div key={row.id} style={{ background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:12 }}>
               <div style={{ fontSize:13.5, fontWeight:600, color:"#fff", marginBottom:8 }}>{row.name || "(no name)"}</div>
@@ -1766,12 +1780,17 @@ function AdminReviewPhotosTab() {
                 </div>
               </div>
               <div style={{ display:"flex", gap:8 }}>
-                <button onClick={() => approve(row)} disabled={busy}
-                        style={{ flex:1, background:"rgba(0,150,70,.22)", border:"1px solid rgba(0,180,80,.4)", color:"#4ACA7A", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: busy ? "wait" : "pointer", opacity: busy ? .6 : 1 }}>
+                <button onClick={() => approve(row)} disabled={busy || regen}
+                        style={{ flex:1, background:"rgba(0,150,70,.22)", border:"1px solid rgba(0,180,80,.4)", color:"#4ACA7A", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
                   {busy ? "…" : "Approve"}
                 </button>
-                <button onClick={() => reject(row)} disabled={busy}
-                        style={{ flex:1, background:"rgba(150,30,30,.18)", border:"1px solid rgba(200,60,60,.35)", color:"#FF6B6B", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: busy ? "wait" : "pointer", opacity: busy ? .6 : 1 }}>
+                <button onClick={() => regenerate(row)} disabled={busy || regen}
+                        title={`Re-shoot this one at ${quality}`}
+                        style={{ flex:1, background:"rgba(74,127,255,.16)", border:"1px solid rgba(74,127,255,.4)", color:"#7AA7FF", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
+                  {regen ? "Regenerating…" : "Regenerate"}
+                </button>
+                <button onClick={() => reject(row)} disabled={busy || regen}
+                        style={{ flex:1, background:"rgba(150,30,30,.18)", border:"1px solid rgba(200,60,60,.35)", color:"#FF6B6B", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
                   Reject
                 </button>
               </div>
