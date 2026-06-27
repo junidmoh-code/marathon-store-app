@@ -1664,7 +1664,7 @@ function usePhotoProposals() {
 function AdminReviewPhotosTab() {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
-  const [regenId, setRegenId] = useState(null);
+  const [regenIds, setRegenIds] = useState(() => new Set()); // ids currently re-generating (per-row lock)
   const [bulkBusy, setBulkBusy] = useState(false);
   const [runN, setRunN]       = useState(12);
   const [quality, setQuality] = useState("medium");
@@ -1714,14 +1714,14 @@ function AdminReviewPhotosTab() {
   // Re-shoot THIS one product at the currently-selected quality (e.g. bump to high for
   // tricky branding). Overwrites its proposal in place; the row updates when it returns.
   const regenerate = async (row) => {
-    setRegenId(row.id);
+    setRegenIds(s => new Set(s).add(row.id));
     setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}…`);
     try {
       const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality });
       const d = res?.data || {};
       setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)}).` : `Regenerate failed for “${row.name || row.id}”.`);
     } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }
-    finally { setRegenId(null); }
+    finally { setRegenIds(s => { const n = new Set(s); n.delete(row.id); return n; }); }
   };
 
   const imgBox = { width:"100%", aspectRatio:"1", objectFit:"contain", background:"rgba(255,255,255,.08)", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", cursor:"zoom-in", display:"block" };
@@ -1765,7 +1765,7 @@ function AdminReviewPhotosTab() {
       <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
         {pending.map(row => {
           const busy = busyId === row.id;
-          const regen = regenId === row.id;
+          const regen = regenIds.has(row.id);
           return (
             <div key={row.id} style={{ background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:12 }}>
               <div style={{ fontSize:13.5, fontWeight:600, color:"#fff", marginBottom:8 }}>{row.name || "(no name)"}</div>
