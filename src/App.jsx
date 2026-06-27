@@ -1661,7 +1661,7 @@ function usePhotoProposals() {
   return proposals;
 }
 
-function AdminReviewPhotosTab() {
+function AdminReviewPhotosTab({ products = [] }) {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
   const [regenIds, setRegenIds] = useState(() => new Set()); // ids currently re-generating (per-row lock)
@@ -1671,6 +1671,33 @@ function AdminReviewPhotosTab() {
   const [runBusy, setRunBusy] = useState(false);
   const [runMsg, setRunMsg]   = useState(null);
   const [lightbox, setLightbox] = useState(null);
+  // Product picker: choose specific products to generate (multi-select).
+  const [picking, setPicking]   = useState(false);
+  const [pickSearch, setPickSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+
+  const pickList = useMemo(() => {
+    const withPhoto = (products || []).filter(p => p && p.id && p.name && p.photoUrl);
+    const q = pickSearch.trim();
+    const base = q ? withPhoto.filter(p => productMatchesQuery(p, q))
+                   : withPhoto.filter(p => (p.productType || "") === "clothing");
+    return base.slice(0, 150);
+  }, [products, pickSearch]);
+  const toggleSel = (id) => setSelectedIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const generateSelected = async () => {
+    const ids = [...selectedIds];
+    if (!ids.length) return;
+    setRunBusy(true); setRunMsg(`Generating ${ids.length} selected at ${quality}… (slow — image generation)`);
+    try {
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality });
+      const d = res?.data || {};
+      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est).`);
+      setSelectedIds(new Set()); setPicking(false);
+    } catch (e) {
+      const m = String(e?.message || e);
+      setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
+    } finally { setRunBusy(false); }
+  };
 
   const pending = useMemo(() => Object.entries(proposals || {})
     .filter(([, v]) => v && v.status !== "approved" && v.status !== "rejected")
@@ -1744,7 +1771,11 @@ function AdminReviewPhotosTab() {
         </select>
         <button onClick={runAI} disabled={runBusy}
                 style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: runBusy ? "wait" : "pointer", opacity: runBusy ? .6 : 1 }}>
-          {runBusy ? "Generating…" : "Generate clothing photos"}
+          {runBusy ? "Generating…" : "Generate next clothing"}
+        </button>
+        <button onClick={() => setPicking(v => !v)}
+                style={{ background: picking ? "#4A7FFF" : "rgba(74,127,255,.14)", color: picking ? "#fff" : "#7AA7FF", border:"1px solid rgba(74,127,255,.4)", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor:"pointer" }}>
+          {picking ? "Close picker" : "Choose products…"}
         </button>
         {pending.length > 0 && (
           <button onClick={approveAll} disabled={bulkBusy}
@@ -1756,9 +1787,45 @@ function AdminReviewPhotosTab() {
       {runMsg && <div style={{ fontSize:11.5, color:"rgba(255,255,255,.6)", marginBottom:10 }}>{runMsg}</div>}
       {decidedCount > 0 && <div style={{ fontSize:11, color:"rgba(255,255,255,.35)", marginBottom:10 }}>{decidedCount} already decided (hidden).</div>}
 
-      {pending.length === 0 && (
+      {/* PRODUCT PICKER — search, tap to select as many as you want, then generate exactly those. */}
+      {picking && (
+        <div style={{ background:"rgba(8,11,20,.95)", border:"1px solid rgba(74,127,255,.3)", borderRadius:12, padding:12, marginBottom:14 }}>
+          <input value={pickSearch} onChange={e => setPickSearch(e.target.value)} placeholder="Search products by name or barcode…"
+                 style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"9px 11px", fontSize:13.5, marginBottom:10 }}/>
+          <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginBottom:8 }}>
+            {pickSearch.trim() ? `${pickList.length} match${pickList.length===1?"":"es"}` : `Clothing (${pickList.length}) — search to find any product`}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}
+          </div>
+          <div style={{ maxHeight:340, overflowY:"auto", display:"flex", flexDirection:"column", gap:6 }}>
+            {pickList.map(p => {
+              const on = selectedIds.has(p.id);
+              return (
+                <div key={p.id} onClick={() => toggleSel(p.id)}
+                     style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 8px", borderRadius:9, cursor:"pointer",
+                              background: on ? "rgba(74,202,122,.16)" : "rgba(255,255,255,.03)", border:"1px solid "+(on ? "rgba(74,202,122,.5)" : "rgba(255,255,255,.07)") }}>
+                  <ProductPhoto url={p.photoUrl} size={38} radius={7}/>
+                  <span style={{ flex:1, minWidth:0, fontSize:12.5, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</span>
+                  <span style={{ fontSize:15, color: on ? "#4ACA7A" : "rgba(255,255,255,.25)" }}>{on ? "✓" : "+"}</span>
+                </div>
+              );
+            })}
+            {pickList.length === 0 && <div style={{ color:"#555", fontSize:12, padding:"12px 4px" }}>No products match.</div>}
+          </div>
+          <div style={{ display:"flex", gap:8, marginTop:10 }}>
+            <button onClick={generateSelected} disabled={!selectedIds.size || runBusy}
+                    style={{ flex:1, background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:800, cursor: (!selectedIds.size||runBusy) ? "not-allowed" : "pointer", opacity: (!selectedIds.size||runBusy) ? .5 : 1 }}>
+              {runBusy ? "Generating…" : `Generate ${selectedIds.size || ""} selected (${quality})`}
+            </button>
+            {selectedIds.size > 0 && (
+              <button onClick={() => setSelectedIds(new Set())}
+                      style={{ background:"rgba(255,255,255,.06)", color:"rgba(255,255,255,.7)", border:"1px solid rgba(255,255,255,.15)", borderRadius:9, padding:"10px 14px", fontSize:12.5, fontWeight:700, cursor:"pointer" }}>Clear</button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {pending.length === 0 && !picking && (
         <div style={{ textAlign:"center", color:"#555", padding:"2.5rem 1rem", fontSize:"0.9rem" }}>
-          No photo proposals to review. Use “Generate clothing photos” to re-shoot a batch on a white background.
+          No photo proposals to review. Use “Generate next clothing” or “Choose products…” to re-shoot on a white background.
         </div>
       )}
 
@@ -2296,7 +2363,7 @@ function AdminView({ products, orders, onExit }) {
         <div style={{ height:6 }}/>
         {sectionToggle}
         <div style={{ height:10 }}/>
-        <AdminReviewPhotosTab />
+        <AdminReviewPhotosTab products={products} />
       </div>
     );
   }
