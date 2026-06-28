@@ -1773,9 +1773,10 @@ function AdminReviewPhotosTab({ products = [] }) {
           <option value="medium">medium (~$0.04)</option>
           <option value="high">high (~$0.17)</option>
         </select>
-        <button onClick={runAI} disabled={runBusy}
+        <button onClick={selectedIds.size ? generateSelected : runAI} disabled={runBusy}
+                title={selectedIds.size ? "Generate the products you picked" : "Auto-generate the next clothing items missing a photo"}
                 style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: runBusy ? "wait" : "pointer", opacity: runBusy ? .6 : 1 }}>
-          {runBusy ? "Generating…" : "Generate next clothing"}
+          {runBusy ? "Generating…" : selectedIds.size ? `Generate ${selectedIds.size} picked (${quality})` : "Generate next clothing"}
         </button>
         <button onClick={() => setPicking(v => !v)}
                 style={{ background: picking ? "#4A7FFF" : "rgba(74,127,255,.14)", color: picking ? "#fff" : "#7AA7FF", border:"1px solid rgba(74,127,255,.4)", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor:"pointer" }}>
