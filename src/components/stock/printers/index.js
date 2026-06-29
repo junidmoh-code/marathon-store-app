@@ -36,12 +36,17 @@ export function defaultTransportId() {
   return TRANSPORTS.find(t => t.supported())?.id || TRANSPORTS[0].id;
 }
 
-// items: [{ code, productName, size, count }] — count copies of each.
+// items: [{ code, productName, size, count, dispatch?, orderNo?, customerName? }]
+// — count copies of each. (dispatch/orderNo/customerName drive the text-first
+// dispatch label and must survive the expansion to reach the renderer.)
 function expand(items) {
   const labels = [];
   for (const it of items || []) {
     const n = Math.max(0, Math.floor(Number(it.count) || 0));
-    for (let i = 0; i < n; i++) labels.push({ code: it.code, productName: it.productName, size: it.size, header: it.header });
+    for (let i = 0; i < n; i++) labels.push({
+      code: it.code, productName: it.productName, size: it.size, header: it.header,
+      dispatch: it.dispatch, orderNo: it.orderNo, customerName: it.customerName,
+    });
   }
   return labels;
 }
