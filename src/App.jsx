@@ -5675,24 +5675,14 @@ function DisplayView({ orders }) {
       for (const id of hiddenComingTomorrow.current) if (!liveIds.has(id)) hiddenComingTomorrow.current.delete(id);
 
       orders.forEach(o => {
-        // IN-STOCK READY → auto-collect + restock (mutates RTDB). OOS is NOT swept.
+        // NOTE: DisplayView is LEGACY/unused — the DISPLAY role renders
+        // <TvWithAutoCollect> (above), not this. Auto-collect was removed here too
+        // so this dead path can never flip READY→COLLECTED if it's ever re-mounted.
+        // Collection is confirmed only by a real POS sale; the timer is display-only.
         if (o.status === STATUS.READY && !expiredRef.current.has(o.id)) {
           const ts = o.readyAt || o.updatedAt;
           if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
-            expiredRef.current.add(o.id);
-            const iso = new Date().toISOString();
-            updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
-            logRestock({
-              timestamp:   iso,
-              date:        getSADateString(),
-              productName: o.productName,
-              photoUrl:    o.productPhotoUrl || null,
-              photo:       o.productPhoto || "",
-              size:        o.size,
-              orderNumber: o.id,
-              hub:         o.hub || "hub1",
-              placedAtHub: o.placedAtHub || o.hub || "hub1",
-            }).catch(err => console.warn("logRestock failed:", err));
+            expiredRef.current.add(o.id);   // display-only marker; no RTDB write
           }
         }
         // OUT-OF-STOCK → display-only hide from the customer TV (NO RTDB write; the
@@ -9967,16 +9957,20 @@ function AppInner() {
   );
 }
 
-// ─── TV AUTO-COLLECT WRAPPER ──────────────────────────────────────────────────
-// Side-effects layer around <TvDisplayMockup>. Watches the live orders list:
-// • IN-STOCK READY → auto-collected after TV_EXPIRY_MS = 8 min (writes
-//   STATUS.COLLECTED back to RTDB + logs a restock entry).
-// • OUT-OF-STOCK → NEVER auto-collected and NO restock (we only restock what we
-//   have); it stays OOS as kept demand and is only display-hidden from the TV
-//   after TV_EXPIRY_MS (no DB write).
-// • COMING_TOMORROW → display-only hidden after TV_TOMORROW_HIDE_MS = 15 min
-//   (no DB write — the row just vanishes from the TV until it changes status).
-// Ref-Sets dedupe across multiple TV screens and prune entries on order removal.
+// ─── TV DISPLAY-TIDY WRAPPER ──────────────────────────────────────────────────
+// Side-effects layer around <TvDisplayMockup>. This is now DISPLAY-ONLY — it
+// never writes order state to RTDB. Collection is confirmed solely by a real POS
+// sale (marathon-pos-app sell-by-order-number), so an order stays live in /orders
+// until it's actually sold. Watches the live orders list purely to tidy the board:
+// • IN-STOCK READY → display-hidden after TV_EXPIRY_MS = 8 min (NO DB write; the
+//   order stays READY/live so a still-browsing customer can pay later). This used
+//   to auto-flip READY→COLLECTED, which retired orders mid-visit and broke the POS
+//   lookup — removed.
+// • OUT-OF-STOCK → display-hidden after TV_EXPIRY_MS (stays OOS as kept demand).
+// • COMING_TOMORROW → display-hidden after TV_TOMORROW_HIDE_MS = 15 min.
+// All three are display-only; Ref-Sets dedupe across multiple TV screens and prune
+// entries on order removal. Manual warehouse "Collected" (changeStatus) is separate
+// and unchanged — a deliberate human action still collects + logs restock.
 const TV_TOMORROW_HIDE_MS = 15 * 60 * 1000;
 
 function TvWithAutoCollect({ orders, onExit }) {
@@ -9987,7 +9981,7 @@ function TvWithAutoCollect({ orders, onExit }) {
   // carry over to today's brand-new "001" and either auto-collect it the
   // instant it appears or hide it forever from COMING_TOMORROW.
   const orderKey = (o) => `${o.id}:${o.createdAt || ""}`;
-  const expiredRef        = useRef(new Set());  // READY orders already auto-collected
+  const hiddenReadyRef    = useRef(new Set());  // READY rows hidden from the TV after 8 min (display-only — NO collect)
   const hiddenOosRef      = useRef(new Set());  // OOS hidden from the TV (display-only)
   const hiddenTomorrowRef = useRef(new Set());
   const [tick, setTick]   = useState(0);
@@ -9998,27 +9992,25 @@ function TvWithAutoCollect({ orders, onExit }) {
     const check = () => {
       const nowMs    = Date.now();
       const liveKeys = new Set(orders.map(orderKey));
-      for (const k of expiredRef.current)        if (!liveKeys.has(k)) expiredRef.current.delete(k);
+      for (const k of hiddenReadyRef.current)    if (!liveKeys.has(k)) hiddenReadyRef.current.delete(k);
       for (const k of hiddenOosRef.current)      if (!liveKeys.has(k)) hiddenOosRef.current.delete(k);
       for (const k of hiddenTomorrowRef.current) if (!liveKeys.has(k)) hiddenTomorrowRef.current.delete(k);
 
       let changed = false;
       orders.forEach(o => {
         const key = orderKey(o);
-        // IN-STOCK READY → auto-collect + restock after 8 min (mutates RTDB).
-        // OUT-OF-STOCK is EXCLUDED — we only restock what we have, so OOS is never
-        // collected and writes no restock; it stays OOS as kept demand.
-        if (o.status === STATUS.READY && !expiredRef.current.has(key)) {
+        // IN-STOCK READY → DISPLAY-ONLY hide after 8 min (NO RTDB write). The
+        // order stays READY/live in /orders so a customer who's still in-store can
+        // pay later: it is now ONLY a real POS sale that marks an order collected
+        // (marathon-pos-app sell-by-order-number). This used to auto-flip
+        // READY→COLLECTED on the timer, which retired the order while the customer
+        // was still browsing — they'd then fail the POS lookup ("no live order").
+        // The timer now just tidies the board; collection = a confirmed sale.
+        if (o.status === STATUS.READY && !hiddenReadyRef.current.has(key)) {
           const ts = o.readyAt || o.updatedAt;
           if (ts && nowMs - new Date(ts).getTime() >= TV_EXPIRY_MS) {
-            expiredRef.current.add(key);
-            const iso = new Date().toISOString();
-            updateOrder(o.id, { status: STATUS.COLLECTED, updatedAt: iso, collectedAt: iso });
-            logRestock({ timestamp: iso, date: getSADateString(), productName: o.productName,
-              photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
-              size: o.size, orderNumber: o.id, hub: o.hub || "hub1",
-              placedAtHub: o.placedAtHub || o.hub || "hub1",
-            }).catch(err => console.warn("logRestock failed:", err));
+            hiddenReadyRef.current.add(key);
+            changed = true;
           }
         }
         // OUT-OF-STOCK → display-only hide from the customer TV after 8 min (NO RTDB
@@ -10050,7 +10042,8 @@ function TvWithAutoCollect({ orders, onExit }) {
   const filteredOrders = useMemo(
     () => orders.filter(o =>
       (o.status !== STATUS.COMING_TOMORROW || !hiddenTomorrowRef.current.has(orderKey(o))) &&
-      (o.status !== STATUS.OUT_OF_STOCK    || !hiddenOosRef.current.has(orderKey(o)))
+      (o.status !== STATUS.OUT_OF_STOCK    || !hiddenOosRef.current.has(orderKey(o))) &&
+      (o.status !== STATUS.READY           || !hiddenReadyRef.current.has(orderKey(o)))
     ),
     [orders, tick]
   );
