@@ -6,6 +6,7 @@ import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
+import { categorize, CATEGORY_TREE, UNCATEGORIZED } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -1885,6 +1886,73 @@ function AdminReviewPhotosTab({ products = [] }) {
 const NAME_HIGH_CONFIDENCE = 0.85;
 const confColor = (c) => (c >= NAME_HIGH_CONFIDENCE ? "#4ACA7A" : c >= 0.6 ? "#F59E0B" : "#FF6B6B");
 
+// ── REVIEW UNCATEGORIZED ───────────────────────────────────────────────────────
+// Admin screen to sort the "Clothing — Uncategorized" stragglers the classifier
+// couldn't type (unbranded supplier codes / branded items with no type word). Each
+// row has a grouped subcategory dropdown; picking one writes products/{id}.
+// {subcategory, category} and the row drops off the live list. Sort at your pace.
+function AdminReviewCategoriesTab({ products = [] }) {
+  const [q, setQ] = useState("");
+  const [savingId, setSavingId] = useState(null);
+  // subcategory → top-level (so a pick sets BOTH the category and subcategory).
+  const subToTop = useMemo(() => {
+    const m = {};
+    for (const [top, subs] of Object.entries(CATEGORY_TREE)) for (const s of subs) m[s] = top;
+    return m;
+  }, []);
+  const list = useMemo(() => {
+    const items = (products || []).filter(p => p && p.id && p.subcategory === UNCATEGORIZED);
+    const query = q.trim().toLowerCase();
+    const filtered = query ? items.filter(p => (p.name || "").toLowerCase().includes(query)) : items;
+    return filtered.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [products, q]);
+
+  const assign = async (p, sub) => {
+    if (!sub || sub === UNCATEGORIZED) return;
+    setSavingId(p.id);
+    try {
+      await update(ref(database, `products/${p.id}`), { subcategory: sub, category: subToTop[sub] || p.category });
+    } catch (e) { alert("Save failed: " + (e?.message || e)); }
+    finally { setSavingId(null); }
+  };
+
+  return (
+    <div style={{ padding:"0 14px 30px" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0 12px" }}>
+        <span style={{ fontSize:18, fontWeight:700, color:"#fff" }}>Sort Uncategorized</span>
+        <span style={{ background:"rgba(245,158,11,.15)", border:"1px solid rgba(245,158,11,.35)", color:"#F59E0B", fontSize:12, fontWeight:700, padding:"3px 10px", borderRadius:12 }}>{list.length} to sort</span>
+      </div>
+      <div style={{ fontSize:12, color:"rgba(255,255,255,.45)", marginBottom:10 }}>
+        Items the auto-classifier couldn’t type. Pick a category for each — it saves instantly and the row drops off.
+      </div>
+      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search these items…"
+             style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:9, color:"#fff", padding:"9px 12px", fontSize:13, marginBottom:12 }}/>
+      {list.length === 0 && <div style={{ color:"#4ACA7A", fontSize:13, padding:"18px 4px", textAlign:"center" }}>All sorted 🎉</div>}
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {list.map(p => (
+          <div key={p.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 10px", borderRadius:10, background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.07)" }}>
+            <img src={p.photoUrl || ""} alt="" loading="lazy"
+                 style={{ width:40, height:40, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
+              <div style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>{p.brand ? p.brand + " · " : ""}{Array.isArray(p.sizes) ? p.sizes.slice(0,6).join("/") : ""}</div>
+            </div>
+            <select disabled={savingId === p.id} defaultValue="" onChange={e => assign(p, e.target.value)}
+                    style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 8px", fontSize:12, maxWidth:140, opacity: savingId === p.id ? .5 : 1 }}>
+              <option value="" disabled>Move to…</option>
+              {Object.entries(CATEGORY_TREE).map(([top, subs]) => (
+                <optgroup key={top} label={top}>
+                  {subs.filter(s => s !== UNCATEGORIZED).map(s => <option key={s} value={s}>{s}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AdminReviewNamesTab({ products }) {
   const proposals = useNameProposals();
   const [edits, setEdits]   = useState({});     // id → edited name (overrides the suggestion)
@@ -2069,6 +2137,7 @@ function AdminView({ products, orders, onExit }) {
   const pendingNameCount = useMemo(() => Object.values(nameProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [nameProposals]);
   const photoProposals = usePhotoProposals();
   const pendingPhotoCount = useMemo(() => Object.values(photoProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [photoProposals]);
+  const pendingCategoryCount = useMemo(() => (products || []).filter(p => p && p.subcategory === UNCATEGORIZED).length, [products]);
   // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
   //    browser back clears it. Listener stays mounted for the whole view. ──
   const [detailId, setDetailId] = useState(() => parseProductHash());
@@ -2105,9 +2174,16 @@ function AdminView({ products, orders, onExit }) {
       const cleanedHubs = (isClothing ? form.hubs.filter(h => h !== "hub1") : form.hubs)
         .filter(h => h === "hub1" || h === "hub2" || h === "hub3");
       const finalHubs = cleanedHubs.length ? cleanedHubs : (isClothing ? ["hub2"] : ["hub1"]);
+      // AUTO-ASSIGN category/subcategory/brand from name + sizes (shared classifier
+      // — same logic as the backfill + bulk scripts). A manually-typed category is
+      // respected as the top level; subcategory + brand are always auto-derived.
+      const auto = categorize(form.name, form.sizes);
+      const manualCat = (form.category || "").trim();
       const newProduct = {
         name: form.name,
-        category: form.category,
+        category: manualCat || auto.category,
+        subcategory: auto.subcategory,
+        brand: auto.brand,
         photo: form.photo,
         photoUrl: photoUrl ?? null,
         hubs: finalHubs,
@@ -2324,9 +2400,9 @@ function AdminView({ products, orders, onExit }) {
   // Section toggle (Products ↔ Review Names), shown at the top of both sections.
   const sectionToggle = (
     <div style={{ display:"flex", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["review-names","Names"],["review-photos","Photos"]].map(([val, label]) => {
+      {[["products","Products"],["review-names","Names"],["review-photos","Photos"],["review-categories","Categories"]].map(([val, label]) => {
         const on = adminSection === val;
-        const badge = val === "review-names" ? pendingNameCount : val === "review-photos" ? pendingPhotoCount : 0;
+        const badge = val === "review-names" ? pendingNameCount : val === "review-photos" ? pendingPhotoCount : val === "review-categories" ? pendingCategoryCount : 0;
         return (
           <button key={val} onClick={() => setAdminSection(val)}
             style={{ flex:1, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 0", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
@@ -2371,6 +2447,25 @@ function AdminView({ products, orders, onExit }) {
         {sectionToggle}
         <div style={{ height:10 }}/>
         <AdminReviewPhotosTab products={products} />
+      </div>
+    );
+  }
+
+  if (adminSection === "review-categories") {
+    return (
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
+          <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
+            <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
+          </div>
+          <div style={{ width:90 }}/>
+        </div>
+        <div style={{ height:6 }}/>
+        {sectionToggle}
+        <div style={{ height:10 }}/>
+        <AdminReviewCategoriesTab products={products} />
       </div>
     );
   }
