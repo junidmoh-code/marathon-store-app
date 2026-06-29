@@ -9983,6 +9983,33 @@ function TvWithAutoCollect({ orders, onExit }) {
   // Layby pulls for the discreet TV awareness strip (invoice numbers). Read-only.
   const laybyPulls = useLaybyPulls();
 
+  // ── TV AUTO-UPDATE ──────────────────────────────────────────────────────────
+  // A kiosk TV is never manually reloaded, so a deploy otherwise never reaches it
+  // (the page keeps running the in-memory bundle it loaded hours ago — which is
+  // exactly how stale "auto-collect" code lingered after we shipped the fix).
+  // index.html is served no-cache, so poll it and reload when the built asset hash
+  // changes. SCOPED TO THE TV ONLY — no in-progress staff action to disrupt, and a
+  // reload re-applies the 8-min hide instantly (it's keyed off the persisted
+  // readyAt age). No reload loop: after reload the document's bundle == deployed.
+  useEffect(() => {
+    const runningBundle =
+      document.querySelector('script[type="module"][src*="assets/index-"]')
+        ?.getAttribute("src")?.match(/index-[A-Za-z0-9_-]+\.js/)?.[0] || "";
+    if (!runningBundle) return; // can't tell what we're running → never force-reload
+    const check = async () => {
+      try {
+        const html = await fetch("/", { cache: "no-store" }).then((r) => r.text());
+        const deployed = html.match(/assets\/(index-[A-Za-z0-9_-]+\.js)/)?.[1] || "";
+        if (deployed && deployed !== runningBundle) {
+          console.warn("TV: new build deployed — reloading", { runningBundle, deployed });
+          window.location.reload();
+        }
+      } catch { /* offline / transient — retry next tick */ }
+    };
+    const id = setInterval(check, 3 * 60 * 1000); // every 3 min
+    return () => clearInterval(id);
+  }, []);
+
   useEffect(() => {
     const check = () => {
       const nowMs    = Date.now();
