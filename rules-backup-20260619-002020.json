@@ -1,0 +1,155 @@
+{
+  "rules": {
+    "orders": {
+      ".read": "auth != null",
+      "$id": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        "status":      { ".write": "auth != null && data.parent().exists() && newData.val() === 'collected'" },
+        "updatedAt":   { ".write": "auth != null && data.parent().exists() && newData.parent().child('status').val() === 'collected'" },
+        "collectedAt": { ".write": "auth != null && data.parent().exists() && newData.parent().child('status').val() === 'collected'" }
+      }
+    },
+
+    "laybys": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$laybyId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        ".validate": "newData.hasChildren(['invoiceNo','status'])",
+        "laybyId":          { ".validate": "newData.isString() && newData.val() === $laybyId" },
+        "invoiceNo":        { ".validate": "newData.isString() && newData.val().length > 0 && (!data.exists() || newData.val() === data.val())" },
+        "saleId":           { ".validate": "newData.isString() && (!data.exists() || newData.val() === data.val())" },
+        "status":           { ".validate": "newData.isString() && newData.val().matches(/^(created|labelPrinted|inTransitToStorage|storedAtHub|pullRequested|sentToStore|collected|expired|rejected|returned)$/)" },
+        "balanceRemaining": { ".validate": "newData.isNumber()" },
+        "itemCount":        { ".validate": "newData.isNumber()" },
+        "storageHub":       { ".validate": "newData.isString()" },
+        "$other":           { ".validate": true }
+      }
+    },
+
+    "laybyPulls": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$pullId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        ".validate": "newData.hasChildren(['invoiceNo','laybyId','status'])",
+        "pullId":           { ".validate": "newData.isString() && newData.val() === $pullId" },
+        "laybyId":          { ".validate": "newData.isString() && newData.val().length > 0 && (!data.exists() || newData.val() === data.val())" },
+        "invoiceNo":        { ".validate": "newData.isString() && newData.val().length > 0 && (!data.exists() || newData.val() === data.val())" },
+        "saleId":           { ".validate": "newData.isString() && (!data.exists() || newData.val() === data.val())" },
+        "status":           { ".validate": "newData.isString() && newData.val().matches(/^(pending|sentToStore|rejected|returnedToStock)$/)" },
+        "balanceRemaining": { ".validate": "newData.isNumber()" },
+        "itemCount":        { ".validate": "newData.isNumber()" },
+        "storageHub":       { ".validate": "newData.isString()" },
+        "rejectionReason":  { ".validate": "newData.isString()" },
+        "$other":           { ".validate": true }
+      }
+    },
+
+    "restock_log": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$date": {
+        "$entryId": {
+          ".write": "auth != null && (auth.token.firebase.sign_in_provider != 'anonymous' || !data.exists())"
+        }
+      }
+    },
+
+    "broadcastHistory":        { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "broadcasts":              { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "customers":               { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "customers_meta":          { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "insights_log":            { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "insights":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "inventory":               { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "inventory_meta":          { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "marketing":               { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "orderCounter":            { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "pos": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "paymentEvents": { ".indexOn": ["at"] }
+    },
+    "pos_meta":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "products":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "products_meta":           { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "restock_requests":        { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "returns_log":             { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "source_onhold_responses": { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+
+    "users": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth.token.email === 'gunidmoh@gmail.com'"
+    },
+
+    "locations": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+    },
+
+    "stock": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$loc": { "$pid": { "$size": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()",
+        ".validate": "newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && newData.child('mv').val() !== data.child('mv').val() && newData.child('lastType').val().matches(/^(received|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val().matches(/^(sold|return)$/))",
+        "qty":      { ".validate": "newData.isNumber()" },
+        "v":        { ".validate": "newData.isNumber()" },
+        "mv":       { ".validate": "newData.isString()" },
+        "lastType": { ".validate": "newData.isString()" },
+        "state":    { ".validate": "newData.val().matches(/^(untracked|counting|live)$/)" },
+        "$other":   { ".validate": "newData.parent().child('qty').exists()" }
+      }}}
+    },
+
+    "stock_movements": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$mvId": {
+        ".write": "!data.exists() && newData.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        ".validate": "newData.hasChildren(['type','productId','size','qty','actor','ts']) && newData.child('qty').isNumber() && newData.child('qty').val() > 0 && newData.child('actor').val() === auth.uid && root.child('products').child(newData.child('productId').val()).exists() && (!newData.child('from').exists() || newData.child('from').val() === null || root.child('locations').child(newData.child('from').val()).exists()) && (!newData.child('to').exists() || newData.child('to').val() === null || root.child('locations').child(newData.child('to').val()).exists())",
+        "type": {
+          ".validate": "(newData.val() === 'received' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|admin)$/)) || (newData.val() === 'transfer_out' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)) || (newData.val() === 'transfer_in' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)) || (newData.val() === 'sold' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(pos|store|admin)$/)) || (newData.val() === 'return' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(pos|store|admin)$/)) || (newData.val() === 'adjustment' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin')"
+        },
+        "reason": { ".validate": "newData.parent().child('type').val() !== 'adjustment' || (newData.isString() && newData.val().length > 0)" }
+      }
+    },
+
+    "transfers": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$transferId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)",
+        "status": { ".validate": "newData.val().matches(/^(dispatched|received|discrepancy)$/)" }
+      }
+    },
+
+    "refill_requests": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$refillId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()",
+        "status": { ".validate": "newData.val().matches(/^(open|fulfilled|cancelled)$/)" }
+      }
+    },
+
+    "sales": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$saleId": {
+        ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(pos|store|admin)$/)",
+        ".validate": "newData.hasChildren(['ts','lines'])"
+      }
+    },
+
+    "stock_alerts": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$alertId": { ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()" }
+    },
+
+    "reports": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+    },
+
+    "config": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "posCutover": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+      }
+    }
+  }
+}

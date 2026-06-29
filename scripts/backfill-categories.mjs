@@ -17,7 +17,7 @@ function targetFor(p) {
   // Respect an existing VALID top-level category (e.g. the 39 perfumes already
   // "Perfume"); empty / garbage categories get (re)classified from name + sizes.
   const existing = (p.category || "").trim();
-  if (existing === "Perfume") return { category: "Perfume", subcategory: "Perfume", brand: null };
+  if (existing === "Perfume") return { category: "Perfume", subcategory: "Perfume", brand: p.brand ?? null };
   if (TOP_CATEGORIES.includes(existing) && p.subcategory) {
     return { category: existing, subcategory: p.subcategory, brand: p.brand ?? categorize(p.name, p.sizes).brand };
   }

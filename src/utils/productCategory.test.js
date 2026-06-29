@@ -51,6 +51,10 @@ describe("categorize — clothing", () => {
   const C = (n) => categorize(n, CLOTHES);
   it("t-shirts", () => expect(C("Lacoste Tee White").subcategory).toBe("T-Shirts"));
   it("polos", () => expect(C("Lacoste Polo Navy").subcategory).toBe("Polos"));
+  it("'Polo Ralph Lauren Hoodie' is a Hoodie, not a Polo", () => {
+    expect(C("Polo Ralph Lauren Hoodie Navy").subcategory).toBe("Hoodies & Sweatshirts");
+    expect(C("Ralph Lauren Polo Shirt White").subcategory).toBe("Polos"); // a real polo still matches
+  });
   it("jeans", () => expect(C("Diesel Slim Jeans Blue").subcategory).toBe("Jeans & Denim"));
   it("tracksuits / sets", () => {
     expect(C("Nike Tech Fleece Black").subcategory).toBe("Tracksuits & Sets");

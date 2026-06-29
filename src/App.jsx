@@ -6,7 +6,7 @@ import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
-import { categorize, CATEGORY_TREE, UNCATEGORIZED } from "./utils/productCategory";
+import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -1937,7 +1937,7 @@ function AdminReviewCategoriesTab({ products = [] }) {
               <div style={{ fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
               <div style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>{p.brand ? p.brand + " · " : ""}{Array.isArray(p.sizes) ? p.sizes.slice(0,6).join("/") : ""}</div>
             </div>
-            <select disabled={savingId === p.id} defaultValue="" onChange={e => assign(p, e.target.value)}
+            <select disabled={savingId === p.id} value="" onChange={e => assign(p, e.target.value)}
                     style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 8px", fontSize:12, maxWidth:140, opacity: savingId === p.id ? .5 : 1 }}>
               <option value="" disabled>Move to…</option>
               {Object.entries(CATEGORY_TREE).map(([top, subs]) => (
@@ -2179,9 +2179,12 @@ function AdminView({ products, orders, onExit }) {
       // respected as the top level; subcategory + brand are always auto-derived.
       const auto = categorize(form.name, form.sizes);
       const manualCat = (form.category || "").trim();
+      // Respect a manual category ONLY when it's a real top-level; otherwise the
+      // auto value wins (so free-text junk can't land in the browse-able field).
+      const useManual = TOP_CATEGORIES.includes(manualCat);
       const newProduct = {
         name: form.name,
-        category: manualCat || auto.category,
+        category: useManual ? manualCat : auto.category,
         subcategory: auto.subcategory,
         brand: auto.brand,
         photo: form.photo,
