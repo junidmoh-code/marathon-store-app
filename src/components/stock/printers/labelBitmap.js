@@ -81,7 +81,7 @@ function fitName(ctx, text, maxWidth, maxPx, minPx, maxLines) {
   return { px: minPx, lines };
 }
 
-function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDots, moduleWidth, contentWidthDots) {
+function drawLabel(ctx, { code, productName, size, header, dispatch, orderNo, customerName }, widthDots, heightDots, moduleWidth, contentWidthDots) {
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, widthDots, heightDots);
   ctx.fillStyle = "#000";
@@ -99,6 +99,41 @@ function drawLabel(ctx, { code, productName, size, header }, widthDots, heightDo
   const TOP_PAD = 14, BOTTOM_PAD = 14;                 // top + bottom clear of the edges
   const maxW = labelW - 2 * EDGE;
   let y = TOP_PAD;
+
+  // ── Dispatch label: TEXT-FIRST, NO barcode ────────────────────────────────
+  // A big "Order #…" hero with the customer name small beneath, then product
+  // name + size (small) for the picker. (Catalog labels have no `dispatch` flag
+  // and fall through to the barcode renderer below — unchanged.)
+  if (dispatch) {
+    const orderText = `Order #${orderNo ?? ""}`.trim();
+    const fo = fitLine(ctx, orderText, maxW, 72, 28, true);   // BIG hero line
+    setFont(ctx, fo.px, true);
+    ctx.fillText(fo.lines[0], cx, y);
+    y += fo.px + 10;
+
+    const cust = String(customerName ?? "").trim();
+    if (cust) {
+      const fc = fitLine(ctx, cust, maxW, 22, 12, false);     // small
+      setFont(ctx, fc.px, false);
+      ctx.fillText(fc.lines[0], cx, y);
+      y += fc.px + 8;
+    }
+
+    if (productName) {
+      const fn = fitName(ctx, String(productName), maxW, 18, 11, 2);  // small, wrapped
+      setFont(ctx, fn.px, true);
+      for (const line of fn.lines) { ctx.fillText(line, cx, y); y += fn.px + 2; }
+    }
+
+    const sStr = (size != null && String(size).trim() !== "") ? `Size: ${String(size).trim()}` : "";
+    if (sStr) {
+      const fs = fitLine(ctx, sStr, maxW, 22, 12, true);
+      setFont(ctx, fs.px, true);
+      ctx.fillText(fs.lines[0], cx, y);
+      y += fs.px + 4;
+    }
+    return;
+  }
 
   // Optional dispatch header (order # · customer) — one fitted line.
   if (header) {

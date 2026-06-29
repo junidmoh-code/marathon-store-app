@@ -31,7 +31,15 @@ export async function printDispatchLabel(order, transport = defaultTransport()) 
     // catalog backfill this almost always just reuses the existing per-size code.
     const { code } = await ensureBarcode(order.productId, sentSize);
     const header = `Order #${order.id}${order.customerName ? "  ·  " + order.customerName : ""}`;
-    const items = [{ code, productName: order.productName, size: sentSize, header, count: 1 }];
+    // Dispatch label is now TEXT-FIRST: a big "Order #…" + small customer name —
+    // no barcode (the Phomemo renderer reads `dispatch`/`orderNo`/`customerName`).
+    // `code`/`header` stay on the item for the Xprinter fallback path, which still
+    // renders a barcode label natively.
+    const items = [{
+      code, productName: order.productName, size: sentSize, header,
+      dispatch: true, orderNo: order.id, customerName: order.customerName ?? "",
+      count: 1,
+    }];
     return await printLabels({ items, transport, conn });
   } catch (err) {
     return { ok: false, error: String(err?.message || err) };
