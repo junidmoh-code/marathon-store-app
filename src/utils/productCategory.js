@@ -111,7 +111,10 @@ const FOOTWEAR_KW = [
 const CLOTHING_KW = [
   ["Jerseys", /\bjerseys?\b/],
   ["T-Shirts", /\bt[\s-]?shirts?\b|\btee\b|\btees\b/],
-  ["Polos", /\bpolo\b/],
+  // "polo" but NOT the "Polo Ralph Lauren" brand prefix — a "Polo Ralph Lauren
+  // Hoodie" is a hoodie, not a polo shirt (the real garment word wins via the
+  // later rules once this skips it).
+  ["Polos", /\bpolo\b(?! ralph)/],
   ["Jeans & Denim", /\bjeans?\b|\bdenim\b/],
   ["Underwear & Socks", /\bunderwear|\bboxers?\b|\bbriefs?\b|\bsocks?\b/],
   ["Shorts & Vests", /\bshorts?\b|sweatshort|\bvest\b|\btank\b/],
