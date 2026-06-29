@@ -5077,15 +5077,10 @@ function WarehouseView({ products = [], orders, onExit }) {
                     </div>
                   );
                 })()}
-                {ready && (
-                  <div style={{ padding:"0 12px 10px 16px" }}>
-                    <button onClick={() => updateStatus(order, STATUS.COLLECTED)}
-                            style={{ width:"100%", padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(100,100,100,.12)", border:"1px solid rgba(100,100,100,.25)", color:"#9CA3AF" }}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                      Mark as Collected
-                    </button>
-                  </div>
-                )}
+                {/* Manual "Mark as Collected" removed — an order is collected ONLY by
+                    a real POS sale (marathon-pos-app sell-by-order-number). The
+                    warehouse view no longer hand-retires orders, so a still-browsing
+                    customer's order can't be collected out from under the POS. */}
               </div>
             );
               }}
