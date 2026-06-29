@@ -20,9 +20,9 @@
 // ── The category tree (also drives the POS browse chips + the review dropdown) ──
 export const CATEGORY_TREE = {
   Footwear:    ["Sneakers", "Soccer Boots", "Sandals & Slides", "Boots"],
-  Clothing:    ["T-Shirts", "Caps & Hats", "Tracksuits & Sets", "Jeans & Denim", "Polos",
+  Clothing:    ["T-Shirts", "Jerseys", "Caps & Hats", "Tracksuits & Sets", "Jeans & Denim", "Polos",
                 "Hoodies & Sweatshirts", "Jackets & Coats", "Cargos & Pants", "Shorts & Vests",
-                "Clothing — Uncategorized"],
+                "Underwear & Socks", "Clothing — Uncategorized"],
   Accessories: ["Bags", "Belts", "Gloves", "Balaclavas & Masks"],
   Perfume:     ["Perfume"],
 };
@@ -109,12 +109,14 @@ const FOOTWEAR_KW = [
   ["Boots", /\bboots?\b|timberland|chelsea boot/],
 ];
 const CLOTHING_KW = [
+  ["Jerseys", /\bjerseys?\b/],
   ["T-Shirts", /\bt[\s-]?shirts?\b|\btee\b|\btees\b/],
   ["Polos", /\bpolo\b/],
   ["Jeans & Denim", /\bjeans?\b|\bdenim\b/],
+  ["Underwear & Socks", /\bunderwear|\bboxers?\b|\bbriefs?\b|\bsocks?\b/],
   ["Shorts & Vests", /\bshorts?\b|sweatshort|\bvest\b|\btank\b/],
   ["Cargos & Pants", /\bcargo|\bchino/],
-  ["Tracksuits & Sets", /track\s?suit|tracksuit|track\s?pant|\bjogger|tech\s?fleece|\bset\b|two[\s-]?piece|2[\s-]?piece/],
+  ["Tracksuits & Sets", /track\s?suit|tracksuit|track\s?pant|sweat\s?pants?|\bjogger|tech\s?fleece|\bset\b|two[\s-]?piece|2[\s-]?piece/],
   ["Hoodies & Sweatshirts", /\bhoodie|hooded|sweat\s?shirt|sweatshirt|\bsweater|\bjumper|pullover|crew\s?neck|\bfleece\b/],
   ["Jackets & Coats", /\bjacket|\bcoat\b|windrunner|\bpuffer|\bbomber|\bparka|\bgilet|windbreak/],
   ["Cargos & Pants", /\bpants?\b|\btrouser/],

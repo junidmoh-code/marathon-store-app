@@ -60,6 +60,15 @@ describe("categorize — clothing", () => {
   it("sweatshorts → Shorts (not Hoodies)", () => expect(C("Fear of God Essentials Sweatshorts Black").subcategory).toBe("Shorts & Vests"));
   it("jackets / windrunner", () => expect(C("Nike Windrunner Navy").subcategory).toBe("Jackets & Coats"));
   it("cargos", () => expect(C("Cargo Pants Olive").subcategory).toBe("Cargos & Pants"));
+  it("football jerseys → Jerseys", () => {
+    expect(C("Adidas Argentina Home Jersey").subcategory).toBe("Jerseys");
+    expect(C("Nike FC Barcelona Away Jersey Orange").subcategory).toBe("Jerseys");
+  });
+  it("sweatpants → Tracksuits & Sets", () => expect(C("Blur Tie Dye Sweatpants").subcategory).toBe("Tracksuits & Sets"));
+  it("underwear / socks → Underwear & Socks", () => {
+    expect(C("On Men's Underwear").subcategory).toBe("Underwear & Socks");
+    expect(C("Nike Crew Socks 3-Pack").subcategory).toBe("Underwear & Socks");
+  });
   it("unmatched clothing → Uncategorized", () => expect(C("Barley 8290").subcategory).toBe(UNCATEGORIZED));
 });
 
