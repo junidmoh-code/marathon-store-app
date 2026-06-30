@@ -124,25 +124,6 @@ function productPhotos(p) {
   return out;
 }
 
-// Group products that look like duplicates: same name regardless of word order /
-// spacing / punctuation (so "Air Max Plus White Black", "...Black White" and
-// "...White/Black" all land together). Returns groups of 2+, biggest first.
-function findDuplicateGroups(products, footwearOnly) {
-  const norm = (s) => String(s || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
-  const fp = (s) => norm(s).split(" ").filter(Boolean).sort().join(" ");
-  const isFoot = (p) => p.category === "Footwear" || ((p.productType || "sneaker") === "sneaker" && !["Clothing", "Accessories", "Perfume"].includes(p.category));
-  const by = {};
-  for (const p of (products || [])) {
-    if (!p?.id || !p?.name) continue;
-    if (footwearOnly && !isFoot(p)) continue;
-    const k = fp(p.name);
-    if (!k) continue;
-    (by[k] ||= []).push(p);
-  }
-  return Object.values(by).filter(g => g.length > 1)
-    .sort((a, b) => b.length - a.length || String(a[0].name).localeCompare(String(b[0].name)));
-}
-
 // Full-screen photo viewer: shows a product's photos (primary + extra angles) with
 // prev/next arrows, swipe, dots + a thumbnail strip. Accepts an array of URLs (or a
 // single URL string for back-compat). Reused by assistant view, admin, etc.
@@ -1734,116 +1715,6 @@ function costByEngineStr(cbe) {
   return parts.length ? ` · ${parts.join(", ")}` : "";
 }
 
-// ── DUPLICATES — review + delete duplicate products ───────────────────────────
-// Groups products with the same name (any word order/spacing/punctuation) so you
-// can see them side by side WITH each one's recorded inventory, then delete the
-// redundant empties while keeping the one that holds stock.
-function AdminDuplicatesTab({ products = [] }) {
-  const cells = useStockCells();          // { loc: { pid: { size: cell } } } — all locations
-  const registry = useLocations();
-  const [footOnly, setFootOnly] = useState(true);
-  const [deleting, setDeleting] = useState(null);
-  const [lightbox, setLightbox] = useState(null);
-
-  // Total recorded stock for a product across every location, + a per-location split.
-  const invOf = (id) => {
-    let total = 0; const byLoc = {};
-    for (const loc of Object.keys(cells || {})) {
-      const bySize = cells[loc]?.[id]; if (!bySize) continue;
-      let n = 0;
-      for (const sz of Object.keys(bySize)) n += (typeof bySize[sz]?.qty === "number" ? bySize[sz].qty : 0);
-      if (n) { byLoc[loc] = n; total += n; }
-    }
-    return { total, byLoc };
-  };
-
-  const groups = useMemo(() => findDuplicateGroups(products, footOnly), [products, footOnly]);
-  const dupCount = groups.reduce((n, g) => n + g.length, 0);
-
-  const del = async (p) => {
-    const { total } = invOf(p.id);
-    const msg = total > 0
-      ? `"${p.name}" still has ${total} in recorded stock.\n\nDeleting removes the product — its stock cells will be left orphaned. Usually you keep the one WITH stock and delete the empty copies. Delete anyway?`
-      : `Delete "${p.name}"? It has no recorded stock. This cannot be undone.`;
-    if (!window.confirm(msg)) return;
-    setDeleting(p.id);
-    try { await deleteProductFromFirebase(p.id); }
-    catch (e) { window.alert(`Delete failed: ${e?.message || e}`); }
-    finally { setDeleting(null); }
-  };
-
-  const sizeCount = (p) => Array.isArray(p.sizes) ? p.sizes.length : (p.sizes && typeof p.sizes === "object" ? Object.keys(p.sizes).length : (p.stock ? Object.keys(p.stock).length : 0));
-
-  return (
-    <div style={{ padding:"0 14px 30px" }}>
-      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0 10px", flexWrap:"wrap" }}>
-        <span style={{ fontSize:18, fontWeight:700, color:"#fff", letterSpacing:-.2 }}>Duplicate Products</span>
-        <span style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", color:"rgba(255,255,255,.6)", fontSize:11.5, fontWeight:600, padding:"3px 10px", borderRadius:999 }}>{groups.length} groups · {dupCount} items</span>
-        <label style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:7, fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>
-          <input type="checkbox" checked={footOnly} onChange={e => setFootOnly(e.target.checked)} style={{ width:15, height:15, accentColor:"#4A7FFF", cursor:"pointer" }}/>
-          Sneakers only
-        </label>
-      </div>
-      <div style={{ fontSize:11.5, color:"rgba(255,255,255,.4)", marginBottom:14, lineHeight:1.5 }}>
-        Same name, any word order (e.g. “White Black” = “Black White”). Each card shows its recorded stock —
-        keep the one holding inventory, delete the empty copies. <b style={{ color:"rgba(255,255,255,.6)" }}>Tip:</b> some colour-reversed
-        names are genuinely two colourways — check the photos before deleting.
-      </div>
-
-      {groups.length === 0 && (
-        <div style={{ color:"rgba(255,255,255,.4)", fontSize:13, textAlign:"center", padding:"30px 0" }}>No duplicate {footOnly ? "sneakers" : "products"} found 🎉</div>
-      )}
-
-      <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-        {groups.map((g, gi) => {
-          const stocked = g.filter(p => invOf(p.id).total > 0).length;
-          return (
-            <div key={gi} style={{ background:"rgba(255,255,255,.025)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:12 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-                <span style={{ fontSize:13.5, fontWeight:700, color:"#fff", flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{g[0].name}</span>
-                <span style={{ fontSize:10.5, fontWeight:700, color:"#F59E0B", background:"rgba(245,158,11,.12)", border:"1px solid rgba(245,158,11,.3)", borderRadius:999, padding:"2px 9px", flexShrink:0 }}>{g.length}× copies</span>
-              </div>
-              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                {g.map(p => {
-                  const { total, byLoc } = invOf(p.id);
-                  const photos = productPhotos(p);
-                  const busy = deleting === p.id;
-                  return (
-                    <div key={p.id} style={{ display:"flex", alignItems:"center", gap:11, padding:"8px 9px", borderRadius:10, background: total > 0 ? "rgba(74,202,122,.07)" : "rgba(255,255,255,.02)", border:"1px solid "+(total > 0 ? "rgba(74,202,122,.28)" : "rgba(255,255,255,.07)") }}>
-                      <div onClick={photos.length ? () => setLightbox(photos) : undefined}
-                           style={{ width:52, height:52, borderRadius:9, overflow:"hidden", flexShrink:0, background:"rgba(255,255,255,.06)", display:"flex", alignItems:"center", justifyContent:"center", cursor: photos.length ? "zoom-in" : "default" }}>
-                        {p.photoUrl ? <img src={p.photoUrl} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:22 }}>{p.photo || "👟"}</span>}
-                      </div>
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ fontSize:12.5, color:"#fff", fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
-                        <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", marginTop:2, display:"flex", gap:8, flexWrap:"wrap" }}>
-                          <span>{sizeCount(p)} sizes</span>
-                          {total > 0
-                            ? <span style={{ color:"#5FD894", fontWeight:700 }}>● {total} in stock{Object.keys(byLoc).length ? ` (${Object.entries(byLoc).map(([l, n]) => `${labelFor(l, registry)}: ${n}`).join(", ")})` : ""}</span>
-                            : <span style={{ color:"rgba(255,255,255,.35)" }}>● no stock</span>}
-                        </div>
-                        <div style={{ fontSize:9.5, color:"rgba(255,255,255,.25)", marginTop:1 }}>{p.id}</div>
-                      </div>
-                      <button onClick={() => del(p)} disabled={busy}
-                              style={{ flexShrink:0, background: total > 0 ? "transparent" : "rgba(255,90,90,.14)", border:"1px solid "+(total > 0 ? "rgba(255,255,255,.12)" : "rgba(255,90,90,.4)"), color: total > 0 ? "rgba(255,140,140,.7)" : "#FF8585", borderRadius:9, padding:"8px 13px", fontSize:12, fontWeight:700, cursor: busy ? "wait" : "pointer", opacity: busy ? .5 : 1 }}>
-                        {busy ? "…" : "Delete"}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-              {stocked > 1 && (
-                <div style={{ fontSize:10.5, color:"#F59E0B", marginTop:8 }}>⚠ {stocked} copies hold stock — check before deleting; you may want to consolidate counts first.</div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      {lightbox && <GalleryLightbox photos={lightbox} onClose={() => setLightbox(null)} />}
-    </div>
-  );
-}
-
 // One-tap fix shortcuts for a regenerate: a short label the user taps → a clear,
 // expanded instruction the image engine understands, appended to the run note. Tap
 // several to combine; free text can be added too. Keeps "make gemini understand
@@ -2574,7 +2445,6 @@ function AdminView({ products, orders, onExit }) {
   const photoProposals = usePhotoProposals();
   const pendingPhotoCount = useMemo(() => Object.values(photoProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [photoProposals]);
   const pendingCategoryCount = useMemo(() => (products || []).filter(p => p && p.subcategory === UNCATEGORIZED).length, [products]);
-  const duplicateGroupCount = useMemo(() => findDuplicateGroups(products, true).length, [products]);
   // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
   //    browser back clears it. Listener stays mounted for the whole view. ──
   const [detailId, setDetailId] = useState(() => parseProductHash());
@@ -2840,11 +2710,11 @@ function AdminView({ products, orders, onExit }) {
   // Section toggle (Products ↔ Review Names), shown at the top of both sections.
   const sectionToggle = (
     <div style={{ display:"flex", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["review-names","Names"],["review-photos","Photos"],["review-categories","Categories"],["duplicates","Dupes"]]
+      {[["products","Products"],["review-names","Names"],["review-photos","Photos"],["review-categories","Categories"]]
         .filter(([val]) => isSuperAdmin || !AI_SECTIONS.includes(val))
         .map(([val, label]) => {
         const on = adminSection === val;
-        const badge = val === "review-names" ? pendingNameCount : val === "review-photos" ? pendingPhotoCount : val === "review-categories" ? pendingCategoryCount : val === "duplicates" ? duplicateGroupCount : 0;
+        const badge = val === "review-names" ? pendingNameCount : val === "review-photos" ? pendingPhotoCount : val === "review-categories" ? pendingCategoryCount : 0;
         return (
           <button key={val} onClick={() => setAdminSection(val)}
             style={{ flex:1, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 0", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
@@ -2908,25 +2778,6 @@ function AdminView({ products, orders, onExit }) {
         {sectionToggle}
         <div style={{ height:10 }}/>
         <AdminReviewCategoriesTab products={products} />
-      </div>
-    );
-  }
-
-  if (adminSection === "duplicates") {
-    return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
-          <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
-          <div style={{ textAlign:"center" }}>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
-            <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
-          </div>
-          <div style={{ width:90 }}/>
-        </div>
-        <div style={{ height:6 }}/>
-        {sectionToggle}
-        <div style={{ height:10 }}/>
-        <AdminDuplicatesTab products={products} />
       </div>
     );
   }
