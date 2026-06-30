@@ -1897,6 +1897,7 @@ exports.cleanProductNames = onCall(
 // Returns { processed, failed, total, estCostUSD, sample }.
 
 const openaiApiKey = defineSecret("OPENAI_API_KEY");
+const geminiApiKey = defineSecret("GEMINI_API_KEY");
 
 const PHOTO_MODEL          = "gpt-image-1";   // OpenAI image-edit model (vision in/out)
 const PHOTO_SIZE           = "auto";          // match each product's aspect → no top/bottom crop
@@ -1957,6 +1958,75 @@ function estimateImageCostUSD(usage) {
   ).toFixed(6);
 }
 
+// ── GEMINI engine — "Nano Banana" (gemini-2.5-flash-image, NOT Pro) ────────────
+// Cheap image-edit workhorse (~$0.039/image). Same job as the OpenAI engine: takes
+// the product photo + the white-bg "keep the product EXACTLY" prompt, returns the
+// edited image. Raw REST (Node-22 global fetch — no SDK dependency). The image
+// comes back as base64 inline_data SOMEWHERE in candidates[0].content.parts — we
+// ITERATE the parts (don't assume an index), since a response may also carry text.
+const GEMINI_MODEL          = "gemini-2.5-flash-image";
+const GEMINI_OUT_PER_MTOK   = 30;      // $/1M image-output tokens (Nano Banana)
+const GEMINI_FLAT_IMAGE_USD = 0.039;   // fallback per-image when usageMetadata is absent
+async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType) {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: PHOTO_PROMPT },
+            { inline_data: { mime_type: contentType, data: imageBuffer.toString("base64") } },
+          ],
+        }],
+      }),
+    },
+  );
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`gemini HTTP ${res.status}: ${txt.slice(0, 200)}`);
+  }
+  const json = await res.json();
+  const parts = ((((json.candidates || [])[0] || {}).content) || {}).parts || [];
+  let b64 = null, mime = "image/png";
+  for (const part of parts) {                       // image lives in inline_data among the parts
+    const inl = part.inlineData || part.inline_data; // REST returns camelCase; accept both
+    if (inl && inl.data) { b64 = inl.data; mime = inl.mimeType || inl.mime_type || mime; break; }
+  }
+  if (!b64) throw new Error("gemini returned no image");
+  // Cost: image-output tokens × Nano-Banana rate, else the documented flat per-image.
+  const um = json.usageMetadata || {};
+  const outTok = um.candidatesTokenCount || 0;
+  const costUSD = outTok ? +((outTok / 1e6) * GEMINI_OUT_PER_MTOK).toFixed(6) : GEMINI_FLAT_IMAGE_USD;
+  return { buffer: Buffer.from(b64, "base64"), costUSD, mime };
+}
+
+// ── Pluggable engine adapter ───────────────────────────────────────────────────
+// One interface, two providers. generate(buffer, contentType, { quality, size }) →
+// { buffer, costUSD, mime }. Add an engine here; the orchestration never special-
+// cases a provider. `makeEngine` is lazy + cached per call.
+function makeEngine(name, openaiClient, OpenAINS) {
+  if (name === "gemini") {
+    const key = geminiApiKey.value();
+    return { name: "gemini", generate: (buf, ct) => generateWhiteBgImageGemini(key, buf, ct) };
+  }
+  return {
+    name: "openai",
+    async generate(buf, ct, { quality, size } = {}) {
+      const { buffer, usage } = await generateWhiteBgImage(openaiClient, OpenAINS, buf, ct, quality, size);
+      return { buffer, costUSD: estimateImageCostUSD(usage), mime: "image/jpeg" };
+    },
+  };
+}
+
+// DEFAULT engine per product, by category (overridable per call via data.engine):
+//   Footwear → Gemini (cheap, clean on sneaker edges). Everything else → OpenAI
+//   (keeps fabric / garments faithful). Accessories / Perfume default OpenAI for now.
+function defaultEngineFor(product) {
+  return product && product.category === "Footwear" ? "gemini" : "openai";
+}
+
 const PHOTO_MAX_BYTES = 15 * 1024 * 1024; // 15 MB cap on a product image
 async function fetchImageBuffer(url) {
   let u;
@@ -1973,15 +2043,18 @@ async function fetchImageBuffer(url) {
   return { buffer, contentType: ct.startsWith("image/") ? ct : "image/jpeg" };
 }
 
-// Upload a buffer to Storage with a Firebase download token; return the public-style URL.
-async function uploadProposalImage(id, buffer) {
+// Upload a buffer to Storage with a Firebase download token; return the public-style
+// URL. `mime` matches the engine's output (OpenAI → jpeg; Gemini → usually png) so
+// the stored object + content-type are honest and the browser renders it correctly.
+async function uploadProposalImage(id, buffer, mime = "image/jpeg") {
   const token = require("crypto").randomUUID();
+  const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
   // Unique per generation so a later reprocess can't mutate an already-approved live
   // image (which points at this object) before its own approval.
-  const path = `products/${id}/photo_proposal_${token}.jpg`;
+  const path = `products/${id}/photo_proposal_${token}.${ext}`;
   await admin.storage().bucket(STORAGE_BUCKET).file(path).save(buffer, {
     resumable: false,
-    contentType: "image/jpeg",
+    contentType: mime,
     metadata: { metadata: { firebaseStorageDownloadTokens: token } },
   });
   return `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
@@ -1990,7 +2063,7 @@ async function uploadProposalImage(id, buffer) {
 exports.generateProductPhotos = onCall(
   {
     region: "europe-west1",
-    secrets: [openaiApiKey],
+    secrets: [openaiApiKey, geminiApiKey],
     memory: "1GiB",
     timeoutSeconds: 540,
   },
@@ -2002,9 +2075,10 @@ exports.generateProductPhotos = onCall(
     const wanted = Number.isFinite(+data.limit) && +data.limit > 0 ? Math.floor(+data.limit) : PHOTO_DEFAULT_LIMIT;
     const limit = Math.min(wanted, PHOTO_MAX_BATCH);
     const quality = ["low", "medium", "high"].includes(data.quality) ? data.quality : PHOTO_DEFAULT_QUALITY;
-    // Clothing is tall → a portrait frame keeps the whole garment (incl. its hanger) in shot
-    // with margins; "auto" was producing near-square crops. Other categories stay "auto".
-    const size = data.category === "clothing" ? "1024x1536" : PHOTO_SIZE;
+    // Per-call engine OVERRIDE (studio "compare" / per-product re-run). When absent,
+    // each product is auto-routed by category (defaultEngineFor): Footwear → Gemini,
+    // everything else → OpenAI.
+    const engineOverride = ["openai", "gemini"].includes(data.engine) ? data.engine : null;
 
     const [prodSnap, propSnap] = await Promise.all([
       db.ref("products").once("value"),
@@ -2020,7 +2094,9 @@ exports.generateProductPhotos = onCall(
       ids = Object.keys(products).filter((id) => {
         const p = products[id];
         if (!p || !p.photoUrl) return false;
-        if (data.category && (p.productType || "") !== data.category) return false;
+        // Match either the new `category` (e.g. "Footwear") OR the legacy productType
+        // (e.g. "clothing"), so old and new callers both work.
+        if (data.category && p.category !== data.category && (p.productType || "") !== data.category) return false;
         if (!data.reprocess && existing[id]) return false;
         return true;
       });
@@ -2030,9 +2106,13 @@ exports.generateProductPhotos = onCall(
 
     const OpenAINS = require("openai");
     const OpenAI = OpenAINS.default || OpenAINS;
-    const client = new OpenAI({ apiKey: openaiApiKey.value() });
+    const openaiClient = new OpenAI({ apiKey: openaiApiKey.value() });
+    // Lazy, cached engines — only the providers actually used get built.
+    const engineCache = {};
+    const getEngine = (name) => (engineCache[name] || (engineCache[name] = makeEngine(name, openaiClient, OpenAINS)));
 
     let processed = 0, failed = 0, estCostUSD = 0;
+    const costByEngine = { openai: 0, gemini: 0 };
     const sample = [];
 
     let cursor = 0;
@@ -2040,11 +2120,15 @@ exports.generateProductPhotos = onCall(
       while (cursor < ids.length) {
         const id = ids[cursor++];
         const p = products[id];
+        const engName = engineOverride || defaultEngineFor(p);
         try {
           const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
-          const { buffer: outBuf, usage } = await generateWhiteBgImage(client, OpenAINS, buffer, contentType, quality, size);
-          const proposedUrl = await uploadProposalImage(id, outBuf);
-          estCostUSD += estimateImageCostUSD(usage);
+          // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
+          const size = (p.category === "Clothing" || p.productType === "clothing") ? "1024x1536" : PHOTO_SIZE;
+          const { buffer: outBuf, costUSD, mime } = await getEngine(engName).generate(buffer, contentType, { quality, size });
+          const proposedUrl = await uploadProposalImage(id, outBuf, mime);
+          estCostUSD += costUSD;
+          costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
           await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
             // Prefer the TRUE original: if this product was already approved once,
             // p.photoUrl is a generated image — keep the real original from photoUrlOriginal.
@@ -2052,15 +2136,17 @@ exports.generateProductPhotos = onCall(
             proposedUrl,
             name: p.name || "",
             productType: p.productType || null,
+            engine: engName,                 // which engine made THIS proposal
+            costUSD: +costUSD.toFixed(6),     // its per-image cost
             status: "pending",          // pending | approved | rejected (set by the review UI)
             at: Date.now(),
             by: request.auth.uid,
           });
           processed++;
-          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl });
+          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName });
         } catch (err) {
           failed++;
-          console.warn(`generateProductPhotos: ${id} failed:`, err && err.message);
+          console.warn(`generateProductPhotos: ${id} (${engName}) failed:`, err && err.message);
         }
       }
     }
@@ -2070,10 +2156,11 @@ exports.generateProductPhotos = onCall(
     const today = new Date().toISOString().slice(0, 10);
     await logReorderUsage(db, today, {
       at: Date.now(), kind: "generateProductPhotos", by: request.auth.uid,
-      imagesGenerated: processed, failed, model: PHOTO_MODEL, quality, estimatedCostUSD: estCostUSD,
+      imagesGenerated: processed, failed, quality, estimatedCostUSD: estCostUSD,
+      engine: engineOverride || "auto", costByEngine,
     });
 
-    return { processed, failed, total: ids.length, estCostUSD, sample };
+    return { processed, failed, total: ids.length, estCostUSD, costByEngine, sample };
   }
 );
 
