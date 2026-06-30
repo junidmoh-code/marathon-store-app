@@ -2385,6 +2385,10 @@ function AdminReviewNamesTab({ products }) {
 }
 
 function AdminView({ products, orders, onExit }) {
+  // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation) are
+  // SUPER-ADMIN ONLY — a regular product_admin can manage products + sort
+  // categories, but not the AI tabs (which spend money per run).
+  const { isSuperAdmin } = usePermissions();
   // ── Add Product form state (collapsible at top of list) ─────────────────
   const [showAdd, setShowAdd] = useState(false);
   // Phase 12A: productType (sneaker default | clothing). Both types use a
@@ -2430,6 +2434,12 @@ function AdminView({ products, orders, onExit }) {
     try { return localStorage.getItem("marathon_admin_section") || "products"; } catch { return "products"; }
   });
   useEffect(() => { try { localStorage.setItem("marathon_admin_section", adminSection); } catch { /* storage off */ } }, [adminSection]);
+  // AI tabs are super-admin only — bounce a non-super-admin (e.g. one with a
+  // persisted AI tab from localStorage) back to Products.
+  const AI_SECTIONS = ["review-names", "review-photos"];
+  useEffect(() => {
+    if (!isSuperAdmin && AI_SECTIONS.includes(adminSection)) setAdminSection("products");
+  }, [isSuperAdmin, adminSection]);
   const nameProposals = useNameProposals();
   const pendingNameCount = useMemo(() => Object.values(nameProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [nameProposals]);
   const photoProposals = usePhotoProposals();
@@ -2700,7 +2710,9 @@ function AdminView({ products, orders, onExit }) {
   // Section toggle (Products ↔ Review Names), shown at the top of both sections.
   const sectionToggle = (
     <div style={{ display:"flex", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["review-names","Names"],["review-photos","Photos"],["review-categories","Categories"]].map(([val, label]) => {
+      {[["products","Products"],["review-names","Names"],["review-photos","Photos"],["review-categories","Categories"]]
+        .filter(([val]) => isSuperAdmin || !AI_SECTIONS.includes(val))
+        .map(([val, label]) => {
         const on = adminSection === val;
         const badge = val === "review-names" ? pendingNameCount : val === "review-photos" ? pendingPhotoCount : val === "review-categories" ? pendingCategoryCount : 0;
         return (
@@ -2713,7 +2725,7 @@ function AdminView({ products, orders, onExit }) {
     </div>
   );
 
-  if (adminSection === "review-names") {
+  if (adminSection === "review-names" && isSuperAdmin) {
     return (
       <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
@@ -2732,7 +2744,7 @@ function AdminView({ products, orders, onExit }) {
     );
   }
 
-  if (adminSection === "review-photos") {
+  if (adminSection === "review-photos" && isSuperAdmin) {
     return (
       <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
