@@ -1688,19 +1688,10 @@ function AdminReviewPhotosTab({ products = [] }) {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
   const [regenIds, setRegenIds] = useState(() => new Set()); // ids currently re-generating (per-row lock)
-  // Per-card regenerate comment (id → note text). Tapping a fix chip toggles its
-  // instruction in here; this card's Regenerate sends exactly its own note to Gemini.
-  const [cardNotes, setCardNotes] = useState({});
-  const toggleCardFix = (id, instr) => setCardNotes(m => {
-    const t = (m[id] || "").trim();
-    const next = t.includes(instr)
-      ? t.replace(instr, "").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "").trim()
-      : (t ? t + "; " + instr : instr).slice(0, 240);
-    return { ...m, [id]: next };
-  });
-  // Per-card engine choice for a regenerate (id → "auto"|"gemini"|"openai"), so you
-  // can try a different AI on just this product. "auto" = use the studio-level engine.
-  const [cardEngines, setCardEngines] = useState({});
+  // The product whose Regenerate popup is open (null = closed). The popup carries
+  // its own AI + fix + comment choices and resets every time it opens, so nothing
+  // stays selected after a send.
+  const [regenFor, setRegenFor] = useState(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [runN, setRunN]       = useState(12);
   const [quality, setQuality] = useState("medium");
@@ -1722,10 +1713,6 @@ function AdminReviewPhotosTab({ products = [] }) {
   // through the improved engine). Off by default so the normal flow still hides
   // done products.
   const [includeDone, setIncludeDone] = useState(false);
-  // Optional per-run instruction appended to the prompt to steer this generation
-  // (e.g. "straighten the laces", "make the black deeper"). Empty = stock prompt.
-  const [regenNote, setRegenNote] = useState("");
-  const noteArg = regenNote.trim() ? { note: regenNote.trim() } : {};
 
   // Products already generated (pending/approved) are excluded so you don't re-pick
   // them; rejected ones stay available to retry.
@@ -1771,7 +1758,7 @@ function AdminReviewPhotosTab({ products = [] }) {
     if (!ids.length) return;
     setRunBusy(true); setRunMsg(`Generating ${ids.length} selected at ${quality}… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality, ...engineArg, ...noteArg });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality, ...engineArg });
       const d = res?.data || {};
       setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
       setSelectedIds(new Set()); setPicking(false);
@@ -1812,7 +1799,7 @@ function AdminReviewPhotosTab({ products = [] }) {
   const runAI = async () => {
     setRunBusy(true); setRunMsg(`Generating ${runN} clothing photos… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg, ...noteArg });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg });
       const d = res?.data || {};
       setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
     } catch (e) {
@@ -1820,18 +1807,15 @@ function AdminReviewPhotosTab({ products = [] }) {
       setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
     } finally { setRunBusy(false); }
   };
-  // Re-shoot THIS one product at the currently-selected quality (e.g. bump to high for
-  // tricky branding). Overwrites its proposal in place; the row updates when it returns.
-  const regenerate = async (row) => {
+  // Re-shoot THIS one product. opts from the Regenerate popup: { note, engine }.
+  // The popup's choices win; "auto"/empty fall back to the studio-level engine.
+  const regenerate = async (row, opts = {}) => {
     setRegenIds(s => new Set(s).add(row.id));
-    // This card's own comment wins; fall back to the picker-level note if the card
-    // has none. Either way the engine gets a PRIORITY FIX for the re-shoot.
-    const cardNote = (cardNotes[row.id] || "").trim();
-    const thisNote = cardNote ? { note: cardNote } : noteArg;
-    // Per-card AI override wins over the studio-level engine; "auto"/unset → studio default.
-    const cardEngine = cardEngines[row.id];
-    const thisEngine = (cardEngine === "gemini" || cardEngine === "openai") ? { engine: cardEngine } : engineArg;
-    setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}${cardEngine && cardEngine !== "auto" ? ` via ${cardEngine}` : ""}${cardNote ? ` — “${cardNote}”` : ""}…`);
+    const note = String(opts.note || "").trim();
+    const thisNote = note ? { note } : {};
+    const engine = opts.engine;
+    const thisEngine = (engine === "gemini" || engine === "openai") ? { engine } : engineArg;
+    setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}${engine && engine !== "auto" ? ` via ${engine}` : ""}${note ? ` — “${note}”` : ""}…`);
     try {
       const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...thisEngine, ...thisNote });
       const d = res?.data || {};
@@ -1906,29 +1890,6 @@ function AdminReviewPhotosTab({ products = [] }) {
             <input type="checkbox" checked={includeDone} onChange={e => { setIncludeDone(e.target.checked); setSelectedIds(new Set()); }} style={{ width:15, height:15, accentColor:"#4A7FFF", cursor:"pointer" }}/>
             Include already-done products <span style={{ color:"rgba(255,255,255,.4)" }}>(re-generate)</span>
           </label>
-          {/* One-tap fix shortcuts — tap to tell the engine what to fix on a redo;
-              combine several, or type your own below. */}
-          <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
-            {FIX_PRESETS.map(([label, instr]) => {
-              const on = regenNote.includes(instr);
-              return (
-                <button key={label} type="button"
-                        onClick={() => setRegenNote(n => {
-                          const t = n.trim();
-                          if (t.includes(instr)) return t.replace(instr, "").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "").trim();
-                          return (t ? t + "; " + instr : instr).slice(0, 240);
-                        })}
-                        style={{ background: on ? "rgba(74,127,255,.22)" : "rgba(255,255,255,.05)", color: on ? "#9DBBFF" : "rgba(255,255,255,.7)",
-                                 border:"1px solid "+(on ? "rgba(74,127,255,.55)" : "rgba(255,255,255,.14)"), borderRadius:999, padding:"4px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>
-                  {on ? "✓ " : ""}{label}
-                </button>
-              );
-            })}
-          </div>
-          {/* Optional instruction appended to the prompt for THIS run — steer a redo. */}
-          <input value={regenNote} onChange={e => setRegenNote(e.target.value.slice(0, 240))} maxLength={240}
-                 placeholder="Optional note for this run — e.g. “straighten the laces”, “make the black deeper”"
-                 style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid "+(regenNote.trim()?"rgba(74,127,255,.5)":"rgba(255,255,255,.15)"), borderRadius:8, color:"#fff", padding:"8px 11px", fontSize:12.5, marginBottom:8 }}/>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
             <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>
               {pickList.length} product{pickList.length===1?"":"s"} {includeDone ? "available (incl. done)" : "not yet done"}{!includeDone && handledIds.size ? ` · ${handledIds.size} hidden` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}
@@ -2008,47 +1969,13 @@ function AdminReviewPhotosTab({ products = [] }) {
                   <img src={row.proposedUrl} alt="" onClick={() => setLightbox(row.proposedUrl)} style={imgBox}/>
                 </div>
               </div>
-              {/* Regenerate controls for THIS product: pick a different AI, tap what to
-                  fix, and/or type a comment — all sent to the engine on Regenerate. */}
-              <div style={{ background:"rgba(255,255,255,.025)", border:"1px solid rgba(255,255,255,.07)", borderRadius:10, padding:"8px 9px", marginBottom:8 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:7, flexWrap:"wrap" }}>
-                  <span style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:.4 }}>REGENERATE WITH</span>
-                  {[["auto","Auto"],["gemini","Gemini"],["openai","OpenAI"]].map(([val, lab]) => {
-                    const sel = (cardEngines[row.id] || "auto") === val;
-                    return (
-                      <button key={val} type="button" disabled={busy || regen}
-                              onClick={() => setCardEngines(m => ({ ...m, [row.id]: val }))}
-                              style={{ background: sel ? "rgba(74,127,255,.22)" : "rgba(255,255,255,.05)", color: sel ? "#9DBBFF" : "rgba(255,255,255,.6)",
-                                       border:"1px solid "+(sel ? "rgba(74,127,255,.55)" : "rgba(255,255,255,.14)"), borderRadius:999, padding:"3px 11px", fontSize:11, fontWeight:700, cursor:"pointer" }}>
-                        {lab}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:7 }}>
-                  {FIX_PRESETS.map(([label, instr]) => {
-                    const on = (cardNotes[row.id] || "").includes(instr);
-                    return (
-                      <button key={label} type="button" disabled={busy || regen}
-                              onClick={() => toggleCardFix(row.id, instr)}
-                              style={{ background: on ? "rgba(74,127,255,.22)" : "rgba(255,255,255,.05)", color: on ? "#9DBBFF" : "rgba(255,255,255,.65)",
-                                       border:"1px solid "+(on ? "rgba(74,127,255,.55)" : "rgba(255,255,255,.13)"), borderRadius:999, padding:"3px 9px", fontSize:10.5, fontWeight:700, cursor:"pointer" }}>
-                        {on ? "✓ " : ""}{label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <input value={cardNotes[row.id] || ""} onChange={e => setCardNotes(m => ({ ...m, [row.id]: e.target.value.slice(0, 240) }))} maxLength={240}
-                       placeholder="Comment for the AI on this regenerate (optional)…" disabled={busy || regen}
-                       style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid "+((cardNotes[row.id]||"").trim()?"rgba(74,127,255,.5)":"rgba(255,255,255,.14)"), borderRadius:8, color:"#fff", padding:"7px 10px", fontSize:12 }}/>
-              </div>
               <div style={{ display:"flex", gap:8 }}>
                 <button onClick={() => approve(row)} disabled={busy || regen}
                         style={{ flex:1, background:"rgba(0,150,70,.22)", border:"1px solid rgba(0,180,80,.4)", color:"#4ACA7A", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
                   {busy ? "…" : "Approve"}
                 </button>
-                <button onClick={() => regenerate(row)} disabled={busy || regen}
-                        title={`Re-shoot this one at ${quality}`}
+                <button onClick={() => setRegenFor(row)} disabled={busy || regen}
+                        title="Open regenerate options"
                         style={{ flex:1, background:"rgba(74,127,255,.16)", border:"1px solid rgba(74,127,255,.4)", color:"#7AA7FF", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
                   {regen ? "Regenerating…" : "Regenerate"}
                 </button>
@@ -2067,6 +1994,86 @@ function AdminReviewPhotosTab({ products = [] }) {
           <img src={lightbox} alt="" style={{ maxWidth:"100%", maxHeight:"100%", objectFit:"contain", borderRadius:10 }}/>
         </div>
       )}
+      {regenFor && (
+        <RegenerateModal
+          row={regenFor}
+          quality={quality}
+          onClose={() => setRegenFor(null)}
+          onSubmit={(opts) => { const r = regenFor; setRegenFor(null); regenerate(r, opts); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Regenerate popup — opens from a card's Regenerate button. Holds its OWN choices
+// (AI + fixes + comment) in local state, so they reset every time it opens and
+// nothing stays selected after a send. onSubmit closes it and fires the re-shoot.
+function RegenerateModal({ row, quality, onClose, onSubmit }) {
+  const [engine, setEngine] = useState("auto");
+  const [note, setNote] = useState("");
+  const toggle = (instr) => setNote(n => {
+    const t = n.trim();
+    if (t.includes(instr)) return t.replace(instr, "").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "").trim();
+    return (t ? t + "; " + instr : instr).slice(0, 240);
+  });
+  const lbl = { fontSize:11, fontWeight:700, color:"rgba(255,255,255,.5)", marginBottom:7, letterSpacing:.4 };
+  const ENGINES = [["auto","Auto","smart pick"], ["gemini","Gemini","best for shoes"], ["openai","OpenAI","best for clothing"]];
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(4,6,12,.72)", backdropFilter:"blur(6px)", WebkitBackdropFilter:"blur(6px)", zIndex:10000, display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width:"100%", maxWidth:440, maxHeight:"90vh", overflowY:"auto", background:"linear-gradient(180deg, rgba(18,22,38,.98), rgba(10,13,24,.98))", border:"1px solid rgba(74,127,255,.28)", borderRadius:18, boxShadow:"0 24px 80px rgba(0,0,0,.6)", padding:18 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:11, marginBottom:16 }}>
+          <img src={row.proposedUrl} alt="" style={{ width:54, height:54, borderRadius:11, objectFit:"cover", border:"1px solid rgba(255,255,255,.12)", background:"#fff", flexShrink:0 }}/>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:10.5, fontWeight:800, letterSpacing:1, color:"#7AA7FF" }}>✦ REGENERATE</div>
+            <div style={{ fontSize:14.5, fontWeight:700, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{row.name || "(no name)"}</div>
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", color:"rgba(255,255,255,.6)", borderRadius:8, width:30, height:30, fontSize:17, cursor:"pointer", lineHeight:1, flexShrink:0 }}>×</button>
+        </div>
+
+        <div style={lbl}>CHOOSE AI</div>
+        <div style={{ display:"flex", gap:7, marginBottom:16 }}>
+          {ENGINES.map(([val, lab, hint]) => {
+            const sel = engine === val;
+            return (
+              <button key={val} type="button" onClick={() => setEngine(val)}
+                      style={{ flex:1, background: sel ? "linear-gradient(180deg,rgba(74,127,255,.32),rgba(74,127,255,.15))" : "rgba(255,255,255,.04)",
+                               border:"1px solid "+(sel ? "rgba(74,127,255,.6)" : "rgba(255,255,255,.1)"), borderRadius:12, padding:"10px 6px", cursor:"pointer" }}>
+                <div style={{ fontSize:12.5, fontWeight:800, color: sel ? "#fff" : "rgba(255,255,255,.75)" }}>{lab}</div>
+                <div style={{ fontSize:9.5, color: sel ? "#9DBBFF" : "rgba(255,255,255,.4)", marginTop:2 }}>{hint}</div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={lbl}>WHAT NEEDS FIXING? <span style={{ fontWeight:500, color:"rgba(255,255,255,.3)" }}>tap any</span></div>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:16 }}>
+          {FIX_PRESETS.map(([label, instr]) => {
+            const on = note.includes(instr);
+            return (
+              <button key={label} type="button" onClick={() => toggle(instr)}
+                      style={{ background: on ? "rgba(74,127,255,.25)" : "rgba(255,255,255,.05)", color: on ? "#cdddff" : "rgba(255,255,255,.7)",
+                               border:"1px solid "+(on ? "rgba(74,127,255,.6)" : "rgba(255,255,255,.13)"), borderRadius:999, padding:"6px 12px", fontSize:11.5, fontWeight:700, cursor:"pointer" }}>
+                {on ? "✓ " : ""}{label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={lbl}>COMMENT <span style={{ fontWeight:500, color:"rgba(255,255,255,.3)" }}>optional</span></div>
+        <textarea value={note} onChange={e => setNote(e.target.value.slice(0, 240))} maxLength={240} rows={2}
+                  placeholder="Tell the AI exactly what to change…"
+                  style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid "+(note.trim() ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.14)"), borderRadius:10, color:"#fff", padding:"10px 12px", fontSize:12.5, resize:"vertical", fontFamily:"inherit" }}/>
+
+        <div style={{ display:"flex", gap:9, marginTop:16 }}>
+          <button type="button" onClick={onClose}
+                  style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.14)", color:"rgba(255,255,255,.7)", borderRadius:11, padding:"11px 16px", fontSize:13, fontWeight:700, cursor:"pointer" }}>Cancel</button>
+          <button type="button" onClick={() => onSubmit({ engine, note })}
+                  style={{ flex:1, background:"linear-gradient(180deg,#5A8BFF,#3D6BFF)", border:"none", color:"#fff", borderRadius:11, padding:"11px 0", fontSize:13.5, fontWeight:800, cursor:"pointer", boxShadow:"0 6px 18px rgba(61,107,255,.4)" }}>
+            ✦ Regenerate at {quality}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
