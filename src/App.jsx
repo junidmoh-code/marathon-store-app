@@ -1688,6 +1688,19 @@ function AdminReviewPhotosTab({ products = [] }) {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
   const [regenIds, setRegenIds] = useState(() => new Set()); // ids currently re-generating (per-row lock)
+  // Per-card regenerate comment (id → note text). Tapping a fix chip toggles its
+  // instruction in here; this card's Regenerate sends exactly its own note to Gemini.
+  const [cardNotes, setCardNotes] = useState({});
+  const toggleCardFix = (id, instr) => setCardNotes(m => {
+    const t = (m[id] || "").trim();
+    const next = t.includes(instr)
+      ? t.replace(instr, "").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "").trim()
+      : (t ? t + "; " + instr : instr).slice(0, 240);
+    return { ...m, [id]: next };
+  });
+  // Per-card engine choice for a regenerate (id → "auto"|"gemini"|"openai"), so you
+  // can try a different AI on just this product. "auto" = use the studio-level engine.
+  const [cardEngines, setCardEngines] = useState({});
   const [bulkBusy, setBulkBusy] = useState(false);
   const [runN, setRunN]       = useState(12);
   const [quality, setQuality] = useState("medium");
@@ -1811,9 +1824,16 @@ function AdminReviewPhotosTab({ products = [] }) {
   // tricky branding). Overwrites its proposal in place; the row updates when it returns.
   const regenerate = async (row) => {
     setRegenIds(s => new Set(s).add(row.id));
-    setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}…`);
+    // This card's own comment wins; fall back to the picker-level note if the card
+    // has none. Either way the engine gets a PRIORITY FIX for the re-shoot.
+    const cardNote = (cardNotes[row.id] || "").trim();
+    const thisNote = cardNote ? { note: cardNote } : noteArg;
+    // Per-card AI override wins over the studio-level engine; "auto"/unset → studio default.
+    const cardEngine = cardEngines[row.id];
+    const thisEngine = (cardEngine === "gemini" || cardEngine === "openai") ? { engine: cardEngine } : engineArg;
+    setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}${cardEngine && cardEngine !== "auto" ? ` via ${cardEngine}` : ""}${cardNote ? ` — “${cardNote}”` : ""}…`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...engineArg, ...noteArg });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...thisEngine, ...thisNote });
       const d = res?.data || {};
       setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”.`);
     } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }
@@ -1987,6 +2007,40 @@ function AdminReviewPhotosTab({ products = [] }) {
                   <div style={{ fontSize:10, fontWeight:700, color:"#4ACA7A", marginBottom:4, letterSpacing:.5 }}>WHITE BACKGROUND</div>
                   <img src={row.proposedUrl} alt="" onClick={() => setLightbox(row.proposedUrl)} style={imgBox}/>
                 </div>
+              </div>
+              {/* Regenerate controls for THIS product: pick a different AI, tap what to
+                  fix, and/or type a comment — all sent to the engine on Regenerate. */}
+              <div style={{ background:"rgba(255,255,255,.025)", border:"1px solid rgba(255,255,255,.07)", borderRadius:10, padding:"8px 9px", marginBottom:8 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:7, flexWrap:"wrap" }}>
+                  <span style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:.4 }}>REGENERATE WITH</span>
+                  {[["auto","Auto"],["gemini","Gemini"],["openai","OpenAI"]].map(([val, lab]) => {
+                    const sel = (cardEngines[row.id] || "auto") === val;
+                    return (
+                      <button key={val} type="button" disabled={busy || regen}
+                              onClick={() => setCardEngines(m => ({ ...m, [row.id]: val }))}
+                              style={{ background: sel ? "rgba(74,127,255,.22)" : "rgba(255,255,255,.05)", color: sel ? "#9DBBFF" : "rgba(255,255,255,.6)",
+                                       border:"1px solid "+(sel ? "rgba(74,127,255,.55)" : "rgba(255,255,255,.14)"), borderRadius:999, padding:"3px 11px", fontSize:11, fontWeight:700, cursor:"pointer" }}>
+                        {lab}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:7 }}>
+                  {FIX_PRESETS.map(([label, instr]) => {
+                    const on = (cardNotes[row.id] || "").includes(instr);
+                    return (
+                      <button key={label} type="button" disabled={busy || regen}
+                              onClick={() => toggleCardFix(row.id, instr)}
+                              style={{ background: on ? "rgba(74,127,255,.22)" : "rgba(255,255,255,.05)", color: on ? "#9DBBFF" : "rgba(255,255,255,.65)",
+                                       border:"1px solid "+(on ? "rgba(74,127,255,.55)" : "rgba(255,255,255,.13)"), borderRadius:999, padding:"3px 9px", fontSize:10.5, fontWeight:700, cursor:"pointer" }}>
+                        {on ? "✓ " : ""}{label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <input value={cardNotes[row.id] || ""} onChange={e => setCardNotes(m => ({ ...m, [row.id]: e.target.value.slice(0, 240) }))} maxLength={240}
+                       placeholder="Comment for the AI on this regenerate (optional)…" disabled={busy || regen}
+                       style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid "+((cardNotes[row.id]||"").trim()?"rgba(74,127,255,.5)":"rgba(255,255,255,.14)"), borderRadius:8, color:"#fff", padding:"7px 10px", fontSize:12 }}/>
               </div>
               <div style={{ display:"flex", gap:8 }}>
                 <button onClick={() => approve(row)} disabled={busy || regen}
