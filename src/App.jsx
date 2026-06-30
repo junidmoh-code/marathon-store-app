@@ -1845,13 +1845,13 @@ function AdminReviewPhotosTab({ products = [] }) {
     finally { setRegenIds(s => { const n = new Set(s); n.delete(row.id); return n; }); }
   };
 
-  const imgBox = { width:"100%", aspectRatio:"1", objectFit:"contain", background:"rgba(255,255,255,.08)", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", cursor:"zoom-in", display:"block" };
+  const imgBox = { width:"100%", aspectRatio:"1", objectFit:"contain", background:"rgba(255,255,255,.05)", borderRadius:12, border:"1px solid rgba(255,255,255,.08)", cursor:"zoom-in", display:"block" };
 
   return (
     <div style={{ padding:"0 14px 30px" }}>
       <div style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0 12px" }}>
-        <span style={{ fontSize:18, fontWeight:700, color:"#fff" }}>AI Photo Cleanup</span>
-        <span style={{ background:"rgba(74,202,122,.15)", border:"1px solid rgba(74,202,122,.35)", color:"#4ACA7A", fontSize:12, fontWeight:700, padding:"3px 10px", borderRadius:12 }}>{pending.length} to review</span>
+        <span style={{ fontSize:18, fontWeight:700, color:"#fff", letterSpacing:-.2 }}>AI Photo Studio</span>
+        <span style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", color:"rgba(255,255,255,.6)", fontSize:11.5, fontWeight:600, padding:"3px 10px", borderRadius:999 }}>{pending.length} to review</span>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:10 }}>
         <span style={{ fontSize:12, color:"rgba(255,255,255,.6)" }}>Generate</span>
@@ -1969,59 +1969,55 @@ function AdminReviewPhotosTab({ products = [] }) {
           const regen = regenIds.has(row.id);
           const extras = galleryOf(row.id);
           return (
-            <div key={row.id} style={{ background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:12 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, flexWrap:"wrap" }}>
-                <span style={{ fontSize:13.5, fontWeight:600, color:"#fff" }}>{row.name || "(no name)"}</span>
+            <div key={row.id} style={{ background:"rgba(255,255,255,.025)", border:"1px solid rgba(255,255,255,.08)", borderRadius:16, padding:14 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+                <span style={{ fontSize:14, fontWeight:600, color:"#fff", letterSpacing:-.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1, minWidth:0 }}>{row.name || "(no name)"}</span>
                 {row.engine && (
-                  <span style={{ fontSize:10.5, fontWeight:700, padding:"2px 8px", borderRadius:10,
-                                 background: row.engine === "gemini" ? "rgba(245,158,11,.16)" : "rgba(74,127,255,.16)",
-                                 border: "1px solid " + (row.engine === "gemini" ? "rgba(245,158,11,.4)" : "rgba(74,127,255,.4)"),
-                                 color: row.engine === "gemini" ? "#F59E0B" : "#7AA7FF" }}>
-                    {row.engine === "gemini" ? "Gemini" : "OpenAI"}{Number(row.costUSD) > 0 ? ` · $${Number(row.costUSD).toFixed(4)}` : ""}
+                  <span style={{ display:"inline-flex", alignItems:"center", gap:5, fontSize:11, fontWeight:600, color:"rgba(255,255,255,.45)", flexShrink:0 }}>
+                    <span style={{ width:6, height:6, borderRadius:"50%", background: row.engine === "gemini" ? "#F59E0B" : "#7AA7FF" }}/>
+                    {row.engine === "gemini" ? "Gemini" : "OpenAI"}{Number(row.costUSD) > 0 ? ` · $${Number(row.costUSD).toFixed(3)}` : ""}
                   </span>
                 )}
               </div>
-              <div style={{ display:"flex", gap:10, marginBottom:10 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", marginBottom:4, letterSpacing:.5 }}>ORIGINAL</div>
+                  <div style={{ fontSize:9, fontWeight:700, color:"rgba(255,255,255,.3)", marginBottom:5, letterSpacing:1 }}>BEFORE</div>
                   <img src={row.originalUrl} alt="" onClick={() => setLightbox(row.originalUrl)} style={imgBox}/>
                 </div>
+                <span style={{ color:"rgba(255,255,255,.2)", fontSize:16, marginTop:18, flexShrink:0 }}>→</span>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#4ACA7A", marginBottom:4, letterSpacing:.5 }}>WHITE BACKGROUND</div>
+                  <div style={{ fontSize:9, fontWeight:700, color:"rgba(123,167,255,.7)", marginBottom:5, letterSpacing:1 }}>AFTER</div>
                   <img src={row.proposedUrl} alt="" onClick={() => setLightbox(row.proposedUrl)} style={imgBox}/>
                 </div>
               </div>
-              {/* Kept extra angles — saved snapshots that survive a regenerate. Tap to
-                  zoom; × to remove. */}
-              {extras.length > 0 && (
-                <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap", marginBottom:8, padding:"7px 9px", background:"rgba(74,202,122,.06)", border:"1px solid rgba(74,202,122,.22)", borderRadius:10 }}>
-                  <span style={{ fontSize:10, fontWeight:700, color:"#4ACA7A", letterSpacing:.4 }}>EXTRA ANGLES · {extras.length}</span>
-                  {extras.map((u) => (
-                    <div key={u} style={{ position:"relative" }}>
-                      <img src={u} alt="" onClick={() => setLightbox(u)} style={{ width:40, height:40, borderRadius:7, objectFit:"cover", background:"#fff", border:"1px solid rgba(255,255,255,.15)", cursor:"zoom-in", display:"block" }}/>
-                      <button onClick={() => removeExtra(row, u)} aria-label="Remove extra angle"
-                              style={{ position:"absolute", top:-6, right:-6, width:17, height:17, borderRadius:"50%", background:"#FF6B6B", color:"#fff", border:"none", fontSize:11, lineHeight:1, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>×</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {/* Keep the current shot as an extra angle WITHOUT regenerating. */}
-              <button onClick={() => keepExtra(row)} disabled={busy || regen}
-                      style={{ width:"100%", boxSizing:"border-box", background:"rgba(74,202,122,.1)", border:"1px dashed rgba(74,202,122,.4)", color:"#4ACA7A", borderRadius:9, padding:"8px 0", fontSize:12, fontWeight:700, cursor:(busy||regen)?"wait":"pointer", marginBottom:8 }}>
-                📌 Keep this photo as an extra angle
-              </button>
+              {/* Extras + keep on one quiet line: kept angles on the left, a ghost
+                  "Keep angle" chip on the right. Tap a thumb to zoom; × to remove. */}
+              <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap", marginBottom:12 }}>
+                {extras.length > 0 && <span style={{ fontSize:9, fontWeight:700, color:"rgba(255,255,255,.35)", letterSpacing:1 }}>EXTRAS</span>}
+                {extras.map((u) => (
+                  <div key={u} style={{ position:"relative" }}>
+                    <img src={u} alt="" onClick={() => setLightbox(u)} style={{ width:34, height:34, borderRadius:8, objectFit:"cover", background:"#fff", border:"1px solid rgba(255,255,255,.12)", cursor:"zoom-in", display:"block" }}/>
+                    <button onClick={() => removeExtra(row, u)} aria-label="Remove extra angle"
+                            style={{ position:"absolute", top:-5, right:-5, width:15, height:15, borderRadius:"50%", background:"rgba(10,12,20,.9)", color:"rgba(255,255,255,.7)", border:"1px solid rgba(255,255,255,.2)", fontSize:10, lineHeight:1, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>×</button>
+                  </div>
+                ))}
+                <button onClick={() => keepExtra(row)} disabled={busy || regen} title="Save this photo as an extra angle (no extra cost)"
+                        style={{ marginLeft:"auto", display:"inline-flex", alignItems:"center", gap:5, background:"transparent", border:"1px solid rgba(255,255,255,.14)", color:"rgba(255,255,255,.65)", borderRadius:999, padding:"5px 11px", fontSize:11, fontWeight:600, cursor:(busy||regen)?"wait":"pointer" }}>
+                  <span style={{ fontSize:12 }}>＋</span> Keep angle
+                </button>
+              </div>
               <div style={{ display:"flex", gap:8 }}>
                 <button onClick={() => approve(row)} disabled={busy || regen}
-                        style={{ flex:1, background:"rgba(0,150,70,.22)", border:"1px solid rgba(0,180,80,.4)", color:"#4ACA7A", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
+                        style={{ flex:1.4, background:"rgba(74,202,122,.16)", border:"1px solid rgba(74,202,122,.35)", color:"#5FD894", borderRadius:11, padding:"11px 0", fontSize:13, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .55 : 1 }}>
                   {busy ? "…" : "Approve"}
                 </button>
                 <button onClick={() => setRegenFor(row)} disabled={busy || regen}
                         title="Open regenerate options"
-                        style={{ flex:1, background:"rgba(74,127,255,.16)", border:"1px solid rgba(74,127,255,.4)", color:"#7AA7FF", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
-                  {regen ? "Regenerating…" : "Regenerate"}
+                        style={{ flex:1, display:"inline-flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(255,255,255,.045)", border:"1px solid rgba(255,255,255,.1)", color:"rgba(255,255,255,.8)", borderRadius:11, padding:"11px 0", fontSize:13, fontWeight:600, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .55 : 1 }}>
+                  <span style={{ fontSize:13 }}>↻</span>{regen ? "…" : "Regenerate"}
                 </button>
-                <button onClick={() => reject(row)} disabled={busy || regen}
-                        style={{ flex:1, background:"rgba(150,30,30,.18)", border:"1px solid rgba(200,60,60,.35)", color:"#FF6B6B", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
+                <button onClick={() => reject(row)} disabled={busy || regen} title="Reject"
+                        style={{ flexShrink:0, background:"transparent", border:"1px solid rgba(255,255,255,.1)", color:"rgba(255,120,120,.75)", borderRadius:11, padding:"11px 16px", fontSize:13, fontWeight:600, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .55 : 1 }}>
                   Reject
                 </button>
               </div>
