@@ -1782,6 +1782,27 @@ function AdminReviewPhotosTab({ products = [] }) {
     } catch (e) { setRunMsg(`Approve failed for “${row.name || row.id}”: ${e?.message || e}`); return false; }
     finally { setBusyId(null); }
   };
+  // Save the CURRENT proposed photo onto the product as an extra angle, so a later
+  // Regenerate (which re-shoots in place) doesn't throw away a good angle Gemini
+  // already produced — at NO extra generation cost. Each generation has a unique,
+  // permanent storage URL, so we just append that URL to products/{id}/gallery.
+  const galleryOf = (id) => { const p = products.find(x => x.id === id); return Array.isArray(p?.gallery) ? p.gallery.filter(Boolean) : []; };
+  const keepExtra = async (row) => {
+    const url = row.proposedUrl;
+    if (!url) return false;
+    const gallery = galleryOf(row.id);
+    if (gallery.includes(url)) { setRunMsg(`That photo is already kept for “${row.name || row.id}”.`); return true; }
+    try {
+      await update(ref(database, `products/${row.id}`), { gallery: [...gallery, url] });
+      setRunMsg(`Kept as an extra angle for “${row.name || row.id}” — ${gallery.length + 1} extra${gallery.length ? "s" : ""} saved.`);
+      return true;
+    } catch (e) { setRunMsg(`Couldn't keep photo: ${e?.message || e}`); return false; }
+  };
+  const removeExtra = async (row, url) => {
+    const gallery = galleryOf(row.id).filter(u => u !== url);
+    try { await update(ref(database, `products/${row.id}`), { gallery }); setRunMsg(`Removed an extra angle from “${row.name || row.id}”.`); }
+    catch (e) { setRunMsg(`Couldn't remove: ${e?.message || e}`); }
+  };
   const reject = async (row) => {
     setBusyId(row.id);
     try { await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "rejected", decidedAt: Date.now() }); }
@@ -1946,6 +1967,7 @@ function AdminReviewPhotosTab({ products = [] }) {
         {pending.map(row => {
           const busy = busyId === row.id;
           const regen = regenIds.has(row.id);
+          const extras = galleryOf(row.id);
           return (
             <div key={row.id} style={{ background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:12 }}>
               <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, flexWrap:"wrap" }}>
@@ -1969,6 +1991,25 @@ function AdminReviewPhotosTab({ products = [] }) {
                   <img src={row.proposedUrl} alt="" onClick={() => setLightbox(row.proposedUrl)} style={imgBox}/>
                 </div>
               </div>
+              {/* Kept extra angles — saved snapshots that survive a regenerate. Tap to
+                  zoom; × to remove. */}
+              {extras.length > 0 && (
+                <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap", marginBottom:8, padding:"7px 9px", background:"rgba(74,202,122,.06)", border:"1px solid rgba(74,202,122,.22)", borderRadius:10 }}>
+                  <span style={{ fontSize:10, fontWeight:700, color:"#4ACA7A", letterSpacing:.4 }}>EXTRA ANGLES · {extras.length}</span>
+                  {extras.map((u) => (
+                    <div key={u} style={{ position:"relative" }}>
+                      <img src={u} alt="" onClick={() => setLightbox(u)} style={{ width:40, height:40, borderRadius:7, objectFit:"cover", background:"#fff", border:"1px solid rgba(255,255,255,.15)", cursor:"zoom-in", display:"block" }}/>
+                      <button onClick={() => removeExtra(row, u)} aria-label="Remove extra angle"
+                              style={{ position:"absolute", top:-6, right:-6, width:17, height:17, borderRadius:"50%", background:"#FF6B6B", color:"#fff", border:"none", fontSize:11, lineHeight:1, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Keep the current shot as an extra angle WITHOUT regenerating. */}
+              <button onClick={() => keepExtra(row)} disabled={busy || regen}
+                      style={{ width:"100%", boxSizing:"border-box", background:"rgba(74,202,122,.1)", border:"1px dashed rgba(74,202,122,.4)", color:"#4ACA7A", borderRadius:9, padding:"8px 0", fontSize:12, fontWeight:700, cursor:(busy||regen)?"wait":"pointer", marginBottom:8 }}>
+                📌 Keep this photo as an extra angle
+              </button>
               <div style={{ display:"flex", gap:8 }}>
                 <button onClick={() => approve(row)} disabled={busy || regen}
                         style={{ flex:1, background:"rgba(0,150,70,.22)", border:"1px solid rgba(0,180,80,.4)", color:"#4ACA7A", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
@@ -1998,8 +2039,9 @@ function AdminReviewPhotosTab({ products = [] }) {
         <RegenerateModal
           row={regenFor}
           quality={quality}
+          extraCount={galleryOf(regenFor.id).length}
           onClose={() => setRegenFor(null)}
-          onSubmit={(opts) => { const r = regenFor; setRegenFor(null); regenerate(r, opts); }}
+          onSubmit={async (opts) => { const r = regenFor; setRegenFor(null); if (opts.keepFirst) await keepExtra(r); regenerate(r, opts); }}
         />
       )}
     </div>
@@ -2009,9 +2051,10 @@ function AdminReviewPhotosTab({ products = [] }) {
 // Regenerate popup — opens from a card's Regenerate button. Holds its OWN choices
 // (AI + fixes + comment) in local state, so they reset every time it opens and
 // nothing stays selected after a send. onSubmit closes it and fires the re-shoot.
-function RegenerateModal({ row, quality, onClose, onSubmit }) {
+function RegenerateModal({ row, quality, extraCount = 0, onClose, onSubmit }) {
   const [engine, setEngine] = useState("gemini"); // default to Gemini for regenerates
   const [note, setNote] = useState("");
+  const [keepFirst, setKeepFirst] = useState(true); // keep the current photo before re-shooting (no extra cost)
   const toggle = (instr) => setNote(n => {
     const t = n.trim();
     if (t.includes(instr)) return t.replace(instr, "").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "").trim();
@@ -2065,10 +2108,22 @@ function RegenerateModal({ row, quality, onClose, onSubmit }) {
                   placeholder="Tell the AI exactly what to change…"
                   style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid "+(note.trim() ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.14)"), borderRadius:10, color:"#fff", padding:"10px 12px", fontSize:12.5, resize:"vertical", fontFamily:"inherit" }}/>
 
-        <div style={{ display:"flex", gap:9, marginTop:16 }}>
+        {/* Keep the current photo as an extra angle before re-shooting — so a good
+            angle you already paid for isn't lost. No extra generation cost. */}
+        <label style={{ display:"flex", alignItems:"flex-start", gap:9, marginTop:16, padding:"11px 12px", borderRadius:11, cursor:"pointer",
+                        background: keepFirst ? "rgba(74,202,122,.1)" : "rgba(255,255,255,.04)", border:"1px solid "+(keepFirst ? "rgba(74,202,122,.4)" : "rgba(255,255,255,.12)") }}>
+          <input type="checkbox" checked={keepFirst} onChange={e => setKeepFirst(e.target.checked)} style={{ width:16, height:16, accentColor:"#4ACA7A", cursor:"pointer", marginTop:1 }}/>
+          <span style={{ fontSize:12.5, color:"#fff", lineHeight:1.35 }}>
+            Keep the current photo as an extra angle first
+            <span style={{ display:"block", fontSize:10.5, color:"rgba(255,255,255,.5)", marginTop:2 }}>
+              Saves it onto the product (no extra cost) so this re-shoot can't lose it{extraCount ? ` · ${extraCount} already kept` : ""}.
+            </span>
+          </span>
+        </label>
+        <div style={{ display:"flex", gap:9, marginTop:14 }}>
           <button type="button" onClick={onClose}
                   style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.14)", color:"rgba(255,255,255,.7)", borderRadius:11, padding:"11px 16px", fontSize:13, fontWeight:700, cursor:"pointer" }}>Cancel</button>
-          <button type="button" onClick={() => onSubmit({ engine, note })}
+          <button type="button" onClick={() => onSubmit({ engine, note, keepFirst })}
                   style={{ flex:1, background:"linear-gradient(180deg,#5A8BFF,#3D6BFF)", border:"none", color:"#fff", borderRadius:11, padding:"11px 0", fontSize:13.5, fontWeight:800, cursor:"pointer", boxShadow:"0 6px 18px rgba(61,107,255,.4)" }}>
             ✦ Regenerate at {quality}
           </button>
