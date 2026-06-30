@@ -1704,13 +1704,26 @@ function AdminReviewPhotosTab({ products = [] }) {
     if (q) avail = avail.filter(p => productMatchesQuery(p, q));
     return avail.sort((a, b) => a.name.localeCompare(b.name));
   }, [products, pickSearch, pickFilter, handledIds]);
+  // Per-category / per-subcategory count of products that are STILL pickable
+  // (have a source photo + not already generated). Shown next to each dropdown
+  // option so you can see at a glance which categories have work left — without
+  // this, picking a fully-done category just shows "0 products" with no clue why.
+  const availBuckets = useMemo(() => {
+    const cat = {}, sub = {};
+    for (const p of (products || [])) {
+      if (!p || !p.id || !p.name || !p.photoUrl || handledIds.has(p.id)) continue;
+      if (p.category)    cat[p.category]    = (cat[p.category]    || 0) + 1;
+      if (p.subcategory) sub[p.subcategory] = (sub[p.subcategory] || 0) + 1;
+    }
+    return { cat, sub };
+  }, [products, handledIds]);
   const toggleSel = (id) => setSelectedIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   // Add the products currently shown (after the category/search filters) to the
   // selection — e.g. "select all Jerseys" in one tap. Capped at the 200/batch
   // limit the generate flow enforces server-side, so the UI never promises more
   // than one run can process.
   const PICK_CAP = 200;
-  const PICK_RENDER_CAP = 120; // only render this many rows (a category can be 1000+ → don't DOM them all)
+  const PICK_RENDER_CAP = 60; // only render this many rows (a category can be 1000+ → don't DOM/fetch 1000 full-res source photos). Narrow with a subcategory; counts in the dropdown show where the work is.
   const selectAllShown = () => setSelectedIds(s => {
     const n = new Set(s);
     for (const p of pickList) { if (n.size >= PICK_CAP) break; n.add(p.id); }
@@ -1838,8 +1851,8 @@ function AdminReviewPhotosTab({ products = [] }) {
             <option value="">All categories</option>
             {Object.entries(CATEGORY_TREE).map(([top, subs]) => (
               <optgroup key={top} label={top}>
-                <option value={`cat:${top}`}>All {top}</option>
-                {subs.map(s => <option key={s} value={`sub:${s}`}>{s}</option>)}
+                <option value={`cat:${top}`}>All {top} ({availBuckets.cat[top] || 0})</option>
+                {subs.map(s => <option key={s} value={`sub:${s}`}>{s} ({availBuckets.sub[s] || 0})</option>)}
               </optgroup>
             ))}
           </select>
@@ -1861,7 +1874,7 @@ function AdminReviewPhotosTab({ products = [] }) {
                 <div key={p.id} onClick={() => toggleSel(p.id)}
                      style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 8px", borderRadius:9, cursor:"pointer",
                               background: on ? "rgba(74,202,122,.16)" : "rgba(255,255,255,.03)", border:"1px solid "+(on ? "rgba(74,202,122,.5)" : "rgba(255,255,255,.07)") }}>
-                  <img src={p.photoUrl} alt="" loading="lazy"
+                  <img src={p.photoUrl} alt="" loading="lazy" decoding="async"
                        style={{ width:38, height:38, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
                   <span style={{ flex:1, minWidth:0, fontSize:12.5, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</span>
                   <span style={{ fontSize:15, color: on ? "#4ACA7A" : "rgba(255,255,255,.25)" }}>{on ? "✓" : "+"}</span>
