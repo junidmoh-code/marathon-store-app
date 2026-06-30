@@ -1686,8 +1686,9 @@ function AdminReviewPhotosTab({ products = [] }) {
   // Product picker: choose specific products to generate (multi-select).
   const [picking, setPicking]   = useState(false);
   const [pickSearch, setPickSearch] = useState("");
-  const [pickCat, setPickCat]   = useState("All");   // top-level category filter
-  const [pickSub, setPickSub]   = useState("");       // subcategory filter (within pickCat)
+  // One filter value: "" = all · "cat:Footwear" = a whole top-level · "sub:Caps & Hats"
+  // = one subcategory. A single grouped dropdown so subcategories are directly pickable.
+  const [pickFilter, setPickFilter] = useState("");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
   // Products already generated (pending/approved) are excluded so you don't re-pick
@@ -1697,12 +1698,12 @@ function AdminReviewPhotosTab({ products = [] }) {
   ), [proposals]);
   const pickList = useMemo(() => {
     let avail = (products || []).filter(p => p && p.id && p.name && p.photoUrl && !handledIds.has(p.id));
-    if (pickCat !== "All") avail = avail.filter(p => p.category === pickCat);
-    if (pickSub) avail = avail.filter(p => p.subcategory === pickSub);
+    if (pickFilter.startsWith("cat:")) { const c = pickFilter.slice(4); avail = avail.filter(p => p.category === c); }
+    else if (pickFilter.startsWith("sub:")) { const s = pickFilter.slice(4); avail = avail.filter(p => p.subcategory === s); }
     const q = pickSearch.trim();
     if (q) avail = avail.filter(p => productMatchesQuery(p, q));
     return avail.sort((a, b) => a.name.localeCompare(b.name));
-  }, [products, pickSearch, pickCat, pickSub, handledIds]);
+  }, [products, pickSearch, pickFilter, handledIds]);
   const toggleSel = (id) => setSelectedIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   // Add the products currently shown (after the category/search filters) to the
   // selection — e.g. "select all Jerseys" in one tap. Capped at the 200/batch
@@ -1829,21 +1830,18 @@ function AdminReviewPhotosTab({ products = [] }) {
         <div style={{ background:"rgba(8,11,20,.95)", border:"1px solid rgba(74,127,255,.3)", borderRadius:12, padding:12, marginBottom:14 }}>
           <input value={pickSearch} onChange={e => setPickSearch(e.target.value)} placeholder="Search products by name or barcode…"
                  style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"9px 11px", fontSize:13.5, marginBottom:8 }}/>
-          {/* Category filter — pick a whole category/subcategory to generate (e.g. all Jerseys). */}
-          <div style={{ display:"flex", gap:8, marginBottom:8 }}>
-            <select value={pickCat} onChange={e => { setPickCat(e.target.value); setPickSub(""); }} aria-label="Filter by category"
-                    style={{ flex:1, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"8px 9px", fontSize:12.5 }}>
-              <option value="All">All categories</option>
-              {Object.keys(CATEGORY_TREE).map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-            {pickCat !== "All" && (
-              <select value={pickSub} onChange={e => setPickSub(e.target.value)} aria-label="Filter by subcategory"
-                      style={{ flex:1, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"8px 9px", fontSize:12.5 }}>
-                <option value="">All {pickCat}</option>
-                {(CATEGORY_TREE[pickCat] || []).map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            )}
-          </div>
+          {/* Category filter — ONE grouped dropdown: every top-level AND every subcategory
+              (Caps & Hats, T-Shirts, Sneakers…) directly pickable, grouped by top level. */}
+          <select value={pickFilter} onChange={e => setPickFilter(e.target.value)} aria-label="Filter by category"
+                  style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"8px 9px", fontSize:12.5, marginBottom:8 }}>
+            <option value="">All categories</option>
+            {Object.entries(CATEGORY_TREE).map(([top, subs]) => (
+              <optgroup key={top} label={top}>
+                <option value={`cat:${top}`}>All {top}</option>
+                {subs.map(s => <option key={s} value={`sub:${s}`}>{s}</option>)}
+              </optgroup>
+            ))}
+          </select>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
             <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>
               {pickList.length} product{pickList.length===1?"":"s"} not yet done{handledIds.size ? ` · ${handledIds.size} hidden` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}
@@ -1869,7 +1867,7 @@ function AdminReviewPhotosTab({ products = [] }) {
                 </div>
               );
             })}
-            {pickList.length === 0 && <div style={{ color:"#555", fontSize:12, padding:"12px 4px" }}>{(pickSearch.trim() || pickCat !== "All") ? "No products match these filters." : "All products already generated 🎉"}</div>}
+            {pickList.length === 0 && <div style={{ color:"#555", fontSize:12, padding:"12px 4px" }}>{(pickSearch.trim() || pickFilter) ? "No products match these filters (those products may have no source photo, or are already done)." : "All products already generated 🎉"}</div>}
           </div>
           <div style={{ fontSize:10.5, color:"rgba(255,255,255,.3)", marginTop:6 }}>Tip: each batch caps at 200; for a big run, select in groups.</div>
           <div style={{ display:"flex", gap:8, marginTop:10 }}>

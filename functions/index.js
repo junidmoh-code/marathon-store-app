@@ -1916,15 +1916,18 @@ const OAI_IMAGE_OUT_PER_MTOK = 40;
 
 const PHOTO_PROMPT = [
   "Place the COMPLETE product on a pure white #FFFFFF seamless studio background.",
-  "CRITICAL: the ENTIRE product must be fully visible with GENEROUS white margin on ALL FOUR",
-  "sides — nothing may be cropped, cut off, or touch any edge of the frame. The product should",
-  "fill at most ~80% of the frame, comfortably inside it. If the item hangs on a hanger, include",
-  "the ENTIRE hanger and hook.",
+  "Orient the product STRAIGHT, upright and LEVEL in a clean, centred e-commerce catalogue pose —",
+  "footwear in a flat, level SIDE PROFILE (toe pointing left); garments laid/hung straight and square.",
+  "Do NOT tilt, skew, rotate or angle the product awkwardly, even if the source photo is angled.",
+  "The ENTIRE product must stay fully visible — nothing cropped, cut off, or touching any edge.",
+  "Frame it LARGE and centred: the product fills as much of the frame as possible (about 90%) while",
+  "keeping a small, even white margin all around so nothing is cut. If the item hangs on a hanger,",
+  "include the ENTIRE hanger and hook.",
   "Keep the product EXACTLY as-is — identical design, shape, proportions, colour, materials,",
   "patterns, logos and text. Do NOT redesign, restyle, recolour or invent any detail.",
   "Soft, even lighting with a subtle natural drop shadow.",
   "Remove any clutter, hands, mannequins, tags, props, reflections or busy background.",
-  "Photorealistic e-commerce catalogue quality.",
+  "Sharp, high-resolution, photorealistic e-commerce catalogue quality.",
 ].join(" ");
 
 // PROVIDER BOUNDARY: given image bytes, return { buffer, usage } of a white-bg re-shoot.
