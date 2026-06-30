@@ -1710,6 +1710,7 @@ function AdminReviewPhotosTab({ products = [] }) {
   // limit the generate flow enforces server-side, so the UI never promises more
   // than one run can process.
   const PICK_CAP = 200;
+  const PICK_RENDER_CAP = 120; // only render this many rows (a category can be 1000+ → don't DOM them all)
   const selectAllShown = () => setSelectedIds(s => {
     const n = new Set(s);
     for (const p of pickList) { if (n.size >= PICK_CAP) break; n.add(p.id); }
@@ -1854,7 +1855,7 @@ function AdminReviewPhotosTab({ products = [] }) {
             )}
           </div>
           <div style={{ maxHeight:380, overflowY:"auto", display:"flex", flexDirection:"column", gap:6 }}>
-            {pickList.map(p => {
+            {pickList.slice(0, PICK_RENDER_CAP).map(p => {
               const on = selectedIds.has(p.id);
               return (
                 <div key={p.id} onClick={() => toggleSel(p.id)}
@@ -1869,7 +1870,12 @@ function AdminReviewPhotosTab({ products = [] }) {
             })}
             {pickList.length === 0 && <div style={{ color:"#555", fontSize:12, padding:"12px 4px" }}>{(pickSearch.trim() || pickFilter) ? "No products match these filters (those products may have no source photo, or are already done)." : "All products already generated 🎉"}</div>}
           </div>
-          <div style={{ fontSize:10.5, color:"rgba(255,255,255,.3)", marginTop:6 }}>Tip: each batch caps at 200; for a big run, select in groups.</div>
+          {pickList.length > PICK_RENDER_CAP && (
+            <div style={{ fontSize:10.5, color:"rgba(255,255,255,.4)", marginTop:6 }}>
+              Showing first {PICK_RENDER_CAP} of {pickList.length} — narrow with a subcategory or search. “Select all” still grabs up to {PICK_CAP}.
+            </div>
+          )}
+          <div style={{ fontSize:10.5, color:"rgba(255,255,255,.3)", marginTop:4 }}>Tip: each batch caps at 200; for a big run, select in groups.</div>
           <div style={{ display:"flex", gap:8, marginTop:10 }}>
             <button onClick={generateSelected} disabled={!selectedIds.size || runBusy}
                     style={{ flex:1, background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:800, cursor: (!selectedIds.size||runBusy) ? "not-allowed" : "pointer", opacity: (!selectedIds.size||runBusy) ? .5 : 1 }}>
@@ -2194,7 +2200,12 @@ function AdminView({ products, orders, onExit }) {
   // managed separately. Defaults to sneakers (the bulk of the catalogue).
   const [typeFilter, setTypeFilter] = useState("sneaker"); // "sneaker" | "clothing"
   // Admin section: the product list vs the AI name-cleanup review screen.
-  const [adminSection, setAdminSection] = useState("products"); // "products" | "review-names"
+  // Persist the active admin tab so a refresh keeps you on the same page (role is
+  // already persisted via localStorage; this keeps the section too).
+  const [adminSection, setAdminSection] = useState(() => {
+    try { return localStorage.getItem("marathon_admin_section") || "products"; } catch { return "products"; }
+  });
+  useEffect(() => { try { localStorage.setItem("marathon_admin_section", adminSection); } catch { /* storage off */ } }, [adminSection]);
   const nameProposals = useNameProposals();
   const pendingNameCount = useMemo(() => Object.values(nameProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [nameProposals]);
   const photoProposals = usePhotoProposals();

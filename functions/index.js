@@ -1916,9 +1916,12 @@ const OAI_IMAGE_OUT_PER_MTOK = 40;
 
 const PHOTO_PROMPT = [
   "Place the COMPLETE product on a pure white #FFFFFF seamless studio background.",
-  "Orient the product STRAIGHT, upright and LEVEL in a clean, centred e-commerce catalogue pose —",
-  "footwear in a flat, level SIDE PROFILE (toe pointing left); garments laid/hung straight and square.",
-  "Do NOT tilt, skew, rotate or angle the product awkwardly, even if the source photo is angled.",
+  "Orient the product STRAIGHT, upright and LEVEL in a clean, centred e-commerce catalogue pose.",
+  "Footwear: show the OUTER (lateral) display side — the side carrying the main branding and logo",
+  "(e.g. the Nike swoosh / adidas stripes) — facing the camera in a flat, level side profile. Keep",
+  "the SAME side and the SAME left/right facing as the original photo; NEVER flip, mirror or rotate",
+  "the shoe to reveal the plain inner (medial) side. Garments: laid or hung straight and square.",
+  "Do NOT tilt, skew, mirror or angle the product awkwardly, even if the source photo is angled.",
   "The ENTIRE product must stay fully visible — nothing cropped, cut off, or touching any edge.",
   "Frame it LARGE and centred: the product fills as much of the frame as possible (about 90%) while",
   "keeping a small, even white margin all around so nothing is cut. If the item hangs on a hanger,",
@@ -1941,16 +1944,33 @@ const PHOTO_PROMPT = [
   "Sharp, high-resolution, photorealistic e-commerce catalogue quality.",
 ].join(" ");
 
-// PROVIDER BOUNDARY: given image bytes, return { buffer, usage } of a white-bg re-shoot.
-// Swap the body to change image providers; callers stay unchanged.
-async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType, quality, size) {
+// Prepend product IDENTITY so the model RECOGNISES the exact item (from its saved
+// name) and reproduces its genuine design — using the source photo + its knowledge
+// of that exact product together to correct blur / missing detail, while NEVER
+// substituting a different model, colourway or design. Reviewed before approval.
+function buildPhotoPrompt(productName) {
+  const name = String(productName || "").trim();
+  if (!name) return PHOTO_PROMPT;
+  return (
+    `This product is: "${name}". Recognise this EXACT product and reproduce its GENUINE, accurate design ` +
+    `— the real product's correct logos, branding, colourway, patterns, materials, text and proportions. ` +
+    `Use the source photo as the primary reference TOGETHER with your knowledge of this exact product; ` +
+    `sharpen, complete and correct anything blurry, low-quality, partial or unclear so it matches the ` +
+    `authentic product. Do NOT substitute a different model, colour or design, and do NOT invent details ` +
+    `the real product does not have. ` + PHOTO_PROMPT
+  );
+}
+
+// PROVIDER BOUNDARY: given image bytes + the per-product prompt, return { buffer,
+// usage } of a white-bg re-shoot. Swap the body to change image providers.
+async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType, quality, size, prompt) {
   const toFile = OpenAINS.toFile || (OpenAINS.default && OpenAINS.default.toFile);
   const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
   const file = await toFile(imageBuffer, `product.${ext}`, { type: contentType });
   const res = await client.images.edit({
     model: PHOTO_MODEL,
     image: file,
-    prompt: PHOTO_PROMPT,
+    prompt: prompt || PHOTO_PROMPT,
     size: size || PHOTO_SIZE,
     quality,
     output_format: "jpeg",   // match the .jpg/image-jpeg upload (gpt-image-1 defaults to PNG)
@@ -1981,7 +2001,7 @@ function estimateImageCostUSD(usage) {
 const GEMINI_MODEL          = "gemini-2.5-flash-image";
 const GEMINI_OUT_PER_MTOK   = 30;      // $/1M image-output tokens (Nano Banana)
 const GEMINI_FLAT_IMAGE_USD = 0.039;   // fallback per-image when usageMetadata is absent
-async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType) {
+async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType, prompt) {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     {
@@ -1990,7 +2010,7 @@ async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType) {
       body: JSON.stringify({
         contents: [{
           parts: [
-            { text: PHOTO_PROMPT },
+            { text: prompt || PHOTO_PROMPT },
             { inline_data: { mime_type: contentType, data: imageBuffer.toString("base64") } },
           ],
         }],
@@ -2023,12 +2043,12 @@ async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType) {
 function makeEngine(name, openaiClient, OpenAINS) {
   if (name === "gemini") {
     const key = geminiApiKey.value();
-    return { name: "gemini", generate: (buf, ct) => generateWhiteBgImageGemini(key, buf, ct) };
+    return { name: "gemini", generate: (buf, ct, { prompt } = {}) => generateWhiteBgImageGemini(key, buf, ct, prompt) };
   }
   return {
     name: "openai",
-    async generate(buf, ct, { quality, size } = {}) {
-      const { buffer, usage } = await generateWhiteBgImage(openaiClient, OpenAINS, buf, ct, quality, size);
+    async generate(buf, ct, { quality, size, prompt } = {}) {
+      const { buffer, usage } = await generateWhiteBgImage(openaiClient, OpenAINS, buf, ct, quality, size, prompt);
       return { buffer, costUSD: estimateImageCostUSD(usage), mime: "image/jpeg" };
     },
   };
@@ -2072,6 +2092,33 @@ async function uploadProposalImage(id, buffer, mime = "image/jpeg") {
     metadata: { metadata: { firebaseStorageDownloadTokens: token } },
   });
   return `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+}
+
+// Trim the white border then CENTRE the product on a uniform white SQUARE canvas
+// with a consistent margin — so every catalogue image is the same size + scale and
+// a grid of them looks even (fixes "some zoomed in, some further back, some cut
+// off"). Best-effort: on any failure, return the engine's raw output unchanged.
+const CATALOGUE_CANVAS = 1500;   // output square, px
+const CATALOGUE_FILL   = 0.86;   // product fills ~86% of the canvas
+async function normalizeForCatalogue(buffer, fallbackMime) {
+  try {
+    const sharp = require("sharp");
+    const white = { r: 255, g: 255, b: 255 };
+    // 1. Flatten any alpha onto white, then trim the near-white border → tight crop.
+    const trimmed = await sharp(buffer).flatten({ background: white }).trim({ background: white, threshold: 12 }).toBuffer();
+    // 2. Resize the product to fit the fill box (aspect preserved).
+    const box = Math.round(CATALOGUE_CANVAS * CATALOGUE_FILL);
+    const fit = await sharp(trimmed).resize(box, box, { fit: "inside", withoutEnlargement: false }).toBuffer({ resolveWithObject: true });
+    // 3. Composite it CENTRED onto a pure-white square.
+    const out = await sharp({ create: { width: CATALOGUE_CANVAS, height: CATALOGUE_CANVAS, channels: 3, background: white } })
+      .composite([{ input: fit.data, left: Math.round((CATALOGUE_CANVAS - fit.info.width) / 2), top: Math.round((CATALOGUE_CANVAS - fit.info.height) / 2) }])
+      .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
+      .toBuffer();
+    return { buffer: out, mime: "image/jpeg" };
+  } catch (e) {
+    console.warn("normalizeForCatalogue failed, using raw output:", e && e.message);
+    return { buffer, mime: fallbackMime || "image/jpeg" };
+  }
 }
 
 exports.generateProductPhotos = onCall(
@@ -2139,7 +2186,10 @@ exports.generateProductPhotos = onCall(
           const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
           // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
           const size = (p.category === "Clothing" || p.productType === "clothing") ? "1024x1536" : PHOTO_SIZE;
-          const { buffer: outBuf, costUSD, mime } = await getEngine(engName).generate(buffer, contentType, { quality, size });
+          const prompt = buildPhotoPrompt(p.name);   // name-aware: recognise the exact product
+          const { buffer: rawBuf, costUSD, mime: rawMime } = await getEngine(engName).generate(buffer, contentType, { quality, size, prompt });
+          // Trim + centre on a uniform white square so the catalogue grid is consistent.
+          const { buffer: outBuf, mime } = await normalizeForCatalogue(rawBuf, rawMime);
           const proposedUrl = await uploadProposalImage(id, outBuf, mime);
           estCostUSD += costUSD;
           costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
