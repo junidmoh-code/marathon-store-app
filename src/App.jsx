@@ -115,6 +115,52 @@ function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,2
   );
 }
 
+// All of a product's photos for the viewer: primary photoUrl first, then any kept
+// extra angles (products/{id}.gallery), deduped. Used everywhere a gallery shows.
+function productPhotos(p) {
+  const out = [];
+  if (p?.photoUrl) out.push(p.photoUrl);
+  if (Array.isArray(p?.gallery)) for (const u of p.gallery) if (u && !out.includes(u)) out.push(u);
+  return out;
+}
+
+// Full-screen photo viewer: shows a product's photos (primary + extra angles) with
+// prev/next arrows, swipe, dots + a thumbnail strip. Accepts an array of URLs (or a
+// single URL string for back-compat). Reused by assistant view, admin, etc.
+function GalleryLightbox({ photos, onClose }) {
+  const list = Array.isArray(photos) ? photos.filter(Boolean) : (photos ? [photos] : []);
+  const [i, setI] = useState(0);
+  const touch = useRef(null);
+  if (!list.length) return null;
+  const idx = Math.min(i, list.length - 1);
+  const go = (d) => setI((cur) => (((cur + d) % list.length) + list.length) % list.length);
+  const multi = list.length > 1;
+  const nav = (side) => ({ position:"absolute", top:"50%", [side]:10, transform:"translateY(-50%)", width:44, height:44, borderRadius:"50%", border:"none", cursor:"pointer", background:"rgba(255,255,255,.12)", color:"#fff", fontSize:26, lineHeight:1, display:"flex", alignItems:"center", justifyContent:"center" });
+  return (
+    <div onClick={onClose}
+         onTouchStart={(e) => { touch.current = e.touches[0]?.clientX ?? null; }}
+         onTouchEnd={(e) => { const s = touch.current, en = e.changedTouches[0]?.clientX; if (multi && s != null && en != null && Math.abs(en - s) > 45) go(en < s ? 1 : -1); touch.current = null; }}
+         style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.93)", zIndex:2000, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24 }}>
+      <img src={list[idx]} alt="" onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10 }} />
+      {multi && (
+        <>
+          <button onClick={e => { e.stopPropagation(); go(-1); }} aria-label="Previous" style={nav("left")}>‹</button>
+          <button onClick={e => { e.stopPropagation(); go(1); }} aria-label="Next" style={nav("right")}>›</button>
+          <div onClick={e => e.stopPropagation()} style={{ display:"flex", gap:8, marginTop:14, flexWrap:"wrap", justifyContent:"center", maxWidth:"100%" }}>
+            {list.map((u, k) => (
+              <img key={k} src={u} alt="" onClick={() => setI(k)}
+                   style={{ width:52, height:52, objectFit:"cover", borderRadius:9, cursor:"pointer", background:"#fff", border: k === idx ? "2px solid #fff" : "2px solid transparent", opacity: k === idx ? 1 : .55 }} />
+            ))}
+          </div>
+          <div onClick={e => e.stopPropagation()} style={{ color:"rgba(255,255,255,.6)", fontSize:12, marginTop:10 }}>{idx + 1} / {list.length}</div>
+        </>
+      )}
+      <button onClick={e => { e.stopPropagation(); onClose(); }} aria-label="Close"
+              style={{ position:"absolute", top:"max(16px, env(safe-area-inset-top))", right:16, width:40, height:40, borderRadius:"50%", border:"none", cursor:"pointer", background:"rgba(255,255,255,.12)", color:"#fff", fontSize:20, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
+    </div>
+  );
+}
+
 const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", BARCODES: "barcodes" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
@@ -2998,6 +3044,10 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   // from the product's own sizes so editing shows the right breakdown.
   const sizeChoices = isClothing ? clothingChoicesFor(productSizes) : SNEAKER_SIZES;
 
+  const [galleryView, setGalleryView] = useState(null); // open the photo gallery viewer
+  const photos = productPhotos(product);
+  const extras = Array.isArray(product.gallery) ? product.gallery.filter(Boolean) : [];
+
   // Name — local draft synced from RTDB, write on blur.
   const [nameDraft, setNameDraft] = useState(product.name);
   useEffect(() => { setNameDraft(product.name); }, [product.name]);
@@ -3220,10 +3270,14 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       </div>
 
       {/* PHOTO */}
-      <div style={sectionTitle}>Photo</div>
+      <div style={sectionTitle}>Photo{photos.length > 1 ? ` · ${photos.length}` : ""}</div>
       <div style={card}>
         <div style={{ ...cardInner, display:"flex", alignItems:"center", gap:14 }}>
-          <ProductPhoto url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
+          <div onClick={photos.length ? () => setGalleryView(photos) : undefined}
+               title={photos.length > 1 ? `View ${photos.length} photos` : (photos.length ? "View photo" : undefined)}
+               style={{ cursor: photos.length ? "zoom-in" : "default" }}>
+            <ProductPhoto url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
+          </div>
           <div style={{ flex:1, display:"flex", flexDirection:"column", gap:8 }}>
             <input ref={fileRef} type="file" accept="image/*" onChange={handlePhotoFile} style={{ display:"none" }} />
             <button onClick={() => fileRef.current?.click()} disabled={photoUploading}
@@ -3238,7 +3292,17 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
             )}
           </div>
         </div>
+        {extras.length > 0 && (
+          <div style={{ ...cardInner, paddingTop:0, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+            <span style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.35)", letterSpacing:1 }}>EXTRA ANGLES</span>
+            {extras.map((u, k) => (
+              <img key={u} src={u} alt="" onClick={() => setGalleryView(photos.length ? photos : [u])}
+                   style={{ width:46, height:46, objectFit:"cover", borderRadius:9, background:"#fff", border:"1px solid rgba(255,255,255,.12)", cursor:"zoom-in" }} />
+            ))}
+          </div>
+        )}
       </div>
+      {galleryView && <GalleryLightbox photos={galleryView} onClose={() => setGalleryView(null)} />}
 
       {/* NAME */}
       <div style={sectionTitle}>Name</div>
@@ -3496,12 +3560,18 @@ function ClothingCard({ product, onAdd, onViewPhoto }) {
   return (
     <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.06)", borderRadius:12, overflow:"hidden" }}>
       <div style={{ display:"flex", gap:12, padding:"12px 13px 0" }}>
-        <div onClick={product.photoUrl && onViewPhoto ? () => onViewPhoto(product.photoUrl) : undefined}
-             title={product.photoUrl ? "View full photo" : undefined}
-             style={{ width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto ? "zoom-in" : "default" }}>
+        <div onClick={product.photoUrl && onViewPhoto ? () => onViewPhoto(productPhotos(product)) : undefined}
+             title={product.photoUrl ? (product.gallery?.length ? `View ${productPhotos(product).length} photos` : "View full photo") : undefined}
+             style={{ position:"relative", width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto ? "zoom-in" : "default" }}>
           {product.photoUrl
             ? <img src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
             : <span style={{ fontSize:36 }}>{product.photo}</span>}
+          {product.gallery?.length > 0 && (
+            <span style={{ position:"absolute", bottom:5, left:5, display:"inline-flex", alignItems:"center", gap:3, background:"rgba(0,0,0,.6)", color:"#fff", fontSize:10, fontWeight:600, padding:"2px 6px", borderRadius:999 }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+              {productPhotos(product).length}
+            </span>
+          )}
         </div>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:8 }}>{product.name}</div>
@@ -4267,15 +4337,21 @@ function AssistantView({ products, onExit, orders = [] }) {
                   {p.photoUrl
                     ? <img src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
                     : <span>{p.photo}</span>}
-                  {/* View full photo — opens an uncropped lightbox without
-                      triggering the card's add-to-cart tap. */}
+                  {/* View full photo(s) — opens the gallery viewer (primary + extra
+                      angles) without triggering the card's add-to-cart tap. */}
                   {p.photoUrl && (
-                    <button onClick={(e) => { e.stopPropagation(); setFullPhoto(p.photoUrl); }}
-                      title="View full photo"
+                    <button onClick={(e) => { e.stopPropagation(); setFullPhoto(productPhotos(p)); }}
+                      title={p.gallery?.length ? `View ${productPhotos(p).length} photos` : "View full photo"}
                       style={{ position:"absolute", top:8, right:8, width:30, height:30, borderRadius:8, border:"none", cursor:"pointer",
                                background:"rgba(0,0,0,.55)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
                     </button>
+                  )}
+                  {p.gallery?.length > 0 && (
+                    <span style={{ position:"absolute", bottom:8, left:8, display:"inline-flex", alignItems:"center", gap:4, background:"rgba(0,0,0,.6)", color:"#fff", fontSize:11, fontWeight:600, padding:"3px 8px", borderRadius:999 }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                      {productPhotos(p).length}
+                    </span>
                   )}
                 </div>
                 <div style={{ padding:"12px 13px 14px" }}>
@@ -4301,9 +4377,14 @@ function AssistantView({ products, onExit, orders = [] }) {
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"1.5rem" }}>
               <div style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
                 {selected.photoUrl
-                  ? <img src={selected.photoUrl} alt={selected.name} onClick={() => setFullPhoto(selected.photoUrl)}
-                         title="View full photo"
-                         style={{ width:"56px", height:"56px", objectFit:"cover", borderRadius:RADIUS, cursor:"zoom-in" }} />
+                  ? <div style={{ position:"relative" }}>
+                      <img src={selected.photoUrl} alt={selected.name} onClick={() => setFullPhoto(productPhotos(selected))}
+                           title={selected.gallery?.length ? `View ${productPhotos(selected).length} photos` : "View full photo"}
+                           style={{ width:"56px", height:"56px", objectFit:"cover", borderRadius:RADIUS, cursor:"zoom-in" }} />
+                      {selected.gallery?.length > 0 && (
+                        <span style={{ position:"absolute", bottom:-4, right:-4, background:"#4A7FFF", color:"#fff", fontSize:10, fontWeight:700, padding:"1px 6px", borderRadius:999, border:"2px solid #0b0e18" }}>{productPhotos(selected).length}</span>
+                      )}
+                    </div>
                   : <div style={{ fontSize:"2.8rem" }}>{selected.photo}</div>}
                 <div>
                   <div style={{ fontWeight:"700", fontSize:"1.05rem" }}>{selected.name}</div>
@@ -4495,15 +4576,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Full-photo lightbox ── tap a product photo to see the complete,
           uncropped image; tap anywhere (or ✕) to dismiss. */}
-      {fullPhoto && (
-        <div onClick={() => setFullPhoto(null)}
-             style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.92)", zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center", padding:"24px" }}>
-          <img src={fullPhoto} alt="" style={{ maxWidth:"100%", maxHeight:"100%", objectFit:"contain", borderRadius:8 }} />
-          <button onClick={(e) => { e.stopPropagation(); setFullPhoto(null); }}
-            style={{ position:"absolute", top:"max(16px, env(safe-area-inset-top))", right:16, width:40, height:40, borderRadius:"50%", border:"none", cursor:"pointer",
-                     background:"rgba(255,255,255,.12)", color:"#fff", fontSize:20, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
-        </div>
-      )}
+      {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
 
       {/* ── Phase 12B: Floating cart trigger ── */}
       {cart.length > 0 && !checkoutOpen && !selected && (
