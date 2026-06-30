@@ -1937,10 +1937,15 @@ const PHOTO_PROMPT = [
   "STOP cleanly at the product's outline and must NEVER bleed, spill, glow or blend over the product —",
   "keep pale, white, cream or light-coloured items clearly separated from the background with sharp,",
   "well-defined edges.",
+  "Keep DARK products DARK: black, charcoal, graphite, navy and other deep colours must stay RICH, DEEP",
+  "and full-strength — do NOT lift, grey-out, fade or wash them lighter against the white; they must read",
+  "as strong, true, bold dark tones that stand out clearly.",
   "Keep the product's DESIGN EXACTLY — identical shape, proportions, colour, materials, patterns, logos",
   "and text. NEVER redesign, restyle, recolour, add or remove real product features, or invent any detail.",
   "TACK-SHARP focus and fine detail throughout — absolutely no blur, softness or smudging.",
-  "Soft, even studio lighting with a subtle natural drop shadow. Professional studio product photography.",
+  "Soft, even, shadowless studio lighting — NO drop shadow, NO reflection, NO gradient, NO vignette. The",
+  "background is perfectly flat, uniform pure #FFFFFF edge to edge, so the product sits as a clean cutout",
+  "with crisp outline. Professional studio product photography.",
   "Sharp, high-resolution, photorealistic e-commerce catalogue quality.",
 ].join(" ");
 
@@ -2100,20 +2105,47 @@ async function uploadProposalImage(id, buffer, mime = "image/jpeg") {
 // off"). Best-effort: on any failure, return the engine's raw output unchanged.
 const CATALOGUE_CANVAS = 1500;   // output square, px
 const CATALOGUE_FILL   = 0.86;   // product fills ~86% of the canvas
+const CATALOGUE_TRIM   = 15;     // trim tolerance from pure white (handles near-white 252-254 the model can emit)
+// Gentle contrast applied as out = in*slope + intercept (clamped 0-255), tuned so
+// the FIXED POINT sits high (~240): pure white (255) clamps back to 255 → the
+// background stays perfectly white, and pale/off-white products (~235+, e.g. the
+// Edge Runner Off-White reference) barely move and stay separated from the bg —
+// while everything below deepens, so black/charcoal/navy products read RICH and
+// DARK instead of washing out to grey on white.
+const DARK_SLOPE = 1.10, DARK_INTERCEPT = -24;
+
+// Place an (already-cropped) product image CENTRED on a uniform white square at the
+// fixed fill ratio + run the dark-strengthen pass. Every catalogue image goes
+// through this, so they all share the SAME canvas size, scale and margin → an even grid.
+async function placeOnWhiteSquare(sharp, innerBuffer) {
+  const white = { r: 255, g: 255, b: 255 };
+  const box = Math.round(CATALOGUE_CANVAS * CATALOGUE_FILL);
+  const fit = await sharp(innerBuffer).resize(box, box, { fit: "inside", withoutEnlargement: false }).toBuffer({ resolveWithObject: true });
+  return sharp({ create: { width: CATALOGUE_CANVAS, height: CATALOGUE_CANVAS, channels: 3, background: white } })
+    .composite([{ input: fit.data, left: Math.round((CATALOGUE_CANVAS - fit.info.width) / 2), top: Math.round((CATALOGUE_CANVAS - fit.info.height) / 2) }])
+    .linear(DARK_SLOPE, DARK_INTERCEPT)
+    .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
+    .toBuffer();
+}
+
 async function normalizeForCatalogue(buffer, fallbackMime) {
+  const sharp = require("sharp");
+  const white = { r: 255, g: 255, b: 255 };
+  // 1. Flatten alpha onto white + trim the near-white border to a tight crop, so
+  //    every product fills the SAME proportion of the canvas (fixes "some zoomed,
+  //    some further back"). If trim fails, fall back to the flattened raw — we
+  //    still square it below, so the output is NEVER a raw rectangle.
+  let inner = null;
   try {
-    const sharp = require("sharp");
-    const white = { r: 255, g: 255, b: 255 };
-    // 1. Flatten any alpha onto white, then trim the near-white border → tight crop.
-    const trimmed = await sharp(buffer).flatten({ background: white }).trim({ background: white, threshold: 12 }).toBuffer();
-    // 2. Resize the product to fit the fill box (aspect preserved).
-    const box = Math.round(CATALOGUE_CANVAS * CATALOGUE_FILL);
-    const fit = await sharp(trimmed).resize(box, box, { fit: "inside", withoutEnlargement: false }).toBuffer({ resolveWithObject: true });
-    // 3. Composite it CENTRED onto a pure-white square.
-    const out = await sharp({ create: { width: CATALOGUE_CANVAS, height: CATALOGUE_CANVAS, channels: 3, background: white } })
-      .composite([{ input: fit.data, left: Math.round((CATALOGUE_CANVAS - fit.info.width) / 2), top: Math.round((CATALOGUE_CANVAS - fit.info.height) / 2) }])
-      .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
-      .toBuffer();
+    inner = await sharp(buffer).flatten({ background: white }).trim({ background: white, threshold: CATALOGUE_TRIM }).toBuffer();
+  } catch (e) {
+    console.warn("normalizeForCatalogue trim failed, squaring untrimmed:", e && e.message);
+  }
+  // 2. Always emit a uniform 1500² square (this is what keeps the grid even — a raw
+  //    1024×1536 passthrough was what made it look uneven and wasted generations).
+  try {
+    const src = inner || await sharp(buffer).flatten({ background: white }).toBuffer();
+    const out = await placeOnWhiteSquare(sharp, src);
     return { buffer: out, mime: "image/jpeg" };
   } catch (e) {
     console.warn("normalizeForCatalogue failed, using raw output:", e && e.message);
