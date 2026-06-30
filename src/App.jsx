@@ -2010,7 +2010,7 @@ function AdminReviewPhotosTab({ products = [] }) {
 // (AI + fixes + comment) in local state, so they reset every time it opens and
 // nothing stays selected after a send. onSubmit closes it and fires the re-shoot.
 function RegenerateModal({ row, quality, onClose, onSubmit }) {
-  const [engine, setEngine] = useState("auto");
+  const [engine, setEngine] = useState("gemini"); // default to Gemini for regenerates
   const [note, setNote] = useState("");
   const toggle = (instr) => setNote(n => {
     const t = n.trim();
