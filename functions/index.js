@@ -1953,17 +1953,22 @@ const PHOTO_PROMPT = [
 // name) and reproduces its genuine design — using the source photo + its knowledge
 // of that exact product together to correct blur / missing detail, while NEVER
 // substituting a different model, colourway or design. Reviewed before approval.
-function buildPhotoPrompt(productName) {
+function buildPhotoPrompt(productName, note) {
   const name = String(productName || "").trim();
-  if (!name) return PHOTO_PROMPT;
-  return (
-    `This product is: "${name}". Recognise this EXACT product and reproduce its GENUINE, accurate design ` +
-    `— the real product's correct logos, branding, colourway, patterns, materials, text and proportions. ` +
-    `Use the source photo as the primary reference TOGETHER with your knowledge of this exact product; ` +
-    `sharpen, complete and correct anything blurry, low-quality, partial or unclear so it matches the ` +
-    `authentic product. Do NOT substitute a different model, colour or design, and do NOT invent details ` +
-    `the real product does not have. ` + PHOTO_PROMPT
-  );
+  const base = name
+    ? `This product is: "${name}". Recognise this EXACT product and reproduce its GENUINE, accurate design ` +
+      `— the real product's correct logos, branding, colourway, patterns, materials, text and proportions. ` +
+      `Use the source photo as the primary reference TOGETHER with your knowledge of this exact product; ` +
+      `sharpen, complete and correct anything blurry, low-quality, partial or unclear so it matches the ` +
+      `authentic product. Do NOT substitute a different model, colour or design, and do NOT invent details ` +
+      `the real product does not have. ` + PHOTO_PROMPT
+    : PHOTO_PROMPT;
+  // Per-run fix instruction (studio note / fix chips). Put it FIRST and flag it as
+  // the priority so the engine focuses on exactly what to fix this time, while all
+  // the standard rules below still apply.
+  const hint = String(note || "").trim();
+  if (!hint) return base;
+  return `PRIORITY FIX FOR THIS REGENERATION — ${hint}. Apply this above all else, then: ${base}`;
 }
 
 // PROVIDER BOUNDARY: given image bytes + the per-product prompt, return { buffer,
@@ -2172,6 +2177,11 @@ exports.generateProductPhotos = onCall(
     // each product is auto-routed by category (defaultEngineFor): Footwear → Gemini,
     // everything else → OpenAI.
     const engineOverride = ["openai", "gemini"].includes(data.engine) ? data.engine : null;
+    // Optional per-run instruction (the studio "regenerate note" / fix chips) — a
+    // short, sanitised hint appended to the prompt so the engine knows what to fix.
+    const note = typeof data.note === "string"
+      ? data.note.replace(/[^\x20-\x7E\u00A0-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
+      : "";
 
     const [prodSnap, propSnap] = await Promise.all([
       db.ref("products").once("value"),
@@ -2218,7 +2228,7 @@ exports.generateProductPhotos = onCall(
           const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
           // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
           const size = (p.category === "Clothing" || p.productType === "clothing") ? "1024x1536" : PHOTO_SIZE;
-          const prompt = buildPhotoPrompt(p.name);   // name-aware: recognise the exact product
+          const prompt = buildPhotoPrompt(p.name, note);   // name-aware + optional per-run fix note
           const { buffer: rawBuf, costUSD, mime: rawMime } = await getEngine(engName).generate(buffer, contentType, { quality, size, prompt });
           // Trim + centre on a uniform white square so the catalogue grid is consistent.
           const { buffer: outBuf, mime } = await normalizeForCatalogue(rawBuf, rawMime);

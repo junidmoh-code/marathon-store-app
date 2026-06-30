@@ -1669,6 +1669,21 @@ function costByEngineStr(cbe) {
   return parts.length ? ` · ${parts.join(", ")}` : "";
 }
 
+// One-tap fix shortcuts for a regenerate: a short label the user taps → a clear,
+// expanded instruction the image engine understands, appended to the run note. Tap
+// several to combine; free text can be added too. Keeps "make gemini understand
+// what to fix" to one tap instead of writing a prompt each time.
+const FIX_PRESETS = [
+  ["Wrong shape",   "the shape and silhouette look wrong — correct it to the authentic product's true shape and proportions"],
+  ["Wrong side",    "the wrong side is showing — show the OUTER branded display side, do not flip to the plain inner side"],
+  ["Colour off",    "the colours are off or washed out — restore the product's true, accurate, full-strength colours exactly"],
+  ["Blacks weak",   "the dark areas look weak and greyish — make black, charcoal and navy richer and deeper so they stand out"],
+  ["Blurry",        "it looks blurry or soft — make it tack-sharp with crisp clean edges and fine detail throughout"],
+  ["Design detail", "minor design details are wrong — fix the logos, patterns, stitching and text to match the authentic product exactly"],
+  ["Framing",       "framing is off — centre the product straight and level with an even margin, fully visible and not cut off"],
+  ["Remove bg",     "remove every trace of the original background and props — show only the single product on flat pure white"],
+];
+
 function AdminReviewPhotosTab({ products = [] }) {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
@@ -1690,6 +1705,14 @@ function AdminReviewPhotosTab({ products = [] }) {
   // = one subcategory. A single grouped dropdown so subcategories are directly pickable.
   const [pickFilter, setPickFilter] = useState("");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  // Re-run a product that already has a proposal (e.g. to redo earlier batches
+  // through the improved engine). Off by default so the normal flow still hides
+  // done products.
+  const [includeDone, setIncludeDone] = useState(false);
+  // Optional per-run instruction appended to the prompt to steer this generation
+  // (e.g. "straighten the laces", "make the black deeper"). Empty = stock prompt.
+  const [regenNote, setRegenNote] = useState("");
+  const noteArg = regenNote.trim() ? { note: regenNote.trim() } : {};
 
   // Products already generated (pending/approved) are excluded so you don't re-pick
   // them; rejected ones stay available to retry.
@@ -1697,13 +1720,13 @@ function AdminReviewPhotosTab({ products = [] }) {
     Object.entries(proposals || {}).filter(([, v]) => v && v.status !== "rejected").map(([id]) => id)
   ), [proposals]);
   const pickList = useMemo(() => {
-    let avail = (products || []).filter(p => p && p.id && p.name && p.photoUrl && !handledIds.has(p.id));
+    let avail = (products || []).filter(p => p && p.id && p.name && p.photoUrl && (includeDone || !handledIds.has(p.id)));
     if (pickFilter.startsWith("cat:")) { const c = pickFilter.slice(4); avail = avail.filter(p => p.category === c); }
     else if (pickFilter.startsWith("sub:")) { const s = pickFilter.slice(4); avail = avail.filter(p => p.subcategory === s); }
     const q = pickSearch.trim();
     if (q) avail = avail.filter(p => productMatchesQuery(p, q));
     return avail.sort((a, b) => a.name.localeCompare(b.name));
-  }, [products, pickSearch, pickFilter, handledIds]);
+  }, [products, pickSearch, pickFilter, handledIds, includeDone]);
   // Per-category / per-subcategory count of products that are STILL pickable
   // (have a source photo + not already generated). Shown next to each dropdown
   // option so you can see at a glance which categories have work left — without
@@ -1711,12 +1734,13 @@ function AdminReviewPhotosTab({ products = [] }) {
   const availBuckets = useMemo(() => {
     const cat = {}, sub = {};
     for (const p of (products || [])) {
-      if (!p || !p.id || !p.name || !p.photoUrl || handledIds.has(p.id)) continue;
+      if (!p || !p.id || !p.name || !p.photoUrl) continue;
+      if (!includeDone && handledIds.has(p.id)) continue;
       if (p.category)    cat[p.category]    = (cat[p.category]    || 0) + 1;
       if (p.subcategory) sub[p.subcategory] = (sub[p.subcategory] || 0) + 1;
     }
     return { cat, sub };
-  }, [products, handledIds]);
+  }, [products, handledIds, includeDone]);
   const toggleSel = (id) => setSelectedIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   // Add the products currently shown (after the category/search filters) to the
   // selection — e.g. "select all Jerseys" in one tap. Capped at the 200/batch
@@ -1734,7 +1758,7 @@ function AdminReviewPhotosTab({ products = [] }) {
     if (!ids.length) return;
     setRunBusy(true); setRunMsg(`Generating ${ids.length} selected at ${quality}… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality, ...engineArg });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality, ...engineArg, ...noteArg });
       const d = res?.data || {};
       setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
       setSelectedIds(new Set()); setPicking(false);
@@ -1775,7 +1799,7 @@ function AdminReviewPhotosTab({ products = [] }) {
   const runAI = async () => {
     setRunBusy(true); setRunMsg(`Generating ${runN} clothing photos… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg, ...noteArg });
       const d = res?.data || {};
       setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
     } catch (e) {
@@ -1789,7 +1813,7 @@ function AdminReviewPhotosTab({ products = [] }) {
     setRegenIds(s => new Set(s).add(row.id));
     setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}…`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...engineArg });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...engineArg, ...noteArg });
       const d = res?.data || {};
       setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”.`);
     } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }
@@ -1856,9 +1880,38 @@ function AdminReviewPhotosTab({ products = [] }) {
               </optgroup>
             ))}
           </select>
+          {/* Re-run already-done products (e.g. redo earlier batches through the improved
+              engine). Counts + list switch to include them when on. */}
+          <label style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, cursor:"pointer", fontSize:12, color:"rgba(255,255,255,.75)" }}>
+            <input type="checkbox" checked={includeDone} onChange={e => { setIncludeDone(e.target.checked); setSelectedIds(new Set()); }} style={{ width:15, height:15, accentColor:"#4A7FFF", cursor:"pointer" }}/>
+            Include already-done products <span style={{ color:"rgba(255,255,255,.4)" }}>(re-generate)</span>
+          </label>
+          {/* One-tap fix shortcuts — tap to tell the engine what to fix on a redo;
+              combine several, or type your own below. */}
+          <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
+            {FIX_PRESETS.map(([label, instr]) => {
+              const on = regenNote.includes(instr);
+              return (
+                <button key={label} type="button"
+                        onClick={() => setRegenNote(n => {
+                          const t = n.trim();
+                          if (t.includes(instr)) return t.replace(instr, "").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "").trim();
+                          return (t ? t + "; " + instr : instr).slice(0, 240);
+                        })}
+                        style={{ background: on ? "rgba(74,127,255,.22)" : "rgba(255,255,255,.05)", color: on ? "#9DBBFF" : "rgba(255,255,255,.7)",
+                                 border:"1px solid "+(on ? "rgba(74,127,255,.55)" : "rgba(255,255,255,.14)"), borderRadius:999, padding:"4px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>
+                  {on ? "✓ " : ""}{label}
+                </button>
+              );
+            })}
+          </div>
+          {/* Optional instruction appended to the prompt for THIS run — steer a redo. */}
+          <input value={regenNote} onChange={e => setRegenNote(e.target.value.slice(0, 240))} maxLength={240}
+                 placeholder="Optional note for this run — e.g. “straighten the laces”, “make the black deeper”"
+                 style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid "+(regenNote.trim()?"rgba(74,127,255,.5)":"rgba(255,255,255,.15)"), borderRadius:8, color:"#fff", padding:"8px 11px", fontSize:12.5, marginBottom:8 }}/>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
             <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>
-              {pickList.length} product{pickList.length===1?"":"s"} not yet done{handledIds.size ? ` · ${handledIds.size} hidden` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}
+              {pickList.length} product{pickList.length===1?"":"s"} {includeDone ? "available (incl. done)" : "not yet done"}{!includeDone && handledIds.size ? ` · ${handledIds.size} hidden` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}
             </span>
             {pickList.length > 0 && (
               <button onClick={selectAllShown}
