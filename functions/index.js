@@ -1915,20 +1915,27 @@ const OAI_IMAGE_IN_PER_MTOK = 10;
 const OAI_IMAGE_OUT_PER_MTOK = 40;
 
 const PHOTO_PROMPT = [
+  "Reshoot this as a HIGH-END, PROFESSIONAL STUDIO product photograph, expertly retouched and",
+  "colour-graded to premium e-commerce standard — the polished, flawless look of a Nike, adidas,",
+  "SSENSE or Farfetch product listing shot by a commercial product photographer.",
   "Place the COMPLETE product on a pure white #FFFFFF seamless studio background.",
   "Orient the product STRAIGHT, upright and LEVEL in a clean, centred e-commerce catalogue pose.",
   "Footwear: show the OUTER (lateral) display side — the side carrying the main branding and logo",
   "(e.g. the Nike swoosh / adidas stripes) — facing the camera in a flat, level side profile. Keep",
   "the SAME side and the SAME left/right facing as the original photo; NEVER flip, mirror or rotate",
-  "the shoe to reveal the plain inner (medial) side. Garments: laid or hung straight and square.",
+  "the shoe to reveal the plain inner (medial) side.",
+  "Clothing & garments: present like a premium fashion e-commerce listing — a clean, symmetrical",
+  "FLAT-LAY or invisible/ghost-mannequin look, fully STEAMED and wrinkle-free, with natural even fabric",
+  "drape, squared shoulders and straight hems, the WHOLE garment shown front-on and centred. Smooth out",
+  "creases, folds and bunching; no hanger marks. Keep the true fabric texture, colour, print and fit.",
   "Do NOT tilt, skew, mirror or angle the product awkwardly, even if the source photo is angled.",
   "The ENTIRE product must stay fully visible — nothing cropped, cut off, or touching any edge.",
   "Frame it LARGE and centred: the product fills as much of the frame as possible (about 90%) while",
-  "keeping a small, even white margin all around so nothing is cut. If the item hangs on a hanger,",
-  "include the ENTIRE hanger and hook.",
+  "keeping a small, even white margin all around so nothing is cut.",
   "Show ONLY the single main product. COMPLETELY remove the entire original background and EVERYTHING",
-  "in it — shelving, racks, pegboard, displays, boxes, packaging, props, hands, mannequins, tags,",
-  "price stickers, reflections and clutter. Nothing from the original background may remain.",
+  "in it — shelving, racks, pegboard, displays, boxes, packaging, props, hands, mannequins, HANGERS,",
+  "clips, hooks, rails, swing tags, hang tags, price tickets/stickers, labels, reflections and clutter.",
+  "Nothing from the original background or packaging may remain — NO hanger and NO tags of any kind.",
   "Present the product in PRISTINE, brand-new condition: fix lighting problems (harsh glare, hot-spots,",
   "colour casts, uneven or dim exposure, blown highlights, dark muddy shadows) and clean off dust,",
   "smudges, fingerprints, scuffs, scratches, lint, stray threads and creases.",
@@ -1942,11 +1949,17 @@ const PHOTO_PROMPT = [
   "as strong, true, bold dark tones that stand out clearly.",
   "Keep the product's DESIGN EXACTLY — identical shape, proportions, colour, materials, patterns, logos",
   "and text. NEVER redesign, restyle, recolour, add or remove real product features, or invent any detail.",
+  "Render every brand wordmark, logo and label CRISPLY and CORRECTLY — correctly spelled, properly",
+  "letter-formed and legible, matching the real brand's exact lettering. NEVER produce garbled, warped,",
+  "misspelled, blurry or fake-looking text.",
   "TACK-SHARP focus and fine detail throughout — absolutely no blur, softness or smudging.",
-  "Soft, even, shadowless studio lighting — NO drop shadow, NO reflection, NO gradient, NO vignette. The",
-  "background is perfectly flat, uniform pure #FFFFFF edge to edge, so the product sits as a clean cutout",
-  "with crisp outline. Professional studio product photography.",
-  "Sharp, high-resolution, photorealistic e-commerce catalogue quality.",
+  "Light the PRODUCT with soft, even, professional studio lighting (softbox quality) so it keeps natural",
+  "depth, gentle highlights and soft form — it must look genuinely THREE-DIMENSIONAL and real, NOT a flat",
+  "paper cut-out. But cast NO shadow, reflection, gradient or vignette onto the background: the background",
+  "stays perfectly flat, uniform pure #FFFFFF edge to edge with a crisp, clean outline around the product.",
+  "Finish to PREMIUM e-commerce standard — professionally retouched and immaculately clean, with balanced",
+  "exposure, accurate white balance, rich true-to-life contrast and tack-sharp, high-resolution detail: a",
+  "flawless, photorealistic catalogue hero image.",
 ].join(" ");
 
 // Prepend product IDENTITY so the model RECOGNISES the exact item (from its saved
@@ -2065,10 +2078,11 @@ function makeEngine(name, openaiClient, OpenAINS) {
 }
 
 // DEFAULT engine per product, by category (overridable per call via data.engine):
-//   Footwear → Gemini (cheap, clean on sneaker edges). Everything else → OpenAI
-//   (keeps fabric / garments faithful). Accessories / Perfume default OpenAI for now.
+//   Footwear + Clothing → Gemini (clean edges, strong professional studio look).
+//   Accessories / Perfume default OpenAI for now.
 function defaultEngineFor(product) {
-  return product && product.category === "Footwear" ? "gemini" : "openai";
+  const c = product && product.category;
+  return c === "Footwear" || c === "Clothing" ? "gemini" : "openai";
 }
 
 const PHOTO_MAX_BYTES = 15 * 1024 * 1024; // 15 MB cap on a product image
