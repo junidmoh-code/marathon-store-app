@@ -1662,6 +1662,13 @@ function usePhotoProposals() {
   return proposals;
 }
 
+// " · gemini $0.0390, openai $0.0461" from the function's per-engine cost split.
+function costByEngineStr(cbe) {
+  if (!cbe || typeof cbe !== "object") return "";
+  const parts = Object.entries(cbe).filter(([, v]) => Number(v) > 0).map(([k, v]) => `${k} $${Number(v).toFixed(4)}`);
+  return parts.length ? ` · ${parts.join(", ")}` : "";
+}
+
 function AdminReviewPhotosTab({ products = [] }) {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
@@ -1669,6 +1676,10 @@ function AdminReviewPhotosTab({ products = [] }) {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [runN, setRunN]       = useState(12);
   const [quality, setQuality] = useState("medium");
+  // Engine: "auto" = route by category (Footwear→Gemini, else OpenAI); or force one
+  // to compare. Only sent when not "auto"; the function auto-routes otherwise.
+  const [engine, setEngine] = useState("auto");
+  const engineArg = engine !== "auto" ? { engine } : {};
   const [runBusy, setRunBusy] = useState(false);
   const [runMsg, setRunMsg]   = useState(null);
   const [lightbox, setLightbox] = useState(null);
@@ -1708,9 +1719,9 @@ function AdminReviewPhotosTab({ products = [] }) {
     if (!ids.length) return;
     setRunBusy(true); setRunMsg(`Generating ${ids.length} selected at ${quality}… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality, ...engineArg });
       const d = res?.data || {};
-      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est).`);
+      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
       setSelectedIds(new Set()); setPicking(false);
     } catch (e) {
       const m = String(e?.message || e);
@@ -1749,9 +1760,9 @@ function AdminReviewPhotosTab({ products = [] }) {
   const runAI = async () => {
     setRunBusy(true); setRunMsg(`Generating ${runN} clothing photos… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg });
       const d = res?.data || {};
-      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est).`);
+      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
     } catch (e) {
       const m = String(e?.message || e);
       setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
@@ -1763,9 +1774,9 @@ function AdminReviewPhotosTab({ products = [] }) {
     setRegenIds(s => new Set(s).add(row.id));
     setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}…`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...engineArg });
       const d = res?.data || {};
-      setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)}).` : `Regenerate failed for “${row.name || row.id}”.`);
+      setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”.`);
     } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }
     finally { setRegenIds(s => { const n = new Set(s); n.delete(row.id); return n; }); }
   };
@@ -1782,11 +1793,17 @@ function AdminReviewPhotosTab({ products = [] }) {
         <span style={{ fontSize:12, color:"rgba(255,255,255,.6)" }}>Generate</span>
         <input type="number" min={1} max={200} value={runN} onChange={e => setRunN(e.target.value)}
                style={{ width:60, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13 }}/>
-        <select value={quality} onChange={e => setQuality(e.target.value)} title="Image quality (cost rises with quality)"
+        <select value={quality} onChange={e => setQuality(e.target.value)} title="OpenAI image quality (cost rises with quality; Gemini ignores it)"
                 style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13 }}>
           <option value="low">low (~$0.01)</option>
           <option value="medium">medium (~$0.04)</option>
           <option value="high">high (~$0.17)</option>
+        </select>
+        <select value={engine} onChange={e => setEngine(e.target.value)} title="Engine: Auto routes Footwear→Gemini, else OpenAI. Force one to compare."
+                style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13 }}>
+          <option value="auto">Auto (by category)</option>
+          <option value="gemini">Gemini (~$0.039)</option>
+          <option value="openai">OpenAI</option>
         </select>
         <button onClick={selectedIds.size ? generateSelected : runAI} disabled={runBusy}
                 title={selectedIds.size ? "Generate the products you picked" : "Auto-generate the next clothing items missing a photo"}
@@ -1880,7 +1897,17 @@ function AdminReviewPhotosTab({ products = [] }) {
           const regen = regenIds.has(row.id);
           return (
             <div key={row.id} style={{ background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:12 }}>
-              <div style={{ fontSize:13.5, fontWeight:600, color:"#fff", marginBottom:8 }}>{row.name || "(no name)"}</div>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, flexWrap:"wrap" }}>
+                <span style={{ fontSize:13.5, fontWeight:600, color:"#fff" }}>{row.name || "(no name)"}</span>
+                {row.engine && (
+                  <span style={{ fontSize:10.5, fontWeight:700, padding:"2px 8px", borderRadius:10,
+                                 background: row.engine === "gemini" ? "rgba(245,158,11,.16)" : "rgba(74,127,255,.16)",
+                                 border: "1px solid " + (row.engine === "gemini" ? "rgba(245,158,11,.4)" : "rgba(74,127,255,.4)"),
+                                 color: row.engine === "gemini" ? "#F59E0B" : "#7AA7FF" }}>
+                    {row.engine === "gemini" ? "Gemini" : "OpenAI"}{Number(row.costUSD) > 0 ? ` · $${Number(row.costUSD).toFixed(4)}` : ""}
+                  </span>
+                )}
+              </div>
               <div style={{ display:"flex", gap:10, marginBottom:10 }}>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", marginBottom:4, letterSpacing:.5 }}>ORIGINAL</div>
