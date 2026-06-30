@@ -1693,9 +1693,16 @@ function AdminReviewPhotosTab({ products = [] }) {
     return avail.sort((a, b) => a.name.localeCompare(b.name));
   }, [products, pickSearch, pickCat, pickSub, handledIds]);
   const toggleSel = (id) => setSelectedIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  // Add every product currently shown (after the category/search filters) to the
-  // selection — e.g. "select all Jerseys" in one tap.
-  const selectAllShown = () => setSelectedIds(s => { const n = new Set(s); pickList.forEach(p => n.add(p.id)); return n; });
+  // Add the products currently shown (after the category/search filters) to the
+  // selection — e.g. "select all Jerseys" in one tap. Capped at the 200/batch
+  // limit the generate flow enforces server-side, so the UI never promises more
+  // than one run can process.
+  const PICK_CAP = 200;
+  const selectAllShown = () => setSelectedIds(s => {
+    const n = new Set(s);
+    for (const p of pickList) { if (n.size >= PICK_CAP) break; n.add(p.id); }
+    return n;
+  });
   const generateSelected = async () => {
     const ids = [...selectedIds];
     if (!ids.length) return;
@@ -1807,13 +1814,13 @@ function AdminReviewPhotosTab({ products = [] }) {
                  style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"9px 11px", fontSize:13.5, marginBottom:8 }}/>
           {/* Category filter — pick a whole category/subcategory to generate (e.g. all Jerseys). */}
           <div style={{ display:"flex", gap:8, marginBottom:8 }}>
-            <select value={pickCat} onChange={e => { setPickCat(e.target.value); setPickSub(""); }}
+            <select value={pickCat} onChange={e => { setPickCat(e.target.value); setPickSub(""); }} aria-label="Filter by category"
                     style={{ flex:1, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"8px 9px", fontSize:12.5 }}>
               <option value="All">All categories</option>
               {Object.keys(CATEGORY_TREE).map(c => <option key={c} value={c}>{c}</option>)}
             </select>
             {pickCat !== "All" && (
-              <select value={pickSub} onChange={e => setPickSub(e.target.value)}
+              <select value={pickSub} onChange={e => setPickSub(e.target.value)} aria-label="Filter by subcategory"
                       style={{ flex:1, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"8px 9px", fontSize:12.5 }}>
                 <option value="">All {pickCat}</option>
                 {(CATEGORY_TREE[pickCat] || []).map(s => <option key={s} value={s}>{s}</option>)}
@@ -1827,7 +1834,7 @@ function AdminReviewPhotosTab({ products = [] }) {
             {pickList.length > 0 && (
               <button onClick={selectAllShown}
                       style={{ background:"rgba(74,127,255,.16)", color:"#7AA7FF", border:"1px solid rgba(74,127,255,.4)", borderRadius:7, padding:"4px 10px", fontSize:11.5, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>
-                + Select all {pickList.length}
+                + Select all {Math.min(pickList.length, PICK_CAP)}
               </button>
             )}
           </div>
