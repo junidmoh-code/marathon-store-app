@@ -115,6 +115,52 @@ function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,2
   );
 }
 
+// All of a product's photos for the viewer: primary photoUrl first, then any kept
+// extra angles (products/{id}.gallery), deduped. Used everywhere a gallery shows.
+function productPhotos(p) {
+  const out = [];
+  if (p?.photoUrl) out.push(p.photoUrl);
+  if (Array.isArray(p?.gallery)) for (const u of p.gallery) if (u && !out.includes(u)) out.push(u);
+  return out;
+}
+
+// Full-screen photo viewer: shows a product's photos (primary + extra angles) with
+// prev/next arrows, swipe, dots + a thumbnail strip. Accepts an array of URLs (or a
+// single URL string for back-compat). Reused by assistant view, admin, etc.
+function GalleryLightbox({ photos, onClose }) {
+  const list = Array.isArray(photos) ? photos.filter(Boolean) : (photos ? [photos] : []);
+  const [i, setI] = useState(0);
+  const touch = useRef(null);
+  if (!list.length) return null;
+  const idx = Math.min(i, list.length - 1);
+  const go = (d) => setI((cur) => (((cur + d) % list.length) + list.length) % list.length);
+  const multi = list.length > 1;
+  const nav = (side) => ({ position:"absolute", top:"50%", [side]:10, transform:"translateY(-50%)", width:44, height:44, borderRadius:"50%", border:"none", cursor:"pointer", background:"rgba(255,255,255,.12)", color:"#fff", fontSize:26, lineHeight:1, display:"flex", alignItems:"center", justifyContent:"center" });
+  return (
+    <div onClick={onClose}
+         onTouchStart={(e) => { touch.current = e.touches[0]?.clientX ?? null; }}
+         onTouchEnd={(e) => { const s = touch.current, en = e.changedTouches[0]?.clientX; if (multi && s != null && en != null && Math.abs(en - s) > 45) go(en < s ? 1 : -1); touch.current = null; }}
+         style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.93)", zIndex:2000, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24 }}>
+      <img src={list[idx]} alt="" onClick={e => e.stopPropagation()} style={{ maxWidth:"100%", maxHeight: multi ? "74vh" : "84vh", objectFit:"contain", borderRadius:10 }} />
+      {multi && (
+        <>
+          <button onClick={e => { e.stopPropagation(); go(-1); }} aria-label="Previous" style={nav("left")}>‹</button>
+          <button onClick={e => { e.stopPropagation(); go(1); }} aria-label="Next" style={nav("right")}>›</button>
+          <div onClick={e => e.stopPropagation()} style={{ display:"flex", gap:8, marginTop:14, flexWrap:"wrap", justifyContent:"center", maxWidth:"100%" }}>
+            {list.map((u, k) => (
+              <img key={k} src={u} alt="" onClick={() => setI(k)}
+                   style={{ width:52, height:52, objectFit:"cover", borderRadius:9, cursor:"pointer", background:"#fff", border: k === idx ? "2px solid #fff" : "2px solid transparent", opacity: k === idx ? 1 : .55 }} />
+            ))}
+          </div>
+          <div onClick={e => e.stopPropagation()} style={{ color:"rgba(255,255,255,.6)", fontSize:12, marginTop:10 }}>{idx + 1} / {list.length}</div>
+        </>
+      )}
+      <button onClick={e => { e.stopPropagation(); onClose(); }} aria-label="Close"
+              style={{ position:"absolute", top:"max(16px, env(safe-area-inset-top))", right:16, width:40, height:40, borderRadius:"50%", border:"none", cursor:"pointer", background:"rgba(255,255,255,.12)", color:"#fff", fontSize:20, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
+    </div>
+  );
+}
+
 const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", BARCODES: "barcodes" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
@@ -1669,10 +1715,29 @@ function costByEngineStr(cbe) {
   return parts.length ? ` · ${parts.join(", ")}` : "";
 }
 
+// One-tap fix shortcuts for a regenerate: a short label the user taps → a clear,
+// expanded instruction the image engine understands, appended to the run note. Tap
+// several to combine; free text can be added too. Keeps "make gemini understand
+// what to fix" to one tap instead of writing a prompt each time.
+const FIX_PRESETS = [
+  ["Wrong shape",   "the shape and silhouette look wrong — correct it to the authentic product's true shape and proportions"],
+  ["Wrong side",    "the wrong side is showing — show the OUTER branded display side, do not flip to the plain inner side"],
+  ["Colour off",    "the colours are off or washed out — restore the product's true, accurate, full-strength colours exactly"],
+  ["Blacks weak",   "the dark areas look weak and greyish — make black, charcoal and navy richer and deeper so they stand out"],
+  ["Blurry",        "it looks blurry or soft — make it tack-sharp with crisp clean edges and fine detail throughout"],
+  ["Design detail", "minor design details are wrong — fix the logos, patterns, stitching and text to match the authentic product exactly"],
+  ["Framing",       "framing is off — centre the product straight and level with an even margin, fully visible and not cut off"],
+  ["Remove bg",     "remove every trace of the original background and props — show only the single product on flat pure white"],
+];
+
 function AdminReviewPhotosTab({ products = [] }) {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
   const [regenIds, setRegenIds] = useState(() => new Set()); // ids currently re-generating (per-row lock)
+  // The product whose Regenerate popup is open (null = closed). The popup carries
+  // its own AI + fix + comment choices and resets every time it opens, so nothing
+  // stays selected after a send.
+  const [regenFor, setRegenFor] = useState(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [runN, setRunN]       = useState(12);
   const [quality, setQuality] = useState("medium");
@@ -1686,9 +1751,14 @@ function AdminReviewPhotosTab({ products = [] }) {
   // Product picker: choose specific products to generate (multi-select).
   const [picking, setPicking]   = useState(false);
   const [pickSearch, setPickSearch] = useState("");
-  const [pickCat, setPickCat]   = useState("All");   // top-level category filter
-  const [pickSub, setPickSub]   = useState("");       // subcategory filter (within pickCat)
+  // One filter value: "" = all · "cat:Footwear" = a whole top-level · "sub:Caps & Hats"
+  // = one subcategory. A single grouped dropdown so subcategories are directly pickable.
+  const [pickFilter, setPickFilter] = useState("");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  // Re-run a product that already has a proposal (e.g. to redo earlier batches
+  // through the improved engine). Off by default so the normal flow still hides
+  // done products.
+  const [includeDone, setIncludeDone] = useState(false);
 
   // Products already generated (pending/approved) are excluded so you don't re-pick
   // them; rejected ones stay available to retry.
@@ -1696,19 +1766,34 @@ function AdminReviewPhotosTab({ products = [] }) {
     Object.entries(proposals || {}).filter(([, v]) => v && v.status !== "rejected").map(([id]) => id)
   ), [proposals]);
   const pickList = useMemo(() => {
-    let avail = (products || []).filter(p => p && p.id && p.name && p.photoUrl && !handledIds.has(p.id));
-    if (pickCat !== "All") avail = avail.filter(p => p.category === pickCat);
-    if (pickSub) avail = avail.filter(p => p.subcategory === pickSub);
+    let avail = (products || []).filter(p => p && p.id && p.name && p.photoUrl && (includeDone || !handledIds.has(p.id)));
+    if (pickFilter.startsWith("cat:")) { const c = pickFilter.slice(4); avail = avail.filter(p => p.category === c); }
+    else if (pickFilter.startsWith("sub:")) { const s = pickFilter.slice(4); avail = avail.filter(p => p.subcategory === s); }
     const q = pickSearch.trim();
     if (q) avail = avail.filter(p => productMatchesQuery(p, q));
     return avail.sort((a, b) => a.name.localeCompare(b.name));
-  }, [products, pickSearch, pickCat, pickSub, handledIds]);
+  }, [products, pickSearch, pickFilter, handledIds, includeDone]);
+  // Per-category / per-subcategory count of products that are STILL pickable
+  // (have a source photo + not already generated). Shown next to each dropdown
+  // option so you can see at a glance which categories have work left — without
+  // this, picking a fully-done category just shows "0 products" with no clue why.
+  const availBuckets = useMemo(() => {
+    const cat = {}, sub = {};
+    for (const p of (products || [])) {
+      if (!p || !p.id || !p.name || !p.photoUrl) continue;
+      if (!includeDone && handledIds.has(p.id)) continue;
+      if (p.category)    cat[p.category]    = (cat[p.category]    || 0) + 1;
+      if (p.subcategory) sub[p.subcategory] = (sub[p.subcategory] || 0) + 1;
+    }
+    return { cat, sub };
+  }, [products, handledIds, includeDone]);
   const toggleSel = (id) => setSelectedIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   // Add the products currently shown (after the category/search filters) to the
   // selection — e.g. "select all Jerseys" in one tap. Capped at the 200/batch
   // limit the generate flow enforces server-side, so the UI never promises more
   // than one run can process.
   const PICK_CAP = 200;
+  const PICK_RENDER_CAP = 60; // only render this many rows (a category can be 1000+ → don't DOM/fetch 1000 full-res source photos). Narrow with a subcategory; counts in the dropdown show where the work is.
   const selectAllShown = () => setSelectedIds(s => {
     const n = new Set(s);
     for (const p of pickList) { if (n.size >= PICK_CAP) break; n.add(p.id); }
@@ -1743,6 +1828,27 @@ function AdminReviewPhotosTab({ products = [] }) {
     } catch (e) { setRunMsg(`Approve failed for “${row.name || row.id}”: ${e?.message || e}`); return false; }
     finally { setBusyId(null); }
   };
+  // Save the CURRENT proposed photo onto the product as an extra angle, so a later
+  // Regenerate (which re-shoots in place) doesn't throw away a good angle Gemini
+  // already produced — at NO extra generation cost. Each generation has a unique,
+  // permanent storage URL, so we just append that URL to products/{id}/gallery.
+  const galleryOf = (id) => { const p = products.find(x => x.id === id); return Array.isArray(p?.gallery) ? p.gallery.filter(Boolean) : []; };
+  const keepExtra = async (row) => {
+    const url = row.proposedUrl;
+    if (!url) return false;
+    const gallery = galleryOf(row.id);
+    if (gallery.includes(url)) { setRunMsg(`That photo is already kept for “${row.name || row.id}”.`); return true; }
+    try {
+      await update(ref(database, `products/${row.id}`), { gallery: [...gallery, url] });
+      setRunMsg(`Kept as an extra angle for “${row.name || row.id}” — ${gallery.length + 1} extra${gallery.length ? "s" : ""} saved.`);
+      return true;
+    } catch (e) { setRunMsg(`Couldn't keep photo: ${e?.message || e}`); return false; }
+  };
+  const removeExtra = async (row, url) => {
+    const gallery = galleryOf(row.id).filter(u => u !== url);
+    try { await update(ref(database, `products/${row.id}`), { gallery }); setRunMsg(`Removed an extra angle from “${row.name || row.id}”.`); }
+    catch (e) { setRunMsg(`Couldn't remove: ${e?.message || e}`); }
+  };
   const reject = async (row) => {
     setBusyId(row.id);
     try { await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "rejected", decidedAt: Date.now() }); }
@@ -1768,26 +1874,30 @@ function AdminReviewPhotosTab({ products = [] }) {
       setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
     } finally { setRunBusy(false); }
   };
-  // Re-shoot THIS one product at the currently-selected quality (e.g. bump to high for
-  // tricky branding). Overwrites its proposal in place; the row updates when it returns.
-  const regenerate = async (row) => {
+  // Re-shoot THIS one product. opts from the Regenerate popup: { note, engine }.
+  // The popup's choices win; "auto"/empty fall back to the studio-level engine.
+  const regenerate = async (row, opts = {}) => {
     setRegenIds(s => new Set(s).add(row.id));
-    setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}…`);
+    const note = String(opts.note || "").trim();
+    const thisNote = note ? { note } : {};
+    const engine = opts.engine;
+    const thisEngine = (engine === "gemini" || engine === "openai") ? { engine } : engineArg;
+    setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}${engine && engine !== "auto" ? ` via ${engine}` : ""}${note ? ` — “${note}”` : ""}…`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...engineArg });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...thisEngine, ...thisNote });
       const d = res?.data || {};
       setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”.`);
     } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }
     finally { setRegenIds(s => { const n = new Set(s); n.delete(row.id); return n; }); }
   };
 
-  const imgBox = { width:"100%", aspectRatio:"1", objectFit:"contain", background:"rgba(255,255,255,.08)", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", cursor:"zoom-in", display:"block" };
+  const imgBox = { width:"100%", aspectRatio:"1", objectFit:"contain", background:"rgba(255,255,255,.05)", borderRadius:12, border:"1px solid rgba(255,255,255,.08)", cursor:"zoom-in", display:"block" };
 
   return (
     <div style={{ padding:"0 14px 30px" }}>
       <div style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0 12px" }}>
-        <span style={{ fontSize:18, fontWeight:700, color:"#fff" }}>AI Photo Cleanup</span>
-        <span style={{ background:"rgba(74,202,122,.15)", border:"1px solid rgba(74,202,122,.35)", color:"#4ACA7A", fontSize:12, fontWeight:700, padding:"3px 10px", borderRadius:12 }}>{pending.length} to review</span>
+        <span style={{ fontSize:18, fontWeight:700, color:"#fff", letterSpacing:-.2 }}>AI Photo Studio</span>
+        <span style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", color:"rgba(255,255,255,.6)", fontSize:11.5, fontWeight:600, padding:"3px 10px", borderRadius:999 }}>{pending.length} to review</span>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:10 }}>
         <span style={{ fontSize:12, color:"rgba(255,255,255,.6)" }}>Generate</span>
@@ -1829,24 +1939,27 @@ function AdminReviewPhotosTab({ products = [] }) {
         <div style={{ background:"rgba(8,11,20,.95)", border:"1px solid rgba(74,127,255,.3)", borderRadius:12, padding:12, marginBottom:14 }}>
           <input value={pickSearch} onChange={e => setPickSearch(e.target.value)} placeholder="Search products by name or barcode…"
                  style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"9px 11px", fontSize:13.5, marginBottom:8 }}/>
-          {/* Category filter — pick a whole category/subcategory to generate (e.g. all Jerseys). */}
-          <div style={{ display:"flex", gap:8, marginBottom:8 }}>
-            <select value={pickCat} onChange={e => { setPickCat(e.target.value); setPickSub(""); }} aria-label="Filter by category"
-                    style={{ flex:1, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"8px 9px", fontSize:12.5 }}>
-              <option value="All">All categories</option>
-              {Object.keys(CATEGORY_TREE).map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-            {pickCat !== "All" && (
-              <select value={pickSub} onChange={e => setPickSub(e.target.value)} aria-label="Filter by subcategory"
-                      style={{ flex:1, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"8px 9px", fontSize:12.5 }}>
-                <option value="">All {pickCat}</option>
-                {(CATEGORY_TREE[pickCat] || []).map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            )}
-          </div>
+          {/* Category filter — ONE grouped dropdown: every top-level AND every subcategory
+              (Caps & Hats, T-Shirts, Sneakers…) directly pickable, grouped by top level. */}
+          <select value={pickFilter} onChange={e => setPickFilter(e.target.value)} aria-label="Filter by category"
+                  style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"8px 9px", fontSize:12.5, marginBottom:8 }}>
+            <option value="">All categories</option>
+            {Object.entries(CATEGORY_TREE).map(([top, subs]) => (
+              <optgroup key={top} label={top}>
+                <option value={`cat:${top}`}>All {top} ({availBuckets.cat[top] || 0})</option>
+                {subs.map(s => <option key={s} value={`sub:${s}`}>{s} ({availBuckets.sub[s] || 0})</option>)}
+              </optgroup>
+            ))}
+          </select>
+          {/* Re-run already-done products (e.g. redo earlier batches through the improved
+              engine). Counts + list switch to include them when on. */}
+          <label style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, cursor:"pointer", fontSize:12, color:"rgba(255,255,255,.75)" }}>
+            <input type="checkbox" checked={includeDone} onChange={e => { setIncludeDone(e.target.checked); setSelectedIds(new Set()); }} style={{ width:15, height:15, accentColor:"#4A7FFF", cursor:"pointer" }}/>
+            Include already-done products <span style={{ color:"rgba(255,255,255,.4)" }}>(re-generate)</span>
+          </label>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
             <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>
-              {pickList.length} product{pickList.length===1?"":"s"} not yet done{handledIds.size ? ` · ${handledIds.size} hidden` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}
+              {pickList.length} product{pickList.length===1?"":"s"} {includeDone ? "available (incl. done)" : "not yet done"}{!includeDone && handledIds.size ? ` · ${handledIds.size} hidden` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}
             </span>
             {pickList.length > 0 && (
               <button onClick={selectAllShown}
@@ -1856,22 +1969,27 @@ function AdminReviewPhotosTab({ products = [] }) {
             )}
           </div>
           <div style={{ maxHeight:380, overflowY:"auto", display:"flex", flexDirection:"column", gap:6 }}>
-            {pickList.map(p => {
+            {pickList.slice(0, PICK_RENDER_CAP).map(p => {
               const on = selectedIds.has(p.id);
               return (
                 <div key={p.id} onClick={() => toggleSel(p.id)}
                      style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 8px", borderRadius:9, cursor:"pointer",
                               background: on ? "rgba(74,202,122,.16)" : "rgba(255,255,255,.03)", border:"1px solid "+(on ? "rgba(74,202,122,.5)" : "rgba(255,255,255,.07)") }}>
-                  <img src={p.photoUrl} alt="" loading="lazy"
+                  <img src={p.photoUrl} alt="" loading="lazy" decoding="async"
                        style={{ width:38, height:38, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
                   <span style={{ flex:1, minWidth:0, fontSize:12.5, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</span>
                   <span style={{ fontSize:15, color: on ? "#4ACA7A" : "rgba(255,255,255,.25)" }}>{on ? "✓" : "+"}</span>
                 </div>
               );
             })}
-            {pickList.length === 0 && <div style={{ color:"#555", fontSize:12, padding:"12px 4px" }}>{(pickSearch.trim() || pickCat !== "All") ? "No products match these filters." : "All products already generated 🎉"}</div>}
+            {pickList.length === 0 && <div style={{ color:"#555", fontSize:12, padding:"12px 4px" }}>{(pickSearch.trim() || pickFilter) ? "No products match these filters (those products may have no source photo, or are already done)." : "All products already generated 🎉"}</div>}
           </div>
-          <div style={{ fontSize:10.5, color:"rgba(255,255,255,.3)", marginTop:6 }}>Tip: each batch caps at 200; for a big run, select in groups.</div>
+          {pickList.length > PICK_RENDER_CAP && (
+            <div style={{ fontSize:10.5, color:"rgba(255,255,255,.4)", marginTop:6 }}>
+              Showing first {PICK_RENDER_CAP} of {pickList.length} — narrow with a subcategory or search. “Select all” still grabs up to {PICK_CAP}.
+            </div>
+          )}
+          <div style={{ fontSize:10.5, color:"rgba(255,255,255,.3)", marginTop:4 }}>Tip: each batch caps at 200; for a big run, select in groups.</div>
           <div style={{ display:"flex", gap:8, marginTop:10 }}>
             <button onClick={generateSelected} disabled={!selectedIds.size || runBusy}
                     style={{ flex:1, background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:800, cursor: (!selectedIds.size||runBusy) ? "not-allowed" : "pointer", opacity: (!selectedIds.size||runBusy) ? .5 : 1 }}>
@@ -1895,41 +2013,57 @@ function AdminReviewPhotosTab({ products = [] }) {
         {pending.map(row => {
           const busy = busyId === row.id;
           const regen = regenIds.has(row.id);
+          const extras = galleryOf(row.id);
           return (
-            <div key={row.id} style={{ background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:12 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, flexWrap:"wrap" }}>
-                <span style={{ fontSize:13.5, fontWeight:600, color:"#fff" }}>{row.name || "(no name)"}</span>
+            <div key={row.id} style={{ background:"rgba(255,255,255,.025)", border:"1px solid rgba(255,255,255,.08)", borderRadius:16, padding:14 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+                <span style={{ fontSize:14, fontWeight:600, color:"#fff", letterSpacing:-.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1, minWidth:0 }}>{row.name || "(no name)"}</span>
                 {row.engine && (
-                  <span style={{ fontSize:10.5, fontWeight:700, padding:"2px 8px", borderRadius:10,
-                                 background: row.engine === "gemini" ? "rgba(245,158,11,.16)" : "rgba(74,127,255,.16)",
-                                 border: "1px solid " + (row.engine === "gemini" ? "rgba(245,158,11,.4)" : "rgba(74,127,255,.4)"),
-                                 color: row.engine === "gemini" ? "#F59E0B" : "#7AA7FF" }}>
-                    {row.engine === "gemini" ? "Gemini" : "OpenAI"}{Number(row.costUSD) > 0 ? ` · $${Number(row.costUSD).toFixed(4)}` : ""}
+                  <span style={{ display:"inline-flex", alignItems:"center", gap:5, fontSize:11, fontWeight:600, color:"rgba(255,255,255,.45)", flexShrink:0 }}>
+                    <span style={{ width:6, height:6, borderRadius:"50%", background: row.engine === "gemini" ? "#F59E0B" : "#7AA7FF" }}/>
+                    {row.engine === "gemini" ? "Gemini" : "OpenAI"}{Number(row.costUSD) > 0 ? ` · $${Number(row.costUSD).toFixed(3)}` : ""}
                   </span>
                 )}
               </div>
-              <div style={{ display:"flex", gap:10, marginBottom:10 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", marginBottom:4, letterSpacing:.5 }}>ORIGINAL</div>
+                  <div style={{ fontSize:9, fontWeight:700, color:"rgba(255,255,255,.3)", marginBottom:5, letterSpacing:1 }}>BEFORE</div>
                   <img src={row.originalUrl} alt="" onClick={() => setLightbox(row.originalUrl)} style={imgBox}/>
                 </div>
+                <span style={{ color:"rgba(255,255,255,.2)", fontSize:16, marginTop:18, flexShrink:0 }}>→</span>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#4ACA7A", marginBottom:4, letterSpacing:.5 }}>WHITE BACKGROUND</div>
+                  <div style={{ fontSize:9, fontWeight:700, color:"rgba(123,167,255,.7)", marginBottom:5, letterSpacing:1 }}>AFTER</div>
                   <img src={row.proposedUrl} alt="" onClick={() => setLightbox(row.proposedUrl)} style={imgBox}/>
                 </div>
               </div>
+              {/* Extras + keep on one quiet line: kept angles on the left, a ghost
+                  "Keep angle" chip on the right. Tap a thumb to zoom; × to remove. */}
+              <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap", marginBottom:12 }}>
+                {extras.length > 0 && <span style={{ fontSize:9, fontWeight:700, color:"rgba(255,255,255,.35)", letterSpacing:1 }}>EXTRAS</span>}
+                {extras.map((u) => (
+                  <div key={u} style={{ position:"relative" }}>
+                    <img src={u} alt="" onClick={() => setLightbox(u)} style={{ width:34, height:34, borderRadius:8, objectFit:"cover", background:"#fff", border:"1px solid rgba(255,255,255,.12)", cursor:"zoom-in", display:"block" }}/>
+                    <button onClick={() => removeExtra(row, u)} aria-label="Remove extra angle"
+                            style={{ position:"absolute", top:-5, right:-5, width:15, height:15, borderRadius:"50%", background:"rgba(10,12,20,.9)", color:"rgba(255,255,255,.7)", border:"1px solid rgba(255,255,255,.2)", fontSize:10, lineHeight:1, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>×</button>
+                  </div>
+                ))}
+                <button onClick={() => keepExtra(row)} disabled={busy || regen} title="Save this photo as an extra angle (no extra cost)"
+                        style={{ marginLeft:"auto", display:"inline-flex", alignItems:"center", gap:5, background:"transparent", border:"1px solid rgba(255,255,255,.14)", color:"rgba(255,255,255,.65)", borderRadius:999, padding:"5px 11px", fontSize:11, fontWeight:600, cursor:(busy||regen)?"wait":"pointer" }}>
+                  <span style={{ fontSize:12 }}>＋</span> Keep angle
+                </button>
+              </div>
               <div style={{ display:"flex", gap:8 }}>
                 <button onClick={() => approve(row)} disabled={busy || regen}
-                        style={{ flex:1, background:"rgba(0,150,70,.22)", border:"1px solid rgba(0,180,80,.4)", color:"#4ACA7A", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
+                        style={{ flex:1.4, background:"rgba(74,202,122,.16)", border:"1px solid rgba(74,202,122,.35)", color:"#5FD894", borderRadius:11, padding:"11px 0", fontSize:13, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .55 : 1 }}>
                   {busy ? "…" : "Approve"}
                 </button>
-                <button onClick={() => regenerate(row)} disabled={busy || regen}
-                        title={`Re-shoot this one at ${quality}`}
-                        style={{ flex:1, background:"rgba(74,127,255,.16)", border:"1px solid rgba(74,127,255,.4)", color:"#7AA7FF", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
-                  {regen ? "Regenerating…" : "Regenerate"}
+                <button onClick={() => setRegenFor(row)} disabled={busy || regen}
+                        title="Open regenerate options"
+                        style={{ flex:1, display:"inline-flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(255,255,255,.045)", border:"1px solid rgba(255,255,255,.1)", color:"rgba(255,255,255,.8)", borderRadius:11, padding:"11px 0", fontSize:13, fontWeight:600, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .55 : 1 }}>
+                  <span style={{ fontSize:13 }}>↻</span>{regen ? "…" : "Regenerate"}
                 </button>
-                <button onClick={() => reject(row)} disabled={busy || regen}
-                        style={{ flex:1, background:"rgba(150,30,30,.18)", border:"1px solid rgba(200,60,60,.35)", color:"#FF6B6B", borderRadius:9, padding:"10px 0", fontSize:12.5, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .6 : 1 }}>
+                <button onClick={() => reject(row)} disabled={busy || regen} title="Reject"
+                        style={{ flexShrink:0, background:"transparent", border:"1px solid rgba(255,255,255,.1)", color:"rgba(255,120,120,.75)", borderRadius:11, padding:"11px 16px", fontSize:13, fontWeight:600, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .55 : 1 }}>
                   Reject
                 </button>
               </div>
@@ -1943,6 +2077,100 @@ function AdminReviewPhotosTab({ products = [] }) {
           <img src={lightbox} alt="" style={{ maxWidth:"100%", maxHeight:"100%", objectFit:"contain", borderRadius:10 }}/>
         </div>
       )}
+      {regenFor && (
+        <RegenerateModal
+          row={regenFor}
+          quality={quality}
+          extraCount={galleryOf(regenFor.id).length}
+          onClose={() => setRegenFor(null)}
+          onSubmit={async (opts) => { const r = regenFor; setRegenFor(null); if (opts.keepFirst) await keepExtra(r); regenerate(r, opts); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Regenerate popup — opens from a card's Regenerate button. Holds its OWN choices
+// (AI + fixes + comment) in local state, so they reset every time it opens and
+// nothing stays selected after a send. onSubmit closes it and fires the re-shoot.
+function RegenerateModal({ row, quality, extraCount = 0, onClose, onSubmit }) {
+  const [engine, setEngine] = useState("gemini"); // default to Gemini for regenerates
+  const [note, setNote] = useState("");
+  const [keepFirst, setKeepFirst] = useState(true); // keep the current photo before re-shooting (no extra cost)
+  const toggle = (instr) => setNote(n => {
+    const t = n.trim();
+    if (t.includes(instr)) return t.replace(instr, "").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "").trim();
+    return (t ? t + "; " + instr : instr).slice(0, 240);
+  });
+  const lbl = { fontSize:11, fontWeight:700, color:"rgba(255,255,255,.5)", marginBottom:7, letterSpacing:.4 };
+  const ENGINES = [["auto","Auto","smart pick"], ["gemini","Gemini","best for shoes"], ["openai","OpenAI","best for clothing"]];
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(4,6,12,.72)", backdropFilter:"blur(6px)", WebkitBackdropFilter:"blur(6px)", zIndex:10000, display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width:"100%", maxWidth:440, maxHeight:"90vh", overflowY:"auto", background:"linear-gradient(180deg, rgba(18,22,38,.98), rgba(10,13,24,.98))", border:"1px solid rgba(74,127,255,.28)", borderRadius:18, boxShadow:"0 24px 80px rgba(0,0,0,.6)", padding:18 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:11, marginBottom:16 }}>
+          <img src={row.proposedUrl} alt="" style={{ width:54, height:54, borderRadius:11, objectFit:"cover", border:"1px solid rgba(255,255,255,.12)", background:"#fff", flexShrink:0 }}/>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:10.5, fontWeight:800, letterSpacing:1, color:"#7AA7FF" }}>✦ REGENERATE</div>
+            <div style={{ fontSize:14.5, fontWeight:700, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{row.name || "(no name)"}</div>
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", color:"rgba(255,255,255,.6)", borderRadius:8, width:30, height:30, fontSize:17, cursor:"pointer", lineHeight:1, flexShrink:0 }}>×</button>
+        </div>
+
+        <div style={lbl}>CHOOSE AI</div>
+        <div style={{ display:"flex", gap:7, marginBottom:16 }}>
+          {ENGINES.map(([val, lab, hint]) => {
+            const sel = engine === val;
+            return (
+              <button key={val} type="button" onClick={() => setEngine(val)}
+                      style={{ flex:1, background: sel ? "linear-gradient(180deg,rgba(74,127,255,.32),rgba(74,127,255,.15))" : "rgba(255,255,255,.04)",
+                               border:"1px solid "+(sel ? "rgba(74,127,255,.6)" : "rgba(255,255,255,.1)"), borderRadius:12, padding:"10px 6px", cursor:"pointer" }}>
+                <div style={{ fontSize:12.5, fontWeight:800, color: sel ? "#fff" : "rgba(255,255,255,.75)" }}>{lab}</div>
+                <div style={{ fontSize:9.5, color: sel ? "#9DBBFF" : "rgba(255,255,255,.4)", marginTop:2 }}>{hint}</div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={lbl}>WHAT NEEDS FIXING? <span style={{ fontWeight:500, color:"rgba(255,255,255,.3)" }}>tap any</span></div>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:16 }}>
+          {FIX_PRESETS.map(([label, instr]) => {
+            const on = note.includes(instr);
+            return (
+              <button key={label} type="button" onClick={() => toggle(instr)}
+                      style={{ background: on ? "rgba(74,127,255,.25)" : "rgba(255,255,255,.05)", color: on ? "#cdddff" : "rgba(255,255,255,.7)",
+                               border:"1px solid "+(on ? "rgba(74,127,255,.6)" : "rgba(255,255,255,.13)"), borderRadius:999, padding:"6px 12px", fontSize:11.5, fontWeight:700, cursor:"pointer" }}>
+                {on ? "✓ " : ""}{label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={lbl}>COMMENT <span style={{ fontWeight:500, color:"rgba(255,255,255,.3)" }}>optional</span></div>
+        <textarea value={note} onChange={e => setNote(e.target.value.slice(0, 240))} maxLength={240} rows={2}
+                  placeholder="Tell the AI exactly what to change…"
+                  style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid "+(note.trim() ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.14)"), borderRadius:10, color:"#fff", padding:"10px 12px", fontSize:12.5, resize:"vertical", fontFamily:"inherit" }}/>
+
+        {/* Keep the current photo as an extra angle before re-shooting — so a good
+            angle you already paid for isn't lost. No extra generation cost. */}
+        <label style={{ display:"flex", alignItems:"flex-start", gap:9, marginTop:16, padding:"11px 12px", borderRadius:11, cursor:"pointer",
+                        background: keepFirst ? "rgba(74,202,122,.1)" : "rgba(255,255,255,.04)", border:"1px solid "+(keepFirst ? "rgba(74,202,122,.4)" : "rgba(255,255,255,.12)") }}>
+          <input type="checkbox" checked={keepFirst} onChange={e => setKeepFirst(e.target.checked)} style={{ width:16, height:16, accentColor:"#4ACA7A", cursor:"pointer", marginTop:1 }}/>
+          <span style={{ fontSize:12.5, color:"#fff", lineHeight:1.35 }}>
+            Keep the current photo as an extra angle first
+            <span style={{ display:"block", fontSize:10.5, color:"rgba(255,255,255,.5)", marginTop:2 }}>
+              Saves it onto the product (no extra cost) so this re-shoot can't lose it{extraCount ? ` · ${extraCount} already kept` : ""}.
+            </span>
+          </span>
+        </label>
+        <div style={{ display:"flex", gap:9, marginTop:14 }}>
+          <button type="button" onClick={onClose}
+                  style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.14)", color:"rgba(255,255,255,.7)", borderRadius:11, padding:"11px 16px", fontSize:13, fontWeight:700, cursor:"pointer" }}>Cancel</button>
+          <button type="button" onClick={() => onSubmit({ engine, note, keepFirst })}
+                  style={{ flex:1, background:"linear-gradient(180deg,#5A8BFF,#3D6BFF)", border:"none", color:"#fff", borderRadius:11, padding:"11px 0", fontSize:13.5, fontWeight:800, cursor:"pointer", boxShadow:"0 6px 18px rgba(61,107,255,.4)" }}>
+            ✦ Regenerate at {quality}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2157,6 +2385,10 @@ function AdminReviewNamesTab({ products }) {
 }
 
 function AdminView({ products, orders, onExit }) {
+  // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation) are
+  // SUPER-ADMIN ONLY — a regular product_admin can manage products + sort
+  // categories, but not the AI tabs (which spend money per run).
+  const { isSuperAdmin } = usePermissions();
   // ── Add Product form state (collapsible at top of list) ─────────────────
   const [showAdd, setShowAdd] = useState(false);
   // Phase 12A: productType (sneaker default | clothing). Both types use a
@@ -2196,7 +2428,18 @@ function AdminView({ products, orders, onExit }) {
   // managed separately. Defaults to sneakers (the bulk of the catalogue).
   const [typeFilter, setTypeFilter] = useState("sneaker"); // "sneaker" | "clothing"
   // Admin section: the product list vs the AI name-cleanup review screen.
-  const [adminSection, setAdminSection] = useState("products"); // "products" | "review-names"
+  // Persist the active admin tab so a refresh keeps you on the same page (role is
+  // already persisted via localStorage; this keeps the section too).
+  const [adminSection, setAdminSection] = useState(() => {
+    try { return localStorage.getItem("marathon_admin_section") || "products"; } catch { return "products"; }
+  });
+  useEffect(() => { try { localStorage.setItem("marathon_admin_section", adminSection); } catch { /* storage off */ } }, [adminSection]);
+  // AI tabs are super-admin only — bounce a non-super-admin (e.g. one with a
+  // persisted AI tab from localStorage) back to Products.
+  const AI_SECTIONS = ["review-names", "review-photos"];
+  useEffect(() => {
+    if (!isSuperAdmin && AI_SECTIONS.includes(adminSection)) setAdminSection("products");
+  }, [isSuperAdmin, adminSection]);
   const nameProposals = useNameProposals();
   const pendingNameCount = useMemo(() => Object.values(nameProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [nameProposals]);
   const photoProposals = usePhotoProposals();
@@ -2467,7 +2710,9 @@ function AdminView({ products, orders, onExit }) {
   // Section toggle (Products ↔ Review Names), shown at the top of both sections.
   const sectionToggle = (
     <div style={{ display:"flex", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["review-names","Names"],["review-photos","Photos"],["review-categories","Categories"]].map(([val, label]) => {
+      {[["products","Products"],["review-names","Names"],["review-photos","Photos"],["review-categories","Categories"]]
+        .filter(([val]) => isSuperAdmin || !AI_SECTIONS.includes(val))
+        .map(([val, label]) => {
         const on = adminSection === val;
         const badge = val === "review-names" ? pendingNameCount : val === "review-photos" ? pendingPhotoCount : val === "review-categories" ? pendingCategoryCount : 0;
         return (
@@ -2480,7 +2725,7 @@ function AdminView({ products, orders, onExit }) {
     </div>
   );
 
-  if (adminSection === "review-names") {
+  if (adminSection === "review-names" && isSuperAdmin) {
     return (
       <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
@@ -2499,7 +2744,7 @@ function AdminView({ products, orders, onExit }) {
     );
   }
 
-  if (adminSection === "review-photos") {
+  if (adminSection === "review-photos" && isSuperAdmin) {
     return (
       <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
@@ -2811,6 +3056,10 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   // from the product's own sizes so editing shows the right breakdown.
   const sizeChoices = isClothing ? clothingChoicesFor(productSizes) : SNEAKER_SIZES;
 
+  const [galleryView, setGalleryView] = useState(null); // open the photo gallery viewer
+  const photos = productPhotos(product);
+  const extras = Array.isArray(product.gallery) ? product.gallery.filter(Boolean) : [];
+
   // Name — local draft synced from RTDB, write on blur.
   const [nameDraft, setNameDraft] = useState(product.name);
   useEffect(() => { setNameDraft(product.name); }, [product.name]);
@@ -3033,10 +3282,14 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       </div>
 
       {/* PHOTO */}
-      <div style={sectionTitle}>Photo</div>
+      <div style={sectionTitle}>Photo{photos.length > 1 ? ` · ${photos.length}` : ""}</div>
       <div style={card}>
         <div style={{ ...cardInner, display:"flex", alignItems:"center", gap:14 }}>
-          <ProductPhoto url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
+          <div onClick={photos.length ? () => setGalleryView(photos) : undefined}
+               title={photos.length > 1 ? `View ${photos.length} photos` : (photos.length ? "View photo" : undefined)}
+               style={{ cursor: photos.length ? "zoom-in" : "default" }}>
+            <ProductPhoto url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
+          </div>
           <div style={{ flex:1, display:"flex", flexDirection:"column", gap:8 }}>
             <input ref={fileRef} type="file" accept="image/*" onChange={handlePhotoFile} style={{ display:"none" }} />
             <button onClick={() => fileRef.current?.click()} disabled={photoUploading}
@@ -3051,7 +3304,17 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
             )}
           </div>
         </div>
+        {extras.length > 0 && (
+          <div style={{ ...cardInner, paddingTop:0, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+            <span style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.35)", letterSpacing:1 }}>EXTRA ANGLES</span>
+            {extras.map((u, k) => (
+              <img key={u} src={u} alt="" onClick={() => setGalleryView(photos.length ? photos : [u])}
+                   style={{ width:46, height:46, objectFit:"cover", borderRadius:9, background:"#fff", border:"1px solid rgba(255,255,255,.12)", cursor:"zoom-in" }} />
+            ))}
+          </div>
+        )}
       </div>
+      {galleryView && <GalleryLightbox photos={galleryView} onClose={() => setGalleryView(null)} />}
 
       {/* NAME */}
       <div style={sectionTitle}>Name</div>
@@ -3309,12 +3572,18 @@ function ClothingCard({ product, onAdd, onViewPhoto }) {
   return (
     <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.06)", borderRadius:12, overflow:"hidden" }}>
       <div style={{ display:"flex", gap:12, padding:"12px 13px 0" }}>
-        <div onClick={product.photoUrl && onViewPhoto ? () => onViewPhoto(product.photoUrl) : undefined}
-             title={product.photoUrl ? "View full photo" : undefined}
-             style={{ width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto ? "zoom-in" : "default" }}>
+        <div onClick={product.photoUrl && onViewPhoto ? () => onViewPhoto(productPhotos(product)) : undefined}
+             title={product.photoUrl ? (product.gallery?.length ? `View ${productPhotos(product).length} photos` : "View full photo") : undefined}
+             style={{ position:"relative", width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto ? "zoom-in" : "default" }}>
           {product.photoUrl
             ? <img src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
             : <span style={{ fontSize:36 }}>{product.photo}</span>}
+          {product.gallery?.length > 0 && (
+            <span style={{ position:"absolute", bottom:5, left:5, display:"inline-flex", alignItems:"center", gap:3, background:"rgba(0,0,0,.6)", color:"#fff", fontSize:10, fontWeight:600, padding:"2px 6px", borderRadius:999 }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+              {productPhotos(product).length}
+            </span>
+          )}
         </div>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:8 }}>{product.name}</div>
@@ -3528,6 +3797,12 @@ function AssistantView({ products, onExit, orders = [] }) {
   }, []);
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
   const [pendingSize, setPendingSize]                   = useState("");
+  // No-size products (bags, accessories, perfume, one-size) order as "Free Size" —
+  // "_"/blank placeholders aren't real sizes. Keeps the size sheet from dead-ending.
+  const selectedSizes = useMemo(() => {
+    const real = (selected?.sizes || []).filter(s => s && String(s).trim() && s !== "_");
+    return real.length ? real : ["Free Size"];
+  }, [selected]);
   const [pendingQty,  setPendingQty]                    = useState(1);
   const [pendingDisplayRequest, setPendingDisplay]      = useState(false);
   const [pendingDisplayPartner, setPendingDisplayPartner] = useState(false);
@@ -4080,15 +4355,21 @@ function AssistantView({ products, onExit, orders = [] }) {
                   {p.photoUrl
                     ? <img src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
                     : <span>{p.photo}</span>}
-                  {/* View full photo — opens an uncropped lightbox without
-                      triggering the card's add-to-cart tap. */}
+                  {/* View full photo(s) — opens the gallery viewer (primary + extra
+                      angles) without triggering the card's add-to-cart tap. */}
                   {p.photoUrl && (
-                    <button onClick={(e) => { e.stopPropagation(); setFullPhoto(p.photoUrl); }}
-                      title="View full photo"
+                    <button onClick={(e) => { e.stopPropagation(); setFullPhoto(productPhotos(p)); }}
+                      title={p.gallery?.length ? `View ${productPhotos(p).length} photos` : "View full photo"}
                       style={{ position:"absolute", top:8, right:8, width:30, height:30, borderRadius:8, border:"none", cursor:"pointer",
                                background:"rgba(0,0,0,.55)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
                     </button>
+                  )}
+                  {p.gallery?.length > 0 && (
+                    <span style={{ position:"absolute", bottom:8, left:8, display:"inline-flex", alignItems:"center", gap:4, background:"rgba(0,0,0,.6)", color:"#fff", fontSize:11, fontWeight:600, padding:"3px 8px", borderRadius:999 }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                      {productPhotos(p).length}
+                    </span>
                   )}
                 </div>
                 <div style={{ padding:"12px 13px 14px" }}>
@@ -4114,9 +4395,14 @@ function AssistantView({ products, onExit, orders = [] }) {
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"1.5rem" }}>
               <div style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
                 {selected.photoUrl
-                  ? <img src={selected.photoUrl} alt={selected.name} onClick={() => setFullPhoto(selected.photoUrl)}
-                         title="View full photo"
-                         style={{ width:"56px", height:"56px", objectFit:"cover", borderRadius:RADIUS, cursor:"zoom-in" }} />
+                  ? <div style={{ position:"relative" }}>
+                      <img src={selected.photoUrl} alt={selected.name} onClick={() => setFullPhoto(productPhotos(selected))}
+                           title={selected.gallery?.length ? `View ${productPhotos(selected).length} photos` : "View full photo"}
+                           style={{ width:"56px", height:"56px", objectFit:"cover", borderRadius:RADIUS, cursor:"zoom-in" }} />
+                      {selected.gallery?.length > 0 && (
+                        <span style={{ position:"absolute", bottom:-4, right:-4, background:"#4A7FFF", color:"#fff", fontSize:10, fontWeight:700, padding:"1px 6px", borderRadius:999, border:"2px solid #0b0e18" }}>{productPhotos(selected).length}</span>
+                      )}
+                    </div>
                   : <div style={{ fontSize:"2.8rem" }}>{selected.photo}</div>}
                 <div>
                   <div style={{ fontWeight:"700", fontSize:"1.05rem" }}>{selected.name}</div>
@@ -4129,7 +4415,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
             <div style={{ color:"#888", fontSize:"0.75rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Select Size</div>
             <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
-              {selected.sizes.map(s => (
+              {selectedSizes.map(s => (
                 <button key={s} onClick={() => setPendingSize(s)}
                   style={{ padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
                   {s}
@@ -4308,15 +4594,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Full-photo lightbox ── tap a product photo to see the complete,
           uncropped image; tap anywhere (or ✕) to dismiss. */}
-      {fullPhoto && (
-        <div onClick={() => setFullPhoto(null)}
-             style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.92)", zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center", padding:"24px" }}>
-          <img src={fullPhoto} alt="" style={{ maxWidth:"100%", maxHeight:"100%", objectFit:"contain", borderRadius:8 }} />
-          <button onClick={(e) => { e.stopPropagation(); setFullPhoto(null); }}
-            style={{ position:"absolute", top:"max(16px, env(safe-area-inset-top))", right:16, width:40, height:40, borderRadius:"50%", border:"none", cursor:"pointer",
-                     background:"rgba(255,255,255,.12)", color:"#fff", fontSize:20, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
-        </div>
-      )}
+      {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
 
       {/* ── Phase 12B: Floating cart trigger ── */}
       {cart.length > 0 && !checkoutOpen && !selected && (

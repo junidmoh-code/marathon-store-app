@@ -1915,28 +1915,85 @@ const OAI_IMAGE_IN_PER_MTOK = 10;
 const OAI_IMAGE_OUT_PER_MTOK = 40;
 
 const PHOTO_PROMPT = [
+  "Reshoot this as a HIGH-END, PROFESSIONAL STUDIO product photograph, expertly retouched and",
+  "colour-graded to premium e-commerce standard — the polished, flawless look of a Nike, adidas,",
+  "SSENSE or Farfetch product listing shot by a commercial product photographer.",
   "Place the COMPLETE product on a pure white #FFFFFF seamless studio background.",
-  "CRITICAL: the ENTIRE product must be fully visible with GENEROUS white margin on ALL FOUR",
-  "sides — nothing may be cropped, cut off, or touch any edge of the frame. The product should",
-  "fill at most ~80% of the frame, comfortably inside it. If the item hangs on a hanger, include",
-  "the ENTIRE hanger and hook.",
-  "Keep the product EXACTLY as-is — identical design, shape, proportions, colour, materials,",
-  "patterns, logos and text. Do NOT redesign, restyle, recolour or invent any detail.",
-  "Soft, even lighting with a subtle natural drop shadow.",
-  "Remove any clutter, hands, mannequins, tags, props, reflections or busy background.",
-  "Photorealistic e-commerce catalogue quality.",
+  "Orient the product STRAIGHT, upright and LEVEL in a clean, centred e-commerce catalogue pose.",
+  "Footwear: show the OUTER (lateral) display side — the side carrying the main branding and logo",
+  "(e.g. the Nike swoosh / adidas stripes) — facing the camera in a flat, level side profile. Keep",
+  "the SAME side and the SAME left/right facing as the original photo; NEVER flip, mirror or rotate",
+  "the shoe to reveal the plain inner (medial) side.",
+  "Clothing & garments: present like a premium fashion e-commerce listing — a clean, symmetrical",
+  "FLAT-LAY or invisible/ghost-mannequin look, fully STEAMED and wrinkle-free, with natural even fabric",
+  "drape, squared shoulders and straight hems, the WHOLE garment shown front-on and centred. Smooth out",
+  "creases, folds and bunching; no hanger marks. Keep the true fabric texture, colour, print and fit.",
+  "Do NOT tilt, skew, mirror or angle the product awkwardly, even if the source photo is angled.",
+  "The ENTIRE product must stay fully visible — nothing cropped, cut off, or touching any edge.",
+  "Frame it LARGE and centred: the product fills as much of the frame as possible (about 90%) while",
+  "keeping a small, even white margin all around so nothing is cut.",
+  "Show ONLY the single main product. COMPLETELY remove the entire original background and EVERYTHING",
+  "in it — shelving, racks, pegboard, displays, boxes, packaging, props, hands, mannequins, HANGERS,",
+  "clips, hooks, rails, swing tags, hang tags, price tickets/stickers, labels, reflections and clutter.",
+  "Nothing from the original background or packaging may remain — NO hanger and NO tags of any kind.",
+  "Present the product in PRISTINE, brand-new condition: fix lighting problems (harsh glare, hot-spots,",
+  "colour casts, uneven or dim exposure, blown highlights, dark muddy shadows) and clean off dust,",
+  "smudges, fingerprints, scuffs, scratches, lint, stray threads and creases.",
+  "CRITICAL — TRUE COLOUR & CRISP EDGES: keep the product's REAL, accurate, full-saturation colours",
+  "exactly; do NOT wash out, fade, lighten, desaturate or over-expose them. The white background must",
+  "STOP cleanly at the product's outline and must NEVER bleed, spill, glow or blend over the product —",
+  "keep pale, white, cream or light-coloured items clearly separated from the background with sharp,",
+  "well-defined edges.",
+  "Keep DARK products DARK: black, charcoal, graphite, navy and other deep colours must stay RICH, DEEP",
+  "and full-strength — do NOT lift, grey-out, fade or wash them lighter against the white; they must read",
+  "as strong, true, bold dark tones that stand out clearly.",
+  "Keep the product's DESIGN EXACTLY — identical shape, proportions, colour, materials, patterns, logos",
+  "and text. NEVER redesign, restyle, recolour, add or remove real product features, or invent any detail.",
+  "Render every brand wordmark, logo and label CRISPLY and CORRECTLY — correctly spelled, properly",
+  "letter-formed and legible, matching the real brand's exact lettering. NEVER produce garbled, warped,",
+  "misspelled, blurry or fake-looking text.",
+  "TACK-SHARP focus and fine detail throughout — absolutely no blur, softness or smudging.",
+  "Light the PRODUCT with soft, even, professional studio lighting (softbox quality) so it keeps natural",
+  "depth, gentle highlights and soft form — it must look genuinely THREE-DIMENSIONAL and real, NOT a flat",
+  "paper cut-out. But cast NO shadow, reflection, gradient or vignette onto the background: the background",
+  "stays perfectly flat, uniform pure #FFFFFF edge to edge with a crisp, clean outline around the product.",
+  "Finish to PREMIUM e-commerce standard — professionally retouched and immaculately clean, with balanced",
+  "exposure, accurate white balance, rich true-to-life contrast and tack-sharp, high-resolution detail: a",
+  "flawless, photorealistic catalogue hero image.",
 ].join(" ");
 
-// PROVIDER BOUNDARY: given image bytes, return { buffer, usage } of a white-bg re-shoot.
-// Swap the body to change image providers; callers stay unchanged.
-async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType, quality, size) {
+// Prepend product IDENTITY so the model RECOGNISES the exact item (from its saved
+// name) and reproduces its genuine design — using the source photo + its knowledge
+// of that exact product together to correct blur / missing detail, while NEVER
+// substituting a different model, colourway or design. Reviewed before approval.
+function buildPhotoPrompt(productName, note) {
+  const name = String(productName || "").trim();
+  const base = name
+    ? `This product is: "${name}". Recognise this EXACT product and reproduce its GENUINE, accurate design ` +
+      `— the real product's correct logos, branding, colourway, patterns, materials, text and proportions. ` +
+      `Use the source photo as the primary reference TOGETHER with your knowledge of this exact product; ` +
+      `sharpen, complete and correct anything blurry, low-quality, partial or unclear so it matches the ` +
+      `authentic product. Do NOT substitute a different model, colour or design, and do NOT invent details ` +
+      `the real product does not have. ` + PHOTO_PROMPT
+    : PHOTO_PROMPT;
+  // Per-run fix instruction (studio note / fix chips). Put it FIRST and flag it as
+  // the priority so the engine focuses on exactly what to fix this time, while all
+  // the standard rules below still apply.
+  const hint = String(note || "").trim();
+  if (!hint) return base;
+  return `PRIORITY FIX FOR THIS REGENERATION — ${hint}. Apply this above all else, then: ${base}`;
+}
+
+// PROVIDER BOUNDARY: given image bytes + the per-product prompt, return { buffer,
+// usage } of a white-bg re-shoot. Swap the body to change image providers.
+async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType, quality, size, prompt) {
   const toFile = OpenAINS.toFile || (OpenAINS.default && OpenAINS.default.toFile);
   const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
   const file = await toFile(imageBuffer, `product.${ext}`, { type: contentType });
   const res = await client.images.edit({
     model: PHOTO_MODEL,
     image: file,
-    prompt: PHOTO_PROMPT,
+    prompt: prompt || PHOTO_PROMPT,
     size: size || PHOTO_SIZE,
     quality,
     output_format: "jpeg",   // match the .jpg/image-jpeg upload (gpt-image-1 defaults to PNG)
@@ -1967,7 +2024,7 @@ function estimateImageCostUSD(usage) {
 const GEMINI_MODEL          = "gemini-2.5-flash-image";
 const GEMINI_OUT_PER_MTOK   = 30;      // $/1M image-output tokens (Nano Banana)
 const GEMINI_FLAT_IMAGE_USD = 0.039;   // fallback per-image when usageMetadata is absent
-async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType) {
+async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType, prompt) {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     {
@@ -1976,7 +2033,7 @@ async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType) {
       body: JSON.stringify({
         contents: [{
           parts: [
-            { text: PHOTO_PROMPT },
+            { text: prompt || PHOTO_PROMPT },
             { inline_data: { mime_type: contentType, data: imageBuffer.toString("base64") } },
           ],
         }],
@@ -2009,22 +2066,23 @@ async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType) {
 function makeEngine(name, openaiClient, OpenAINS) {
   if (name === "gemini") {
     const key = geminiApiKey.value();
-    return { name: "gemini", generate: (buf, ct) => generateWhiteBgImageGemini(key, buf, ct) };
+    return { name: "gemini", generate: (buf, ct, { prompt } = {}) => generateWhiteBgImageGemini(key, buf, ct, prompt) };
   }
   return {
     name: "openai",
-    async generate(buf, ct, { quality, size } = {}) {
-      const { buffer, usage } = await generateWhiteBgImage(openaiClient, OpenAINS, buf, ct, quality, size);
+    async generate(buf, ct, { quality, size, prompt } = {}) {
+      const { buffer, usage } = await generateWhiteBgImage(openaiClient, OpenAINS, buf, ct, quality, size, prompt);
       return { buffer, costUSD: estimateImageCostUSD(usage), mime: "image/jpeg" };
     },
   };
 }
 
 // DEFAULT engine per product, by category (overridable per call via data.engine):
-//   Footwear → Gemini (cheap, clean on sneaker edges). Everything else → OpenAI
-//   (keeps fabric / garments faithful). Accessories / Perfume default OpenAI for now.
+//   Footwear + Clothing → Gemini (clean edges, strong professional studio look).
+//   Accessories / Perfume default OpenAI for now.
 function defaultEngineFor(product) {
-  return product && product.category === "Footwear" ? "gemini" : "openai";
+  const c = product && product.category;
+  return c === "Footwear" || c === "Clothing" ? "gemini" : "openai";
 }
 
 const PHOTO_MAX_BYTES = 15 * 1024 * 1024; // 15 MB cap on a product image
@@ -2060,6 +2118,60 @@ async function uploadProposalImage(id, buffer, mime = "image/jpeg") {
   return `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
 }
 
+// Trim the white border then CENTRE the product on a uniform white SQUARE canvas
+// with a consistent margin — so every catalogue image is the same size + scale and
+// a grid of them looks even (fixes "some zoomed in, some further back, some cut
+// off"). Best-effort: on any failure, return the engine's raw output unchanged.
+const CATALOGUE_CANVAS = 1500;   // output square, px
+const CATALOGUE_FILL   = 0.86;   // product fills ~86% of the canvas
+const CATALOGUE_TRIM   = 15;     // trim tolerance from pure white (handles near-white 252-254 the model can emit)
+// Gentle contrast applied as out = in*slope + intercept (clamped 0-255), tuned so
+// the FIXED POINT sits high (~240): pure white (255) clamps back to 255 → the
+// background stays perfectly white, and pale/off-white products (~235+, e.g. the
+// Edge Runner Off-White reference) barely move and stay separated from the bg —
+// while everything below deepens, so black/charcoal/navy products read RICH and
+// DARK instead of washing out to grey on white.
+const DARK_SLOPE = 1.10, DARK_INTERCEPT = -24;
+
+// Place an (already-cropped) product image CENTRED on a uniform white square at the
+// fixed fill ratio + run the dark-strengthen pass. Every catalogue image goes
+// through this, so they all share the SAME canvas size, scale and margin → an even grid.
+async function placeOnWhiteSquare(sharp, innerBuffer) {
+  const white = { r: 255, g: 255, b: 255 };
+  const box = Math.round(CATALOGUE_CANVAS * CATALOGUE_FILL);
+  const fit = await sharp(innerBuffer).resize(box, box, { fit: "inside", withoutEnlargement: false }).toBuffer({ resolveWithObject: true });
+  return sharp({ create: { width: CATALOGUE_CANVAS, height: CATALOGUE_CANVAS, channels: 3, background: white } })
+    .composite([{ input: fit.data, left: Math.round((CATALOGUE_CANVAS - fit.info.width) / 2), top: Math.round((CATALOGUE_CANVAS - fit.info.height) / 2) }])
+    .linear(DARK_SLOPE, DARK_INTERCEPT)
+    .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
+    .toBuffer();
+}
+
+async function normalizeForCatalogue(buffer, fallbackMime) {
+  const sharp = require("sharp");
+  const white = { r: 255, g: 255, b: 255 };
+  // 1. Flatten alpha onto white + trim the near-white border to a tight crop, so
+  //    every product fills the SAME proportion of the canvas (fixes "some zoomed,
+  //    some further back"). If trim fails, fall back to the flattened raw — we
+  //    still square it below, so the output is NEVER a raw rectangle.
+  let inner = null;
+  try {
+    inner = await sharp(buffer).flatten({ background: white }).trim({ background: white, threshold: CATALOGUE_TRIM }).toBuffer();
+  } catch (e) {
+    console.warn("normalizeForCatalogue trim failed, squaring untrimmed:", e && e.message);
+  }
+  // 2. Always emit a uniform 1500² square (this is what keeps the grid even — a raw
+  //    1024×1536 passthrough was what made it look uneven and wasted generations).
+  try {
+    const src = inner || await sharp(buffer).flatten({ background: white }).toBuffer();
+    const out = await placeOnWhiteSquare(sharp, src);
+    return { buffer: out, mime: "image/jpeg" };
+  } catch (e) {
+    console.warn("normalizeForCatalogue failed, using raw output:", e && e.message);
+    return { buffer, mime: fallbackMime || "image/jpeg" };
+  }
+}
+
 exports.generateProductPhotos = onCall(
   {
     region: "europe-west1",
@@ -2079,6 +2191,11 @@ exports.generateProductPhotos = onCall(
     // each product is auto-routed by category (defaultEngineFor): Footwear → Gemini,
     // everything else → OpenAI.
     const engineOverride = ["openai", "gemini"].includes(data.engine) ? data.engine : null;
+    // Optional per-run instruction (the studio "regenerate note" / fix chips) — a
+    // short, sanitised hint appended to the prompt so the engine knows what to fix.
+    const note = typeof data.note === "string"
+      ? data.note.replace(/[^\x20-\x7E\u00A0-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
+      : "";
 
     const [prodSnap, propSnap] = await Promise.all([
       db.ref("products").once("value"),
@@ -2125,7 +2242,10 @@ exports.generateProductPhotos = onCall(
           const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
           // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
           const size = (p.category === "Clothing" || p.productType === "clothing") ? "1024x1536" : PHOTO_SIZE;
-          const { buffer: outBuf, costUSD, mime } = await getEngine(engName).generate(buffer, contentType, { quality, size });
+          const prompt = buildPhotoPrompt(p.name, note);   // name-aware + optional per-run fix note
+          const { buffer: rawBuf, costUSD, mime: rawMime } = await getEngine(engName).generate(buffer, contentType, { quality, size, prompt });
+          // Trim + centre on a uniform white square so the catalogue grid is consistent.
+          const { buffer: outBuf, mime } = await normalizeForCatalogue(rawBuf, rawMime);
           const proposedUrl = await uploadProposalImage(id, outBuf, mime);
           estCostUSD += costUSD;
           costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);

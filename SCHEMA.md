@@ -25,6 +25,7 @@ Each product is its own node. `productId` is generated client-side as
 | `hub`             | string                            | legacy   | Pre-14A single-hub field. New writes double-write for back-compat. |
 | `photo`           | string                            | no       | Legacy data-URL slot — superseded by `photoUrl`. |
 | `photoUrl`        | string \| null                    | no       | HTTPS URL into Firebase Storage `products/{id}/photo.jpg`. |
+| `gallery`         | string[]                          | no       | Extra-angle photo URLs kept from the AI photo studio (each a unique permanent Storage URL). `photoUrl` stays the primary/hero; `gallery` holds additional angles saved before a regenerate. Admin-managed; not yet shown customer-facing. |
 | `stock`           | object \| undefined               | no       | Per-size stock counter, used by some clothing flows. |
 | **`stockPrice`**  | **number (ZAR)**                  | **no**   | **POS Phase 2. Wholesale / B2B unit price. Optional — existing products without it remain valid.** |
 | **`retailPrice`** | **number (ZAR)**                  | **no**   | **POS Phase 2. Walk-in / consumer unit price. Optional.** |
