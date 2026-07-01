@@ -2,6 +2,34 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 
+// Last-resort crash surface: show ANY uncaught error / promise rejection as a
+// fixed banner on screen, so a failure can never be a silent black screen with
+// no clue (which is what the Returns view showed). Sits below React's error
+// boundaries and catches the async / event-handler errors those can't.
+if (typeof window !== "undefined") {
+  const showFatal = (msg) => {
+    try {
+      let el = document.getElementById("__fatal_error");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "__fatal_error";
+        el.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:2147483647;background:#7f1d1d;color:#fff;font:12px/1.5 -apple-system,system-ui,sans-serif;padding:10px 40px 10px 12px;white-space:pre-wrap;word-break:break-word;max-height:45vh;overflow:auto;box-shadow:0 2px 10px rgba(0,0,0,.5)";
+        const x = document.createElement("button");
+        x.textContent = "✕";
+        x.style.cssText = "position:absolute;right:8px;top:6px;background:transparent;border:0;color:#fff;font-size:16px;cursor:pointer";
+        x.onclick = () => el.remove();
+        el.appendChild(x);
+        document.body.appendChild(el);
+      }
+      const line = document.createElement("div");
+      line.textContent = "⚠ " + msg;
+      el.appendChild(line);
+    } catch { /* ignore */ }
+  };
+  window.addEventListener("error", (e) => showFatal(String(e?.message || e?.error || e) + (e?.filename ? `  (${e.filename}:${e.lineno})` : "")));
+  window.addEventListener("unhandledrejection", (e) => showFatal("Promise: " + String(e?.reason?.message || e?.reason || e)));
+}
+
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <App />

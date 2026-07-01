@@ -10563,7 +10563,9 @@ export default function App() {
   }
   return (
     <AuthGate renderTv={() => <TvOnlyShell />}>
-      <AppInner />
+      <AppErrorBoundary>
+        <AppInner />
+      </AppErrorBoundary>
     </AuthGate>
   );
 }
