@@ -10741,7 +10741,9 @@ function TvWithAutoCollect({ orders, onExit }) {
       document.querySelector('script[type="module"][src*="assets/index-"]')
         ?.getAttribute("src")?.match(/index-[A-Za-z0-9_-]+\.js/)?.[0] || "";
     if (!runningBundle) return; // can't tell what we're running → never force-reload
+    let stopped = false;
     const check = async () => {
+      if (stopped) return;
       try {
         const html = await fetch("/", { cache: "no-store" }).then((r) => r.text());
         const deployed = html.match(/assets\/(index-[A-Za-z0-9_-]+\.js)/)?.[1] || "";
@@ -10751,8 +10753,19 @@ function TvWithAutoCollect({ orders, onExit }) {
         }
       } catch { /* offline / transient — retry next tick */ }
     };
-    const id = setInterval(check, 3 * 60 * 1000); // every 3 min
-    return () => clearInterval(id);
+    check();                                        // check IMMEDIATELY on load (don't wait a full interval)
+    const id = setInterval(check, 60 * 1000);       // then every 60s
+    // Also check when the TV tab regains focus/visibility (background tabs throttle
+    // the timer, so a kiosk that was asleep still catches up on wake).
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", check);
+    return () => {
+      stopped = true;
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", check);
+    };
   }, []);
 
   useEffect(() => {
