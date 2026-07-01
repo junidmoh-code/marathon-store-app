@@ -64,6 +64,7 @@
     "pos_meta":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "products":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "products_meta":           { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "settings":                { ".read": "auth != null", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "barcodes": {
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "$code": {

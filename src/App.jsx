@@ -2396,6 +2396,91 @@ function AdminReviewNamesTab({ products }) {
   );
 }
 
+// Admin control for the TV pickup board's spoken-announcement engine. Writes
+// /settings/pickupVoice live (RTDB); the TV reads it live so switching the voice
+// needs no redeploy. Browser + OpenAI are always usable; ElevenLabs shows "add API
+// key to activate" until the key exists in Secret Manager (probed via pickupVoice
+// status). Same pluggable idea as the photo studio's engine picker.
+const OPENAI_TTS_VOICES = ["nova", "coral", "shimmer", "alloy", "echo", "onyx"];
+function PickupVoiceAdmin() {
+  const setting = usePickupVoiceSetting(); // { engine, voice }
+  const [engines, setEngines] = useState({ browser: true, openai: true, elevenlabs: false });
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    httpsCallable(functions, "pickupVoice")({ status: true })
+      .then(r => { if (alive && r?.data?.engines) setEngines(r.data.engines); })
+      .catch(() => { /* keep defaults */ });
+    return () => { alive = false; };
+  }, []);
+  const choose = async (engine, voice) => {
+    setSaving(true);
+    try { await update(ref(database, PICKUP_VOICE_PATH), { engine, voice: voice ?? (engine === "openai" ? (setting.voice || "nova") : "") }); }
+    catch (e) { console.warn("pickup voice save failed:", e); }
+    finally { setSaving(false); }
+  };
+  const setEnabled = async (en) => {
+    setSaving(true);
+    try { await update(ref(database, PICKUP_VOICE_PATH), { enabled: en }); }
+    catch (e) { console.warn("pickup voice enable save failed:", e); }
+    finally { setSaving(false); }
+  };
+  const enabled = setting.enabled !== false;
+  const OPTS = [
+    { id: "browser",    label: "Browser",    sub: "Free · robotic",      active: true },
+    { id: "openai",     label: "OpenAI",     sub: "Natural · tts-1",     active: engines.openai },
+    { id: "elevenlabs", label: "ElevenLabs", sub: engines.elevenlabs ? "Most human" : "Add API key to activate", active: engines.elevenlabs },
+  ];
+  return (
+    <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, padding:12 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>🔊 Pickup board voice</span>
+        {/* Master switch — turns the board's spoken announcements on/off for everyone. */}
+        <div style={{ display:"flex", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", borderRadius:999, padding:2 }}>
+          {[["on", "On"], ["off", "Off"]].map(([val, lbl]) => {
+            const sel = (val === "on") === enabled;
+            return (
+              <button key={val} type="button" onClick={() => setEnabled(val === "on")} disabled={saving}
+                      style={{ background: sel ? (val === "on" ? "#4ACA7A" : "rgba(255,255,255,.18)") : "transparent",
+                               color: sel ? (val === "on" ? "#062" : "#fff") : "rgba(255,255,255,.6)",
+                               border:"none", borderRadius:999, padding:"4px 14px", fontSize:12, fontWeight:800, cursor:"pointer" }}>{lbl}</button>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", opacity: enabled ? 1 : 0.45, pointerEvents: enabled ? "auto" : "none" }}>
+        {OPTS.map(o => {
+          const on = setting.engine === o.id;
+          const disabled = o.id === "elevenlabs" && !o.active;
+          return (
+            <button key={o.id} type="button" onClick={() => !disabled && choose(o.id)} disabled={saving || disabled}
+                    style={{ flex:1, minWidth:110, textAlign:"left", background: on ? "rgba(74,127,255,.2)" : "rgba(255,255,255,.05)",
+                             border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.12)"), borderRadius:10, padding:"9px 11px",
+                             cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.55 : 1 }}>
+              <div style={{ fontSize:12.5, fontWeight:700, color: on ? "#fff" : "rgba(255,255,255,.85)" }}>{o.label}{on ? " ✓" : ""}</div>
+              <div style={{ fontSize:10.5, color:"rgba(255,255,255,.5)", marginTop:2 }}>{o.sub}</div>
+            </button>
+          );
+        })}
+      </div>
+      {setting.engine === "openai" && (
+        <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap", marginTop:10 }}>
+          <span style={{ fontSize:11, color:"rgba(255,255,255,.5)" }}>Voice:</span>
+          {OPENAI_TTS_VOICES.map(v => {
+            const on = (setting.voice || "nova") === v;
+            return (
+              <button key={v} type="button" onClick={() => choose("openai", v)} disabled={saving}
+                      style={{ background: on ? "rgba(74,127,255,.25)" : "rgba(255,255,255,.05)", color: on ? "#9DBBFF" : "rgba(255,255,255,.7)",
+                               border:"1px solid "+(on ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.13)"), borderRadius:999, padding:"3px 11px", fontSize:11, fontWeight:600, cursor:"pointer" }}>{v}</button>
+            );
+          })}
+        </div>
+      )}
+      <div style={{ fontSize:10.5, color:"rgba(255,255,255,.35)", marginTop:9 }}>The TV pickup board reads this live — switching the engine takes effect on the board with no redeploy. A paid engine that fails falls back to Browser (never silent).</div>
+    </div>
+  );
+}
+
 function AdminView({ products, orders, onExit }) {
   // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation) are
   // SUPER-ADMIN ONLY — a regular product_admin can manage products + sort
@@ -2814,6 +2899,8 @@ function AdminView({ products, orders, onExit }) {
 
       <div style={{ height:12 }}/>
       {sectionToggle}
+
+      <div style={{ padding:"12px 14px 0" }}><PickupVoiceAdmin /></div>
 
       <div>
         {/* PRODUCTS HEADER ROW */}
@@ -10429,6 +10516,35 @@ function laybyTvNumber(invoiceNo) {
   return m ? `${m[1].toUpperCase()}-${m[2]}` : s;
 }
 
+const TV_VOICE_LS_KEY = "mc_tv_voice";
+const ANNOUNCE_REPEATS = 3;      // say each order announcement this many times
+const ANNOUNCE_GAP_MS  = 550;    // pause between clips (repeats + back-to-back orders)
+// Pick a clear English voice for the spoken pickup announcements; falls back to the
+// browser default when no preferred voice is installed.
+function pickAnnounceVoice(synth) {
+  const voices = (synth.getVoices && synth.getVoices()) || [];
+  return voices.find(v => /en[-_]?US/i.test(v.lang) && /google|natural|samantha|aria|zira|jenny/i.test(v.name))
+      || voices.find(v => /^en[-_]?(US|GB|ZA|AU)/i.test(v.lang))
+      || voices.find(v => /^en/i.test(v.lang))
+      || null;
+}
+
+// Live pickup-board voice engine setting (admin-controlled, RTDB). The TV reads it
+// live so changing the engine switches the voice with NO redeploy.
+const PICKUP_VOICE_PATH = "settings/pickupVoice";
+const VOICE_ENGINES = ["browser", "openai", "elevenlabs"];
+function usePickupVoiceSetting() {
+  const [s, setS] = useState({ enabled: true, engine: "browser", voice: "" });
+  useEffect(() => {
+    const unsub = onValue(ref(database, PICKUP_VOICE_PATH), snap => {
+      const v = snap.val() || {};
+      setS({ enabled: v.enabled !== false, engine: VOICE_ENGINES.includes(v.engine) ? v.engine : "browser", voice: v.voice || "" });
+    });
+    return () => unsub();
+  }, []);
+  return s;
+}
+
 function TvWithAutoCollect({ orders, onExit }) {
   // Dedupe markers are keyed by a composite of order.id + createdAt rather
   // than id alone. order.id is daily-scoped (it's the orderNumber, which
@@ -10441,6 +10557,154 @@ function TvWithAutoCollect({ orders, onExit }) {
   const hiddenOosRef      = useRef(new Set());  // OOS hidden from the TV (display-only)
   const hiddenTomorrowRef = useRef(new Set());
   const [tick, setTick]   = useState(0);
+
+  // ── VOICE PICKUP ANNOUNCEMENTS (switchable engine) ──────────────────────────
+  // Say "Order number X, ready for collection" through the TV speaker when an order
+  // NEWLY becomes ready. Engine is admin-selected + live from RTDB: Browser
+  // (speechSynthesis, free), OpenAI tts-1, or ElevenLabs (paid engines go through
+  // the pickupVoice callable, which caches each clip). A paid engine that fails or
+  // is inactive falls back to Browser — never silent. TV device ONLY (renders solely
+  // for the DISPLAY role / #tv). Orders already ready at load are SEEDED (never read
+  // out). A single reused <audio> element + a FIFO queue keep clips from overlapping.
+  const voiceSetting = usePickupVoiceSetting();      // { engine, voice } — live
+  const settingRef = useRef(voiceSetting);
+  settingRef.current = voiceSetting;                 // so the async queue uses the latest
+  const [voiceOn, setVoiceOn] = useState(() => { try { return localStorage.getItem(TV_VOICE_LS_KEY) === "on"; } catch { return false; } });
+  const [voiceUnlocked, setVoiceUnlocked] = useState(false); // browsers block audio until one user gesture per page load
+  const announcedRef = useRef(null); // Set of announced order keys; null until seeded with the load-time backlog
+  const audioElRef = useRef(null);
+  const queueRef = useRef([]);
+  const playingRef = useRef(false);
+  const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+
+  // Stop ALL current sound (speech + audio) so the two engines can never overlap.
+  const stopAll = () => {
+    try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
+    try { const el = audioElRef.current; if (el) el.pause(); } catch { /* ignore */ }
+  };
+  const speakBrowser = (text) => new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; clearTimeout(to); resolve(); };
+    // Chrome's onend is unreliable — cap with a duration-based timeout so the queue
+    // ALWAYS advances (never hangs) even if the event never fires.
+    const to = setTimeout(finish, Math.min(12000, 1600 + String(text).length * 90));
+    try {
+      const synth = window.speechSynthesis;
+      if (!synth) return finish();
+      synth.cancel();                         // clear any stuck utterance first
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.95; u.pitch = 1; u.volume = 1; u.lang = "en-US";
+      const v = pickAnnounceVoice(synth); if (v) u.voice = v;
+      u.onend = finish; u.onerror = finish;
+      synth.speak(u);
+    } catch { finish(); }
+  });
+  const playUrl = (url) => new Promise((resolve, reject) => {
+    const el = audioElRef.current;
+    if (!el) return reject(new Error("no audio element"));
+    let done = false, started = false;
+    const finish = (fn, arg) => { if (done) return; done = true; el.onended = null; el.onerror = null; el.onplaying = null; clearTimeout(to); fn(arg); };
+    // If it started playing, resolve (it's playing — no fallback); only reject when
+    // it never started, so we never speak the robotic voice OVER a playing clip.
+    const to = setTimeout(() => finish(started ? resolve : reject, started ? undefined : new Error("audio timeout")), 20000);
+    el.onplaying = () => { started = true; };
+    el.onended = () => finish(resolve);
+    el.onerror = () => (started ? finish(resolve) : finish(reject, new Error("audio error")));
+    try { el.src = url; const p = el.play(); if (p && p.catch) p.catch((e) => { if (!started) finish(reject, e); }); }
+    catch (e) { finish(reject, e); }
+  });
+  const pump = async () => {
+    if (playingRef.current) return;
+    const text = queueRef.current.shift();
+    if (text == null) return;
+    playingRef.current = true;
+    const { engine, voice } = settingRef.current || {};
+    try {
+      if (engine === "openai" || engine === "elevenlabs") {
+        stopAll();                            // no speech under the clip
+        const res = await httpsCallable(functions, "pickupVoice")({ text, engine, voice });
+        const url = res?.data?.url;
+        if (!url) throw new Error("no tts url");
+        await playUrl(url);
+      } else {
+        stopAll();                            // no audio under the speech
+        await speakBrowser(text);
+      }
+    } catch {
+      stopAll();                              // stop any half-played clip BEFORE the fallback so they don't overlap
+      await speakBrowser(text);               // paid engine failed / inactive → Browser, never silent
+    } finally {
+      // Short gap between clips so repeats (and back-to-back orders) are clear, not
+      // rushed. The lock stays held through the gap so nothing starts early.
+      setTimeout(() => { playingRef.current = false; pump(); }, ANNOUNCE_GAP_MS);
+    }
+  };
+  const enqueueAnnounce = (text) => { queueRef.current.push(text); pump(); };
+
+  const enableVoice = () => {
+    // The tap unlocks BOTH HTML5 audio (OpenAI/ElevenLabs clips) AND speechSynthesis
+    // (Browser fallback) for the session, then plays a confirmation.
+    try { const el = audioElRef.current; if (el) { el.src = SILENT_WAV; const p = el.play(); if (p && p.catch) p.catch(() => {}); } } catch { /* ignore */ }
+    // Unlock speech with a SPACE (not an empty string — an empty utterance can wedge
+    // Chrome's speech queue so nothing speaks afterwards). resume() clears a paused state.
+    try { const s = window.speechSynthesis; if (s) { s.resume?.(); const u = new SpeechSynthesisUtterance(" "); u.volume = 0; s.speak(u); } } catch { /* ignore */ }
+    setVoiceUnlocked(true);
+    setVoiceOn(true);
+    try { localStorage.setItem(TV_VOICE_LS_KEY, "on"); } catch { /* ignore */ }
+    enqueueAnnounce("Pickup announcements on");
+  };
+  const toggleVoice = () => setVoiceOn(v => {
+    const n = !v;
+    try { localStorage.setItem(TV_VOICE_LS_KEY, n ? "on" : "off"); } catch { /* ignore */ }
+    if (!n) { // muting stops any in-progress speech/audio + drops the queue
+      try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
+      try { audioElRef.current?.pause(); } catch { /* ignore */ }
+      queueRef.current = [];
+    }
+    return n;
+  });
+
+  // Init the reused audio element + nudge the browser voice list (populated only
+  // after 'voiceschanged' on some browsers).
+  useEffect(() => {
+    try { if (!audioElRef.current && typeof Audio !== "undefined") audioElRef.current = new Audio(); } catch { /* ignore */ }
+    try { window.speechSynthesis?.getVoices(); } catch { /* ignore */ }
+  }, []);
+
+  // Statuses we announce, and the phrase for each. Keyed by orderKey:status so each
+  // TRANSITION is announced once (e.g. an order that goes Out-of-stock → Ready later
+  // gets both). The board's other column (Incoming) is intentionally not announced.
+  const ANNOUNCE_PHRASE = {
+    [STATUS.READY]:          "ready for collection",
+    [STATUS.OUT_OF_STOCK]:   "out of stock",
+    [STATUS.COMING_TOMORROW]:"scheduled for tomorrow",
+  };
+  const announceKey = (o) => `${orderKey(o)}:${o.status}`;
+
+  // Detect newly-announceable status transitions → announce once each.
+  useEffect(() => {
+    if (announcedRef.current === null) {
+      if (!orders || orders.length === 0) return;                          // wait for the first populated load
+      announcedRef.current = new Set(orders.filter(o => ANNOUNCE_PHRASE[o.status]).map(announceKey)); // seed backlog, don't read out
+      return;
+    }
+    const seen = announcedRef.current;
+    const liveKeys = new Set((orders || []).map(orderKey));
+    for (const k of seen) if (!liveKeys.has(k.slice(0, k.lastIndexOf(":")))) seen.delete(k); // prune vanished orders
+    for (const o of (orders || [])) {
+      const phrase = ANNOUNCE_PHRASE[o.status];
+      if (!phrase) continue;
+      const k = announceKey(o);
+      if (seen.has(k)) continue;
+      seen.add(k);                                                          // mark announced even when off/muted so re-enabling won't dump a backlog
+      if (settingRef.current?.enabled !== false && voiceOn && voiceUnlocked) { // admin master switch AND TV mute AND unlocked
+        const num = String(o.id ?? "").replace(/^0+(?=\d)/, "") || String(o.id ?? "");
+        const line = `Order number ${num}, ${phrase}`;
+        for (let i = 0; i < ANNOUNCE_REPEATS; i++) enqueueAnnounce(line); // repeat so it's not missed
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, voiceOn, voiceUnlocked]);
   // Layby collections tracked on the customer board exactly like orders: when the
   // cashier sends a pull request the invoice number appears in INCOMING; once the
   // warehouse marks it Sent it moves to READY and hides on the SAME 8-min timer as
@@ -10551,7 +10815,45 @@ function TvWithAutoCollect({ orders, onExit }) {
     [allOrders, tick]
   );
 
-  return <TvDisplayMockup orders={filteredOrders} onExit={onExit} />;
+  return (
+    <>
+      <TvDisplayMockup orders={filteredOrders} onExit={onExit} />
+      {/* Voice controls (overlay — never touches the tuned board layout). One-tap
+          "enable" on load unlocks audio for the session; then a discreet mute toggle. */}
+      {!voiceUnlocked ? (
+        <button
+          type="button"
+          onClick={enableVoice}
+          aria-label="Enable pickup announcements"
+          style={{
+            position: "fixed", left: "50%", bottom: 22, transform: "translateX(-50%)", zIndex: 400,
+            display: "flex", alignItems: "center", gap: 9,
+            background: "rgba(74,127,255,.94)", color: "#fff", border: "none", borderRadius: 999,
+            padding: "13px 24px", fontSize: 15, fontWeight: 800, letterSpacing: 0.3, cursor: "pointer",
+            fontFamily: FONT, boxShadow: "0 8px 28px rgba(0,0,0,.55)",
+          }}
+        >
+          🔊 Tap once to enable pickup voice
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={toggleVoice}
+          aria-label={voiceOn ? "Mute pickup announcements" : "Unmute pickup announcements"}
+          title={voiceOn ? "Mute pickup announcements" : "Unmute pickup announcements"}
+          style={{
+            position: "fixed", right: 14, bottom: 14, zIndex: 400,
+            width: 46, height: 46, borderRadius: "50%",
+            display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+            background: "rgba(0,0,0,.5)", border: "1px solid rgba(255,255,255,.28)", fontSize: 21,
+            WebkitTapHighlightColor: "transparent",
+          }}
+        >
+          {voiceOn ? "🔊" : "🔇"}
+        </button>
+      )}
+    </>
+  );
 }
 
 // ─── TV ONLY SHELL ────────────────────────────────────────────────────────────
