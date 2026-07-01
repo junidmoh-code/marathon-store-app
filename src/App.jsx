@@ -10496,6 +10496,8 @@ function laybyTvNumber(invoiceNo) {
 }
 
 const TV_VOICE_LS_KEY = "mc_tv_voice";
+const ANNOUNCE_REPEATS = 3;      // say each order announcement this many times
+const ANNOUNCE_GAP_MS  = 550;    // pause between clips (repeats + back-to-back orders)
 // Pick a clear English voice for the spoken pickup announcements; falls back to the
 // browser default when no preferred voice is installed.
 function pickAnnounceVoice(synth) {
@@ -10611,8 +10613,9 @@ function TvWithAutoCollect({ orders, onExit }) {
       stopAll();                              // stop any half-played clip BEFORE the fallback so they don't overlap
       await speakBrowser(text);               // paid engine failed / inactive → Browser, never silent
     } finally {
-      playingRef.current = false;
-      pump();
+      // Short gap between clips so repeats (and back-to-back orders) are clear, not
+      // rushed. The lock stays held through the gap so nothing starts early.
+      setTimeout(() => { playingRef.current = false; pump(); }, ANNOUNCE_GAP_MS);
     }
   };
   const enqueueAnnounce = (text) => { queueRef.current.push(text); pump(); };
@@ -10675,7 +10678,8 @@ function TvWithAutoCollect({ orders, onExit }) {
       seen.add(k);                                                          // mark announced even when muted so unmuting won't dump a backlog
       if (voiceOn && voiceUnlocked) {
         const num = String(o.id ?? "").replace(/^0+(?=\d)/, "") || String(o.id ?? "");
-        enqueueAnnounce(`Order number ${num}, ${phrase}`);
+        const line = `Order number ${num}, ${phrase}`;
+        for (let i = 0; i < ANNOUNCE_REPEATS; i++) enqueueAnnounce(line); // repeat so it's not missed
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
