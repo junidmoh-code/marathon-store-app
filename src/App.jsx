@@ -10554,34 +10554,42 @@ function TvWithAutoCollect({ orders, onExit }) {
   const playingRef = useRef(false);
   const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
 
+  // Stop ALL current sound (speech + audio) so the two engines can never overlap.
+  const stopAll = () => {
+    try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
+    try { const el = audioElRef.current; if (el) el.pause(); } catch { /* ignore */ }
+  };
   const speakBrowser = (text) => new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; clearTimeout(to); resolve(); };
+    // Chrome's onend is unreliable — cap with a duration-based timeout so the queue
+    // ALWAYS advances (never hangs) even if the event never fires.
+    const to = setTimeout(finish, Math.min(12000, 1600 + String(text).length * 90));
     try {
       const synth = window.speechSynthesis;
-      if (!synth) return resolve();
+      if (!synth) return finish();
+      synth.cancel();                         // clear any stuck utterance first
       const u = new SpeechSynthesisUtterance(text);
       u.rate = 0.95; u.pitch = 1; u.volume = 1; u.lang = "en-US";
       const v = pickAnnounceVoice(synth); if (v) u.voice = v;
-      u.onend = () => resolve(); u.onerror = () => resolve();
+      u.onend = finish; u.onerror = finish;
       synth.speak(u);
-    } catch { resolve(); }
+    } catch { finish(); }
   });
   const playUrl = (url) => new Promise((resolve, reject) => {
     const el = audioElRef.current;
     if (!el) return reject(new Error("no audio element"));
-    let done = false;
-    const to = setTimeout(() => finish(reject, new Error("audio timeout")), 15000);
-    function finish(fn, arg) { if (done) return; done = true; el.onended = null; el.onerror = null; clearTimeout(to); fn(arg); }
+    let done = false, started = false;
+    const finish = (fn, arg) => { if (done) return; done = true; el.onended = null; el.onerror = null; el.onplaying = null; clearTimeout(to); fn(arg); };
+    // If it started playing, resolve (it's playing — no fallback); only reject when
+    // it never started, so we never speak the robotic voice OVER a playing clip.
+    const to = setTimeout(() => finish(started ? resolve : reject, started ? undefined : new Error("audio timeout")), 20000);
+    el.onplaying = () => { started = true; };
     el.onended = () => finish(resolve);
-    el.onerror = () => finish(reject, new Error("audio error"));
-    try { el.src = url; const p = el.play(); if (p && p.catch) p.catch((e) => finish(reject, e)); }
+    el.onerror = () => (started ? finish(resolve) : finish(reject, new Error("audio error")));
+    try { el.src = url; const p = el.play(); if (p && p.catch) p.catch((e) => { if (!started) finish(reject, e); }); }
     catch (e) { finish(reject, e); }
   });
-  const playViaFunction = async (engine, voice, text) => {
-    const res = await httpsCallable(functions, "pickupVoice")({ text, engine, voice });
-    const url = res?.data?.url;
-    if (!url) throw new Error("no tts url");
-    await playUrl(url);
-  };
   const pump = async () => {
     if (playingRef.current) return;
     const text = queueRef.current.shift();
@@ -10589,10 +10597,19 @@ function TvWithAutoCollect({ orders, onExit }) {
     playingRef.current = true;
     const { engine, voice } = settingRef.current || {};
     try {
-      if (engine === "openai" || engine === "elevenlabs") await playViaFunction(engine, voice, text);
-      else await speakBrowser(text);
+      if (engine === "openai" || engine === "elevenlabs") {
+        stopAll();                            // no speech under the clip
+        const res = await httpsCallable(functions, "pickupVoice")({ text, engine, voice });
+        const url = res?.data?.url;
+        if (!url) throw new Error("no tts url");
+        await playUrl(url);
+      } else {
+        stopAll();                            // no audio under the speech
+        await speakBrowser(text);
+      }
     } catch {
-      await speakBrowser(text); // paid engine failed / inactive → never silent
+      stopAll();                              // stop any half-played clip BEFORE the fallback so they don't overlap
+      await speakBrowser(text);               // paid engine failed / inactive → Browser, never silent
     } finally {
       playingRef.current = false;
       pump();
@@ -10604,7 +10621,9 @@ function TvWithAutoCollect({ orders, onExit }) {
     // The tap unlocks BOTH HTML5 audio (OpenAI/ElevenLabs clips) AND speechSynthesis
     // (Browser fallback) for the session, then plays a confirmation.
     try { const el = audioElRef.current; if (el) { el.src = SILENT_WAV; const p = el.play(); if (p && p.catch) p.catch(() => {}); } } catch { /* ignore */ }
-    try { const s = window.speechSynthesis; if (s) { s.cancel(); s.speak(new SpeechSynthesisUtterance("")); } } catch { /* ignore */ }
+    // Unlock speech with a SPACE (not an empty string — an empty utterance can wedge
+    // Chrome's speech queue so nothing speaks afterwards). resume() clears a paused state.
+    try { const s = window.speechSynthesis; if (s) { s.resume?.(); const u = new SpeechSynthesisUtterance(" "); u.volume = 0; s.speak(u); } } catch { /* ignore */ }
     setVoiceUnlocked(true);
     setVoiceOn(true);
     try { localStorage.setItem(TV_VOICE_LS_KEY, "on"); } catch { /* ignore */ }
