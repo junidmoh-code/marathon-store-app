@@ -14,6 +14,7 @@ import { toAuthPassword } from "./utils/auth-utils";
 import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits } from "./utils/phone";
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
+import AppErrorBoundary from "./AppErrorBoundary";
 import StockView from "./components/stock/StockView";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
@@ -10386,7 +10387,7 @@ function AppInner() {
       <PWAUpdateBanner />
       {!role && <AndroidInstallChip />}
       {!role && <IOSInstallTooltip />}
-      {view}
+      <AppErrorBoundary key={role || "home"}>{view}</AppErrorBoundary>
       {showIndicator && <UserIndicator label={indicatorLabel} onSignOut={handleAdminSignOut} />}
     </>
   );
