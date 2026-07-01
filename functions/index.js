@@ -2501,6 +2501,107 @@ const VALID_PERMISSIONS = [
 ];
 const VALID_ROLES = ["admin", "store_assistant", "warehouse"];
 
+// ─── PICKUP-BOARD VOICE (natural TTS) ─────────────────────────────────────────
+// One callable, pluggable engines for the TV pickup board's spoken announcements:
+//   • openai      — tts-1 (bound OPENAI_API_KEY), voice nova/coral/…
+//   • elevenlabs  — most human; key read at RUNTIME from Secret Manager so the
+//                   function deploys BEFORE the key exists and ACTIVATES the moment
+//                   ELEVENLABS_API_KEY is created (no redeploy). Absent ⇒ inactive.
+//   • browser     — client-side speechSynthesis (handled on the TV, not here).
+// Each generated clip is CACHED in Storage per engine+voice+text, so after the
+// first generation an announcement replays instantly and free. Text is locked to
+// the pickup-announcement shape so it can't be abused for arbitrary paid TTS.
+const OPENAI_TTS_MODEL = "tts-1";
+const OPENAI_TTS_COST_PER_MCHAR = 15;                 // $15 / 1M chars (tts-1)
+const ELEVEN_MODEL = "eleven_turbo_v2_5";
+const ELEVEN_DEFAULT_VOICE = "EXAVITQu4vr4xnSDxMaL";  // "Sarah" — clear, friendly
+const ELEVEN_COST_PER_KCHAR = 0.10;                   // ≈ turbo pricing (approx, for logging)
+const VOICE_TEXT_RE = /^(Order number .{1,24}, ready for collection\.?|Pickup announcements on\.?)$/;
+
+function ttsCacheKey(engine, voice, text) {
+  const t = String(text).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const v = String(voice || "default").replace(/[^a-z0-9]+/gi, "").toLowerCase();
+  return `${engine}_${v}_${t}`.slice(0, 100);
+}
+
+// Runtime ElevenLabs key (NOT a bound secret — lets the function deploy before the
+// key exists). Cached per instance; null when the secret is absent/unreadable.
+let _elevenKey; let _elevenChecked = false;
+async function getElevenKey() {
+  if (_elevenChecked) return _elevenKey || null;
+  _elevenChecked = true;
+  try {
+    const { SecretManagerServiceClient } = require("@google-cloud/secret-manager");
+    const client = new SecretManagerServiceClient();
+    const [v] = await client.accessSecretVersion({ name: "projects/marathon-club/secrets/ELEVENLABS_API_KEY/versions/latest" });
+    _elevenKey = (v.payload.data.toString("utf8") || "").trim() || null;
+  } catch { _elevenKey = null; }
+  return _elevenKey;
+}
+
+async function ttsTokenUrl(file, path) {
+  const [md] = await file.getMetadata();
+  let token = md.metadata && md.metadata.firebaseStorageDownloadTokens;
+  token = token ? String(token).split(",")[0] : null;
+  if (!token) { token = require("crypto").randomUUID(); await file.setMetadata({ metadata: { firebaseStorageDownloadTokens: token } }); }
+  return `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+}
+
+exports.pickupVoice = onCall(
+  { region: "europe-west1", secrets: [openaiApiKey], memory: "256MiB", timeoutSeconds: 30 },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Sign-in required.");
+    const data = request.data || {};
+
+    // Status probe for the admin selector: which engines are usable right now.
+    if (data.status) {
+      return { engines: { browser: true, openai: true, elevenlabs: !!(await getElevenKey()) } };
+    }
+
+    const text = String(data.text || "").trim();
+    const engine = ["openai", "elevenlabs"].includes(data.engine) ? data.engine : "openai";
+    const voice = String(data.voice || "").trim().slice(0, 40);
+    if (!VOICE_TEXT_RE.test(text)) throw new HttpsError("invalid-argument", "Unsupported announcement text.");
+
+    const bucket = admin.storage().bucket(STORAGE_BUCKET);
+    const path = `tts/${ttsCacheKey(engine, voice, text)}.mp3`;
+    const file = bucket.file(path);
+
+    const [exists] = await file.exists();
+    if (exists) return { url: await ttsTokenUrl(file, path), engine, cached: true, costUSD: 0 };
+
+    let buf, costUSD = 0;
+    if (engine === "elevenlabs") {
+      const k = await getElevenKey();
+      if (!k) throw new HttpsError("failed-precondition", "elevenlabs_inactive"); // TV falls back to Browser
+      const vid = voice || ELEVEN_DEFAULT_VOICE;
+      const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${vid}?output_format=mp3_44100_128`, {
+        method: "POST",
+        headers: { "xi-api-key": k, "Content-Type": "application/json" },
+        body: JSON.stringify({ text, model_id: ELEVEN_MODEL }),
+      });
+      if (!res.ok) throw new HttpsError("internal", `elevenlabs ${res.status}: ${(await res.text().catch(() => "")).slice(0, 120)}`);
+      buf = Buffer.from(await res.arrayBuffer());
+      costUSD = +((text.length / 1000) * ELEVEN_COST_PER_KCHAR).toFixed(6);
+    } else {
+      const res = await fetch("https://api.openai.com/v1/audio/speech", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${openaiApiKey.value()}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: OPENAI_TTS_MODEL, voice: voice || "nova", input: text, response_format: "mp3" }),
+      });
+      if (!res.ok) throw new HttpsError("internal", `openai tts ${res.status}: ${(await res.text().catch(() => "")).slice(0, 120)}`);
+      buf = Buffer.from(await res.arrayBuffer());
+      costUSD = +((text.length / 1e6) * OPENAI_TTS_COST_PER_MCHAR).toFixed(6);
+    }
+
+    const token = require("crypto").randomUUID();
+    await file.save(buf, { resumable: false, contentType: "audio/mpeg", metadata: { metadata: { firebaseStorageDownloadTokens: token } } });
+    const url = `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+    try { await logReorderUsage(admin.database(), new Date().toISOString().slice(0, 10), { at: Date.now(), kind: "pickupVoice", by: request.auth.uid, engine, chars: text.length, costUSD }); } catch { /* best-effort */ }
+    return { url, engine, cached: false, costUSD };
+  }
+);
+
 exports.createStaffUser = onCall(
   { region: "europe-west1" },
   async (request) => {
