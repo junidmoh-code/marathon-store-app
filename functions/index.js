@@ -2516,7 +2516,7 @@ const OPENAI_TTS_COST_PER_MCHAR = 15;                 // $15 / 1M chars (tts-1)
 const ELEVEN_MODEL = "eleven_turbo_v2_5";
 const ELEVEN_DEFAULT_VOICE = "EXAVITQu4vr4xnSDxMaL";  // "Sarah" — clear, friendly
 const ELEVEN_COST_PER_KCHAR = 0.10;                   // ≈ turbo pricing (approx, for logging)
-const VOICE_TEXT_RE = /^(Order number .{1,24}, ready for collection\.?|Pickup announcements on\.?)$/;
+const VOICE_TEXT_RE = /^(Order number .{1,24}, (ready for collection|out of stock|scheduled for tomorrow)\.?|Pickup announcements on\.?)$/;
 
 function ttsCacheKey(engine, voice, text) {
   const t = String(text).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");

@@ -10647,24 +10647,35 @@ function TvWithAutoCollect({ orders, onExit }) {
     try { window.speechSynthesis?.getVoices(); } catch { /* ignore */ }
   }, []);
 
-  // Detect newly-ready orders → announce once each.
+  // Statuses we announce, and the phrase for each. Keyed by orderKey:status so each
+  // TRANSITION is announced once (e.g. an order that goes Out-of-stock → Ready later
+  // gets both). The board's other column (Incoming) is intentionally not announced.
+  const ANNOUNCE_PHRASE = {
+    [STATUS.READY]:          "ready for collection",
+    [STATUS.OUT_OF_STOCK]:   "out of stock",
+    [STATUS.COMING_TOMORROW]:"scheduled for tomorrow",
+  };
+  const announceKey = (o) => `${orderKey(o)}:${o.status}`;
+
+  // Detect newly-announceable status transitions → announce once each.
   useEffect(() => {
     if (announcedRef.current === null) {
-      if (!orders || orders.length === 0) return;                    // wait for the first populated load
-      announcedRef.current = new Set(orders.filter(o => o.status === STATUS.READY).map(orderKey)); // seed backlog, don't read out
+      if (!orders || orders.length === 0) return;                          // wait for the first populated load
+      announcedRef.current = new Set(orders.filter(o => ANNOUNCE_PHRASE[o.status]).map(announceKey)); // seed backlog, don't read out
       return;
     }
     const seen = announcedRef.current;
-    const live = new Set((orders || []).map(orderKey));
-    for (const k of seen) if (!live.has(k)) seen.delete(k);          // prune vanished orders so the set stays bounded
+    const liveKeys = new Set((orders || []).map(orderKey));
+    for (const k of seen) if (!liveKeys.has(k.slice(0, k.lastIndexOf(":")))) seen.delete(k); // prune vanished orders
     for (const o of (orders || [])) {
-      if (o.status !== STATUS.READY) continue;
-      const k = orderKey(o);
+      const phrase = ANNOUNCE_PHRASE[o.status];
+      if (!phrase) continue;
+      const k = announceKey(o);
       if (seen.has(k)) continue;
-      seen.add(k);                                                    // mark announced even when muted so unmuting won't dump a backlog
+      seen.add(k);                                                          // mark announced even when muted so unmuting won't dump a backlog
       if (voiceOn && voiceUnlocked) {
         const num = String(o.id ?? "").replace(/^0+(?=\d)/, "") || String(o.id ?? "");
-        enqueueAnnounce(`Order number ${num}, ready for collection`);
+        enqueueAnnounce(`Order number ${num}, ${phrase}`);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
