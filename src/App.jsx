@@ -10408,6 +10408,15 @@ function AppInner() {
 // and unchanged — a deliberate human action still collects + logs restock.
 const TV_TOMORROW_HIDE_MS = 15 * 60 * 1000;
 
+// TV display form of a layby invoice number: strip the padding zeros so the board
+// shows "L-45" instead of "L-00045" (the padded form is too wide for the number
+// slot). Falls back to the raw value for any non-standard / migrated invoice shape.
+function laybyTvNumber(invoiceNo) {
+  const s = String(invoiceNo || "").trim();
+  const m = s.match(/^([A-Za-z]+)[-\s]?0*(\d+)$/);
+  return m ? `${m[1].toUpperCase()}-${m[2]}` : s;
+}
+
 function TvWithAutoCollect({ orders, onExit }) {
   // Dedupe markers are keyed by a composite of order.id + createdAt rather
   // than id alone. order.id is daily-scoped (it's the orderNumber, which
@@ -10429,12 +10438,13 @@ function TvWithAutoCollect({ orders, onExit }) {
     .filter(p => p && p.invoiceNo && dispositionOf(p) !== DISPOSITION.RETURN_TO_STOCK)
     .map(p => {
       const st = p.status || PULL_STATUS.PENDING;
+      const num = laybyTvNumber(p.invoiceNo);
       if (st === PULL_STATUS.PENDING) {
-        return { id: p.invoiceNo, status: STATUS.INCOMING, isLayby: true,
+        return { id: num, status: STATUS.INCOMING, isLayby: true,
                  createdAt: p.requestedAt || p.createdAt || p.updatedAt || "" };
       }
       if (st === PULL_STATUS.SENT) {
-        return { id: p.invoiceNo, status: STATUS.READY, isLayby: true,
+        return { id: num, status: STATUS.READY, isLayby: true,
                  readyAt: p.sentAt, updatedAt: p.sentAt, createdAt: p.sentAt || p.requestedAt || "" };
       }
       return null; // rejected / returnedToStock → not shown on the board
