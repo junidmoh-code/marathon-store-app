@@ -2526,10 +2526,11 @@ function ttsCacheKey(engine, voice, text) {
 
 // Runtime ElevenLabs key (NOT a bound secret — lets the function deploy before the
 // key exists). Cached per instance; null when the secret is absent/unreadable.
-let _elevenKey; let _elevenChecked = false;
+let _elevenKey = null; let _elevenCheckedAt = 0;
 async function getElevenKey() {
-  if (_elevenChecked) return _elevenKey || null;
-  _elevenChecked = true;
+  if (_elevenKey) return _elevenKey;                      // found → cache for the instance lifetime
+  if (Date.now() - _elevenCheckedAt < 60000) return null; // absent → re-check at most once/min (so activation is near-immediate, no hammering)
+  _elevenCheckedAt = Date.now();
   try {
     const { SecretManagerServiceClient } = require("@google-cloud/secret-manager");
     const client = new SecretManagerServiceClient();
