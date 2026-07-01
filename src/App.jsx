@@ -26,7 +26,7 @@ import { ensureBarcodes } from "./components/stock/barcodeStore";
 import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
-import { DEFAULT_STORAGE_HUB, PULL_STATUS } from "./components/layby/contract";
+import { DEFAULT_STORAGE_HUB, PULL_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod } from "./utils/insights";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
@@ -10420,8 +10420,27 @@ function TvWithAutoCollect({ orders, onExit }) {
   const hiddenOosRef      = useRef(new Set());  // OOS hidden from the TV (display-only)
   const hiddenTomorrowRef = useRef(new Set());
   const [tick, setTick]   = useState(0);
-  // Layby pulls for the discreet TV awareness strip (invoice numbers). Read-only.
+  // Layby collections tracked on the customer board exactly like orders: when the
+  // cashier sends a pull request the invoice number appears in INCOMING; once the
+  // warehouse marks it Sent it moves to READY and hides on the SAME 8-min timer as
+  // orders. Only "collect" pulls (return_to_stock are internal cancellations).
   const laybyPulls = useLaybyPulls();
+  const laybyOrders = useMemo(() => (laybyPulls || [])
+    .filter(p => p && p.invoiceNo && dispositionOf(p) !== DISPOSITION.RETURN_TO_STOCK)
+    .map(p => {
+      const st = p.status || PULL_STATUS.PENDING;
+      if (st === PULL_STATUS.PENDING) {
+        return { id: p.invoiceNo, status: STATUS.INCOMING, isLayby: true,
+                 createdAt: p.requestedAt || p.createdAt || p.updatedAt || "" };
+      }
+      if (st === PULL_STATUS.SENT) {
+        return { id: p.invoiceNo, status: STATUS.READY, isLayby: true,
+                 readyAt: p.sentAt, updatedAt: p.sentAt, createdAt: p.sentAt || p.requestedAt || "" };
+      }
+      return null; // rejected / returnedToStock → not shown on the board
+    })
+    .filter(Boolean), [laybyPulls]);
+  const allOrders = useMemo(() => [...(orders || []), ...laybyOrders], [orders, laybyOrders]);
 
   // ── TV AUTO-UPDATE ──────────────────────────────────────────────────────────
   // A kiosk TV is never manually reloaded, so a deploy otherwise never reaches it
@@ -10453,13 +10472,13 @@ function TvWithAutoCollect({ orders, onExit }) {
   useEffect(() => {
     const check = () => {
       const nowMs    = Date.now();
-      const liveKeys = new Set(orders.map(orderKey));
+      const liveKeys = new Set(allOrders.map(orderKey));
       for (const k of hiddenReadyRef.current)    if (!liveKeys.has(k)) hiddenReadyRef.current.delete(k);
       for (const k of hiddenOosRef.current)      if (!liveKeys.has(k)) hiddenOosRef.current.delete(k);
       for (const k of hiddenTomorrowRef.current) if (!liveKeys.has(k)) hiddenTomorrowRef.current.delete(k);
 
       let changed = false;
-      orders.forEach(o => {
+      allOrders.forEach(o => {
         const key = orderKey(o);
         // IN-STOCK READY → DISPLAY-ONLY hide after 8 min (NO RTDB write). The
         // order stays READY/live in /orders so a customer who's still in-store can
@@ -10498,19 +10517,19 @@ function TvWithAutoCollect({ orders, onExit }) {
     check();
     const id = setInterval(check, TV_EXPIRY_CHECK_MS);
     return () => clearInterval(id);
-  }, [orders]);
+  }, [allOrders]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const filteredOrders = useMemo(
-    () => orders.filter(o =>
+    () => allOrders.filter(o =>
       (o.status !== STATUS.COMING_TOMORROW || !hiddenTomorrowRef.current.has(orderKey(o))) &&
       (o.status !== STATUS.OUT_OF_STOCK    || !hiddenOosRef.current.has(orderKey(o))) &&
       (o.status !== STATUS.READY           || !hiddenReadyRef.current.has(orderKey(o)))
     ),
-    [orders, tick]
+    [allOrders, tick]
   );
 
-  return <TvDisplayMockup orders={filteredOrders} laybyPulls={laybyPulls} onExit={onExit} />;
+  return <TvDisplayMockup orders={filteredOrders} onExit={onExit} />;
 }
 
 // ─── TV ONLY SHELL ────────────────────────────────────────────────────────────
