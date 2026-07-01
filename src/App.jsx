@@ -2064,9 +2064,9 @@ function AdminReviewPhotosTab({ products = [] }) {
                   <span style={{ fontSize:12 }}>＋</span> Keep angle
                 </button>
               </div>
-              <div style={{ display:"flex", gap:8 }}>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
                 <button onClick={() => approve(row)} disabled={busy || regen}
-                        style={{ flex:1.4, background:"rgba(74,202,122,.16)", border:"1px solid rgba(74,202,122,.35)", color:"#5FD894", borderRadius:11, padding:"11px 0", fontSize:13, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .55 : 1 }}>
+                        style={{ flex:"1.4 1 100px", background:"rgba(74,202,122,.16)", border:"1px solid rgba(74,202,122,.35)", color:"#5FD894", borderRadius:11, padding:"11px 0", fontSize:13, fontWeight:700, cursor: (busy||regen) ? "wait" : "pointer", opacity: (busy||regen) ? .55 : 1 }}>
                   {busy ? "…" : "Approve"}
                 </button>
                 <button onClick={() => setRegenFor(row)} disabled={busy || regen}
@@ -2129,7 +2129,7 @@ function RegenerateModal({ row, quality, extraCount = 0, onClose, onSubmit }) {
         </div>
 
         <div style={lbl}>CHOOSE AI</div>
-        <div style={{ display:"flex", gap:7, marginBottom:16 }}>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:7, marginBottom:16 }}>
           {ENGINES.map(([val, lab, hint]) => {
             const sel = engine === val;
             return (
@@ -2454,7 +2454,7 @@ function PickupVoiceAdmin() {
           const disabled = o.id === "elevenlabs" && !o.active;
           return (
             <button key={o.id} type="button" onClick={() => !disabled && choose(o.id)} disabled={saving || disabled}
-                    style={{ flex:1, minWidth:110, textAlign:"left", background: on ? "rgba(74,127,255,.2)" : "rgba(255,255,255,.05)",
+                    style={{ flex:"1 1 92px", minWidth:92, textAlign:"left", background: on ? "rgba(74,127,255,.2)" : "rgba(255,255,255,.05)",
                              border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.12)"), borderRadius:10, padding:"9px 11px",
                              cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.55 : 1 }}>
               <div style={{ fontSize:12.5, fontWeight:700, color: on ? "#fff" : "rgba(255,255,255,.85)" }}>{o.label}{on ? " ✓" : ""}</div>
@@ -2794,7 +2794,7 @@ function AdminView({ products, orders, onExit }) {
   // When the detail page is mounted, render JUST the detail (no list chrome).
   if (detailProduct) {
     return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
         <AdminProductDetail
           product={detailProduct}
           insightsLog={insightsLog}
@@ -2806,7 +2806,7 @@ function AdminView({ products, orders, onExit }) {
 
   // Section toggle (Products ↔ Review Names), shown at the top of both sections.
   const sectionToggle = (
-    <div style={{ display:"flex", gap:8, padding:"0 14px 4px" }}>
+    <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
       {[["products","Products"],["review-names","Names"],["review-photos","Photos"],["review-categories","Categories"]]
         .filter(([val]) => isSuperAdmin || !AI_SECTIONS.includes(val))
         .map(([val, label]) => {
@@ -2814,7 +2814,7 @@ function AdminView({ products, orders, onExit }) {
         const badge = val === "review-names" ? pendingNameCount : val === "review-photos" ? pendingPhotoCount : val === "review-categories" ? pendingCategoryCount : 0;
         return (
           <button key={val} onClick={() => setAdminSection(val)}
-            style={{ flex:1, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 0", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+            style={{ flex:"1 1 88px", minWidth:88, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 6px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
             {label}{badge > 0 && <span style={{ background:"#4ACA7A", color:"#063", fontSize:11, fontWeight:800, borderRadius:9, padding:"0 7px" }}>{badge}</span>}
           </button>
         );
@@ -2824,7 +2824,7 @@ function AdminView({ products, orders, onExit }) {
 
   if (adminSection === "review-names" && isSuperAdmin) {
     return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
           <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
           <div style={{ textAlign:"center" }}>
@@ -2843,7 +2843,7 @@ function AdminView({ products, orders, onExit }) {
 
   if (adminSection === "review-photos" && isSuperAdmin) {
     return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
           <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
           <div style={{ textAlign:"center" }}>
@@ -2862,7 +2862,7 @@ function AdminView({ products, orders, onExit }) {
 
   if (adminSection === "review-categories") {
     return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
           <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
           <div style={{ textAlign:"center" }}>
@@ -2880,7 +2880,7 @@ function AdminView({ products, orders, onExit }) {
   }
 
   return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
       {/* TOP BAR with Switch View */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
         <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
@@ -2923,7 +2923,7 @@ function AdminView({ products, orders, onExit }) {
       {showAdd && (
         <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.5rem", marginBottom:"1.5rem", boxShadow:GLOW }}>
           <div style={{ fontWeight:"700", fontSize:"0.95rem", marginBottom:"1rem", color:"#ccc" }}>New Product</div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem", marginBottom:"1rem" }}>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))", gap:"1rem", marginBottom:"1rem" }}>
             <input placeholder="Product name" value={form.name} onChange={e => setForm(f=>({...f,name:e.target.value}))} style={inputStyle} />
             <input placeholder="Category (e.g. Sneakers)" value={form.category} onChange={e => setCategory(e.target.value)} style={inputStyle} />
             <div style={{ gridColumn:"1 / -1" }}>
@@ -2939,7 +2939,7 @@ function AdminView({ products, orders, onExit }) {
           </div>
           {/* Product type toggle (Phase 12A) */}
           <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Product Type</div>
-          <div style={{ display:"flex", gap:"0.5rem", marginBottom:"1.25rem" }}>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:"0.5rem", marginBottom:"1.25rem" }}>
             {SIZE_TYPE_OPTIONS.map(opt => {
               const on = form.sizeStyle === opt.key;
               return (
@@ -3022,7 +3022,7 @@ function AdminView({ products, orders, onExit }) {
               a shoebox checkbox. The shoebox checkbox auto-syncs from category
               / productType until the user manually toggles it. */}
           <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Pricing (ZAR, optional)</div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem", marginBottom:"1rem" }}>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))", gap:"1rem", marginBottom:"1rem" }}>
             <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="Stock Price (R)" value={form.stockPrice}  onChange={e => setForm(f=>({...f, stockPrice:  e.target.value}))} style={inputStyle} />
             <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="Retail Price (R)" value={form.retailPrice} onChange={e => setForm(f=>({...f, retailPrice: e.target.value}))} style={inputStyle} />
           </div>
