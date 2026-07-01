@@ -2419,6 +2419,13 @@ function PickupVoiceAdmin() {
     catch (e) { console.warn("pickup voice save failed:", e); }
     finally { setSaving(false); }
   };
+  const setEnabled = async (en) => {
+    setSaving(true);
+    try { await update(ref(database, PICKUP_VOICE_PATH), { enabled: en }); }
+    catch (e) { console.warn("pickup voice enable save failed:", e); }
+    finally { setSaving(false); }
+  };
+  const enabled = setting.enabled !== false;
   const OPTS = [
     { id: "browser",    label: "Browser",    sub: "Free · robotic",      active: true },
     { id: "openai",     label: "OpenAI",     sub: "Natural · tts-1",     active: engines.openai },
@@ -2426,8 +2433,22 @@ function PickupVoiceAdmin() {
   ];
   return (
     <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, padding:12 }}>
-      <div style={{ fontSize:13, fontWeight:700, color:"#fff", marginBottom:8 }}>🔊 Pickup board voice</div>
-      <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>🔊 Pickup board voice</span>
+        {/* Master switch — turns the board's spoken announcements on/off for everyone. */}
+        <div style={{ display:"flex", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", borderRadius:999, padding:2 }}>
+          {[["on", "On"], ["off", "Off"]].map(([val, lbl]) => {
+            const sel = (val === "on") === enabled;
+            return (
+              <button key={val} type="button" onClick={() => setEnabled(val === "on")} disabled={saving}
+                      style={{ background: sel ? (val === "on" ? "#4ACA7A" : "rgba(255,255,255,.18)") : "transparent",
+                               color: sel ? (val === "on" ? "#062" : "#fff") : "rgba(255,255,255,.6)",
+                               border:"none", borderRadius:999, padding:"4px 14px", fontSize:12, fontWeight:800, cursor:"pointer" }}>{lbl}</button>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", opacity: enabled ? 1 : 0.45, pointerEvents: enabled ? "auto" : "none" }}>
         {OPTS.map(o => {
           const on = setting.engine === o.id;
           const disabled = o.id === "elevenlabs" && !o.active;
@@ -10513,11 +10534,11 @@ function pickAnnounceVoice(synth) {
 const PICKUP_VOICE_PATH = "settings/pickupVoice";
 const VOICE_ENGINES = ["browser", "openai", "elevenlabs"];
 function usePickupVoiceSetting() {
-  const [s, setS] = useState({ engine: "browser", voice: "" });
+  const [s, setS] = useState({ enabled: true, engine: "browser", voice: "" });
   useEffect(() => {
     const unsub = onValue(ref(database, PICKUP_VOICE_PATH), snap => {
       const v = snap.val() || {};
-      setS({ engine: VOICE_ENGINES.includes(v.engine) ? v.engine : "browser", voice: v.voice || "" });
+      setS({ enabled: v.enabled !== false, engine: VOICE_ENGINES.includes(v.engine) ? v.engine : "browser", voice: v.voice || "" });
     });
     return () => unsub();
   }, []);
@@ -10675,8 +10696,8 @@ function TvWithAutoCollect({ orders, onExit }) {
       if (!phrase) continue;
       const k = announceKey(o);
       if (seen.has(k)) continue;
-      seen.add(k);                                                          // mark announced even when muted so unmuting won't dump a backlog
-      if (voiceOn && voiceUnlocked) {
+      seen.add(k);                                                          // mark announced even when off/muted so re-enabling won't dump a backlog
+      if (settingRef.current?.enabled !== false && voiceOn && voiceUnlocked) { // admin master switch AND TV mute AND unlocked
         const num = String(o.id ?? "").replace(/^0+(?=\d)/, "") || String(o.id ?? "");
         const line = `Order number ${num}, ${phrase}`;
         for (let i = 0; i < ANNOUNCE_REPEATS; i++) enqueueAnnounce(line); // repeat so it's not missed
