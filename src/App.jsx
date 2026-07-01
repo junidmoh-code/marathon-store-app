@@ -10429,6 +10429,17 @@ function laybyTvNumber(invoiceNo) {
   return m ? `${m[1].toUpperCase()}-${m[2]}` : s;
 }
 
+const TV_VOICE_LS_KEY = "mc_tv_voice";
+// Pick a clear English voice for the spoken pickup announcements; falls back to the
+// browser default when no preferred voice is installed.
+function pickAnnounceVoice(synth) {
+  const voices = (synth.getVoices && synth.getVoices()) || [];
+  return voices.find(v => /en[-_]?US/i.test(v.lang) && /google|natural|samantha|aria|zira|jenny/i.test(v.name))
+      || voices.find(v => /^en[-_]?(US|GB|ZA|AU)/i.test(v.lang))
+      || voices.find(v => /^en/i.test(v.lang))
+      || null;
+}
+
 function TvWithAutoCollect({ orders, onExit }) {
   // Dedupe markers are keyed by a composite of order.id + createdAt rather
   // than id alone. order.id is daily-scoped (it's the orderNumber, which
@@ -10441,6 +10452,69 @@ function TvWithAutoCollect({ orders, onExit }) {
   const hiddenOosRef      = useRef(new Set());  // OOS hidden from the TV (display-only)
   const hiddenTomorrowRef = useRef(new Set());
   const [tick, setTick]   = useState(0);
+
+  // ── VOICE PICKUP ANNOUNCEMENTS ──────────────────────────────────────────────
+  // Speak "Order number X, ready for collection" through the TV speaker when an
+  // order NEWLY becomes ready. Built-in speechSynthesis only — no external service,
+  // no cost. TV device ONLY (this component renders solely for the DISPLAY role /
+  // #tv, never the POS or other screens). Orders already ready at load are SEEDED
+  // (never read out); only fresh transitions speak. speechSynthesis has an internal
+  // FIFO queue, so several at once play one-after-another and never talk over.
+  const [voiceOn, setVoiceOn] = useState(() => { try { return localStorage.getItem(TV_VOICE_LS_KEY) === "on"; } catch { return false; } });
+  const [voiceUnlocked, setVoiceUnlocked] = useState(false); // browsers block audio until one user gesture per page load
+  const announcedRef = useRef(null); // Set of already-announced order keys; null until seeded with the load-time backlog
+
+  const speak = (text) => {
+    try {
+      const synth = window.speechSynthesis;
+      if (!synth) return;
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.95; u.pitch = 1; u.volume = 1; u.lang = "en-US";
+      const v = pickAnnounceVoice(synth);
+      if (v) u.voice = v;
+      synth.speak(u);
+    } catch { /* speech unavailable — ignore */ }
+  };
+  const enableVoice = () => {
+    // The tap IS the gesture that unlocks audio for the session; prime it with a
+    // short confirmation so staff hear it's working.
+    try { const s = window.speechSynthesis; if (s) { s.cancel(); s.speak(new SpeechSynthesisUtterance("Pickup announcements on")); } } catch { /* ignore */ }
+    setVoiceUnlocked(true);
+    setVoiceOn(true);
+    try { localStorage.setItem(TV_VOICE_LS_KEY, "on"); } catch { /* ignore */ }
+  };
+  const toggleVoice = () => setVoiceOn(v => {
+    const n = !v;
+    try { localStorage.setItem(TV_VOICE_LS_KEY, n ? "on" : "off"); } catch { /* ignore */ }
+    if (!n) { try { window.speechSynthesis?.cancel(); } catch { /* ignore */ } } // muting also stops any in-progress speech
+    return n;
+  });
+
+  // Some browsers populate getVoices() only after 'voiceschanged' — nudge it early.
+  useEffect(() => { try { window.speechSynthesis?.getVoices(); } catch { /* ignore */ } }, []);
+
+  // Detect newly-ready orders → announce once each.
+  useEffect(() => {
+    if (announcedRef.current === null) {
+      if (!orders || orders.length === 0) return;                    // wait for the first populated load
+      announcedRef.current = new Set(orders.filter(o => o.status === STATUS.READY).map(orderKey)); // seed backlog, don't read out
+      return;
+    }
+    const seen = announcedRef.current;
+    const live = new Set((orders || []).map(orderKey));
+    for (const k of seen) if (!live.has(k)) seen.delete(k);          // prune vanished orders so the set stays bounded
+    for (const o of (orders || [])) {
+      if (o.status !== STATUS.READY) continue;
+      const k = orderKey(o);
+      if (seen.has(k)) continue;
+      seen.add(k);                                                    // mark announced even when muted so unmuting won't dump a backlog
+      if (voiceOn && voiceUnlocked) {
+        const num = String(o.id ?? "").replace(/^0+(?=\d)/, "") || String(o.id ?? "");
+        speak(`Order number ${num}, ready for collection`);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, voiceOn, voiceUnlocked]);
   // Layby collections tracked on the customer board exactly like orders: when the
   // cashier sends a pull request the invoice number appears in INCOMING; once the
   // warehouse marks it Sent it moves to READY and hides on the SAME 8-min timer as
@@ -10551,7 +10625,45 @@ function TvWithAutoCollect({ orders, onExit }) {
     [allOrders, tick]
   );
 
-  return <TvDisplayMockup orders={filteredOrders} onExit={onExit} />;
+  return (
+    <>
+      <TvDisplayMockup orders={filteredOrders} onExit={onExit} />
+      {/* Voice controls (overlay — never touches the tuned board layout). One-tap
+          "enable" on load unlocks audio for the session; then a discreet mute toggle. */}
+      {!voiceUnlocked ? (
+        <button
+          type="button"
+          onClick={enableVoice}
+          aria-label="Enable pickup announcements"
+          style={{
+            position: "fixed", left: "50%", bottom: 22, transform: "translateX(-50%)", zIndex: 400,
+            display: "flex", alignItems: "center", gap: 9,
+            background: "rgba(74,127,255,.94)", color: "#fff", border: "none", borderRadius: 999,
+            padding: "13px 24px", fontSize: 15, fontWeight: 800, letterSpacing: 0.3, cursor: "pointer",
+            fontFamily: FONT, boxShadow: "0 8px 28px rgba(0,0,0,.55)",
+          }}
+        >
+          🔊 Tap once to enable pickup voice
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={toggleVoice}
+          aria-label={voiceOn ? "Mute pickup announcements" : "Unmute pickup announcements"}
+          title={voiceOn ? "Mute pickup announcements" : "Unmute pickup announcements"}
+          style={{
+            position: "fixed", right: 14, bottom: 14, zIndex: 400,
+            width: 46, height: 46, borderRadius: "50%",
+            display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+            background: "rgba(0,0,0,.5)", border: "1px solid rgba(255,255,255,.28)", fontSize: 21,
+            WebkitTapHighlightColor: "transparent",
+          }}
+        >
+          {voiceOn ? "🔊" : "🔇"}
+        </button>
+      )}
+    </>
+  );
 }
 
 // ─── TV ONLY SHELL ────────────────────────────────────────────────────────────
