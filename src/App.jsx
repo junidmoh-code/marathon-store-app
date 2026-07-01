@@ -3797,6 +3797,12 @@ function AssistantView({ products, onExit, orders = [] }) {
   }, []);
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
   const [pendingSize, setPendingSize]                   = useState("");
+  // No-size products (bags, accessories, perfume, one-size) order as "Free Size" —
+  // "_"/blank placeholders aren't real sizes. Keeps the size sheet from dead-ending.
+  const selectedSizes = useMemo(() => {
+    const real = (selected?.sizes || []).filter(s => s && String(s).trim() && s !== "_");
+    return real.length ? real : ["Free Size"];
+  }, [selected]);
   const [pendingQty,  setPendingQty]                    = useState(1);
   const [pendingDisplayRequest, setPendingDisplay]      = useState(false);
   const [pendingDisplayPartner, setPendingDisplayPartner] = useState(false);
@@ -4409,7 +4415,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
             <div style={{ color:"#888", fontSize:"0.75rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Select Size</div>
             <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
-              {selected.sizes.map(s => (
+              {selectedSizes.map(s => (
                 <button key={s} onClick={() => setPendingSize(s)}
                   style={{ padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
                   {s}
