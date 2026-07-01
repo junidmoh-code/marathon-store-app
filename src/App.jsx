@@ -515,7 +515,7 @@ function useOrders() {
           console.warn("Order migration write failed:", err);
         });
         const arr = data.items.slice().sort((a, b) =>
-          (b?.createdAt || "").localeCompare(a?.createdAt || "")
+          tsMs(b?.createdAt) - tsMs(a?.createdAt)
         );
         setOrders(arr);
         return;
@@ -523,7 +523,7 @@ function useOrders() {
       // Normal shape: map of id → order. Convert to sorted array.
       const arr = Object.values(data)
         .filter(Boolean)
-        .sort((a, b) => (b?.createdAt || "").localeCompare(a?.createdAt || ""));
+        .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
       setOrders(arr);
     }, (err) => {
       console.warn("Firebase read error on /orders:", err);
@@ -569,7 +569,7 @@ function useInsightsLog() {
       setLog(
         Object.values(data)
           .filter(Boolean)
-          .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""))
+          .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp))
       );
     });
     return () => unsub();
@@ -888,6 +888,17 @@ function orderReadyDate(order) {
 // Used by Source "Today's Request" and Insights Net Sales (day mode) so both
 // derive from the same live-order field, not the append-only insights_log
 // (which keeps phantom events when orders are flipped, edited, or deleted).
+// Timestamp fields may be an ISO string OR an epoch-ms number (different writers
+// over time). Coerce to a comparable ms number so a sort NEVER calls .localeCompare
+// on a number — which throws "localeCompare is not a function" and white-screens
+// the whole view (this is what broke the Returns screen). Newest-first sorts become
+// tsMs(b) - tsMs(a). Safe for strings too (ISO sorts chronologically either way).
+function tsMs(v) {
+  if (v == null || v === "") return 0;
+  const n = typeof v === "number" ? v : new Date(v).getTime();
+  return Number.isNaN(n) ? 0 : n;
+}
+
 function orderSaleDate(order) {
   const r = order.readyAt     ? new Date(order.readyAt).getTime()     : null;
   const c = order.collectedAt ? new Date(order.collectedAt).getTime() : null;
@@ -960,7 +971,7 @@ function useReturnsLog() {
       const data = snap.val();
       if (!data) { setLog([]); return; }
       setLog(Object.values(data).filter(Boolean)
-        .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || "")));
+        .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp)));
     });
     return () => unsub();
   }, [authReady]);
@@ -1062,7 +1073,7 @@ function matchCustomers(customers, query, mode) {
       if ((c.name || "").toLowerCase().startsWith(needle)) hits.push(c);
     }
   }
-  hits.sort((a, b) => (b.lastOrderAt || "").localeCompare(a.lastOrderAt || ""));
+  hits.sort((a, b) => tsMs(b.lastOrderAt) - tsMs(a.lastOrderAt));
   return hits.slice(0, 5);
 }
 
@@ -1113,7 +1124,7 @@ function useBroadcastHistory() {
       const data = snap.val();
       if (!data) { setBroadcasts([]); return; }
       setBroadcasts(Object.values(data).filter(Boolean)
-        .sort((a, b) => (b.sentAt || "").localeCompare(a.sentAt || "")));
+        .sort((a, b) => tsMs(b.sentAt) - tsMs(a.sentAt)));
     });
     return () => unsub();
   }, [authReady]);
@@ -1139,7 +1150,7 @@ function useGroupBroadcastHistory() {
       if (!data) { setItems([]); return; }
       setItems(Object.entries(data)
         .map(([id, v]) => ({ id, ...(v || {}) }))
-        .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""))
+        .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp))
         .slice(0, 10));
     });
     return () => unsub();
@@ -1204,7 +1215,7 @@ function CustomersView({ onExit }) {
         const fb  = customersDb[key] || {};
         return { ...c, optedIn: fb.optedIn || false };
       })
-      .sort((a, b) => (b.lastOrderAt || "").localeCompare(a.lastOrderAt || ""));
+      .sort((a, b) => tsMs(b.lastOrderAt) - tsMs(a.lastOrderAt));
   }, [insightsLog, customersDb]);
 
   const optedInList = useMemo(() => customerList.filter(c => c.optedIn), [customerList]);
@@ -4794,8 +4805,8 @@ function WarehouseView({ products = [], orders, onExit }) {
       }
     });
     // Active: newest first (within DayCollapsible's bucket logic).
-    active.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    completed.sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || ""));
+    active.sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt));
+    completed.sort((a, b) => tsMs(b.resolvedAt) - tsMs(a.resolvedAt));
     return { clothingActiveBatches: active, clothingCompletedBatches: completed };
   }, [orders, nowTick]);
   const [showClothingCompleted, setShowClothingCompleted] = useState(false);
@@ -6838,7 +6849,7 @@ function SourceOnHoldTab({ orders, hub, onHoldResponses }) {
     const candidates = (orders || [])
       .filter(o => o.status === STATUS.COMING_TOMORROW && o.status !== STATUS.OUT_OF_STOCK)
       .filter(o => (o.hub || "hub1") === hub)
-      .sort((a, b) => (b.comingTomorrowAt || b.updatedAt || "").localeCompare(a.comingTomorrowAt || a.updatedAt || ""));
+      .sort((a, b) => tsMs(b.comingTomorrowAt || b.updatedAt) - tsMs(a.comingTomorrowAt || a.updatedAt));
     const pending = [];
     const completed = [];
     candidates.forEach(o => {
@@ -7259,7 +7270,7 @@ function ReturnsView({ orders, onExit }) {
         const saDate = new Date(new Date(ts).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
         return allowed.has(saDate);
       })
-      .sort((a, b) => (b.readyAt || b.updatedAt || "").localeCompare(a.readyAt || a.updatedAt || ""));
+      .sort((a, b) => tsMs(b.readyAt || b.updatedAt) - tsMs(a.readyAt || a.updatedAt));
   }, [orders, todayDate]);
 
   // Composite `${SA-date}::${orderNumber}` set of already-returned orders. NOT a
