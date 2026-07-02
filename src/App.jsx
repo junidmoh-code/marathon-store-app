@@ -2481,6 +2481,27 @@ function PickupVoiceAdmin() {
   );
 }
 
+// Shared size→quantity entry grid — used by BOTH the Add-Product "Opening stock"
+// and the product-detail "Receive stock" blocks (identical layout, previously
+// copy-pasted). `sizes` is the already-filtered list; values/onChange bind to the
+// caller's qty state.
+function SizeQtyGrid({ sizes, values, onChange }) {
+  return (
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(64px, 1fr))", gap:10 }}>
+      {sizes.map(s => (
+        <div key={s} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:"#6A9FFF" }}>{s}</div>
+          <div style={{ color:"rgba(120,150,255,.5)", fontSize:14, lineHeight:1 }}>↓</div>
+          <input type="number" inputMode="numeric" min="0" placeholder="0"
+            value={values[s] ?? ""}
+            onChange={e => onChange(s, e.target.value)}
+            style={{ ...inputStyle, width:"100%", boxSizing:"border-box", textAlign:"center", padding:"8px 4px" }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AdminView({ products, orders, onExit }) {
   // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation) are
   // SUPER-ADMIN ONLY — a regular product_admin can manage products + sort
@@ -2822,74 +2843,38 @@ function AdminView({ products, orders, onExit }) {
     </div>
   );
 
-  if (adminSection === "review-names" && isSuperAdmin) {
-    return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
-          <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
-          <div style={{ textAlign:"center" }}>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
-            <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
-          </div>
-          <div style={{ width:90 }}/>
-        </div>
-        <div style={{ height:6 }}/>
-        {sectionToggle}
-        <div style={{ height:10 }}/>
-        <AdminReviewNamesTab products={products} />
+  // Shared admin chrome (was copy-pasted across the four tab branches).
+  const ADMIN_WRAP = { minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 };
+  const adminTopBar = (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
+      <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
+      <div style={{ textAlign:"center" }}>
+        <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
+        <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
       </div>
-    );
-  }
+      <div style={{ width:90 }}/>
+    </div>
+  );
+  // A review tab (Names / Photos / Categories) is the same shell: wrapper → top bar
+  // → section toggle → the tab body.
+  const reviewShell = (tab) => (
+    <div style={ADMIN_WRAP}>
+      {adminTopBar}
+      <div style={{ height:6 }}/>
+      {sectionToggle}
+      <div style={{ height:10 }}/>
+      {tab}
+    </div>
+  );
 
-  if (adminSection === "review-photos" && isSuperAdmin) {
-    return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
-          <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
-          <div style={{ textAlign:"center" }}>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
-            <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
-          </div>
-          <div style={{ width:90 }}/>
-        </div>
-        <div style={{ height:6 }}/>
-        {sectionToggle}
-        <div style={{ height:10 }}/>
-        <AdminReviewPhotosTab products={products} />
-      </div>
-    );
-  }
-
-  if (adminSection === "review-categories") {
-    return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
-          <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
-          <div style={{ textAlign:"center" }}>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
-            <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
-          </div>
-          <div style={{ width:90 }}/>
-        </div>
-        <div style={{ height:6 }}/>
-        {sectionToggle}
-        <div style={{ height:10 }}/>
-        <AdminReviewCategoriesTab products={products} />
-      </div>
-    );
-  }
+  if (adminSection === "review-names" && isSuperAdmin) return reviewShell(<AdminReviewNamesTab products={products} />);
+  if (adminSection === "review-photos" && isSuperAdmin) return reviewShell(<AdminReviewPhotosTab products={products} />);
+  if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
 
   return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+    <div style={ADMIN_WRAP}>
       {/* TOP BAR with Switch View */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
-        <div onClick={onExit} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>← Switch View</div>
-        <div style={{ textAlign:"center" }}>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
-          <div style={{ fontSize:15, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.5px" }}>ADMIN</div>
-        </div>
-        <div style={{ width:90 }}/>
-      </div>
+      {adminTopBar}
 
       {/* ADMIN HERO IMAGE */}
       <div style={{ position:"relative", height:200, overflow:"hidden" }}>
@@ -2981,18 +2966,7 @@ function AdminView({ products, orders, onExit }) {
                 {form.sizes.length === 0 ? (
                   <div style={{ color:"#666", fontSize:"0.82rem", textAlign:"center", padding:"0.5rem" }}>Select sizes above, then enter how many of each you're receiving.</div>
                 ) : (
-                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(64px, 1fr))", gap:"0.6rem" }}>
-                    {formSizeChoices.filter(s => form.sizes.includes(s)).map(s => (
-                      <div key={s} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
-                        <div style={{ fontSize:"0.85rem", fontWeight:700, color:BLUE_L }}>{s}</div>
-                        <div style={{ color:"rgba(120,150,255,.5)", fontSize:"0.9rem", lineHeight:1 }}>↓</div>
-                        <input type="number" inputMode="numeric" min="0" placeholder="0"
-                          value={recvQtys[s] ?? ""}
-                          onChange={e => setRecvQtys(q => ({ ...q, [s]: e.target.value }))}
-                          style={{ ...inputStyle, width:"100%", boxSizing:"border-box", textAlign:"center", padding:"8px 4px" }} />
-                      </div>
-                    ))}
-                  </div>
+                  <SizeQtyGrid sizes={formSizeChoices.filter(s => form.sizes.includes(s))} values={recvQtys} onChange={(s, v) => setRecvQtys(q => ({ ...q, [s]: v }))} />
                 )}
                 <div style={{ fontSize:"0.75rem", color:"#666", marginTop:"0.75rem" }}>
                   Entered amounts are received into <span style={{ color:"#4ADE80" }}>{labelFor(recvLoc, recvRegistry)}</span> as ledger movements on save. Saving with no quantities works exactly as before.
@@ -3480,18 +3454,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
               {productSizes.length === 0 ? (
                 <div style={{ color:"#666", fontSize:13 }}>Add sizes above first.</div>
               ) : (
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(64px, 1fr))", gap:10 }}>
-                  {sizeChoices.filter(s => productSizes.includes(s)).map(s => (
-                    <div key={s} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
-                      <div style={{ fontSize:13, fontWeight:700, color:"#6A9FFF" }}>{s}</div>
-                      <div style={{ color:"rgba(120,150,255,.5)", fontSize:14, lineHeight:1 }}>↓</div>
-                      <input type="number" inputMode="numeric" min="0" placeholder="0"
-                        value={recvQtys[s] ?? ""}
-                        onChange={e => setRecvQtys(q => ({ ...q, [s]: e.target.value }))}
-                        style={{ ...inputStyle, width:"100%", boxSizing:"border-box", textAlign:"center", padding:"8px 4px" }} />
-                    </div>
-                  ))}
-                </div>
+                <SizeQtyGrid sizes={sizeChoices.filter(s => productSizes.includes(s))} values={recvQtys} onChange={(s, v) => setRecvQtys(q => ({ ...q, [s]: v }))} />
               )}
               <button onClick={doReceive} disabled={recvBusy || !recvLoc}
                 style={{ ...bBlue, padding:"0.55rem 1.25rem", marginTop:14, opacity: (recvBusy || !recvLoc) ? 0.5 : 1 }}>
