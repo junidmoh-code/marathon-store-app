@@ -1,11 +1,18 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // TODO: tighten after Phase 1.5 adds Firebase Auth — currently public
-    // write so the Add Product photo upload flow works without auth.
+    // Product images. Public read: photos are shown in-app and on the
+    // anonymous TV board, and are non-sensitive. Writes/deletes require an
+    // authenticated, non-anonymous user — this mirrors the RTDB /products
+    // write rule and matches how uploads actually happen (the Add Product /
+    // Edit photo screens are only reachable after a staff PIN or owner
+    // sign-in; anonymous TV/pickup sessions only ever read). Tightened
+    // 2026-07-02: was `write: if true`, which let anyone on the internet
+    // overwrite or delete the entire product catalog with no auth.
     match /products/{allPaths=**} {
       allow read: if true;
-      allow write: if true;
+      allow write: if request.auth != null
+                   && request.auth.token.firebase.sign_in_provider != 'anonymous';
     }
 
     // Broadcast media. Public read so the broadcast VM can fetch
