@@ -60,7 +60,35 @@
     "inventory_meta":          { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "marketing":               { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "orderCounter":            { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
-    "pos":                     { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", "paymentEvents": { ".indexOn": ["at"] } },
+    "pos": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "sales": {
+        "$saleId": {
+          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+          ".validate": "newData.hasChildren(['total','type'])",
+          "status":               { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".validate": "newData.isString()" },
+          "updatedAt":            { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+          "returnedTransactions": { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+          "refund":               { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+          "layby":                { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+          "payments": {
+            "$paymentId": { ".write": "!data.exists() && root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" }
+          },
+          "lineItems": {
+            "$lineId": {
+              "refundedQty": { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".validate": "newData.isNumber()" }
+            }
+          }
+        }
+      },
+      "paymentEvents": {
+        ".indexOn": ["at"],
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+      },
+      "$other": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+      }
+    },
     "pos_meta":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "products":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "products_meta":           { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
