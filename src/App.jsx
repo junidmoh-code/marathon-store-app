@@ -32,15 +32,17 @@ import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oos
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
-// are proxied through the sendWhatsApp Cloud Function which holds the token.
-const WA_FUNCTION_URL = "https://sendwhatsapp-jp3ooc2lya-ew.a.run.app";
-
+// are proxied through the sendWhatsApp Cloud Function which enqueues to the
+// outbox. sendWhatsApp is an authenticated onCall (httpsCallable attaches the
+// signed-in user's ID token automatically), so only signed-in staff can send —
+// the callable protocol replaced the old open HTTP endpoint. Fire-and-forget:
+// order notifications must never block or fail the underlying action.
 function sendWhatsAppTemplate(phone, templateName, params = []) {
   if (!phone) return;
-  fetch(WA_FUNCTION_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ templateName, recipientPhone: phone, templateParams: params }),
+  httpsCallable(functions, "sendWhatsApp")({
+    templateName,
+    recipientPhone: phone,
+    templateParams: params,
   }).catch(err => console.warn("WhatsApp send failed:", err));
 }
 
@@ -1233,14 +1235,15 @@ function CustomersView({ onExit }) {
     for (const c of optedInList) {
       if (!c.phone) continue;
       try {
-        await fetch("https://sendwhatsapp-jp3ooc2lya-ew.a.run.app", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            templateName: "marathon_broadcast",
-            recipientPhone: c.phone,
-            templateParams: [broadcastMsg.trim()],
-          }),
+        // Routed through the authenticated sendWhatsApp callable (no longer the
+        // raw HTTP URL). NOTE: "marathon_broadcast" is not a known template in
+        // the function, so this legacy path is rejected server-side — real
+        // broadcasts go through the sendBroadcast callable. Left wired to the
+        // callable only so no code references the retired open endpoint.
+        await httpsCallable(functions, "sendWhatsApp")({
+          templateName: "marathon_broadcast",
+          recipientPhone: c.phone,
+          templateParams: [broadcastMsg.trim()],
         });
         sent++;
       } catch (e) {

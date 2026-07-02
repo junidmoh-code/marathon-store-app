@@ -26,13 +26,6 @@ const META_FALLBACK_ENABLED  = process.env.META_FALLBACK_ENABLED !== "false";   
 const FALLBACK_GRACE_SECONDS = parseInt(process.env.FALLBACK_GRACE_SECONDS, 10) || 60; // gateway's head start
 const META_MAX_ATTEMPTS      = parseInt(process.env.META_MAX_ATTEMPTS, 10) || 2;       // Meta tries before "failed"
 
-// Set CORS headers on every response — must happen before any early return.
-function setCORSHeaders(res) {
-  res.set("Access-Control-Allow-Origin",  "*");
-  res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type");
-}
-
 // Normalise a South African number to E.164: +27XXXXXXXXX
 function normaliseSAPhone(raw) {
   let digits = (raw || "").replace(/[^\d]/g, "");
@@ -130,12 +123,13 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
 }
 
 // Primary send path: enqueue a doc to the whatsapp_outbox collection (default
-// database) for the self-hosted gateway to consume. Same request contract as
-// before ({ templateName, recipientPhone, templateParams }) so callers are
-// unchanged — this no longer calls Meta directly.
-async function handlePost(req, res) {
-  const body = req.body || {};
-  const { templateName, recipientPhone, templateParams = [] } = body;
+// database) for the self-hosted gateway to consume. Request contract is
+// { templateName, recipientPhone, templateParams } — this no longer calls Meta
+// directly. Invoked only via the authenticated onCall wrapper below; returns a
+// plain result object and throws HttpsError on failure (the callable protocol
+// maps those to a rejected client promise).
+async function enqueueWhatsApp(data) {
+  const { templateName, recipientPhone, templateParams = [] } = data || {};
 
   console.log("sendWhatsApp enqueue:", JSON.stringify({
     templateName,
@@ -145,7 +139,7 @@ async function handlePost(req, res) {
 
   if (!templateName || !recipientPhone) {
     console.warn("Missing required fields:", { templateName, recipientPhone: maskPhone(recipientPhone) });
-    return res.status(400).json({ error: "templateName and recipientPhone are required" });
+    throw new HttpsError("invalid-argument", "templateName and recipientPhone are required");
   }
 
   // Strict validation: reject unknown templates or wrong param counts rather
@@ -158,7 +152,7 @@ async function handlePost(req, res) {
       paramCount: templateParams.length,
       error:      rendered.error,
     }));
-    return res.status(400).json({ error: rendered.error });
+    throw new HttpsError("invalid-argument", rendered.error);
   }
 
   const to           = normaliseSAPhone(recipientPhone);
@@ -193,7 +187,7 @@ async function handlePost(req, res) {
         outboxId:  dup.id,
         status,
       }));
-      return res.json({ success: true, outboxId: dup.id, status, deduped: true });
+      return { success: true, outboxId: dup.id, status, deduped: true };
     }
   } catch (err) {
     // Never drop a real message because the lookup failed — log and fall
@@ -218,33 +212,28 @@ async function handlePost(req, res) {
   try {
     const ref = await admin.firestore().collection("whatsapp_outbox").add(outboxDoc);
     console.log("WhatsApp enqueued:", JSON.stringify({ templateName, recipient: maskPhone(to), outboxId: ref.id }));
-    return res.json({ success: true, outboxId: ref.id, status: "pending" });
+    return { success: true, outboxId: ref.id, status: "pending" };
   } catch (err) {
     console.error("Failed to enqueue WhatsApp outbox doc:", err.message);
-    return res.status(500).json({ error: "Could not enqueue WhatsApp message", detail: err.message });
+    throw new HttpsError("internal", "Could not enqueue WhatsApp message");
   }
 }
 
-exports.sendWhatsApp = onRequest(
-  { region: "europe-west1", secrets: [metaToken] },
-  (req, res) => {
-    // Stamp CORS headers on every response — OPTIONS, errors, and success alike.
-    setCORSHeaders(res);
-
-    if (req.method === "OPTIONS") {
-      res.set("Access-Control-Max-Age", "3600");
-      return res.status(204).send("");
+// Authenticated callable. Was an open onRequest HTTP endpoint that let ANYONE
+// on the internet enqueue a WhatsApp send from our business number (Meta-
+// suspension + spam risk — security audit finding #2). Now an onCall, so the
+// Firebase platform verifies the caller's ID token; we additionally reject
+// anonymous sessions (the TV/pickup board), leaving only signed-in staff.
+// No secret binding: the enqueue path writes to the outbox and never calls
+// Meta — the token lives only on metaFallbackSweep, which does the Meta send.
+exports.sendWhatsApp = onCall(
+  { region: "europe-west1" },
+  async (request) => {
+    const provider = request.auth?.token?.firebase?.sign_in_provider;
+    if (!request.auth || provider === "anonymous") {
+      throw new HttpsError("unauthenticated", "Sign-in required to send WhatsApp messages.");
     }
-
-    if (req.method !== "POST") {
-      return res.status(405).json({ error: "Method not allowed" });
-    }
-
-    // Wrap in try/catch so an unexpected throw still gets CORS headers.
-    handlePost(req, res).catch(err => {
-      console.error("sendWhatsApp unhandled error:", err.stack || err.message);
-      res.status(500).json({ error: err.message || "Internal server error" });
-    });
+    return enqueueWhatsApp(request.data);
   }
 );
 
