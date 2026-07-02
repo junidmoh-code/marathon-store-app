@@ -52,7 +52,17 @@
 
     "broadcastHistory":        { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "broadcasts":              { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
-    "customers":               { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "customers": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$customerId": {
+        "storeCredit": {
+          "$creditId": {
+            "remainingAmount": { ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() <= data.val())" }
+          }
+        }
+      }
+    },
     "customers_meta":          { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "insights_log":            { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "insights":                { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
@@ -77,6 +87,25 @@
           "lineItems": {
             "$lineId": {
               "refundedQty": { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".validate": "newData.isNumber()" }
+            }
+          }
+        }
+      },
+      "storeCredits": {
+        "$creditId": {
+          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+          ".validate": "newData.hasChildren(['issuedAmount','remainingAmount'])",
+          "remainingAmount": {
+            ".write": "root.child('pos').child('storeCredits').child($creditId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() <= data.val())"
+          },
+          "status": {
+            ".write": "root.child('pos').child('storeCredits').child($creditId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isString()"
+          },
+          "redemptions": {
+            "$saleId": {
+              ".write": "!data.exists() && root.child('pos').child('storeCredits').child($creditId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
             }
           }
         }
