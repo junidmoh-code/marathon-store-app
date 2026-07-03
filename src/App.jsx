@@ -4282,7 +4282,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   }
 
   return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom: cart.length > 0 ? 90 : 40 }}>
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:880, margin:"0 auto", overflowX:"hidden", paddingBottom: cart.length > 0 ? 90 : 40 }}>
       {/* TOP BAR */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
         <div onClick={onExit}
@@ -4419,13 +4419,17 @@ function AssistantView({ products, onExit, orders = [] }) {
             : "No products match your search."}
         </div>
       ) : isRefillMode ? (
-        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+        // Responsive: 1 column on a phone, 2 on iPad — each bulk card gets a
+        // comfortable width instead of one stretched full-width row per product.
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(340px, 1fr))", gap:10 }}>
           {filtered.map(p => (
             <ClothingCard key={p.id} product={p} onAdd={addClothingLines} onViewPhoto={setFullPhoto} />
           ))}
         </div>
       ) : (
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+        // Responsive: 2 columns on a phone, 3–4 on iPad — cards stay touch-sized
+        // (min 180px) and the grid fills the tablet width instead of a narrow strip.
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(180px, 1fr))", gap:10 }}>
           {filtered.map(p => {
             const isSel = selected && selected.id === p.id;
             return (
@@ -4682,7 +4686,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       {/* ── Phase 12B: Floating cart trigger ── */}
       {cart.length > 0 && !checkoutOpen && !selected && (
         <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"12px 14px 14px", background:"linear-gradient(transparent, rgba(0,0,0,.92) 30%)", zIndex:50, pointerEvents:"none" }}>
-          <div style={{ maxWidth:430, margin:"0 auto", pointerEvents:"auto" }}>
+          <div style={{ maxWidth:880, margin:"0 auto", pointerEvents:"auto" }}>
             <button
               onClick={hasCustomerInCart ? openCheckout : placeRefillRequests}
               disabled={submitting}
