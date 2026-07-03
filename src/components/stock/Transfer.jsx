@@ -26,6 +26,7 @@ import { Toast, Empty } from "./widgets";
 import { GLASS, GLASS_SOLID, CARD, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, BORDER, RADIUS, FONT, input, bGreen, bGhost } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
 import { formatSize } from "../../utils/sizeLabel";
+import { SizeTag } from "../SizeTag";
 
 const keyOf = (pid, size) => `${pid}__${size}`;
 
@@ -128,7 +129,7 @@ export default function Transfer({ products, registry, actorRole }) {
             const nm = products.find(p => p.id === r.productId)?.name || r.productId;
             return (
               <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderTop: BORDER, fontSize: 13 }}>
-                <span style={{ color: "#fff" }}>{nm} · {formatSize(r.size)} ×{r.qty || 1}<span style={{ color: GRAY }}> → {labelFor(r.requestingLocation, registry)}</span></span>
+                <span style={{ color: "#fff" }}>{nm} · <SizeTag size={r.size} /> ×{r.qty || 1}<span style={{ color: GRAY }}> → {labelFor(r.requestingLocation, registry)}</span></span>
                 <button onClick={() => prefillRefill(r)} style={{ ...bGhost, padding: "5px 10px", fontSize: 12 }}>Prefill</button>
               </div>
             );
