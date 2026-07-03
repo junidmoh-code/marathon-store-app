@@ -93,6 +93,8 @@
       },
       "storeCredits": {
         "$creditId": {
+          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+          ".validate": "newData.hasChildren(['issuedAmount','remainingAmount'])",
           "remainingAmount": {
             ".write": "root.child('pos').child('storeCredits').child($creditId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
             ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() <= data.val())"
@@ -106,24 +108,6 @@
               ".write": "!data.exists() && root.child('pos').child('storeCredits').child($creditId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
             }
           }
-        }
-      },
-      "storeCreditQueue": {
-        "$creditId": {
-          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-          ".validate": "newData.hasChildren(['creditId','customerId','amount','source'])",
-          "amount": { ".validate": "newData.isNumber() && newData.val() > 0" },
-          "creditId": { ".validate": "newData.isString() && newData.val() === $creditId" }
-        }
-      },
-      "audit": {
-        "store_credit_issued":  { "$customerId": { "$eventId": { ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" } } },
-        "store_credit_removed": { "$customerId": { "$eventId": { ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" } } },
-        "on_account":           { "$customerId": { "$eventId": { ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" } } },
-        "on_account_config":    { "$customerId": { "$eventId": { ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" } } },
-        "$logId": {
-          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-          ".validate": "newData.hasChildren(['action','actingUserUid','timestamp'])"
         }
       },
       "paymentEvents": {
