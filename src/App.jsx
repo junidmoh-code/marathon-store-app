@@ -4283,6 +4283,17 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:880, margin:"0 auto", overflowX:"hidden", paddingBottom: cart.length > 0 ? 90 : 40 }}>
+      {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
+          iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
+          so it's exactly 5 across on tablet regardless of orientation. */}
+      <style>{`
+        .mc-grid-photo  { grid-template-columns: repeat(2, 1fr); }
+        .mc-grid-refill { grid-template-columns: 1fr; }
+        @media (min-width: 768px) {
+          .mc-grid-photo  { grid-template-columns: repeat(5, 1fr); }
+          .mc-grid-refill { grid-template-columns: repeat(2, 1fr); }
+        }
+      `}</style>
       {/* TOP BAR */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
         <div onClick={onExit}
@@ -4419,17 +4430,15 @@ function AssistantView({ products, onExit, orders = [] }) {
             : "No products match your search."}
         </div>
       ) : isRefillMode ? (
-        // Responsive: 1 column on a phone, 2 on iPad — each bulk card gets a
-        // comfortable width instead of one stretched full-width row per product.
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(340px, 1fr))", gap:10 }}>
+        // Responsive: 1 column on a phone, 2 on iPad (see .mc-grid-refill above).
+        <div className="mc-grid-refill" style={{ display:"grid", gap:10 }}>
           {filtered.map(p => (
             <ClothingCard key={p.id} product={p} onAdd={addClothingLines} onViewPhoto={setFullPhoto} />
           ))}
         </div>
       ) : (
-        // Responsive: 2 columns on a phone, 3–4 on iPad — cards stay touch-sized
-        // (min 180px) and the grid fills the tablet width instead of a narrow strip.
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(180px, 1fr))", gap:10 }}>
+        // Responsive: 2 columns on a phone, 5 on iPad (see .mc-grid-photo above).
+        <div className="mc-grid-photo" style={{ display:"grid", gap:10 }}>
           {filtered.map(p => {
             const isSel = selected && selected.id === p.id;
             return (
