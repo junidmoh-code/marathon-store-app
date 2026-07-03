@@ -93,8 +93,6 @@
       },
       "storeCredits": {
         "$creditId": {
-          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-          ".validate": "newData.hasChildren(['issuedAmount','remainingAmount'])",
           "remainingAmount": {
             ".write": "root.child('pos').child('storeCredits').child($creditId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
             ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() <= data.val())"
@@ -108,6 +106,14 @@
               ".write": "!data.exists() && root.child('pos').child('storeCredits').child($creditId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
             }
           }
+        }
+      },
+      "storeCreditQueue": {
+        "$creditId": {
+          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+          ".validate": "newData.hasChildren(['creditId','customerId','amount','source'])",
+          "amount": { ".validate": "newData.isNumber() && newData.val() > 0" },
+          "creditId": { ".validate": "newData.isString() && newData.val() === $creditId" }
         }
       },
       "paymentEvents": {
