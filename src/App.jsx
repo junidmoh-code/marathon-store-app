@@ -16,6 +16,7 @@ import { formatSize } from "./utils/sizeLabel";
 import { SizeTag } from "./components/SizeTag";
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
+import LabelPrintCard from "./components/LabelPrintCard";
 import AppErrorBoundary from "./AppErrorBoundary";
 import StockView from "./components/stock/StockView";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
@@ -4371,6 +4372,10 @@ function AssistantView({ products, onExit, orders = [] }) {
       {/* Read-only per-shop stock (Marathon PE / Trophy / Pine) — visibility only,
           separate from the Central/Pine order toggle above. Locked to stockRole. */}
       {canAccessStock && <ShopStockPanel products={products} />}
+
+      {/* Permanent, all-users label print card — search a product, tap to print a
+          name · price · barcode label on the Phomemo (reuses the stock print path). */}
+      <LabelPrintCard products={products} />
 
       {/* PLACE ORDER HERO */}
       <div style={{ position:"relative", width:"100%", height:160, overflow:"hidden", marginBottom:4 }}>
