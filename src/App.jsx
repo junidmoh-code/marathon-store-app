@@ -4899,7 +4899,10 @@ function WarehouseView({ products = [], orders, onExit }) {
     .filter(p => p && p.invoiceNo && (p.storageHub || DEFAULT_STORAGE_HUB) === selectedHub)
     .map(p => {
       const st = p.status || PULL_STATUS.PENDING;
-      if (st === PULL_STATUS.PENDING) return { id: p.invoiceNo, status: STATUS.INCOMING, isLayby: true, _pull: p, createdAt: p.requestedAt || p.createdAt || p.updatedAt || "" };
+      // PENDING = unactioned work: bucket it as current-day so the queue's 3-day
+      // window can NEVER hide it (the whole point — never miss a layby). The card
+      // still shows the true requested-age via the pull's requestedAt.
+      if (st === PULL_STATUS.PENDING) return { id: p.invoiceNo, status: STATUS.INCOMING, isLayby: true, _pull: p, createdAt: new Date().toISOString() };
       if (st === PULL_STATUS.SENT)    return { id: p.invoiceNo, status: STATUS.READY,    isLayby: true, _pull: p, readyAt: p.sentAt, updatedAt: p.sentAt, createdAt: p.sentAt || p.requestedAt || "" };
       return null; // rejected / returnedToStock → resolved, not shown in the queue
     })
