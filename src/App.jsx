@@ -25,9 +25,9 @@ import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
 import { printDispatchLabel } from "./components/stock/printDispatch";
-import LaybyTab, { LaybyExceptionsBanner } from "./components/layby/LaybyTab";
+import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
-import { DEFAULT_STORAGE_HUB, PULL_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
+import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod } from "./utils/insights";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
@@ -4773,7 +4773,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   const laybyPulls = useLaybyPulls();
   // Which layby sub-queue to open on next mount. The exceptions banner flips this
   // to "exceptions" so a tap jumps straight there; keyed remount applies it.
-  const [laybySub, setLaybySub] = useState("pulls");
+  const [laybySub, setLaybySub] = useState("receiving");
   const DISPLAY_REFILL_DELAY_MS = 15 * 60 * 1000;
   const RESOLVED_VISIBLE_MS     = 24 * 60 * 60 * 1000;
   const { dueRefills, completedRefills } = useMemo(() => {
@@ -4888,7 +4888,23 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Filter orders to only this hub. hub1/hub2: legacy order.hub field.
   // hub3 (Phase 14B): placedAtHub field — orders flow in here based on which
   // Store Assistant universe they were placed in.
-  const hubOrders = orders.filter(o => orderInHub(o, selectedHub));
+  //
+  // Layby pull requests surface in the SAME main queue (no separate Layby box):
+  // a pending pull → Incoming, a sent pull → Ready, so they flow through the same
+  // status pills + day grouping as orders. Each carries _pull + isLayby so the
+  // queue renders the real PullCard (L-xxxxx invoice + Sent/Reject/Return) — layby
+  // behaviour is unchanged, they're just seen with everything else. Matches the
+  // TV board's existing orders+laybys merge.
+  const hubLaybyOrders = (laybyPulls || [])
+    .filter(p => p && p.invoiceNo && (p.storageHub || DEFAULT_STORAGE_HUB) === selectedHub)
+    .map(p => {
+      const st = p.status || PULL_STATUS.PENDING;
+      if (st === PULL_STATUS.PENDING) return { id: p.invoiceNo, status: STATUS.INCOMING, isLayby: true, _pull: p, createdAt: p.requestedAt || p.createdAt || p.updatedAt || "" };
+      if (st === PULL_STATUS.SENT)    return { id: p.invoiceNo, status: STATUS.READY,    isLayby: true, _pull: p, readyAt: p.sentAt, updatedAt: p.sentAt, createdAt: p.sentAt || p.requestedAt || "" };
+      return null; // rejected / returnedToStock → resolved, not shown in the queue
+    })
+    .filter(Boolean);
+  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub)), ...hubLaybyOrders];
 
   // extraPatch is merged into the Firebase update — used to stamp sentSize when
   // the warehouse picks a substitute size. Insights/restock logs continue to
@@ -5165,11 +5181,12 @@ function WarehouseView({ products = [], orders, onExit }) {
   const clothingBadge = clothingActiveBatches.length;
 
   // ── Layby badges (warehouse side) ────────────────────────────────────────
-  // Tab badge = pending pull requests for this hub (the actionable queue).
+  // Pull requests now live in the MAIN queue, so this tab's badge = parcels
+  // awaiting scan-in (Receiving) for this hub — the tab's remaining job.
   // Missing-in-transit exceptions get the louder banner above the tabs.
   const laybyHubOf = (x) => x?.storageHub || DEFAULT_STORAGE_HUB;
-  const laybyBadge = laybyPulls.filter(p =>
-    laybyHubOf(p) === selectedHub && (p.status || PULL_STATUS.PENDING) === PULL_STATUS.PENDING
+  const laybyBadge = laybys.filter(l =>
+    laybyHubOf(l) === selectedHub && (l.status || LAYBY_STATUS.IN_TRANSIT) === LAYBY_STATUS.IN_TRANSIT
   ).length;
 
   // Resolve a batch — patch every item with the same status + timestamp.
@@ -5434,6 +5451,17 @@ function WarehouseView({ products = [], orders, onExit }) {
               dateOf={queueDateOf}
               emptyMessage="No orders in the last 3 days."
               renderItem={(order) => {
+            // Layby pull request — render the real PullCard inline (same L-xxxxx
+            // invoice + Sent/Reject/Return); it actions via markPullSent, never the
+            // order print flow.
+            if (order.isLayby) {
+              return (
+                <PullCard pull={order._pull} selectedHub={selectedHub} nowMs={nowTick}
+                  onSent={()   => { setPrintToast({ kind:"ok", text:`${order.id} marked sent to store.` }); setTimeout(() => setPrintToast(null), 4000); }}
+                  onReject={() => { setPrintToast({ kind:"ok", text:`${order.id} rejected — store notified.` });  setTimeout(() => setPrintToast(null), 4000); }}
+                  onReturn={() => { setPrintToast({ kind:"ok", text:`${order.id} returned to stock.` });          setTimeout(() => setPrintToast(null), 4000); }}/>
+              );
+            }
             const status = order.status;
             const incoming = status === STATUS.INCOMING;
             const ready    = status === STATUS.READY;

@@ -21,7 +21,7 @@ import QrScanner from "./QrScanner";
 import { receiveLayby, markPullSent, rejectPull, returnPullToStock } from "./useLayby";
 import { labelFor } from "../stock/locations";
 import {
-  LAYBY_STATUS, PULL_STATUS, DEFAULT_STORAGE_HUB, DISPOSITION, dispositionOf,
+  LAYBY_STATUS, DEFAULT_STORAGE_HUB, DISPOSITION, dispositionOf,
   formatLaybyMoney, isLaybyException, isPullExpired, ageLabel, parseLaybyScan, normalizeInvoiceNo,
 } from "./contract";
 
@@ -92,7 +92,11 @@ function Field({ label, value, strong, danger }) {
 }
 
 // ── Pull request card — invoice number dominant ────────────────────────────────
-function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn }) {
+// Exported so the warehouse MAIN queue can render layby pull requests inline
+// alongside orders (one queue — no separate Layby Requests box). Unchanged card:
+// same L-xxxxx invoice + Sent/Reject/Return actions, so behaviour is identical
+// whether shown here or in the main queue.
+export function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -126,6 +130,7 @@ function PullCard({ pull, selectedHub, nowMs, onSent, onReject, onReturn }) {
         {/* INVOICE NUMBER — huge + unmistakable */}
         <div style={{ display:"flex", alignItems:"flex-start", gap:12 }}>
           <div style={{ flex:1, minWidth:0 }}>
+            <span style={{ display:"inline-block", background:"rgba(60,110,255,.18)", color:BLUE, border:"1px solid rgba(60,110,255,.4)", borderRadius:8, padding:"2px 8px", fontSize:10, fontWeight:800, letterSpacing:".1em", marginBottom:6 }}>LAYBY</span>
             <div style={{ fontSize:11, fontWeight:700, color:MUTED, letterSpacing:".12em", textTransform:"uppercase" }}>Layby invoice</div>
             <div style={{ fontSize:34, fontWeight:900, color:"#fff", lineHeight:1.05, letterSpacing:".02em", wordBreak:"break-all" }}>{invOf(pull)}</div>
           </div>
@@ -238,17 +243,15 @@ function ExceptionRow({ layby, nowMs }) {
 
 // ── Main tab ───────────────────────────────────────────────────────────────────
 export default function LaybyTab({ selectedHub, laybys = [], pulls = [], nowMs, initialSub }) {
-  const [sub, setSub] = useState(initialSub || "pulls");
+  // Pull Requests now live in the MAIN order queue (one queue). This tab keeps the
+  // two flows that don't belong in that queue: Receiving (scan parcels in) and
+  // Exceptions (missing-in-transit).
+  const [sub, setSub] = useState(initialSub || "receiving");
   const [scanning, setScanning] = useState(false);
   const [manual, setManual] = useState("");
   const [flash, setFlash] = useState(null); // { ok, text }
   const [busy, setBusy] = useState(false);
 
-  const pendingPulls = useMemo(
-    () => pulls.filter(p => hubOf(p) === selectedHub && (p.status || PULL_STATUS.PENDING) === PULL_STATUS.PENDING)
-               .sort((a, b) => (a.dueDate || "").localeCompare(b.dueDate || "")),
-    [pulls, selectedHub]
-  );
   const receiving = useMemo(
     () => laybys.filter(l => hubOf(l) === selectedHub && (l.status || LAYBY_STATUS.IN_TRANSIT) === LAYBY_STATUS.IN_TRANSIT)
                 .sort((a, b) => Number(isLaybyException(b, nowMs)) - Number(isLaybyException(a, nowMs))),
@@ -293,7 +296,6 @@ export default function LaybyTab({ selectedHub, laybys = [], pulls = [], nowMs, 
 
       {/* Sub-queue nav */}
       <div style={{ display:"flex", gap:7, paddingBottom:12, overflowX:"auto", scrollbarWidth:"none" }}>
-        <SubPill active={sub==="pulls"}      label="Pull Requests" count={pendingPulls.length} onClick={() => setSub("pulls")}/>
         <SubPill active={sub==="receiving"}  label="Receiving"     count={receiving.length}     onClick={() => setSub("receiving")}/>
         <SubPill active={sub==="exceptions"} label="Exceptions"    count={exceptions.length} danger onClick={() => setSub("exceptions")}/>
       </div>
@@ -306,19 +308,6 @@ export default function LaybyTab({ selectedHub, laybys = [], pulls = [], nowMs, 
           <span>{flash.text}</span>
           <span onClick={() => setFlash(null)} style={{ cursor:"pointer", opacity:.7 }}>✕</span>
         </div>
-      )}
-
-      {sub === "pulls" && (
-        pendingPulls.length === 0
-          ? emptyBox("No pull requests for this hub.")
-          : <div style={{ display:"flex", flexDirection:"column", gap:11 }}>
-              {pendingPulls.map(p => (
-                <PullCard key={p.key} pull={p} selectedHub={selectedHub} nowMs={nowMs}
-                          onSent={() => setFlash({ ok:true, text:`${invOf(p)} marked sent.` })}
-                          onReject={() => setFlash({ ok:true, text:`${invOf(p)} rejected — store notified.` })}
-                          onReturn={() => setFlash({ ok:true, text:`${invOf(p)} returned to stock.` })}/>
-              ))}
-            </div>
       )}
 
       {sub === "receiving" && (
