@@ -1,8 +1,7 @@
 {
   "rules": {
     "orders": {
-      ".read": "auth != null && (!root.child('users').child(auth.uid).child('destShop').exists() || (query.orderByChild === 'destShop' && query.equalTo === root.child('users').child(auth.uid).child('destShop').val()))",
-      ".indexOn": ["destShop"],
+      ".read": "auth != null",
       "$id": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
       }

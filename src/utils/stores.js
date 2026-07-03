@@ -41,6 +41,14 @@ export const SHOP_TO_UNIVERSE = {
 // default to central so a future/unmapped shop can't accidentally route to Pine.
 export const shopUniverse = (shopId) => SHOP_TO_UNIVERSE[shopId] || "central";
 
+// ─── PER-USER SINGLE-SHOP ASSIGNMENT (store-access restriction) ───────────────
+// A staff user assigned a `destShop` on /users/{uid} sees & acts on ONLY that
+// physical shop's orders — enforced at the DB level by the /orders rule (a scoped
+// user's unscoped read is rejected). No destShop → warehouse/admin/super-admin/
+// unassigned → full access. These are the three real shops (== order.destShop).
+export const SHOP_IDS = ["marathon-pe", "trophy", "marathon-pine"];
+export const SHOP_LABELS = { "marathon-pe": "Marathon PE", "trophy": "Trophy", "marathon-pine": "Pine" };
+
 // Resolve the stores a user may actually place orders against.
 //   • super-admin               → all stores (bypass, per ADMIN_EMAIL)
 //   • no storeIds field (legacy) → all stores (backward-compatible)

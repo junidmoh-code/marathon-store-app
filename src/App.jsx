@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ref, onValue, set, update, remove, push, runTransaction, get } from "firebase/database";
+import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, equalTo } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
@@ -491,14 +491,24 @@ function updateProductHubs(id, hubs) {
 //
 // Legacy data: earlier versions stored orders as { items: [...] } at /orders.
 // We migrate that on first read into per-id nodes so existing data isn't lost.
-function useOrders() {
+// scopeShop: when set (a store-assigned staff user's destShop, e.g. "trophy"), the
+// read is a destShop-scoped query — the /orders rule REJECTS an unscoped full read
+// from a store-assigned user, so this is genuine data-level isolation, not just UI.
+// null/undefined (warehouse, admin, super-admin, anonymous TV) → full-node read.
+function useOrders(scopeShop = null) {
   const authReady = useAuthReady();
   const [orders, setOrders] = useState([]);
 
   useEffect(() => {
     if (!authReady) return;
     const ordersRef = ref(database, "orders");
-    const unsub = onValue(ordersRef, (snap) => {
+    // Legacy /orders can briefly be an ARRAY under .items; a scoped query only
+    // makes sense on the per-id map. The migration below rewrites it, after which
+    // the scoped query applies. For the scoped read we query by destShop.
+    const readRef = scopeShop
+      ? query(ordersRef, orderByChild("destShop"), equalTo(scopeShop))
+      : ordersRef;
+    const unsub = onValue(readRef, (snap) => {
       const data = snap.val();
       if (!data) {
         setOrders([]);
@@ -531,7 +541,7 @@ function useOrders() {
       console.warn("Firebase read error on /orders:", err);
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, scopeShop]);
 
   return orders;
 }
@@ -3830,7 +3840,13 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Shop-stock visibility: stock permission OR a stock-capable stockRole (mirrors the
   // Stock section gate).
   const canAccessStock = stockIsSuperAdmin || ["warehouse", "admin"].includes(stockPermRecord?.stockRole) || stockHasPermission("stock_management");
-  const availableShops = allShops.filter(s => allowedStores.includes(shopUniverse(s.id)));
+  // Single-store assignment (destShop) locks the picker to exactly that shop — the
+  // user can only place/act on their store. Falls back to the older central/pine
+  // storeIds gating when no destShop is set (warehouse/admin/unassigned).
+  const myShop = stockPermRecord?.destShop || null;
+  const availableShops = myShop
+    ? allShops.filter(s => s.id === myShop)
+    : allShops.filter(s => allowedStores.includes(shopUniverse(s.id)));
   const noStoreAccess = availableShops.length === 0;
   const singleShop    = availableShops.length === 1;
   useEffect(() => {
@@ -10258,7 +10274,12 @@ function AppInner() {
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
   // straight to /orders/{id} via writeOrder() / updateOrder().
-  const orders = useOrders();
+  // Store-access (audit #6-adjacent): a store-ASSIGNED staff user (permRecord.destShop
+  // set — e.g. "trophy") reads ONLY their shop's orders, enforced by the /orders
+  // rule (an unscoped read from them is rejected). Warehouse/admin/super-admin have
+  // no destShop → full read. This is the single feed for every authenticated view.
+  const myShop = isSuperAdmin ? null : (permRecord?.destShop || null);
+  const orders = useOrders(myShop);
   const returnsLog = useReturnsLog();
 
   // ── ORDER AUDIT — runs on every render; logs only when numbers mismatch ────
