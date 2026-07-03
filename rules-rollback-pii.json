@@ -53,10 +53,9 @@
     "broadcastHistory":        { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "broadcasts":              { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "customers": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')",
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "$customerId": {
-        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
         "storeCredit": {
           "$creditId": {
             "remainingAmount": { ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() <= data.val())" }
