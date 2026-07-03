@@ -12,6 +12,8 @@ import { activeLocations } from "./locations";
 import { Card, Field, LocationPicker, NumberInput, Toast, Empty } from "./widgets";
 import { GRAY, GREEN, AMBER, BLUE_L, BORDER, CARD, bGreen, input } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
+import { formatSize } from "../../utils/sizeLabel";
+import { SizeTag } from "../SizeTag";
 
 function Thumb({ url }) {
   if (url) return <img src={url} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }}
@@ -133,7 +135,7 @@ export default function CountSession({ products, registry, actorRole }) {
               return (
                 <div key={s}>
                   <div style={{ fontSize: 12, color: "#fff", marginBottom: 2, textAlign: "center" }}>
-                    {s} <span style={{ fontSize: 9, color: live ? GREEN : AMBER }}>{live ? "live" : curState(s)[0]}</span>
+                    <SizeTag size={s} /> <span style={{ fontSize: 9, color: live ? GREEN : AMBER }}>{live ? "live" : curState(s)[0]}</span>
                   </div>
                   <div style={{ fontSize: 9, color: GRAY, textAlign: "center", marginBottom: 2 }}>sys {curQty(s)}</div>
                   <NumberInput value={counts[s] ?? ""} onChange={(v) => setCounts(c => ({ ...c, [s]: v }))} placeholder="count" />

@@ -4,6 +4,7 @@
 
 import React from "react";
 import { CARD, BORDER, RADIUS, BLUE_L, GRAY, FONT, input } from "./ui";
+import { formatSize } from "../../utils/sizeLabel";
 import { activeLocations, labelFor } from "./locations";
 
 export function Card({ children, style }) {
@@ -76,7 +77,7 @@ export function SizePicker({ product, value, onChange }) {
   return (
     <Select value={value} onChange={onChange} disabled={!product}>
       <option value="">— size —</option>
-      {sizes.map(s => <option key={s} value={s}>{s}</option>)}
+      {sizes.map(s => <option key={s} value={s}>{formatSize(s)}</option>)}
     </Select>
   );
 }

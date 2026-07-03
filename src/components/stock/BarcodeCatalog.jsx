@@ -19,6 +19,8 @@ import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag, 
 import { Toast, Empty } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGhost, input } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
+import { formatSize } from "../../utils/sizeLabel";
+import { SizeTag } from "../SizeTag";
 
 const keyOf = (pid, size) => `${pid}|${size}`;
 
@@ -217,7 +219,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
                         <div key={s} style={{ background: CARD, border: picked ? "1px solid rgba(74,222,128,.5)" : BORDER, borderRadius: 10, padding: "7px 8px" }}>
                           <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
                             <input type="checkbox" checked={picked} onChange={() => toggle(p, s)} />
-                            <span style={{ fontSize: 12, color: BLUE_L, fontWeight: 700 }}>{s}</span>
+                            <span style={{ fontSize: 12, color: BLUE_L, fontWeight: 700 }}><SizeTag size={s} /></span>
                           </label>
                           <div style={{ fontSize: 9, color: GRAY, margin: "3px 0", textAlign: "center" }}>on hand {oh}</div>
                           {picked && (

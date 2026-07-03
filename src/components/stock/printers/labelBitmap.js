@@ -22,6 +22,7 @@
 //    line-count matches the content — no oversized canvas, no spill.
 
 import { code128Modules } from "../barcode";
+import { formatSize } from "../../../utils/sizeLabel";
 
 const FONT = "monospace";
 const setFont = (ctx, px, bold = true) => { ctx.font = `${bold ? "bold " : ""}${px}px ${FONT}`; };
@@ -125,7 +126,7 @@ function drawLabel(ctx, { code, productName, size, header, dispatch, orderNo, cu
       for (const line of fn.lines) { ctx.fillText(line, cx, y); y += fn.px + 2; }
     }
 
-    const sStr = (size != null && String(size).trim() !== "") ? `Size: ${String(size).trim()}` : "";
+    const sStr = (size != null && String(size).trim() !== "") ? `Size: ${formatSize(String(size).trim())}` : "";
     if (sStr) {
       const fs = fitLine(ctx, sStr, maxW, 22, 12, true);
       setFont(ctx, fs.px, true);
@@ -152,7 +153,7 @@ function drawLabel(ctx, { code, productName, size, header, dispatch, orderNo, cu
   }
 
   // SIZE — its own bold, prominent line. Always shown when present, at a glance.
-  const sizeStr = (size != null && String(size).trim() !== "") ? `Size: ${String(size).trim()}` : "";
+  const sizeStr = (size != null && String(size).trim() !== "") ? `Size: ${formatSize(String(size).trim())}` : "";
   if (sizeStr) {
     const f = fitLine(ctx, sizeStr, maxW, header ? 17 : 34, 12, true);
     setFont(ctx, f.px, true);

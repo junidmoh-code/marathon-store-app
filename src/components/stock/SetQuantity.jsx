@@ -25,6 +25,8 @@ import { transferTargets, RECEIVING_DEFAULT } from "./locations";
 import { Card, Field, LocationPicker, NumberInput, TextInput, Toast, Empty } from "./widgets";
 import { GRAY, GREEN, RED, BLUE_L, BORDER, CARD, bGreen, bGhost, tabOn, tabOff, input } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
+import { formatSize } from "../../utils/sizeLabel";
+import { SizeTag } from "../SizeTag";
 import BarcodePrint from "./BarcodePrint";
 
 function Thumb({ url }) {
@@ -218,7 +220,7 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
               const badDir = touched && intent.additive && delta < 0;   // receipt/opening can't reduce
               return (
                 <div key={s}>
-                  <div style={{ fontSize: 12, color: "#fff", marginBottom: 2, textAlign: "center" }}>{s}</div>
+                  <div style={{ fontSize: 12, color: "#fff", marginBottom: 2, textAlign: "center" }}><SizeTag size={s} /></div>
                   <div style={{ fontSize: 9, color: GRAY, textAlign: "center", marginBottom: 2 }}>now {cur}</div>
                   <NumberInput value={raw ?? ""} onChange={(v) => setTargets(t => ({ ...t, [s]: v }))} placeholder="set to" />
                   <div style={{ fontSize: 9, textAlign: "center", marginTop: 2, height: 12,

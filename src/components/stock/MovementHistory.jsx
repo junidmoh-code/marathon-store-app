@@ -11,6 +11,8 @@ import { labelFor } from "./locations";
 import { Empty } from "./widgets";
 import { searchProducts } from "../../utils/productSearch";
 import { GRAY, GREEN, RED, BLUE_L, BORDER, CARD, input } from "./ui";
+import { formatSize } from "../../utils/sizeLabel";
+import { SizeTag } from "../SizeTag";
 
 // Product thumbnail — tap target in search results / selected header.
 function Thumb({ url, size = 38 }) {
@@ -124,7 +126,7 @@ export default function MovementHistory({ products, registry }) {
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 13, color: "#fff" }}>
                 <span style={{ color: COLOR[m.type] || "#fff", fontWeight: 700 }}>{m.type}</span>
-                <span style={{ color: GRAY, marginLeft: 6 }}>size {m.size}</span>
+                <span style={{ color: GRAY, marginLeft: 6 }}>size <SizeTag size={m.size} /></span>
               </div>
               <div style={{ fontSize: 11, color: GRAY, marginTop: 2 }}>{route}</div>
               {oldNew(m, registry) && <div style={{ fontSize: 11, color: GRAY, marginTop: 2 }}>{oldNew(m, registry)}</div>}

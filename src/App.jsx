@@ -12,6 +12,8 @@ import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
 import { toAuthPassword } from "./utils/auth-utils";
 import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits } from "./utils/phone";
+import { formatSize } from "./utils/sizeLabel";
+import { SizeTag } from "./components/SizeTag";
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import AppErrorBoundary from "./AppErrorBoundary";
@@ -2503,7 +2505,7 @@ function SizeQtyGrid({ sizes, values, onChange }) {
     <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(64px, 1fr))", gap:10 }}>
       {sizes.map(s => (
         <div key={s} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
-          <div style={{ fontSize:13, fontWeight:700, color:"#6A9FFF" }}>{s}</div>
+          <div style={{ fontSize:13, fontWeight:700, color:"#6A9FFF" }}><SizeTag size={s} /></div>
           <div style={{ color:"rgba(120,150,255,.5)", fontSize:14, lineHeight:1 }}>↓</div>
           <input type="number" inputMode="numeric" min="0" placeholder="0"
             value={values[s] ?? ""}
@@ -2955,7 +2957,7 @@ function AdminView({ products, orders, onExit }) {
             {formSizeChoices.map(s => (
               <button key={s} onClick={() => toggleSize(s)}
                 style={{ padding:"6px 14px", borderRadius:"8px", border:"2px solid", borderColor: form.sizes.includes(s)?BLUE:"rgba(60,110,255,.15)", background: form.sizes.includes(s)?"rgba(60,110,255,.12)":"transparent", color: form.sizes.includes(s)?BLUE_L:"#666", cursor:"pointer", fontWeight:"600" }}>
-                {s}
+                <SizeTag size={s} />
               </button>
             ))}
           </div>
@@ -3440,7 +3442,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
             const on = productSizes.includes(s);
             return (
               <button key={s} onClick={() => toggleSize(s)}
-                      style={{ padding:"7px 14px", borderRadius:8, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.18)" : "rgba(255,255,255,.03)", color: on ? "#4A7FFF" : "rgba(255,255,255,.7)", cursor:"pointer", fontSize:13, fontWeight:600 }}>{s}</button>
+                      style={{ padding:"7px 14px", borderRadius:8, border:`1px solid ${on ? "#4A7FFF" : "rgba(255,255,255,.1)"}`, background: on ? "rgba(60,110,255,.18)" : "rgba(255,255,255,.03)", color: on ? "#4A7FFF" : "rgba(255,255,255,.7)", cursor:"pointer", fontSize:13, fontWeight:600 }}><SizeTag size={s} /></button>
             );
           })}
         </div>
@@ -3667,7 +3669,7 @@ function ClothingCard({ product, onAdd, onViewPhoto }) {
               const n = qty[sz] || 0;
               return (
                 <div key={sz} style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <div style={{ minWidth:42, padding:"3px 8px", borderRadius:7, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:BLUE_L, fontSize:12, fontWeight:700, textAlign:"center" }}>{sz}</div>
+                  <div style={{ minWidth:42, padding:"3px 8px", borderRadius:7, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:BLUE_L, fontSize:12, fontWeight:700, textAlign:"center" }}><SizeTag size={sz} /></div>
                   <button onClick={() => bump(sz, -1)} disabled={n === 0}
                     style={{ width:28, height:28, borderRadius:7, border:"1px solid rgba(255,255,255,.12)", background: n === 0 ? "rgba(255,255,255,.02)" : "rgba(60,110,255,.08)", color: n === 0 ? "rgba(255,255,255,.25)" : BLUE_L, fontSize:16, fontWeight:700, cursor: n === 0 ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>
                     −
@@ -3745,7 +3747,7 @@ function ShopStockList({ shopId, products, registry }) {
               <span key={sz} style={{ fontSize:11, color: qty > 0 ? "#fff" : "rgba(255,255,255,.35)",
                 background: qty > 0 ? "rgba(60,110,255,.12)" : "rgba(255,255,255,.03)",
                 border:"1px solid rgba(60,110,255,.18)", borderRadius:7, padding:"2px 7px" }}>
-                {sz}: {qty}
+                <SizeTag size={sz} />: {qty}
               </span>
             ))}
           </div>
@@ -4386,7 +4388,7 @@ function AssistantView({ products, onExit, orders = [] }) {
               </div>
               {lastOrders.map(o => (
                 <div key={o.id} style={{ color:"#888", fontSize:"0.82rem" }}>
-                  <strong style={{ color:"#ccc" }}>#{o.id}</strong> — {o.productName}{o.size ? ` Sz ${o.size}` : ""}{o.qty && o.qty > 1 ? ` × ${o.qty}` : ""}
+                  <strong style={{ color:"#ccc" }}>#{o.id}</strong> — {o.productName}{o.size ? ` Sz ${formatSize(o.size)}` : ""}{o.qty && o.qty > 1 ? ` × ${o.qty}` : ""}
                 </div>
               ))}
             </div>
@@ -4499,7 +4501,7 @@ function AssistantView({ products, onExit, orders = [] }) {
               {selectedSizes.map(s => (
                 <button key={s} onClick={() => setPendingSize(s)}
                   style={{ padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
-                  {s}
+                  <SizeTag size={s} />
                 </button>
               ))}
             </div>
@@ -4539,12 +4541,12 @@ function AssistantView({ products, onExit, orders = [] }) {
               // prefix so the CTA doesn't promise a quantity the cart will ignore.
               const btnLabel = pendingDisplayPartner
                 ? (pendingSize
-                    ? `Add Size ${pendingSize} + Display Partner to Cart`
+                    ? `Add Size ${formatSize(pendingSize)} + Display Partner to Cart`
                     : "Add Display Partner Request to Cart")
                 : pendingSize
                   ? (qtyOnly && pendingQty > 1
-                      ? `Add ${pendingQty} × Size ${pendingSize} to Cart`
-                      : `Add Size ${pendingSize} to Cart`)
+                      ? `Add ${pendingQty} × Size ${formatSize(pendingSize)} to Cart`
+                      : `Add Size ${formatSize(pendingSize)} to Cart`)
                   : ((selected.productType || "sneaker") === "clothing" ? "Select a size" : "Select a size or display option");
               return (
                 <button onClick={addToCart} disabled={!canAdd}
@@ -4660,7 +4662,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                 : !phoneOk
                   ? "Enter a valid phone number"
                   : singleSku && sample.size
-                    ? (n > 1 ? `Place order — size ${sample.size} × ${n}` : `Place order — size ${sample.size}`)
+                    ? (n > 1 ? `Place order — size ${formatSize(sample.size)} × ${n}` : `Place order — size ${formatSize(sample.size)}`)
                     : `Place ${n} Order${n > 1 ? "s" : ""} →`;
               return (
                 <button onClick={placeOrders} disabled={!canPlace}
@@ -5602,21 +5604,21 @@ function WarehouseView({ products = [], orders, onExit }) {
                         <div style={{ background:"rgba(245,158,11,.06)", border:"1px solid rgba(245,158,11,.25)", borderRadius:10, padding:"10px 10px 8px" }}>
                           <div style={{ fontSize:11, fontWeight:600, color:"#F59E0B", marginBottom:8, display:"flex", alignItems:"center", gap:6 }}>
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-                            Pick a substitute for Size {order.size}
+                            Pick a substitute for Size <SizeTag size={order.size} />
                           </div>
                           <div style={{ display:"flex", gap:8 }}>
                             {below && (
                               <button onClick={() => commitSub(below)}
                                       style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(245,158,11,.15)", border:"1px solid rgba(245,158,11,.4)", color:"#F59E0B" }}>
                                 <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="19 12 12 19 5 12"/><line x1="12" y1="5" x2="12" y2="19"/></svg>
-                                Size {below}
+                                Size <SizeTag size={below} />
                               </button>
                             )}
                             {above && (
                               <button onClick={() => commitSub(above)}
                                       style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(245,158,11,.15)", border:"1px solid rgba(245,158,11,.4)", color:"#F59E0B" }}>
                                 <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 12 12 5 19 12"/><line x1="12" y1="19" x2="12" y2="5"/></svg>
-                                Size {above}
+                                Size <SizeTag size={above} />
                               </button>
                             )}
                             <button onClick={() => setPickerOpenId(null)}
@@ -5779,7 +5781,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
                       waiting {fmtWaiting(order.displayRefillScheduledAt)}
                     </span>
                   </div>
-                  <div style={{ fontWeight:700, color:"#fff", fontSize:13 }}>{order.productName}{order.size || order.sentSize ? ` — Size ${sourceDisplaySize(order)}` : ""}</div>
+                  <div style={{ fontWeight:700, color:"#fff", fontSize:13 }}>{order.productName}{order.size || order.sentSize ? ` — Size ${formatSize(sourceDisplaySize(order))}` : ""}</div>
                 </div>
               </div>
               <div style={{ display:"flex", gap:8 }}>
@@ -5834,7 +5836,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
                           {isDepleted ? "Stock Depleted" : "Refilled"}
                         </span>
                       </div>
-                      <div style={{ fontWeight:600, color:"rgba(255,255,255,.85)", fontSize:12 }}>{order.productName}{order.size || order.sentSize ? ` — Size ${sourceDisplaySize(order)}` : ""}</div>
+                      <div style={{ fontWeight:600, color:"rgba(255,255,255,.85)", fontSize:12 }}>{order.productName}{order.size || order.sentSize ? ` — Size ${formatSize(sourceDisplaySize(order))}` : ""}</div>
                     </div>
                   </div>
                   <div style={{ display:"flex", justifyContent:"flex-end" }}>
@@ -5887,7 +5889,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
     <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginTop:6 }}>
       {items.map(it => (
         <span key={it.orderId} style={{ display:"inline-flex", alignItems:"center", gap:4, background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.25)", borderRadius:7, padding:"3px 8px", fontSize:11, fontWeight:600, color:"#fff" }}>
-          <span>{it.size}</span>
+          <span><SizeTag size={it.size} /></span>
           <span style={{ background:"rgba(60,110,255,.25)", color:BLUE_L, borderRadius:999, padding:"0 6px", fontSize:10, fontWeight:700 }}>×{it.qty}</span>
         </span>
       ))}
@@ -6059,7 +6061,7 @@ function WarehouseRestockTab({ rawCounts, responses }) {
                       border:`2px solid ${resp==="available"?"rgba(0,150,70,.5)":resp==="out_of_stock"?"rgba(150,20,20,.4)":"rgba(60,110,255,.15)"}`,
                       borderRadius:"10px", padding:"0.5rem 0.75rem", textAlign:"center", minWidth:"64px",
                     }}>
-                      <div style={{ fontWeight:"700", fontSize:"0.9rem", color:"#fff" }}>Sz {size}</div>
+                      <div style={{ fontWeight:"700", fontSize:"0.9rem", color:"#fff" }}>Sz <SizeTag size={size} /></div>
                       {count > 1 && <div style={{ color:"#4A7FFF", fontSize:"0.68rem", fontWeight:"700" }}>×{count}</div>}
                       {resp==="available"    && <div style={{ color:"#4ADE80", fontSize:"0.7rem", fontWeight:"600" }}>Avail</div>}
                       {resp==="out_of_stock" && <div style={{ color:"#F87171", fontSize:"0.7rem", fontWeight:"600" }}>OOS</div>}
@@ -6112,7 +6114,7 @@ function CustomerView({ orders, onExit }) {
         <div style={{ background:CARD, border:`2px solid ${cfg.color}33`, borderRadius:RADIUS, padding:"2rem", maxWidth:"420px", width:"100%", textAlign:"center", boxShadow:GLOW }}>
           <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"5rem", color:BLUE, lineHeight:1, marginBottom:"0.25rem", letterSpacing:"0.05em" }}>#{found.id}</div>
           <div style={{ background:cfg.bg, color:cfg.color, border:`1px solid ${cfg.border}`, borderRadius:"999px", padding:"0.5rem 1.5rem", display:"inline-block", fontWeight:"700", fontSize:"1.1rem", marginBottom:"1rem" }}>{cfg.icon} {cfg.label}</div>
-          <div style={{ fontWeight:"600", fontSize:"1.1rem", marginBottom:"0.25rem" }}>{found.productName} · Size {found.size}</div>
+          <div style={{ fontWeight:"600", fontSize:"1.1rem", marginBottom:"0.25rem" }}>{found.productName} · Size <SizeTag size={found.size} /></div>
           <div style={{ color:"#666", fontSize:"0.85rem" }}>For {found.customerName}</div>
           {found.status===STATUS.INCOMING        && <div style={{ marginTop:"1.5rem", color:"#4A7FFF", fontSize:"0.9rem", background:"rgba(60,110,255,.1)", borderRadius:"10px", padding:"0.75rem" }}>Your order is being prepared. We'll have it ready soon.</div>}
           {found.status===STATUS.READY           && <div style={{ marginTop:"1.5rem", color:"#4ADE80", fontSize:"0.9rem", background:"rgba(74,222,128,.1)", borderRadius:"10px", padding:"0.75rem" }}>Your order is ready. Please collect it at the store.</div>}
@@ -6724,7 +6726,7 @@ function PendingCard({ product, size, count, onAvailable, onOutOfStock }) {
         </div>
       </div>
       <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px", marginBottom:10 }}>
-        <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size {size}</span>
+        <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
         {count > 1 && <span style={{ fontSize:10, color:"#4A7FFF", fontWeight:600 }}>×{count}</span>}
       </div>
       <div style={{ display:"flex", gap:8 }}>
@@ -6771,7 +6773,7 @@ function CompletedCard({ product, size, count, response, onUndo }) {
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:10 }}>
         <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.2)", borderRadius:8, padding:"5px 10px" }}>
-          <span style={{ fontSize:12, fontWeight:700, color:"rgba(255,255,255,.7)" }}>Size {size}</span>
+          <span style={{ fontSize:12, fontWeight:700, color:"rgba(255,255,255,.7)" }}>Size <SizeTag size={size} /></span>
           {count > 1 && <span style={{ fontSize:10, color:BLUE, fontWeight:600 }}>×{count}</span>}
         </div>
         <div style={{ flex:1 }} />
@@ -6901,7 +6903,7 @@ function SourceHistoryTab({ orders, returnsLog, allResponses, hub, onResponse })
                           </div>
                         </div>
                         <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px", marginBottom:10 }}>
-                          <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size {size}</span>
+                          <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
                           {count > 1 && <span style={{ fontSize:10, color:"#4A7FFF", fontWeight:600 }}>×{count}</span>}
                         </div>
                         <div style={{ display:"flex", gap:8 }}>
@@ -7029,7 +7031,7 @@ function SourceOnHoldTab({ orders, hub, onHoldResponses }) {
                 <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.4rem", color:BLUE_L, lineHeight:1, letterSpacing:"0.05em" }}>#{order.id}</span>
                 <span style={{ background:"rgba(60,110,255,.12)", color:BLUE_L, border:BORDER, borderRadius:"999px", padding:"1px 8px", fontSize:"0.7rem", fontWeight:"600" }}>On Hold</span>
               </div>
-              <div style={{ fontWeight:"600", fontSize:"0.92rem", color:"#fff" }}>{order.productName} — Size {sourceDisplaySize(order)}</div>
+              <div style={{ fontWeight:"600", fontSize:"0.92rem", color:"#fff" }}>{order.productName} — Size <SizeTag size={sourceDisplaySize(order)} /></div>
               <div style={{ color:"#888", fontSize:"0.8rem" }}>{order.customerName}</div>
               <div style={{ color:"#444", fontSize:"0.72rem", marginTop:"0.2rem" }}>Put on hold: {fmt(order.comingTomorrowAt || order.updatedAt)}</div>
             </div>
@@ -7078,7 +7080,7 @@ function SourceOnHoldTab({ orders, hub, onHoldResponses }) {
                         {isSent ? "Sent" : "Out of Stock"}
                       </span>
                     </div>
-                    <div style={{ fontWeight:"600", fontSize:"0.9rem", color:"rgba(255,255,255,.85)" }}>{order.productName} — Size {sourceDisplaySize(order)}</div>
+                    <div style={{ fontWeight:"600", fontSize:"0.9rem", color:"rgba(255,255,255,.85)" }}>{order.productName} — Size <SizeTag size={sourceDisplaySize(order)} /></div>
                     <div style={{ color:"#888", fontSize:"0.78rem" }}>{order.customerName}</div>
                   </div>
                 </div>
@@ -7439,7 +7441,7 @@ function ReturnsView({ orders, onExit }) {
                 <div style={{ display:"flex", alignItems:"center", gap:"1rem", flexWrap:"wrap" }}>
                   <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.9rem", color:BLUE_L, lineHeight:1, minWidth:"60px", letterSpacing:"0.05em" }}>#{order.id}</div>
                   <div style={{ flex:1, minWidth:"140px" }}>
-                    <div style={{ fontWeight:"600", fontSize:"0.95rem" }}>{order.productName} · Size {order.size}</div>
+                    <div style={{ fontWeight:"600", fontSize:"0.95rem" }}>{order.productName} · Size <SizeTag size={order.size} /></div>
                     <div style={{ color:"#666", fontSize:"0.82rem", marginTop:"2px" }}>{order.customerName}</div>
                   </div>
                   {isReturned ? (
@@ -7821,7 +7823,7 @@ function InsightProductSearchTab({ log, productPhotoMap, filterStart, filterEnd,
 
   const placedFiltered  = useMemo(() => filtered.filter(e=>e.action==="placed"), [filtered]);
   const productCounts   = useMemo(() => groupCount(placedFiltered, e=>e.productName), [placedFiltered]);
-  const sizeCounts      = useMemo(() => groupCount(placedFiltered, e=>`Size ${e.size}`), [placedFiltered]);
+  const sizeCounts      = useMemo(() => groupCount(placedFiltered, e=>`Size ${formatSize(e.size)}`), [placedFiltered]);
 
   return (
     <div>
@@ -7952,7 +7954,7 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
                 <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 14px 14px", display:"flex", flexWrap:"wrap", gap:6 }}>
                   {sizes.map(([size, count]) => (
                     <div key={size} style={{ background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px", display:"flex", alignItems:"center", gap:6 }}>
-                      <span style={{ fontSize:12, fontWeight:700, color:"#fff" }}>Size {size}</span>
+                      <span style={{ fontSize:12, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
                       <span style={{ background:"rgba(60,110,255,.2)", color:"#4A7FFF", borderRadius:999, padding:"2px 7px", fontSize:10, fontWeight:700 }}>×{count}</span>
                     </div>
                   ))}
@@ -8024,7 +8026,7 @@ function InsightSizePopularityTab({ log, filterStart, filterEnd, filterLabel, ca
             return (
               <div key={label} style={{ display:"flex", alignItems:"center", gap:12 }}>
                 <div style={{ width:64, color: isPeak ? "#fff" : "rgba(255,255,255,.7)", fontSize:13, fontWeight: isPeak ? 700 : 500 }}>
-                  Size {label}
+                  Size <SizeTag size={label} />
                 </div>
                 <div style={{ flex:1, position:"relative", height:24, background:"rgba(60,110,255,.05)", borderRadius:6, overflow:"hidden" }}>
                   <div style={{
@@ -8247,7 +8249,7 @@ function InsightReturnsTab({ returnsLog, productPhotoMap, filterStart, filterEnd
                         <span style={{ fontWeight:800, fontSize:14, color:"#6A9FFF", letterSpacing:"0.5px" }}>#{r.orderNumber}</span>
                         <span style={{ color:"#ccc", fontWeight:600, fontSize:13 }}>{r.productName}</span>
                       </div>
-                      <span style={{ color:"rgba(255,255,255,.4)", fontSize:11 }}>Size {r.size}</span>
+                      <span style={{ color:"rgba(255,255,255,.4)", fontSize:11 }}>Size <SizeTag size={r.size} /></span>
                     </div>
                   </div>
                   <div style={{ textAlign:"right", flexShrink:0 }}>
@@ -8346,7 +8348,7 @@ function InsightClothingRefillsTab({ orders, log, productPhotoMap, filterStart, 
                   <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:10 }}>
                     {sizeEntries.map(([sz, count]) => (
                       <span key={sz} style={{ display:"inline-flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.22)", borderRadius:7, padding:"3px 9px", fontSize:11, fontWeight:600, color:"#fff" }}>
-                        <span>{sz}</span>
+                        <span><SizeTag size={sz} /></span>
                         <span style={{ background:"rgba(60,110,255,.2)", color:BLUE_L, borderRadius:999, padding:"0 6px", fontSize:10, fontWeight:700 }}>{count}</span>
                       </span>
                     ))}
@@ -8492,7 +8494,7 @@ function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, fi
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontWeight:700, fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.productName}</div>
                 <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:4, flexWrap:"wrap" }}>
-                  <span style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#fff", borderRadius:8, padding:"2px 8px", fontSize:11, fontWeight:600 }}>Size {r.size}</span>
+                  <span style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#fff", borderRadius:8, padding:"2px 8px", fontSize:11, fontWeight:600 }}>Size <SizeTag size={r.size} /></span>
                   {r.hubs.map(h => (
                     <span key={h} style={{ background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", color:"rgba(255,255,255,.6)", borderRadius:8, padding:"2px 8px", fontSize:10, fontWeight:600 }}>{hubLabel(h)}</span>
                   ))}
@@ -8637,7 +8639,7 @@ function InsightSalesSummaryTab({ log, returnsLog, productPhotoMap, filterStart,
                       <div style={{ color:"#444", fontSize:"0.82rem" }}>No size data</div>
                     ) : sizeRows.map(([sz, count]) => (
                       <div key={sz} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.25rem 0", borderBottom:"1px solid rgba(60,110,255,.08)" }}>
-                        <span style={{ color:"#888", fontSize:"0.82rem" }}>Size {sz}</span>
+                        <span style={{ color:"#888", fontSize:"0.82rem" }}>Size <SizeTag size={sz} /></span>
                         <span style={{ color:BLUE_L, fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1rem", letterSpacing:"0.03em" }}>{count} sold</span>
                       </div>
                     ))}
@@ -8970,7 +8972,7 @@ function InsightReorderTab({ productPhotoMap }) {
                           <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:10 }}>
                             {sizes.map(([sz, count]) => (
                               <span key={sz} style={{ display:"inline-flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.22)", borderRadius:7, padding:"3px 9px", fontSize:11, fontWeight:600, color:"#fff" }}>
-                                <span>{sz}</span>
+                                <span><SizeTag size={sz} /></span>
                                 <span style={{ background:"rgba(60,110,255,.2)", color:BLUE_L, borderRadius:999, padding:"0 6px", fontSize:10, fontWeight:700 }}>{count}</span>
                               </span>
                             ))}
@@ -9412,7 +9414,7 @@ function AuditModal({ audit, onClose }) {
                 <td style={{ padding:"4px 6px", borderBottom:"1px solid rgba(255,255,255,.04)", color:"#6A9FFF", fontWeight:700 }}>{o.id}</td>
                 <td style={{ padding:"4px 6px", borderBottom:"1px solid rgba(255,255,255,.04)", color: o.status ? "#fff" : "#F87171" }}>{o.status === undefined ? "(undefined)" : (o.status || "(empty)")}</td>
                 <td style={{ padding:"4px 6px", borderBottom:"1px solid rgba(255,255,255,.04)" }}>{o.customerName || "—"}</td>
-                <td style={{ padding:"4px 6px", borderBottom:"1px solid rgba(255,255,255,.04)" }}>{(o.productName || "—") + (o.size ? ` Sz${o.size}` : "")}</td>
+                <td style={{ padding:"4px 6px", borderBottom:"1px solid rgba(255,255,255,.04)" }}>{(o.productName || "—") + (o.size ? ` Sz${formatSize(o.size)}` : "")}</td>
                 <td style={{ padding:"4px 6px", borderBottom:"1px solid rgba(255,255,255,.04)" }}>{fmt(o.createdAt)}</td>
                 <td style={{ padding:"4px 6px", borderBottom:"1px solid rgba(255,255,255,.04)" }}>{fmt(o.readyAt)}</td>
                 <td style={{ padding:"4px 6px", borderBottom:"1px solid rgba(255,255,255,.04)" }}>{fmt(o.collectedAt)}</td>

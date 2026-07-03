@@ -10,6 +10,8 @@ import { activeLocations, labelFor } from "./locations";
 import { Empty } from "./widgets";
 import { GLASS, CARD, BLUE_L, GREEN, RED, GRAY, BORDER, RADIUS, input } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
+import { formatSize } from "../../utils/sizeLabel";
+import { SizeTag } from "../SizeTag";
 
 function Thumb({ product, size = 42 }) {
   const url = product?.photoUrl;
@@ -75,7 +77,7 @@ export default function Locator({ products, registry }) {
               return (
                 <div key={size} style={{ background: CARD, border: BORDER, borderRadius: RADIUS, padding: "10px 12px" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: places.length ? 6 : 0 }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: BLUE_L }}>Size {size}</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: BLUE_L }}>Size <SizeTag size={size} /></span>
                     <span style={{ fontSize: 13, fontWeight: 700, color: total > 0 ? "#fff" : GRAY }}>{total} total</span>
                   </div>
                   {places.length > 0 && (
