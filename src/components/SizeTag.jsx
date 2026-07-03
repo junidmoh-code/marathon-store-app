@@ -9,7 +9,7 @@ import { formatSize } from "../utils/sizeLabel";
 export function SizeTag({ size, style }) {
   if (size == null || size === "") return null;
   const label = String(formatSize(size));
-  const m = label.match(/^([A-Za-z]+)-(\d+)$/); // "M-32" (clothing) → letter + number
+  const m = label.match(/^(\d*[A-Za-z]+)-(\d+)$/); // "M-32" / "4XL-42" (clothing) → letter + number
   if (!m) return <span style={style}>{label}</span>; // footwear / unchanged
   return (
     <span style={style}>
