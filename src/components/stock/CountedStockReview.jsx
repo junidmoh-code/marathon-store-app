@@ -18,6 +18,7 @@ import { barcodeSizeKey } from "./barcode";
 import { Toast, Empty, LocationPicker } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, RED, BLUE_L, AMBER, BORDER, bGreen, bGhost, input } from "./ui";
 import { productMatchesQuery } from "../../utils/productSearch";
+import { formatSize } from "../../utils/sizeLabel";
 
 const DEFAULT_LOCATION = "marathon-pe";   // counts happen at Marathon PE by default
 
@@ -312,7 +313,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
                       const busy = busyKey === k;
                       return (
                         <div key={k} style={{ background: s.qty === 0 ? "rgba(255,255,255,.015)" : "rgba(255,255,255,.03)", border: BORDER, borderRadius: 10, padding: "7px 7px", opacity: s.qty === 0 ? 0.7 : 1 }}>
-                          <div style={{ fontSize: 12, fontWeight: 700, color: BLUE_L, textAlign: "center" }}>{s.size}</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: BLUE_L, textAlign: "center" }}>{formatSize(s.size)}</div>
                           {editKey === k ? (
                             <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
                               <input type="number" inputMode="numeric" min="0" autoFocus value={editVal}

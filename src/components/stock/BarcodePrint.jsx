@@ -13,6 +13,7 @@ import Barcode from "./BarcodeView";
 import { TRANSPORTS, printLabels, defaultTransportId } from "./printers";
 import { Toast } from "./widgets";
 import { GLASS_SOLID, bGreen, bGhost, GRAY, GREEN, AMBER, BLUE_L, input } from "./ui";
+import { formatSize } from "../../utils/sizeLabel";
 
 export default function BarcodePrint({ product, items, onClose }) {
   // items: [{ size, added }] — the sizes just saved, and units added per size.
@@ -102,7 +103,7 @@ export default function BarcodePrint({ product, items, onClose }) {
                 <div key={it.size} style={{ display: "flex", alignItems: "center", gap: 12, background: "rgba(255,255,255,.03)", border: "1px solid rgba(60,110,255,.15)", borderRadius: 10, padding: 10 }}>
                   <input type="checkbox" checked={checked} onChange={e => setSel(s => ({ ...s, [it.size]: e.target.checked }))} style={{ width: 18, height: 18 }} />
                   <div style={{ minWidth: 44 }}>
-                    <div style={{ color: "#fff", fontWeight: 700, fontSize: 14 }}>{it.size}</div>
+                    <div style={{ color: "#fff", fontWeight: 700, fontSize: 14 }}>{formatSize(it.size)}</div>
                     <div style={{ color: GRAY, fontSize: 10 }}>+{Math.max(0, it.added || 0)} added</div>
                   </div>
                   <div style={{ flex: 1, minWidth: 0, opacity: checked ? 1 : 0.4 }}>
