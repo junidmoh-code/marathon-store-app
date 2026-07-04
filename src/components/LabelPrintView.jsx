@@ -22,16 +22,29 @@ const byName = (a, b) => String(a?.name || "").localeCompare(String(b?.name || "
 
 export default function LabelPrintView({ products = [], onExit }) {
   const [query, setQuery] = useState("");
+  const [cat, setCat] = useState("all");            // category filter (Footwear / Accessories / …)
   const [busyId, setBusyId] = useState(null);       // product id currently printing
   const [toast, setToast] = useState(null);         // { kind: "ok"|"err", text }
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 4000); };
 
+  // Category chips are data-driven — every product has a `category` (Footwear,
+  // Accessories, Clothing, Perfume, …) so sneakers and accessories browse apart.
+  const categories = useMemo(() => {
+    const set = new Set();
+    for (const p of products || []) if (p?.category) set.add(String(p.category));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [products]);
+
   // ALWAYS show products: empty query → the whole catalogue (alphabetical); a query
-  // filters via the shared forgiving matcher, then re-sorted alphabetically.
+  // filters via the shared forgiving matcher. The category chip pre-filters both
+  // paths; results are re-sorted alphabetically.
   const shown = useMemo(() => {
-    const base = query.trim() === "" ? (products || []).filter((p) => p && p.id && p.name) : searchProducts(products, query, { limit: 500 });
+    const predicate = cat === "all" ? undefined : (p) => p.category === cat;
+    const base = query.trim() === ""
+      ? (products || []).filter((p) => p && p.id && p.name && (!predicate || predicate(p)))
+      : searchProducts(products, query, { predicate, limit: 2000 });
     return [...base].sort(byName);
-  }, [products, query]);
+  }, [products, query, cat]);
 
   async function printLabel(product) {
     if (busyId) return;
@@ -83,6 +96,25 @@ export default function LabelPrintView({ products = [], onExit }) {
       <div style={{ padding: "0 14px 4px" }}>
         <div style={{ fontSize: 14, color: "rgba(255,255,255,.4)" }}>Tap a product to print a name · price · barcode label on the Phomemo</div>
       </div>
+
+      {/* CATEGORY TOGGLE — All + one chip per category, so sneakers (Footwear) and
+          Accessories browse separately. Data-driven from the catalogue. */}
+      {categories.length > 1 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 14px 2px" }}>
+          {["all", ...categories].map((c) => {
+            const on = cat === c;
+            return (
+              <button key={c} onClick={() => setCat(c)}
+                style={{ padding: "8px 16px", borderRadius: 999, border: on ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.25)",
+                         background: on ? "rgba(60,110,255,.25)" : "rgba(255,255,255,.04)",
+                         color: on ? "#fff" : "rgba(255,255,255,.55)", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+                         boxShadow: on ? "0 0 8px rgba(60,110,255,.3)" : "none" }}>
+                {c === "all" ? "All" : c}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* SEARCH */}
       <div style={{ padding: "10px 14px 6px" }}>
