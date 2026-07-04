@@ -13,7 +13,18 @@ import React, { useMemo, useState } from "react";
 import { searchProducts } from "../utils/productSearch";
 import { ensureBarcode } from "./stock/barcodeStore";
 import { connectTransport, printLabels, defaultTransportId } from "./stock/printers";
+import { useLocations, useStockCells } from "./stock/useStock";
+import { sellableLocations, labelFor } from "./stock/locations";
 import { FONT } from "./stock/ui";
+
+// Shared filter-chip style (category + store rows).
+const chip = (on) => ({
+  padding: "8px 16px", borderRadius: 999, cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: FONT,
+  border: on ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.25)",
+  background: on ? "rgba(60,110,255,.25)" : "rgba(255,255,255,.04)",
+  color: on ? "#fff" : "rgba(255,255,255,.55)",
+  boxShadow: on ? "0 0 8px rgba(60,110,255,.3)" : "none",
+});
 
 const RANDS = (v) =>
   v == null || v === "" || isNaN(Number(v)) ? "" : `R${Number(v).toLocaleString("en-ZA")}`;
@@ -23,6 +34,7 @@ const byName = (a, b) => String(a?.name || "").localeCompare(String(b?.name || "
 export default function LabelPrintView({ products = [], onExit }) {
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState("all");            // category filter (Footwear / Accessories / …)
+  const [store, setStore] = useState("all");        // store filter (Marathon PE / Trophy / …)
   const [busyId, setBusyId] = useState(null);       // product id currently printing
   const [toast, setToast] = useState(null);         // { kind: "ok"|"err", text }
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 4000); };
@@ -35,16 +47,28 @@ export default function LabelPrintView({ products = [], onExit }) {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [products]);
 
+  // Store picker — the sellable shops. When a store is chosen, the grid is limited
+  // to products with stock recorded at that store (same source as Shop-stock).
+  // useStockCells("all") reads /stock/all (no such node) → {}, so "All stores"
+  // stays unfiltered without loading the whole /stock tree.
+  const registry = useLocations();
+  const stores = useMemo(() => sellableLocations(registry), [registry]);
+  const storeCells = useStockCells(store);   // { pid: { size: cell } } for the chosen store; {} for "all"
+
   // ALWAYS show products: empty query → the whole catalogue (alphabetical); a query
-  // filters via the shared forgiving matcher. The category chip pre-filters both
+  // filters via the shared forgiving matcher. Category + store pre-filter both
   // paths; results are re-sorted alphabetically.
   const shown = useMemo(() => {
-    const predicate = cat === "all" ? undefined : (p) => p.category === cat;
+    const predicate = (p) => {
+      if (cat !== "all" && p.category !== cat) return false;
+      if (store !== "all" && !storeCells[p.id]) return false;
+      return true;
+    };
     const base = query.trim() === ""
-      ? (products || []).filter((p) => p && p.id && p.name && (!predicate || predicate(p)))
+      ? (products || []).filter((p) => p && p.id && p.name && predicate(p))
       : searchProducts(products, query, { predicate, limit: 2000 });
     return [...base].sort(byName);
-  }, [products, query, cat]);
+  }, [products, query, cat, store, storeCells]);
 
   async function printLabel(product) {
     if (busyId) return;
@@ -97,22 +121,29 @@ export default function LabelPrintView({ products = [], onExit }) {
         <div style={{ fontSize: 14, color: "rgba(255,255,255,.4)" }}>Tap a product to print a name · price · barcode label on the Phomemo</div>
       </div>
 
+      {/* STORE PICKER — All stores + one chip per sellable shop. Selecting a store
+          limits the grid to products with stock recorded at that store. */}
+      {stores.length > 0 && (
+        <div style={{ padding: "12px 14px 2px" }}>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,.35)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Store</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {[{ id: "all", label: "All stores" }, ...stores.map((s) => ({ id: s.id, label: labelFor(s.id, registry) }))].map((o) => (
+              <button key={o.id} onClick={() => setStore(o.id)} style={chip(store === o.id)}>{o.label}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* CATEGORY TOGGLE — All + one chip per category, so sneakers (Footwear) and
           Accessories browse separately. Data-driven from the catalogue. */}
       {categories.length > 1 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 14px 2px" }}>
-          {["all", ...categories].map((c) => {
-            const on = cat === c;
-            return (
-              <button key={c} onClick={() => setCat(c)}
-                style={{ padding: "8px 16px", borderRadius: 999, border: on ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.25)",
-                         background: on ? "rgba(60,110,255,.25)" : "rgba(255,255,255,.04)",
-                         color: on ? "#fff" : "rgba(255,255,255,.55)", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
-                         boxShadow: on ? "0 0 8px rgba(60,110,255,.3)" : "none" }}>
-                {c === "all" ? "All" : c}
-              </button>
-            );
-          })}
+        <div style={{ padding: "10px 14px 2px" }}>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,.35)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Category</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {["all", ...categories].map((c) => (
+              <button key={c} onClick={() => setCat(c)} style={chip(cat === c)}>{c === "all" ? "All" : c}</button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -140,7 +171,13 @@ export default function LabelPrintView({ products = [], onExit }) {
       <div style={{ padding: "12px 14px 0" }}>
         {shown.length === 0 ? (
           <div style={{ textAlign: "center", color: "rgba(255,255,255,.4)", fontSize: 14, padding: "40px 0" }}>
-            {query.trim() ? `No products match “${query}”.` : "No products yet."}
+            {query.trim()
+              ? `No products match “${query}”.`
+              : store !== "all"
+                ? `No ${cat !== "all" ? cat.toLowerCase() + " " : ""}products with stock at ${labelFor(store, registry)}.`
+                : cat !== "all"
+                  ? `No ${cat} products.`
+                  : "No products yet."}
           </div>
         ) : (
           <div className="lp-grid" style={{ display: "grid", gap: 10 }}>
