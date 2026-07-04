@@ -23,6 +23,7 @@ import { Toast, Empty } from "./widgets";
 import { GLASS, GLASS_SOLID, CARD, BLUE_L, GREEN, GRAY, AMBER, BORDER, FONT, input, bGreen, bGhost } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
 import { SizeTag } from "../SizeTag";
+import FilterPicker from "./FilterPicker";
 
 const keyOf = (pid, size) => `${pid}__${size}`;
 
@@ -158,21 +159,13 @@ export default function Transfer({ products, registry, actorRole }) {
         </div>
       )}
 
-      {/* SOURCE — pick first; the grid below shows only what's here. */}
-      <div style={{ fontSize: 10, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Transfer from</div>
-      <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 4, marginBottom: 10, WebkitOverflowScrolling: "touch" }}>
-        {locations.map((l) => (
-          <button key={l.id} onClick={() => pickSource(l.id)} style={chip(from === l.id)}>{labelFor(l.id, registry)}</button>
-        ))}
-      </div>
-
-      {/* CATEGORY — only categories present at the source. */}
+      {/* Source (pick first — the grid shows only what's here) + Category, as
+          collapsible cards. Category only shows categories present at the source. */}
+      <FilterPicker label="Transfer from" value={from} onChange={pickSource}
+        options={locations.map((l) => ({ id: l.id, label: labelFor(l.id, registry) }))} />
       {categories.length > 1 && (
-        <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 4, marginBottom: 10, WebkitOverflowScrolling: "touch" }}>
-          {["all", ...categories].map((c) => (
-            <button key={c} onClick={() => setCat(c)} style={chip(cat === c)}>{c === "all" ? "All" : c}</button>
-          ))}
-        </div>
+        <FilterPicker label="Category" value={cat} onChange={setCat}
+          options={[{ id: "all", label: "All" }, ...categories.map((c) => ({ id: c, label: c }))]} />
       )}
 
       {/* Search */}

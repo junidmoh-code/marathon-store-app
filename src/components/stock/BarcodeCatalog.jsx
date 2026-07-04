@@ -15,6 +15,7 @@ import { ref, set } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells, useLocations } from "./useStock";
 import { transferTargets, labelFor } from "./locations";
+import FilterPicker from "./FilterPicker";
 import { ensureBarcode, getBarcode } from "./barcodeStore";
 import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag, defaultTransportId } from "./printers";
 import { Toast, Empty } from "./widgets";
@@ -24,14 +25,6 @@ import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
 
 const keyOf = (pid, size) => `${pid}|${size}`;
-
-// Compact filter chip (location + category rows).
-const chip = (on) => ({
-  padding: "7px 14px", borderRadius: 999, cursor: "pointer", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap",
-  border: on ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.22)",
-  background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)",
-  color: on ? "#fff" : "rgba(255,255,255,.5)",
-});
 
 // Product thumbnail — same pattern as Transfer/Locator (product.photoUrl). Tap to open full.
 function Thumb({ product, size = 40, onOpen }) {
@@ -189,19 +182,13 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
       <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"
         style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 10 }} />
 
-      {/* Location picker — pick a location to see only what's there (on-hand shown
-          per size reflects that location). "All" = whole catalogue, summed on-hand. */}
-      <div style={{ fontSize: 10, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Location</div>
-      <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 4, marginBottom: 10, WebkitOverflowScrolling: "touch" }}>
-        <button onClick={() => setLoc("all")} style={chip(loc === "all")}>All locations</button>
-        {locations.map(l => <button key={l.id} onClick={() => setLoc(l.id)} style={chip(loc === l.id)}>{labelFor(l.id, registry)}</button>)}
-      </div>
-
-      {/* Category picker */}
+      {/* Location + Category — collapsible cards; pick a location to see only what's
+          there (per-size on-hand reflects that location). Default "All". */}
+      <FilterPicker label="Location" value={loc} onChange={setLoc}
+        options={[{ id: "all", label: "All locations" }, ...locations.map(l => ({ id: l.id, label: labelFor(l.id, registry) }))]} />
       {categories.length > 1 && (
-        <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 4, marginBottom: 12, WebkitOverflowScrolling: "touch" }}>
-          {["all", ...categories].map(c => <button key={c} onClick={() => setCat(c)} style={chip(cat === c)}>{c === "all" ? "All" : c}</button>)}
-        </div>
+        <FilterPicker label="Category" value={cat} onChange={setCat}
+          options={[{ id: "all", label: "All" }, ...categories.map(c => ({ id: c, label: c }))]} />
       )}
 
       {/* Transport */}
