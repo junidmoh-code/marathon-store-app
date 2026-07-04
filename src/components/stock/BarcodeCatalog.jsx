@@ -13,7 +13,9 @@
 import React, { useState, useMemo } from "react";
 import { ref, set } from "firebase/database";
 import { database } from "../../firebase";
-import { useStockCells } from "./useStock";
+import { useStockCells, useLocations } from "./useStock";
+import { transferTargets, labelFor } from "./locations";
+import FilterPicker from "./FilterPicker";
 import { ensureBarcode, getBarcode } from "./barcodeStore";
 import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag, defaultTransportId } from "./printers";
 import { Toast, Empty } from "./widgets";
@@ -42,7 +44,11 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   const [toast, setToast] = useState(null);
   const [diagText, setDiagText] = useState(null);   // persistent printer diagnostic (manual dismiss)
   const [lightbox, setLightbox] = useState(null);   // full-screen product photo url
+  const [loc, setLoc] = useState("all");            // location filter — "see what's here"
+  const [cat, setCat] = useState("all");            // category filter
   const cells = useStockCells();        // { loc: { pid: { size: cell } } } — all locations
+  const registry = useLocations();
+  const locations = useMemo(() => transferTargets(registry), [registry]);
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3400); };
 
   // Diagnostic test print: connect (inside this tap's gesture) and send a canvas-free
@@ -70,27 +76,39 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     } catch (e) { /* diagnostic only */ }
   };
 
-  // On-hand for a product+size, summed across every location (the one source of truth).
+  // On-hand for a product+size. When a location is picked, show THAT location's qty
+  // ("see what's there"); otherwise the total summed across every location.
   const onHand = (pid, size) => {
+    if (loc !== "all") { const c = cells?.[loc]?.[pid]?.[size]; return c && typeof c.qty === "number" ? c.qty : 0; }
     let n = 0;
-    for (const loc of Object.keys(cells || {})) {
-      const c = cells[loc]?.[pid]?.[size];
-      if (c && typeof c.qty === "number") n += c.qty;
-    }
+    for (const l of Object.keys(cells || {})) { const c = cells[l]?.[pid]?.[size]; if (c && typeof c.qty === "number") n += c.qty; }
     return n;
   };
+  // Total at the picked location (for the "only what's here" filter).
+  const locTotal = (pid) => Object.values(cells?.[loc]?.[pid] || {}).reduce((s, c) => s + (typeof c?.qty === "number" ? c.qty : 0), 0);
+
+  // Category chips — data-driven from the sized catalogue.
+  const categories = useMemo(() => {
+    const set = new Set();
+    for (const p of products || []) if (p?.category && Array.isArray(p.sizes) && p.sizes.length) set.add(String(p.category));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [products]);
 
   // Forgiving search (fuzzy name + barcode/sku/per-size codes; code hits first).
-  // Empty query lists every sized product, alphabetical. See productSearch.js.
+  // Empty query lists products, alphabetical. Location + category pre-filter both.
   const filtered = useMemo(() => {
-    const requireSizes = (p) => Array.isArray(p.sizes) && p.sizes.length;
+    const predicate = (p) =>
+      Array.isArray(p.sizes) && p.sizes.length &&
+      (cat === "all" || p.category === cat) &&
+      (loc === "all" || (cells?.[loc]?.[p.id] && locTotal(p.id) > 0));
     if (!search.trim()) {
       return [...(products || [])]
-        .filter(p => p && p.id && p.name && requireSizes(p))
+        .filter(p => p && p.id && p.name && predicate(p))
         .sort((a, b) => a.name.localeCompare(b.name));
     }
-    return searchProducts(products, search, { limit: 500, predicate: requireSizes });
-  }, [products, search]);
+    return searchProducts(products, search, { limit: 500, predicate });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products, search, cat, loc, cells]);
 
   const toggle = (p, size) => setSel(s => {
     const k = keyOf(p.id, size); const next = { ...s };
@@ -163,6 +181,15 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
       {!canMint && <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>Re-print existing labels — new barcodes are created by warehouse/admin.</div>}
       <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"
         style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 10 }} />
+
+      {/* Location + Category — collapsible cards; pick a location to see only what's
+          there (per-size on-hand reflects that location). Default "All". */}
+      <FilterPicker label="Location" value={loc} onChange={setLoc}
+        options={[{ id: "all", label: "All locations" }, ...locations.map(l => ({ id: l.id, label: labelFor(l.id, registry) }))]} />
+      {categories.length > 1 && (
+        <FilterPicker label="Category" value={cat} onChange={setCat}
+          options={[{ id: "all", label: "All" }, ...categories.map(c => ({ id: c, label: c }))]} />
+      )}
 
       {/* Transport */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
