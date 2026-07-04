@@ -13,7 +13,8 @@
 import React, { useState, useMemo } from "react";
 import { ref, set } from "firebase/database";
 import { database } from "../../firebase";
-import { useStockCells } from "./useStock";
+import { useStockCells, useLocations } from "./useStock";
+import { transferTargets, labelFor } from "./locations";
 import { ensureBarcode, getBarcode } from "./barcodeStore";
 import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag, defaultTransportId } from "./printers";
 import { Toast, Empty } from "./widgets";
@@ -23,6 +24,14 @@ import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
 
 const keyOf = (pid, size) => `${pid}|${size}`;
+
+// Compact filter chip (location + category rows).
+const chip = (on) => ({
+  padding: "7px 14px", borderRadius: 999, cursor: "pointer", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap",
+  border: on ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.22)",
+  background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)",
+  color: on ? "#fff" : "rgba(255,255,255,.5)",
+});
 
 // Product thumbnail — same pattern as Transfer/Locator (product.photoUrl). Tap to open full.
 function Thumb({ product, size = 40, onOpen }) {
@@ -42,7 +51,11 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   const [toast, setToast] = useState(null);
   const [diagText, setDiagText] = useState(null);   // persistent printer diagnostic (manual dismiss)
   const [lightbox, setLightbox] = useState(null);   // full-screen product photo url
+  const [loc, setLoc] = useState("all");            // location filter — "see what's here"
+  const [cat, setCat] = useState("all");            // category filter
   const cells = useStockCells();        // { loc: { pid: { size: cell } } } — all locations
+  const registry = useLocations();
+  const locations = useMemo(() => transferTargets(registry), [registry]);
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3400); };
 
   // Diagnostic test print: connect (inside this tap's gesture) and send a canvas-free
@@ -70,27 +83,39 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     } catch (e) { /* diagnostic only */ }
   };
 
-  // On-hand for a product+size, summed across every location (the one source of truth).
+  // On-hand for a product+size. When a location is picked, show THAT location's qty
+  // ("see what's there"); otherwise the total summed across every location.
   const onHand = (pid, size) => {
+    if (loc !== "all") { const c = cells?.[loc]?.[pid]?.[size]; return c && typeof c.qty === "number" ? c.qty : 0; }
     let n = 0;
-    for (const loc of Object.keys(cells || {})) {
-      const c = cells[loc]?.[pid]?.[size];
-      if (c && typeof c.qty === "number") n += c.qty;
-    }
+    for (const l of Object.keys(cells || {})) { const c = cells[l]?.[pid]?.[size]; if (c && typeof c.qty === "number") n += c.qty; }
     return n;
   };
+  // Total at the picked location (for the "only what's here" filter).
+  const locTotal = (pid) => Object.values(cells?.[loc]?.[pid] || {}).reduce((s, c) => s + (typeof c?.qty === "number" ? c.qty : 0), 0);
+
+  // Category chips — data-driven from the sized catalogue.
+  const categories = useMemo(() => {
+    const set = new Set();
+    for (const p of products || []) if (p?.category && Array.isArray(p.sizes) && p.sizes.length) set.add(String(p.category));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [products]);
 
   // Forgiving search (fuzzy name + barcode/sku/per-size codes; code hits first).
-  // Empty query lists every sized product, alphabetical. See productSearch.js.
+  // Empty query lists products, alphabetical. Location + category pre-filter both.
   const filtered = useMemo(() => {
-    const requireSizes = (p) => Array.isArray(p.sizes) && p.sizes.length;
+    const predicate = (p) =>
+      Array.isArray(p.sizes) && p.sizes.length &&
+      (cat === "all" || p.category === cat) &&
+      (loc === "all" || (cells?.[loc]?.[p.id] && locTotal(p.id) > 0));
     if (!search.trim()) {
       return [...(products || [])]
-        .filter(p => p && p.id && p.name && requireSizes(p))
+        .filter(p => p && p.id && p.name && predicate(p))
         .sort((a, b) => a.name.localeCompare(b.name));
     }
-    return searchProducts(products, search, { limit: 500, predicate: requireSizes });
-  }, [products, search]);
+    return searchProducts(products, search, { limit: 500, predicate });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products, search, cat, loc, cells]);
 
   const toggle = (p, size) => setSel(s => {
     const k = keyOf(p.id, size); const next = { ...s };
@@ -163,6 +188,21 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
       {!canMint && <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>Re-print existing labels — new barcodes are created by warehouse/admin.</div>}
       <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"
         style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 10 }} />
+
+      {/* Location picker — pick a location to see only what's there (on-hand shown
+          per size reflects that location). "All" = whole catalogue, summed on-hand. */}
+      <div style={{ fontSize: 10, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Location</div>
+      <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 4, marginBottom: 10, WebkitOverflowScrolling: "touch" }}>
+        <button onClick={() => setLoc("all")} style={chip(loc === "all")}>All locations</button>
+        {locations.map(l => <button key={l.id} onClick={() => setLoc(l.id)} style={chip(loc === l.id)}>{labelFor(l.id, registry)}</button>)}
+      </div>
+
+      {/* Category picker */}
+      {categories.length > 1 && (
+        <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 4, marginBottom: 12, WebkitOverflowScrolling: "touch" }}>
+          {["all", ...categories].map(c => <button key={c} onClick={() => setCat(c)} style={chip(cat === c)}>{c === "all" ? "All" : c}</button>)}
+        </div>
+      )}
 
       {/* Transport */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
