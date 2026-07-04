@@ -46,6 +46,7 @@ function expand(items) {
     for (let i = 0; i < n; i++) labels.push({
       code: it.code, productName: it.productName, size: it.size, header: it.header,
       dispatch: it.dispatch, orderNo: it.orderNo, customerName: it.customerName,
+      price: it.price,
     });
   }
   return labels;

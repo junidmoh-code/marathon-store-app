@@ -16,6 +16,7 @@ import { formatSize } from "./utils/sizeLabel";
 import { SizeTag } from "./components/SizeTag";
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
+import LabelPrintView from "./components/LabelPrintView";
 import AppErrorBoundary from "./AppErrorBoundary";
 import StockView from "./components/stock/StockView";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
@@ -166,7 +167,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", BARCODES: "barcodes" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", BARCODES: "barcodes", LABEL_PRINT: "label_print" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -1647,6 +1648,9 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
           // Open to everyone — reprinting an existing barcode is read-only. Minting
           // a NEW code is gated by stockRole inside the screen.
           <RoleCard key="barcodes" icon={RoleIcons.stock} name="Barcodes" desc="Print product barcodes" onClick={() => onSelect(ROLES.BARCODES)} />,
+          // Open to everyone — browse the catalogue and print a single name · price ·
+          // barcode label. Minting a new code is stockRole-gated inside the view.
+          <RoleCard key="label_print" icon={RoleIcons.stock} name="Print Labels" desc="Product labels · name, price, barcode" onClick={() => onSelect(ROLES.LABEL_PRINT)} />,
         ].filter(Boolean);
         const insightsDisplay = [
           hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && <RoleCard key="insights" icon={RoleIcons.insights} name="Internal Insights" desc="Business analytics"    onClick={() => onSelect(ROLES.INSIGHTS)} />,
@@ -10501,6 +10505,7 @@ function AppInner() {
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
+  else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={orders} onExit={() => setRole(null)} />);

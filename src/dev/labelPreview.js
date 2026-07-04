@@ -18,6 +18,7 @@ const SAMPLES = [
   { title: "Letter size (clothing)", label: { code: "34567890", productName: "Marathon Performance Hoodie", size: "M" } },
   { title: "No size (falls back cleanly)", label: { code: "45678901", productName: "Generic Accessory", size: "" } },
   { title: "Dispatch label (with header)", label: { code: "56789012", productName: "Jordan 1 Retro High OG", size: "8", header: "Order #1042  ·  Jane M." } },
+  { title: "Product label · name · PRICE · barcode (Assistant print card)", label: { code: "80001234", productName: "Nike Air Force 1 Cream Black Grey", price: "R750" } },
 ];
 
 // Paint the 1-bpp mono buffer (bit=1 → black) into a scaled, pixelated canvas.

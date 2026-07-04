@@ -82,7 +82,7 @@ function fitName(ctx, text, maxWidth, maxPx, minPx, maxLines) {
   return { px: minPx, lines };
 }
 
-function drawLabel(ctx, { code, productName, size, header, dispatch, orderNo, customerName }, widthDots, heightDots, moduleWidth, contentWidthDots) {
+function drawLabel(ctx, { code, productName, size, header, dispatch, orderNo, customerName, price }, widthDots, heightDots, moduleWidth, contentWidthDots) {
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, widthDots, heightDots);
   ctx.fillStyle = "#000";
@@ -152,10 +152,13 @@ function drawLabel(ctx, { code, productName, size, header, dispatch, orderNo, cu
     for (const line of f.lines) { ctx.fillText(line, cx, y); y += f.px + 2; }
   }
 
-  // SIZE — its own bold, prominent line. Always shown when present, at a glance.
+  // SIZE (per-size labels) OR PRICE (product labels — Assistant print card) — its own
+  // bold, prominent line in the same slot, so it reads name → size/price → barcode.
+  // A product label carries `price` and no size; a stock label carries `size`.
   const sizeStr = (size != null && String(size).trim() !== "") ? `Size: ${formatSize(String(size).trim())}` : "";
-  if (sizeStr) {
-    const f = fitLine(ctx, sizeStr, maxW, header ? 17 : 34, 12, true);
+  const heroStr = sizeStr || ((price != null && String(price).trim() !== "") ? String(price) : "");
+  if (heroStr) {
+    const f = fitLine(ctx, heroStr, maxW, header ? 17 : 34, 12, true);
     setFont(ctx, f.px, true);
     ctx.fillText(f.lines[0], cx, y);
     y += f.px + 4;
