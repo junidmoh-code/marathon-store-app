@@ -1765,6 +1765,7 @@ function AdminReviewPhotosTab({ products = [] }) {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
   const [regenIds, setRegenIds] = useState(() => new Set()); // ids currently re-generating (per-row lock)
+  const [dlIds, setDlIds]     = useState(() => new Set()); // ids currently downloading (per-row lock)
   // The product whose Regenerate popup is open (null = closed). The popup carries
   // its own AI + fix + comment choices and resets every time it opens, so nothing
   // stays selected after a send.
@@ -1879,6 +1880,35 @@ function AdminReviewPhotosTab({ products = [] }) {
     const gallery = galleryOf(row.id).filter(u => u !== url);
     try { await update(ref(database, `products/${row.id}`), { gallery }); setRunMsg(`Removed an extra angle from “${row.name || row.id}”.`); }
     catch (e) { setRunMsg(`Couldn't remove: ${e?.message || e}`); }
+  };
+  // Download the AI-generated (proposed) photo to the device. Storage URLs are
+  // cross-origin, so a bare <a download> would just navigate — fetch → blob →
+  // object-URL keeps the save-as behaviour (Firebase Storage sends CORS on GET).
+  // Falls back to opening the photo in a new tab if the fetch is blocked.
+  const downloadPhoto = async (row) => {
+    const url = row.proposedUrl;
+    if (!url || dlIds.has(row.id)) return;
+    setDlIds(s => new Set(s).add(row.id));
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const ext = (blob.type.split("/")[1] || "jpg").replace("jpeg", "jpg");
+      const base = String(row.name || row.id).toLowerCase().replace(/[^\w]+/g, "-").replace(/^-+|-+$/g, "") || row.id;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${base}-ai.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      setRunMsg(`Downloaded “${row.name || row.id}” photo.`);
+    } catch {
+      window.open(url, "_blank", "noopener");
+      setRunMsg("Direct download blocked — opened the photo in a new tab (right-click / long-press to save).");
+    } finally {
+      setDlIds(s => { const n = new Set(s); n.delete(row.id); return n; });
+    }
   };
   const reject = async (row) => {
     setBusyId(row.id);
@@ -2081,6 +2111,10 @@ function AdminReviewPhotosTab({ products = [] }) {
                 <button onClick={() => keepExtra(row)} disabled={busy || regen} title="Save this photo as an extra angle (no extra cost)"
                         style={{ marginLeft:"auto", display:"inline-flex", alignItems:"center", gap:5, background:"transparent", border:"1px solid rgba(255,255,255,.14)", color:"rgba(255,255,255,.65)", borderRadius:999, padding:"5px 11px", fontSize:11, fontWeight:600, cursor:(busy||regen)?"wait":"pointer" }}>
                   <span style={{ fontSize:12 }}>＋</span> Keep angle
+                </button>
+                <button onClick={() => downloadPhoto(row)} disabled={dlIds.has(row.id)} title="Download the AI-generated photo to this device"
+                        style={{ display:"inline-flex", alignItems:"center", gap:5, background:"transparent", border:"1px solid rgba(255,255,255,.14)", color:"rgba(255,255,255,.65)", borderRadius:999, padding:"5px 11px", fontSize:11, fontWeight:600, cursor: dlIds.has(row.id) ? "wait" : "pointer", opacity: dlIds.has(row.id) ? .55 : 1 }}>
+                  <span style={{ fontSize:12 }}>⬇</span> {dlIds.has(row.id) ? "Saving…" : "Download"}
                 </button>
               </div>
               <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
