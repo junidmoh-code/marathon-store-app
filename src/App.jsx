@@ -999,31 +999,69 @@ function phoneToKey(phone) {
   return (phone || "").replace(/\D/g, "") || "unknown";
 }
 
+// The same phone can already live under a different key shape: order phones
+// arrive as "27656996104" while the POS keys staff-created customers as
+// "0656996104". Writing blindly at the typed key mints a duplicate customer
+// (the 2026-07 POS audit found 31 duplicate pairs, 30 from exactly this
+// 27↔0 split). Mirrors POS's phoneKeyVariants — typed digits first, then the
+// local 0-form, then the international 27-form.
+function phoneKeyVariants(phone) {
+  const digits = (phone || "").replace(/\D/g, "");
+  if (!digits) return [];
+  let local = digits;
+  if (digits.length === 11 && digits.startsWith("27")) local = "0" + digits.slice(2);
+  else if (digits.length === 9 && !digits.startsWith("0")) local = "0" + digits;
+  const out = [digits];
+  if (!out.includes(local)) out.push(local);
+  if (local.length === 10 && local.startsWith("0")) {
+    const intl = "27" + local.slice(1);
+    if (!out.includes(intl)) out.push(intl);
+  }
+  return out;
+}
+
+// Resolve the key an existing record for this phone lives under (any variant,
+// typed shape first), or the typed key when none exists yet. Returns
+// { key, existing } so callers keep their single read.
+async function resolveCustomerKey(phone) {
+  const variants = phoneKeyVariants(phone);
+  if (variants.length === 0) return { key: "unknown", existing: null };
+  for (const key of variants) {
+    const snap = await get(ref(database, `customers/${key}`));
+    const val = snap.val();
+    if (val) return { key, existing: val };
+  }
+  return { key: variants[0], existing: null };
+}
+
 // Upsert a customer record when an order is placed.
 // Only sets optedIn: true — never reverts an existing true back to false.
 function upsertCustomer(phone, name, orderedAt, optedIn) {
-  const key = phoneToKey(phone);
-  if (key === "unknown") return;
-  const cRef = ref(database, `customers/${key}`);
-  get(cRef).then(snap => {
-    const existing = snap.val() || {};
+  if (phoneToKey(phone) === "unknown") return;
+  resolveCustomerKey(phone).then(({ key, existing: found }) => {
+    const existing = found || {};
     const patch = {
-      phone,
+      // Keep the phone format the record already has — rewriting a POS
+      // "065…" record's phone to the order's "2765…" would desync the field
+      // from its key for no gain (search matches both shapes canonically).
+      phone: existing.phone || phone,
       name: name || existing.name || "",
       firstOrderAt: existing.firstOrderAt || orderedAt,
       lastOrderAt: orderedAt,
       orderCount: (existing.orderCount || 0) + 1,
     };
     if (optedIn) patch.optedIn = true;
-    update(cRef, patch);
+    update(ref(database, `customers/${key}`), patch);
   }).catch(err => console.warn("upsertCustomer failed:", err));
 }
 
 function setCustomerOptIn(phone, optedIn) {
-  const key = phoneToKey(phone);
-  if (key === "unknown") return;
-  update(ref(database, `customers/${key}`), { optedIn, phone })
-    .catch(err => console.warn("setCustomerOptIn failed:", err));
+  if (phoneToKey(phone) === "unknown") return;
+  // Same variant resolution — opting in must not create a stub twin at the
+  // other key shape when the customer already exists.
+  resolveCustomerKey(phone).then(({ key, existing }) => {
+    update(ref(database, `customers/${key}`), { optedIn, phone: existing?.phone || phone });
+  }).catch(err => console.warn("setCustomerOptIn failed:", err));
 }
 
 function useCustomersDb() {
