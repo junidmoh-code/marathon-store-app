@@ -95,7 +95,12 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   }, [products]);
 
   // Forgiving search (fuzzy name + barcode/sku/per-size codes; code hits first).
-  // Empty query lists products, alphabetical. Location + category pre-filter both.
+  // Empty query lists products NEWEST-FIRST — a product id is "p" + Date.now()
+  // at creation (App.jsx), so the id encodes the upload time; just-added
+  // products sit at the top ready to select and print, instead of being buried
+  // alphabetically. Ties/legacy ids fall back to name order. Location +
+  // category pre-filter both; a typed search keeps its relevance ranking.
+  const createdMs = (p) => { const m = /^p(\d{13})$/.exec(p?.id || ""); return m ? Number(m[1]) : 0; };
   const filtered = useMemo(() => {
     const predicate = (p) =>
       Array.isArray(p.sizes) && p.sizes.length &&
@@ -104,7 +109,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     if (!search.trim()) {
       return [...(products || [])]
         .filter(p => p && p.id && p.name && predicate(p))
-        .sort((a, b) => a.name.localeCompare(b.name));
+        .sort((a, b) => (createdMs(b) - createdMs(a)) || a.name.localeCompare(b.name));
     }
     return searchProducts(products, search, { limit: 500, predicate });
     // eslint-disable-next-line react-hooks/exhaustive-deps
