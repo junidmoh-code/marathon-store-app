@@ -1765,7 +1765,8 @@ function AdminReviewPhotosTab({ products = [] }) {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
   const [regenIds, setRegenIds] = useState(() => new Set()); // ids currently re-generating (per-row lock)
-  const [dlIds, setDlIds]     = useState(() => new Set()); // ids currently downloading (per-row lock)
+  const [dlIds, setDlIds]     = useState(() => new Set()); // ids currently downloading (per-row lock, UI)
+  const dlBusyRef = useRef(new Set()); // synchronous double-click guard (state lags a fast second tap)
   // The product whose Regenerate popup is open (null = closed). The popup carries
   // its own AI + fix + comment choices and resets every time it opens, so nothing
   // stays selected after a send.
@@ -1887,7 +1888,10 @@ function AdminReviewPhotosTab({ products = [] }) {
   // Falls back to opening the photo in a new tab if the fetch is blocked.
   const downloadPhoto = async (row) => {
     const url = row.proposedUrl;
-    if (!url || dlIds.has(row.id)) return;
+    // Ref guard is synchronous — a double-click's second tap lands before React
+    // re-renders the disabled state, so a state-only check would race.
+    if (!url || dlBusyRef.current.has(row.id)) return;
+    dlBusyRef.current.add(row.id);
     setDlIds(s => new Set(s).add(row.id));
     try {
       const res = await fetch(url);
@@ -1907,6 +1911,7 @@ function AdminReviewPhotosTab({ products = [] }) {
       window.open(url, "_blank", "noopener");
       setRunMsg("Direct download blocked — opened the photo in a new tab (right-click / long-press to save).");
     } finally {
+      dlBusyRef.current.delete(row.id);
       setDlIds(s => { const n = new Set(s); n.delete(row.id); return n; });
     }
   };
