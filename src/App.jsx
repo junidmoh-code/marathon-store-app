@@ -1885,6 +1885,9 @@ function AdminReviewPhotosTab({ products = [] }) {
   // Download the AI-generated (proposed) photo to the device. Storage URLs are
   // cross-origin, so a bare <a download> would just navigate — fetch → blob →
   // object-URL keeps the save-as behaviour (Firebase Storage sends CORS on GET).
+  // On Safari/iOS the file-share sheet is used instead: a web page can't write
+  // into the Photos library directly, but sharing the image FILE puts "Save
+  // Image" one tap away — straight into Photos, never via the Downloads folder.
   // Falls back to opening the photo in a new tab if the fetch is blocked.
   const downloadPhoto = async (row) => {
     const url = row.proposedUrl;
@@ -1899,9 +1902,22 @@ function AdminReviewPhotosTab({ products = [] }) {
       const blob = await res.blob();
       const ext = (blob.type.split("/")[1] || "jpg").replace("jpeg", "jpg");
       const base = String(row.name || row.id).toLowerCase().replace(/[^\w]+/g, "-").replace(/^-+|-+$/g, "") || row.id;
+      const file = new File([blob], `${base}-ai.${ext}`, { type: blob.type || "image/jpeg" });
+      // Share sheet where supported (Safari/iOS/iPadOS): "Save Image" → Photos.
+      if (typeof navigator !== "undefined" && navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: row.name || "Product photo" });
+          setRunMsg(`Shared “${row.name || row.id}” — tap "Save Image" to add it to Photos.`);
+          return;
+        } catch (e) {
+          // User closed the sheet — not an error, and don't ALSO download.
+          if (e?.name === "AbortError") return;
+          // Share failed for real (e.g. gesture expired) → fall through to download.
+        }
+      }
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${base}-ai.${ext}`;
+      a.download = file.name;
       document.body.appendChild(a);
       a.click();
       a.remove();
