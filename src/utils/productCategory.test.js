@@ -89,6 +89,21 @@ describe("categorize — accessories + caps + perfume (size-agnostic)", () => {
   it("one-size with no keyword → Perfume", () => {
     expect(categorize("Adore", ONE)).toMatchObject({ category: "Perfume", subcategory: "Perfume" });
   });
+  it("watch → Watches (one-size would otherwise fall into Perfume)", () => {
+    expect(categorize("Chanel Watch", ONE)).toMatchObject({ category: "Accessories", subcategory: "Watches", brand: "Chanel" });
+    expect(categorize("Daniel Wellington Watch", ONE).subcategory).toBe("Watches");
+  });
+  it("glasses / sunglasses → Eyewear", () => {
+    expect(categorize("Designer Glasses", ONE).subcategory).toBe("Eyewear");
+    expect(categorize("Ray-Ban Sunglasses Black", ONE).subcategory).toBe("Eyewear");
+  });
+  it("necklace / bracelet → Jewellery", () => {
+    expect(categorize("Necklace", ONE).subcategory).toBe("Jewellery");
+    expect(categorize("Bracelet", ONE).subcategory).toBe("Jewellery");
+  });
+  it("'chain' in a sneaker name is NOT jewellery (no bare chain keyword)", () => {
+    expect(categorize("Louis Vuitton Time Out White Monogram Canvas Silver Chain", ["4", "5", "6"]).category).toBe("Footwear");
+  });
 });
 
 describe("tree", () => {
