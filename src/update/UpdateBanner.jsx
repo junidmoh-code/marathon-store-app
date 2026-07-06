@@ -14,6 +14,7 @@ export default function UpdateBanner() {
     <button
       type="button"
       onClick={applyUpdate}
+      aria-live="polite"
       style={{
         position: "fixed",
         bottom: 14,

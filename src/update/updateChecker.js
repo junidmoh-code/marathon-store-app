@@ -92,9 +92,21 @@ function maybeAutoReload(hidden) {
   }
 }
 
+// Single-flight: check() is wired to five triggers (interval, focus, online,
+// visibility, initial) and e.g. wake-from-sleep fires several at once — one
+// outstanding fetch at a time, with a hard timeout so a stalled request on a
+// flaky till network can't pile up over a days-long session.
+let checkInFlight = false;
+const FETCH_TIMEOUT_MS = 10_000;
+
 async function check() {
+  if (checkInFlight) return;
+  checkInFlight = true;
   try {
-    const res = await fetch(`/version.json?_=${Date.now()}`, { cache: "no-store" });
+    const res = await fetch(`/version.json?_=${Date.now()}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
     if (!res.ok) return; // 404 in dev / transient CDN error — say nothing
     const data = await res.json();
     if (isNewVersion(CURRENT_VERSION, data?.version)) {
@@ -106,7 +118,9 @@ async function check() {
       maybeAutoReload(document.visibilityState === "hidden");
     }
   } catch {
-    // Offline / fetch failure — the next tick retries; never surface an error.
+    // Offline / timeout / fetch failure — the next tick retries silently.
+  } finally {
+    checkInFlight = false;
   }
 }
 
