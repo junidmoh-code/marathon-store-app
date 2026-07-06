@@ -181,10 +181,13 @@ durable record of past-day activity.
 | `customerName`    | string                                                                        | `"Shop Refill"` for clothing/shop refills. |
 | `customerPhone`   | string \| null                                                                | `null` for refills. |
 | `orderNumber`     | string                                                                        | The daily 3-digit order id (`/orders` key); **not globally unique** — dedupe with a composite `${SA-date}::${orderNumber}` key. |
-| `action`          | `"placed" \| "ready" \| "out_of_stock" \| "tomorrow" \| "collected" \| "stock_depleted"` | The lifecycle transition. |
+| `action`          | `"placed" \| "ready" \| "out_of_stock" \| "tomorrow" \| "collected" \| "stock_depleted" \| "sold"` | The lifecycle transition. `"sold"` (added 2026-07-06, POS-written) = a CLOTHING line left a shop floor at sale finalize — feeds the Source view's Clothing Sold refill tab. Consumers filter by exact action, so `sold` is invisible to the pre-existing reports. |
 | `placedAtHub`     | `"hub1" \| "hub2" \| "hub3" \| "hubC"`                                        | Fulfilment hub. |
 | `qty`             | number \| **absent**                                                          | Units on this event. Written on **clothing-refill `placed`** events (one refill line carries `qty>1`, unlike sneaker checkout which expands qty into one event per unit). **Absent** on events written before this field and on non-refill events — consumers fall back to `1` (e.g. the Insights Clothing Refills tab sums `qty ?? 1`). |
 | `displayRefilledBy` | string                                                                       | `stock_depleted` events only — the resolving hub label. |
+| `destShop`        | `"marathon-pe"` \| `"trophy"` \| `"marathon-pine"` \| null \| **absent**        | Canonical physical shop (stores.js `SHOP_IDS`). On POS `sold` events (where sold) and POS `collected` events (order's destination shop) from 2026-07-06; **absent** on all earlier events — those cannot be shop-attributed. |
+| `saleId`          | string \| null \| **absent**                                                | `sold` events only — the `/pos/sales` record id. |
+| `source`          | `"pos"` \| **absent**                                                        | Provenance marker on POS-written events (`collected`, `sold`). |
 
 > **`productId` is the join key going forward.** Every new event carries the
 > field (string id, or `null` for a legacy order/batch). Consumers should prefer
@@ -197,6 +200,23 @@ durable record of past-day activity.
 > fall-back-to-name lookup is tracked separately — there is no rush, since the
 > id only helps events written after 2026-06-10 (a small slice until new data
 > accumulates).
+
+---
+
+## `/clothing_sold_refills`
+
+Per-event "Refilled" confirmations for the Source view's **Clothing Sold** tab
+(the floor-refill feed). Keyed by the `/insights_log` push id of the `sold`
+event being confirmed — per-EVENT, unlike `restock_requests`' per-product-size
+keying, because `sold` events are line-level and already unique.
+
+- **`/clothing_sold_refills/{insightEventId}`** — `{ response: "refilled",
+  respondedOn: ISO, respondedBy: string|null }`. `respondedBy` is the signed-in
+  staff label (displayName/username). Written by `saveClothingSoldRefill`;
+  **Undo removes the node** (`clearClothingSoldRefill`), returning the event to
+  the pending list. A `sold` event with no entry here is pending refill; the tab
+  windows events to Source's `HISTORY_RETENTION_DAYS`, so unconfirmed items age
+  out with the window.
 
 ---
 

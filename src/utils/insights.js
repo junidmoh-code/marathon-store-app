@@ -118,3 +118,39 @@ export function clothingRefillEventsForPeriod({ isToday, orders, log, filterStar
     e => ({ orderNumber: e.orderNumber, productName: e.productName || "Unknown", size: e.size, qty: e.qty || 1, timestamp: e.timestamp })
   );
 }
+
+// ── CLOTHING SOLD (Source view refill tab) ────────────────────────────────────
+// Every clothing item SOLD at the included shops — the feed the warehouse
+// refill crew restocks the floor from. Reads ONLY the immutable log (never live
+// /orders — see the drift warning above): the POS appends one
+// { action:"sold", destShop, qty, saleId } event per clothing line that left
+// the floor (marathon-pos-app logClothingSold.js — plain sales, layby creates,
+// exchange NEW lines; refunds/returns excluded at the writer).
+//
+// `sold` events are per-LINE with unique push ids, so there is no orderNumber
+// dedupe here (and legacy `collected` events without destShop can't be shop-
+// attributed, so they are deliberately not consumed).
+
+// The shops whose floor the crew refills. Adding a shop (e.g. Marathon Pine:
+// "marathon-pine") is a one-entry change — labels come from stores.js SHOP_LABELS.
+export const CLOTHING_SOLD_SHOPS = ["marathon-pe", "trophy"];
+
+export function clothingSoldEvents({ log, shops = CLOTHING_SOLD_SHOPS, sinceMs = null }) {
+  const shopSet = new Set(shops);
+  return (log || [])
+    .filter(e =>
+      e && e.action === "sold"
+      && inferProductType(e) === "clothing"
+      && shopSet.has(e.destShop)
+      && (sinceMs == null || new Date(e.timestamp).getTime() >= sinceMs))
+    .map(e => ({
+      id: e.id,                                 // insights_log push key — the confirmation join key
+      productId: e.productId ?? null,
+      productName: e.productName || "Unknown",
+      size: e.size ?? "_",
+      qty: Number.isFinite(e.qty) && e.qty > 0 ? e.qty : 1,
+      shop: e.destShop,
+      timestamp: e.timestamp,
+    }))
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+}
