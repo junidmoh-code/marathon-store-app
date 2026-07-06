@@ -6,6 +6,7 @@ import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
+import { stockCellPath } from "./utils/sizeKey";
 import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
@@ -5275,12 +5276,26 @@ function WarehouseView({ products = [], orders, onExit }) {
   // well within the browser's ~5s transient-activation window.
   // extraPatch.sentSize carries a warehouse size substitution → the label barcodes
   // the size physically shipping.
+  // A3 (stock-integrity) — transfer FIRST, then flip the status, so a skipped
+  // ledger move can never hide behind an already-Sent order. The order is
+  // marked Sent either way (the parcel physically leaves regardless), but a
+  // failed/unrecordable transfer is STAMPED on the order (transferFailed:
+  // reason) — an auditable flag a sweep can query, not a toast that fades.
+  // Returns the transfer result so callers can gate their own follow-ups.
+  const markSentWithTransfer = async (order, extraPatch = {}) => {
+    const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
+    const transfer = await recordDispatchTransfer(order, sentSize);
+    updateStatus(order, STATUS.READY, {
+      ...extraPatch,
+      ...(transfer.moved ? { transferFailed: null } : { transferFailed: transfer.reason || "unknown" }),
+    });
+    return transfer;
+  };
+
   const markSentAndPrint = async (order, extraPatch = {}) => {
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
-    updateStatus(order, STATUS.READY, extraPatch);
-    // Gate the label on the transfer: print ONLY if stock genuinely moved.
-    const moved = await recordDispatchTransfer(order, sentSize);
-    if (!moved) return;  // recordDispatchTransfer already raised the explaining toast
+    const transfer = await markSentWithTransfer(order, extraPatch);
+    if (!transfer.moved) return;  // recordDispatchTransfer already raised the explaining toast
     printDispatchLabel({ ...order, sentSize })
       .then((res) => {
         const diag = res?.diag ? ` [${res.diag}]` : "";
@@ -5340,7 +5355,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       // No recordable hub→shop transfer → no stock moved → no label.
       setPrintToast({ kind: "err", text: `Sent — no hub→shop transfer recorded for #${order.id}. No label — route via Lightspeed.` });
       setTimeout(() => setPrintToast(null), 7000);
-      return false;
+      return { moved: false, reason: "no_route" };
     }
     // Idempotent + date-unique movementId: order.id is the DAILY counter (reused
     // across days), so scope by createdAt — a re-tap is a no-op, but #042 on two
@@ -5358,20 +5373,35 @@ function WarehouseView({ products = [], orders, onExit }) {
         link: { orderId: order.id },
         ts: new Date().toISOString(),
         movementId,
+        // A1 (stock-integrity) — the dispatch ALWAYS moves the ledger. A short or
+        // never-counted hub cell goes NEGATIVE instead of silently skipping the
+        // transfer (the old behavior shipped the parcel with zero ledger effect,
+        // and the shop cell then went negative at the till — the −534 hole at PE).
+        // The hub negative is the honest shortage signal for the count team.
+        allowNegative: true,
       });
-      // A repeat send returns ok:true (idempotent). Only a genuine failure
-      // (insufficient hub stock) is a no-move → no label.
       if (res && res.ok === false) {
-        setPrintToast({ kind: "err", text: `Sent — but stock not deducted (${res.reason || "hub count low"}). No label — route via Lightspeed.` });
+        // With allowNegative this is only a genuine write/auth failure now.
+        setPrintToast({ kind: "err", text: `Sent — but stock not deducted (${res.reason || "write failed"}). No label — route via Lightspeed.` });
         setTimeout(() => setPrintToast(null), 7000);
-        return false;
+        return { moved: false, reason: res.reason || "write_failed" };
       }
-      return true;
+      // Warn (don't block) when the move drove the hub cell negative — the item
+      // shipped before the hub counted it. One extra read, only for the warning.
+      try {
+        const cellSnap = await get(ref(database, stockCellPath(fromHub, order.productId, sentSize ?? order.size ?? null)));
+        const q = cellSnap.val()?.qty;
+        if (typeof q === "number" && q < 0) {
+          setPrintToast({ kind: "err", text: `#${order.id} sent — ${fromHub} is now ${q} on this size (dispatched before counted). Flag for recount.` });
+          setTimeout(() => setPrintToast(null), 9000);
+        }
+      } catch { /* warning only — never affects the dispatch */ }
+      return { moved: true };
     } catch {
       // Ledger write error — we can't confirm stock moved, so withhold the label.
       setPrintToast({ kind: "err", text: `Sent — but stock not deducted (write error). No label — route via Lightspeed.` });
       setTimeout(() => setPrintToast(null), 7000);
-      return false;
+      return { moved: false, reason: "write_error" };
     }
   };
 
@@ -5634,7 +5664,11 @@ function WarehouseView({ products = [], orders, onExit }) {
                     <div style={{ color:"#555", fontSize:11 }}>{order.customerName}</div>
                   </div>
                   <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                    <button onClick={() => updateStatus(order, STATUS.READY)} style={{ background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.3)", color:"#4ACA7A", borderRadius:8, padding:"6px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>Available</button>
+                    {/* A2 (stock-integrity): "Available" is a dispatch — route it through the
+                        SAME transfer-then-status path as Mark-as-Sent (it previously flipped the
+                        status directly and never moved stock, one of the −534 leak paths).
+                        No label here — PR #92 removed auto-print on this path on purpose. */}
+                    <button onClick={() => markSentWithTransfer(order)} style={{ background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.3)", color:"#4ACA7A", borderRadius:8, padding:"6px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>Available</button>
                     <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)} style={{ background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B", borderRadius:8, padding:"6px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>Still OOS</button>
                   </div>
                 </div>
@@ -7640,16 +7674,58 @@ function ReturnsView({ orders, onExit }) {
     );
   }, [last3DaysOrders, search]);
 
-  const submitReturn = (order) => {
+  // R1 (stock-integrity) — a confirmed return MOVES THE LEDGER, not just the log.
+  // The dispatch wrote a deterministic disp_ transfer (hub→shop); its id is
+  // reconstructible from the order, so we reverse EXACTLY that movement
+  // (shop→origin hub, same qty/size) — and ONLY when it exists. Orders whose
+  // dispatch never transferred (pre-fix leaks, hubC, legacy) are logged
+  // ledgered:false instead of guessing a move that would corrupt a hub cell.
+  // returns_log keeps its role as the human report feed, now enriched with
+  // productId/qty/ledgered so it can always be audited against the ledger.
+  const submitReturn = async (order) => {
+    const scrub = (s) => s.replace(/[.#$[\]/\s:]/g, "_");
+    const dispId = scrub(`disp_${order.id}_${order.createdAt || ""}`);
+    let ledgered = false;
+    let ledgerNote = "no_dispatch_transfer";
+    try {
+      const dispSnap = await get(ref(database, `stock_movements/${dispId}`));
+      const disp = dispSnap.val();
+      if (disp && disp.type === "transfer_out" && disp.from && disp.to) {
+        const res = await applyMovement({
+          type: "transfer_out",
+          productId: disp.productId,
+          size: disp.size,            // the size that actually shipped (incl. substitutions)
+          qty: disp.qty || 1,
+          from: disp.to,              // shop the parcel was sent to…
+          to: disp.from,              // …back to the hub the dispatch debited
+          actorRole: "warehouse",
+          reason: "order return (reverses dispatch)",
+          link: { orderId: order.id, reverses: dispId },
+          ts: new Date().toISOString(),
+          movementId: scrub(`ret_${order.id}_${order.createdAt || ""}`),
+          // Reversing a recorded ledger fact: the unit demonstrably left the
+          // shop, so the shop cell may legitimately pass through negative.
+          allowNegative: true,
+        });
+        if (res?.ok) { ledgered = true; ledgerNote = res.idempotent ? "already_reversed" : "reversed"; }
+        else ledgerNote = `reverse_failed:${res?.reason || "unknown"}`;
+      }
+    } catch (err) {
+      ledgerNote = `reverse_failed:${String(err?.message || err).slice(0, 60)}`;
+    }
     logReturn({
       timestamp:   new Date().toISOString(),
       date:        todayDate,
       orderNumber: order.id,
       productName: order.productName,
+      productId:   order.productId || null,
+      qty:         order.qty || 1,
       size:        order.size,
       customerName:order.customerName,
       reason:      null,
       placedAtHub: order.placedAtHub || order.hub || "hub1",
+      ledgered,
+      ledgerNote,
     });
     setExpandedId(null);
   };

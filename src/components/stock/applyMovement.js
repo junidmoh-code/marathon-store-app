@@ -96,8 +96,15 @@ export async function applyMovement(movement, opts = {}) {
       const cell = snap.val();
       const curQty = cell && typeof cell.qty === "number" ? cell.qty : 0;
       const newQty = curQty + d.delta;
-      // Only a `sold` decrement may go negative; everything else is floored.
-      if (newQty < 0 && movement.type !== "sold") {
+      // P0 (stock-integrity): only a NEGATIVE delta can be floored — a positive
+      // delta (a return / the +to leg of a transfer) always applies, even onto a
+      // cell already negative (raising −3 to −2 is an improvement; the old
+      // `newQty < 0` form refused exactly those restocks). A negative delta below
+      // zero is refused unless the movement is `sold` OR the caller opts in with
+      // `allowNegative` (A1: a dispatch is a physical fact — the parcel leaves the
+      // hub whether or not the hub cell was counted; the resulting hub negative
+      // is the same honest shortage signal a `sold` oversell leaves at a shop).
+      if (d.delta < 0 && newQty < 0 && movement.type !== "sold" && !movement.allowNegative) {
         return { ok: false, reason: "insufficient_stock", location: d.loc, available: curQty, requested: Number(movement.qty) };
       }
       cells.push({ path, cell, newQty });
