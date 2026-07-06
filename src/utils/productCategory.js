@@ -23,7 +23,7 @@ export const CATEGORY_TREE = {
   Clothing:    ["T-Shirts", "Jerseys", "Caps & Hats", "Tracksuits & Sets", "Jeans & Denim", "Polos",
                 "Hoodies & Sweatshirts", "Jackets & Coats", "Cargos & Pants", "Shorts & Vests",
                 "Underwear & Socks", "Clothing — Uncategorized"],
-  Accessories: ["Bags", "Belts", "Gloves", "Balaclavas & Masks"],
+  Accessories: ["Bags", "Belts", "Watches", "Eyewear", "Jewellery", "Gloves", "Balaclavas & Masks"],
   Perfume:     ["Perfume"],
 };
 export const TOP_CATEGORIES = Object.keys(CATEGORY_TREE);
@@ -99,6 +99,10 @@ const ACCESSORY_KW = [
   ["Balaclavas & Masks", /\bbalaclava|ski[\s-]?mask|face[\s-]?mask|ninja[\s-]?mask/],
   ["Bags",  /\bbag\b|\bbags\b|backpack|\bduffel|\bduffle|holdall|\bpouch\b|\btote\b|crossbody|\bsling\b/],
   ["Belts", /\bbelt\b|\bbelts\b/],
+  ["Watches", /\bwatch(es)?\b/],
+  ["Eyewear", /\bglasses\b|\bsunglass|\beyewear\b|\bshades\b/],
+  // NO bare "chain" keyword — sneaker names use it ("… Silver Chain").
+  ["Jewellery", /\bnecklaces?\b|\bbracelets?\b|\bjewell?ery\b|\bpendants?\b|\bearrings?\b/],
   ["Gloves", /\bglove/],
 ];
 const CAP_KW = /\bcap\b|\bcaps\b|snapback|\bbeanie|bucket\s?hat|\bhat\b/;
