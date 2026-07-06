@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, equalTo } from "firebase/database";
+import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, equalTo, startAt } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
@@ -25,7 +25,11 @@ import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { sellableLocations, labelFor, transferTargets } from "./components/stock/locations";
 import { useStockCells, useLocations } from "./components/stock/useStock";
-import { shopUniverse } from "./utils/stores";
+import { shopUniverse, SHOP_LABELS } from "./utils/stores";
+import {
+  clothingSoldEventsForPeriod, clothingSoldCutoff, cellId as clothingCellId,
+  saStartIso, CLOTHING_SOLD_BACKLOG_DAYS, CLOTHING_SOLD_STORES,
+} from "./utils/clothingSold";
 import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
@@ -816,6 +820,106 @@ function saveSourceResponse(date, productKey, size, response) {
 function clearSourceResponse(date, productKey, size) {
   return remove(ref(database, `restock_requests/${date}/${productKey}/${size}`))
     .catch(err => console.warn("clearSourceResponse failed:", err));
+}
+
+// ─── CLOTHING-SOLD REFILL PERSISTENCE ─────────────────────────────────────────
+// Mirrors the Source-response layer verbatim (normalize shim + live listener +
+// save/clear), but keyed for the clothing-sold worklist:
+//   clothing_sold_refills/{SA-date}/{store}/{cellId} = { response:"refilled", respondedOn }
+// where SA-date is the sale's day, store is the selling shop, and cellId is
+// `${saleId}__${productId}__${sizeKey}` (see utils/clothingSold cellId).
+
+// Normalize a refill leaf to { response, respondedOn } | null. Legacy bare-string
+// entries are tolerated (as with normalizeSourceResponse). Always read via this.
+function normalizeClothingRefill(v) {
+  if (v == null) return null;
+  if (typeof v === "string") return { response: v, respondedOn: null };
+  if (typeof v === "object" && typeof v.response === "string") {
+    return { response: v.response, respondedOn: v.respondedOn || null };
+  }
+  return null;
+}
+
+// Live listener for all clothing-sold refills.
+// Shape on read: { "YYYY-MM-DD": { store: { cellId: { response, respondedOn } } } }
+function useAllClothingRefills() {
+  const authReady = useAuthReady();
+  const [refills, setRefills] = useState({});
+  useEffect(() => {
+    if (!authReady) return;
+    const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
+      const data = snap.val() || {};
+      const result = {};
+      Object.entries(data).forEach(([date, dateNode]) => {
+        if (!dateNode || typeof dateNode !== "object") return;
+        result[date] = {};
+        Object.entries(dateNode).forEach(([store, storeNode]) => {
+          if (!storeNode || typeof storeNode !== "object") return;
+          const cells = {};
+          Object.entries(storeNode).forEach(([cid, raw]) => {
+            const norm = normalizeClothingRefill(raw);
+            if (norm) cells[cid] = norm;
+          });
+          if (Object.keys(cells).length) result[date][store] = cells;
+        });
+      });
+      setRefills(result);
+    });
+    return () => unsub();
+  }, [authReady]);
+  return refills;
+}
+
+// Marks one clothing-sold cell refilled. `date` is the sale's SA-date, `store`
+// the selling shop, `cid` the cellId. respondedOn is always now.
+function saveClothingRefill(date, store, cid) {
+  update(ref(database, `clothing_sold_refills/${date}/${store}`), {
+    [cid]: { response: "refilled", respondedOn: new Date().toISOString() }
+  }).catch(err => console.warn("saveClothingRefill failed:", err));
+}
+
+// Reverses a refill (Undo) — removes the single cell leaf so it returns to pending.
+function clearClothingRefill(date, store, cid) {
+  return remove(ref(database, `clothing_sold_refills/${date}/${store}/${cid}`))
+    .catch(err => console.warn("clearClothingRefill failed:", err));
+}
+
+// Bounded read of /stock_movements: a ts-windowed query over the last
+// CLOTHING_SOLD_BACKLOG_DAYS days — NEVER an unbounded whole-ledger subscription.
+// Requires the stock_movements `.indexOn:["ts"]` rule (server-side sort); without
+// it Firebase falls back to reading the entire node and sorting client-side.
+function useClothingSoldMovements() {
+  const authReady = useAuthReady();
+  const [movements, setMovements] = useState([]);
+  useEffect(() => {
+    if (!authReady) return;
+    const startIso = saStartIso(getSAPastDateString(CLOTHING_SOLD_BACKLOG_DAYS));
+    const q = query(ref(database, "stock_movements"), orderByChild("ts"), startAt(startIso));
+    const unsub = onValue(q, snap => {
+      const data = snap.val() || {};
+      const arr = [];
+      Object.entries(data).forEach(([mvId, m]) => {
+        if (m && typeof m === "object") arr.push({ mvId, ...m });
+      });
+      setMovements(arr);
+    }, err => console.warn("stock_movements read error:", err));
+    return () => unsub();
+  }, [authReady]);
+  return movements;
+}
+
+// Compact relative-time label for a card ("just now", "3h ago", "2d ago").
+function relativeTimeFromIso(iso) {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const mins = Math.floor((Date.now() - then) / 60000);
+  if (mins < 1)  return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
 }
 
 // Raw OOS log for today — real-time stream, no compilation needed.
@@ -7201,9 +7305,12 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
   );
 }
 
-// Single pending (product, size) cell — Available / Out of Stock buttons.
+// Single pending (product, size) cell. Sneaker refill: Available / Out of Stock.
+// Clothing-sold refill: pass `confirm={{ label, onConfirm }}` for a single-button
+// variant, plus optional `storeLabel` / `relativeTime` for the meta line. The
+// sneaker call sites pass neither and render byte-identically to before.
 // Local pending state suppresses double-taps while Firebase echoes the write back.
-function PendingCard({ product, size, count, onAvailable, onOutOfStock }) {
+function PendingCard({ product, size, count, onAvailable, onOutOfStock, confirm, storeLabel, relativeTime }) {
   const [busy, setBusy] = useState(false);
   const tap = (fn) => {
     if (busy) return;
@@ -7227,34 +7334,55 @@ function PendingCard({ product, size, count, onAvailable, onOutOfStock }) {
         <ProductPhoto url={product.photoUrl} photo={product.photo} size={48} radius={10}/>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{product.productName}</div>
+          {(storeLabel || relativeTime) && (
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:4, color:"rgba(255,255,255,.45)", fontSize:11 }}>
+              {storeLabel && <span style={{ display:"inline-flex", alignItems:"center", gap:4, color:BLUE_L, fontWeight:600 }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+                {storeLabel}
+              </span>}
+              {storeLabel && relativeTime && <span style={{ opacity:.4 }}>·</span>}
+              {relativeTime && <span>{relativeTime}</span>}
+            </div>
+          )}
         </div>
       </div>
       <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px", marginBottom:10 }}>
         <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
         {count > 1 && <span style={{ fontSize:10, color:"#4A7FFF", fontWeight:600 }}>×{count}</span>}
       </div>
-      <div style={{ display:"flex", gap:8 }}>
-        <button disabled={busy} onClick={() => tap(onAvailable)}
-                style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          Available
+      {confirm ? (
+        <button disabled={busy} onClick={() => tap(confirm.onConfirm)}
+                style={{ width:"100%", padding:"11px 12px", borderRadius:10, border:"1px solid rgba(74,222,128,.5)", background:"rgba(74,222,128,.12)", color:"#4ADE80", cursor: busy ? "default" : "pointer", fontWeight:700, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+          {confirm.label}
         </button>
-        <button disabled={busy} onClick={() => tap(onOutOfStock)}
-                style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          Out of Stock
-        </button>
-      </div>
+      ) : (
+        <div style={{ display:"flex", gap:8 }}>
+          <button disabled={busy} onClick={() => tap(onAvailable)}
+                  style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Available
+          </button>
+          <button disabled={busy} onClick={() => tap(onOutOfStock)}
+                  style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            Out of Stock
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-// Single completed cell — colored indicator + Undo.
-function CompletedCard({ product, size, count, response, onUndo }) {
-  const isAvail = response === "available";
-  const accent  = isAvail ? "rgba(74,222,128,.5)"  : "rgba(248,113,113,.5)";
-  const tint    = isAvail ? "rgba(74,222,128,.08)" : "rgba(248,113,113,.08)";
-  const text    = isAvail ? "#4ADE80"              : "#F87171";
+// Single completed cell — colored indicator + Undo. `response` "available" and
+// "refilled" are the positive (green) states; "out_of_stock" is red. `storeLabel`
+// is an optional meta shown for the clothing-sold variant.
+function CompletedCard({ product, size, count, response, onUndo, storeLabel }) {
+  const isPositive = response !== "out_of_stock";
+  const label   = response === "refilled" ? "Refilled" : (response === "available" ? "Available" : "Out of Stock");
+  const accent  = isPositive ? "rgba(74,222,128,.5)"  : "rgba(248,113,113,.5)";
+  const tint    = isPositive ? "rgba(74,222,128,.08)" : "rgba(248,113,113,.08)";
+  const text    = isPositive ? "#4ADE80"              : "#F87171";
   return (
     <div style={{
       background:"rgba(4,5,10,1)",
@@ -7267,11 +7395,14 @@ function CompletedCard({ product, size, count, response, onUndo }) {
         <ProductPhoto url={product.photoUrl} photo={product.photo} size={48} radius={10}/>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{product.productName}</div>
-          <div style={{ display:"inline-flex", alignItems:"center", gap:5, marginTop:4, padding:"2px 8px", borderRadius:999, background:tint, border:`1px solid ${accent}`, color:text, fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
-              {isAvail ? <polyline points="20 6 9 17 4 12"/> : <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>}
-            </svg>
-            {isAvail ? "Available" : "Out of Stock"}
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:4, flexWrap:"wrap" }}>
+            <div style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"2px 8px", borderRadius:999, background:tint, border:`1px solid ${accent}`, color:text, fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                {isPositive ? <polyline points="20 6 9 17 4 12"/> : <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>}
+              </svg>
+              {label}
+            </div>
+            {storeLabel && <span style={{ color:"rgba(255,255,255,.4)", fontSize:11 }}>{storeLabel}</span>}
           </div>
         </div>
       </div>
@@ -7613,7 +7744,197 @@ function getSAYesterdayString() {
   return now.toISOString().slice(0, 10);
 }
 
-function SourceView({ onExit, orders, returnsLog }) {
+// ─── CLOTHING-SOLD REFILL TAB ─────────────────────────────────────────────────
+// One scope's worklist: fresh per-store sales OR the merged Sold Backlog. Same
+// card/toggle/day-bucket furniture the sneaker Today tab uses, but the pending
+// action is a single "Refilled" confirm and the data is /stock_movements-native.
+function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo }) {
+  const [showCompleted, setShowCompleted] = useState(false);
+
+  const isRefilled = (ev) => !!refills[ev.saDate]?.[ev.store]?.[ev.cellId];
+  const { pending, completed } = useMemo(() => {
+    const pending = [], completed = [];
+    events.forEach(ev => {
+      const done = refills[ev.saDate]?.[ev.store]?.[ev.cellId];
+      if (done) completed.push({ ...ev, response: done.response });
+      else pending.push(ev);
+    });
+    pending.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
+    completed.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
+    return { pending, completed };
+  }, [events, refills]);
+
+  if (!pending.length && !completed.length) return (
+    <div style={{ textAlign:"center", color:"#444", padding:"4rem 1rem" }}>
+      <ProductIcon size={32} opacity={0.5}/>
+      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>No clothing sales to refill here.</div>
+      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Clothing sold at the till appears here for restocking.</div>
+    </div>
+  );
+
+  const pendingUnits = pending.reduce((n, e) => n + e.qty, 0);
+  const totalUnits   = events.reduce((n, e) => n + e.qty, 0);
+  const productCount = new Set(events.map(e => e.productId)).size;
+
+  return (
+    <div>
+      {/* Summary headline — pending units */}
+      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"14px 16px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.2)" }}>
+        <div style={{ fontWeight:800, fontSize:36, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1px" }}>{pendingUnits}</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Clothing Refill Pending</div>
+          <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:3, lineHeight:1.4 }}>
+            {totalUnits} unit{totalUnits !== 1 ? "s" : ""} sold · {productCount} product{productCount !== 1 ? "s" : ""}
+          </div>
+        </div>
+      </div>
+
+      {completed.length > 0 && (
+        <CompletedTogglePill on={showCompleted} count={completed.length} onClick={() => setShowCompleted(v => !v)} />
+      )}
+
+      {pending.length === 0 && completed.length > 0 && !showCompleted && (
+        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(74,222,128,.4)", borderRadius:14, padding:"22px 18px", textAlign:"center", boxShadow:"0 0 12px rgba(74,222,128,.12)" }}>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
+            <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
+          </svg>
+          <div style={{ color:"#fff", fontSize:14, fontWeight:700, marginTop:10 }}>All caught up</div>
+          <div style={{ color:"rgba(255,255,255,.55)", fontSize:12, marginTop:4 }}>{completed.length} unit group{completed.length !== 1 ? "s" : ""} refilled.</div>
+          <button onClick={() => setShowCompleted(true)}
+                  style={{ marginTop:14, padding:"8px 16px", borderRadius:10, border:"1px solid rgba(60,110,255,.5)", background:"rgba(60,110,255,.12)", color:BLUE_L, fontWeight:600, fontSize:12, cursor:"pointer" }}>
+            Show Completed
+          </button>
+        </div>
+      )}
+
+      {/* Active list — day-bucketed. `includeOlder` keeps the >2-day backlog visible. */}
+      <DayCollapsible
+        sectionKey={`clothingsold:${scopeKey}`}
+        items={pending}
+        dateOf={ev => ev.ts}
+        includeOlder
+        emptyMessage="Nothing to refill."
+        renderItem={ev => (
+          <PendingCard
+            product={{ productName: ev.productName, photo: ev.photo, photoUrl: ev.photoUrl }}
+            size={ev.size}
+            count={ev.qty}
+            storeLabel={SHOP_LABELS[ev.store] || ev.store}
+            relativeTime={relativeTimeFromIso(ev.ts)}
+            confirm={{ label:"Refilled", onConfirm: () => onRefill(ev) }}
+          />
+        )}
+      />
+
+      {showCompleted && completed.length > 0 && (
+        <>
+          <div style={{ marginTop:18, marginBottom:10, display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
+            <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>COMPLETED</div>
+            <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {completed.map(ev => (
+              <CompletedCard
+                key={`done-${ev.saDate}-${ev.store}-${ev.cellId}`}
+                product={{ productName: ev.productName, photo: ev.photo, photoUrl: ev.photoUrl }}
+                size={ev.size}
+                count={ev.qty}
+                response={ev.response}
+                storeLabel={SHOP_LABELS[ev.store] || ev.store}
+                onUndo={() => onUndo(ev)}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Clothing-Sold refill view mounted inside SourceView's "Clothing Sold" top tab.
+// Owns its own scope segmented-pill row: [ Sold Backlog | <per-store…> ]. Reads
+// the bounded movements window + products + refills once and derives each scope.
+function ClothingSoldView({ products }) {
+  const [scope, setScope] = usePersistedTab("clothingSold", "backlog");
+  const movements = useClothingSoldMovements();
+  const refills   = useAllClothingRefills();
+
+  const productsById = useMemo(() => {
+    const m = {};
+    (products || []).forEach(p => { if (p && p.id) m[p.id] = p; });
+    return m;
+  }, [products]);
+
+  const cutoff      = clothingSoldCutoff();
+  const windowStart = getSAPastDateString(CLOTHING_SOLD_BACKLOG_DAYS);
+
+  // Events per scope. Backlog merges the covered stores (older than today);
+  // each store scope is that store's fresh (today) sales.
+  const eventsByScope = useMemo(() => {
+    const shared = { movements, productsById, cutoff, windowStartSaDate: windowStart };
+    const out = {
+      backlog: clothingSoldEventsForPeriod({ ...shared, store: null, stores: CLOTHING_SOLD_STORES }),
+    };
+    CLOTHING_SOLD_STORES.forEach(s => { out[s] = clothingSoldEventsForPeriod({ ...shared, store: s }); });
+    return out;
+  }, [movements, productsById, cutoff, windowStart]);
+
+  const pendingUnits = (evs) => evs.reduce(
+    (n, ev) => n + (refills[ev.saDate]?.[ev.store]?.[ev.cellId] ? 0 : ev.qty), 0
+  );
+
+  const SCOPES = [
+    { key: "backlog", label: "Sold Backlog" },
+    ...CLOTHING_SOLD_STORES.map(s => ({ key: s, label: SHOP_LABELS[s] || s })),
+  ];
+
+  const handleRefill = (ev) => saveClothingRefill(ev.saDate, ev.store, ev.cellId);
+  const handleUndo   = (ev) => clearClothingRefill(ev.saDate, ev.store, ev.cellId);
+
+  return (
+    <div>
+      {/* Scope segmented pills — mirrors the Hub 1/Hub 2 pill markup, per-tab badge */}
+      <div style={{ display:"flex", gap:8, marginBottom:16, overflowX:"auto" }}>
+        {SCOPES.map(({ key, label }) => {
+          const active = scope === key;
+          const badge = pendingUnits(eventsByScope[key] || []);
+          return (
+            <button key={key} onClick={() => setScope(key)}
+                    style={{
+                      flex:"1 0 auto",
+                      padding:"10px 12px",
+                      borderRadius:14,
+                      border: active ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(255,255,255,.08)",
+                      background: active ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.02)",
+                      color: active ? BLUE_L : "rgba(255,255,255,.55)",
+                      fontWeight:700, fontSize:13, cursor:"pointer",
+                      display:"flex", alignItems:"center", justifyContent:"center", gap:8, whiteSpace:"nowrap",
+                      boxShadow: active ? "0 0 12px rgba(60,110,255,.18)" : "none",
+                      transition:"background 120ms ease, border-color 120ms ease",
+                    }}>
+              <span>{label}</span>
+              <span style={{
+                background: active ? "rgba(60,110,255,.25)" : "rgba(255,255,255,.06)",
+                color: active ? "#fff" : "rgba(255,255,255,.5)",
+                borderRadius:999, padding:"1px 8px", fontSize:11, fontWeight:700, minWidth:22, textAlign:"center",
+              }}>{badge}</span>
+            </button>
+          );
+        })}
+      </div>
+      <ClothingSoldScopePanel
+        scopeKey={scope}
+        events={eventsByScope[scope] || []}
+        refills={refills}
+        onRefill={handleRefill}
+        onUndo={handleUndo}
+      />
+    </div>
+  );
+}
+
+function SourceView({ onExit, orders, returnsLog, products }) {
   const [tab, setTab] = usePersistedTab("source", "today");
   // Active hub — shared across all three top tabs. Defaults to Hub 1.
   const [hub, setHub] = useState("hub1");
@@ -7793,14 +8114,16 @@ function SourceView({ onExit, orders, returnsLog }) {
       <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
       {/* TOP TABS — Today / History / On Hold */}
       <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8 }}>
-        {[["today","Today's Request"],["history","History"],["onhold","On Hold"]].map(([key, label]) => (
+        {[["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Clothing Sold"]].map(([key, label]) => (
           <div key={key} onClick={() => setTab(key)}
                style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
             {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
           </div>
         ))}
       </div>
-      {/* HUB SUB-TABS — segmented pill, shared across all three top tabs */}
+      {/* HUB SUB-TABS — segmented pill, shared across the three order-refill tabs.
+          Hidden for Clothing Sold, which carries its own store scope pills. */}
+      {tab !== "clothing" && (
       <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
         {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
           const active = hub === val;
@@ -7834,6 +8157,7 @@ function SourceView({ onExit, orders, returnsLog }) {
           );
         })}
       </div>
+      )}
       <div style={{ padding:"1.5rem" }}>
         {tab==="today"   && <SourceTodayTab
                               rawCounts={rawCounts}
@@ -7849,6 +8173,7 @@ function SourceView({ onExit, orders, returnsLog }) {
                               hub={hub}
                               onResponse={handleResponse} />}
         {tab==="onhold"  && <SourceOnHoldTab orders={orders} hub={hub} onHoldResponses={onHoldResponses} />}
+        {tab==="clothing" && <ClothingSoldView products={products} />}
       </div>
     </div>
   );
@@ -11027,7 +11352,7 @@ function AppInner() {
   } else if (!role) {
     view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
-  else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} onExit={() => setRole(null)} />);
+  else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMERS_DB)   view = guard(ROLES.CUSTOMERS_DB, <CustomersView  onExit={() => setRole(null)} />);
   else if (role === ROLES.DISPLAY) {
