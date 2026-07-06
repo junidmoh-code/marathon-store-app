@@ -7,6 +7,7 @@ import { database, storage, auth, googleProvider, functions, functionsUS } from 
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
 import { stockCellPath } from "./utils/sizeKey";
+import UpdateBanner from "./update/UpdateBanner";
 import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
@@ -11236,10 +11237,16 @@ export default function App() {
     return <PrivacyPage />;
   }
   return (
-    <AuthGate renderTv={() => <TvOnlyShell />}>
-      <AppErrorBoundary>
-        <AppInner />
-      </AppErrorBoundary>
-    </AuthGate>
+    <>
+      {/* Deploy pickup for long-lived warehouse/TV tabs — banner + idle
+          auto-reload (src/update/updateChecker.js). Outside AuthGate so the
+          TV shell (which never navigates or re-auths) updates itself too. */}
+      <UpdateBanner />
+      <AuthGate renderTv={() => <TvOnlyShell />}>
+        <AppErrorBoundary>
+          <AppInner />
+        </AppErrorBoundary>
+      </AuthGate>
+    </>
   );
 }

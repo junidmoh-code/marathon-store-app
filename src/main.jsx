@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
+import { startUpdateChecker } from "./update/updateChecker.js";
 
 // Last-resort crash surface: show ANY uncaught error / promise rejection as a
 // fixed banner on screen, so a failure can never be a silent black screen with
@@ -29,6 +30,11 @@ if (typeof window !== "undefined") {
   window.addEventListener("error", (e) => showFatal(String(e?.message || e?.error || e) + (e?.filename ? `  (${e.filename}:${e.lineno})` : "")));
   window.addEventListener("unhandledrejection", (e) => showFatal("Promise: " + String(e?.reason?.message || e?.reason || e)));
 }
+
+// Long-lived warehouse/TV tabs: poll /version.json and pick up new deploys on
+// their own (banner + idle auto-reload; never mid-count — see updateChecker.js).
+// Deliberately NOT a service worker — see the SW rollback note below.
+startUpdateChecker();
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
