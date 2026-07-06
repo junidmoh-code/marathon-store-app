@@ -27,7 +27,7 @@ import { sellableLocations, labelFor, transferTargets } from "./components/stock
 import { useStockCells, useLocations } from "./components/stock/useStock";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
-  clothingSoldEventsForPeriod, clothingSoldCutoff, isGroupRefilled,
+  clothingSoldEventsForPeriod, clothingSoldCutoff, isGroupRefilled, clothingSectionLabel,
   saStartIso, CLOTHING_SOLD_BACKLOG_DAYS, CLOTHING_SOLD_STORES,
 } from "./utils/clothingSold";
 import { LocationPicker } from "./components/stock/widgets";
@@ -7713,18 +7713,88 @@ function getSAYesterdayString() {
 }
 
 // ─── CLOTHING-SOLD REFILL TAB ─────────────────────────────────────────────────
-// One card per (store, day, product) with a per-size qty breakdown — NOT one per
+// One card per (store, product) with a per-size qty breakdown — NOT one per
 // (sale,size) cell (which fragmented a popular item into dozens of ×1 cards). The
 // data is /stock_movements-native; the action is a single "Refilled" confirm.
+
+// Canonical section order — Clothing subcategories first (catalogue order), then
+// any others (e.g. mis-tagged accessories) alphabetically after.
+const CLOTHING_SECTION_ORDER = CATEGORY_TREE.Clothing || [];
+
+// Buckets refill cards under collapsible category/subcategory headers (T-Shirts,
+// Jackets, Tracksuits…) so the crew scans by section. Same collapsible furniture
+// as DayCollapsible; open state persists in sessionStorage. Defaults all open.
+function CategoryCollapsible({ sectionKey, items, sectionOf, renderItem, emptyMessage }) {
+  const STORAGE_KEY = `clothingCat:${sectionKey}`;
+  const [closed, setClosed] = useState(() => {
+    try { const raw = sessionStorage.getItem(STORAGE_KEY); if (raw) return JSON.parse(raw); } catch { /* ignore */ }
+    return {}; // default: every section OPEN (absent from the closed-set)
+  });
+  const toggle = (key) => setClosed(prev => {
+    const next = { ...prev, [key]: !prev[key] };
+    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+    return next;
+  });
+
+  const buckets = new Map();
+  (items || []).forEach(item => {
+    const label = sectionOf(item);
+    if (!buckets.has(label)) buckets.set(label, []);
+    buckets.get(label).push(item);
+  });
+
+  const orderIdx = (label) => {
+    const i = CLOTHING_SECTION_ORDER.indexOf(label);
+    return i >= 0 ? i : CLOTHING_SECTION_ORDER.length + 1;
+  };
+  const sections = Array.from(buckets.entries())
+    .sort((a, b) => orderIdx(a[0]) - orderIdx(b[0]) || a[0].localeCompare(b[0]));
+
+  if (!sections.length) {
+    return <div style={{ textAlign:"center", color:"#444", padding:"3rem 1rem", fontSize:"0.95rem" }}>{emptyMessage || "Nothing to show."}</div>;
+  }
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+      {sections.map(([label, list]) => {
+        const open = !closed[label];
+        const units = list.reduce((n, g) => n + (g.total || 0), 0);
+        return (
+          <div key={label} style={{ background:"rgba(20,40,100,.3)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, overflow:"hidden" }}>
+            <div onClick={() => toggle(label)}
+                 style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", cursor:"pointer" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.3px" }}>{label}</div>
+                <div style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"2px 10px", fontSize:11, fontWeight:700 }}>
+                  {list.length}{units !== list.length ? ` · ${units}u` : ""}
+                </div>
+              </div>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                   style={{ transition:"transform 150ms ease", transform: open ? "rotate(180deg)" : "rotate(0deg)", flexShrink:0 }}>
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+            <div style={{ maxHeight: open ? 100000 : 0, overflow:"hidden", transition:"max-height 200ms ease" }}>
+              <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 8px 12px", display:"flex", flexDirection:"column", gap:10 }}>
+                {list.map((item, i) => <div key={item.key || i}>{renderItem(item)}</div>)}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // Product refill card. Pending → big "Refilled" button; done → Refilled tag + Undo.
 // `group` is a clothingSoldGroups() row: { productName, photo, sizes:[{size,qty}],
 // total, store, ts, ... }. `showStore` adds the store label (used in Backlog,
 // where stores are merged; redundant in a single-store daily tab).
-function ClothingSoldCard({ group, done, onRefill, onUndo, showStore }) {
+function ClothingSoldCard({ group, done, onRefill, onUndo, showStore, onViewPhoto }) {
   const [busy, setBusy] = useState(false);
   const tap = (fn) => { if (busy) return; setBusy(true); fn(); setTimeout(() => setBusy(false), 1500); };
   const accent = done ? "rgba(74,222,128,.5)" : "rgba(60,110,255,.6)";
+  const hasPhotos = onViewPhoto && Array.isArray(group.photos) && group.photos.length > 0;
   return (
     <div style={{
       background:CARD, border:`1px solid ${accent}`,
@@ -7735,7 +7805,18 @@ function ClothingSoldCard({ group, done, onRefill, onUndo, showStore }) {
       transition:"opacity 120ms ease",
     }}>
       <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
-        <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+        {/* Tap the photo to enlarge — reuses the app-wide GalleryLightbox so the
+            refill crew can see the garment before pulling it. */}
+        <div onClick={hasPhotos ? () => onViewPhoto(group.photos) : undefined}
+             title={hasPhotos ? "Tap to enlarge" : undefined}
+             style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
+          <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+          {hasPhotos && (
+            <div style={{ position:"absolute", right:-3, bottom:-3, width:16, height:16, borderRadius:"50%", background:"rgba(4,5,10,.95)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>
+            </div>
+          )}
+        </div>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{group.productName}</div>
           <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3, color:"rgba(255,255,255,.45)", fontSize:11 }}>
@@ -7784,7 +7865,7 @@ function ClothingSoldCard({ group, done, onRefill, onUndo, showStore }) {
 // One scope's worklist (a store's daily list, or the merged Backlog). Groups are
 // split pending/done by clothing_sold_refills; pending are day-bucketed via
 // DayCollapsible, done sit under a Show-Completed toggle.
-function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, isBacklog }) {
+function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, isBacklog, onViewPhoto }) {
   const [showCompleted, setShowCompleted] = useState(false);
 
   const { pending, completed } = useMemo(() => {
@@ -7836,15 +7917,14 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, i
         </div>
       )}
 
-      {/* Active list — day-bucketed. `includeOlder` keeps the >2-day backlog visible. */}
-      <DayCollapsible
+      {/* Active list — grouped under collapsible category/subcategory sections. */}
+      <CategoryCollapsible
         sectionKey={`clothingsold:${scopeKey}`}
         items={pending}
-        dateOf={g => g.ts}
-        includeOlder
+        sectionOf={clothingSectionLabel}
         emptyMessage="Nothing to refill."
         renderItem={g => (
-          <ClothingSoldCard group={g} done={false} showStore={isBacklog}
+          <ClothingSoldCard group={g} done={false} showStore={isBacklog} onViewPhoto={onViewPhoto}
             onRefill={() => onRefill(g)} onUndo={() => onUndo(g)} />
         )}
       />
@@ -7858,7 +7938,7 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, i
           </div>
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
             {completed.map(g => (
-              <ClothingSoldCard key={g.key} group={g} done showStore={isBacklog}
+              <ClothingSoldCard key={g.key} group={g} done showStore={isBacklog} onViewPhoto={onViewPhoto}
                 onRefill={() => onRefill(g)} onUndo={() => onUndo(g)} />
             ))}
           </div>
@@ -7873,6 +7953,7 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, i
 // last and secondary. Reads the bounded movements window + products + refills once.
 function ClothingSoldView({ products }) {
   const [scope, setScope] = usePersistedTab("clothingSold", CLOTHING_SOLD_STORES[0]);
+  const [fullPhoto, setFullPhoto] = useState(null); // GalleryLightbox photos array | null
   const movements = useClothingSoldMovements();
   const refills   = useAllClothingRefills();
 
@@ -7951,7 +8032,9 @@ function ClothingSoldView({ products }) {
         onRefill={handleRefill}
         onUndo={handleUndo}
         isBacklog={scope === "backlog"}
+        onViewPhoto={setFullPhoto}
       />
+      {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
     </div>
   );
 }

@@ -6,14 +6,15 @@ import {
   nettedSoldRows,
   clothingSoldEventsForPeriod,
   isGroupRefilled,
+  clothingSectionLabel,
   CLOTHING_SOLD_STORES,
 } from "./clothingSold";
 
 // Catalogue join. p1/p2 clothing (explicit productType), p3 sneaker, p4 has NO
 // productType → classification falls back to the size letter.
 const PRODUCTS = {
-  p1: { id: "p1", name: "Nike Tee",    productType: "clothing", photoUrl: "u1", photo: "b1" },
-  p2: { id: "p2", name: "Puma Hoodie", productType: "clothing" },
+  p1: { id: "p1", name: "Nike Tee",    productType: "clothing", photoUrl: "u1", photo: "b1", category: "Clothing", subcategory: "T-Shirts", gallery: ["u1", "g2"] },
+  p2: { id: "p2", name: "Puma Hoodie", productType: "clothing", category: "Clothing", subcategory: "Hoodies & Sweatshirts" },
   p3: { id: "p3", name: "Air Max 90",  productType: "sneaker" },
   p4: { id: "p4", name: "Legacy Polo" },
 };
@@ -151,6 +152,27 @@ describe("scope split (daily per-store vs merged backlog)", () => {
   it("windowStartSaDate drops sales older than the read window", () => {
     const old = [sold("S0", "p1", "M", "08", { ts: "2026-05-01T08:00:00.000Z" })];
     expect(clothingSoldEventsForPeriod({ ...base, movements: old, cutoff: PAST, store: null, stores: CLOTHING_SOLD_STORES, windowStartSaDate: "2026-06-03" })).toHaveLength(0);
+  });
+});
+
+describe("group carries category/subcategory + deduped photos", () => {
+  it("attaches category, subcategory, and a deduped photo list for the lightbox", () => {
+    const g = clothingSoldEventsForPeriod({ ...base, movements: [sold("S1", "p1", "M", "08")], cutoff: PAST, store: null, stores: CLOTHING_SOLD_STORES })[0];
+    expect(g.category).toBe("Clothing");
+    expect(g.subcategory).toBe("T-Shirts");
+    expect(g.photos).toEqual(["u1", "g2"]); // photoUrl first, gallery deduped
+  });
+  it("group with no gallery still lists the primary photo", () => {
+    const g = clothingSoldEventsForPeriod({ ...base, movements: [sold("S1", "p2", "L", "08")], cutoff: PAST, store: null, stores: CLOTHING_SOLD_STORES })[0];
+    expect(g.photos).toEqual([]); // p2 has no photoUrl/gallery
+  });
+});
+
+describe("clothingSectionLabel", () => {
+  it("prefers subcategory, then category, then Other", () => {
+    expect(clothingSectionLabel({ subcategory: "T-Shirts", category: "Clothing" })).toBe("T-Shirts");
+    expect(clothingSectionLabel({ category: "Clothing" })).toBe("Clothing");
+    expect(clothingSectionLabel({})).toBe("Other");
   });
 });
 

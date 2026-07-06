@@ -88,6 +88,21 @@ const returnQtyOf = (m) => {
 // this is a collision-free join. size is RAW (sold and returns carry the same).
 const pssKey = (store, pid, size) => `${store} ${pid} ${String(size)}`;
 
+// A product's photos for the lightbox: primary photoUrl first, then extra angles
+// (products/{id}.gallery), deduped. Mirrors App.jsx productPhotos() but pure.
+function productPhotoList(p) {
+  const out = [];
+  if (p && p.photoUrl) out.push(p.photoUrl);
+  if (p && Array.isArray(p.gallery)) for (const u of p.gallery) if (u && !out.includes(u)) out.push(u);
+  return out;
+}
+
+// The section header a card sits under: subcategory (T-Shirts, Jackets…) preferred,
+// then category, then a catch-all so nothing is dropped.
+export function clothingSectionLabel(group) {
+  return (group && (group.subcategory || group.category)) || "Other";
+}
+
 // Clothing size display order: XS<S<M<L<XL<XXL…; numeric waist sizes sort after
 // letters by value; anything else sorts last.
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL", "5XL", "6XL"];
@@ -156,6 +171,9 @@ function groupByStoreProduct(rows, productsById) {
       g = {
         key: gk, productId: r.pid, store: r.store,
         productName: p.name || "Unknown", photo: p.photo || null, photoUrl: p.photoUrl || null,
+        photos: productPhotoList(p),           // primary + gallery angles, for the lightbox
+        category: p.category || null,          // section-grouping headers
+        subcategory: p.subcategory || null,
         _sizes: {}, total: 0, latestTs: r.ts, earliestTs: r.ts,
       };
       groups.set(gk, g);
