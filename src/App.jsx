@@ -1807,7 +1807,7 @@ const FIX_PRESETS = [
 // approvals deliberately do NOT stamp photoUpdatedAt: an approved re-shoot
 // isn't a new upload.
 const RECENT_DAYS = 14; // ~20 uploads/day currently → a fortnight is plenty of lookback…
-const RECENT_CAP  = 60; // …but render only the newest 60 (same DOM/fetch rationale as PICK_RENDER_CAP)
+const RECENT_CAP  = 100; // …but render only the newest 100 (thumbnails are lazy-loaded, so a bigger grid than PICK_RENDER_CAP stays cheap)
 const uploadTs = (p) => {
   if (typeof p?.photoUpdatedAt === "number" && p.photoUpdatedAt > 0) return p.photoUpdatedAt;
   const n = Number(String(p?.id || "").slice(1));
