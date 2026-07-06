@@ -5,8 +5,9 @@
 // it `live` — so partial coverage is normal (per-cell state). A count equal to the
 // current value (or a true zero) flips state via setCellState without a movement.
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { applyMovement, setCellState } from "./applyMovement";
+import { setUpdateBusy } from "../../update/updateChecker";
 import { useStockCells } from "./useStock";
 import { activeLocations } from "./locations";
 import { Card, Field, LocationPicker, NumberInput, Toast, Empty } from "./widgets";
@@ -31,6 +32,15 @@ export default function CountSession({ products, registry, actorRole }) {
 
   const product = useMemo(() => products.find(p => p.id === productId), [products, productId]);
   const sizes = (product && Array.isArray(product.sizes)) ? product.sizes : [];
+
+  // Auto-update gate: uncommitted counted quantities live only in this
+  // component's state — an auto-reload mid-count would silently drop them.
+  // Busy while any count is typed in; free again once committed/cleared.
+  const hasUncommitted = Object.values(counts).some((v) => String(v ?? "").trim() !== "");
+  useEffect(() => {
+    setUpdateBusy("count-session", hasUncommitted);
+    return () => setUpdateBusy("count-session", false);
+  }, [hasUncommitted]);
 
   // Product search (name OR barcode/sku/per-size code); capped for speed.
   // Forgiving search: fuzzy name + barcode/sku/per-size codes (see productSearch.js).
