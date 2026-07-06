@@ -185,7 +185,7 @@ durable record of past-day activity.
 | `placedAtHub`     | `"hub1" \| "hub2" \| "hub3" \| "hubC"`                                        | Fulfilment hub. |
 | `qty`             | number \| **absent**                                                          | Units on this event. Written on **clothing-refill `placed`** events (one refill line carries `qty>1`, unlike sneaker checkout which expands qty into one event per unit). **Absent** on events written before this field and on non-refill events — consumers fall back to `1` (e.g. the Insights Clothing Refills tab sums `qty ?? 1`). |
 | `displayRefilledBy` | string                                                                       | `stock_depleted` events only — the resolving hub label. |
-| `destShop`        | `"marathon-pe" \| "trophy" \| "marathon-pine" \| null \| **absent**        | Canonical physical shop (stores.js `SHOP_IDS`). On POS `sold` events (where sold) and POS `collected` events (order's destination shop) from 2026-07-06; **absent** on all earlier events — those cannot be shop-attributed. |
+| `destShop`        | `"marathon-pe"` \| `"trophy"` \| `"marathon-pine"` \| null \| **absent**        | Canonical physical shop (stores.js `SHOP_IDS`). On POS `sold` events (where sold) and POS `collected` events (order's destination shop) from 2026-07-06; **absent** on all earlier events — those cannot be shop-attributed. |
 | `saleId`          | string \| null \| **absent**                                                | `sold` events only — the `/pos/sales` record id. |
 | `source`          | `"pos"` \| **absent**                                                        | Provenance marker on POS-written events (`collected`, `sold`). |
 

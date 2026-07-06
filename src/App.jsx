@@ -7404,14 +7404,16 @@ function getSAYesterdayString() {
 // once the floor is restocked, and the card moves to the completed section
 // (Undo returns it) — same rhythm as the hub tabs and Display Refills.
 
-// "14:32" for today (SA time), "Sat 05 Jul · 14:32" for older events.
+// "14:32" for today, "Sat 05 Jul · 14:32" for older events — everything
+// rendered in SA time (CR #163 R1: the crew's devices may not be on SAST, so
+// the today-check and the displayed clock must come from the same zone).
 function fmtSoldWhen(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
   const saDay = new Date(d.getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = d.toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" });
   if (saDay === getSADateString()) return time;
-  return d.toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }) + " · " + time;
+  return d.toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short", timeZone: "Africa/Johannesburg" }) + " · " + time;
 }
 
 function ClothingSoldPendingCard({ event, product, onRefilled }) {
