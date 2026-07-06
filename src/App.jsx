@@ -1822,6 +1822,12 @@ const recentDayLabel = (day) => {
   return `${Number(day.slice(8, 10))} ${RECENT_MONTHS[Number(day.slice(5, 7)) - 1]}`;
 };
 
+// Keyframes for the Recent-grid shimmer. A module-level element keeps its
+// identity across re-renders, so React never remounts the <style> tag.
+const RECENT_SHIMMER_STYLE = (
+  <style>{`@keyframes recentShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }`}</style>
+);
+
 // One card in the Recent grid: square photo, name strip, green selection ring
 // (same selected-green as the list rows). Shimmer placeholder + fade-in so the
 // grid doesn't pop as thumbnails arrive.
@@ -2135,7 +2141,7 @@ function AdminReviewPhotosTab({ products = [] }) {
       {/* PRODUCT PICKER — search, tap to select as many as you want, then generate exactly those. */}
       {picking && (
         <div style={{ background:"rgba(8,11,20,.95)", border:"1px solid rgba(74,127,255,.3)", borderRadius:12, padding:12, marginBottom:14 }}>
-          <style>{`@keyframes recentShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }`}</style>
+          {RECENT_SHIMMER_STYLE}
           {/* View chips — "Recent" (newest uploads across all categories, the
               default) vs "Browse categories" (the grouped dropdown below). */}
           <div style={{ display:"flex", gap:8, marginBottom:8 }}>
@@ -2208,7 +2214,7 @@ function AdminReviewPhotosTab({ products = [] }) {
                   <div style={{ fontSize:22, marginBottom:6, opacity:.5 }}>✦</div>
                   <div style={{ fontSize:13, fontWeight:700, color:"rgba(255,255,255,.75)" }}>No recent uploads</div>
                   <div style={{ fontSize:11.5, color:"rgba(255,255,255,.4)", marginTop:4 }}>
-                    {pickSearch.trim() ? "Nothing in the last 14 days matches that search." : `Nothing uploaded in the last ${RECENT_DAYS} days${!includeDone ? " that isn't already done — tick “Include already-done” to see everything" : ""}.`}
+                    {pickSearch.trim() ? `Nothing in the last ${RECENT_DAYS} days matches that search.` : `Nothing uploaded in the last ${RECENT_DAYS} days${!includeDone ? " that isn't already done — tick “Include already-done” to see everything" : ""}.`}
                   </div>
                 </div>
               )}
