@@ -27,7 +27,7 @@ import { sellableLocations, labelFor, transferTargets } from "./components/stock
 import { useStockCells, useLocations } from "./components/stock/useStock";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
-  clothingSoldEventsForPeriod, clothingSoldCutoff, cellId as clothingCellId,
+  clothingSoldEventsForPeriod, clothingSoldCutoff, isGroupRefilled,
   saStartIso, CLOTHING_SOLD_BACKLOG_DAYS, CLOTHING_SOLD_STORES,
 } from "./utils/clothingSold";
 import { LocationPicker } from "./components/stock/widgets";
@@ -825,23 +825,21 @@ function clearSourceResponse(date, productKey, size) {
 // ─── CLOTHING-SOLD REFILL PERSISTENCE ─────────────────────────────────────────
 // Mirrors the Source-response layer verbatim (normalize shim + live listener +
 // save/clear), but keyed for the clothing-sold worklist:
-//   clothing_sold_refills/{SA-date}/{store}/{cellId} = { response:"refilled", respondedOn }
-// where SA-date is the sale's day, store is the selling shop, and cellId is
-// `${saleId}__${productId}__${sizeKey}` (see utils/clothingSold cellId).
+//   clothing_sold_refills/{store}/{productId} = { refilledAt, respondedOn }
+// A refill is a TIMESTAMP per (store, product): a card is "done" iff refilledAt
+// is at-or-after its latest sale (see isGroupRefilled), so one restock clears all
+// current demand AND the card re-opens when the product sells again later.
 
-// Normalize a refill leaf to { response, respondedOn } | null. Legacy bare-string
-// entries are tolerated (as with normalizeSourceResponse). Always read via this.
+// Normalize a refill leaf to { refilledAt, respondedOn } | null. Always read via this.
 function normalizeClothingRefill(v) {
-  if (v == null) return null;
-  if (typeof v === "string") return { response: v, respondedOn: null };
-  if (typeof v === "object" && typeof v.response === "string") {
-    return { response: v.response, respondedOn: v.respondedOn || null };
+  if (v && typeof v === "object" && typeof v.refilledAt === "string") {
+    return { refilledAt: v.refilledAt, respondedOn: v.respondedOn || v.refilledAt };
   }
   return null;
 }
 
 // Live listener for all clothing-sold refills.
-// Shape on read: { "YYYY-MM-DD": { store: { cellId: { response, respondedOn } } } }
+// Shape on read: { store: { productId: { refilledAt, respondedOn } } }
 function useAllClothingRefills() {
   const authReady = useAuthReady();
   const [refills, setRefills] = useState({});
@@ -850,18 +848,14 @@ function useAllClothingRefills() {
     const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
       const data = snap.val() || {};
       const result = {};
-      Object.entries(data).forEach(([date, dateNode]) => {
-        if (!dateNode || typeof dateNode !== "object") return;
-        result[date] = {};
-        Object.entries(dateNode).forEach(([store, storeNode]) => {
-          if (!storeNode || typeof storeNode !== "object") return;
-          const cells = {};
-          Object.entries(storeNode).forEach(([cid, raw]) => {
-            const norm = normalizeClothingRefill(raw);
-            if (norm) cells[cid] = norm;
-          });
-          if (Object.keys(cells).length) result[date][store] = cells;
+      Object.entries(data).forEach(([store, storeNode]) => {
+        if (!storeNode || typeof storeNode !== "object") return;
+        const byProduct = {};
+        Object.entries(storeNode).forEach(([pid, raw]) => {
+          const norm = normalizeClothingRefill(raw);
+          if (norm) byProduct[pid] = norm;
         });
+        if (Object.keys(byProduct).length) result[store] = byProduct;
       });
       setRefills(result);
     });
@@ -870,17 +864,18 @@ function useAllClothingRefills() {
   return refills;
 }
 
-// Marks one clothing-sold cell refilled. `date` is the sale's SA-date, `store`
-// the selling shop, `cid` the cellId. respondedOn is always now.
-function saveClothingRefill(date, store, cid) {
-  update(ref(database, `clothing_sold_refills/${date}/${store}`), {
-    [cid]: { response: "refilled", respondedOn: new Date().toISOString() }
+// Marks a (store, product) refilled AS OF NOW — clears every currently-pending
+// unit of that product at that store (refilledAt >= their sale ts).
+function saveClothingRefill(store, productId) {
+  const now = new Date().toISOString();
+  update(ref(database, `clothing_sold_refills/${store}`), {
+    [productId]: { refilledAt: now, respondedOn: now }
   }).catch(err => console.warn("saveClothingRefill failed:", err));
 }
 
-// Reverses a refill (Undo) — removes the single cell leaf so it returns to pending.
-function clearClothingRefill(date, store, cid) {
-  return remove(ref(database, `clothing_sold_refills/${date}/${store}/${cid}`))
+// Reverses a refill (Undo) — removes the leaf so the product returns to pending.
+function clearClothingRefill(store, productId) {
+  return remove(ref(database, `clothing_sold_refills/${store}/${productId}`))
     .catch(err => console.warn("clearClothingRefill failed:", err));
 }
 
@@ -7305,12 +7300,9 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
   );
 }
 
-// Single pending (product, size) cell. Sneaker refill: Available / Out of Stock.
-// Clothing-sold refill: pass `confirm={{ label, onConfirm }}` for a single-button
-// variant, plus optional `storeLabel` / `relativeTime` for the meta line. The
-// sneaker call sites pass neither and render byte-identically to before.
+// Single pending (product, size) cell — Available / Out of Stock buttons.
 // Local pending state suppresses double-taps while Firebase echoes the write back.
-function PendingCard({ product, size, count, onAvailable, onOutOfStock, confirm, storeLabel, relativeTime }) {
+function PendingCard({ product, size, count, onAvailable, onOutOfStock }) {
   const [busy, setBusy] = useState(false);
   const tap = (fn) => {
     if (busy) return;
@@ -7334,55 +7326,34 @@ function PendingCard({ product, size, count, onAvailable, onOutOfStock, confirm,
         <ProductPhoto url={product.photoUrl} photo={product.photo} size={48} radius={10}/>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{product.productName}</div>
-          {(storeLabel || relativeTime) && (
-            <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:4, color:"rgba(255,255,255,.45)", fontSize:11 }}>
-              {storeLabel && <span style={{ display:"inline-flex", alignItems:"center", gap:4, color:BLUE_L, fontWeight:600 }}>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-                {storeLabel}
-              </span>}
-              {storeLabel && relativeTime && <span style={{ opacity:.4 }}>·</span>}
-              {relativeTime && <span>{relativeTime}</span>}
-            </div>
-          )}
         </div>
       </div>
       <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px", marginBottom:10 }}>
         <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
         {count > 1 && <span style={{ fontSize:10, color:"#4A7FFF", fontWeight:600 }}>×{count}</span>}
       </div>
-      {confirm ? (
-        <button disabled={busy} onClick={() => tap(confirm.onConfirm)}
-                style={{ width:"100%", padding:"11px 12px", borderRadius:10, border:"1px solid rgba(74,222,128,.5)", background:"rgba(74,222,128,.12)", color:"#4ADE80", cursor: busy ? "default" : "pointer", fontWeight:700, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-          {confirm.label}
+      <div style={{ display:"flex", gap:8 }}>
+        <button disabled={busy} onClick={() => tap(onAvailable)}
+                style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Available
         </button>
-      ) : (
-        <div style={{ display:"flex", gap:8 }}>
-          <button disabled={busy} onClick={() => tap(onAvailable)}
-                  style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Available
-          </button>
-          <button disabled={busy} onClick={() => tap(onOutOfStock)}
-                  style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            Out of Stock
-          </button>
-        </div>
-      )}
+        <button disabled={busy} onClick={() => tap(onOutOfStock)}
+                style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Out of Stock
+        </button>
+      </div>
     </div>
   );
 }
 
-// Single completed cell — colored indicator + Undo. `response` "available" and
-// "refilled" are the positive (green) states; "out_of_stock" is red. `storeLabel`
-// is an optional meta shown for the clothing-sold variant.
-function CompletedCard({ product, size, count, response, onUndo, storeLabel }) {
-  const isPositive = response !== "out_of_stock";
-  const label   = response === "refilled" ? "Refilled" : (response === "available" ? "Available" : "Out of Stock");
-  const accent  = isPositive ? "rgba(74,222,128,.5)"  : "rgba(248,113,113,.5)";
-  const tint    = isPositive ? "rgba(74,222,128,.08)" : "rgba(248,113,113,.08)";
-  const text    = isPositive ? "#4ADE80"              : "#F87171";
+// Single completed cell — colored indicator + Undo.
+function CompletedCard({ product, size, count, response, onUndo }) {
+  const isAvail = response === "available";
+  const accent  = isAvail ? "rgba(74,222,128,.5)"  : "rgba(248,113,113,.5)";
+  const tint    = isAvail ? "rgba(74,222,128,.08)" : "rgba(248,113,113,.08)";
+  const text    = isAvail ? "#4ADE80"              : "#F87171";
   return (
     <div style={{
       background:"rgba(4,5,10,1)",
@@ -7395,14 +7366,11 @@ function CompletedCard({ product, size, count, response, onUndo, storeLabel }) {
         <ProductPhoto url={product.photoUrl} photo={product.photo} size={48} radius={10}/>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{product.productName}</div>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:4, flexWrap:"wrap" }}>
-            <div style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"2px 8px", borderRadius:999, background:tint, border:`1px solid ${accent}`, color:text, fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
-                {isPositive ? <polyline points="20 6 9 17 4 12"/> : <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>}
-              </svg>
-              {label}
-            </div>
-            {storeLabel && <span style={{ color:"rgba(255,255,255,.4)", fontSize:11 }}>{storeLabel}</span>}
+          <div style={{ display:"inline-flex", alignItems:"center", gap:5, marginTop:4, padding:"2px 8px", borderRadius:999, background:tint, border:`1px solid ${accent}`, color:text, fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+              {isAvail ? <polyline points="20 6 9 17 4 12"/> : <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>}
+            </svg>
+            {isAvail ? "Available" : "Out of Stock"}
           </div>
         </div>
       </div>
@@ -7745,20 +7713,83 @@ function getSAYesterdayString() {
 }
 
 // ─── CLOTHING-SOLD REFILL TAB ─────────────────────────────────────────────────
-// One scope's worklist: fresh per-store sales OR the merged Sold Backlog. Same
-// card/toggle/day-bucket furniture the sneaker Today tab uses, but the pending
-// action is a single "Refilled" confirm and the data is /stock_movements-native.
-function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo }) {
+// One card per (store, day, product) with a per-size qty breakdown — NOT one per
+// (sale,size) cell (which fragmented a popular item into dozens of ×1 cards). The
+// data is /stock_movements-native; the action is a single "Refilled" confirm.
+
+// Product refill card. Pending → big "Refilled" button; done → Refilled tag + Undo.
+// `group` is a clothingSoldGroups() row: { productName, photo, sizes:[{size,qty}],
+// total, store, ts, ... }. `showStore` adds the store label (used in Backlog,
+// where stores are merged; redundant in a single-store daily tab).
+function ClothingSoldCard({ group, done, onRefill, onUndo, showStore }) {
+  const [busy, setBusy] = useState(false);
+  const tap = (fn) => { if (busy) return; setBusy(true); fn(); setTimeout(() => setBusy(false), 1500); };
+  const accent = done ? "rgba(74,222,128,.5)" : "rgba(60,110,255,.6)";
+  return (
+    <div style={{
+      background:CARD, border:`1px solid ${accent}`,
+      borderLeft: done ? `3px solid ${accent}` : `1px solid ${accent}`,
+      borderRadius:14, padding:14,
+      opacity: done ? 0.85 : (busy ? 0.7 : 1),
+      boxShadow: done ? "none" : "0 0 10px rgba(60,110,255,.15)",
+      transition:"opacity 120ms ease",
+    }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
+        <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{group.productName}</div>
+          <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3, color:"rgba(255,255,255,.45)", fontSize:11 }}>
+            {showStore && <><span style={{ color:BLUE_L, fontWeight:600 }}>{SHOP_LABELS[group.store] || group.store}</span><span style={{ opacity:.4 }}>·</span></>}
+            <span>{relativeTimeFromIso(group.ts)}</span>
+          </div>
+        </div>
+        <div style={{ textAlign:"center", flexShrink:0 }}>
+          <div style={{ fontWeight:800, fontSize:22, color: done ? "#4ADE80" : "#4A7FFF", lineHeight:1 }}>{group.total}</div>
+          <div style={{ fontSize:9, color:"rgba(255,255,255,.4)", fontWeight:700, letterSpacing:".5px" }}>SOLD</div>
+        </div>
+      </div>
+      {/* Per-size qty breakdown — the whole point of the grouped card. */}
+      <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom: done ? 0 : 10 }}>
+        {group.sizes.map(({ size, qty }) => (
+          <div key={size} style={{ display:"inline-flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"4px 8px" }}>
+            <span style={{ fontSize:12, fontWeight:700, color:"#fff" }}><SizeTag size={size} /></span>
+            <span style={{ fontSize:11, color:BLUE_L, fontWeight:700 }}>×{qty}</span>
+          </div>
+        ))}
+      </div>
+      {done ? (
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:10 }}>
+          <div style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"2px 8px", borderRadius:999, background:"rgba(74,222,128,.08)", border:"1px solid rgba(74,222,128,.5)", color:"#4ADE80", fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            Refilled
+          </div>
+          <div style={{ flex:1 }} />
+          <button onClick={onUndo}
+                  style={{ padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+            Undo
+          </button>
+        </div>
+      ) : (
+        <button disabled={busy} onClick={() => tap(onRefill)}
+                style={{ width:"100%", padding:"11px 12px", borderRadius:10, border:"1px solid rgba(74,222,128,.5)", background:"rgba(74,222,128,.12)", color:"#4ADE80", cursor: busy ? "default" : "pointer", fontWeight:700, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+          Refilled
+        </button>
+      )}
+    </div>
+  );
+}
+
+// One scope's worklist (a store's daily list, or the merged Backlog). Groups are
+// split pending/done by clothing_sold_refills; pending are day-bucketed via
+// DayCollapsible, done sit under a Show-Completed toggle.
+function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, isBacklog }) {
   const [showCompleted, setShowCompleted] = useState(false);
 
-  const isRefilled = (ev) => !!refills[ev.saDate]?.[ev.store]?.[ev.cellId];
   const { pending, completed } = useMemo(() => {
     const pending = [], completed = [];
-    events.forEach(ev => {
-      const done = refills[ev.saDate]?.[ev.store]?.[ev.cellId];
-      if (done) completed.push({ ...ev, response: done.response });
-      else pending.push(ev);
-    });
+    events.forEach(g => (isGroupRefilled(g, refills) ? completed : pending).push(g));
     pending.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
     completed.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
     return { pending, completed };
@@ -7767,24 +7798,22 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo })
   if (!pending.length && !completed.length) return (
     <div style={{ textAlign:"center", color:"#444", padding:"4rem 1rem" }}>
       <ProductIcon size={32} opacity={0.5}/>
-      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>No clothing sales to refill here.</div>
+      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>{isBacklog ? "No older clothing sales pending." : "No clothing sold here yet today."}</div>
       <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Clothing sold at the till appears here for restocking.</div>
     </div>
   );
 
-  const pendingUnits = pending.reduce((n, e) => n + e.qty, 0);
-  const totalUnits   = events.reduce((n, e) => n + e.qty, 0);
-  const productCount = new Set(events.map(e => e.productId)).size;
+  const pendingUnits = pending.reduce((n, g) => n + g.total, 0);
 
   return (
     <div>
-      {/* Summary headline — pending units */}
+      {/* Summary headline — pending units across pending products */}
       <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"14px 16px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.2)" }}>
         <div style={{ fontWeight:800, fontSize:36, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1px" }}>{pendingUnits}</div>
         <div style={{ flex:1 }}>
-          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Clothing Refill Pending</div>
+          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Units to refill</div>
           <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:3, lineHeight:1.4 }}>
-            {totalUnits} unit{totalUnits !== 1 ? "s" : ""} sold · {productCount} product{productCount !== 1 ? "s" : ""}
+            {pending.length} product{pending.length !== 1 ? "s" : ""} pending{completed.length ? ` · ${completed.length} refilled` : ""}
           </div>
         </div>
       </div>
@@ -7799,10 +7828,10 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo })
             <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
           </svg>
           <div style={{ color:"#fff", fontSize:14, fontWeight:700, marginTop:10 }}>All caught up</div>
-          <div style={{ color:"rgba(255,255,255,.55)", fontSize:12, marginTop:4 }}>{completed.length} unit group{completed.length !== 1 ? "s" : ""} refilled.</div>
+          <div style={{ color:"rgba(255,255,255,.55)", fontSize:12, marginTop:4 }}>{completed.length} product{completed.length !== 1 ? "s" : ""} refilled.</div>
           <button onClick={() => setShowCompleted(true)}
                   style={{ marginTop:14, padding:"8px 16px", borderRadius:10, border:"1px solid rgba(60,110,255,.5)", background:"rgba(60,110,255,.12)", color:BLUE_L, fontWeight:600, fontSize:12, cursor:"pointer" }}>
-            Show Completed
+            Show Refilled
           </button>
         </div>
       )}
@@ -7811,18 +7840,12 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo })
       <DayCollapsible
         sectionKey={`clothingsold:${scopeKey}`}
         items={pending}
-        dateOf={ev => ev.ts}
+        dateOf={g => g.ts}
         includeOlder
         emptyMessage="Nothing to refill."
-        renderItem={ev => (
-          <PendingCard
-            product={{ productName: ev.productName, photo: ev.photo, photoUrl: ev.photoUrl }}
-            size={ev.size}
-            count={ev.qty}
-            storeLabel={SHOP_LABELS[ev.store] || ev.store}
-            relativeTime={relativeTimeFromIso(ev.ts)}
-            confirm={{ label:"Refilled", onConfirm: () => onRefill(ev) }}
-          />
+        renderItem={g => (
+          <ClothingSoldCard group={g} done={false} showStore={isBacklog}
+            onRefill={() => onRefill(g)} onUndo={() => onUndo(g)} />
         )}
       />
 
@@ -7830,20 +7853,13 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo })
         <>
           <div style={{ marginTop:18, marginBottom:10, display:"flex", alignItems:"center", gap:8 }}>
             <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
-            <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>COMPLETED</div>
+            <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>REFILLED</div>
             <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
           </div>
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            {completed.map(ev => (
-              <CompletedCard
-                key={`done-${ev.saDate}-${ev.store}-${ev.cellId}`}
-                product={{ productName: ev.productName, photo: ev.photo, photoUrl: ev.photoUrl }}
-                size={ev.size}
-                count={ev.qty}
-                response={ev.response}
-                storeLabel={SHOP_LABELS[ev.store] || ev.store}
-                onUndo={() => onUndo(ev)}
-              />
+            {completed.map(g => (
+              <ClothingSoldCard key={g.key} group={g} done showStore={isBacklog}
+                onRefill={() => onRefill(g)} onUndo={() => onUndo(g)} />
             ))}
           </div>
         </>
@@ -7852,11 +7868,11 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo })
   );
 }
 
-// Clothing-Sold refill view mounted inside SourceView's "Clothing Sold" top tab.
-// Owns its own scope segmented-pill row: [ Sold Backlog | <per-store…> ]. Reads
-// the bounded movements window + products + refills once and derives each scope.
+// Clothing-Sold view mounted inside SOURCE's "Clothing Sold" top tab. Scope pills
+// put the actionable per-store DAILY lists first; the merged aging "Backlog" is
+// last and secondary. Reads the bounded movements window + products + refills once.
 function ClothingSoldView({ products }) {
-  const [scope, setScope] = usePersistedTab("clothingSold", "backlog");
+  const [scope, setScope] = usePersistedTab("clothingSold", CLOTHING_SOLD_STORES[0]);
   const movements = useClothingSoldMovements();
   const refills   = useAllClothingRefills();
 
@@ -7869,35 +7885,35 @@ function ClothingSoldView({ products }) {
   const cutoff      = clothingSoldCutoff();
   const windowStart = getSAPastDateString(CLOTHING_SOLD_BACKLOG_DAYS);
 
-  // Events per scope. Backlog merges the covered stores (older than today);
-  // each store scope is that store's fresh (today) sales.
+  // Groups per scope: each store's fresh (today) sales, plus the merged backlog.
   const eventsByScope = useMemo(() => {
     const shared = { movements, productsById, cutoff, windowStartSaDate: windowStart };
-    const out = {
-      backlog: clothingSoldEventsForPeriod({ ...shared, store: null, stores: CLOTHING_SOLD_STORES }),
-    };
+    const out = {};
     CLOTHING_SOLD_STORES.forEach(s => { out[s] = clothingSoldEventsForPeriod({ ...shared, store: s }); });
+    out.backlog = clothingSoldEventsForPeriod({ ...shared, store: null, stores: CLOTHING_SOLD_STORES });
     return out;
   }, [movements, productsById, cutoff, windowStart]);
 
   const pendingUnits = (evs) => evs.reduce(
-    (n, ev) => n + (refills[ev.saDate]?.[ev.store]?.[ev.cellId] ? 0 : ev.qty), 0
+    (n, g) => n + (isGroupRefilled(g, refills) ? 0 : g.total), 0
   );
 
+  // Daily per-store lists first (the crew's actual work), aging Backlog last.
   const SCOPES = [
-    { key: "backlog", label: "Sold Backlog" },
     ...CLOTHING_SOLD_STORES.map(s => ({ key: s, label: SHOP_LABELS[s] || s })),
+    { key: "backlog", label: "Backlog" },
   ];
 
-  const handleRefill = (ev) => saveClothingRefill(ev.saDate, ev.store, ev.cellId);
-  const handleUndo   = (ev) => clearClothingRefill(ev.saDate, ev.store, ev.cellId);
+  const handleRefill = (g) => saveClothingRefill(g.store, g.productId);
+  const handleUndo   = (g) => clearClothingRefill(g.store, g.productId);
 
   return (
     <div>
-      {/* Scope segmented pills — mirrors the Hub 1/Hub 2 pill markup, per-tab badge */}
-      <div style={{ display:"flex", gap:8, marginBottom:16, overflowX:"auto" }}>
+      {/* Scope segmented pills — daily stores first, Backlog (secondary) last */}
+      <div style={{ display:"flex", gap:8, marginBottom:8, overflowX:"auto" }}>
         {SCOPES.map(({ key, label }) => {
           const active = scope === key;
+          const backlog = key === "backlog";
           const badge = pendingUnits(eventsByScope[key] || []);
           return (
             <button key={key} onClick={() => setScope(key)}
@@ -7907,7 +7923,7 @@ function ClothingSoldView({ products }) {
                       borderRadius:14,
                       border: active ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(255,255,255,.08)",
                       background: active ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.02)",
-                      color: active ? BLUE_L : "rgba(255,255,255,.55)",
+                      color: active ? BLUE_L : (backlog ? "rgba(255,255,255,.4)" : "rgba(255,255,255,.55)"),
                       fontWeight:700, fontSize:13, cursor:"pointer",
                       display:"flex", alignItems:"center", justifyContent:"center", gap:8, whiteSpace:"nowrap",
                       boxShadow: active ? "0 0 12px rgba(60,110,255,.18)" : "none",
@@ -7923,12 +7939,18 @@ function ClothingSoldView({ products }) {
           );
         })}
       </div>
+      <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginBottom:14, lineHeight:1.4 }}>
+        {scope === "backlog"
+          ? "Older unrefilled sales (both stores). Mostly already restocked — work the daily tabs first."
+          : `Sold today at ${SHOP_LABELS[scope] || scope} — refill it.`}
+      </div>
       <ClothingSoldScopePanel
         scopeKey={scope}
         events={eventsByScope[scope] || []}
         refills={refills}
         onRefill={handleRefill}
         onUndo={handleUndo}
+        isBacklog={scope === "backlog"}
       />
     </div>
   );
