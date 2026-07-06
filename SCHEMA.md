@@ -26,6 +26,7 @@ Each product is its own node. `productId` is generated client-side as
 | `photo`           | string                            | no       | Legacy data-URL slot — superseded by `photoUrl`. |
 | `photoUrl`        | string \| null                    | no       | HTTPS URL into Firebase Storage `products/{id}/photo.jpg`. |
 | `gallery`         | string[]                          | no       | Extra-angle photo URLs kept from the AI photo studio (each a unique permanent Storage URL). `photoUrl` stays the primary/hero; `gallery` holds additional angles saved before a regenerate. Admin-managed; not yet shown customer-facing. |
+| `photoUpdatedAt`  | number (epoch ms)                 | no       | When an admin last uploaded/replaced the product photo (Add Product form or edit-photo replace; stamped since 2026-07). AI-studio approvals do NOT stamp it — an approved re-shoot isn't a new upload. Missing on older products: readers fall back to the creation time encoded in the id (`"p" + Date.now()`; every id in the DB conforms). Drives the AI Photo Studio picker's "Recent" view. |
 | `stock`           | object \| undefined               | no       | Per-size stock counter, used by some clothing flows. |
 | **`stockPrice`**  | **number (ZAR)**                  | **no**   | **POS Phase 2. Wholesale / B2B unit price. Optional — existing products without it remain valid.** |
 | **`retailPrice`** | **number (ZAR)**                  | **no**   | **POS Phase 2. Walk-in / consumer unit price. Optional.** |
