@@ -168,7 +168,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", BARCODES: "barcodes", LABEL_PRINT: "label_print" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -1546,10 +1546,9 @@ const RoleIcons = {
       <path d="m21.5 19.5-1-1"/>
     </svg>
   ),
-  ai_reorder: (
+  ai_studio: (
     // lucide-style "sparkles": one large four-point star + two small accents.
-    // Reads as AI / magic / something-generated, distinct from the bar-chart
-    // insights icon (this tile takes you INTO Insights but to a different tab).
+    // Reads as AI / magic / something-generated — the AI Studio tile.
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/>
       <path d="M19 14l.75 2.25L22 17l-2.25.75L19 20l-.75-2.25L16 17l2.25-.75L19 14z"/>
@@ -1632,7 +1631,7 @@ function GroupSection({ label, children }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessStock }) {
+function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessStock, isSuperAdmin }) {
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
   // Source badge = today's restock requests + on-hold (Tomorrow), excluding OOS.
@@ -1704,15 +1703,12 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
           // User Management is hash-routed (not role-routed) — the screen mounts
           // on wantUserMgmt in the App view cascade. Tap → set hash → mount.
           hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && <RoleCard key="user_mgmt" icon={RoleIcons.user_management} name="User Management" desc="Manage staff accounts" onClick={() => (window.location.hash = "#admin/users")} />,
-          // AI Reorder shortcut: mounts the existing Insights view but pre-selects
-          // the "reorder" tab by writing its persistence key first. Gated by the
-          // "ai_reorder" permission string — no record grants it explicitly, so
-          // only super-admin sees the tile via the usePermissions() bypass.
-          // (The Cloud Function's assertAdmin is super-admin-only anyway.)
-          hasPermission("ai_reorder") && <RoleCard key="ai_reorder" icon={RoleIcons.ai_reorder} name="AI Reorder" desc="Reorder plan + slow movers" onClick={() => {
-            try { localStorage.setItem("tabState:insights", "reorder"); } catch { /* localStorage unavailable; tab will start on overview */ }
-            onSelect(ROLES.INSIGHTS);
-          }} />,
+          // AI Studio: every AI tool (Photo Studio, Names, Reorder, Voice) in
+          // one super-admin-only view. Gated on the REAL isSuperAdmin flag —
+          // not a permission string a /users record could ever grant — and the
+          // view mount re-checks it, so this is render + route enforcement.
+          // (The AI Cloud Functions are assertAdmin server-side anyway.)
+          isSuperAdmin && <RoleCard key="ai_studio" icon={RoleIcons.ai_studio} name="AI Studio" desc="Photos · Names · Reorder · Voice" onClick={() => onSelect(ROLES.AI_STUDIO)} />,
         ].filter(Boolean);
         // `last` on the final card in each group removes the trailing divider.
         const withLast = (cards) => cards.map((card, i) =>
@@ -2749,11 +2745,243 @@ function SizeQtyGrid({ sizes, values, onChange }) {
   );
 }
 
+// ─── AI STUDIO ────────────────────────────────────────────────────────────────
+// Super-admin-only home for every AI tool: Photo Studio (Gemini/OpenAI),
+// Name Cleanup (Claude), Reorder Planner (Claude) and the pickup-board voice
+// engine (OpenAI/ElevenLabs TTS). Pure relocation + shell: the four tool
+// components mount here UNCHANGED — zero behavior changes inside them.
+// Laptop-first per the redesign reference: left sidebar (wordmark, icon+label
+// nav, electric-blue active state), stat-card row, frosted cards on black;
+// below 980px the sidebar gives way to a chip row (tablet).
+// Access: the role tile renders only for isSuperAdmin AND the view mount
+// re-checks isSuperAdmin (route guard) — plus every money callable is
+// assertAdmin server-side, so a spoofed client still can't run anything.
+
+// Tool nav icons take currentColor so active/inactive tinting is pure CSS.
+const AI_TOOL_ICON = {
+  photos: (
+    <svg viewBox="0 0 24 24" width="17" height="17" stroke="currentColor" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
+    </svg>
+  ),
+  names: (
+    <svg viewBox="0 0 24 24" width="17" height="17" stroke="currentColor" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/>
+    </svg>
+  ),
+  reorder: (
+    <svg viewBox="0 0 24 24" width="17" height="17" stroke="currentColor" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+    </svg>
+  ),
+  voice: (
+    <svg viewBox="0 0 24 24" width="17" height="17" stroke="currentColor" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+    </svg>
+  ),
+};
+const AI_TOOLS = [
+  { id: "photos",  label: "Photo Studio", desc: "White-bg product shots" },
+  { id: "names",   label: "Name Cleanup", desc: "Tidy product names" },
+  { id: "reorder", label: "Reorder",      desc: "Plan + slow movers" },
+  { id: "voice",   label: "Voice",        desc: "Pickup-board TTS" },
+];
+
+// Matches the sidebar breakpoint: true below `px` wide (tablet and down).
+function useIsNarrow(px = 980) {
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth <= px);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${px}px)`);
+    const onChange = (e) => setNarrow(e.matches);
+    setNarrow(mq.matches);
+    // Safari < 14 only has addListener/removeListener.
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", onChange);
+      else mq.removeListener(onChange);
+    };
+  }, [px]);
+  return narrow;
+}
+
+// Tolerant epoch-ms parse for status timestamps that may be ISO strings or ms.
+const aiTsMs = (v) => (typeof v === "number" ? v : Date.parse(v) || 0);
+
+function AiStatCard({ label, value, sub, tint, icon }) {
+  return (
+    <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.08)", borderRadius:16, padding:"14px 16px", minWidth:0 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+        <span style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.55)" }}>{label}</span>
+        <span style={{ width:30, height:30, borderRadius:9, background:`${tint}22`, border:`1px solid ${tint}55`, color:tint, display:"flex", alignItems:"center", justifyContent:"center" }}>{icon}</span>
+      </div>
+      <div style={{ fontSize:24, fontWeight:800, letterSpacing:-.4, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{value}</div>
+      {sub && <div style={{ fontSize:11.5, color:"rgba(255,255,255,.4)", marginTop:3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function AiStudioView({ products, onExit }) {
+  const { user } = usePermissions();
+  const [tool, setTool] = usePersistedTab("aistudio", "photos");
+  const narrow = useIsNarrow(980);
+
+  // Stat-row data — live, same sources the tools themselves use.
+  const nameProposals  = useNameProposals();
+  const photoProposals = usePhotoProposals();
+  const pendingPhotos = useMemo(() => Object.values(photoProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [photoProposals]);
+  const pendingNames  = useMemo(() => Object.values(nameProposals  || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [nameProposals]);
+  const voice = usePickupVoiceSetting();
+  const [reorderStatus, setReorderStatus] = useState(null);
+  useEffect(() => {
+    const unsub = onValue(ref(database, "insights/reorderPlan/status"),
+      snap => setReorderStatus(snap.val()),
+      err  => console.warn("reorderPlan/status read error:", err.message));
+    return () => unsub();
+  }, []);
+  const reorderValue = useMemo(() => {
+    if (reorderStatus?.state === "running") return "Running…";
+    const t = aiTsMs(reorderStatus?.finishedAt) || aiTsMs(reorderStatus?.startedAt);
+    return t ? new Date(t).toLocaleDateString("en-ZA", { day:"numeric", month:"short" }) : "Never run";
+  }, [reorderStatus]);
+
+  // Same name → photo lookup InsightsView builds for InsightReorderTab.
+  const productPhotoMap = useMemo(() => {
+    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
+    const map = {};
+    (products || []).forEach(p => {
+      if (!p.name) return;
+      const entry = { photoUrl: p.photoUrl || null, photo: p.photo || "" };
+      map[p.name] = entry;
+      map[normKey(p.name)] = entry;
+    });
+    return map;
+  }, [products]);
+
+  const badgeOf = (id) => id === "photos" ? pendingPhotos : id === "names" ? pendingNames : 0;
+  const VOICE_LABELS = { browser: "Browser", openai: "OpenAI", elevenlabs: "ElevenLabs" };
+
+  const navItem = (t) => {
+    const on = tool === t.id;
+    const badge = badgeOf(t.id);
+    return (
+      <button key={t.id} onClick={() => setTool(t.id)}
+              style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", boxSizing:"border-box",
+                       background: on ? "rgba(74,127,255,.12)" : "transparent",
+                       border:"1px solid " + (on ? "rgba(74,127,255,.45)" : "transparent"),
+                       color: on ? "#9DBCFF" : "rgba(255,255,255,.6)",
+                       borderRadius:11, padding:"11px 13px", fontSize:13.5, fontWeight:600, cursor:"pointer",
+                       transition:"background .15s ease, color .15s ease, border-color .15s ease" }}>
+        {AI_TOOL_ICON[t.id]}
+        <span style={{ flex:1 }}>{t.label}</span>
+        {badge > 0 && <span style={{ background:"rgba(74,127,255,.25)", color:"#9DBCFF", fontSize:11, fontWeight:800, borderRadius:999, padding:"1px 8px" }}>{badge}</span>}
+      </button>
+    );
+  };
+
+  const switchViewBtn = (
+    <button onClick={onExit}
+            style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.12)",
+                     color:"rgba(255,255,255,.7)", borderRadius:10, padding:"9px 14px", fontSize:12.5, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
+      ⇄ Switch View
+    </button>
+  );
+
+  const sidebar = (
+    <aside style={{ width:224, flexShrink:0, position:"sticky", top:0, height:"100vh", boxSizing:"border-box",
+                    display:"flex", flexDirection:"column", gap:4, padding:"24px 14px 18px",
+                    background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.07)" }}>
+      <div style={{ padding:"0 10px 20px" }}>
+        <div style={{ fontSize:22, fontWeight:800, fontStyle:"italic", letterSpacing:-.6, color:"#fff" }}>marathon</div>
+        <div style={{ fontSize:10.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF", marginTop:1 }}>CLUB</div>
+      </div>
+      {AI_TOOLS.map(navItem)}
+      <div style={{ flex:1 }}/>
+      {switchViewBtn}
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:10, padding:"10px 12px", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12 }}>
+        <span style={{ width:30, height:30, borderRadius:"50%", flexShrink:0, background:"rgba(74,127,255,.2)", border:"1px solid rgba(74,127,255,.5)", color:"#9DBCFF", fontSize:13, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>
+          {(user?.email || "?")[0].toUpperCase()}
+        </span>
+        <span style={{ minWidth:0 }}>
+          <span style={{ display:"block", fontSize:12, fontWeight:700, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{(user?.email || "").split("@")[0]}</span>
+          <span style={{ display:"block", fontSize:10.5, color:"rgba(255,255,255,.4)" }}>Super admin</span>
+        </span>
+      </div>
+    </aside>
+  );
+
+  const chips = (
+    <div style={{ display:"flex", gap:8, flexWrap:"wrap", margin:"16px 0 0" }}>
+      {AI_TOOLS.map(t => {
+        const on = tool === t.id;
+        const badge = badgeOf(t.id);
+        return (
+          <button key={t.id} onClick={() => setTool(t.id)}
+                  style={{ display:"flex", alignItems:"center", gap:7,
+                           background: on ? "rgba(74,127,255,.22)" : "rgba(255,255,255,.05)",
+                           color: on ? "#9DBCFF" : "rgba(255,255,255,.55)",
+                           border:"1px solid " + (on ? "rgba(74,127,255,.55)" : "rgba(255,255,255,.12)"),
+                           borderRadius:999, padding:"8px 15px", fontSize:12.5, fontWeight:700, cursor:"pointer" }}>
+            {AI_TOOL_ICON[t.id]}{t.label}
+            {badge > 0 && <span style={{ background:"rgba(74,127,255,.3)", color:"#BDD2FF", fontSize:10.5, fontWeight:800, borderRadius:999, padding:"0 7px" }}>{badge}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const activeTool = AI_TOOLS.find(t => t.id === tool) || AI_TOOLS[0];
+  const toolBody =
+    tool === "names"   ? <AdminReviewNamesTab products={products} /> :
+    tool === "reorder" ? <InsightReorderTab productPhotoMap={productPhotoMap} /> :
+    tool === "voice"   ? <div style={{ padding:"14px 14px 8px" }}><PickupVoiceAdmin /></div> :
+                         <AdminReviewPhotosTab products={products} />;
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, display:"flex" }}>
+      {!narrow && sidebar}
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ maxWidth:1160, margin:"0 auto", padding: narrow ? "26px 16px 50px" : "30px 30px 60px", boxSizing:"border-box" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12 }}>
+            <div>
+              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                <span style={{ color:"#4A7FFF" }}>{RoleIcons.ai_studio}</span>
+                <span style={{ fontSize:25, fontWeight:800, letterSpacing:-.5 }}>AI Studio</span>
+              </div>
+              <div style={{ fontSize:13, color:"rgba(255,255,255,.5)", marginTop:4 }}>Every AI tool in one place — super admin only.</div>
+            </div>
+            {narrow && switchViewBtn}
+          </div>
+
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(175px, 1fr))", gap:12, marginTop:20 }}>
+            <AiStatCard label="Photos to review" value={pendingPhotos} sub="awaiting approve / reject" tint="#4A7FFF" icon={AI_TOOL_ICON.photos}/>
+            <AiStatCard label="Names to review"  value={pendingNames}  sub="awaiting approve / reject" tint="#A78BFA" icon={AI_TOOL_ICON.names}/>
+            <AiStatCard label="Reorder plan"     value={reorderValue}  sub={reorderStatus?.state === "running" ? "analysis in progress" : "last analysis run"} tint="#4ACA7A" icon={AI_TOOL_ICON.reorder}/>
+            <AiStatCard label="Pickup voice"     value={VOICE_LABELS[voice.engine] || "Browser"} sub={voice.enabled ? "announcements on" : "announcements off"} tint="#F59E0B" icon={AI_TOOL_ICON.voice}/>
+          </div>
+
+          {narrow && chips}
+
+          <section style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.08)", borderRadius:18, marginTop:18, overflow:"hidden" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:9, padding:"14px 16px 0" }}>
+              <span style={{ color:"#4A7FFF" }}>{AI_TOOL_ICON[activeTool.id]}</span>
+              <span style={{ fontSize:14.5, fontWeight:800 }}>{activeTool.label}</span>
+              <span style={{ fontSize:11.5, color:"rgba(255,255,255,.35)" }}>· {activeTool.desc}</span>
+            </div>
+            <div style={{ padding:"6px 2px 14px" }}>
+              {toolBody}
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminView({ products, orders, onExit }) {
-  // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation) are
-  // SUPER-ADMIN ONLY — a regular product_admin can manage products + sort
-  // categories, but not the AI tabs (which spend money per run).
-  const { isSuperAdmin } = usePermissions();
+  // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation,
+  // pickup-board voice) moved to the super-admin-only AI Studio view — this
+  // view is pure product management now (products + category sorting).
   // ── Add Product form state (collapsible at top of list) ─────────────────
   const [showAdd, setShowAdd] = useState(false);
   // Phase 12A: productType (sneaker default | clothing). Both types use a
@@ -2799,16 +3027,11 @@ function AdminView({ products, orders, onExit }) {
     try { return localStorage.getItem("marathon_admin_section") || "products"; } catch { return "products"; }
   });
   useEffect(() => { try { localStorage.setItem("marathon_admin_section", adminSection); } catch { /* storage off */ } }, [adminSection]);
-  // AI tabs are super-admin only — bounce a non-super-admin (e.g. one with a
-  // persisted AI tab from localStorage) back to Products.
-  const AI_SECTIONS = ["review-names", "review-photos"];
+  // The AI review tabs moved to AI Studio — bounce any persisted AI section
+  // (pre-move localStorage) back to Products, for everyone.
   useEffect(() => {
-    if (!isSuperAdmin && AI_SECTIONS.includes(adminSection)) setAdminSection("products");
-  }, [isSuperAdmin, adminSection]);
-  const nameProposals = useNameProposals();
-  const pendingNameCount = useMemo(() => Object.values(nameProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [nameProposals]);
-  const photoProposals = usePhotoProposals();
-  const pendingPhotoCount = useMemo(() => Object.values(photoProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [photoProposals]);
+    if (adminSection === "review-names" || adminSection === "review-photos") setAdminSection("products");
+  }, [adminSection]);
   const pendingCategoryCount = useMemo(() => (products || []).filter(p => p && p.subcategory === UNCATEGORIZED).length, [products]);
   // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
   //    browser back clears it. Listener stays mounted for the whole view. ──
@@ -3076,14 +3299,13 @@ function AdminView({ products, orders, onExit }) {
     );
   }
 
-  // Section toggle (Products ↔ Review Names), shown at the top of both sections.
+  // Section toggle (Products ↔ Categories) — the AI tabs live in AI Studio now.
   const sectionToggle = (
     <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["review-names","Names"],["review-photos","Photos"],["review-categories","Categories"]]
-        .filter(([val]) => isSuperAdmin || !AI_SECTIONS.includes(val))
+      {[["products","Products"],["review-categories","Categories"]]
         .map(([val, label]) => {
         const on = adminSection === val;
-        const badge = val === "review-names" ? pendingNameCount : val === "review-photos" ? pendingPhotoCount : val === "review-categories" ? pendingCategoryCount : 0;
+        const badge = val === "review-categories" ? pendingCategoryCount : 0;
         return (
           <button key={val} onClick={() => setAdminSection(val)}
             style={{ flex:"1 1 88px", minWidth:88, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 6px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
@@ -3118,8 +3340,6 @@ function AdminView({ products, orders, onExit }) {
     </div>
   );
 
-  if (adminSection === "review-names" && isSuperAdmin) return reviewShell(<AdminReviewNamesTab products={products} />);
-  if (adminSection === "review-photos" && isSuperAdmin) return reviewShell(<AdminReviewPhotosTab products={products} />);
   if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
 
   return (
@@ -3135,8 +3355,6 @@ function AdminView({ products, orders, onExit }) {
 
       <div style={{ height:12 }}/>
       {sectionToggle}
-
-      <div style={{ padding:"12px 14px 0" }}><PickupVoiceAdmin /></div>
 
       <div>
         {/* PRODUCTS HEADER ROW */}
@@ -10596,9 +10814,13 @@ function AppInner() {
     if (!role) return;
     // Stock is stockRole-gated (not permission-mapped) — drop non-stock users back home.
     if (role === ROLES.STOCK && !canAccessStock) { setRole(null); return; }
+    // AI Studio is isSuperAdmin-gated (not permission-mapped) — drop anyone
+    // else (e.g. a stale persisted role) back to the selector instead of
+    // leaving them on the null view.
+    if (role === ROLES.AI_STUDIO && !isSuperAdmin) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -10802,7 +11024,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} canAccessStock={canAccessStock} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
@@ -10813,6 +11035,10 @@ function AppInner() {
     view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} onExit={() => setRole(null)} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
+  // AI Studio is route-guarded on the REAL isSuperAdmin flag (verified email),
+  // not a grantable permission string — a non-super-admin who lands here via a
+  // persisted role or manual state gets null and drops back to the selector.
+  else if (role === ROLES.AI_STUDIO) view = isSuperAdmin ? <AiStudioView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
