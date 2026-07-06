@@ -1799,6 +1799,62 @@ const FIX_PRESETS = [
   ["Remove bg",     "remove every trace of the original background and props — show only the single product on flat pure white"],
 ];
 
+// ─── "RECENT" PICKER CATEGORY ─────────────────────────────────────────────────
+// Newest photo uploads across ALL categories. Upload time = photoUpdatedAt
+// (stamped on every admin photo upload/replace since 2026-07); fallback is the
+// creation time encoded in the product id ("p" + Date.now() — every product id
+// in the DB conforms), so legacy products sort correctly too. AI-studio
+// approvals deliberately do NOT stamp photoUpdatedAt: an approved re-shoot
+// isn't a new upload.
+const RECENT_DAYS = 14; // ~20 uploads/day currently → a fortnight is plenty of lookback…
+const RECENT_CAP  = 60; // …but render only the newest 60 (same DOM/fetch rationale as PICK_RENDER_CAP)
+const uploadTs = (p) => {
+  if (typeof p?.photoUpdatedAt === "number" && p.photoUpdatedAt > 0) return p.photoUpdatedAt;
+  const n = Number(String(p?.id || "").slice(1));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
+// SA-time (UTC+2, no DST) day bucket → header label "Today" / "Yesterday" / "3 Jul".
+const saDay = (ms) => new Date(ms + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
+const RECENT_MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const recentDayLabel = (day) => {
+  if (day === saDay(Date.now())) return "Today";
+  if (day === saDay(Date.now() - 864e5)) return "Yesterday";
+  return `${Number(day.slice(8, 10))} ${RECENT_MONTHS[Number(day.slice(5, 7)) - 1]}`;
+};
+
+// One card in the Recent grid: square photo, name strip, green selection ring
+// (same selected-green as the list rows). Shimmer placeholder + fade-in so the
+// grid doesn't pop as thumbnails arrive.
+function RecentPickCard({ p, selected, onToggle }) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <div onClick={onToggle} title={p.name}
+         style={{ position:"relative", borderRadius:12, overflow:"hidden", cursor:"pointer",
+                  background:"rgba(255,255,255,.04)",
+                  border:"1px solid " + (selected ? "rgba(74,202,122,.65)" : "rgba(255,255,255,.08)"),
+                  boxShadow: selected ? "0 0 0 1px rgba(74,202,122,.65), 0 4px 18px rgba(74,202,122,.14)" : "none",
+                  transition:"border-color .15s ease, box-shadow .15s ease" }}>
+      <img src={p.photoUrl} alt="" loading="lazy" decoding="async" onLoad={() => setLoaded(true)}
+           style={{ width:"100%", aspectRatio:"1", objectFit:"cover", display:"block",
+                    opacity: loaded ? 1 : 0, transition:"opacity .25s ease" }}/>
+      {!loaded && (
+        <div style={{ position:"absolute", inset:0,
+                      background:"linear-gradient(110deg, rgba(255,255,255,.03) 30%, rgba(255,255,255,.09) 50%, rgba(255,255,255,.03) 70%)",
+                      backgroundSize:"200% 100%", animation:"recentShimmer 1.4s linear infinite" }}/>
+      )}
+      <div style={{ position:"absolute", left:0, right:0, bottom:0, padding:"14px 7px 5px",
+                    background:"linear-gradient(transparent, rgba(0,0,0,.72))",
+                    fontSize:10, fontWeight:600, color:"rgba(255,255,255,.88)",
+                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
+      {selected && (
+        <span style={{ position:"absolute", top:5, right:5, width:20, height:20, borderRadius:"50%",
+                       background:"#4ACA7A", color:"#04150B", fontSize:12, fontWeight:900,
+                       display:"flex", alignItems:"center", justifyContent:"center" }}>✓</span>
+      )}
+    </div>
+  );
+}
+
 function AdminReviewPhotosTab({ products = [] }) {
   const proposals = usePhotoProposals();
   const [busyId, setBusyId]   = useState(null);
@@ -1822,9 +1878,11 @@ function AdminReviewPhotosTab({ products = [] }) {
   // Product picker: choose specific products to generate (multi-select).
   const [picking, setPicking]   = useState(false);
   const [pickSearch, setPickSearch] = useState("");
-  // One filter value: "" = all · "cat:Footwear" = a whole top-level · "sub:Caps & Hats"
-  // = one subcategory. A single grouped dropdown so subcategories are directly pickable.
-  const [pickFilter, setPickFilter] = useState("");
+  // One filter value: "recent" = newest uploads (the default view) · "" = all ·
+  // "cat:Footwear" = a whole top-level · "sub:Caps & Hats" = one subcategory.
+  // Non-recent values come from a single grouped dropdown so subcategories are
+  // directly pickable.
+  const [pickFilter, setPickFilter] = useState("recent");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   // Re-run a product that already has a proposal (e.g. to redo earlier batches
   // through the improved engine). Off by default so the normal flow still hides
@@ -1842,8 +1900,28 @@ function AdminReviewPhotosTab({ products = [] }) {
     else if (pickFilter.startsWith("sub:")) { const s = pickFilter.slice(4); avail = avail.filter(p => p.subcategory === s); }
     const q = pickSearch.trim();
     if (q) avail = avail.filter(p => productMatchesQuery(p, q));
+    if (pickFilter === "recent") {
+      // Newest uploads across all categories: last RECENT_DAYS days, newest
+      // first, capped at RECENT_CAP for the grid.
+      const cutoff = Date.now() - RECENT_DAYS * 864e5;
+      return avail.filter(p => uploadTs(p) >= cutoff)
+        .sort((a, b) => uploadTs(b) - uploadTs(a))
+        .slice(0, RECENT_CAP);
+    }
     return avail.sort((a, b) => a.name.localeCompare(b.name));
   }, [products, pickSearch, pickFilter, handledIds, includeDone]);
+  // Day-grouped view of the Recent list: [{ day:"2026-07-06", items:[…] }, …].
+  // pickList is already newest-first, so groups come out in display order.
+  const recentGroups = useMemo(() => {
+    if (pickFilter !== "recent") return [];
+    const groups = [];
+    for (const p of pickList) {
+      const day = saDay(uploadTs(p));
+      if (!groups.length || groups[groups.length - 1].day !== day) groups.push({ day, items: [] });
+      groups[groups.length - 1].items.push(p);
+    }
+    return groups;
+  }, [pickFilter, pickList]);
   // Per-category / per-subcategory count of products that are STILL pickable
   // (have a source photo + not already generated). Shown next to each dropdown
   // option so you can see at a glance which categories have work left — without
@@ -2057,10 +2135,29 @@ function AdminReviewPhotosTab({ products = [] }) {
       {/* PRODUCT PICKER — search, tap to select as many as you want, then generate exactly those. */}
       {picking && (
         <div style={{ background:"rgba(8,11,20,.95)", border:"1px solid rgba(74,127,255,.3)", borderRadius:12, padding:12, marginBottom:14 }}>
+          <style>{`@keyframes recentShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }`}</style>
+          {/* View chips — "Recent" (newest uploads across all categories, the
+              default) vs "Browse categories" (the grouped dropdown below). */}
+          <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+            {[["recent", "✦ Recent"], ["", "Browse categories"]].map(([val, label]) => {
+              const active = (pickFilter === "recent") === (val === "recent");
+              return (
+                <button key={val || "browse"} onClick={() => setPickFilter(val)}
+                        style={{ background: active ? "rgba(74,127,255,.22)" : "rgba(255,255,255,.05)",
+                                 color: active ? "#9DBCFF" : "rgba(255,255,255,.55)",
+                                 border:"1px solid " + (active ? "rgba(74,127,255,.55)" : "rgba(255,255,255,.12)"),
+                                 borderRadius:999, padding:"7px 14px", fontSize:12, fontWeight:700, cursor:"pointer",
+                                 transition:"background .15s ease, color .15s ease, border-color .15s ease" }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
           <input value={pickSearch} onChange={e => setPickSearch(e.target.value)} placeholder="Search products by name or barcode…"
                  style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"9px 11px", fontSize:13.5, marginBottom:8 }}/>
           {/* Category filter — ONE grouped dropdown: every top-level AND every subcategory
               (Caps & Hats, T-Shirts, Sneakers…) directly pickable, grouped by top level. */}
+          {pickFilter !== "recent" && (
           <select value={pickFilter} onChange={e => setPickFilter(e.target.value)} aria-label="Filter by category"
                   style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"8px 9px", fontSize:12.5, marginBottom:8 }}>
             <option value="">All categories</option>
@@ -2071,6 +2168,7 @@ function AdminReviewPhotosTab({ products = [] }) {
               </optgroup>
             ))}
           </select>
+          )}
           {/* Re-run already-done products (e.g. redo earlier batches through the improved
               engine). Counts + list switch to include them when on. */}
           <label style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, cursor:"pointer", fontSize:12, color:"rgba(255,255,255,.75)" }}>
@@ -2079,7 +2177,9 @@ function AdminReviewPhotosTab({ products = [] }) {
           </label>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
             <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>
-              {pickList.length} product{pickList.length===1?"":"s"} {includeDone ? "available (incl. done)" : "not yet done"}{!includeDone && handledIds.size ? ` · ${handledIds.size} hidden` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}
+              {pickFilter === "recent"
+                ? <>{pickList.length} upload{pickList.length===1?"":"s"} · last {RECENT_DAYS} days{pickList.length >= RECENT_CAP ? ` (newest ${RECENT_CAP})` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}</>
+                : <>{pickList.length} product{pickList.length===1?"":"s"} {includeDone ? "available (incl. done)" : "not yet done"}{!includeDone && handledIds.size ? ` · ${handledIds.size} hidden` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}</>}
             </span>
             {pickList.length > 0 && (
               <button onClick={selectAllShown}
@@ -2088,6 +2188,33 @@ function AdminReviewPhotosTab({ products = [] }) {
               </button>
             )}
           </div>
+          {/* RECENT — day-grouped grid of newest uploads, tap to select. */}
+          {pickFilter === "recent" && (
+            <div style={{ maxHeight:420, overflowY:"auto" }}>
+              {recentGroups.map(g => (
+                <div key={g.day}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, margin:"10px 2px 7px" }}>
+                    <span style={{ fontSize:11, fontWeight:800, letterSpacing:.4, textTransform:"uppercase", color:"rgba(157,188,255,.85)" }}>{recentDayLabel(g.day)}</span>
+                    <span style={{ flex:1, height:1, background:"linear-gradient(90deg, rgba(74,127,255,.28), transparent)" }}/>
+                    <span style={{ fontSize:10.5, color:"rgba(255,255,255,.35)" }}>{g.items.length}</span>
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(92px, 1fr))", gap:8 }}>
+                    {g.items.map(p => <RecentPickCard key={p.id} p={p} selected={selectedIds.has(p.id)} onToggle={() => toggleSel(p.id)}/>)}
+                  </div>
+                </div>
+              ))}
+              {pickList.length === 0 && (
+                <div style={{ textAlign:"center", padding:"28px 10px 22px" }}>
+                  <div style={{ fontSize:22, marginBottom:6, opacity:.5 }}>✦</div>
+                  <div style={{ fontSize:13, fontWeight:700, color:"rgba(255,255,255,.75)" }}>No recent uploads</div>
+                  <div style={{ fontSize:11.5, color:"rgba(255,255,255,.4)", marginTop:4 }}>
+                    {pickSearch.trim() ? "Nothing in the last 14 days matches that search." : `Nothing uploaded in the last ${RECENT_DAYS} days${!includeDone ? " that isn't already done — tick “Include already-done” to see everything" : ""}.`}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {pickFilter !== "recent" && (
           <div style={{ maxHeight:380, overflowY:"auto", display:"flex", flexDirection:"column", gap:6 }}>
             {pickList.slice(0, PICK_RENDER_CAP).map(p => {
               const on = selectedIds.has(p.id);
@@ -2104,7 +2231,8 @@ function AdminReviewPhotosTab({ products = [] }) {
             })}
             {pickList.length === 0 && <div style={{ color:"#555", fontSize:12, padding:"12px 4px" }}>{(pickSearch.trim() || pickFilter) ? "No products match these filters (those products may have no source photo, or are already done)." : "All products already generated 🎉"}</div>}
           </div>
-          {pickList.length > PICK_RENDER_CAP && (
+          )}
+          {pickList.length > PICK_RENDER_CAP && pickFilter !== "recent" && (
             <div style={{ fontSize:10.5, color:"rgba(255,255,255,.4)", marginTop:6 }}>
               Showing first {PICK_RENDER_CAP} of {pickList.length} — narrow with a subcategory or search. “Select all” still grabs up to {PICK_CAP}.
             </div>
@@ -2731,6 +2859,10 @@ function AdminView({ products, orders, onExit }) {
         sizes: form.sizes,
         id,
       };
+      // A real photo was uploaded with the product — stamp the upload time
+      // (drives the AI Photo Studio picker's "Recent" view; legacy products
+      // fall back to the id-encoded creation time).
+      if (form.photoBlob) newProduct.photoUpdatedAt = Date.now();
       // POS Phase 2: parse the price strings. Empty / non-finite / non-positive
       // → omit the field entirely. We never want to write `0` and have the POS
       // treat the product as free.
@@ -3286,7 +3418,10 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           const sRef = storageRef(storage, `products/${product.id}/photo.jpg`);
           await uploadBytes(sRef, blob, { contentType: "image/jpeg" });
           const url = await getDownloadURL(sRef);
-          await update(ref(database, `products/${product.id}`), { photoUrl: url });
+          // photoUpdatedAt: upload-time stamp for the AI Photo Studio "Recent"
+          // view. Only human uploads stamp it — an approved AI re-shoot isn't
+          // a new upload, so approve() deliberately leaves it alone.
+          await update(ref(database, `products/${product.id}`), { photoUrl: url, photoUpdatedAt: Date.now() });
         } catch (err) {
           console.error("photo upload failed:", err);
           alert("Failed to save photo. Please try again.");
