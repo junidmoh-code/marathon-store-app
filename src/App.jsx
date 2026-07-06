@@ -2430,8 +2430,11 @@ function RegenerateModal({ row, quality, house = false, product = null, extraCou
   const [note, setNote] = useState("");
   const [keepFirst, setKeepFirst] = useState(true); // keep the current photo before re-shooting (no extra cost)
   // Box-photo slot state (house + sneaker only). boxUrl mirrors the product's
-  // photoBoxUrl and updates optimistically after an upload.
-  const isSneaker = (product?.productType || row.productType || "sneaker") !== "clothing";
+  // photoBoxUrl and updates optimistically after an upload. Mirror the backend's
+  // clothing test EXACTLY (category === "Clothing" || productType === "clothing")
+  // so we never show a box slot for something the function treats as clothing —
+  // otherwise the uploaded box would be silently ignored in house generation.
+  const isSneaker = !((product?.category || row.category) === "Clothing" || (product?.productType || row.productType) === "clothing");
   const [boxUrl, setBoxUrl] = useState(product?.photoBoxUrl || null);
   const [boxBusy, setBoxBusy] = useState(false);
   const [boxErr, setBoxErr] = useState(null);
@@ -4111,6 +4114,10 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
 
   // Box photo (sneakers) — the shoe's own retail-box shot, attached to AI
   // Photo Studio HOUSE-STYLE generations so the AI reproduces the real box.
+  // Gate on the SAME clothing test the backend uses (category OR productType),
+  // not the size-logic `isClothing` above (productType only), so the slot never
+  // shows for a category:"Clothing" item whose box the function would ignore.
+  const isSneakerForBox = !(product.category === "Clothing" || (product.productType || "") === "clothing");
   const boxFileRef = useRef(null);
   const [boxUploading, setBoxUploading] = useState(false);
   const handleBoxFile = async (e) => {
@@ -4324,7 +4331,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
         )}
         {/* BOX PHOTO — sneakers only. Attached automatically to house-style AI
             re-shoots so the generated scene shows the REAL retail box. */}
-        {!isClothing && (
+        {isSneakerForBox && (
           <div style={{ ...cardInner, display:"flex", alignItems:"center", gap:10, borderTop:"1px solid rgba(255,255,255,.05)", paddingTop:12 }}>
             {product.photoBoxUrl
               ? <img src={product.photoBoxUrl} alt="Box" onClick={() => setGalleryView([product.photoBoxUrl])}

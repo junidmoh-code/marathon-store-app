@@ -2095,6 +2095,10 @@ const GEMINI_FLAT_IMAGE_USD = 0.067;   // fallback per-image when usageMetadata 
 const NBPRO_MODEL           = "gemini-3-pro-image";
 const NBPRO_OUT_PER_MTOK    = 120;     // $/1M image-output tokens (1120 tok ≈ $0.134 per 1K/2K image)
 const NBPRO_FLAT_IMAGE_USD  = 0.134;   // fallback per-image when usageMetadata is absent
+// Per-request abort so a stalled upstream call fails fast instead of pinning the
+// worker for the Cloud Function's full 540s timeout (esp. NB Pro multi-image gens).
+// Generous headroom over a normal gen (~30-90s) so legitimate slow calls complete.
+const GEMINI_FETCH_TIMEOUT_MS = 180000;
 
 // Core generateContent call shared by both Gemini engines: takes prebuilt
 // `parts` (interleaved text labels + inline images) and returns the first
@@ -2103,14 +2107,25 @@ const NBPRO_FLAT_IMAGE_USD  = 0.134;   // fallback per-image when usageMetadata 
 async function geminiGenerateImage(apiKey, model, parts, { outPerMtok, flatUsd, imageConfig } = {}) {
   const body = { contents: [{ parts }] };
   if (imageConfig) body.generationConfig = { imageConfig };
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify(body),
-    },
-  );
+  let res;
+  try {
+    res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(GEMINI_FETCH_TIMEOUT_MS),
+      },
+    );
+  } catch (err) {
+    // Normalise the abort into the same Error-with-message path as HTTP failures,
+    // so the per-product worker catch logs it consistently and moves on.
+    if (err && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      throw new Error(`gemini request timed out after ${GEMINI_FETCH_TIMEOUT_MS / 1000}s`);
+    }
+    throw err;
+  }
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(`gemini HTTP ${res.status}: ${txt.slice(0, 200)}`);
@@ -2412,6 +2427,13 @@ exports.generateProductPhotos = onCall(
           // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
           const size = isClothing ? "1024x1536" : PHOTO_SIZE;
           const kit = styleKit ? styleKit[template] : null;
+          // Never write a style:"house" proposal that isn't actually reference-
+          // conditioned: if the template has no enabled refs (or every ref fetch
+          // failed), fail this product loudly instead of burning an NB Pro gen on
+          // an ungrounded result. The Style Kit panel warns when a template is empty.
+          if (kit && !kit.refs.length) {
+            throw new Error(`house style: no usable ${template} Style Kit references`);
+          }
           // name-aware + optional per-run fix note; house swaps in the template's locked prompt
           const prompt = buildPhotoPrompt(p.name, note, kit ? kit.prompt : PHOTO_PROMPT);
           // Sneaker house shots include the product's own box photo when one is

@@ -16,14 +16,16 @@ service firebase.storage {
     }
 
     // AI Studio Style Kit reference images (aiStudio/styleKit/{template}/…).
-    // Same policy as /products: public read (non-sensitive scene photos; the
-    // generate function fetches them by URL), write requires an authenticated,
-    // non-anonymous user. The Style Kit panel itself is super-admin gated in
-    // the UI, and generation is assertAdmin server-side.
+    // Public read (non-sensitive scene photos; the generate function fetches
+    // them by URL). Writes restricted to the super-admin — these refs drive
+    // EVERY house-style generation store-wide, so a non-super-admin staff user
+    // must not be able to overwrite/delete them via the Storage SDK. Mirrors
+    // ADMIN_EMAIL (functions assertAdmin / PermissionsContext) and the
+    // broadcast-media gate below, rather than relying on the UI gate alone.
     match /aiStudio/{allPaths=**} {
       allow read: if true;
       allow write: if request.auth != null
-                   && request.auth.token.firebase.sign_in_provider != 'anonymous';
+                   && request.auth.token.email == "gunidmoh@gmail.com";
     }
 
     // Broadcast media. Public read so the broadcast VM can fetch
