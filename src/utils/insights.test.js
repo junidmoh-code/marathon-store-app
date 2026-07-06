@@ -7,6 +7,7 @@ import {
   oosEventsForPeriod,
   readyEventsForPeriod,
   clothingRefillEventsForPeriod,
+  clothingSoldEvents,
 } from "./insights";
 
 // A one-day window. Timestamps use mid-day UTC so the +2h SA shift never crosses
@@ -180,5 +181,57 @@ describe("clothingRefillEventsForPeriod", () => {
       const orders = [{ id: "001", productType: "clothing", placedAtHub: "hub2", createdAt: "2026-06-16T08:00:00.000Z", size: "M" }];
       expect(sumQty(clothingRefillEventsForPeriod({ ...base, orders }))).toBe(1);
     });
+  });
+});
+
+describe("clothingSoldEvents — Source Clothing Sold refill feed", () => {
+  const ev = (over = {}) => ({
+    id: "k1", action: "sold", productType: "clothing", productId: "p1",
+    productName: "Nike Tee", size: "M", qty: 1, destShop: "marathon-pe",
+    timestamp: "2026-07-06T10:00:00.000Z", ...over,
+  });
+
+  it("keeps clothing `sold` events at the refill shops, mapped with id/shop/qty", () => {
+    const out = clothingSoldEvents({ log: [ev()] });
+    expect(out).toEqual([{
+      id: "k1", productId: "p1", productName: "Nike Tee", size: "M",
+      qty: 1, shop: "marathon-pe", timestamp: "2026-07-06T10:00:00.000Z",
+    }]);
+  });
+
+  it("drops other actions, other shops, non-clothing, and events without destShop", () => {
+    const log = [
+      ev({ id: "a", action: "collected" }),               // wrong action (legacy collected not consumed)
+      ev({ id: "b", destShop: "marathon-pine" }),          // shop not in the default list
+      ev({ id: "c", destShop: undefined }),                // legacy event — no shop attribution
+      ev({ id: "d", productType: "sneaker", size: "9" }),  // not clothing
+      ev({ id: "e" }),                                     // the one keeper
+    ];
+    expect(clothingSoldEvents({ log }).map(e => e.id)).toEqual(["e"]);
+  });
+
+  it("honors a custom shops list (adding Pine is a one-entry change)", () => {
+    const log = [ev({ id: "pine", destShop: "marathon-pine" })];
+    expect(clothingSoldEvents({ log, shops: ["marathon-pine"] })).toHaveLength(1);
+  });
+
+  it("windows by sinceMs and sorts newest first", () => {
+    const log = [
+      ev({ id: "old", timestamp: "2026-07-01T10:00:00.000Z" }),
+      ev({ id: "older", timestamp: "2026-06-01T10:00:00.000Z" }),
+      ev({ id: "new", timestamp: "2026-07-06T10:00:00.000Z" }),
+    ];
+    const out = clothingSoldEvents({ log, sinceMs: new Date("2026-06-30T00:00:00Z").getTime() });
+    expect(out.map(e => e.id)).toEqual(["new", "old"]);
+  });
+
+  it("qty falls back to 1 when absent/invalid (legacy events)", () => {
+    const out = clothingSoldEvents({ log: [ev({ qty: undefined }), ev({ id: "k2", qty: -2 })] });
+    expect(out.every(e => e.qty === 1)).toBe(true);
+  });
+
+  it("legacy events lacking productType still classify via the size heuristic", () => {
+    const out = clothingSoldEvents({ log: [ev({ productType: undefined, size: "XL" })] });
+    expect(out).toHaveLength(1);
   });
 });

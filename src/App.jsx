@@ -23,7 +23,7 @@ import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { sellableLocations, labelFor, transferTargets } from "./components/stock/locations";
 import { useStockCells, useLocations } from "./components/stock/useStock";
-import { shopUniverse } from "./utils/stores";
+import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
@@ -31,7 +31,7 @@ import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
-import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod } from "./utils/insights";
+import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, clothingSoldEvents } from "./utils/insights";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -581,9 +581,13 @@ function useInsightsLog() {
     const unsub = onValue(ref(database, "insights_log"), snap => {
       const data = snap.val();
       if (!data) { setLog([]); return; }
+      // Entries carry their push key as `id` — the Source view's Clothing Sold
+      // tab keys per-event refill confirmations off it. (Log events have no
+      // `id` field of their own, so the spread can't collide.)
       setLog(
-        Object.values(data)
-          .filter(Boolean)
+        Object.entries(data)
+          .filter(([, e]) => !!e)
+          .map(([id, e]) => ({ id, ...e }))
           .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp))
       );
     });
@@ -814,6 +818,39 @@ function saveSourceResponse(date, productKey, size, response) {
 function clearSourceResponse(date, productKey, size) {
   return remove(ref(database, `restock_requests/${date}/${productKey}/${size}`))
     .catch(err => console.warn("clearSourceResponse failed:", err));
+}
+
+// ── CLOTHING SOLD refill confirmations (Source view) ──────────────────────────
+// Keyed by the insights_log event's push id — one confirmation per sold event
+// (per-EVENT, unlike restock_requests' per-product-size keying: sold events are
+// line-level and already unique). Payload mirrors the {response, respondedOn}
+// source-response shape, plus respondedBy (the signed-in staff label) since the
+// refill crew asked "who confirmed".
+// Path: clothing_sold_refills/{insightEventId}
+function saveClothingSoldRefill(eventId, respondedBy) {
+  return update(ref(database, "clothing_sold_refills"), {
+    [eventId]: { response: "refilled", respondedOn: new Date().toISOString(), respondedBy: respondedBy || null },
+  }).catch(err => console.warn("saveClothingSoldRefill failed:", err));
+}
+
+// Undo — the sold event returns to the pending refill list.
+function clearClothingSoldRefill(eventId) {
+  return remove(ref(database, `clothing_sold_refills/${eventId}`))
+    .catch(err => console.warn("clearClothingSoldRefill failed:", err));
+}
+
+// Live map { eventId: { response, respondedOn, respondedBy } }.
+function useClothingSoldRefills() {
+  const authReady = useAuthReady();
+  const [confirmations, setConfirmations] = useState({});
+  useEffect(() => {
+    if (!authReady) return;
+    const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
+      setConfirmations(snap.val() || {});
+    });
+    return () => unsub();
+  }, [authReady]);
+  return confirmations;
 }
 
 // Raw OOS log for today — real-time stream, no compilation needed.
@@ -7360,11 +7397,190 @@ function getSAYesterdayString() {
   return now.toISOString().slice(0, 10);
 }
 
-function SourceView({ onExit, orders, returnsLog }) {
+// ─── SOURCE — CLOTHING SOLD (refill feed) ─────────────────────────────────────
+// Every clothing item sold at the refill shops (utils/insights
+// CLOTHING_SOLD_SHOPS), fed by immutable insights_log `sold` events written by
+// the POS at sale finalize. The crew works the list newest-first, taps Refilled
+// once the floor is restocked, and the card moves to the completed section
+// (Undo returns it) — same rhythm as the hub tabs and Display Refills.
+
+// "14:32" for today (SA time), "Sat 05 Jul · 14:32" for older events.
+function fmtSoldWhen(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const saDay = new Date(d.getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (saDay === getSADateString()) return time;
+  return d.toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" }) + " · " + time;
+}
+
+function ClothingSoldPendingCard({ event, product, onRefilled }) {
+  const [busy, setBusy] = useState(false);
+  const tap = () => {
+    if (busy) return;
+    setBusy(true);
+    onRefilled();
+    // Card unmounts when the confirmation echoes back; belt-and-braces guard
+    // for the tap→Firebase round-trip window (same as PendingCard).
+    setTimeout(() => setBusy(false), 1500);
+  };
+  return (
+    <div style={{
+      background:"rgba(4,5,10,1)",
+      border:"1px solid rgba(60,110,255,.6)",
+      borderRadius:14,
+      padding:14,
+      boxShadow:"0 0 10px rgba(60,110,255,.15)",
+      opacity: busy ? 0.7 : 1,
+      transition:"opacity 120ms ease",
+    }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
+        <ProductPhoto url={product?.photoUrl} photo={product?.photo} size={48} radius={10}/>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{event.productName}</div>
+          <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginTop:2 }}>
+            {SHOP_LABELS[event.shop] || event.shop} · {fmtSoldWhen(event.timestamp)}
+          </div>
+        </div>
+      </div>
+      <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px", marginBottom:10 }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={event.size} /></span>
+        {event.qty > 1 && <span style={{ fontSize:10, color:"#4A7FFF", fontWeight:600 }}>×{event.qty}</span>}
+      </div>
+      <div style={{ display:"flex", gap:8 }}>
+        <button disabled={busy} onClick={tap}
+                style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor: busy ? "default" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.4)", color:"#4ADE80" }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Refilled
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ClothingSoldCompletedCard({ event, product, conf, onUndo }) {
+  const accent = "rgba(74,222,128,.5)";
+  return (
+    <div style={{
+      background:"rgba(4,5,10,1)",
+      border:`1px solid ${accent}`,
+      borderLeft:`3px solid ${accent}`,
+      borderRadius:14, padding:14,
+      opacity:0.85,
+    }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
+        <ProductPhoto url={product?.photoUrl} photo={product?.photo} size={48} radius={10}/>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{event.productName}</div>
+          <div style={{ display:"inline-flex", alignItems:"center", gap:5, marginTop:4, padding:"2px 8px", borderRadius:999, background:"rgba(74,222,128,.08)", border:`1px solid ${accent}`, color:"#4ADE80", fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Refilled
+          </div>
+        </div>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+        <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.2)", borderRadius:8, padding:"5px 10px" }}>
+          <span style={{ fontSize:12, fontWeight:700, color:"rgba(255,255,255,.7)" }}>Size <SizeTag size={event.size} /></span>
+          {event.qty > 1 && <span style={{ fontSize:10, color:BLUE, fontWeight:600 }}>×{event.qty}</span>}
+        </div>
+        <div style={{ fontSize:10, color:"rgba(255,255,255,.35)", minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+          {SHOP_LABELS[event.shop] || event.shop}
+          {conf?.respondedBy ? ` · by ${conf.respondedBy}` : ""}
+          {conf?.respondedOn ? ` · ${fmtSoldWhen(conf.respondedOn)}` : ""}
+        </div>
+        <div style={{ flex:1 }} />
+        <button onClick={onUndo}
+                style={{ padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+          </svg>
+          Undo
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// soldEvents    = newest-first from clothingSoldEvents (utils/insights)
+// confirmations = { eventId: { response, respondedOn, respondedBy } } — live
+function SourceClothingSoldTab({ soldEvents, confirmations, productsById, onRefilled, onUndo }) {
+  const [showCompleted, setShowCompleted] = useState(false);
+
+  const { pending, completed, totalUnits } = useMemo(() => {
+    const pending = [], completed = [];
+    for (const e of soldEvents) {
+      const conf = confirmations[e.id];
+      if (conf) completed.push({ event: e, conf });
+      else pending.push(e);
+    }
+    return { pending, completed, totalUnits: pending.reduce((a, e) => a + e.qty, 0) };
+  }, [soldEvents, confirmations]);
+
+  if (!pending.length && !completed.length) return (
+    <div style={{ textAlign:"center", color:"#444", padding:"4rem" }}>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeOpacity="0.4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/></svg>
+      <div style={{ fontSize:"1rem", marginTop:"0.75rem", color:"rgba(255,255,255,.55)" }}>No clothing sold to refill.</div>
+    </div>
+  );
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        <div style={{ fontSize:12, color:"rgba(255,255,255,.45)", fontWeight:600 }}>
+          {pending.length} sold item{pending.length === 1 ? "" : "s"} · {totalUnits} unit{totalUnits === 1 ? "" : "s"} to refill
+        </div>
+        <div style={{ flex:1 }} />
+        {completed.length > 0 && (
+          <CompletedTogglePill on={showCompleted} count={completed.length} onClick={() => setShowCompleted(v => !v)} />
+        )}
+      </div>
+
+      {pending.map(e => (
+        <ClothingSoldPendingCard key={e.id} event={e} product={productsById[e.productId]} onRefilled={() => onRefilled(e.id)} />
+      ))}
+
+      {showCompleted && completed.length > 0 && (
+        <>
+          <div style={{ marginTop:10, marginBottom:2, display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
+            <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>COMPLETED</div>
+            <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
+          </div>
+          {completed.map(({ event, conf }) => (
+            <ClothingSoldCompletedCard key={event.id} event={event} conf={conf} product={productsById[event.productId]} onUndo={() => onUndo(event.id)} />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SourceView({ onExit, orders, returnsLog, products, staffName }) {
   const [tab, setTab] = usePersistedTab("source", "today");
   // Active hub — shared across all three top tabs. Defaults to Hub 1.
+  // "clothingSold" is the third pill: the refill feed replaces the top-tab
+  // content entirely while it's selected (its window is fixed, not per-day).
   const [hub, setHub] = useState("hub1");
   const todayDate   = getSADateString();
+
+  // CLOTHING SOLD — insights_log `sold` events at the refill shops, plus the
+  // per-event Refilled confirmations. Listeners live here (not app root) so
+  // they only run while Source is open.
+  const insightsLog = useInsightsLog();
+  const soldConfirmations = useClothingSoldRefills();
+  const soldEvents = useMemo(
+    () => clothingSoldEvents({ log: insightsLog, sinceMs: Date.now() - HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000 }),
+    [insightsLog],
+  );
+  const clothingSoldBadge = useMemo(
+    () => soldEvents.filter(e => !soldConfirmations[e.id]).length,
+    [soldEvents, soldConfirmations],
+  );
+  const productsById = useMemo(() => {
+    const map = {};
+    for (const p of products || []) if (p?.id) map[p.id] = p;
+    return map;
+  }, [products]);
 
   // On Hold response state — read once here so badges and the On Hold tab
   // share the same source of truth (no duplicate Firebase listeners).
@@ -7538,7 +7754,10 @@ function SourceView({ onExit, orders, returnsLog }) {
         </div>
       </div>
       <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
-      {/* TOP TABS — Today / History / On Hold */}
+      {/* TOP TABS — Today / History / On Hold. Hidden while the Clothing Sold
+          pill is active: the refill feed has its own fixed window, so the
+          per-day request tabs don't apply to it. */}
+      {hub !== "clothingSold" && (
       <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8 }}>
         {[["today","Today's Request"],["history","History"],["onhold","On Hold"]].map(([key, label]) => (
           <div key={key} onClick={() => setTab(key)}
@@ -7547,11 +7766,13 @@ function SourceView({ onExit, orders, returnsLog }) {
           </div>
         ))}
       </div>
-      {/* HUB SUB-TABS — segmented pill, shared across all three top tabs */}
+      )}
+      {/* HUB SUB-TABS — segmented pill, shared across all three top tabs.
+          Third pill: Clothing Sold (the floor-refill feed). */}
       <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
-        {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
+        {[["hub1","Hub 1"],["hub2","Hub 2"],["clothingSold","Clothing Sold"]].map(([val, label]) => {
           const active = hub === val;
-          const badge = hubBadges[val] || 0;
+          const badge = val === "clothingSold" ? clothingSoldBadge : (hubBadges[val] || 0);
           return (
             <button key={val} onClick={() => setHub(val)}
                     style={{
@@ -7582,6 +7803,14 @@ function SourceView({ onExit, orders, returnsLog }) {
         })}
       </div>
       <div style={{ padding:"1.5rem" }}>
+        {hub === "clothingSold" ? (
+          <SourceClothingSoldTab
+            soldEvents={soldEvents}
+            confirmations={soldConfirmations}
+            productsById={productsById}
+            onRefilled={(eventId) => saveClothingSoldRefill(eventId, staffName)}
+            onUndo={clearClothingSoldRefill} />
+        ) : (<>
         {tab==="today"   && <SourceTodayTab
                               rawCounts={rawCounts}
                               responses={allResponses[todayDate] || {}}
@@ -7596,6 +7825,7 @@ function SourceView({ onExit, orders, returnsLog }) {
                               hub={hub}
                               onResponse={handleResponse} />}
         {tab==="onhold"  && <SourceOnHoldTab orders={orders} hub={hub} onHoldResponses={onHoldResponses} />}
+        </>)}
       </div>
     </div>
   );
@@ -10728,7 +10958,7 @@ function AppInner() {
   } else if (!role) {
     view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} canAccessStock={canAccessStock} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
-  else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} onExit={() => setRole(null)} />);
+  else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} staffName={permRecord?.displayName || permRecord?.username || authUser?.email?.split("@")[0] || "Staff"} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMERS_DB)   view = guard(ROLES.CUSTOMERS_DB, <CustomersView  onExit={() => setRole(null)} />);
   else if (role === ROLES.DISPLAY) {
