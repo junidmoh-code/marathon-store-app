@@ -2080,16 +2080,18 @@ function estimateImageCostUSD(usage) {
 // base64 inline_data SOMEWHERE in candidates[0].content.parts — we ITERATE the
 // parts (don't assume an index), since a response may also carry text.
 //
-// White-bg workhorse: gemini-3.1-flash-image-preview ("Nano Banana 2") — the
-// forced replacement for gemini-2.5-flash-image, which Google retires on
-// 2026-10-02. Same request/response shape; ~$0.067 per 1K image (was $0.039).
-const GEMINI_MODEL          = "gemini-3.1-flash-image-preview";
+// White-bg workhorse: gemini-3.1-flash-image ("Nano Banana 2") — the forced
+// replacement for gemini-2.5-flash-image, which Google retires on 2026-10-02.
+// GA id (verified on the v1beta models endpoint alongside its -preview alias;
+// GA gets longer deprecation notice, so preferred for this high-volume path).
+// Same request/response shape; ~$0.067 per 1K image (was $0.039).
+const GEMINI_MODEL          = "gemini-3.1-flash-image";
 const GEMINI_OUT_PER_MTOK   = 60;      // $/1M image-output tokens (NB2: 1120 tok ≈ $0.067 per 1K image)
 const GEMINI_FLAT_IMAGE_USD = 0.067;   // fallback per-image when usageMetadata is absent
 //
 // House-style engine: gemini-3-pro-image ("Nano Banana Pro") — multi-reference
 // scene conditioning (up to 14 input images), used ONLY for style:"house" runs.
-// Shares the same GEMINI_API_KEY secret.
+// GA id (verified live; -preview alias also exists). Shares the GEMINI_API_KEY secret.
 const NBPRO_MODEL           = "gemini-3-pro-image";
 const NBPRO_OUT_PER_MTOK    = 120;     // $/1M image-output tokens (1120 tok ≈ $0.134 per 1K/2K image)
 const NBPRO_FLAT_IMAGE_USD  = 0.134;   // fallback per-image when usageMetadata is absent
