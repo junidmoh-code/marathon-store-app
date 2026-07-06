@@ -1882,7 +1882,9 @@ exports.cleanProductNames = onCall(
 // products/{id}/photo_proposal.jpg (with a Firebase download token) → write
 // /aiAssistant/photoProposals/{id} = { originalUrl, proposedUrl, status:"pending", ... }.
 //
-// request.data (all optional): { limit=12, productIds:[...], category, reprocess=false }.
+// request.data (all optional): { limit=12, productIds:[...], category, reprocess=false,
+// style: "white" (default, existing behavior) | "house" (Marathon house-style scene,
+// conditioned on the Style Kit reference images — see STYLE_KIT_PATH below) }.
 // Returns { processed, failed, total, estCostUSD, sample }.
 
 const openaiApiKey = defineSecret("OPENAI_API_KEY");
@@ -1896,6 +1898,16 @@ const PHOTO_DEFAULT_LIMIT  = 12;              // small first batch to eyeball qu
 const PHOTO_MAX_BATCH      = 200;            // hard ceiling per call (cost / timeout safety)
 const PHOTO_PROPOSALS_PATH = "aiAssistant/photoProposals";
 const STORAGE_BUCKET       = "marathon-club.firebasestorage.app";
+
+// ── House-style ("Style Kit") config ──────────────────────────────────────────
+// Reference-conditioned generations: every house-style call attaches the enabled
+// Style Kit reference images for the product's template (sneaker | clothing) so
+// the output matches the store's signature scene. The kit lives at
+// /aiAssistant/styleKit/{template} = { prompt, refs: { refId: { url, enabled, … } } }
+// and is managed from the AI Studio Style Kit panel — prompt + refs are re-read
+// on every call, so edits take effect next generation with NO redeploy.
+const STYLE_KIT_PATH = "aiAssistant/styleKit";
+const HOUSE_MAX_REFS = 6;   // refs sent per generation (kit can hold more; more refs = more latency)
 
 // gpt-image-1 token pricing (USD per 1M tokens) — used only for an ESTIMATE; the
 // authoritative number is the OpenAI bill.
@@ -1951,11 +1963,70 @@ const PHOTO_PROMPT = [
   "flawless, photorealistic catalogue hero image.",
 ].join(" ");
 
+// DEFAULT house-style locked prompts — code fallbacks only. The live prompt is
+// read from /aiAssistant/styleKit/{template}/prompt (editable in the Style Kit
+// panel, no redeploy); these apply when no custom prompt is saved.
+// KEEP IN SYNC with STYLE_KIT_DEFAULT_PROMPTS in src/App.jsx (panel starting text).
+const HOUSE_PROMPT_CLOTHING = [
+  "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
+  "images show our exact studio scene — recreate that scene precisely: the same backdrop and wall,",
+  "the same hangers and display hardware, the same lighting direction, softness and colour grade,",
+  "the same camera height, distance, angle and framing, and the same layout and spacing. The output",
+  "must look like it was shot in the SAME session, in the SAME spot, with the SAME lighting rig as",
+  "the references.",
+  "CRITICAL — the references define ONLY the scene and styling. The garments shown in the references",
+  "are DIFFERENT products: none of their design, colour, fabric, branding or details may appear in",
+  "the output.",
+  "The PRODUCT image shows the actual item to photograph. Keep the product's design EXACTLY —",
+  "identical shape, proportions, colour, materials, patterns, logos and text. Never redesign,",
+  "restyle, recolour, or invent details the real product does not have. Render every brand wordmark",
+  "and logo crisply and correctly — properly letter-formed, correctly spelled, matching the real",
+  "brand's exact lettering; never garbled, warped or fake-looking.",
+  "Present the garments as a coordinated SET, displayed exactly the way the reference sets are",
+  "displayed — every piece visible in the product photo (e.g. hoodie and matching joggers) arranged",
+  "together in the same configuration, on the same hangers, with the same spacing as the references.",
+  "If the product photo shows a single piece, present just that piece in the identical scene and",
+  "position. Garments fully steamed and wrinkle-free with natural drape, squared shoulders and",
+  "straight hems; nothing cropped or cut off.",
+  "Keep the product's TRUE colours at full strength — never washed out, faded or over-exposed. Dark",
+  "colours stay RICH and DEEP. Match the exposure and white balance of the reference scene so the",
+  "product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a flawless,",
+  "photorealistic result indistinguishable from a real photo taken in our studio.",
+].join(" ");
+
+const HOUSE_PROMPT_SNEAKER = [
+  "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
+  "images show our exact studio scene — recreate it precisely: the same backdrop, surface, lighting",
+  "direction, softness and colour grade, the same camera height, angle and framing, and the same",
+  "shoe-and-box composition and spacing as the references. The output must look like it was shot in",
+  "the SAME session, in the SAME spot, with the SAME lighting rig.",
+  "CRITICAL — the references define ONLY the scene, layout and styling. The sneakers and boxes shown",
+  "in them are DIFFERENT products: none of their design, colourway or branding may appear in the",
+  "output.",
+  "The PRODUCT image shows the actual sneaker to photograph. Keep its design EXACTLY — identical",
+  "shape, proportions, colourway, materials, patterns, logos and text. Show the OUTER (lateral)",
+  "branded display side facing the camera, keeping the SAME side and SAME left/right facing as the",
+  "product photo — never flip, mirror or rotate to the plain inner side. Never redesign or invent",
+  "details.",
+  "Display the sneaker WITH its retail box, positioned exactly as the boxes are positioned in the",
+  "references. If a BOX image is provided, reproduce that exact box — its true colours, graphics,",
+  "logos and label text, correctly spelled and crisply rendered. If no box image is provided, show",
+  "this exact model's authentic retail box using your knowledge of the real product; keep all box",
+  "text and branding accurate and legible, and never invent box artwork that doesn't exist.",
+  "True, full-strength colours — dark colours stay rich and deep; match the reference scene's",
+  "exposure and white balance. Tack-sharp focus and detail; a flawless, photorealistic result",
+  "indistinguishable from a real photo taken in our studio.",
+].join(" ");
+
+const HOUSE_DEFAULT_PROMPTS = { clothing: HOUSE_PROMPT_CLOTHING, sneaker: HOUSE_PROMPT_SNEAKER };
+
 // Prepend product IDENTITY so the model RECOGNISES the exact item (from its saved
 // name) and reproduces its genuine design — using the source photo + its knowledge
 // of that exact product together to correct blur / missing detail, while NEVER
 // substituting a different model, colourway or design. Reviewed before approval.
-function buildPhotoPrompt(productName, note) {
+// `basePrompt` defaults to the white-bg prompt; house style passes the template's
+// locked prompt (custom from the Style Kit, else the code default above).
+function buildPhotoPrompt(productName, note, basePrompt = PHOTO_PROMPT) {
   const name = String(productName || "").trim();
   const base = name
     ? `This product is: "${name}". Recognise this EXACT product and reproduce its GENUINE, accurate design ` +
@@ -1963,8 +2034,8 @@ function buildPhotoPrompt(productName, note) {
       `Use the source photo as the primary reference TOGETHER with your knowledge of this exact product; ` +
       `sharpen, complete and correct anything blurry, low-quality, partial or unclear so it matches the ` +
       `authentic product. Do NOT substitute a different model, colour or design, and do NOT invent details ` +
-      `the real product does not have. ` + PHOTO_PROMPT
-    : PHOTO_PROMPT;
+      `the real product does not have. ` + basePrompt
+    : basePrompt;
   // Per-run fix instruction (studio note / fix chips). Put it FIRST and flag it as
   // the priority so the engine focuses on exactly what to fix this time, while all
   // the standard rules below still apply.
@@ -2004,29 +2075,38 @@ function estimateImageCostUSD(usage) {
   ).toFixed(6);
 }
 
-// ── GEMINI engine — "Nano Banana" (gemini-2.5-flash-image, NOT Pro) ────────────
-// Cheap image-edit workhorse (~$0.039/image). Same job as the OpenAI engine: takes
-// the product photo + the white-bg "keep the product EXACTLY" prompt, returns the
-// edited image. Raw REST (Node-22 global fetch — no SDK dependency). The image
-// comes back as base64 inline_data SOMEWHERE in candidates[0].content.parts — we
-// ITERATE the parts (don't assume an index), since a response may also carry text.
-const GEMINI_MODEL          = "gemini-2.5-flash-image";
-const GEMINI_OUT_PER_MTOK   = 30;      // $/1M image-output tokens (Nano Banana)
-const GEMINI_FLAT_IMAGE_USD = 0.039;   // fallback per-image when usageMetadata is absent
-async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType, prompt) {
+// ── GEMINI engines — "Nano Banana" family ──────────────────────────────────────
+// Raw REST (Node-22 global fetch — no SDK dependency). The image comes back as
+// base64 inline_data SOMEWHERE in candidates[0].content.parts — we ITERATE the
+// parts (don't assume an index), since a response may also carry text.
+//
+// White-bg workhorse: gemini-3.1-flash-image-preview ("Nano Banana 2") — the
+// forced replacement for gemini-2.5-flash-image, which Google retires on
+// 2026-10-02. Same request/response shape; ~$0.067 per 1K image (was $0.039).
+const GEMINI_MODEL          = "gemini-3.1-flash-image-preview";
+const GEMINI_OUT_PER_MTOK   = 60;      // $/1M image-output tokens (NB2: 1120 tok ≈ $0.067 per 1K image)
+const GEMINI_FLAT_IMAGE_USD = 0.067;   // fallback per-image when usageMetadata is absent
+//
+// House-style engine: gemini-3-pro-image ("Nano Banana Pro") — multi-reference
+// scene conditioning (up to 14 input images), used ONLY for style:"house" runs.
+// Shares the same GEMINI_API_KEY secret.
+const NBPRO_MODEL           = "gemini-3-pro-image";
+const NBPRO_OUT_PER_MTOK    = 120;     // $/1M image-output tokens (1120 tok ≈ $0.134 per 1K/2K image)
+const NBPRO_FLAT_IMAGE_USD  = 0.134;   // fallback per-image when usageMetadata is absent
+
+// Core generateContent call shared by both Gemini engines: takes prebuilt
+// `parts` (interleaved text labels + inline images) and returns the first
+// image in the response. `imageConfig` is only sent when given (the white-bg
+// NB2 path sends none — request shape identical to the 2.5-flash-image days).
+async function geminiGenerateImage(apiKey, model, parts, { outPerMtok, flatUsd, imageConfig } = {}) {
+  const body = { contents: [{ parts }] };
+  if (imageConfig) body.generationConfig = { imageConfig };
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: prompt || PHOTO_PROMPT },
-            { inline_data: { mime_type: contentType, data: imageBuffer.toString("base64") } },
-          ],
-        }],
-      }),
+      body: JSON.stringify(body),
     },
   );
   if (!res.ok) {
@@ -2034,18 +2114,53 @@ async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType, prom
     throw new Error(`gemini HTTP ${res.status}: ${txt.slice(0, 200)}`);
   }
   const json = await res.json();
-  const parts = ((((json.candidates || [])[0] || {}).content) || {}).parts || [];
+  const outParts = ((((json.candidates || [])[0] || {}).content) || {}).parts || [];
   let b64 = null, mime = "image/png";
-  for (const part of parts) {                       // image lives in inline_data among the parts
+  for (const part of outParts) {                    // image lives in inline_data among the parts
     const inl = part.inlineData || part.inline_data; // REST returns camelCase; accept both
     if (inl && inl.data) { b64 = inl.data; mime = inl.mimeType || inl.mime_type || mime; break; }
   }
   if (!b64) throw new Error("gemini returned no image");
-  // Cost: image-output tokens × Nano-Banana rate, else the documented flat per-image.
+  // Cost: image-output tokens × the model's rate, else the documented flat per-image.
   const um = json.usageMetadata || {};
   const outTok = um.candidatesTokenCount || 0;
-  const costUSD = outTok ? +((outTok / 1e6) * GEMINI_OUT_PER_MTOK).toFixed(6) : GEMINI_FLAT_IMAGE_USD;
+  const costUSD = outTok ? +((outTok / 1e6) * outPerMtok).toFixed(6) : flatUsd;
   return { buffer: Buffer.from(b64, "base64"), costUSD, mime };
+}
+
+const inlineImagePart = (buffer, contentType) =>
+  ({ inline_data: { mime_type: contentType, data: buffer.toString("base64") } });
+
+async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType, prompt) {
+  return geminiGenerateImage(apiKey, GEMINI_MODEL, [
+    { text: prompt || PHOTO_PROMPT },
+    inlineImagePart(imageBuffer, contentType),
+  ], { outPerMtok: GEMINI_OUT_PER_MTOK, flatUsd: GEMINI_FLAT_IMAGE_USD });
+}
+
+// House-style generation on Nano Banana Pro: the product photo (+ its box shot,
+// for sneakers) and the Style Kit references go in as SEPARATE, text-labelled
+// images so the model can't confuse which item to render and which scene to
+// copy. Square 2K output — the catalogue grid is square, and 2K costs the same
+// as 1K on this model.
+async function generateHouseStyleImage(apiKey, prompt, product, box, refs) {
+  const parts = [
+    { text: prompt },
+    { text: "PRODUCT — the item to place in the scene:" },
+    inlineImagePart(product.buffer, product.contentType),
+  ];
+  if (box) {
+    parts.push({ text: "PRODUCT'S BOX — reproduce this exact box:" });
+    parts.push(inlineImagePart(box.buffer, box.contentType));
+  }
+  if (refs.length) {
+    parts.push({ text: "STYLE REFERENCES — match this exact scene, backdrop, lighting and layout:" });
+    for (const r of refs) parts.push(inlineImagePart(r.buffer, r.contentType));
+  }
+  return geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
+    outPerMtok: NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_FLAT_IMAGE_USD,
+    imageConfig: { aspectRatio: "1:1", imageSize: "2K" },
+  });
 }
 
 // ── Pluggable engine adapter ───────────────────────────────────────────────────
@@ -2056,6 +2171,16 @@ function makeEngine(name, openaiClient, OpenAINS) {
   if (name === "gemini") {
     const key = geminiApiKey.value();
     return { name: "gemini", generate: (buf, ct, { prompt } = {}) => generateWhiteBgImageGemini(key, buf, ct, prompt) };
+  }
+  if (name === "nbpro") {
+    // House-style only — multi-reference conditioning on Nano Banana Pro.
+    // opts.box / opts.refs are { buffer, contentType } (refs: array).
+    const key = geminiApiKey.value();
+    return {
+      name: "nbpro",
+      generate: (buf, ct, { prompt, box, refs } = {}) =>
+        generateHouseStyleImage(key, prompt, { buffer: buf, contentType: ct }, box, refs || []),
+    };
   }
   return {
     name: "openai",
@@ -2161,6 +2286,48 @@ async function normalizeForCatalogue(buffer, fallbackMime) {
   }
 }
 
+// House-style outputs keep their generated scene — the white-bg pipeline's
+// trim/white-square/dark-strengthen passes would mangle the grid backdrop, so
+// they are deliberately BYPASSED. Just cap the size for the catalogue (the
+// model already returns square via imageConfig). Best-effort like the white path.
+async function normalizeHouseStyle(buffer, fallbackMime) {
+  try {
+    const sharp = require("sharp");
+    const out = await sharp(buffer)
+      .resize(CATALOGUE_CANVAS, CATALOGUE_CANVAS, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
+      .toBuffer();
+    return { buffer: out, mime: "image/jpeg" };
+  } catch (e) {
+    console.warn("normalizeHouseStyle failed, using raw output:", e && e.message);
+    return { buffer, mime: fallbackMime || "image/jpeg" };
+  }
+}
+
+// Load the Style Kit for house-style runs: per-template locked prompt (custom
+// from RTDB else the code default) + the enabled reference images, capped at
+// HOUSE_MAX_REFS (oldest first — the curated core of the kit). Ref buffers are
+// fetched ONCE and shared by every product in the batch.
+async function loadStyleKit(db) {
+  const snap = await db.ref(STYLE_KIT_PATH).once("value");
+  const kit = snap.val() || {};
+  const out = {};
+  for (const template of ["sneaker", "clothing"]) {
+    const t = kit[template] || {};
+    const prompt = (typeof t.prompt === "string" && t.prompt.trim()) ? t.prompt.trim() : HOUSE_DEFAULT_PROMPTS[template];
+    const refEntries = Object.entries(t.refs || {})
+      .filter(([, r]) => r && r.url && r.enabled !== false)
+      .sort(([, a], [, b]) => (a.addedAt || 0) - (b.addedAt || 0))
+      .slice(0, HOUSE_MAX_REFS);
+    const refs = (await Promise.all(refEntries.map(async ([id, r]) => {
+      try { return await fetchImageBuffer(r.url); }
+      catch (err) { console.warn(`styleKit ref ${template}/${id} fetch failed:`, err && err.message); return null; }
+    }))).filter(Boolean);
+    out[template] = { prompt, refs };
+  }
+  return out;
+}
+
 exports.generateProductPhotos = onCall(
   {
     region: "europe-west1",
@@ -2180,6 +2347,10 @@ exports.generateProductPhotos = onCall(
     // each product is auto-routed by category (defaultEngineFor): Footwear → Gemini,
     // everything else → OpenAI.
     const engineOverride = ["openai", "gemini"].includes(data.engine) ? data.engine : null;
+    // style:"house" = Marathon house-style scene (Style Kit references + Nano
+    // Banana Pro, engine override ignored). Anything else = the classic white-bg
+    // pipeline, byte-for-byte unchanged.
+    const style = data.style === "house" ? "house" : "white";
     // Optional per-run instruction (the studio "regenerate note" / fix chips) — a
     // short, sanitised hint appended to the prompt so the engine knows what to fix.
     const note = typeof data.note === "string"
@@ -2217,8 +2388,12 @@ exports.generateProductPhotos = onCall(
     const engineCache = {};
     const getEngine = (name) => (engineCache[name] || (engineCache[name] = makeEngine(name, openaiClient, OpenAINS)));
 
+    // House style: load the Style Kit (locked prompts + enabled refs) once —
+    // the ref buffers are shared across every product in this batch.
+    const styleKit = style === "house" ? await loadStyleKit(db) : null;
+
     let processed = 0, failed = 0, estCostUSD = 0;
-    const costByEngine = { openai: 0, gemini: 0 };
+    const costByEngine = { openai: 0, gemini: 0, nbpro: 0 };
     const sample = [];
 
     let cursor = 0;
@@ -2226,15 +2401,32 @@ exports.generateProductPhotos = onCall(
       while (cursor < ids.length) {
         const id = ids[cursor++];
         const p = products[id];
-        const engName = engineOverride || defaultEngineFor(p);
+        const isClothing = p.category === "Clothing" || p.productType === "clothing";
+        // House style always runs on Nano Banana Pro; templates key on productType.
+        const template = isClothing ? "clothing" : "sneaker";
+        const engName = style === "house" ? "nbpro" : (engineOverride || defaultEngineFor(p));
         try {
           const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
           // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
-          const size = (p.category === "Clothing" || p.productType === "clothing") ? "1024x1536" : PHOTO_SIZE;
-          const prompt = buildPhotoPrompt(p.name, note);   // name-aware + optional per-run fix note
-          const { buffer: rawBuf, costUSD, mime: rawMime } = await getEngine(engName).generate(buffer, contentType, { quality, size, prompt });
-          // Trim + centre on a uniform white square so the catalogue grid is consistent.
-          const { buffer: outBuf, mime } = await normalizeForCatalogue(rawBuf, rawMime);
+          const size = isClothing ? "1024x1536" : PHOTO_SIZE;
+          const kit = styleKit ? styleKit[template] : null;
+          // name-aware + optional per-run fix note; house swaps in the template's locked prompt
+          const prompt = buildPhotoPrompt(p.name, note, kit ? kit.prompt : PHOTO_PROMPT);
+          // Sneaker house shots include the product's own box photo when one is
+          // saved (photoBoxUrl). Best-effort: a broken box URL downgrades to the
+          // no-box prompt path instead of failing the product.
+          let box = null;
+          if (kit && template === "sneaker" && p.photoBoxUrl) {
+            try { box = await fetchImageBuffer(p.photoBoxUrl); }
+            catch (err) { console.warn(`generateProductPhotos: ${id} box photo fetch failed:`, err && err.message); }
+          }
+          const { buffer: rawBuf, costUSD, mime: rawMime } = await getEngine(engName)
+            .generate(buffer, contentType, { quality, size, prompt, box, refs: kit ? kit.refs : undefined });
+          // White: trim + centre on a uniform white square so the catalogue grid is
+          // consistent. House: keep the generated scene — resize only.
+          const { buffer: outBuf, mime } = kit
+            ? await normalizeHouseStyle(rawBuf, rawMime)
+            : await normalizeForCatalogue(rawBuf, rawMime);
           const proposedUrl = await uploadProposalImage(id, outBuf, mime);
           estCostUSD += costUSD;
           costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
@@ -2250,6 +2442,8 @@ exports.generateProductPhotos = onCall(
             status: "pending",          // pending | approved | rejected (set by the review UI)
             at: Date.now(),
             by: request.auth.uid,
+            // House-style provenance (absent on white runs — their records are unchanged).
+            ...(kit ? { style: "house", template, refsUsed: kit.refs.length } : {}),
           });
           processed++;
           if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName });
@@ -2266,7 +2460,7 @@ exports.generateProductPhotos = onCall(
     await logReorderUsage(db, today, {
       at: Date.now(), kind: "generateProductPhotos", by: request.auth.uid,
       imagesGenerated: processed, failed, quality, estimatedCostUSD: estCostUSD,
-      engine: engineOverride || "auto", costByEngine,
+      engine: style === "house" ? "nbpro" : (engineOverride || "auto"), style, costByEngine,
     });
 
     return { processed, failed, total: ids.length, estCostUSD, costByEngine, sample };
