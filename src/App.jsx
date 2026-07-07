@@ -1921,8 +1921,10 @@ function AdminReviewPhotosTab({ products = [] }) {
   const engineArg = engine !== "auto" ? { engine } : {};
   // Style: "white" = classic white-bg re-shoot (default, unchanged behavior).
   // "house" = Marathon house-style scene — Style Kit references + Nano Banana
-  // Pro (engine choice doesn't apply; the function forces NB Pro).
-  const [style, setStyle] = useState("white");
+  // Pro (engine choice doesn't apply; the function forces NB Pro). Persisted
+  // (localStorage) so it survives leaving/returning to the Photo Studio tab —
+  // otherwise a remount reset it to "white" and silently ran the wrong mode.
+  const [style, setStyle] = usePersistedTab("aistudio-photostyle", "white");
   const house = style === "house";
   const styleArg = house ? { style: "house" } : {};
   const [runBusy, setRunBusy] = useState(false);
