@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, equalTo } from "firebase/database";
+import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, equalTo, startAt } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
@@ -25,7 +25,11 @@ import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { sellableLocations, labelFor, transferTargets } from "./components/stock/locations";
 import { useStockCells, useLocations } from "./components/stock/useStock";
-import { shopUniverse } from "./utils/stores";
+import { shopUniverse, SHOP_LABELS } from "./utils/stores";
+import {
+  clothingSoldEventsForPeriod, clothingSoldCutoff, isGroupRefilled, clothingSectionLabel,
+  saStartIso, CLOTHING_SOLD_BACKLOG_DAYS, CLOTHING_SOLD_STORES, CLOTHING_SOLD_MAX_RANGE_DAYS,
+} from "./utils/clothingSold";
 import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
@@ -859,6 +863,109 @@ function saveSourceResponse(date, productKey, size, response) {
 function clearSourceResponse(date, productKey, size) {
   return remove(ref(database, `restock_requests/${date}/${productKey}/${size}`))
     .catch(err => console.warn("clearSourceResponse failed:", err));
+}
+
+// ─── CLOTHING-SOLD REFILL PERSISTENCE ─────────────────────────────────────────
+// Mirrors the Source-response layer verbatim (normalize shim + live listener +
+// save/clear), but keyed for the clothing-sold worklist:
+//   clothing_sold_refills/{store}/{productId} = { refilledAt, respondedOn }
+// A refill is a TIMESTAMP per (store, product): a card is "done" iff refilledAt
+// is at-or-after its latest sale (see isGroupRefilled), so one restock clears all
+// current demand AND the card re-opens when the product sells again later.
+
+// Normalize a refill leaf to { refilledAt, respondedOn } | null. Always read via this.
+function normalizeClothingRefill(v) {
+  if (v && typeof v === "object" && typeof v.refilledAt === "string") {
+    return { refilledAt: v.refilledAt, respondedOn: v.respondedOn || v.refilledAt };
+  }
+  return null;
+}
+
+// Live listener for all clothing-sold refills.
+// Shape on read: { store: { productId: { refilledAt, respondedOn } } }
+function useAllClothingRefills() {
+  const authReady = useAuthReady();
+  const [refills, setRefills] = useState({});
+  useEffect(() => {
+    if (!authReady) return;
+    const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
+      const data = snap.val() || {};
+      const result = {};
+      Object.entries(data).forEach(([store, storeNode]) => {
+        if (!storeNode || typeof storeNode !== "object") return;
+        const byProduct = {};
+        Object.entries(storeNode).forEach(([pid, raw]) => {
+          const norm = normalizeClothingRefill(raw);
+          if (norm) byProduct[pid] = norm;
+        });
+        if (Object.keys(byProduct).length) result[store] = byProduct;
+      });
+      setRefills(result);
+    });
+    return () => unsub();
+  }, [authReady]);
+  return refills;
+}
+
+// Marks a (store, product) refilled AS OF NOW — clears every currently-pending
+// unit of that product at that store (refilledAt >= their sale ts).
+function saveClothingRefill(store, productId) {
+  const now = new Date().toISOString();
+  update(ref(database, `clothing_sold_refills/${store}`), {
+    [productId]: { refilledAt: now, respondedOn: now }
+  }).catch(err => console.warn("saveClothingRefill failed:", err));
+}
+
+// Reverses a refill (Undo) — removes the leaf so the product returns to pending.
+function clearClothingRefill(store, productId) {
+  return remove(ref(database, `clothing_sold_refills/${store}/${productId}`))
+    .catch(err => console.warn("clearClothingRefill failed:", err));
+}
+
+// Bounded read of /stock_movements: a ts-windowed query over the last
+// CLOTHING_SOLD_BACKLOG_DAYS days — NEVER an unbounded whole-ledger subscription.
+// Requires the stock_movements `.indexOn:["ts"]` rule (server-side sort); without
+// it Firebase falls back to reading the entire node and sorting client-side.
+function useClothingSoldMovements(fromSaDate) {
+  const authReady = useAuthReady();
+  const [movements, setMovements] = useState([]);
+  // Clamp the window start to [today-MAX, today-BACKLOG_DAYS]: never reach past
+  // the hard cap, and never read LESS than the default window (daily tabs + the
+  // default backlog always need it). Open-ended to now covers today's sales.
+  const maxBack = getSAPastDateString(CLOTHING_SOLD_MAX_RANGE_DAYS);
+  const dflt    = getSAPastDateString(CLOTHING_SOLD_BACKLOG_DAYS);
+  let start = fromSaDate || dflt;
+  if (start < maxBack) start = maxBack;   // cap: never before today-90
+  if (start > dflt)    start = dflt;      // floor: always cover the default window
+  useEffect(() => {
+    if (!authReady) return;
+    const startIso = saStartIso(start);
+    const q = query(ref(database, "stock_movements"), orderByChild("ts"), startAt(startIso));
+    const unsub = onValue(q, snap => {
+      const data = snap.val() || {};
+      const arr = [];
+      Object.entries(data).forEach(([mvId, m]) => {
+        if (m && typeof m === "object") arr.push({ mvId, ...m });
+      });
+      setMovements(arr);
+    }, err => console.warn("stock_movements read error:", err));
+    return () => unsub();
+  }, [authReady, start]);
+  return movements;
+}
+
+// Compact relative-time label for a card ("just now", "3h ago", "2d ago").
+function relativeTimeFromIso(iso) {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const mins = Math.floor((Date.now() - then) / 60000);
+  if (mins < 1)  return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
 }
 
 // Raw OOS log for today — real-time stream, no compilation needed.
@@ -8108,7 +8215,419 @@ function getSAYesterdayString() {
   return now.toISOString().slice(0, 10);
 }
 
-function SourceView({ onExit, orders, returnsLog }) {
+// ─── CLOTHING-SOLD REFILL TAB ─────────────────────────────────────────────────
+// One card per (store, product) with a per-size qty breakdown — NOT one per
+// (sale,size) cell (which fragmented a popular item into dozens of ×1 cards). The
+// data is /stock_movements-native; the action is a single "Refilled" confirm.
+
+// Canonical section order — Clothing subcategories first (catalogue order), then
+// any others (e.g. mis-tagged accessories) alphabetically after.
+const CLOTHING_SECTION_ORDER = CATEGORY_TREE.Clothing || [];
+
+// Buckets refill cards under collapsible category/subcategory headers (T-Shirts,
+// Jackets, Tracksuits…) so the crew scans by section. Same collapsible furniture
+// as DayCollapsible; open state persists in sessionStorage. Defaults all open.
+function CategoryCollapsible({ sectionKey, items, sectionOf, renderItem, emptyMessage }) {
+  const STORAGE_KEY = `clothingCat:${sectionKey}`;
+  const [closed, setClosed] = useState(() => {
+    try { const raw = sessionStorage.getItem(STORAGE_KEY); if (raw) return JSON.parse(raw); } catch { /* ignore */ }
+    return {}; // default: every section OPEN (absent from the closed-set)
+  });
+  const toggle = (key) => setClosed(prev => {
+    const next = { ...prev, [key]: !prev[key] };
+    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+    return next;
+  });
+
+  const buckets = new Map();
+  (items || []).forEach(item => {
+    const label = sectionOf(item);
+    if (!buckets.has(label)) buckets.set(label, []);
+    buckets.get(label).push(item);
+  });
+
+  const orderIdx = (label) => {
+    const i = CLOTHING_SECTION_ORDER.indexOf(label);
+    return i >= 0 ? i : CLOTHING_SECTION_ORDER.length + 1;
+  };
+  const sections = Array.from(buckets.entries())
+    .sort((a, b) => orderIdx(a[0]) - orderIdx(b[0]) || a[0].localeCompare(b[0]));
+
+  if (!sections.length) {
+    return <div style={{ textAlign:"center", color:"#444", padding:"3rem 1rem", fontSize:"0.95rem" }}>{emptyMessage || "Nothing to show."}</div>;
+  }
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+      {sections.map(([label, list]) => {
+        const open = !closed[label];
+        const units = list.reduce((n, g) => n + (g.total || 0), 0);
+        return (
+          <div key={label} style={{ background:"rgba(20,40,100,.3)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, overflow:"hidden" }}>
+            <div onClick={() => toggle(label)}
+                 style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", cursor:"pointer" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.3px" }}>{label}</div>
+                <div style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"2px 10px", fontSize:11, fontWeight:700 }}>
+                  {list.length}{units !== list.length ? ` · ${units}u` : ""}
+                </div>
+              </div>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                   style={{ transition:"transform 150ms ease", transform: open ? "rotate(180deg)" : "rotate(0deg)", flexShrink:0 }}>
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+            <div style={{ maxHeight: open ? 100000 : 0, overflow:"hidden", transition:"max-height 200ms ease" }}>
+              <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 8px 12px", display:"flex", flexDirection:"column", gap:10 }}>
+                {list.map((item, i) => <div key={item.key || i}>{renderItem(item)}</div>)}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Product refill card. Pending → big "Refilled" button; done → Refilled tag + Undo.
+// `group` is a clothingSoldGroups() row: { productName, photo, sizes:[{size,qty}],
+// total, store, ts, ... }. `showStore` adds the store label (used in Backlog,
+// where stores are merged; redundant in a single-store daily tab).
+function ClothingSoldCard({ group, done, onRefill, onUndo, showStore, onViewPhoto }) {
+  const [busy, setBusy] = useState(false);
+  const tap = (fn) => { if (busy) return; setBusy(true); fn(); setTimeout(() => setBusy(false), 1500); };
+  const accent = done ? "rgba(74,222,128,.5)" : "rgba(60,110,255,.6)";
+  const hasPhotos = onViewPhoto && Array.isArray(group.photos) && group.photos.length > 0;
+  return (
+    <div style={{
+      background:CARD, border:`1px solid ${accent}`,
+      borderLeft: done ? `3px solid ${accent}` : `1px solid ${accent}`,
+      borderRadius:14, padding:14,
+      opacity: done ? 0.85 : (busy ? 0.7 : 1),
+      boxShadow: done ? "none" : "0 0 10px rgba(60,110,255,.15)",
+      transition:"opacity 120ms ease",
+    }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
+        {/* Tap the photo to enlarge — reuses the app-wide GalleryLightbox so the
+            refill crew can see the garment before pulling it. */}
+        <div onClick={hasPhotos ? () => onViewPhoto(group.photos) : undefined}
+             title={hasPhotos ? "Tap to enlarge" : undefined}
+             style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
+          <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+          {hasPhotos && (
+            <div style={{ position:"absolute", right:-3, bottom:-3, width:16, height:16, borderRadius:"50%", background:"rgba(4,5,10,.95)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>
+            </div>
+          )}
+        </div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{group.productName}</div>
+          <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3, color:"rgba(255,255,255,.45)", fontSize:11 }}>
+            {showStore && <><span style={{ color:BLUE_L, fontWeight:600 }}>{SHOP_LABELS[group.store] || group.store}</span><span style={{ opacity:.4 }}>·</span></>}
+            <span>{relativeTimeFromIso(group.ts)}</span>
+          </div>
+        </div>
+        <div style={{ textAlign:"center", flexShrink:0 }}>
+          <div style={{ fontWeight:800, fontSize:22, color: done ? "#4ADE80" : "#4A7FFF", lineHeight:1 }}>{group.total}</div>
+          <div style={{ fontSize:9, color:"rgba(255,255,255,.4)", fontWeight:700, letterSpacing:".5px" }}>SOLD</div>
+        </div>
+      </div>
+      {/* Per-size qty breakdown — the whole point of the grouped card. */}
+      <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom: done ? 0 : 10 }}>
+        {group.sizes.map(({ size, qty }) => (
+          <div key={size} style={{ display:"inline-flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"4px 8px" }}>
+            <span style={{ fontSize:12, fontWeight:700, color:"#fff" }}><SizeTag size={size} /></span>
+            <span style={{ fontSize:11, color:BLUE_L, fontWeight:700 }}>×{qty}</span>
+          </div>
+        ))}
+      </div>
+      {done ? (
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:10 }}>
+          <div style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"2px 8px", borderRadius:999, background:"rgba(74,222,128,.08)", border:"1px solid rgba(74,222,128,.5)", color:"#4ADE80", fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            Refilled
+          </div>
+          <div style={{ flex:1 }} />
+          <button onClick={onUndo}
+                  style={{ padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+            Undo
+          </button>
+        </div>
+      ) : (
+        <button disabled={busy} onClick={() => tap(onRefill)}
+                style={{ width:"100%", padding:"11px 12px", borderRadius:10, border:"1px solid rgba(74,222,128,.5)", background:"rgba(74,222,128,.12)", color:"#4ADE80", cursor: busy ? "default" : "pointer", fontWeight:700, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+          Refilled
+        </button>
+      )}
+    </div>
+  );
+}
+
+// One scope's worklist (a store's daily list, or the merged Backlog). Groups are
+// split pending/done by clothing_sold_refills; pending are day-bucketed via
+// DayCollapsible, done sit under a Show-Completed toggle.
+function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, isBacklog, onViewPhoto }) {
+  const [showCompleted, setShowCompleted] = useState(false);
+
+  const { pending, completed } = useMemo(() => {
+    const pending = [], completed = [];
+    events.forEach(g => (isGroupRefilled(g, refills) ? completed : pending).push(g));
+    pending.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
+    completed.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
+    return { pending, completed };
+  }, [events, refills]);
+
+  if (!pending.length && !completed.length) return (
+    <div style={{ textAlign:"center", color:"#444", padding:"4rem 1rem" }}>
+      <ProductIcon size={32} opacity={0.5}/>
+      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>{isBacklog ? "No older clothing sales pending." : "No clothing sold here yet today."}</div>
+      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Clothing sold at the till appears here for restocking.</div>
+    </div>
+  );
+
+  const pendingUnits = pending.reduce((n, g) => n + g.total, 0);
+
+  return (
+    <div>
+      {/* Summary headline — pending units across pending products */}
+      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"14px 16px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.2)" }}>
+        <div style={{ fontWeight:800, fontSize:36, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1px" }}>{pendingUnits}</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Units to refill</div>
+          <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:3, lineHeight:1.4 }}>
+            {pending.length} product{pending.length !== 1 ? "s" : ""} pending{completed.length ? ` · ${completed.length} refilled` : ""}
+          </div>
+        </div>
+      </div>
+
+      {completed.length > 0 && (
+        <CompletedTogglePill on={showCompleted} count={completed.length} onClick={() => setShowCompleted(v => !v)} />
+      )}
+
+      {pending.length === 0 && completed.length > 0 && !showCompleted && (
+        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(74,222,128,.4)", borderRadius:14, padding:"22px 18px", textAlign:"center", boxShadow:"0 0 12px rgba(74,222,128,.12)" }}>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
+            <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
+          </svg>
+          <div style={{ color:"#fff", fontSize:14, fontWeight:700, marginTop:10 }}>All caught up</div>
+          <div style={{ color:"rgba(255,255,255,.55)", fontSize:12, marginTop:4 }}>{completed.length} product{completed.length !== 1 ? "s" : ""} refilled.</div>
+          <button onClick={() => setShowCompleted(true)}
+                  style={{ marginTop:14, padding:"8px 16px", borderRadius:10, border:"1px solid rgba(60,110,255,.5)", background:"rgba(60,110,255,.12)", color:BLUE_L, fontWeight:600, fontSize:12, cursor:"pointer" }}>
+            Show Refilled
+          </button>
+        </div>
+      )}
+
+      {/* Active list — grouped under collapsible category/subcategory sections. */}
+      <CategoryCollapsible
+        sectionKey={`clothingsold:${scopeKey}`}
+        items={pending}
+        sectionOf={clothingSectionLabel}
+        emptyMessage="Nothing to refill."
+        renderItem={g => (
+          <ClothingSoldCard group={g} done={false} showStore={isBacklog} onViewPhoto={onViewPhoto}
+            onRefill={() => onRefill(g)} onUndo={() => onUndo(g)} />
+        )}
+      />
+
+      {showCompleted && completed.length > 0 && (
+        <>
+          <div style={{ marginTop:18, marginBottom:10, display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
+            <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>REFILLED</div>
+            <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {completed.map(g => (
+              <ClothingSoldCard key={g.key} group={g} done showStore={isBacklog} onViewPhoto={onViewPhoto}
+                onRefill={() => onRefill(g)} onUndo={() => onUndo(g)} />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Clothing-Sold view mounted inside SOURCE's "Clothing Sold" top tab. Scope pills
+// put the actionable per-store DAILY lists first; the merged aging "Backlog" is
+// last and secondary. Reads the bounded movements window + products + refills once.
+function ClothingSoldView({ products }) {
+  const [scope, setScope] = usePersistedTab("clothingSold", CLOTHING_SOLD_STORES[0]);
+  const [fullPhoto, setFullPhoto] = useState(null); // GalleryLightbox photos array | null
+  const [search, setSearch] = useState("");
+
+  // Backlog date window (SA-dates). Default: the recent BACKLOG_DAYS window ending
+  // yesterday (backlog is strictly before today). The picker widens it back to the
+  // 90-day cap or narrows to a single day (from === to).
+  const today     = clothingSoldCutoff();
+  const yesterday = getSAPastDateString(1);
+  const maxBack   = getSAPastDateString(CLOTHING_SOLD_MAX_RANGE_DAYS);
+  const defaultFrom = getSAPastDateString(CLOTHING_SOLD_BACKLOG_DAYS);
+  const [backlogWindow, setBacklogWindow] = useState(() => ({ from: defaultFrom, to: yesterday }));
+
+  // The movements query starts at the backlog window's `from` (clamped in the
+  // hook to ≤ 90 days) and stays open-ended to now, so the daily tabs always see
+  // today. Picking an older `from` re-subscribes to a wider (still bounded) window.
+  const movements = useClothingSoldMovements(backlogWindow.from);
+  const refills   = useAllClothingRefills();
+
+  const productsById = useMemo(() => {
+    const m = {};
+    (products || []).forEach(p => { if (p && p.id) m[p.id] = p; });
+    return m;
+  }, [products]);
+
+  // Groups per scope. Daily tabs use today's sales; Backlog is bounded to the
+  // picked [from, to] window (and strictly < today).
+  const eventsByScope = useMemo(() => {
+    const out = {};
+    CLOTHING_SOLD_STORES.forEach(s => {
+      out[s] = clothingSoldEventsForPeriod({ movements, productsById, cutoff: today, store: s });
+    });
+    out.backlog = clothingSoldEventsForPeriod({
+      movements, productsById, cutoff: today, store: null, stores: CLOTHING_SOLD_STORES,
+      fromSaDate: backlogWindow.from, toSaDate: backlogWindow.to,
+    });
+    return out;
+  }, [movements, productsById, today, backlogWindow.from, backlogWindow.to]);
+
+  const pendingUnits = (evs) => evs.reduce(
+    (n, g) => n + (isGroupRefilled(g, refills) ? 0 : g.total), 0
+  );
+
+  // Backlog search filter (name + category/subcategory), live as you type.
+  const backlogEvents = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const evs = eventsByScope.backlog || [];
+    if (!q) return evs;
+    return evs.filter(g =>
+      (g.productName || "").toLowerCase().includes(q) ||
+      (g.subcategory || "").toLowerCase().includes(q) ||
+      (g.category || "").toLowerCase().includes(q)
+    );
+  }, [eventsByScope, search]);
+
+  // Daily per-store lists first (the crew's actual work), aging Backlog last.
+  const SCOPES = [
+    ...CLOTHING_SOLD_STORES.map(s => ({ key: s, label: SHOP_LABELS[s] || s })),
+    { key: "backlog", label: "Backlog" },
+  ];
+
+  const handleRefill = (g) => saveClothingRefill(g.store, g.productId);
+  const handleUndo   = (g) => clearClothingRefill(g.store, g.productId);
+
+  // Date-picker clamps: keep maxBack ≤ from ≤ to ≤ yesterday and the span ≤ cap.
+  const addDays  = (d, n) => new Date(new Date(`${d}T00:00:00.000Z`).getTime() + n * 86400000).toISOString().slice(0, 10);
+  const spanDays = (a, b) => Math.round((new Date(`${b}T00:00:00.000Z`).getTime() - new Date(`${a}T00:00:00.000Z`).getTime()) / 86400000);
+  const clamp    = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
+  const setFrom = (v) => setBacklogWindow(w => {
+    let from = clamp(v, maxBack, w.to);
+    if (spanDays(from, w.to) > CLOTHING_SOLD_MAX_RANGE_DAYS) from = addDays(w.to, -CLOTHING_SOLD_MAX_RANGE_DAYS);
+    return { ...w, from };
+  });
+  const setTo = (v) => setBacklogWindow(w => {
+    let to = clamp(v, w.from, yesterday);
+    if (spanDays(w.from, to) > CLOTHING_SOLD_MAX_RANGE_DAYS) to = addDays(w.from, CLOTHING_SOLD_MAX_RANGE_DAYS);
+    return { ...w, to };
+  });
+  const resetWindow    = () => { setBacklogWindow({ from: defaultFrom, to: yesterday }); setSearch(""); };
+  const isDefaultWindow = backlogWindow.from === defaultFrom && backlogWindow.to === yesterday;
+
+  const dateInput = { padding:"7px 9px", borderRadius:10, border:"1px solid rgba(60,110,255,.25)", background:"rgba(255,255,255,.03)", color:"#fff", fontSize:12, colorScheme:"dark", outline:"none" };
+  const isBacklog = scope === "backlog";
+  const backlogTotal = (eventsByScope.backlog || []).length;
+  const panelEvents = isBacklog ? backlogEvents : (eventsByScope[scope] || []);
+
+  return (
+    <div>
+      {/* Scope segmented pills — daily stores first, Backlog (secondary) last */}
+      <div style={{ display:"flex", gap:8, marginBottom:8, overflowX:"auto" }}>
+        {SCOPES.map(({ key, label }) => {
+          const active = scope === key;
+          const backlog = key === "backlog";
+          const badge = pendingUnits(eventsByScope[key] || []);
+          return (
+            <button key={key} onClick={() => setScope(key)}
+                    style={{
+                      flex:"1 0 auto",
+                      padding:"10px 12px",
+                      borderRadius:14,
+                      border: active ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(255,255,255,.08)",
+                      background: active ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.02)",
+                      color: active ? BLUE_L : (backlog ? "rgba(255,255,255,.4)" : "rgba(255,255,255,.55)"),
+                      fontWeight:700, fontSize:13, cursor:"pointer",
+                      display:"flex", alignItems:"center", justifyContent:"center", gap:8, whiteSpace:"nowrap",
+                      boxShadow: active ? "0 0 12px rgba(60,110,255,.18)" : "none",
+                      transition:"background 120ms ease, border-color 120ms ease",
+                    }}>
+              <span>{label}</span>
+              <span style={{
+                background: active ? "rgba(60,110,255,.25)" : "rgba(255,255,255,.06)",
+                color: active ? "#fff" : "rgba(255,255,255,.5)",
+                borderRadius:999, padding:"1px 8px", fontSize:11, fontWeight:700, minWidth:22, textAlign:"center",
+              }}>{badge}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {isBacklog ? (
+        <div style={{ marginBottom:14, display:"flex", flexDirection:"column", gap:10 }}>
+          {/* Search — live filter by product name / category */}
+          <div style={{ position:"relative" }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.4)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                 style={{ position:"absolute", left:11, top:"50%", transform:"translateY(-50%)" }}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input value={search} onChange={e => setSearch(e.target.value)}
+                   placeholder={`Search ${backlogTotal} products by name or category…`}
+                   style={{ width:"100%", boxSizing:"border-box", padding:"10px 34px 10px 34px", borderRadius:12, border:"1px solid rgba(60,110,255,.25)", background:"rgba(255,255,255,.03)", color:"#fff", fontSize:13, outline:"none" }} />
+            {search && (
+              <button onClick={() => setSearch("")} aria-label="Clear search"
+                      style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)", width:22, height:22, borderRadius:"50%", border:"none", background:"rgba(255,255,255,.08)", color:"rgba(255,255,255,.6)", cursor:"pointer", fontSize:15, lineHeight:1 }}>×</button>
+            )}
+          </div>
+          {/* Date range — bounded ts window, capped at 90 days */}
+          <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+            <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>From</span>
+            <input type="date" value={backlogWindow.from} min={maxBack} max={backlogWindow.to}
+                   onChange={e => e.target.value && setFrom(e.target.value)} style={dateInput} />
+            <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>to</span>
+            <input type="date" value={backlogWindow.to} min={backlogWindow.from} max={yesterday}
+                   onChange={e => e.target.value && setTo(e.target.value)} style={dateInput} />
+            {!(isDefaultWindow && !search) && (
+              <button onClick={resetWindow}
+                      style={{ padding:"6px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor:"pointer" }}>Reset</button>
+            )}
+          </div>
+          <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", lineHeight:1.4 }}>
+            {search
+              ? `${backlogEvents.length} of ${backlogTotal} products match “${search}”`
+              : `${backlogTotal} product${backlogTotal !== 1 ? "s" : ""} sold ${backlogWindow.from === backlogWindow.to ? `on ${backlogWindow.from}` : `${backlogWindow.from} → ${backlogWindow.to}`} — mostly already restocked; work the daily tabs first.`}
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginBottom:14, lineHeight:1.4 }}>
+          {`Sold today at ${SHOP_LABELS[scope] || scope} — refill it.`}
+        </div>
+      )}
+
+      <ClothingSoldScopePanel
+        scopeKey={scope}
+        events={panelEvents}
+        refills={refills}
+        onRefill={handleRefill}
+        onUndo={handleUndo}
+        isBacklog={isBacklog}
+        onViewPhoto={setFullPhoto}
+      />
+      {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
+    </div>
+  );
+}
+
+function SourceView({ onExit, orders, returnsLog, products }) {
   const [tab, setTab] = usePersistedTab("source", "today");
   // Active hub — shared across all three top tabs. Defaults to Hub 1.
   const [hub, setHub] = useState("hub1");
@@ -8288,14 +8807,16 @@ function SourceView({ onExit, orders, returnsLog }) {
       <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
       {/* TOP TABS — Today / History / On Hold */}
       <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8 }}>
-        {[["today","Today's Request"],["history","History"],["onhold","On Hold"]].map(([key, label]) => (
+        {[["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Clothing Sold"]].map(([key, label]) => (
           <div key={key} onClick={() => setTab(key)}
                style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
             {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
           </div>
         ))}
       </div>
-      {/* HUB SUB-TABS — segmented pill, shared across all three top tabs */}
+      {/* HUB SUB-TABS — segmented pill, shared across the three order-refill tabs.
+          Hidden for Clothing Sold, which carries its own store scope pills. */}
+      {tab !== "clothing" && (
       <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
         {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
           const active = hub === val;
@@ -8329,6 +8850,7 @@ function SourceView({ onExit, orders, returnsLog }) {
           );
         })}
       </div>
+      )}
       <div style={{ padding:"1.5rem" }}>
         {tab==="today"   && <SourceTodayTab
                               rawCounts={rawCounts}
@@ -8344,6 +8866,7 @@ function SourceView({ onExit, orders, returnsLog }) {
                               hub={hub}
                               onResponse={handleResponse} />}
         {tab==="onhold"  && <SourceOnHoldTab orders={orders} hub={hub} onHoldResponses={onHoldResponses} />}
+        {tab==="clothing" && <ClothingSoldView products={products} />}
       </div>
     </div>
   );
@@ -11522,7 +12045,7 @@ function AppInner() {
   } else if (!role) {
     view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
-  else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} onExit={() => setRole(null)} />);
+  else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMERS_DB)   view = guard(ROLES.CUSTOMERS_DB, <CustomersView  onExit={() => setRole(null)} />);
   else if (role === ROLES.DISPLAY) {
