@@ -20,11 +20,20 @@
 // ("Nike Tee — M×7, L×5, S×5 = 17"), aggregated across the scope's days. NOT one
 // card per (sale,size) cell (which fragmented a popular item into dozens).
 //
-// REFILL MODEL: a refill is a timestamp per (store, product) — refilledAt. A card
-// is "done" iff refilledAt >= its latest sale ts, so a restock clears all current
-// demand AND the card correctly RE-APPEARS when the product sells again later.
+// REFILL MODEL (ledger-derived): refilling a size fires a REAL `transfer_out`
+// (hub→store) tagged reason=CLOTHING_REFILL_REASON. A size's outstanding demand is
+//   outstanding = netSold − refilledQty   (both from the windowed ledger)
+// so a card clears only when every sold size has been transferred (or skipped),
+// and RE-APPEARS automatically when more sells. The `clothing_sold_refills` node
+// is NOT the completion source anymore — it only records explicit SKIPs (a size
+// the crew acknowledges it can't/won't refill, so it stops reappearing).
 
 import { inferProductType } from "./insights";
+
+// Marker on the refill transfer_out movement's `reason`, so refill replenishments
+// are distinguishable from any other transfer to a store (e.g. the sneaker
+// refill-request fulfilment, which sets link.refillId but no such reason).
+export const CLOTHING_REFILL_REASON = "clothing_refill";
 
 // Read window (days) for the bounded /stock_movements query. The App builds a
 // ts-windowed query [saStartIso(getSAPastDateString(N)) … now) so the read is
@@ -68,12 +77,28 @@ export const saStartIso = (saDate) => {
 export const clothingSoldCutoff = () =>
   new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-// A card is refilled iff a refilledAt exists for its (store, product) AND it is
-// at-or-after the card's latest sale — so a later sale re-opens the card. Shared
-// by the panel (pending/done split) and the pill badge so they can't diverge.
-export function isGroupRefilled(group, refills) {
-  const r = (refills || {})[group.store] && refills[group.store][group.productId];
-  return !!(r && r.refilledAt && r.refilledAt >= group.latestTs);
+// Tally refilled UNITS per (store, productId, size) from the windowed ledger:
+// sum the qty of every refill-tagged `transfer_out` whose destination is a store.
+// (The +to leg of a transfer credits the store cell — that's the replenishment.)
+export function tallyRefills(movements) {
+  const byPss = new Map();
+  for (const m of (movements || [])) {
+    if (!m || m.type !== "transfer_out") continue;
+    if (m.reason !== CLOTHING_REFILL_REASON) continue;
+    if (!m.to) continue;
+    const q = Number(m.qty);
+    if (!(q > 0)) continue;
+    const k = pssKey(m.to, m.productId, m.size);
+    byPss.set(k, (byPss.get(k) || 0) + q);
+  }
+  return byPss;
+}
+
+// Is this (store, product, size) marked skipped in clothing_sold_refills? A skip
+// is the crew acknowledging a size it won't refill, so it stops reappearing.
+export function isSizeSkipped(skips, store, productId, size) {
+  const leaf = skips && skips[store] && skips[store][productId] && skips[store][productId][String(size)];
+  return !!(leaf && leaf.skipped);
 }
 
 // Is this movement a clothing item? Join productId → product, prefer explicit
@@ -166,10 +191,14 @@ export function nettedSoldRows({ movements, productsById, windowStartSaDate = nu
   return soldRows.filter((r) => r.qty > 0);
 }
 
-// Group surviving sold rows into ONE card per (store, product): per-size qty
-// breakdown + total + latestTs (newest sale — drives refill state, recency, and
-// day bucket). refillKey/{store,productId} address the refill leaf.
-function groupByStoreProduct(rows, productsById) {
+// Group surviving sold rows into ONE card per (store, product). For each sold
+// size we compute outstanding = max(0, sold − refilled), where refilled comes from
+// the ledger tally and a skipped size is forced to 0. `total` is the sum of
+// outstanding (pending units); `done` is total === 0 (all refilled or skipped).
+// `sizes` carries the full breakdown { size, sold, refilled, outstanding, skipped }
+// so the card can show progress and the refill sheet can seed defaults.
+function groupByStoreProduct(rows, productsById, refilledByPss, skips) {
+  const refilled = refilledByPss || new Map();
   const groups = new Map();
   for (const r of rows) {
     const gk = `${r.store}__${r.pid}`;
@@ -182,22 +211,28 @@ function groupByStoreProduct(rows, productsById) {
         photos: productPhotoList(p),           // primary + gallery angles, for the lightbox
         category: p.category || null,          // section-grouping headers
         subcategory: p.subcategory || null,
-        _sizes: {}, total: 0, latestTs: r.ts, earliestTs: r.ts,
+        _sizes: {}, latestTs: r.ts, earliestTs: r.ts,
       };
       groups.set(gk, g);
     }
     g._sizes[r.size] = (g._sizes[r.size] || 0) + r.qty;
-    g.total += r.qty;
     if (r.ts > g.latestTs) g.latestTs = r.ts;
     if (r.ts && (!g.earliestTs || r.ts < g.earliestTs)) g.earliestTs = r.ts;
   }
-  return Array.from(groups.values()).map(({ _sizes, ...g }) => ({
-    ...g,
-    ts: g.latestTs, // DayCollapsible + relative-time key on the most-recent sale
-    sizes: Object.entries(_sizes)
+  return Array.from(groups.values()).map(({ _sizes, ...g }) => {
+    let total = 0, soldTotal = 0;
+    const sizes = Object.entries(_sizes)
       .sort((a, b) => sizeSortKey(a[0]) - sizeSortKey(b[0]) || String(a[0]).localeCompare(String(b[0])))
-      .map(([size, qty]) => ({ size, qty })),
-  }));
+      .map(([size, sold]) => {
+        const ref = refilled.get(pssKey(g.store, g.productId, size)) || 0;
+        const skipped = isSizeSkipped(skips, g.store, g.productId, size);
+        const outstanding = skipped ? 0 : Math.max(0, sold - ref);
+        total += outstanding;
+        soldTotal += sold;
+        return { size, sold, refilled: ref, outstanding, skipped };
+      });
+    return { ...g, ts: g.latestTs, sizes, total, soldTotal, done: total === 0 };
+  });
 }
 
 // The tab query. Returns per-(store, product) refill cards for one scope:
@@ -205,8 +240,9 @@ function groupByStoreProduct(rows, productsById) {
 //   • store null → Sold Backlog:        sales with saDate <  cutoff (merged `stores`),
 //                  further bounded to the picked [fromSaDate, toSaDate] window.
 // Netting runs across the queried window first (so a refund is cancelled wherever
-// its unit sold); rows are then scope-filtered and grouped by product.
-export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, store = null, stores = null, fromSaDate = null, toSaDate = null }) {
+// its unit sold); rows are then scope-filtered and grouped by product, with each
+// size's outstanding = sold − refilled (from the ledger) and skips applied.
+export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, store = null, stores = null, fromSaDate = null, toSaDate = null, skips = null }) {
   const rows = nettedSoldRows({ movements, productsById, windowStartSaDate: fromSaDate });
   const scoped = rows.filter((r) => {
     if (store) return r.saDate >= cutoff && r.store === store;
@@ -216,5 +252,6 @@ export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, s
     if (stores && !stores.includes(r.store)) return false;   // merge only the covered stores
     return true;
   });
-  return groupByStoreProduct(scoped, productsById);
+  const refilledByPss = tallyRefills(movements); // refills tagged in the same window
+  return groupByStoreProduct(scoped, productsById, refilledByPss, skips);
 }
