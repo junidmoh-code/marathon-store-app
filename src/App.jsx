@@ -1925,6 +1925,44 @@ function AdminReviewPhotosTab({ products = [] }) {
   const [style, setStyle] = usePersistedTab("aistudio-photostyle", "white");
   const house = style === "house";
   const styleArg = house ? { style: "house" } : {};
+  // Monthly spend budget (owner-set, settings/photoBudgetUSD). The FUNCTION gates a
+  // run that would exceed it (it can read this month's actual spend, which the
+  // client can't); here we just read it for the field and write edits back.
+  const [budgetDraft, setBudgetDraft] = useState("");
+  useEffect(() => {
+    const unsub = onValue(ref(database, "settings/photoBudgetUSD"), s => {
+      const v = s.val(); setBudgetDraft(v == null ? "" : String(v));
+    });
+    return () => unsub();
+  }, []);
+  const saveBudget = () => {
+    const t = String(budgetDraft).trim();
+    const v = t === "" ? null : Math.max(0, Number(t) || 0);
+    update(ref(database, "settings"), { photoBudgetUSD: v });
+  };
+  // One wrapper for every generate call: handle the budget gate (confirm → retry
+  // with confirmBudget) and surface an out-of-credits top-up message. Returns the
+  // result data, or null if the owner cancelled at the budget prompt.
+  const runGenerate = async (payload) => {
+    let res = await httpsCallable(functions, "generateProductPhotos")(payload);
+    let d = res?.data || {};
+    if (d.budgetBlocked) {
+      const ok = window.confirm(
+        `Monthly photo budget: $${Number(d.budget).toFixed(2)}\n` +
+        `Spent so far this month: $${Number(d.monthSpend).toFixed(2)}\n` +
+        `This run adds ≈ $${Number(d.estBatch).toFixed(2)} for ${d.total} photo${d.total === 1 ? "" : "s"} → $${Number(d.wouldBe).toFixed(2)} total.\n\n` +
+        `That would go over your budget. Generate anyway?`
+      );
+      if (!ok) { setRunMsg("Cancelled — over the monthly budget, nothing generated."); return null; }
+      res = await httpsCallable(functions, "generateProductPhotos")({ ...payload, confirmBudget: true });
+      d = res?.data || {};
+    }
+    if (d.outOfCredits) {
+      const prov = d.outOfCredits === "openai" ? "OpenAI" : "Gemini";
+      setRunMsg(`⚠ Out of ${prov} credits — top up that account, then try again.${d.processed ? ` (${d.processed} generated before it ran out.)` : ""}`);
+    }
+    return d;
+  };
   const [runBusy, setRunBusy] = useState(false);
   const [runMsg, setRunMsg]   = useState(null);
   const [lightbox, setLightbox] = useState(null);
@@ -2005,9 +2043,9 @@ function AdminReviewPhotosTab({ products = [] }) {
     if (!ids.length) return;
     setRunBusy(true); setRunMsg(`Generating ${ids.length} selected${house ? " in house style" : ""} at ${quality}… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality, ...engineArg, ...styleArg });
-      const d = res?.data || {};
-      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
+      const d = await runGenerate({ productIds: ids, reprocess: true, quality, ...engineArg, ...styleArg });
+      if (!d) return;                    // cancelled at the budget prompt
+      if (!d.outOfCredits) setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
       setSelectedIds(new Set()); setPicking(false);
     } catch (e) {
       const m = String(e?.message || e);
@@ -2116,9 +2154,9 @@ function AdminReviewPhotosTab({ products = [] }) {
   const runAI = async () => {
     setRunBusy(true); setRunMsg(`Generating ${runN} clothing photos${house ? " in house style" : ""}… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg, ...styleArg });
-      const d = res?.data || {};
-      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
+      const d = await runGenerate({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg, ...styleArg });
+      if (!d) return;                    // cancelled at the budget prompt
+      if (!d.outOfCredits) setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
     } catch (e) {
       const m = String(e?.message || e);
       setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
@@ -2134,9 +2172,9 @@ function AdminReviewPhotosTab({ products = [] }) {
     const thisEngine = (engine === "gemini" || engine === "openai") ? { engine } : engineArg;
     setRunMsg(`Regenerating “${row.name || row.id}”${house ? " in house style" : ""} at ${quality}${!house && engine && engine !== "auto" ? ` via ${engine}` : ""}${note ? ` — “${note}”` : ""}…`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...thisEngine, ...thisNote, ...styleArg });
-      const d = res?.data || {};
-      setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”.`);
+      const d = await runGenerate({ productIds: [row.id], reprocess: true, quality, ...thisEngine, ...thisNote, ...styleArg });
+      if (!d) return;                    // cancelled at the budget prompt
+      if (!d.outOfCredits) setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”.`);
     } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }
     finally { setRegenIds(s => { const n = new Set(s); n.delete(row.id); return n; }); }
   };
@@ -2181,6 +2219,17 @@ function AdminReviewPhotosTab({ products = [] }) {
             );
           })}
         </div>
+        {/* Monthly spend budget — the run is blocked (with a confirm) before it
+            would push this month's photo spend over this. Blank = no limit. */}
+        <label title="Warn before a run pushes this month's photo spend over this budget. Blank = no limit."
+               style={{ display:"flex", alignItems:"center", gap:3, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, padding:"0 8px" }}>
+          <span style={{ fontSize:12, color:"rgba(255,255,255,.45)" }}>$</span>
+          <input type="number" min={0} step={1} value={budgetDraft}
+                 onChange={e => setBudgetDraft(e.target.value)} onBlur={saveBudget}
+                 onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                 placeholder="budget/mo" aria-label="Monthly photo budget in dollars"
+                 style={{ width:74, background:"transparent", border:"none", outline:"none", color:"#fff", padding:"7px 0", fontSize:13 }}/>
+        </label>
         <button onClick={selectedIds.size ? generateSelected : runAI} disabled={runBusy}
                 title={selectedIds.size ? "Generate the products you picked" : "Auto-generate the next clothing items missing a photo"}
                 style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: runBusy ? "wait" : "pointer", opacity: runBusy ? .6 : 1 }}>

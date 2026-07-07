@@ -2345,6 +2345,48 @@ async function loadStyleKit(db) {
   return out;
 }
 
+// ── Spend budget + out-of-credits detection ────────────────────────────────────
+// The image APIs don't expose remaining balance, so "warn before you run out" is:
+//   (1) an owner-set MONTHLY budget at settings/photoBudgetUSD — the function sums
+//       this month's photo spend from aiAssistant/usage and refuses a run that
+//       would exceed it (client re-sends confirmBudget:true to override); and
+//   (2) detecting the provider's genuine out-of-credits/quota error mid-run so the
+//       client can say "top up {provider}" instead of showing a vague failure.
+const PHOTO_BUDGET_PATH = "settings/photoBudgetUSD";
+
+async function monthPhotoSpendUSD(db) {
+  const snap = await db.ref("aiAssistant/usage").once("value");
+  const usage = snap.val() || {};
+  const month = new Date().toISOString().slice(0, 7); // YYYY-MM (matches the day keys)
+  let sum = 0;
+  for (const [day, entries] of Object.entries(usage)) {
+    if (!day.startsWith(month)) continue;
+    for (const e of Object.values(entries || {})) {
+      if (e && e.kind === "generateProductPhotos") sum += Number(e.estimatedCostUSD) || 0;
+    }
+  }
+  return +sum.toFixed(4);
+}
+
+// Rough per-image estimate for the PRE-flight budget check (before real token
+// cost is known): house = NB Pro flat; white = the routed engine's flat rate.
+function estPerImageUSD(style, engineOverride) {
+  if (style === "house") return NBPRO_FLAT_IMAGE_USD;
+  if (engineOverride === "openai") return 0.04;   // gpt-image-1 medium ballpark
+  return GEMINI_FLAT_IMAGE_USD;                    // NB2 white-bg default
+}
+
+// Recognise a genuine "account out of credits / over quota" error so the client
+// can prompt a top-up. Returns 'openai' | 'gemini' | null.
+function outOfCreditsProvider(err) {
+  const msg  = String((err && err.message) || "").toLowerCase();
+  const code = String((err && (err.code || (err.error && err.error.code))) || "").toLowerCase();
+  if (code === "insufficient_quota" || /insufficient_quota|billing_hard_limit|exceeded your current quota/.test(msg)) return "openai";
+  // Gemini REST failures are thrown as `gemini HTTP <status>: <body>`.
+  if (/^gemini http (429|403)/.test(msg) && /(quota|billing|resource_exhausted|exceeded|permission_denied)/.test(msg)) return "gemini";
+  return null;
+}
+
 exports.generateProductPhotos = onCall(
   {
     region: "europe-west1",
@@ -2398,6 +2440,24 @@ exports.generateProductPhotos = onCall(
       ids = ids.slice(0, limit);
     }
 
+    // Budget gate (pre-flight): if a monthly budget is set and this run would push
+    // this month's photo spend over it, DON'T spend — return the numbers so the
+    // client can confirm. Bypassed when the client re-sends confirmBudget:true.
+    if (ids.length && !data.confirmBudget) {
+      const budget = Number((await db.ref(PHOTO_BUDGET_PATH).once("value")).val()) || 0;
+      if (budget > 0) {
+        const monthSpend = await monthPhotoSpendUSD(db);
+        const estBatch = +(ids.length * estPerImageUSD(style, engineOverride)).toFixed(2);
+        if (monthSpend + estBatch > budget) {
+          return {
+            budgetBlocked: true, budget, monthSpend, estBatch,
+            wouldBe: +(monthSpend + estBatch).toFixed(2),
+            total: ids.length, processed: 0, failed: 0,
+          };
+        }
+      }
+    }
+
     const OpenAINS = require("openai");
     const OpenAI = OpenAINS.default || OpenAINS;
     const openaiClient = new OpenAI({ apiKey: openaiApiKey.value() });
@@ -2412,6 +2472,10 @@ exports.generateProductPhotos = onCall(
     let processed = 0, failed = 0, estCostUSD = 0;
     const costByEngine = { openai: 0, gemini: 0, nbpro: 0 };
     const sample = [];
+    // Set when a provider reports the account is out of credits/quota — stops the
+    // batch early (every remaining call would fail the same way) and is returned so
+    // the client shows a "top up {provider}" message instead of N generic failures.
+    let creditStop = null;
 
     let cursor = 0;
     async function worker() {
@@ -2472,6 +2536,10 @@ exports.generateProductPhotos = onCall(
           processed++;
           if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName });
         } catch (err) {
+          // Out of credits: stop the whole batch — every remaining call fails the
+          // same way, and continuing just racks up failures.
+          const prov = outOfCreditsProvider(err);
+          if (prov) { creditStop = prov; cursor = ids.length; }
           failed++;
           console.warn(`generateProductPhotos: ${id} (${engName}) failed:`, err && err.message);
         }
@@ -2487,7 +2555,11 @@ exports.generateProductPhotos = onCall(
       engine: style === "house" ? "nbpro" : (engineOverride || "auto"), style, costByEngine,
     });
 
-    return { processed, failed, total: ids.length, estCostUSD, costByEngine, sample };
+    return {
+      processed, failed, total: ids.length, estCostUSD, costByEngine, sample,
+      // Present only when the account ran dry mid-batch → client shows "top up {provider}".
+      ...(creditStop ? { outOfCredits: creditStop } : {}),
+    };
   }
 );
 
