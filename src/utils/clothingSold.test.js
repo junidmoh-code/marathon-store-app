@@ -17,6 +17,7 @@ const PRODUCTS = {
   p2: { id: "p2", name: "Puma Hoodie", productType: "clothing", category: "Clothing", subcategory: "Hoodies & Sweatshirts" },
   p3: { id: "p3", name: "Air Max 90",  productType: "sneaker" },
   p4: { id: "p4", name: "Legacy Polo" },
+  p5: { id: "p5", name: "Nike Cap",    productType: "clothing", photoUrl: "only1", category: "Clothing", subcategory: "Caps & Hats" }, // photoUrl, no gallery
 };
 
 // A `sold` movement on 2026-06-16 at hour `t`. Mid-day UTC so the +2h SA shift
@@ -34,9 +35,11 @@ const base = { productsById: PRODUCTS };
 const PAST = "2026-06-17"; // cutoff: all 06-16 sales are backlog (saDate < cutoff)
 
 describe("saDateOf / saStartIso / sizeSortKey", () => {
-  it("saDateOf slices in SA time (+2h)", () => {
+  it("saDateOf slices in SA time (+2h), and returns '' on empty/malformed ts", () => {
     expect(saDateOf("2026-06-16T12:00:00.000Z")).toBe("2026-06-16");
     expect(saDateOf("2026-06-16T23:00:00.000Z")).toBe("2026-06-17");
+    expect(saDateOf("")).toBe("");
+    expect(saDateOf("not-a-date")).toBe(""); // guard: must not throw
   });
   it("saStartIso is 22:00 UTC the previous day (midnight SA)", () => {
     expect(saStartIso("2026-06-16")).toBe("2026-06-15T22:00:00.000Z");
@@ -175,9 +178,13 @@ describe("group carries category/subcategory + deduped photos", () => {
     expect(g.subcategory).toBe("T-Shirts");
     expect(g.photos).toEqual(["u1", "g2"]); // photoUrl first, gallery deduped
   });
-  it("group with no gallery still lists the primary photo", () => {
+  it("lists just the primary photo when photoUrl is set but there is no gallery", () => {
+    const g = clothingSoldEventsForPeriod({ ...base, movements: [sold("S1", "p5", "L", "08")], cutoff: PAST, store: null, stores: CLOTHING_SOLD_STORES })[0];
+    expect(g.photos).toEqual(["only1"]);
+  });
+  it("photos is empty when the product has neither photoUrl nor gallery", () => {
     const g = clothingSoldEventsForPeriod({ ...base, movements: [sold("S1", "p2", "L", "08")], cutoff: PAST, store: null, stores: CLOTHING_SOLD_STORES })[0];
-    expect(g.photos).toEqual([]); // p2 has no photoUrl/gallery
+    expect(g.photos).toEqual([]);
   });
 });
 

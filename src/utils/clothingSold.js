@@ -44,7 +44,9 @@ export const CLOTHING_SOLD_MAX_RANGE_DAYS = 90;
 // convention to insights.js / DayCollapsible (+2h shift before slicing).
 export const saDateOf = (iso) => {
   if (!iso) return "";
-  return new Date(new Date(iso).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return ""; // malformed ts → skip, don't throw on toISOString
+  return new Date(t + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
 };
 
 // UTC ISO instant of 00:00 SA-time on a given SA-date "YYYY-MM-DD". Midnight SA
@@ -52,7 +54,9 @@ export const saDateOf = (iso) => {
 // bound for the ts-windowed query — everything sold on-or-after that SA-date.
 export const saStartIso = (saDate) => {
   if (!saDate) return "";
-  return new Date(new Date(`${saDate}T00:00:00.000Z`).getTime() - 2 * 60 * 60 * 1000).toISOString();
+  const t = new Date(`${saDate}T00:00:00.000Z`).getTime();
+  if (!Number.isFinite(t)) return ""; // malformed date → don't throw
+  return new Date(t - 2 * 60 * 60 * 1000).toISOString();
 };
 
 // The single cutoff constant dividing "today's per-store sales" from the merged

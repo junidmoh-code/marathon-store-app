@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, equalTo, startAt } from "firebase/database";
-import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
@@ -63,6 +63,49 @@ function dataURLToBlob(dataUrl) {
   const arr = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
   return new Blob([arr], { type: mime });
+}
+
+// Compress an image File in-browser to maxDim / maxBytes and return a JPEG
+// blob — the same scale-then-step-quality-down pipeline the product photo
+// uploads use, promisified for the Style Kit / box-photo upload paths (which
+// need bigger targets than the 800px/200KB product thumbnails: references
+// drive scene fidelity, so they keep more detail).
+function compressImageFile(file, maxDim, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read that file."));
+    reader.onload = ev => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("That file isn't an image."));
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / img.width, maxDim / img.height);
+        const canvas = document.createElement("canvas");
+        canvas.width  = Math.round(img.width  * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        let dataUrl = canvas.toDataURL("image/jpeg", 0.05); // worst-case fallback
+        for (let q = 0.85; q > 0.05; q = Math.round((q - 0.05) * 100) / 100) {
+          const candidate = canvas.toDataURL("image/jpeg", q);
+          if (candidate.length * 0.75 <= maxBytes) { dataUrl = candidate; break; }
+        }
+        resolve(dataURLToBlob(dataUrl));
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Upload a sneaker's box photo → products/{id}/source_box.jpg + photoBoxUrl.
+// House-style sneaker generations attach it automatically so the AI reproduces
+// the REAL box instead of guessing. Used by the Regenerate popup + product page.
+async function uploadBoxPhoto(productId, file) {
+  const blob = await compressImageFile(file, 1200, 400 * 1024);
+  const sRef = storageRef(storage, `products/${productId}/source_box.jpg`);
+  await uploadBytes(sRef, blob, { contentType: "image/jpeg" });
+  const url = await getDownloadURL(sRef);
+  await update(ref(database, `products/${productId}`), { photoBoxUrl: url, boxPhotoUpdatedAt: Date.now() });
+  return url;
 }
 
 // Clean product placeholder icon — replaces 👟 emoji
@@ -1983,6 +2026,12 @@ function AdminReviewPhotosTab({ products = [] }) {
   // to compare. Only sent when not "auto"; the function auto-routes otherwise.
   const [engine, setEngine] = useState("auto");
   const engineArg = engine !== "auto" ? { engine } : {};
+  // Style: "white" = classic white-bg re-shoot (default, unchanged behavior).
+  // "house" = Marathon house-style scene — Style Kit references + Nano Banana
+  // Pro (engine choice doesn't apply; the function forces NB Pro).
+  const [style, setStyle] = useState("white");
+  const house = style === "house";
+  const styleArg = house ? { style: "house" } : {};
   const [runBusy, setRunBusy] = useState(false);
   const [runMsg, setRunMsg]   = useState(null);
   const [lightbox, setLightbox] = useState(null);
@@ -2062,9 +2111,9 @@ function AdminReviewPhotosTab({ products = [] }) {
   const generateSelected = async () => {
     const ids = [...selectedIds];
     if (!ids.length) return;
-    setRunBusy(true); setRunMsg(`Generating ${ids.length} selected at ${quality}… (slow — image generation)`);
+    setRunBusy(true); setRunMsg(`Generating ${ids.length} selected${house ? " in house style" : ""} at ${quality}… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality, ...engineArg });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality, ...engineArg, ...styleArg });
       const d = res?.data || {};
       setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
       setSelectedIds(new Set()); setPicking(false);
@@ -2173,9 +2222,9 @@ function AdminReviewPhotosTab({ products = [] }) {
     finally { setBulkBusy(false); setRunMsg(`Approved ${okN}${failN ? `, ${failN} failed (see above)` : ""}.`); }
   };
   const runAI = async () => {
-    setRunBusy(true); setRunMsg(`Generating ${runN} clothing photos… (slow — image generation)`);
+    setRunBusy(true); setRunMsg(`Generating ${runN} clothing photos${house ? " in house style" : ""}… (slow — image generation)`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg, ...styleArg });
       const d = res?.data || {};
       setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
     } catch (e) {
@@ -2191,9 +2240,9 @@ function AdminReviewPhotosTab({ products = [] }) {
     const thisNote = note ? { note } : {};
     const engine = opts.engine;
     const thisEngine = (engine === "gemini" || engine === "openai") ? { engine } : engineArg;
-    setRunMsg(`Regenerating “${row.name || row.id}” at ${quality}${engine && engine !== "auto" ? ` via ${engine}` : ""}${note ? ` — “${note}”` : ""}…`);
+    setRunMsg(`Regenerating “${row.name || row.id}”${house ? " in house style" : ""} at ${quality}${!house && engine && engine !== "auto" ? ` via ${engine}` : ""}${note ? ` — “${note}”` : ""}…`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...thisEngine, ...thisNote });
+      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...thisEngine, ...thisNote, ...styleArg });
       const d = res?.data || {};
       setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”.`);
     } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }
@@ -2218,12 +2267,28 @@ function AdminReviewPhotosTab({ products = [] }) {
           <option value="medium">medium (~$0.04)</option>
           <option value="high">high (~$0.17)</option>
         </select>
-        <select value={engine} onChange={e => setEngine(e.target.value)} title="Engine: Auto routes Footwear→Gemini, else OpenAI. Force one to compare."
-                style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13 }}>
+        <select value={engine} onChange={e => setEngine(e.target.value)} disabled={house}
+                title={house ? "House style always runs on Nano Banana Pro" : "Engine: Auto routes Footwear→Gemini, else OpenAI. Force one to compare."}
+                style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13, opacity: house ? .45 : 1 }}>
           <option value="auto">Auto (by category)</option>
-          <option value="gemini">Gemini (~$0.039)</option>
+          <option value="gemini">Gemini (~$0.067)</option>
           <option value="openai">OpenAI</option>
         </select>
+        {/* Style: classic white background vs the Marathon house-style scene
+            (Style Kit references + Nano Banana Pro — manage refs in Style Kit). */}
+        <div style={{ display:"flex", borderRadius:9, overflow:"hidden", border:"1px solid rgba(255,255,255,.15)" }}>
+          {[["white", "⬜ White bg", "Classic white-background re-shoot"], ["house", "⌗ House style", "Marathon scene from the Style Kit references — Nano Banana Pro, ~$0.14/image"]].map(([val, label, hint]) => {
+            const on = style === val;
+            return (
+              <button key={val} onClick={() => setStyle(val)} title={hint}
+                      style={{ background: on ? (val === "house" ? "rgba(167,139,250,.28)" : "rgba(74,127,255,.28)") : "rgba(255,255,255,.04)",
+                               color: on ? (val === "house" ? "#C4B5FD" : "#9DBCFF") : "rgba(255,255,255,.5)",
+                               border:"none", padding:"8px 12px", fontSize:12, fontWeight:700, cursor:"pointer" }}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
         <button onClick={selectedIds.size ? generateSelected : runAI} disabled={runBusy}
                 title={selectedIds.size ? "Generate the products you picked" : "Auto-generate the next clothing items missing a photo"}
                 style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: runBusy ? "wait" : "pointer", opacity: runBusy ? .6 : 1 }}>
@@ -2377,10 +2442,16 @@ function AdminReviewPhotosTab({ products = [] }) {
             <div key={row.id} style={{ background:"rgba(255,255,255,.025)", border:"1px solid rgba(255,255,255,.08)", borderRadius:16, padding:14 }}>
               <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
                 <span style={{ fontSize:14, fontWeight:600, color:"#fff", letterSpacing:-.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1, minWidth:0 }}>{row.name || "(no name)"}</span>
+                {row.style === "house" && (
+                  <span title={`House style · ${row.template || "?"} template · ${row.refsUsed ?? 0} reference${row.refsUsed === 1 ? "" : "s"}`}
+                        style={{ background:"rgba(167,139,250,.18)", border:"1px solid rgba(167,139,250,.45)", color:"#C4B5FD", fontSize:10, fontWeight:800, padding:"2px 8px", borderRadius:999, flexShrink:0 }}>
+                    ⌗ HOUSE
+                  </span>
+                )}
                 {row.engine && (
                   <span style={{ display:"inline-flex", alignItems:"center", gap:5, fontSize:11, fontWeight:600, color:"rgba(255,255,255,.45)", flexShrink:0 }}>
-                    <span style={{ width:6, height:6, borderRadius:"50%", background: row.engine === "gemini" ? "#F59E0B" : "#7AA7FF" }}/>
-                    {row.engine === "gemini" ? "Gemini" : "OpenAI"}{Number(row.costUSD) > 0 ? ` · $${Number(row.costUSD).toFixed(3)}` : ""}
+                    <span style={{ width:6, height:6, borderRadius:"50%", background: row.engine === "gemini" ? "#F59E0B" : row.engine === "nbpro" ? "#A78BFA" : "#7AA7FF" }}/>
+                    {row.engine === "gemini" ? "Gemini" : row.engine === "nbpro" ? "NB Pro" : "OpenAI"}{Number(row.costUSD) > 0 ? ` · $${Number(row.costUSD).toFixed(3)}` : ""}
                   </span>
                 )}
               </div>
@@ -2444,6 +2515,8 @@ function AdminReviewPhotosTab({ products = [] }) {
         <RegenerateModal
           row={regenFor}
           quality={quality}
+          house={house}
+          product={products.find(p => p.id === regenFor.id)}
           extraCount={galleryOf(regenFor.id).length}
           onClose={() => setRegenFor(null)}
           onSubmit={async (opts) => { const r = regenFor; setRegenFor(null); if (opts.keepFirst) await keepExtra(r); regenerate(r, opts); }}
@@ -2456,10 +2529,32 @@ function AdminReviewPhotosTab({ products = [] }) {
 // Regenerate popup — opens from a card's Regenerate button. Holds its OWN choices
 // (AI + fixes + comment) in local state, so they reset every time it opens and
 // nothing stays selected after a send. onSubmit closes it and fires the re-shoot.
-function RegenerateModal({ row, quality, extraCount = 0, onClose, onSubmit }) {
+// In house mode the engine picker is hidden (the function forces Nano Banana Pro)
+// and sneakers get a box-photo slot: the product's real box shot is attached to
+// every house generation so the AI reproduces the actual box, not a guess.
+function RegenerateModal({ row, quality, house = false, product = null, extraCount = 0, onClose, onSubmit }) {
   const [engine, setEngine] = useState("gemini"); // default to Gemini for regenerates
   const [note, setNote] = useState("");
   const [keepFirst, setKeepFirst] = useState(true); // keep the current photo before re-shooting (no extra cost)
+  // Box-photo slot state (house + sneaker only). boxUrl mirrors the product's
+  // photoBoxUrl and updates optimistically after an upload. Mirror the backend's
+  // clothing test EXACTLY (category === "Clothing" || productType === "clothing")
+  // so we never show a box slot for something the function treats as clothing —
+  // otherwise the uploaded box would be silently ignored in house generation.
+  const isSneaker = !((product?.category || row.category) === "Clothing" || (product?.productType || row.productType) === "clothing");
+  const [boxUrl, setBoxUrl] = useState(product?.photoBoxUrl || null);
+  const [boxBusy, setBoxBusy] = useState(false);
+  const [boxErr, setBoxErr] = useState(null);
+  const boxFileRef = useRef(null);
+  const handleBoxFile = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file || !product?.id) return;
+    setBoxBusy(true); setBoxErr(null);
+    try { setBoxUrl(await uploadBoxPhoto(product.id, file)); }
+    catch (err) { setBoxErr(String(err?.message || err)); }
+    finally { setBoxBusy(false); }
+  };
   const toggle = (instr) => setNote(n => {
     const t = n.trim();
     if (t.includes(instr)) return t.replace(instr, "").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "").trim();
@@ -2479,6 +2574,7 @@ function RegenerateModal({ row, quality, extraCount = 0, onClose, onSubmit }) {
           <button onClick={onClose} aria-label="Close" style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", color:"rgba(255,255,255,.6)", borderRadius:8, width:30, height:30, fontSize:17, cursor:"pointer", lineHeight:1, flexShrink:0 }}>×</button>
         </div>
 
+        {!house && (<>
         <div style={lbl}>CHOOSE AI</div>
         <div style={{ display:"flex", flexWrap:"wrap", gap:7, marginBottom:16 }}>
           {ENGINES.map(([val, lab, hint]) => {
@@ -2493,6 +2589,36 @@ function RegenerateModal({ row, quality, extraCount = 0, onClose, onSubmit }) {
             );
           })}
         </div>
+        </>)}
+        {house && (
+          <div style={{ background:"rgba(167,139,250,.1)", border:"1px solid rgba(167,139,250,.35)", borderRadius:12, padding:"10px 12px", marginBottom:16 }}>
+            <div style={{ fontSize:11.5, fontWeight:800, color:"#C4B5FD" }}>⌗ HOUSE STYLE · Nano Banana Pro</div>
+            <div style={{ fontSize:10.5, color:"rgba(255,255,255,.55)", marginTop:3 }}>
+              Re-shot in the Marathon scene using the Style Kit references (~$0.14/image).
+            </div>
+          </div>
+        )}
+        {house && isSneaker && (
+          <>
+            <div style={lbl}>BOX PHOTO <span style={{ fontWeight:500, color:"rgba(255,255,255,.3)" }}>attached automatically</span></div>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16, padding:"10px 12px", borderRadius:12,
+                          background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.12)" }}>
+              {boxUrl
+                ? <img src={boxUrl} alt="Box" style={{ width:46, height:46, borderRadius:9, objectFit:"cover", background:"#fff", border:"1px solid rgba(255,255,255,.12)", flexShrink:0 }}/>
+                : <span style={{ width:46, height:46, borderRadius:9, border:"1px dashed rgba(255,255,255,.25)", color:"rgba(255,255,255,.3)", fontSize:17, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>▣</span>}
+              <span style={{ flex:1, minWidth:0, fontSize:11, color:"rgba(255,255,255,.55)", lineHeight:1.4 }}>
+                {boxErr ? <span style={{ color:"#FF8A8A" }}>{boxErr}</span>
+                        : boxUrl ? "This box shot is sent with the re-shoot so the AI reproduces the real box."
+                                 : "No box photo yet — the AI will render this model's retail box from its knowledge. Add a real shot for an exact match."}
+              </span>
+              <input ref={boxFileRef} type="file" accept="image/*" onChange={handleBoxFile} style={{ display:"none" }}/>
+              <button type="button" onClick={() => boxFileRef.current?.click()} disabled={boxBusy || !product?.id}
+                      style={{ background:"rgba(167,139,250,.16)", color:"#C4B5FD", border:"1px solid rgba(167,139,250,.45)", borderRadius:9, padding:"7px 12px", fontSize:11.5, fontWeight:700, cursor: boxBusy ? "wait" : "pointer", flexShrink:0, opacity: boxBusy ? .6 : 1 }}>
+                {boxBusy ? "Uploading…" : boxUrl ? "Replace" : "＋ Add box photo"}
+              </button>
+            </div>
+          </>
+        )}
 
         <div style={lbl}>WHAT NEEDS FIXING? <span style={{ fontWeight:500, color:"rgba(255,255,255,.3)" }}>tap any</span></div>
         <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:16 }}>
@@ -2528,11 +2654,325 @@ function RegenerateModal({ row, quality, extraCount = 0, onClose, onSubmit }) {
         <div style={{ display:"flex", gap:9, marginTop:14 }}>
           <button type="button" onClick={onClose}
                   style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.14)", color:"rgba(255,255,255,.7)", borderRadius:11, padding:"11px 16px", fontSize:13, fontWeight:700, cursor:"pointer" }}>Cancel</button>
-          <button type="button" onClick={() => onSubmit({ engine, note, keepFirst })}
-                  style={{ flex:1, background:"linear-gradient(180deg,#5A8BFF,#3D6BFF)", border:"none", color:"#fff", borderRadius:11, padding:"11px 0", fontSize:13.5, fontWeight:800, cursor:"pointer", boxShadow:"0 6px 18px rgba(61,107,255,.4)" }}>
-            ✦ Regenerate at {quality}
+          <button type="button" onClick={() => onSubmit({ engine: house ? "auto" : engine, note, keepFirst })}
+                  style={{ flex:1, background: house ? "linear-gradient(180deg,#A78BFA,#7C5CE0)" : "linear-gradient(180deg,#5A8BFF,#3D6BFF)", border:"none", color:"#fff", borderRadius:11, padding:"11px 0", fontSize:13.5, fontWeight:800, cursor:"pointer", boxShadow: house ? "0 6px 18px rgba(124,92,224,.4)" : "0 6px 18px rgba(61,107,255,.4)" }}>
+            {house ? "⌗ Regenerate in house style" : `✦ Regenerate at ${quality}`}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── STYLE KIT — HOUSE-STYLE REFERENCE MANAGER ────────────────────────────────
+// Super-admin panel (inside AI Studio) for the reference images + locked prompts
+// that drive house-style generations. Two templates keyed on productType:
+// "sneaker" (shoe + its box) and "clothing" (garment sets). Everything lives at
+// /aiAssistant/styleKit/{template} = { prompt, refs:{refId:{url,path,enabled,…}} }
+// and Storage aiStudio/styleKit/{template}/{refId}.jpg — the generate function
+// re-reads it per call, so changes apply to the NEXT generation, no redeploy.
+const STYLE_KIT_TEMPLATES = [
+  { key: "sneaker",  label: "Sneaker",  hint: "shoe displayed with its box" },
+  { key: "clothing", label: "Clothing", hint: "garment sets on the backdrop" },
+];
+// Cosmetic garment-type labels for CLOTHING refs — organisation only, so the
+// spread across types is visible at a glance. The generator ignores them and
+// sends the first enabled clothing refs regardless of label.
+const STYLE_KIT_KINDS = ["cap", "tee", "jeans", "jacket", "tracksuit", "other"];
+const STYLE_KIT_MAX_SENT = 6; // KEEP IN SYNC with HOUSE_MAX_REFS in functions/index.js
+
+// Panel starting text for the locked prompts — display copies of the function's
+// code defaults. KEEP IN SYNC with HOUSE_PROMPT_* in functions/index.js: the
+// function only reads /aiAssistant/styleKit/{template}/prompt when one is SAVED;
+// until then it uses its own identical built-in.
+const STYLE_KIT_DEFAULT_PROMPTS = {
+  clothing: [
+    "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
+    "images show our exact studio scene — recreate that scene precisely: the same backdrop and wall,",
+    "the same hangers and display hardware, the same lighting direction, softness and colour grade,",
+    "the same camera height, distance, angle and framing, and the same layout and spacing. The output",
+    "must look like it was shot in the SAME session, in the SAME spot, with the SAME lighting rig as",
+    "the references.",
+    "CRITICAL — the references define ONLY the scene and styling. The garments shown in the references",
+    "are DIFFERENT products: none of their design, colour, fabric, branding or details may appear in",
+    "the output.",
+    "The PRODUCT image shows the actual item to photograph. Keep the product's design EXACTLY —",
+    "identical shape, proportions, colour, materials, patterns, logos and text. Never redesign,",
+    "restyle, recolour, or invent details the real product does not have. Render every brand wordmark",
+    "and logo crisply and correctly — properly letter-formed, correctly spelled, matching the real",
+    "brand's exact lettering; never garbled, warped or fake-looking.",
+    "Present the garments as a coordinated SET, displayed exactly the way the reference sets are",
+    "displayed — every piece visible in the product photo (e.g. hoodie and matching joggers) arranged",
+    "together in the same configuration, on the same hangers, with the same spacing as the references.",
+    "If the product photo shows a single piece, present just that piece in the identical scene and",
+    "position. Garments fully steamed and wrinkle-free with natural drape, squared shoulders and",
+    "straight hems; nothing cropped or cut off.",
+    "Keep the product's TRUE colours at full strength — never washed out, faded or over-exposed. Dark",
+    "colours stay RICH and DEEP. Match the exposure and white balance of the reference scene so the",
+    "product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a flawless,",
+    "photorealistic result indistinguishable from a real photo taken in our studio.",
+  ].join(" "),
+  sneaker: [
+    "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
+    "images show our exact studio scene — recreate it precisely: the same backdrop, surface, lighting",
+    "direction, softness and colour grade, the same camera height, angle and framing, and the same",
+    "shoe-and-box composition and spacing as the references. The output must look like it was shot in",
+    "the SAME session, in the SAME spot, with the SAME lighting rig.",
+    "CRITICAL — the references define ONLY the scene, layout and styling. The sneakers and boxes shown",
+    "in them are DIFFERENT products: none of their design, colourway or branding may appear in the",
+    "output.",
+    "The PRODUCT image shows the actual sneaker to photograph. Keep its design EXACTLY — identical",
+    "shape, proportions, colourway, materials, patterns, logos and text. Show the OUTER (lateral)",
+    "branded display side facing the camera, keeping the SAME side and SAME left/right facing as the",
+    "product photo — never flip, mirror or rotate to the plain inner side. Never redesign or invent",
+    "details.",
+    "Display the sneaker WITH its retail box, positioned exactly as the boxes are positioned in the",
+    "references. If a BOX image is provided, reproduce that exact box — its true colours, graphics,",
+    "logos and label text, correctly spelled and crisply rendered. If no box image is provided, show",
+    "this exact model's authentic retail box using your knowledge of the real product; keep all box",
+    "text and branding accurate and legible, and never invent box artwork that doesn't exist.",
+    "True, full-strength colours — dark colours stay rich and deep; match the reference scene's",
+    "exposure and white balance. Tack-sharp focus and detail; a flawless, photorealistic result",
+    "indistinguishable from a real photo taken in our studio.",
+  ].join(" "),
+};
+
+function StyleKitPanel() {
+  const { user } = usePermissions();
+  const [kit, setKit] = useState({});
+  useEffect(() => {
+    const unsub = onValue(ref(database, "aiAssistant/styleKit"), snap => setKit(snap.val() || {}));
+    return () => unsub();
+  }, []);
+  const [template, setTemplate] = useState("sneaker");
+  const [uploadKind, setUploadKind] = useState("other");
+  const [uploading, setUploading] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const fileRef = useRef(null);
+  // Prompt draft: null = showing the saved (or default) text; a string = edited.
+  const [draft, setDraft] = useState(null);
+  const [savingPrompt, setSavingPrompt] = useState(false);
+  useEffect(() => { setDraft(null); setMsg(null); }, [template]);
+
+  const t = kit[template] || {};
+  const refsArr = useMemo(() => Object.entries(t.refs || {})
+    .map(([id, r]) => ({ id, ...r }))
+    .sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)), [t.refs]);
+  const enabled = refsArr.filter(r => r.enabled !== false);
+  // The generator sends the FIRST STYLE_KIT_MAX_SENT enabled refs (oldest first)
+  // — badge exactly those so what's "live" is never a guess.
+  const sentIds = new Set(enabled.slice(0, STYLE_KIT_MAX_SENT).map(r => r.id));
+
+  const isCustomPrompt = typeof t.prompt === "string" && t.prompt.trim().length > 0;
+  const effectivePrompt = isCustomPrompt ? t.prompt : STYLE_KIT_DEFAULT_PROMPTS[template];
+  const shownPrompt = draft !== null ? draft : effectivePrompt;
+  const promptDirty = draft !== null && draft.trim() !== effectivePrompt.trim();
+
+  const handleFiles = async (e) => {
+    const files = [...(e.target.files || [])];
+    e.target.value = "";
+    if (!files.length) return;
+    setUploading(true); setMsg(`Uploading ${files.length} reference${files.length === 1 ? "" : "s"}…`);
+    let ok = 0, fail = 0;
+    for (const file of files) {
+      try {
+        // References drive scene fidelity — keep more detail than product thumbs.
+        const blob = await compressImageFile(file, 1600, 800 * 1024);
+        const refId = `r${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const path = `aiStudio/styleKit/${template}/${refId}.jpg`;
+        const sRef = storageRef(storage, path);
+        await uploadBytes(sRef, blob, { contentType: "image/jpeg" });
+        const url = await getDownloadURL(sRef);
+        await set(ref(database, `aiAssistant/styleKit/${template}/refs/${refId}`), {
+          url, path, enabled: true, addedAt: Date.now(), by: user?.email || "",
+          ...(template === "clothing" ? { kind: uploadKind } : {}),
+        });
+        ok++;
+      } catch (err) { fail++; console.warn("styleKit ref upload failed:", err); }
+    }
+    setMsg(`Added ${ok} reference${ok === 1 ? "" : "s"}${fail ? ` · ${fail} failed` : ""}.`);
+    setUploading(false);
+  };
+  const toggleRef = (r) => update(ref(database, `aiAssistant/styleKit/${template}/refs/${r.id}`), { enabled: r.enabled === false });
+  const setRefKind = (r, kind) => update(ref(database, `aiAssistant/styleKit/${template}/refs/${r.id}`), { kind });
+  const deleteRef = async (r) => {
+    if (!window.confirm("Delete this reference image?")) return;
+    try {
+      await remove(ref(database, `aiAssistant/styleKit/${template}/refs/${r.id}`));
+      if (r.path) deleteObject(storageRef(storage, r.path)).catch(() => {}); // best-effort; the RTDB entry is the source of truth
+      setMsg("Reference deleted.");
+    } catch (err) { setMsg(`Couldn't delete: ${err?.message || err}`); }
+  };
+  const savePrompt = async () => {
+    const text = shownPrompt.trim();
+    if (!text) { setMsg("Prompt can't be empty — use Reset to go back to the default."); return; }
+    setSavingPrompt(true);
+    try { await set(ref(database, `aiAssistant/styleKit/${template}/prompt`), text); setDraft(null); setMsg("Prompt saved — applies from the next generation."); }
+    catch (err) { setMsg(`Couldn't save: ${err?.message || err}`); }
+    finally { setSavingPrompt(false); }
+  };
+  const resetPrompt = async () => {
+    if (!window.confirm("Reset this template's prompt to the built-in default?")) return;
+    setSavingPrompt(true);
+    try { await set(ref(database, `aiAssistant/styleKit/${template}/prompt`), null); setDraft(null); setMsg("Reset to the built-in default prompt."); }
+    catch (err) { setMsg(`Couldn't reset: ${err?.message || err}`); }
+    finally { setSavingPrompt(false); }
+  };
+
+  // Clothing tab: group by cosmetic garment-type label so the spread across
+  // types is visible. Sneaker tab: one flat group.
+  const groups = template === "clothing"
+    ? STYLE_KIT_KINDS.map(k => ({ kind: k, items: refsArr.filter(r => (r.kind || "other") === k) })).filter(g => g.items.length)
+    : [{ kind: null, items: refsArr }];
+
+  const chip = (on, tint = "#4A7FFF") => ({
+    background: on ? `${tint}38` : "rgba(255,255,255,.05)", color: on ? "#C9D9FF" : "rgba(255,255,255,.55)",
+    border: "1px solid " + (on ? `${tint}90` : "rgba(255,255,255,.13)"),
+    borderRadius: 999, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+  });
+
+  return (
+    <div style={{ padding:"0 14px 30px" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0 4px", flexWrap:"wrap" }}>
+        <span style={{ fontSize:18, fontWeight:700, color:"#fff", letterSpacing:-.2 }}>Style Kit</span>
+        <span style={{ background:"rgba(167,139,250,.14)", border:"1px solid rgba(167,139,250,.4)", color:"#C4B5FD", fontSize:11.5, fontWeight:600, padding:"3px 10px", borderRadius:999 }}>
+          drives ⌗ House style
+        </span>
+      </div>
+      <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginBottom:12, lineHeight:1.5 }}>
+        Upload 5–10 photos of the Marathon scene per template. Every house-style generation sends the product photo
+        {" "}(+ box photo for sneakers) plus the first {STYLE_KIT_MAX_SENT} enabled references — changes apply from the
+        next generation, no redeploy.
+      </div>
+
+      {/* Template tabs */}
+      <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+        {STYLE_KIT_TEMPLATES.map(tp => {
+          const on = template === tp.key;
+          const count = Object.values((kit[tp.key] || {}).refs || {}).filter(r => r && r.enabled !== false).length;
+          return (
+            <button key={tp.key} onClick={() => setTemplate(tp.key)} title={tp.hint} style={chip(on, "#A78BFA")}>
+              {tp.label} <span style={{ opacity:.65, fontWeight:600 }}>· {count} live</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Upload row */}
+      <div style={{ background:"rgba(8,11,20,.95)", border:"1px solid rgba(167,139,250,.3)", borderRadius:12, padding:12, marginBottom:14 }}>
+        {template === "clothing" && (
+          <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:10 }}>
+            <span style={{ fontSize:11, fontWeight:700, color:"rgba(255,255,255,.45)", marginRight:2 }}>LABEL UPLOADS AS</span>
+            {STYLE_KIT_KINDS.map(k => (
+              <button key={k} onClick={() => setUploadKind(k)} style={{ ...chip(uploadKind === k, "#A78BFA"), padding:"5px 11px", fontSize:11 }}>
+                {k}
+              </button>
+            ))}
+            <span style={{ fontSize:10, color:"rgba(255,255,255,.35)", width:"100%", marginTop:2 }}>
+              Labels only organise this grid — the generator uses all enabled clothing refs regardless.
+            </span>
+          </div>
+        )}
+        <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+          <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleFiles} style={{ display:"none" }}/>
+          <button onClick={() => fileRef.current?.click()} disabled={uploading}
+                  style={{ background:"linear-gradient(180deg,#A78BFA,#7C5CE0)", color:"#fff", border:"none", borderRadius:9, padding:"9px 16px", fontSize:12.5, fontWeight:800, cursor: uploading ? "wait" : "pointer", opacity: uploading ? .6 : 1 }}>
+            {uploading ? "Uploading…" : "＋ Add reference photos"}
+          </button>
+          <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>
+            {enabled.length} enabled · first {Math.min(enabled.length, STYLE_KIT_MAX_SENT)} sent per generation
+          </span>
+        </div>
+        {enabled.length === 0 && (
+          <div style={{ marginTop:8, fontSize:11.5, color:"#FFC46B" }}>
+            ⚠ No enabled references — house-style runs for this template will rely on the prompt alone until you add some.
+          </div>
+        )}
+      </div>
+      {msg && <div style={{ fontSize:11.5, color:"rgba(255,255,255,.6)", marginBottom:10 }}>{msg}</div>}
+
+      {/* Reference grid (clothing: grouped by garment-type label) */}
+      {groups.map(g => (
+        <div key={g.kind || "all"} style={{ marginBottom:6 }}>
+          {g.kind && (
+            <div style={{ display:"flex", alignItems:"center", gap:8, margin:"10px 2px 7px" }}>
+              <span style={{ fontSize:11, fontWeight:800, letterSpacing:.6, textTransform:"uppercase", color:"rgba(196,181,253,.85)" }}>{g.kind}</span>
+              <span style={{ flex:1, height:1, background:"linear-gradient(90deg, rgba(167,139,250,.28), transparent)" }}/>
+              <span style={{ fontSize:10.5, color:"rgba(255,255,255,.35)" }}>{g.items.length}</span>
+            </div>
+          )}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(130px, 1fr))", gap:10 }}>
+            {g.items.map(r => {
+              const on = r.enabled !== false;
+              const sent = sentIds.has(r.id);
+              return (
+                <div key={r.id} style={{ borderRadius:12, overflow:"hidden", background:"rgba(255,255,255,.04)",
+                                          border:"1px solid " + (sent ? "rgba(167,139,250,.55)" : "rgba(255,255,255,.09)") }}>
+                  <div style={{ position:"relative" }}>
+                    <img src={r.url} alt="" loading="lazy" decoding="async"
+                         style={{ width:"100%", aspectRatio:"1", objectFit:"cover", display:"block", opacity: on ? 1 : .35, transition:"opacity .15s ease" }}/>
+                    {sent && (
+                      <span style={{ position:"absolute", top:6, left:6, background:"rgba(124,92,224,.85)", color:"#fff", fontSize:9, fontWeight:800, letterSpacing:.6, padding:"2px 7px", borderRadius:999 }}>SENT</span>
+                    )}
+                    {!on && (
+                      <span style={{ position:"absolute", top:6, left:6, background:"rgba(10,12,20,.8)", color:"rgba(255,255,255,.6)", fontSize:9, fontWeight:800, letterSpacing:.6, padding:"2px 7px", borderRadius:999 }}>OFF</span>
+                    )}
+                    <button onClick={() => deleteRef(r)} aria-label="Delete reference" title="Delete reference"
+                            style={{ position:"absolute", top:5, right:5, width:20, height:20, borderRadius:"50%", background:"rgba(10,12,20,.85)", color:"rgba(255,140,140,.9)", border:"1px solid rgba(255,255,255,.2)", fontSize:12, lineHeight:1, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>×</button>
+                  </div>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 8px" }}>
+                    <button onClick={() => toggleRef(r)}
+                            style={{ flex:1, background: on ? "rgba(74,202,122,.14)" : "rgba(255,255,255,.05)", color: on ? "#5FD894" : "rgba(255,255,255,.5)",
+                                     border:"1px solid " + (on ? "rgba(74,202,122,.4)" : "rgba(255,255,255,.13)"), borderRadius:8, padding:"5px 0", fontSize:10.5, fontWeight:800, cursor:"pointer" }}>
+                      {on ? "✓ Enabled" : "Off"}
+                    </button>
+                    {template === "clothing" && (
+                      <select value={r.kind || "other"} onChange={e => setRefKind(r, e.target.value)} title="Garment-type label (organisation only)"
+                              style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"rgba(255,255,255,.75)", padding:"4px 5px", fontSize:10.5, maxWidth:86 }}>
+                        {STYLE_KIT_KINDS.map(k => <option key={k} value={k}>{k}</option>)}
+                      </select>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      {refsArr.length === 0 && (
+        <div style={{ textAlign:"center", color:"#555", padding:"2rem 1rem", fontSize:"0.9rem" }}>
+          No {template} references yet — add the photos that define the Marathon look for this template.
+        </div>
+      )}
+
+      {/* Locked prompt editor */}
+      <div style={{ display:"flex", alignItems:"center", gap:8, margin:"18px 0 8px" }}>
+        <span style={{ fontSize:13.5, fontWeight:800, color:"#fff" }}>Locked prompt · {template}</span>
+        <span style={{ background: isCustomPrompt ? "rgba(167,139,250,.16)" : "rgba(255,255,255,.06)", border:"1px solid " + (isCustomPrompt ? "rgba(167,139,250,.45)" : "rgba(255,255,255,.13)"),
+                       color: isCustomPrompt ? "#C4B5FD" : "rgba(255,255,255,.5)", fontSize:10.5, fontWeight:700, padding:"2px 9px", borderRadius:999 }}>
+          {isCustomPrompt ? "custom" : "built-in default"}
+        </span>
+      </div>
+      <textarea value={shownPrompt} onChange={e => setDraft(e.target.value)} rows={9} spellCheck={false}
+                style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.05)", border:"1px solid " + (promptDirty ? "rgba(167,139,250,.55)" : "rgba(255,255,255,.13)"),
+                         borderRadius:12, color:"rgba(255,255,255,.85)", padding:"12px 13px", fontSize:12, lineHeight:1.55, resize:"vertical", fontFamily:"inherit" }}/>
+      <div style={{ display:"flex", gap:8, marginTop:8 }}>
+        <button onClick={savePrompt} disabled={savingPrompt || !promptDirty}
+                style={{ background: promptDirty ? "linear-gradient(180deg,#A78BFA,#7C5CE0)" : "rgba(255,255,255,.06)", color: promptDirty ? "#fff" : "rgba(255,255,255,.4)",
+                         border: promptDirty ? "none" : "1px solid rgba(255,255,255,.12)", borderRadius:9, padding:"9px 18px", fontSize:12.5, fontWeight:800, cursor: (savingPrompt || !promptDirty) ? "default" : "pointer" }}>
+          {savingPrompt ? "Saving…" : "Save prompt"}
+        </button>
+        {(isCustomPrompt || draft !== null) && (
+          <button onClick={resetPrompt} disabled={savingPrompt}
+                  style={{ background:"transparent", border:"1px solid rgba(255,255,255,.14)", color:"rgba(255,255,255,.6)", borderRadius:9, padding:"9px 14px", fontSize:12, fontWeight:700, cursor:"pointer" }}>
+            Reset to default
+          </button>
+        )}
+      </div>
+      <div style={{ fontSize:10.5, color:"rgba(255,255,255,.35)", marginTop:8, lineHeight:1.5 }}>
+        The prompt locks scene rules (product identity, layout, no reference-product leakage); the reference photos are
+        the authority on the exact backdrop, lighting and framing. Product name + any regenerate fix-note are added
+        automatically per product.
       </div>
     </div>
   );
@@ -2887,12 +3327,18 @@ const AI_TOOL_ICON = {
       <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
     </svg>
   ),
+  stylekit: (
+    <svg viewBox="0 0 24 24" width="17" height="17" stroke="currentColor" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
+    </svg>
+  ),
 };
 const AI_TOOLS = [
-  { id: "photos",  label: "Photo Studio", desc: "White-bg product shots" },
-  { id: "names",   label: "Name Cleanup", desc: "Tidy product names" },
-  { id: "reorder", label: "Reorder",      desc: "Plan + slow movers" },
-  { id: "voice",   label: "Voice",        desc: "Pickup-board TTS" },
+  { id: "photos",   label: "Photo Studio", desc: "White-bg + house-style shots" },
+  { id: "stylekit", label: "Style Kit",    desc: "House-style references" },
+  { id: "names",    label: "Name Cleanup", desc: "Tidy product names" },
+  { id: "reorder",  label: "Reorder",      desc: "Plan + slow movers" },
+  { id: "voice",    label: "Voice",        desc: "Pickup-board TTS" },
 ];
 
 // Matches the sidebar breakpoint: true below `px` wide (tablet and down).
@@ -3040,10 +3486,11 @@ function AiStudioView({ products, onExit }) {
 
   const activeTool = AI_TOOLS.find(t => t.id === tool) || AI_TOOLS[0];
   const toolBody =
-    tool === "names"   ? <AdminReviewNamesTab products={products} /> :
-    tool === "reorder" ? <InsightReorderTab productPhotoMap={productPhotoMap} /> :
-    tool === "voice"   ? <div style={{ padding:"14px 14px 8px" }}><PickupVoiceAdmin /></div> :
-                         <AdminReviewPhotosTab products={products} />;
+    tool === "names"    ? <AdminReviewNamesTab products={products} /> :
+    tool === "reorder"  ? <InsightReorderTab productPhotoMap={productPhotoMap} /> :
+    tool === "voice"    ? <div style={{ padding:"14px 14px 8px" }}><PickupVoiceAdmin /></div> :
+    tool === "stylekit" ? <StyleKitPanel /> :
+                          <AdminReviewPhotosTab products={products} />;
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, display:"flex" }}>
@@ -3772,6 +4219,29 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     await update(ref(database, `products/${product.id}`), { photoUrl: null });
   };
 
+  // Box photo (sneakers) — the shoe's own retail-box shot, attached to AI
+  // Photo Studio HOUSE-STYLE generations so the AI reproduces the real box.
+  // Gate on the SAME clothing test the backend uses (category OR productType),
+  // not the size-logic `isClothing` above (productType only), so the slot never
+  // shows for a category:"Clothing" item whose box the function would ignore.
+  const isSneakerForBox = !(product.category === "Clothing" || (product.productType || "") === "clothing");
+  const boxFileRef = useRef(null);
+  const [boxUploading, setBoxUploading] = useState(false);
+  const handleBoxFile = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setBoxUploading(true);
+    try { await uploadBoxPhoto(product.id, file); }
+    catch (err) { console.error("box photo upload failed:", err); alert("Failed to save the box photo. Please try again."); }
+    finally { setBoxUploading(false); }
+  };
+  const removeBoxPhoto = async () => {
+    if (!product.photoBoxUrl) return;
+    if (!window.confirm(`Remove the box photo for "${product.name}"?`)) return;
+    await update(ref(database, `products/${product.id}`), { photoBoxUrl: null });
+  };
+
   // Type — switching to Clothing strips Hub 1 (mirrors the Add Product
   // form's setProductType helper). Double-writes `hub` for back-compat per
   // the project-broadcast-api-async/14A double-write pattern.
@@ -3964,6 +4434,31 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
               <img key={u} src={u} alt="" onClick={() => setGalleryView(photos.length ? photos : [u])}
                    style={{ width:46, height:46, objectFit:"cover", borderRadius:9, background:"#fff", border:"1px solid rgba(255,255,255,.12)", cursor:"zoom-in" }} />
             ))}
+          </div>
+        )}
+        {/* BOX PHOTO — sneakers only. Attached automatically to house-style AI
+            re-shoots so the generated scene shows the REAL retail box. */}
+        {isSneakerForBox && (
+          <div style={{ ...cardInner, display:"flex", alignItems:"center", gap:10, borderTop:"1px solid rgba(255,255,255,.05)", paddingTop:12 }}>
+            {product.photoBoxUrl
+              ? <img src={product.photoBoxUrl} alt="Box" onClick={() => setGalleryView([product.photoBoxUrl])}
+                     style={{ width:46, height:46, objectFit:"cover", borderRadius:9, background:"#fff", border:"1px solid rgba(255,255,255,.12)", cursor:"zoom-in", flexShrink:0 }}/>
+              : <span style={{ width:46, height:46, borderRadius:9, border:"1px dashed rgba(255,255,255,.22)", color:"rgba(255,255,255,.28)", fontSize:16, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>▣</span>}
+            <span style={{ flex:1, minWidth:0 }}>
+              <span style={{ display:"block", fontSize:12.5, fontWeight:600, color:"rgba(255,255,255,.8)" }}>Box photo</span>
+              <span style={{ display:"block", fontSize:10.5, color:"rgba(255,255,255,.4)", marginTop:1 }}>Used by AI house-style shots to show the real retail box.</span>
+            </span>
+            <input ref={boxFileRef} type="file" accept="image/*" onChange={handleBoxFile} style={{ display:"none" }}/>
+            <button onClick={() => boxFileRef.current?.click()} disabled={boxUploading}
+                    style={{ background:"rgba(60,110,255,.12)", border:"1px solid rgba(60,110,255,.3)", color:"#4A7FFF", fontSize:12, fontWeight:600, padding:"8px 12px", borderRadius:9, cursor: boxUploading ? "not-allowed" : "pointer", opacity: boxUploading ? 0.5 : 1, flexShrink:0 }}>
+              {boxUploading ? "Uploading…" : product.photoBoxUrl ? "Replace" : "＋ Add"}
+            </button>
+            {product.photoBoxUrl && (
+              <button onClick={removeBoxPhoto} disabled={boxUploading}
+                      style={{ background:"transparent", border:"1px solid rgba(180,40,40,.25)", color:"#FF8888", fontSize:12, fontWeight:600, padding:"8px 12px", borderRadius:9, cursor: boxUploading ? "not-allowed" : "pointer", flexShrink:0 }}>
+                Remove
+              </button>
+            )}
           </div>
         )}
       </div>
