@@ -149,9 +149,22 @@ describe("scope split (daily per-store vs merged backlog)", () => {
   it("backlog excludes today's fresh sales (>= cutoff)", () => {
     expect(clothingSoldEventsForPeriod({ ...b, cutoff: TODAY, store: null, stores: CLOTHING_SOLD_STORES })).toHaveLength(0);
   });
-  it("windowStartSaDate drops sales older than the read window", () => {
-    const old = [sold("S0", "p1", "M", "08", { ts: "2026-05-01T08:00:00.000Z" })];
-    expect(clothingSoldEventsForPeriod({ ...base, movements: old, cutoff: PAST, store: null, stores: CLOTHING_SOLD_STORES, windowStartSaDate: "2026-06-03" })).toHaveLength(0);
+  it("fromSaDate drops sales older than the picked window", () => {
+    const movements2 = [
+      sold("A", "p1", "M", "08", { ts: "2026-06-10T08:00:00.000Z" }), // before from
+      sold("B", "p1", "L", "08", { ts: "2026-06-14T08:00:00.000Z" }), // inside
+    ];
+    const g = clothingSoldEventsForPeriod({ ...base, movements: movements2, cutoff: PAST, store: null, stores: CLOTHING_SOLD_STORES, fromSaDate: "2026-06-12" });
+    expect(g).toHaveLength(1);
+    expect(g[0].sizes).toEqual([{ size: "L", qty: 1 }]);
+  });
+  it("toSaDate drops sales newer than the picked window (still < cutoff)", () => {
+    const movements2 = [
+      sold("A", "p1", "M", "08", { ts: "2026-06-13T08:00:00.000Z" }), // inside [12,14]
+      sold("B", "p2", "L", "08", { ts: "2026-06-16T08:00:00.000Z" }), // after to
+    ];
+    const g = clothingSoldEventsForPeriod({ ...base, movements: movements2, cutoff: PAST, store: null, stores: CLOTHING_SOLD_STORES, fromSaDate: "2026-06-12", toSaDate: "2026-06-14" });
+    expect(g.map((x) => x.productId)).toEqual(["p1"]);
   });
 });
 

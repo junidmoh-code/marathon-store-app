@@ -36,6 +36,10 @@ export const CLOTHING_SOLD_BACKLOG_DAYS = 14;
 // Sold Backlog merges these. Pine is a one-line add: append "marathon-pine".
 export const CLOTHING_SOLD_STORES = ["marathon-pe", "trophy"];
 
+// Hard cap on how far back the Backlog date picker may reach — bounds the
+// ts-windowed query so a big pick can't pull the whole ledger.
+export const CLOTHING_SOLD_MAX_RANGE_DAYS = 90;
+
 // SA-timezone (UTC+2) date slice "YYYY-MM-DD" of an ISO timestamp. Identical
 // convention to insights.js / DayCollapsible (+2h shift before slicing).
 export const saDateOf = (iso) => {
@@ -194,15 +198,18 @@ function groupByStoreProduct(rows, productsById) {
 
 // The tab query. Returns per-(store, product) refill cards for one scope:
 //   • store set  → per-store DAILY tab: sales with saDate >= cutoff at that store
-//   • store null → Sold Backlog:        sales with saDate <  cutoff (merged `stores`)
-// Netting runs across the whole window first (so a refund is cancelled wherever
+//   • store null → Sold Backlog:        sales with saDate <  cutoff (merged `stores`),
+//                  further bounded to the picked [fromSaDate, toSaDate] window.
+// Netting runs across the queried window first (so a refund is cancelled wherever
 // its unit sold); rows are then scope-filtered and grouped by product.
-export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, store = null, stores = null, windowStartSaDate = null }) {
-  const rows = nettedSoldRows({ movements, productsById, windowStartSaDate });
+export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, store = null, stores = null, fromSaDate = null, toSaDate = null }) {
+  const rows = nettedSoldRows({ movements, productsById, windowStartSaDate: fromSaDate });
   const scoped = rows.filter((r) => {
     if (store) return r.saDate >= cutoff && r.store === store;
-    if (r.saDate >= cutoff) return false;                 // backlog is strictly older than today
-    if (stores && !stores.includes(r.store)) return false; // merge only the covered stores
+    if (r.saDate >= cutoff) return false;                    // backlog is strictly older than today
+    if (fromSaDate && r.saDate < fromSaDate) return false;   // picked window lower bound
+    if (toSaDate && r.saDate > toSaDate) return false;       // picked window upper bound
+    if (stores && !stores.includes(r.store)) return false;   // merge only the covered stores
     return true;
   });
   return groupByStoreProduct(scoped, productsById);

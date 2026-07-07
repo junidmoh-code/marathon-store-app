@@ -28,7 +28,7 @@ import { useStockCells, useLocations } from "./components/stock/useStock";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSoldCutoff, isGroupRefilled, clothingSectionLabel,
-  saStartIso, CLOTHING_SOLD_BACKLOG_DAYS, CLOTHING_SOLD_STORES,
+  saStartIso, CLOTHING_SOLD_BACKLOG_DAYS, CLOTHING_SOLD_STORES, CLOTHING_SOLD_MAX_RANGE_DAYS,
 } from "./utils/clothingSold";
 import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
@@ -883,12 +883,20 @@ function clearClothingRefill(store, productId) {
 // CLOTHING_SOLD_BACKLOG_DAYS days — NEVER an unbounded whole-ledger subscription.
 // Requires the stock_movements `.indexOn:["ts"]` rule (server-side sort); without
 // it Firebase falls back to reading the entire node and sorting client-side.
-function useClothingSoldMovements() {
+function useClothingSoldMovements(fromSaDate) {
   const authReady = useAuthReady();
   const [movements, setMovements] = useState([]);
+  // Clamp the window start to [today-MAX, today-BACKLOG_DAYS]: never reach past
+  // the hard cap, and never read LESS than the default window (daily tabs + the
+  // default backlog always need it). Open-ended to now covers today's sales.
+  const maxBack = getSAPastDateString(CLOTHING_SOLD_MAX_RANGE_DAYS);
+  const dflt    = getSAPastDateString(CLOTHING_SOLD_BACKLOG_DAYS);
+  let start = fromSaDate || dflt;
+  if (start < maxBack) start = maxBack;   // cap: never before today-90
+  if (start > dflt)    start = dflt;      // floor: always cover the default window
   useEffect(() => {
     if (!authReady) return;
-    const startIso = saStartIso(getSAPastDateString(CLOTHING_SOLD_BACKLOG_DAYS));
+    const startIso = saStartIso(start);
     const q = query(ref(database, "stock_movements"), orderByChild("ts"), startAt(startIso));
     const unsub = onValue(q, snap => {
       const data = snap.val() || {};
@@ -899,7 +907,7 @@ function useClothingSoldMovements() {
       setMovements(arr);
     }, err => console.warn("stock_movements read error:", err));
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, start]);
   return movements;
 }
 
@@ -7954,7 +7962,21 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, i
 function ClothingSoldView({ products }) {
   const [scope, setScope] = usePersistedTab("clothingSold", CLOTHING_SOLD_STORES[0]);
   const [fullPhoto, setFullPhoto] = useState(null); // GalleryLightbox photos array | null
-  const movements = useClothingSoldMovements();
+  const [search, setSearch] = useState("");
+
+  // Backlog date window (SA-dates). Default: the recent BACKLOG_DAYS window ending
+  // yesterday (backlog is strictly before today). The picker widens it back to the
+  // 90-day cap or narrows to a single day (from === to).
+  const today     = clothingSoldCutoff();
+  const yesterday = getSAPastDateString(1);
+  const maxBack   = getSAPastDateString(CLOTHING_SOLD_MAX_RANGE_DAYS);
+  const defaultFrom = getSAPastDateString(CLOTHING_SOLD_BACKLOG_DAYS);
+  const [backlogWindow, setBacklogWindow] = useState(() => ({ from: defaultFrom, to: yesterday }));
+
+  // The movements query starts at the backlog window's `from` (clamped in the
+  // hook to ≤ 90 days) and stays open-ended to now, so the daily tabs always see
+  // today. Picking an older `from` re-subscribes to a wider (still bounded) window.
+  const movements = useClothingSoldMovements(backlogWindow.from);
   const refills   = useAllClothingRefills();
 
   const productsById = useMemo(() => {
@@ -7963,21 +7985,35 @@ function ClothingSoldView({ products }) {
     return m;
   }, [products]);
 
-  const cutoff      = clothingSoldCutoff();
-  const windowStart = getSAPastDateString(CLOTHING_SOLD_BACKLOG_DAYS);
-
-  // Groups per scope: each store's fresh (today) sales, plus the merged backlog.
+  // Groups per scope. Daily tabs use today's sales; Backlog is bounded to the
+  // picked [from, to] window (and strictly < today).
   const eventsByScope = useMemo(() => {
-    const shared = { movements, productsById, cutoff, windowStartSaDate: windowStart };
     const out = {};
-    CLOTHING_SOLD_STORES.forEach(s => { out[s] = clothingSoldEventsForPeriod({ ...shared, store: s }); });
-    out.backlog = clothingSoldEventsForPeriod({ ...shared, store: null, stores: CLOTHING_SOLD_STORES });
+    CLOTHING_SOLD_STORES.forEach(s => {
+      out[s] = clothingSoldEventsForPeriod({ movements, productsById, cutoff: today, store: s });
+    });
+    out.backlog = clothingSoldEventsForPeriod({
+      movements, productsById, cutoff: today, store: null, stores: CLOTHING_SOLD_STORES,
+      fromSaDate: backlogWindow.from, toSaDate: backlogWindow.to,
+    });
     return out;
-  }, [movements, productsById, cutoff, windowStart]);
+  }, [movements, productsById, today, backlogWindow.from, backlogWindow.to]);
 
   const pendingUnits = (evs) => evs.reduce(
     (n, g) => n + (isGroupRefilled(g, refills) ? 0 : g.total), 0
   );
+
+  // Backlog search filter (name + category/subcategory), live as you type.
+  const backlogEvents = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const evs = eventsByScope.backlog || [];
+    if (!q) return evs;
+    return evs.filter(g =>
+      (g.productName || "").toLowerCase().includes(q) ||
+      (g.subcategory || "").toLowerCase().includes(q) ||
+      (g.category || "").toLowerCase().includes(q)
+    );
+  }, [eventsByScope, search]);
 
   // Daily per-store lists first (the crew's actual work), aging Backlog last.
   const SCOPES = [
@@ -7987,6 +8023,28 @@ function ClothingSoldView({ products }) {
 
   const handleRefill = (g) => saveClothingRefill(g.store, g.productId);
   const handleUndo   = (g) => clearClothingRefill(g.store, g.productId);
+
+  // Date-picker clamps: keep maxBack ≤ from ≤ to ≤ yesterday and the span ≤ cap.
+  const addDays  = (d, n) => new Date(new Date(`${d}T00:00:00.000Z`).getTime() + n * 86400000).toISOString().slice(0, 10);
+  const spanDays = (a, b) => Math.round((new Date(`${b}T00:00:00.000Z`).getTime() - new Date(`${a}T00:00:00.000Z`).getTime()) / 86400000);
+  const clamp    = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
+  const setFrom = (v) => setBacklogWindow(w => {
+    let from = clamp(v, maxBack, w.to);
+    if (spanDays(from, w.to) > CLOTHING_SOLD_MAX_RANGE_DAYS) from = addDays(w.to, -CLOTHING_SOLD_MAX_RANGE_DAYS);
+    return { ...w, from };
+  });
+  const setTo = (v) => setBacklogWindow(w => {
+    let to = clamp(v, w.from, yesterday);
+    if (spanDays(w.from, to) > CLOTHING_SOLD_MAX_RANGE_DAYS) to = addDays(w.from, CLOTHING_SOLD_MAX_RANGE_DAYS);
+    return { ...w, to };
+  });
+  const resetWindow    = () => { setBacklogWindow({ from: defaultFrom, to: yesterday }); setSearch(""); };
+  const isDefaultWindow = backlogWindow.from === defaultFrom && backlogWindow.to === yesterday;
+
+  const dateInput = { padding:"7px 9px", borderRadius:10, border:"1px solid rgba(60,110,255,.25)", background:"rgba(255,255,255,.03)", color:"#fff", fontSize:12, colorScheme:"dark", outline:"none" };
+  const isBacklog = scope === "backlog";
+  const backlogTotal = (eventsByScope.backlog || []).length;
+  const panelEvents = isBacklog ? backlogEvents : (eventsByScope[scope] || []);
 
   return (
     <div>
@@ -8020,18 +8078,53 @@ function ClothingSoldView({ products }) {
           );
         })}
       </div>
-      <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginBottom:14, lineHeight:1.4 }}>
-        {scope === "backlog"
-          ? "Older unrefilled sales (both stores). Mostly already restocked — work the daily tabs first."
-          : `Sold today at ${SHOP_LABELS[scope] || scope} — refill it.`}
-      </div>
+
+      {isBacklog ? (
+        <div style={{ marginBottom:14, display:"flex", flexDirection:"column", gap:10 }}>
+          {/* Search — live filter by product name / category */}
+          <div style={{ position:"relative" }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.4)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                 style={{ position:"absolute", left:11, top:"50%", transform:"translateY(-50%)" }}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input value={search} onChange={e => setSearch(e.target.value)}
+                   placeholder={`Search ${backlogTotal} products by name or category…`}
+                   style={{ width:"100%", boxSizing:"border-box", padding:"10px 34px 10px 34px", borderRadius:12, border:"1px solid rgba(60,110,255,.25)", background:"rgba(255,255,255,.03)", color:"#fff", fontSize:13, outline:"none" }} />
+            {search && (
+              <button onClick={() => setSearch("")} aria-label="Clear search"
+                      style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)", width:22, height:22, borderRadius:"50%", border:"none", background:"rgba(255,255,255,.08)", color:"rgba(255,255,255,.6)", cursor:"pointer", fontSize:15, lineHeight:1 }}>×</button>
+            )}
+          </div>
+          {/* Date range — bounded ts window, capped at 90 days */}
+          <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+            <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>From</span>
+            <input type="date" value={backlogWindow.from} min={maxBack} max={backlogWindow.to}
+                   onChange={e => e.target.value && setFrom(e.target.value)} style={dateInput} />
+            <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>to</span>
+            <input type="date" value={backlogWindow.to} min={backlogWindow.from} max={yesterday}
+                   onChange={e => e.target.value && setTo(e.target.value)} style={dateInput} />
+            {!(isDefaultWindow && !search) && (
+              <button onClick={resetWindow}
+                      style={{ padding:"6px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor:"pointer" }}>Reset</button>
+            )}
+          </div>
+          <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", lineHeight:1.4 }}>
+            {search
+              ? `${backlogEvents.length} of ${backlogTotal} products match “${search}”`
+              : `${backlogTotal} product${backlogTotal !== 1 ? "s" : ""} sold ${backlogWindow.from === backlogWindow.to ? `on ${backlogWindow.from}` : `${backlogWindow.from} → ${backlogWindow.to}`} — mostly already restocked; work the daily tabs first.`}
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginBottom:14, lineHeight:1.4 }}>
+          {`Sold today at ${SHOP_LABELS[scope] || scope} — refill it.`}
+        </div>
+      )}
+
       <ClothingSoldScopePanel
         scopeKey={scope}
-        events={eventsByScope[scope] || []}
+        events={panelEvents}
         refills={refills}
         onRefill={handleRefill}
         onUndo={handleUndo}
-        isBacklog={scope === "backlog"}
+        isBacklog={isBacklog}
         onViewPhoto={setFullPhoto}
       />
       {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
