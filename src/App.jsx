@@ -1847,8 +1847,6 @@ const FIX_PRESETS = [
 // in the DB conforms), so legacy products sort correctly too. AI-studio
 // approvals deliberately do NOT stamp photoUpdatedAt: an approved re-shoot
 // isn't a new upload.
-const RECENT_DAYS = 14; // ~20 uploads/day currently → a fortnight is plenty of lookback…
-const RECENT_CAP  = 100; // …but render only the newest 100 (thumbnails are lazy-loaded, so a bigger grid than PICK_RENDER_CAP stays cheap)
 const uploadTs = (p) => {
   if (typeof p?.photoUpdatedAt === "number" && p.photoUpdatedAt > 0) return p.photoUpdatedAt;
   const n = Number(String(p?.id || "").slice(1));
@@ -1956,12 +1954,11 @@ function AdminReviewPhotosTab({ products = [] }) {
     const q = pickSearch.trim();
     if (q) avail = avail.filter(p => productMatchesQuery(p, q));
     if (pickFilter === "recent") {
-      // Newest uploads across all categories: last RECENT_DAYS days, newest
-      // first, capped at RECENT_CAP for the grid.
-      const cutoff = Date.now() - RECENT_DAYS * 864e5;
-      return avail.filter(p => uploadTs(p) >= cutoff)
-        .sort((a, b) => uploadTs(b) - uploadTs(a))
-        .slice(0, RECENT_CAP);
+      // Newest uploads across all categories: EVERY upload, newest first, with
+      // NO date window and NO count cap — the full history, top to bottom.
+      // Thumbnails lazy-load (RecentPickCard), so a large grid stays cheap on
+      // bandwidth; the grid also scrolls inside its own 420px box.
+      return [...avail].sort((a, b) => uploadTs(b) - uploadTs(a));
     }
     return avail.sort((a, b) => a.name.localeCompare(b.name));
   }, [products, pickSearch, pickFilter, handledIds, includeDone]);
@@ -2249,7 +2246,7 @@ function AdminReviewPhotosTab({ products = [] }) {
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
             <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>
               {pickFilter === "recent"
-                ? <>{pickList.length} upload{pickList.length===1?"":"s"} · last {RECENT_DAYS} days{pickList.length >= RECENT_CAP ? ` (newest ${RECENT_CAP})` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}</>
+                ? <>{pickList.length} upload{pickList.length===1?"":"s"} · newest first{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}</>
                 : <>{pickList.length} product{pickList.length===1?"":"s"} {includeDone ? "available (incl. done)" : "not yet done"}{!includeDone && handledIds.size ? ` · ${handledIds.size} hidden` : ""}{selectedIds.size ? ` · ${selectedIds.size} selected` : ""}</>}
             </span>
             {pickList.length > 0 && (
@@ -2277,9 +2274,9 @@ function AdminReviewPhotosTab({ products = [] }) {
               {pickList.length === 0 && (
                 <div style={{ textAlign:"center", padding:"28px 10px 22px" }}>
                   <div style={{ fontSize:22, marginBottom:6, opacity:.5 }}>✦</div>
-                  <div style={{ fontSize:13, fontWeight:700, color:"rgba(255,255,255,.75)" }}>No recent uploads</div>
+                  <div style={{ fontSize:13, fontWeight:700, color:"rgba(255,255,255,.75)" }}>No uploads</div>
                   <div style={{ fontSize:11.5, color:"rgba(255,255,255,.4)", marginTop:4 }}>
-                    {pickSearch.trim() ? `Nothing in the last ${RECENT_DAYS} days matches that search.` : `Nothing uploaded in the last ${RECENT_DAYS} days${!includeDone ? " that isn't already done — tick “Include already-done” to see everything" : ""}.`}
+                    {pickSearch.trim() ? `Nothing matches that search.` : `Nothing uploaded yet${!includeDone ? " that isn't already done — tick “Include already-done” to see everything" : ""}.`}
                   </div>
                 </div>
               )}
