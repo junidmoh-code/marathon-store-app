@@ -32,9 +32,10 @@ import { inferProductType } from "./insights";
 // stock_movements `.indexOn:["ts"]` rule, else the query silently reads it all.
 export const CLOTHING_SOLD_BACKLOG_DAYS = 14;
 
-// The stores the clothing-sold tabs cover. Each gets a per-store daily tab;
-// Sold Backlog merges these. Pine is a one-line add: append "marathon-pine".
-export const CLOTHING_SOLD_STORES = ["marathon-pe", "trophy"];
+// The stores the clothing-sold tabs cover. Each gets a per-store daily tab
+// (today + yesterday — see ClothingSoldView's perStoreCutoff); Sold Backlog
+// merges these.
+export const CLOTHING_SOLD_STORES = ["marathon-pe", "trophy", "marathon-pine"];
 
 // Hard cap on how far back the Backlog date picker may reach — bounds the
 // ts-windowed query so a big pick can't pull the whole ledger.
@@ -210,7 +211,7 @@ export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, s
   const rows = nettedSoldRows({ movements, productsById, windowStartSaDate: fromSaDate });
   const scoped = rows.filter((r) => {
     if (store) return r.saDate >= cutoff && r.store === store;
-    if (r.saDate >= cutoff) return false;                    // backlog is strictly older than today
+    if (r.saDate >= cutoff) return false;                    // backlog is strictly older than the caller-supplied cutoff (perStoreCutoff = yesterday)
     if (fromSaDate && r.saDate < fromSaDate) return false;   // picked window lower bound
     if (toSaDate && r.saDate > toSaDate) return false;       // picked window upper bound
     if (stores && !stores.includes(r.store)) return false;   // merge only the covered stores

@@ -134,7 +134,7 @@ describe("scope split (daily per-store vs merged backlog)", () => {
   const movements = [
     sold("S1", "p1", "M", "08"),                            // PE
     sold("S2", "p2", "L", "09", { from: "trophy" }),        // Trophy
-    sold("S3", "p2", "S", "10", { from: "marathon-pine" }), // Pine (not covered)
+    sold("S3", "p2", "S", "10", { from: "marathon-pine" }), // Pine (now covered)
   ];
   const b = { ...base, movements };
 
@@ -145,9 +145,12 @@ describe("scope split (daily per-store vs merged backlog)", () => {
   it("per-store tab empty once the sale day is in the past", () => {
     expect(clothingSoldEventsForPeriod({ ...b, cutoff: PAST, store: "marathon-pe" })).toHaveLength(0);
   });
-  it("backlog: saDate < cutoff, merged across covered stores only (Pine excluded)", () => {
+  it("backlog: saDate < cutoff, merged across all covered stores (PE + Trophy + Pine)", () => {
     const backlog = clothingSoldEventsForPeriod({ ...b, cutoff: PAST, store: null, stores: CLOTHING_SOLD_STORES });
-    expect(backlog.map((g) => g.store).sort()).toEqual(["marathon-pe", "trophy"]);
+    expect(backlog.map((g) => g.store).sort()).toEqual(["marathon-pe", "marathon-pine", "trophy"]);
+  });
+  it("per-store daily tab covers Pine too", () => {
+    expect(clothingSoldEventsForPeriod({ ...b, cutoff: TODAY, store: "marathon-pine" }).map((g) => g.productId)).toEqual(["p2"]);
   });
   it("backlog excludes today's fresh sales (>= cutoff)", () => {
     expect(clothingSoldEventsForPeriod({ ...b, cutoff: TODAY, store: null, stores: CLOTHING_SOLD_STORES })).toHaveLength(0);
