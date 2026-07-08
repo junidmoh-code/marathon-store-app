@@ -8345,7 +8345,13 @@ function ClothingRefillSheet({ group, fromLoc, fromLabel, availAt, storeQtyAt, a
       if (qty <= 0) continue;
       const before = storeQtyAt(s.size);  // store qty pre-move → expected qty after
       const res = await fireClothingRefill({ store: group.store, productId: group.productId, size: s.size, qty, from: fromLoc, actorRole });
-      if (res && res.ok) { ok++; moved.push({ size: s.size, qty, expect: before + qty }); }
+      if (res && res.ok) {
+        ok++; moved.push({ size: s.size, qty, expect: before + qty });
+        // Zero a moved size immediately: fireClothingRefill isn't idempotent, so if
+        // the sheet stays open on a partial failure, a second Confirm must only send
+        // the legs that still haven't moved — never re-send this one.
+        setQtys(prev => ({ ...prev, [s.size]: 0 }));
+      }
       else fails.push(`${s.size}: ${res && res.reason === "insufficient_stock" ? `only ${res.available} at source` : (res && res.reason) || "failed"}`);
     }
     setBusy(false);

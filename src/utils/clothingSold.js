@@ -88,19 +88,26 @@ export const clothingSoldCutoff = () =>
 // and SUBTRACT any undo-tagged reversal sourced from that store (store→hub). The
 // forward refill (+to=store) credits the store cell; its 60s undo (−from=store)
 // cancels it, so a reversed refill nets back to 0 refilled and the size re-opens.
-export function tallyRefills(movements) {
+//
+// `inScope(store, saDate)` (optional) restricts the tally to the SAME sold-row
+// window the caller is grouping — a refill is keyed to the store cell it credited
+// and the SA-date it happened. Without it (direct callers/tests) every refill in
+// the array counts. WITH it, a refill counts in exactly one scope (daily OR
+// backlog), never both — otherwise one refill would clear a size in two views and
+// under-report outstanding units.
+export function tallyRefills(movements, inScope = null) {
   const byPss = new Map();
   for (const m of (movements || [])) {
     if (!m || m.type !== "transfer_out") continue;
     const q = Number(m.qty);
     if (!(q > 0)) continue;
-    if (m.reason === CLOTHING_REFILL_REASON && m.to) {
-      const k = pssKey(m.to, m.productId, m.size);
-      byPss.set(k, (byPss.get(k) || 0) + q);
-    } else if (m.reason === CLOTHING_REFILL_UNDO_REASON && m.from) {
-      const k = pssKey(m.from, m.productId, m.size);
-      byPss.set(k, (byPss.get(k) || 0) - q);
-    }
+    let store, sign;
+    if (m.reason === CLOTHING_REFILL_REASON && m.to) { store = m.to; sign = 1; }
+    else if (m.reason === CLOTHING_REFILL_UNDO_REASON && m.from) { store = m.from; sign = -1; }
+    else continue;
+    if (inScope && !inScope(store, saDateOf(m.ts))) continue;
+    const k = pssKey(store, m.productId, m.size);
+    byPss.set(k, (byPss.get(k) || 0) + sign * q);
   }
   return byPss;
 }
@@ -257,15 +264,19 @@ function groupByStoreProduct(rows, productsById, refilledByPss, oos) {
 // its unit sold); rows are then scope-filtered and grouped by product, with each
 // size's outstanding = sold − refilled (from the ledger) and out-flags attached.
 export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, store = null, stores = null, fromSaDate = null, toSaDate = null, oos = null }) {
-  const rows = nettedSoldRows({ movements, productsById, windowStartSaDate: fromSaDate });
-  const scoped = rows.filter((r) => {
-    if (store) return r.saDate >= cutoff && r.store === store;
-    if (r.saDate >= cutoff) return false;                    // backlog is strictly older than the caller-supplied cutoff (perStoreCutoff = yesterday)
-    if (fromSaDate && r.saDate < fromSaDate) return false;   // picked window lower bound
-    if (toSaDate && r.saDate > toSaDate) return false;       // picked window upper bound
-    if (stores && !stores.includes(r.store)) return false;   // merge only the covered stores
+  // One scope predicate, applied to BOTH sold rows and refill movements, so a
+  // refill offsets demand in exactly the window it belongs to (never double-counted
+  // across the daily + backlog views).
+  const inScope = (rowStore, saDate) => {
+    if (store) return saDate >= cutoff && rowStore === store;   // per-store daily tab
+    if (saDate >= cutoff) return false;                         // backlog: strictly older than cutoff
+    if (fromSaDate && saDate < fromSaDate) return false;        // picked window lower bound
+    if (toSaDate && saDate > toSaDate) return false;            // picked window upper bound
+    if (stores && !stores.includes(rowStore)) return false;     // merge only the covered stores
     return true;
-  });
-  const refilledByPss = tallyRefills(movements); // refills tagged in the same window
+  };
+  const scoped = nettedSoldRows({ movements, productsById, windowStartSaDate: fromSaDate })
+    .filter((r) => inScope(r.store, r.saDate));
+  const refilledByPss = tallyRefills(movements, inScope); // refills scoped to the SAME window
   return groupByStoreProduct(scoped, productsById, refilledByPss, oos);
 }

@@ -126,6 +126,12 @@ describe("outstanding = sold − refilled", () => {
     expect(g.sizes[0].outstanding).toBe(0);
     expect(g.total).toBe(0);
   });
+  it("a refill dated OUTSIDE the scope is not credited (no cross-window double-count)", () => {
+    // Backlog scope (cutoff PAST=06-17): the 06-16 sale is in-window, but a refill
+    // dated 06-17 is out of window → must NOT offset this scope's outstanding.
+    const g = g0({ movements: [sold("S1", "p1", "M", "08"), sold("S2", "p1", "M", "09"), refill("p1", "M", 2, { ts: "2026-06-17T08:00:00.000Z" })] });
+    expect(g.sizes[0]).toMatchObject({ sold: 2, refilled: 0, outstanding: 2 });
+  });
   it("an undo reversal cancels its refill — the size re-opens", () => {
     const g = g0({ movements: [sold("S1", "p1", "M", "08"), sold("S2", "p1", "M", "09"), refill("p1", "M", 2), refillUndo("p1", "M", 2)] });
     expect(g.sizes[0]).toMatchObject({ sold: 2, refilled: 0, outstanding: 2 });
