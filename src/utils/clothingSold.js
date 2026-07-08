@@ -35,6 +35,11 @@ import { inferProductType } from "./insights";
 // refill-request fulfilment, which sets link.refillId but no such reason).
 export const CLOTHING_REFILL_REASON = "clothing_refill";
 
+// Marker on the REVERSAL of a refill (the 60-second undo): a store→hub transfer_out
+// that cancels a just-made refill. Netted OUT of the store's refilled tally so the
+// size's outstanding is restored exactly (the forward movement is never deleted).
+export const CLOTHING_REFILL_UNDO_REASON = "clothing_refill_undo";
+
 // Read window (days) for the bounded /stock_movements query. The App builds a
 // ts-windowed query [saStartIso(getSAPastDateString(N)) … now) so the read is
 // bounded — NEVER an unbounded subscription over the whole ledger. Requires the
@@ -79,18 +84,23 @@ export const clothingSoldCutoff = () =>
   new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 // Tally refilled UNITS per (store, productId, size) from the windowed ledger:
-// sum the qty of every refill-tagged `transfer_out` whose destination is a store.
-// (The +to leg of a transfer credits the store cell — that's the replenishment.)
+// sum the qty of every refill-tagged `transfer_out` whose destination is a store,
+// and SUBTRACT any undo-tagged reversal sourced from that store (store→hub). The
+// forward refill (+to=store) credits the store cell; its 60s undo (−from=store)
+// cancels it, so a reversed refill nets back to 0 refilled and the size re-opens.
 export function tallyRefills(movements) {
   const byPss = new Map();
   for (const m of (movements || [])) {
     if (!m || m.type !== "transfer_out") continue;
-    if (m.reason !== CLOTHING_REFILL_REASON) continue;
-    if (!m.to) continue;
     const q = Number(m.qty);
     if (!(q > 0)) continue;
-    const k = pssKey(m.to, m.productId, m.size);
-    byPss.set(k, (byPss.get(k) || 0) + q);
+    if (m.reason === CLOTHING_REFILL_REASON && m.to) {
+      const k = pssKey(m.to, m.productId, m.size);
+      byPss.set(k, (byPss.get(k) || 0) + q);
+    } else if (m.reason === CLOTHING_REFILL_UNDO_REASON && m.from) {
+      const k = pssKey(m.from, m.productId, m.size);
+      byPss.set(k, (byPss.get(k) || 0) - q);
+    }
   }
   return byPss;
 }

@@ -9,6 +9,7 @@ import {
   sizeOutHub,
   clothingSectionLabel,
   CLOTHING_REFILL_REASON,
+  CLOTHING_REFILL_UNDO_REASON,
   CLOTHING_SOLD_STORES,
 } from "./clothingSold";
 
@@ -34,6 +35,11 @@ const ret = (productId, size, t, extra = {}) => ({
 const refill = (productId, size, qty, extra = {}) => ({
   type: "transfer_out", reason: CLOTHING_REFILL_REASON, productId, size, qty,
   from: "hub1", to: "marathon-pe", ts: "2026-06-16T20:00:00.000Z", link: { refillId: "R1" }, ...extra,
+});
+// The 60s undo: a store→hub reversal that cancels a refill in the tally.
+const refillUndo = (productId, size, qty, extra = {}) => ({
+  type: "transfer_out", reason: CLOTHING_REFILL_UNDO_REASON, productId, size, qty,
+  from: "marathon-pe", to: "hub1", ts: "2026-06-16T20:05:00.000Z", ...extra,
 });
 const base = { productsById: PRODUCTS };
 const PAST = "2026-06-17"; // cutoff: all 06-16 sales are backlog
@@ -119,6 +125,11 @@ describe("outstanding = sold − refilled", () => {
     const g = g0({ movements: [sold("S1", "p1", "M", "08"), refill("p1", "M", 5)] });
     expect(g.sizes[0].outstanding).toBe(0);
     expect(g.total).toBe(0);
+  });
+  it("an undo reversal cancels its refill — the size re-opens", () => {
+    const g = g0({ movements: [sold("S1", "p1", "M", "08"), sold("S2", "p1", "M", "09"), refill("p1", "M", 2), refillUndo("p1", "M", 2)] });
+    expect(g.sizes[0]).toMatchObject({ sold: 2, refilled: 0, outstanding: 2 });
+    expect(g.done).toBe(false);
   });
   it("refill at a DIFFERENT store does not offset this store", () => {
     const g = g0({ movements: [sold("S1", "p1", "M", "08"), refill("p1", "M", 1, { to: "trophy" })] });

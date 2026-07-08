@@ -29,7 +29,7 @@ import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
   saStartIso, CLOTHING_SOLD_BACKLOG_DAYS, CLOTHING_SOLD_STORES, CLOTHING_SOLD_MAX_RANGE_DAYS,
-  CLOTHING_REFILL_REASON,
+  CLOTHING_REFILL_REASON, CLOTHING_REFILL_UNDO_REASON,
 } from "./utils/clothingSold";
 import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
@@ -930,6 +930,22 @@ async function fireClothingRefill({ store, productId, size, qty, from, actorRole
     reason: CLOTHING_REFILL_REASON,
     actorRole: actorRole || null,
     link: { refillId: `clth_${store}_${productId}` },
+  });
+}
+
+// Reverse ONE size of a just-made refill: a store→hub transfer_out tagged
+// CLOTHING_REFILL_UNDO_REASON (netted against the forward refill in tallyRefills).
+// `movementId` is keyed to the undo batch so a double-tap can't double-reverse, and
+// applyMovement's negative floor still refuses to drive the store cell below zero.
+async function reverseClothingRefill({ store, productId, size, qty, hub, batchId, actorRole }) {
+  return applyMovement({
+    type: "transfer_out",
+    productId, size, qty,
+    from: store, to: hub,
+    reason: CLOTHING_REFILL_UNDO_REASON,
+    actorRole: actorRole || null,
+    link: { refillId: `clth_${store}_${productId}` },
+    movementId: `clthundo_${batchId}_${size}`,
   });
 }
 
@@ -8303,7 +8319,7 @@ function clothingSoldDayLabel(group) {
 // at the hub), capped at available so nothing goes negative), confirm → one tagged
 // hub→store transfer per size via applyMovement. A per-size "Out" flags a size the
 // hub is short on (it stays outstanding). The card updates itself from the ledger.
-function ClothingRefillSheet({ group, fromLoc, fromLabel, availAt, actorRole, onMarkOut, onClose }) {
+function ClothingRefillSheet({ group, fromLoc, fromLabel, availAt, storeQtyAt, actorRole, onMarkOut, onRefilled, onClose }) {
   const outSizes = group.sizes.filter(s => s.outstanding > 0);
   const [qtys, setQtys] = useState({});
   const [busy, setBusy] = useState(false);
@@ -8323,15 +8339,17 @@ function ClothingRefillSheet({ group, fromLoc, fromLabel, availAt, actorRole, on
   const confirm = async () => {
     if (busy || !fromLoc) return;
     setBusy(true); setMsg(null);
-    let ok = 0; const fails = [];
+    let ok = 0; const fails = []; const moved = [];
     for (const s of outSizes) {
       const qty = qtys[s.size] || 0;
       if (qty <= 0) continue;
+      const before = storeQtyAt(s.size);  // store qty pre-move → expected qty after
       const res = await fireClothingRefill({ store: group.store, productId: group.productId, size: s.size, qty, from: fromLoc, actorRole });
-      if (res && res.ok) ok++;
+      if (res && res.ok) { ok++; moved.push({ size: s.size, qty, expect: before + qty }); }
       else fails.push(`${s.size}: ${res && res.reason === "insufficient_stock" ? `only ${res.available} at source` : (res && res.reason) || "failed"}`);
     }
     setBusy(false);
+    if (ok > 0 && onRefilled) onRefilled({ store: group.store, productId: group.productId, productName: group.productName, from: fromLoc, lines: moved });
     if (!fails.length && ok > 0) onClose();       // live ledger recomputes the card
     else if (!ok && !fails.length) setMsg("Enter a quantity for at least one size.");
     else setMsg(`${ok} moved · ${fails.length} failed — ${fails.join("; ")}`);
@@ -8386,7 +8404,7 @@ function ClothingRefillSheet({ group, fromLoc, fromLabel, availAt, actorRole, on
 // Sizes the hub is short on can be flagged "Out at <hub>" (stays outstanding).
 // Done (every size fully refilled) shows a cleared state. `canTransfer` gates the
 // transfer UI on a stock-capable role; `refillFrom` must be picked to transfer.
-function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut }) {
+function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut, onRefilled }) {
   const [openSheet, setOpenSheet] = useState(false);
   const done = group.done;
   const accent = done ? "rgba(74,222,128,.5)" : "rgba(60,110,255,.6)";
@@ -8394,6 +8412,9 @@ function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, a
   // Availability of THIS product at the tab-wide picked hub, per size.
   const hubCells = (refillFrom && allCells && allCells[refillFrom] && allCells[refillFrom][group.productId]) || {};
   const availAt = (size) => Number(hubCells[size] && hubCells[size].qty) || 0;
+  // Current on-hand at the STORE — the baseline for the 60s undo's intact-check.
+  const storeCells = (allCells && allCells[group.store] && allCells[group.store][group.productId]) || {};
+  const storeQtyAt = (size) => Number(storeCells[size] && storeCells[size].qty) || 0;
   const hubLabel = refillFrom ? labelFor(refillFrom, registry) : null;
 
   return (
@@ -8482,8 +8503,8 @@ function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, a
       )}
 
       {!done && openSheet && (
-        <ClothingRefillSheet group={group} fromLoc={refillFrom} fromLabel={hubLabel} availAt={availAt}
-          actorRole={actorRole} onMarkOut={onMarkOut} onClose={() => setOpenSheet(false)} />
+        <ClothingRefillSheet group={group} fromLoc={refillFrom} fromLabel={hubLabel} availAt={availAt} storeQtyAt={storeQtyAt}
+          actorRole={actorRole} onMarkOut={onMarkOut} onRefilled={onRefilled} onClose={() => setOpenSheet(false)} />
       )}
 
       {/* Out-flagged sizes — a tag naming the hub, tap to clear (pending or done). */}
@@ -8506,7 +8527,7 @@ function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, a
 // One scope's worklist (a store's daily list, or the merged Backlog). Groups are
 // split pending/done by ledger-derived outstanding (group.done); pending are laid
 // out flat, type-ordered (ClothingSoldSections); done sit under a Show-Completed toggle.
-function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut }) {
+function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut, onRefilled }) {
   const [showCompleted, setShowCompleted] = useState(false);
 
   const { pending, completed } = useMemo(() => {
@@ -8516,7 +8537,7 @@ function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, regi
     completed.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
     return { pending, completed };
   }, [events]);
-  const cardProps = { showStore: isBacklog, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut };
+  const cardProps = { showStore: isBacklog, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut, onRefilled };
 
   if (!pending.length && !completed.length) return (
     <div style={{ textAlign:"center", color:"#444", padding:"4rem 1rem" }}>
@@ -8670,6 +8691,45 @@ function ClothingSoldView({ products }) {
   const handleMarkOut = (store, pid, size) => saveClothingOut(store, pid, size, refillFrom);
   const handleClearOut = (store, pid, size) => clearClothingOut(store, pid, size);
 
+  // 60-second accidental-transfer undo. A successful refill registers its moved
+  // lines; within 60s "Undo" reverses each (store→hub) — but ONLY sizes whose store
+  // cell is still EXACTLY what the refill left (nothing sold/moved since). Changed
+  // sizes are left alone (reverse them by hand); after 60s the affordance is gone.
+  const [undo, setUndo] = useState(null);   // { id, store, productId, productName, from, lines:[{size,qty,expect}], units }
+  const [undoMsg, setUndoMsg] = useState(null);
+  const [undoLeft, setUndoLeft] = useState(0);
+  const undoTimer = useRef(null);
+  const handleRefilled = (batch) => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    const units = batch.lines.reduce((n, l) => n + l.qty, 0);
+    setUndoMsg(null);
+    setUndo({ ...batch, id: String(Date.now()), units });
+    setUndoLeft(60);
+    undoTimer.current = setTimeout(() => setUndo(null), 60000);
+  };
+  useEffect(() => {
+    if (!undo) return;
+    const iv = setInterval(() => setUndoLeft(n => (n > 1 ? n - 1 : 0)), 1000);
+    return () => clearInterval(iv);
+  }, [undo]);
+  const runUndo = async () => {
+    if (!undo) return;
+    const cur = (allCells && allCells[undo.store] && allCells[undo.store][undo.productId]) || {};
+    let reversed = 0, blocked = 0;
+    for (const ln of undo.lines) {
+      const nowQty = Number(cur[ln.size] && cur[ln.size].qty) || 0;
+      if (nowQty !== ln.expect) { blocked++; continue; }   // store cell changed → don't claw back
+      const res = await reverseClothingRefill({ store: undo.store, productId: undo.productId, size: ln.size, qty: ln.qty, hub: undo.from, batchId: undo.id, actorRole });
+      if (res && res.ok) reversed++; else blocked++;
+    }
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndo(null);
+    setUndoMsg(blocked
+      ? `Reversed ${reversed}; ${blocked} already moved since — reverse those with a manual transfer.`
+      : `Reversed ${reversed} unit${reversed !== 1 ? "s" : ""} back to ${labelFor(undo.from, registry)}.`);
+    setTimeout(() => setUndoMsg(null), 6000);
+  };
+
   // Date-picker clamps: keep maxBack ≤ from ≤ to ≤ dayBeforeYest and the span ≤ cap.
   const addDays  = (d, n) => new Date(new Date(`${d}T00:00:00.000Z`).getTime() + n * 86400000).toISOString().slice(0, 10);
   const spanDays = (a, b) => Math.round((new Date(`${b}T00:00:00.000Z`).getTime() - new Date(`${a}T00:00:00.000Z`).getTime()) / 86400000);
@@ -8797,7 +8857,31 @@ function ClothingSoldView({ products }) {
         refillFrom={refillFrom}
         onMarkOut={handleMarkOut}
         onClearOut={handleClearOut}
+        onRefilled={handleRefilled}
       />
+
+      {/* 60-second accidental-transfer undo — reverses only untouched store cells. */}
+      {undo && (
+        <div style={{ position:"fixed", left:12, right:12, bottom:16, zIndex:70, maxWidth:430, margin:"0 auto",
+                      background:"rgba(4,5,10,.97)", border:"1px solid rgba(74,222,128,.5)", borderRadius:14, padding:"12px 14px",
+                      display:"flex", alignItems:"center", gap:12, boxShadow:"0 10px 30px rgba(0,0,0,.5)" }}>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ color:"#fff", fontSize:13, fontWeight:700 }}>Refilled {undo.units} unit{undo.units !== 1 ? "s" : ""} → {SHOP_LABELS[undo.store] || undo.store}</div>
+            <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:2 }}>{undo.productName} · from {labelFor(undo.from, registry)}</div>
+          </div>
+          <button onClick={runUndo}
+                  style={{ padding:"8px 14px", borderRadius:10, border:"1px solid rgba(248,113,113,.5)", background:"rgba(248,113,113,.12)", color:"#F87171", fontWeight:800, fontSize:12.5, cursor:"pointer", whiteSpace:"nowrap" }}>
+            Undo ({undoLeft}s)
+          </button>
+        </div>
+      )}
+      {undoMsg && !undo && (
+        <div style={{ position:"fixed", left:12, right:12, bottom:16, zIndex:70, maxWidth:430, margin:"0 auto",
+                      background:"rgba(4,5,10,.97)", border:"1px solid rgba(60,110,255,.4)", borderRadius:14, padding:"11px 14px",
+                      color:"rgba(255,255,255,.85)", fontSize:12, boxShadow:"0 10px 30px rgba(0,0,0,.5)" }}>
+          {undoMsg}
+        </div>
+      )}
       {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
     </div>
   );
