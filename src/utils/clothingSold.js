@@ -95,11 +95,13 @@ export function tallyRefills(movements) {
   return byPss;
 }
 
-// Is this (store, product, size) marked skipped in clothing_sold_refills? A skip
-// is the crew acknowledging a size it won't refill, so it stops reappearing.
-export function isSizeSkipped(skips, store, productId, size) {
-  const leaf = skips && skips[store] && skips[store][productId] && skips[store][productId][String(size)];
-  return !!(leaf && leaf.skipped);
+// The hub a (store, product, size) is flagged "OUT from", or null. An out-flag is
+// the crew recording that a hub didn't have this size. Unlike a completion it does
+// NOT clear the demand — the size STAYS outstanding on the card so it can be
+// sourced elsewhere; the flag is a visible "Out at <hub>" note only.
+export function sizeOutHub(oos, store, productId, size) {
+  const leaf = oos && oos[store] && oos[store][productId] && oos[store][productId][String(size)];
+  return (leaf && leaf.outHub) || null;
 }
 
 // Is this movement a clothing item? Join productId → product, prefer explicit
@@ -195,10 +197,11 @@ export function nettedSoldRows({ movements, productsById, windowStartSaDate = nu
 // Group surviving sold rows into ONE card per (store, product). For each sold
 // size we compute outstanding = max(0, sold − refilled), where refilled comes from
 // the ledger tally and a skipped size is forced to 0. `total` is the sum of
-// outstanding (pending units); `done` is total === 0 (all refilled or skipped).
-// `sizes` carries the full breakdown { size, sold, refilled, outstanding, skipped }
-// so the card can show progress and the refill sheet can seed defaults.
-function groupByStoreProduct(rows, productsById, refilledByPss, skips) {
+// outstanding (pending units); `done` is total === 0 (every sold size fully
+// refilled — an out-flag does NOT clear a size). `sizes` carries the full
+// breakdown { size, sold, refilled, outstanding, outHub } so the card can show
+// progress, an "Out at <hub>" tag, and seed the refill sheet.
+function groupByStoreProduct(rows, productsById, refilledByPss, oos) {
   const refilled = refilledByPss || new Map();
   const groups = new Map();
   for (const r of rows) {
@@ -226,11 +229,11 @@ function groupByStoreProduct(rows, productsById, refilledByPss, skips) {
       .sort((a, b) => sizeSortKey(a[0]) - sizeSortKey(b[0]) || String(a[0]).localeCompare(String(b[0])))
       .map(([size, sold]) => {
         const ref = refilled.get(pssKey(g.store, g.productId, size)) || 0;
-        const skipped = isSizeSkipped(skips, g.store, g.productId, size);
-        const outstanding = skipped ? 0 : Math.max(0, sold - ref);
+        const outstanding = Math.max(0, sold - ref);   // out-flag never zeroes it
+        const outHub = sizeOutHub(oos, g.store, g.productId, size);
         total += outstanding;
         soldTotal += sold;
-        return { size, sold, refilled: ref, outstanding, skipped };
+        return { size, sold, refilled: ref, outstanding, outHub };
       });
     return { ...g, ts: g.latestTs, sizes, total, soldTotal, done: total === 0 };
   });
@@ -242,8 +245,8 @@ function groupByStoreProduct(rows, productsById, refilledByPss, skips) {
 //                  further bounded to the picked [fromSaDate, toSaDate] window.
 // Netting runs across the queried window first (so a refund is cancelled wherever
 // its unit sold); rows are then scope-filtered and grouped by product, with each
-// size's outstanding = sold − refilled (from the ledger) and skips applied.
-export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, store = null, stores = null, fromSaDate = null, toSaDate = null, skips = null }) {
+// size's outstanding = sold − refilled (from the ledger) and out-flags attached.
+export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, store = null, stores = null, fromSaDate = null, toSaDate = null, oos = null }) {
   const rows = nettedSoldRows({ movements, productsById, windowStartSaDate: fromSaDate });
   const scoped = rows.filter((r) => {
     if (store) return r.saDate >= cutoff && r.store === store;
@@ -254,5 +257,5 @@ export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, s
     return true;
   });
   const refilledByPss = tallyRefills(movements); // refills tagged in the same window
-  return groupByStoreProduct(scoped, productsById, refilledByPss, skips);
+  return groupByStoreProduct(scoped, productsById, refilledByPss, oos);
 }

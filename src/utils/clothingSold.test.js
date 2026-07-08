@@ -6,7 +6,7 @@ import {
   nettedSoldRows,
   clothingSoldEventsForPeriod,
   tallyRefills,
-  isSizeSkipped,
+  sizeOutHub,
   clothingSectionLabel,
   CLOTHING_REFILL_REASON,
   CLOTHING_SOLD_STORES,
@@ -63,8 +63,8 @@ describe("grouping — per-size sold/refilled/outstanding", () => {
     const g = g0({ movements: [sold("S1", "p1", "M", "08"), sold("S2", "p1", "M", "09"), sold("S3", "p1", "L", "10")] });
     expect(g).toMatchObject({ productId: "p1", store: "marathon-pe", total: 3, soldTotal: 3, done: false });
     expect(g.sizes).toEqual([
-      { size: "M", sold: 2, refilled: 0, outstanding: 2, skipped: false },
-      { size: "L", sold: 1, refilled: 0, outstanding: 1, skipped: false },
+      { size: "M", sold: 2, refilled: 0, outstanding: 2, outHub: null },
+      { size: "L", sold: 1, refilled: 0, outstanding: 1, outHub: null },
     ]);
   });
   it("excludes sneakers; size-letter fallback when productType absent", () => {
@@ -126,17 +126,24 @@ describe("outstanding = sold − refilled", () => {
   });
 });
 
-describe("skip marker", () => {
-  it("isSizeSkipped reads the nested leaf", () => {
-    const skips = { "marathon-pe": { p1: { M: { skipped: true } } } };
-    expect(isSizeSkipped(skips, "marathon-pe", "p1", "M")).toBe(true);
-    expect(isSizeSkipped(skips, "marathon-pe", "p1", "L")).toBe(false);
-    expect(isSizeSkipped(null, "marathon-pe", "p1", "M")).toBe(false);
+describe("out-from-hub marker", () => {
+  it("sizeOutHub returns the flagged hub, else null", () => {
+    const oos = { "marathon-pe": { p1: { M: { outHub: "hub1" } } } };
+    expect(sizeOutHub(oos, "marathon-pe", "p1", "M")).toBe("hub1");
+    expect(sizeOutHub(oos, "marathon-pe", "p1", "L")).toBe(null);
+    expect(sizeOutHub(null, "marathon-pe", "p1", "M")).toBe(null);
   });
-  it("a skipped size is forced to 0 outstanding and can make the card done", () => {
-    const skips = { "marathon-pe": { p1: { M: { skipped: true } } } };
-    const g = g0({ movements: [sold("S1", "p1", "M", "08"), sold("S2", "p1", "M", "09")], skips });
-    expect(g.sizes[0]).toMatchObject({ sold: 2, outstanding: 0, skipped: true });
+  it("an out-flag tags the size but KEEPS it outstanding (never done)", () => {
+    const oos = { "marathon-pe": { p1: { M: { outHub: "hub1" } } } };
+    const g = g0({ movements: [sold("S1", "p1", "M", "08"), sold("S2", "p1", "M", "09")], oos });
+    expect(g.sizes[0]).toMatchObject({ sold: 2, outstanding: 2, outHub: "hub1" });
+    expect(g.total).toBe(2);
+    expect(g.done).toBe(false);
+  });
+  it("a refill still clears an out-flagged size", () => {
+    const oos = { "marathon-pe": { p1: { M: { outHub: "hub1" } } } };
+    const g = g0({ movements: [sold("S1", "p1", "M", "08"), sold("S2", "p1", "M", "09"), refill("p1", "M", 2)], oos });
+    expect(g.sizes[0]).toMatchObject({ sold: 2, refilled: 2, outstanding: 0, outHub: "hub1" });
     expect(g.done).toBe(true);
   });
 });

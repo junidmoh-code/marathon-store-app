@@ -871,15 +871,16 @@ function clearSourceResponse(date, productKey, size) {
 // `transfer_out` (reason=CLOTHING_REFILL_REASON) via applyMovement, and the card's
 // outstanding = sold − refilled comes straight from /stock_movements (see
 // utils/clothingSold). The `clothing_sold_refills` node no longer stores a
-// completion timestamp — it holds ONLY explicit SKIPs:
-//   clothing_sold_refills/{store}/{productId}/{size} = { skipped:true, at, by }
-// A skip is the crew acknowledging a size it can't/won't refill so it stops
-// reappearing; it never touches stock.
+// completion timestamp — it holds ONLY "OUT from hub" flags:
+//   clothing_sold_refills/{store}/{productId}/{size} = { outHub, at, by }
+// An out-flag records that the picked hub didn't have this size. It NEVER clears
+// the demand (the size stays outstanding so it can be sourced elsewhere) and never
+// touches stock — it's a visible "Out at <hub>" note only.
 
-// Live listener for all skips. Shape: { store: { productId: { size: {skipped,at,by} } } }
-function useClothingSkips() {
+// Live listener for all out-flags. Shape: { store: { productId: { size: {outHub,at,by} } } }
+function useClothingOos() {
   const authReady = useAuthReady();
-  const [skips, setSkips] = useState({});
+  const [oos, setOos] = useState({});
   useEffect(() => {
     if (!authReady) return;
     const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
@@ -892,29 +893,29 @@ function useClothingSkips() {
           if (!sizesNode || typeof sizesNode !== "object") return;
           const bySize = {};
           Object.entries(sizesNode).forEach(([size, leaf]) => {
-            if (leaf && typeof leaf === "object" && leaf.skipped) bySize[size] = leaf;
+            if (leaf && typeof leaf === "object" && leaf.outHub) bySize[size] = leaf;
           });
           if (Object.keys(bySize).length) byProduct[pid] = bySize;
         });
         if (Object.keys(byProduct).length) result[store] = byProduct;
       });
-      setSkips(result);
+      setOos(result);
     });
     return () => unsub();
   }, [authReady]);
-  return skips;
+  return oos;
 }
 
-// Mark / unmark a (store, product, size) as skipped.
-function saveClothingSkip(store, productId, size) {
+// Flag / clear a (store, product, size) as OUT from `hub`.
+function saveClothingOut(store, productId, size, hub) {
   const uid = auth.currentUser?.uid || null;
   update(ref(database, `clothing_sold_refills/${store}/${productId}`), {
-    [String(size)]: { skipped: true, at: new Date().toISOString(), by: uid }
-  }).catch(err => console.warn("saveClothingSkip failed:", err));
+    [String(size)]: { outHub: hub || null, at: new Date().toISOString(), by: uid }
+  }).catch(err => console.warn("saveClothingOut failed:", err));
 }
-function clearClothingSkip(store, productId, size) {
+function clearClothingOut(store, productId, size) {
   return remove(ref(database, `clothing_sold_refills/${store}/${productId}/${String(size)}`))
-    .catch(err => console.warn("clearClothingSkip failed:", err));
+    .catch(err => console.warn("clearClothingOut failed:", err));
 }
 
 // Fire ONE size's refill as a real hub→store transfer through the single stock
@@ -8297,47 +8298,21 @@ function clothingSoldDayLabel(group) {
   return { label, fresh: late === today };
 }
 
-// Candidate SOURCE locations for a refill: every non-shop location (warehouses,
-// hubs) that holds stock for at least one outstanding size, with the per-size qty
-// it holds. Sorted by most stock first. allCells uses RAW size keys (useStockCells
-// decodes), so clothing sizes look up directly.
-const REFILL_SHOP_IDS = new Set(["marathon-pe", "trophy", "marathon-pine"]);
-function refillSourcesFor(group, allCells, registry) {
-  const outSizes = group.sizes.filter(s => s.outstanding > 0 && !s.skipped).map(s => s.size);
-  const cells = allCells || {};
-  const out = [];
-  for (const locId of Object.keys(cells)) {
-    if (locId === group.store || locId === "in_transit") continue;
-    const kind = registry && registry[locId] && registry[locId].kind;
-    if (kind === "store" || (!kind && REFILL_SHOP_IDS.has(locId))) continue; // non-shop only
-    const prodCells = cells[locId][group.productId] || {};
-    const perSize = {};
-    let totalAvail = 0;
-    for (const sz of outSizes) {
-      const q = Number(prodCells[sz] && prodCells[sz].qty) || 0;
-      if (q > 0) { perSize[sz] = q; totalAvail += q; }
-    }
-    if (totalAvail > 0) out.push({ locId, label: labelFor(locId, registry), perSize, totalAvail });
-  }
-  return out.sort((a, b) => b.totalAvail - a.totalAvail);
-}
-
-// The inline refill sheet: pick a SOURCE (with its per-size qty), set the qty to
-// move for each outstanding size (default = min(outstanding, available), capped at
-// available so nothing goes negative), confirm → one tagged hub→store transfer per
-// size via applyMovement. The card updates itself from the live ledger.
-function ClothingRefillSheet({ group, sources, actorRole, onClose }) {
-  const outSizes = group.sizes.filter(s => s.outstanding > 0 && !s.skipped);
-  const [fromLoc, setFromLoc] = useState(sources[0] ? sources[0].locId : "");
-  const src = sources.find(s => s.locId === fromLoc) || sources[0] || null;
+// The inline refill sheet: the SOURCE is the tab-wide picked hub (fromLoc). For
+// each outstanding size, set the qty to move (default = min(outstanding, available
+// at the hub), capped at available so nothing goes negative), confirm → one tagged
+// hub→store transfer per size via applyMovement. A per-size "Out" flags a size the
+// hub is short on (it stays outstanding). The card updates itself from the ledger.
+function ClothingRefillSheet({ group, fromLoc, fromLabel, availAt, actorRole, onMarkOut, onClose }) {
+  const outSizes = group.sizes.filter(s => s.outstanding > 0);
   const [qtys, setQtys] = useState({});
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
-  // Seed per-size defaults whenever the picked source changes.
+  // Seed per-size defaults from the picked hub's availability.
   useEffect(() => {
     const next = {};
-    outSizes.forEach(s => { const avail = (src && src.perSize[s.size]) || 0; next[s.size] = Math.min(s.outstanding, avail); });
+    outSizes.forEach(s => { next[s.size] = Math.min(s.outstanding, availAt(s.size)); });
     setQtys(next);
     setMsg(null);
   }, [fromLoc]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -8364,69 +8339,62 @@ function ClothingRefillSheet({ group, sources, actorRole, onClose }) {
 
   return (
     <div style={{ marginTop:10, background:"rgba(60,110,255,.05)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:12 }}>
-      {sources.length === 0 ? (
-        <div style={{ color:"#F59E0B", fontSize:12, fontWeight:600 }}>No warehouse/hub holds this product — nothing to pull from.</div>
-      ) : (
-        <>
-          <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:".6px", marginBottom:6 }}>PULL FROM</div>
-          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:12 }}>
-            {sources.map(s => {
-              const on = s.locId === fromLoc;
-              return (
-                <button key={s.locId} onClick={() => setFromLoc(s.locId)}
-                        style={{ padding:"6px 10px", borderRadius:9, cursor:"pointer", fontSize:12, fontWeight:700,
-                                 border: on ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.22)",
-                                 background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)", color: on ? "#fff" : "rgba(255,255,255,.6)" }}>
-                  {s.label} <span style={{ color: on ? "#9BC0FF" : "rgba(255,255,255,.4)", fontWeight:600 }}>·{s.totalAvail}</span>
-                </button>
-              );
-            })}
-          </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-            {outSizes.map(s => {
-              const avail = (src && src.perSize[s.size]) || 0;
-              const q = qtys[s.size] || 0;
-              return (
-                <div key={s.size} style={{ display:"flex", alignItems:"center", gap:10 }}>
-                  <div style={{ minWidth:64 }}><span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={s.size} /></span></div>
-                  <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", flex:1 }}>
-                    need {s.outstanding}{s.refilled > 0 ? ` · ${s.refilled} done` : ""} · {avail} at {src ? src.label : "source"}
-                  </div>
-                  <div style={{ display:"flex", alignItems:"center", gap:0, border:"1px solid rgba(60,110,255,.3)", borderRadius:8, overflow:"hidden" }}>
-                    <button onClick={() => setQ(s.size, q - 1, avail)} disabled={q <= 0} style={{ width:28, height:30, border:"none", background:"rgba(255,255,255,.04)", color:"#fff", cursor: q<=0?"default":"pointer", fontSize:16 }}>−</button>
-                    <input value={q} onChange={e => setQ(s.size, e.target.value, avail)} inputMode="numeric"
-                           style={{ width:34, height:30, textAlign:"center", border:"none", background:"rgba(0,0,0,.3)", color: q>avail?"#F87171":"#fff", fontSize:13, fontWeight:700, outline:"none" }} />
-                    <button onClick={() => setQ(s.size, q + 1, avail)} disabled={q >= avail} style={{ width:28, height:30, border:"none", background:"rgba(255,255,255,.04)", color:"#fff", cursor: q>=avail?"default":"pointer", fontSize:16 }}>+</button>
-                  </div>
+      <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:".6px", marginBottom:8 }}>PULL FROM <span style={{ color:BLUE_L }}>{fromLabel}</span></div>
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {outSizes.map(s => {
+          const avail = availAt(s.size);
+          const q = qtys[s.size] || 0;
+          return (
+            <div key={s.size} style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <div style={{ minWidth:56 }}><span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={s.size} /></span></div>
+              <div style={{ fontSize:11, color: avail > 0 ? "rgba(255,255,255,.45)" : "#F5A623", flex:1 }}>
+                need {s.outstanding}{s.refilled > 0 ? ` · ${s.refilled} done` : ""} · {avail} at {fromLabel}
+              </div>
+              {avail > 0 ? (
+                <div style={{ display:"flex", alignItems:"center", gap:0, border:"1px solid rgba(60,110,255,.3)", borderRadius:8, overflow:"hidden" }}>
+                  <button onClick={() => setQ(s.size, q - 1, avail)} disabled={q <= 0} style={{ width:28, height:30, border:"none", background:"rgba(255,255,255,.04)", color:"#fff", cursor: q<=0?"default":"pointer", fontSize:16 }}>−</button>
+                  <input value={q} onChange={e => setQ(s.size, e.target.value, avail)} inputMode="numeric"
+                         style={{ width:34, height:30, textAlign:"center", border:"none", background:"rgba(0,0,0,.3)", color: q>avail?"#F87171":"#fff", fontSize:13, fontWeight:700, outline:"none" }} />
+                  <button onClick={() => setQ(s.size, q + 1, avail)} disabled={q >= avail} style={{ width:28, height:30, border:"none", background:"rgba(255,255,255,.04)", color:"#fff", cursor: q>=avail?"default":"pointer", fontSize:16 }}>+</button>
                 </div>
-              );
-            })}
-          </div>
-          {msg && <div style={{ marginTop:10, fontSize:11, color:"#F59E0B", fontWeight:600 }}>{msg}</div>}
-          <div style={{ display:"flex", gap:8, marginTop:12 }}>
-            <button onClick={onClose} style={{ padding:"9px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:12, cursor:"pointer" }}>Cancel</button>
-            <button onClick={confirm} disabled={busy || movingTotal <= 0}
-                    style={{ flex:1, padding:"9px 12px", borderRadius:10, border:"1px solid rgba(74,222,128,.5)", background: movingTotal>0?"rgba(74,222,128,.15)":"rgba(255,255,255,.03)", color: movingTotal>0?"#4ADE80":"rgba(255,255,255,.35)", fontWeight:700, fontSize:13, cursor: (busy||movingTotal<=0)?"default":"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-              {busy ? "Transferring…" : `Transfer ${movingTotal} → ${SHOP_LABELS[group.store] || group.store}`}
-            </button>
-          </div>
-        </>
-      )}
+              ) : (
+                <button onClick={() => onMarkOut(group.store, group.productId, s.size)}
+                        title={`${fromLabel} has none — flag this size out at ${fromLabel}`}
+                        style={{ padding:"6px 11px", borderRadius:8, border:"1px solid rgba(245,166,35,.45)", background:"rgba(245,166,35,.1)", color:"#F5A623", fontWeight:700, fontSize:11, cursor:"pointer" }}>
+                  Out here
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {msg && <div style={{ marginTop:10, fontSize:11, color:"#F59E0B", fontWeight:600 }}>{msg}</div>}
+      <div style={{ display:"flex", gap:8, marginTop:12 }}>
+        <button onClick={onClose} style={{ padding:"9px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:12, cursor:"pointer" }}>Cancel</button>
+        <button onClick={confirm} disabled={busy || movingTotal <= 0}
+                style={{ flex:1, padding:"9px 12px", borderRadius:10, border:"1px solid rgba(74,222,128,.5)", background: movingTotal>0?"rgba(74,222,128,.15)":"rgba(255,255,255,.03)", color: movingTotal>0?"#4ADE80":"rgba(255,255,255,.35)", fontWeight:700, fontSize:13, cursor: (busy||movingTotal<=0)?"default":"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          {busy ? "Transferring…" : `Transfer ${movingTotal} → ${SHOP_LABELS[group.store] || group.store}`}
+        </button>
+      </div>
     </div>
   );
 }
 
-// Product refill card. Shows per-size OUTSTANDING (sold − refilled), a Refill
-// button that opens the transfer sheet, and per-size Skip. Done (all sizes
-// refilled or skipped) shows a cleared state. `canTransfer` gates the transfer
-// UI on a stock-capable role; without it the crew can still Skip.
-function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, actorRole, canTransfer, onSkip, onUnskip }) {
+// Product refill card. Shows per-size OUTSTANDING (sold − refilled) and a Refill
+// button that opens the transfer sheet, sourced from the tab-wide picked hub.
+// Sizes the hub is short on can be flagged "Out at <hub>" (stays outstanding).
+// Done (every size fully refilled) shows a cleared state. `canTransfer` gates the
+// transfer UI on a stock-capable role; `refillFrom` must be picked to transfer.
+function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut }) {
   const [openSheet, setOpenSheet] = useState(false);
   const done = group.done;
   const accent = done ? "rgba(74,222,128,.5)" : "rgba(60,110,255,.6)";
   const hasPhotos = onViewPhoto && Array.isArray(group.photos) && group.photos.length > 0;
-  const sources = useMemo(() => refillSourcesFor(group, allCells, registry), [group, allCells, registry]);
+  // Availability of THIS product at the tab-wide picked hub, per size.
+  const hubCells = (refillFrom && allCells && allCells[refillFrom] && allCells[refillFrom][group.productId]) || {};
+  const availAt = (size) => Number(hubCells[size] && hubCells[size].qty) || 0;
+  const hubLabel = refillFrom ? labelFor(refillFrom, registry) : null;
 
   return (
     <div style={{
@@ -8474,21 +8442,20 @@ function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, a
         </div>
       </div>
 
-      {/* Per-size rows: outstanding, refill progress, skip state. */}
+      {/* Per-size rows: outstanding, refill progress, out-flag. */}
       <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom: done ? 0 : 10 }}>
         {group.sizes.map(s => {
-          const cleared = s.skipped || s.outstanding === 0;
-          const border = s.skipped ? "rgba(255,255,255,.12)" : s.outstanding === 0 ? "rgba(74,222,128,.4)" : "rgba(60,110,255,.25)";
-          const bg = s.skipped ? "rgba(255,255,255,.03)" : s.outstanding === 0 ? "rgba(74,222,128,.08)" : "rgba(60,110,255,.1)";
+          const zero = s.outstanding === 0;
+          const border = s.outHub ? "rgba(245,166,35,.4)" : zero ? "rgba(74,222,128,.4)" : "rgba(60,110,255,.25)";
+          const bg = s.outHub ? "rgba(245,166,35,.08)" : zero ? "rgba(74,222,128,.08)" : "rgba(60,110,255,.1)";
           return (
-            <div key={s.size} title={`sold ${s.sold} · refilled ${s.refilled}${s.skipped ? " · skipped" : ""}`}
-                 style={{ display:"inline-flex", alignItems:"center", gap:5, background:bg, border:`1px solid ${border}`, borderRadius:8, padding:"4px 8px", opacity: cleared ? 0.75 : 1 }}>
-              <span style={{ fontSize:12, fontWeight:700, color:"#fff", textDecoration: s.skipped ? "line-through" : "none" }}><SizeTag size={s.size} /></span>
-              {s.skipped
-                ? <span style={{ fontSize:10, color:"rgba(255,255,255,.5)", fontWeight:700 }}>skip</span>
-                : s.outstanding === 0
-                  ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-                  : <span style={{ fontSize:11, color:BLUE_L, fontWeight:700 }}>×{s.outstanding}{s.refilled > 0 ? <span style={{ color:"rgba(255,255,255,.35)" }}> /{s.sold}</span> : null}</span>}
+            <div key={s.size} title={`sold ${s.sold} · refilled ${s.refilled}${s.outHub ? ` · out at ${labelFor(s.outHub, registry)}` : ""}${refillFrom ? ` · ${availAt(s.size)} at ${hubLabel}` : ""}`}
+                 style={{ display:"inline-flex", alignItems:"center", gap:5, background:bg, border:`1px solid ${border}`, borderRadius:8, padding:"4px 8px", opacity: zero ? 0.75 : 1 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:"#fff" }}><SizeTag size={s.size} /></span>
+              {zero
+                ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                : <span style={{ fontSize:11, color:BLUE_L, fontWeight:700 }}>×{s.outstanding}{s.refilled > 0 ? <span style={{ color:"rgba(255,255,255,.35)" }}> /{s.sold}</span> : null}</span>}
+              {s.outHub && !zero && <span style={{ fontSize:9, color:"#F5A623", fontWeight:800, letterSpacing:".3px" }}>OUT</span>}
             </div>
           );
         })}
@@ -8496,37 +8463,38 @@ function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, a
 
       {!done && !openSheet && (
         <div style={{ display:"flex", gap:8 }}>
-          {canTransfer ? (
-            <button onClick={() => setOpenSheet(true)}
-                    style={{ flex:1, padding:"11px 12px", borderRadius:10, border:"1px solid rgba(74,222,128,.5)", background:"rgba(74,222,128,.12)", color:"#4ADE80", cursor:"pointer", fontWeight:700, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-              Refill (transfer)
-            </button>
-          ) : (
+          {!canTransfer ? (
             <div style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px dashed rgba(255,255,255,.15)", color:"rgba(255,255,255,.4)", fontSize:11.5, textAlign:"center" }}>
               Refill needs stock permission — ask an admin for a stock role.
             </div>
+          ) : !refillFrom ? (
+            <div style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px dashed rgba(245,166,35,.35)", color:"#F5A623", fontSize:11.5, textAlign:"center" }}>
+              Pick a “Refill from” hub above to transfer.
+            </div>
+          ) : (
+            <button onClick={() => setOpenSheet(true)}
+                    style={{ flex:1, padding:"11px 12px", borderRadius:10, border:"1px solid rgba(74,222,128,.5)", background:"rgba(74,222,128,.12)", color:"#4ADE80", cursor:"pointer", fontWeight:700, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              Refill from {hubLabel}
+            </button>
           )}
-          <button onClick={() => group.sizes.filter(s => s.outstanding > 0 && !s.skipped).forEach(s => onSkip(group.store, group.productId, s.size))}
-                  title="Mark every outstanding size skipped"
-                  style={{ padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.6)", fontWeight:600, fontSize:12, cursor:"pointer" }}>
-            Skip
-          </button>
         </div>
       )}
 
       {!done && openSheet && (
-        <ClothingRefillSheet group={group} sources={sources} actorRole={actorRole} onClose={() => setOpenSheet(false)} />
+        <ClothingRefillSheet group={group} fromLoc={refillFrom} fromLabel={hubLabel} availAt={availAt}
+          actorRole={actorRole} onMarkOut={onMarkOut} onClose={() => setOpenSheet(false)} />
       )}
 
-      {/* Any skipped sizes get an Unskip affordance (works in pending or done). */}
-      {group.sizes.some(s => s.skipped) && (
+      {/* Out-flagged sizes — a tag naming the hub, tap to clear (pending or done). */}
+      {group.sizes.some(s => s.outHub) && (
         <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginTop:10, alignItems:"center" }}>
-          <span style={{ fontSize:10, color:"rgba(255,255,255,.35)", fontWeight:700 }}>SKIPPED:</span>
-          {group.sizes.filter(s => s.skipped).map(s => (
-            <button key={s.size} onClick={() => onUnskip(group.store, group.productId, s.size)}
-                    style={{ display:"inline-flex", alignItems:"center", gap:4, padding:"3px 8px", borderRadius:999, border:"1px solid rgba(255,255,255,.15)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.6)", fontSize:10.5, fontWeight:700, cursor:"pointer" }}>
-              <SizeTag size={s.size} /> undo
+          <span style={{ fontSize:10, color:"#F5A623", fontWeight:800, letterSpacing:".4px" }}>OUT:</span>
+          {group.sizes.filter(s => s.outHub).map(s => (
+            <button key={s.size} onClick={() => onClearOut(group.store, group.productId, s.size)}
+                    title={`Out at ${labelFor(s.outHub, registry)} — tap to clear`}
+                    style={{ display:"inline-flex", alignItems:"center", gap:4, padding:"3px 8px", borderRadius:999, border:"1px solid rgba(245,166,35,.4)", background:"rgba(245,166,35,.08)", color:"#F5A623", fontSize:10.5, fontWeight:700, cursor:"pointer" }}>
+              <SizeTag size={s.size} /> @{labelFor(s.outHub, registry)} ✕
             </button>
           ))}
         </div>
@@ -8538,7 +8506,7 @@ function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, a
 // One scope's worklist (a store's daily list, or the merged Backlog). Groups are
 // split pending/done by ledger-derived outstanding (group.done); pending are laid
 // out flat, type-ordered (ClothingSoldSections); done sit under a Show-Completed toggle.
-function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, registry, actorRole, canTransfer, onSkip, onUnskip }) {
+function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut }) {
   const [showCompleted, setShowCompleted] = useState(false);
 
   const { pending, completed } = useMemo(() => {
@@ -8548,7 +8516,7 @@ function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, regi
     completed.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
     return { pending, completed };
   }, [events]);
-  const cardProps = { showStore: isBacklog, onViewPhoto, allCells, registry, actorRole, canTransfer, onSkip, onUnskip };
+  const cardProps = { showStore: isBacklog, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut };
 
   if (!pending.length && !completed.length) return (
     <div style={{ textAlign:"center", color:"#444", padding:"4rem 1rem" }}>
@@ -8639,12 +8607,22 @@ function ClothingSoldView({ products }) {
   // hook to ≤ 90 days) and stays open-ended to now, so the daily tabs always see
   // today. Picking an older `from` re-subscribes to a wider (still bounded) window.
   const movements = useClothingSoldMovements(backlogWindow.from);
-  const skips     = useClothingSkips();
+  const oos       = useClothingOos();
   const allCells  = useStockCells();     // { loc: { pid: { size: cell } } } — source availability
   const registry  = useLocations();      // location labels/kinds for the source picker
   const { permRecord: clothPerm, isSuperAdmin: clothSuper } = usePermissions();
   const actorRole = clothSuper ? "admin" : (clothPerm && clothPerm.stockRole) || null;
   const canTransfer = ["store", "warehouse", "admin"].includes(actorRole);
+
+  // ONE "Refill from" hub for the whole tab — pick it once and every card refills
+  // from it (required, no default). Options = every non-shop location, whether or
+  // not it currently holds stock (availability shows per card).
+  const [refillFrom, setRefillFrom] = useState("");
+  const refillSourceOpts = useMemo(
+    () => transferTargets(registry).filter(l => l.kind !== "store")
+      .map(l => ({ id: l.id, label: labelFor(l.id, registry) })),
+    [registry]
+  );
 
   const productsById = useMemo(() => {
     const m = {};
@@ -8659,14 +8637,14 @@ function ClothingSoldView({ products }) {
   const eventsByScope = useMemo(() => {
     const out = {};
     CLOTHING_SOLD_STORES.forEach(s => {
-      out[s] = clothingSoldEventsForPeriod({ movements, productsById, cutoff: perStoreCutoff, store: s, skips });
+      out[s] = clothingSoldEventsForPeriod({ movements, productsById, cutoff: perStoreCutoff, store: s, oos });
     });
     out.backlog = clothingSoldEventsForPeriod({
       movements, productsById, cutoff: perStoreCutoff, store: null, stores: CLOTHING_SOLD_STORES,
-      fromSaDate: backlogWindow.from, toSaDate: backlogWindow.to, skips,
+      fromSaDate: backlogWindow.from, toSaDate: backlogWindow.to, oos,
     });
     return out;
-  }, [movements, productsById, perStoreCutoff, backlogWindow.from, backlogWindow.to, skips]);
+  }, [movements, productsById, perStoreCutoff, backlogWindow.from, backlogWindow.to, oos]);
 
   const pendingUnits = (evs) => evs.reduce((n, g) => n + (g.done ? 0 : g.total), 0);
 
@@ -8688,8 +8666,9 @@ function ClothingSoldView({ products }) {
     { key: "backlog", label: "Backlog" },
   ];
 
-  const handleSkip   = (store, pid, size) => saveClothingSkip(store, pid, size);
-  const handleUnskip = (store, pid, size) => clearClothingSkip(store, pid, size);
+  // Mark a size OUT from the currently-picked hub (keeps it outstanding), or clear.
+  const handleMarkOut = (store, pid, size) => saveClothingOut(store, pid, size, refillFrom);
+  const handleClearOut = (store, pid, size) => clearClothingOut(store, pid, size);
 
   // Date-picker clamps: keep maxBack ≤ from ≤ to ≤ dayBeforeYest and the span ≤ cap.
   const addDays  = (d, n) => new Date(new Date(`${d}T00:00:00.000Z`).getTime() + n * 86400000).toISOString().slice(0, 10);
@@ -8746,6 +8725,28 @@ function ClothingSoldView({ products }) {
         })}
       </div>
 
+      {/* ONE global "Refill from" hub — drives availability + transfers on every
+          card. Required (no default); until it's picked, cards can't transfer. */}
+      {canTransfer && (
+        <div style={{ marginBottom:12 }}>
+          <div style={{ fontSize:10, fontWeight:800, color:"rgba(255,255,255,.4)", letterSpacing:".6px", textTransform:"uppercase", marginBottom:6 }}>Refill from</div>
+          <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
+            {refillSourceOpts.map(o => {
+              const on = refillFrom === o.id;
+              return (
+                <button key={o.id} onClick={() => setRefillFrom(o.id)}
+                        style={{ padding:"7px 12px", borderRadius:999, cursor:"pointer", fontSize:12, fontWeight:700,
+                                 border: on ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.22)",
+                                 background: on ? "rgba(60,110,255,.2)" : "rgba(255,255,255,.03)", color: on ? "#fff" : "rgba(255,255,255,.55)" }}>
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+          {!refillFrom && <div style={{ fontSize:11, color:"#F5A623", marginTop:6 }}>Pick a hub to refill from — availability shows on each card.</div>}
+        </div>
+      )}
+
       {isBacklog ? (
         <div style={{ marginBottom:14, display:"flex", flexDirection:"column", gap:10 }}>
           {/* Search — live filter by product name / category */}
@@ -8793,8 +8794,9 @@ function ClothingSoldView({ products }) {
         registry={registry}
         actorRole={actorRole}
         canTransfer={canTransfer}
-        onSkip={handleSkip}
-        onUnskip={handleUnskip}
+        refillFrom={refillFrom}
+        onMarkOut={handleMarkOut}
+        onClearOut={handleClearOut}
       />
       {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
     </div>
