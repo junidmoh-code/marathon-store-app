@@ -4905,6 +4905,80 @@ function ShopStockPanel({ products }) {
   );
 }
 
+// ── REFILL TRACKING CARD ──────────────────────────────────────────────────────
+// Read-only status view for the requesting shop. After a store places a CR
+// (Clothing Refill) request the staff were "blind" — the confirmation banner is
+// transient and gone on reload, and all live status lived on the warehouse side.
+// This card reads the SAME /orders the warehouse resolves (customerName ===
+// "Shop Refill", scoped to this shop) and surfaces each line's status so staff can
+// see what's ready, what's still pending, and what the warehouse couldn't fill.
+//   clothingRefillStatus:  null → Pending  ·  "available" → Ready  ·  "outOfStock" → Out of stock
+const REFILL_STATUS = {
+  pending: { label: "Pending",      fg: "#F5C451", bg: "rgba(245,196,81,.12)",  bd: "rgba(245,196,81,.35)" },
+  ready:   { label: "Ready",        fg: "#4ADE80", bg: "rgba(74,222,128,.12)",  bd: "rgba(74,222,128,.4)"  },
+  oos:     { label: "Out of stock", fg: "#FF8B8B", bg: "rgba(255,90,90,.12)",   bd: "rgba(255,90,90,.4)"   },
+};
+function RefillTrackingCard({ orders = [], shop, registry }) {
+  const [open, setOpen] = useState(true);
+  const mine = useMemo(() => {
+    const rank = { pending: 0, oos: 1, ready: 2 }; // waiting-on first, then resolved
+    return (orders || [])
+      .filter(o => o && o.customerName === "Shop Refill" && o.destShop === shop)
+      .map(o => {
+        const st = o.clothingRefillStatus;
+        const status = st === "available" ? "ready" : st === "outOfStock" ? "oos" : "pending";
+        const ts = (status === "ready" ? o.clothingRefilledAt : status === "oos" ? o.clothingOutOfStockAt : o.createdAt) || o.createdAt;
+        return { id: o.id, name: o.productName, size: o.size, qty: o.qty || 1, status, ts };
+      })
+      .sort((a, b) => (rank[a.status] - rank[b.status]) || String(b.ts || "").localeCompare(String(a.ts || "")))
+      .slice(0, 40);
+  }, [orders, shop]);
+
+  const counts = useMemo(() => {
+    const c = { pending: 0, ready: 0, oos: 0 };
+    for (const r of mine) c[r.status]++;
+    return c;
+  }, [mine]);
+
+  if (mine.length === 0) return null;
+
+  return (
+    <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(60,110,255,.25)", borderRadius:RADIUS, marginBottom:"1.5rem", overflow:"hidden" }}>
+      <div onClick={() => setOpen(o => !o)} style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 14px", cursor:"pointer" }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:12.5, fontWeight:700, color:"#fff", letterSpacing:".02em" }}>My refill requests · {labelFor(shop, registry)}</div>
+          <div style={{ display:"flex", gap:6, marginTop:6, flexWrap:"wrap" }}>
+            {(["pending","ready","oos"]).filter(k => counts[k] > 0).map(k => (
+              <span key={k} style={{ fontSize:11, fontWeight:700, color:REFILL_STATUS[k].fg, background:REFILL_STATUS[k].bg, border:`1px solid ${REFILL_STATUS[k].bd}`, borderRadius:999, padding:"2px 9px" }}>
+                {counts[k]} {REFILL_STATUS[k].label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <span style={{ color:"#4A7FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s", fontSize:14 }}>▸</span>
+      </div>
+      {open && (
+        <div style={{ padding:"0 14px 10px", display:"flex", flexDirection:"column" }}>
+          {mine.map(r => {
+            const s = REFILL_STATUS[r.status];
+            return (
+              <div key={r.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderTop:"1px solid rgba(255,255,255,.06)" }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, color:"#eee", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                    {r.name}{r.size ? ` · Sz ${formatSize(r.size)}` : ""}{r.qty > 1 ? ` × ${r.qty}` : ""}
+                  </div>
+                  <div style={{ fontSize:10.5, color:"#777" }}>#{r.id} · {relativeTimeFromIso(r.ts)}</div>
+                </div>
+                <span style={{ fontSize:11, fontWeight:700, color:s.fg, background:s.bg, border:`1px solid ${s.bd}`, borderRadius:999, padding:"3px 10px", whiteSpace:"nowrap" }}>{s.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AssistantView({ products, onExit, orders = [] }) {
   const [search, setSearch]                             = useState("");
   // Single 3-way mode selector (replaces the old Sneakers/Clothing toggle +
@@ -5511,6 +5585,10 @@ function AssistantView({ products, onExit, orders = [] }) {
           </div>
         );
       })()}
+
+      {/* Refill order tracking — CR mode only. Live status of this shop's refill
+          requests so staff aren't blind after submitting (pending/ready/OOS). */}
+      {mode === "cr" && <RefillTrackingCard orders={orders} shop={effectiveShop} registry={shopRegistry} />}
 
       {/* Inline cart summary removed (Phase 12B) — the floating bottom bar
           below the screen is now the single cart trigger. Sneaker users still
