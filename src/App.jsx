@@ -8222,18 +8222,11 @@ const CLOTHING_SECTION_ORDER = CATEGORY_TREE.Clothing || [];
 // Buckets refill cards under collapsible category/subcategory headers (T-Shirts,
 // Jackets, Tracksuits…) so the crew scans by section. Same collapsible furniture
 // as DayCollapsible; open state persists in sessionStorage. Defaults all open.
-function CategoryCollapsible({ sectionKey, items, sectionOf, renderItem, emptyMessage }) {
-  const STORAGE_KEY = `clothingCat:${sectionKey}`;
-  const [closed, setClosed] = useState(() => {
-    try { const raw = sessionStorage.getItem(STORAGE_KEY); if (raw) return JSON.parse(raw); } catch { /* ignore */ }
-    return {}; // default: every section OPEN (absent from the closed-set)
-  });
-  const toggle = (key) => setClosed(prev => {
-    const next = { ...prev, [key]: !prev[key] };
-    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-    return next;
-  });
-
+// Flat, type-ordered worklist: products are grouped by clothing type (T-Shirts,
+// Hoodies, …) in CLOTHING_SECTION_ORDER and listed one after another under a
+// lightweight, ALWAYS-VISIBLE header — no collapsing. Same-type products follow
+// each other so the refill crew reads straight down the rail.
+function ClothingSoldSections({ items, sectionOf, renderItem, emptyMessage }) {
   const buckets = new Map();
   (items || []).forEach(item => {
     const label = sectionOf(item);
@@ -8253,29 +8246,21 @@ function CategoryCollapsible({ sectionKey, items, sectionOf, renderItem, emptyMe
   }
 
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+    <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
       {sections.map(([label, list]) => {
-        const open = !closed[label];
         const units = list.reduce((n, g) => n + (g.total || 0), 0);
         return (
-          <div key={label} style={{ background:"rgba(20,40,100,.3)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, overflow:"hidden" }}>
-            <div onClick={() => toggle(label)}
-                 style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", cursor:"pointer" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:"#4A7FFF", letterSpacing:"0.3px" }}>{label}</div>
-                <div style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"2px 10px", fontSize:11, fontWeight:700 }}>
-                  {list.length}{units !== list.length ? ` · ${units}u` : ""}
-                </div>
+          <div key={label}>
+            {/* Non-collapsible type header — a labelled divider, always open. */}
+            <div style={{ display:"flex", alignItems:"center", gap:8, margin:"0 2px 10px" }}>
+              <div style={{ fontSize:11, fontWeight:800, color:"#4A7FFF", letterSpacing:"1px", textTransform:"uppercase" }}>{label}</div>
+              <div style={{ background:"rgba(60,110,255,.12)", color:"#4A7FFF", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"1px 8px", fontSize:10, fontWeight:700 }}>
+                {list.length}{units !== list.length ? ` · ${units}u` : ""}
               </div>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                   style={{ transition:"transform 150ms ease", transform: open ? "rotate(180deg)" : "rotate(0deg)", flexShrink:0 }}>
-                <polyline points="6 9 12 15 18 9"/>
-              </svg>
+              <div style={{ height:1, flex:1, background:"rgba(60,110,255,.12)" }} />
             </div>
-            <div style={{ maxHeight: open ? 100000 : 0, overflow:"hidden", transition:"max-height 200ms ease" }}>
-              <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 8px 12px", display:"flex", flexDirection:"column", gap:10 }}>
-                {list.map((item, i) => <div key={item.key || i}>{renderItem(item)}</div>)}
-              </div>
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {list.map((item, i) => <div key={item.key || i}>{renderItem(item)}</div>)}
             </div>
           </div>
         );
@@ -8391,7 +8376,7 @@ function ClothingSoldCard({ group, done, onRefill, onUndo, showStore, onViewPhot
 // One scope's worklist (a store's daily list, or the merged Backlog). Groups are
 // split pending/done by clothing_sold_refills; pending are day-bucketed via
 // DayCollapsible, done sit under a Show-Completed toggle.
-function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, isBacklog, onViewPhoto }) {
+function ClothingSoldScopePanel({ events, refills, onRefill, onUndo, isBacklog, onViewPhoto }) {
   const [showCompleted, setShowCompleted] = useState(false);
 
   const { pending, completed } = useMemo(() => {
@@ -8443,9 +8428,8 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, i
         </div>
       )}
 
-      {/* Active list — grouped under collapsible category/subcategory sections. */}
-      <CategoryCollapsible
-        sectionKey={`clothingsold:${scopeKey}`}
+      {/* Active list — flat, type-ordered (T-Shirts, Hoodies, …), no collapsing. */}
+      <ClothingSoldSections
         items={pending}
         sectionOf={clothingSectionLabel}
         emptyMessage="Nothing to refill."
@@ -8641,7 +8625,6 @@ function ClothingSoldView({ products }) {
       )}
 
       <ClothingSoldScopePanel
-        scopeKey={scope}
         events={panelEvents}
         refills={refills}
         onRefill={handleRefill}
