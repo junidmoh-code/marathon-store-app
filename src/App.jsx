@@ -8530,20 +8530,38 @@ function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, a
 function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut, onRefilled }) {
   const [showCompleted, setShowCompleted] = useState(false);
 
-  const { pending, completed } = useMemo(() => {
-    const pending = [], completed = [];
-    events.forEach(g => (g.done ? completed : pending).push(g));
+  // With a "Refill from" hub picked, the PENDING list is filtered to only what that
+  // hub can actually fill: qty > 0 of at least one still-outstanding size. Partial
+  // counts (needs M×2, hub has M×1 → shown; they send 1, the rest stays). A card the
+  // hub has zero of every outstanding size is hidden — it reappears under a hub that
+  // holds it. No hub picked → show the full pending list.
+  const { pending, completed, hiddenByHub } = useMemo(() => {
+    const pend = [], completed = [];
+    events.forEach(g => (g.done ? completed : pend).push(g));
+    const canFill = (g) => {
+      if (!refillFrom) return true;
+      const cells = (allCells && allCells[refillFrom] && allCells[refillFrom][g.productId]) || {};
+      return g.sizes.some(s => s.outstanding > 0 && (Number(cells[s.size] && cells[s.size].qty) || 0) > 0);
+    };
+    const pending = pend.filter(canFill);
+    const hiddenByHub = refillFrom ? pend.length - pending.length : 0;
     pending.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
     completed.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
-    return { pending, completed };
-  }, [events]);
+    return { pending, completed, hiddenByHub };
+  }, [events, refillFrom, allCells]);
   const cardProps = { showStore: isBacklog, onViewPhoto, allCells, registry, actorRole, canTransfer, refillFrom, onMarkOut, onClearOut, onRefilled };
 
   if (!pending.length && !completed.length) return (
     <div style={{ textAlign:"center", color:"#444", padding:"4rem 1rem" }}>
       <ProductIcon size={32} opacity={0.5}/>
-      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>{isBacklog ? "No older clothing sales pending." : "No clothing sold here today or yesterday."}</div>
-      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Clothing sold at the till appears here for restocking.</div>
+      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>
+        {hiddenByHub > 0
+          ? `${labelFor(refillFrom, registry)} can't fill anything here — ${hiddenByHub} item${hiddenByHub !== 1 ? "s" : ""} need a different hub.`
+          : isBacklog ? "No older clothing sales pending." : "No clothing sold here today or yesterday."}
+      </div>
+      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>
+        {hiddenByHub > 0 ? "Switch the “Refill from” hub above." : "Clothing sold at the till appears here for restocking."}
+      </div>
     </div>
   );
 
@@ -8557,7 +8575,7 @@ function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, regi
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Units to refill</div>
           <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:3, lineHeight:1.4 }}>
-            {pending.length} product{pending.length !== 1 ? "s" : ""} pending{completed.length ? ` · ${completed.length} refilled` : ""}
+            {pending.length} product{pending.length !== 1 ? "s" : ""} {refillFrom ? `fillable from ${labelFor(refillFrom, registry)}` : "pending"}{completed.length ? ` · ${completed.length} refilled` : ""}{hiddenByHub > 0 ? ` · ${hiddenByHub} on other hubs` : ""}
           </div>
         </div>
       </div>
