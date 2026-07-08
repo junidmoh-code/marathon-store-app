@@ -211,7 +211,7 @@ export function clothingSoldEventsForPeriod({ movements, productsById, cutoff, s
   const rows = nettedSoldRows({ movements, productsById, windowStartSaDate: fromSaDate });
   const scoped = rows.filter((r) => {
     if (store) return r.saDate >= cutoff && r.store === store;
-    if (r.saDate >= cutoff) return false;                    // backlog is strictly older than today
+    if (r.saDate >= cutoff) return false;                    // backlog is strictly older than the caller-supplied cutoff (perStoreCutoff = yesterday)
     if (fromSaDate && r.saDate < fromSaDate) return false;   // picked window lower bound
     if (toSaDate && r.saDate > toSaDate) return false;       // picked window upper bound
     if (stores && !stores.includes(r.store)) return false;   // merge only the covered stores
