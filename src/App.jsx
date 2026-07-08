@@ -27,7 +27,7 @@ import { sellableLocations, labelFor, transferTargets } from "./components/stock
 import { useStockCells, useLocations } from "./components/stock/useStock";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
-  clothingSoldEventsForPeriod, isGroupRefilled, clothingSectionLabel,
+  clothingSoldEventsForPeriod, isGroupRefilled, clothingSectionLabel, saDateOf,
   saStartIso, CLOTHING_SOLD_BACKLOG_DAYS, CLOTHING_SOLD_STORES, CLOTHING_SOLD_MAX_RANGE_DAYS,
 } from "./utils/clothingSold";
 import { LocationPicker } from "./components/stock/widgets";
@@ -8288,6 +8288,20 @@ function CategoryCollapsible({ sectionKey, items, sectionOf, renderItem, emptyMe
 // `group` is a clothingSoldGroups() row: { productName, photo, sizes:[{size,qty}],
 // total, store, ts, ... }. `showStore` adds the store label (used in Backlog,
 // where stores are merged; redundant in a single-store daily tab).
+// Which SA-day(s) a daily-tab card covers. A card sums a (store, product) across
+// the today+yesterday window, so it can span both days — label the actual span
+// ("Today", "Yesterday", or "Yesterday → Today") instead of an ambiguous "20h ago".
+// `fresh` (has a sale today) drives the accent so leftover-only cards read amber.
+function clothingSoldDayLabel(group) {
+  const today = getSAPastDateString(0);
+  const yest  = getSAPastDateString(1);
+  const name  = (d) => (d === today ? "Today" : d === yest ? "Yesterday" : d);
+  const late  = saDateOf(group.ts);
+  const early = saDateOf(group.earliestTs || group.ts);
+  const label = early === late ? name(late) : `${name(early)} → ${name(late)}`;
+  return { label, fresh: late === today };
+}
+
 function ClothingSoldCard({ group, done, onRefill, onUndo, showStore, onViewPhoto }) {
   const [busy, setBusy] = useState(false);
   const tap = (fn) => { if (busy) return; setBusy(true); fn(); setTimeout(() => setBusy(false), 1500); };
@@ -8319,7 +8333,21 @@ function ClothingSoldCard({ group, done, onRefill, onUndo, showStore, onViewPhot
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{group.productName}</div>
           <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:3, color:"rgba(255,255,255,.45)", fontSize:11 }}>
             {showStore && <><span style={{ color:BLUE_L, fontWeight:600 }}>{SHOP_LABELS[group.store] || group.store}</span><span style={{ opacity:.4 }}>·</span></>}
-            <span>{relativeTimeFromIso(group.ts)}</span>
+            {showStore ? (
+              <span>{relativeTimeFromIso(group.ts)}</span>
+            ) : (() => {
+              // Daily tabs merge today+yesterday — mark the day(s) explicitly.
+              const { label, fresh } = clothingSoldDayLabel(group);
+              return (
+                <span style={{
+                  display:"inline-flex", alignItems:"center", padding:"1px 8px", borderRadius:999,
+                  fontSize:10, fontWeight:700, letterSpacing:".3px", textTransform:"uppercase",
+                  color: fresh ? "#4A7FFF" : "#F5A623",
+                  background: fresh ? "rgba(60,110,255,.12)" : "rgba(245,166,35,.1)",
+                  border: `1px solid ${fresh ? "rgba(60,110,255,.4)" : "rgba(245,166,35,.4)"}`,
+                }}>{label}</span>
+              );
+            })()}
           </div>
         </div>
         <div style={{ textAlign:"center", flexShrink:0 }}>
@@ -8377,7 +8405,7 @@ function ClothingSoldScopePanel({ scopeKey, events, refills, onRefill, onUndo, i
   if (!pending.length && !completed.length) return (
     <div style={{ textAlign:"center", color:"#444", padding:"4rem 1rem" }}>
       <ProductIcon size={32} opacity={0.5}/>
-      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>{isBacklog ? "No older clothing sales pending." : "No clothing sold here yet today."}</div>
+      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>{isBacklog ? "No older clothing sales pending." : "No clothing sold here today or yesterday."}</div>
       <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Clothing sold at the till appears here for restocking.</div>
     </div>
   );
