@@ -32,9 +32,10 @@ import { inferProductType } from "./insights";
 // stock_movements `.indexOn:["ts"]` rule, else the query silently reads it all.
 export const CLOTHING_SOLD_BACKLOG_DAYS = 14;
 
-// The stores the clothing-sold tabs cover. Each gets a per-store daily tab;
-// Sold Backlog merges these. Pine is a one-line add: append "marathon-pine".
-export const CLOTHING_SOLD_STORES = ["marathon-pe", "trophy"];
+// The stores the clothing-sold tabs cover. Each gets a per-store daily tab
+// (today + yesterday — see ClothingSoldView's perStoreCutoff); Sold Backlog
+// merges these.
+export const CLOTHING_SOLD_STORES = ["marathon-pe", "trophy", "marathon-pine"];
 
 // Hard cap on how far back the Backlog date picker may reach — bounds the
 // ts-windowed query so a big pick can't pull the whole ledger.

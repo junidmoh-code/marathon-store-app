@@ -27,7 +27,7 @@ import { sellableLocations, labelFor, transferTargets } from "./components/stock
 import { useStockCells, useLocations } from "./components/stock/useStock";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
-  clothingSoldEventsForPeriod, clothingSoldCutoff, isGroupRefilled, clothingSectionLabel,
+  clothingSoldEventsForPeriod, isGroupRefilled, clothingSectionLabel,
   saStartIso, CLOTHING_SOLD_BACKLOG_DAYS, CLOTHING_SOLD_STORES, CLOTHING_SOLD_MAX_RANGE_DAYS,
 } from "./utils/clothingSold";
 import { LocationPicker } from "./components/stock/widgets";
@@ -7743,7 +7743,7 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
         </div>
       </div>
 
-      {/* Show / Hide Completed toggle (per hub, session state) */}
+      {/* Show / Hide Completed toggle (session state) */}
       {completed.length > 0 && (
         <CompletedTogglePill on={showCompleted} count={completed.length} onClick={() => setShowCompleted(v => !v)} />
       )}
@@ -8041,22 +8041,17 @@ function SourceHistoryTab({ orders, returnsLog, allResponses, hub, onResponse })
 // Tracks per-order responses at source_onhold_responses/{key}. Cards vanish
 // when responded; the Completed toggle reveals them with green/red indicators
 // and Undo removes the response so the order returns to the active list.
-function SourceOnHoldTab({ orders, hub, onHoldResponses }) {
-  // Per-hub toggle — each hub remembers whether its completed list is open.
-  const [showCompletedByHub, setShowCompletedByHub] = useState({ hub1: false, hub2: false });
-  const showCompleted = !!showCompletedByHub[hub];
-  const setShowCompleted = (next) => setShowCompletedByHub(prev => ({
-    ...prev,
-    [hub]: typeof next === "function" ? next(!!prev[hub]) : next,
-  }));
+function SourceOnHoldTab({ orders, onHoldResponses }) {
+  const [showCompleted, setShowCompleted] = useState(false);
   const orderResponseKey = (orderId) => String(orderId).replace(/[.#$[\]/\s]/g, "_");
 
-  // Hub-filtered, in-status orders sorted newest-first. Then split by whether
-  // they have a response in source_onhold_responses.
+  // ALL-HUB on-hold list — every "Coming Tomorrow" order regardless of hub, so
+  // Source sees the same on-hold set the warehouse does (hub1/hub2/hub3/hubC).
+  // Sorted newest-first, then split by whether they have a response in
+  // source_onhold_responses.
   const { pending, completed } = useMemo(() => {
     const candidates = (orders || [])
       .filter(o => o.status === STATUS.COMING_TOMORROW && o.status !== STATUS.OUT_OF_STOCK)
-      .filter(o => (o.hub || "hub1") === hub)
       .sort((a, b) => tsMs(b.comingTomorrowAt || b.updatedAt) - tsMs(a.comingTomorrowAt || a.updatedAt));
     const pending = [];
     const completed = [];
@@ -8066,7 +8061,7 @@ function SourceOnHoldTab({ orders, hub, onHoldResponses }) {
       else pending.push({ order: o });
     });
     return { pending, completed };
-  }, [orders, onHoldResponses, hub]);
+  }, [orders, onHoldResponses]);
 
   const handleRespond = (order, response) => {
     const key = orderResponseKey(order.id);
@@ -8088,11 +8083,11 @@ function SourceOnHoldTab({ orders, hub, onHoldResponses }) {
 
   const fmt = iso => iso ? new Date(iso).toLocaleString([], { day:"numeric", month:"short", hour:"2-digit", minute:"2-digit" }) : "—";
 
-  // True empty — nothing on hold for this hub, completed or otherwise.
+  // True empty — nothing on hold anywhere, completed or otherwise.
   if (!pending.length && !completed.length) return (
     <div style={{ textAlign:"center", color:"#444", padding:"4rem" }}>
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeOpacity="0.4" strokeWidth="1.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>No orders on hold for this hub.</div>
+      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>No orders on hold.</div>
       <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Orders marked "Coming Tomorrow" appear here in real time.</div>
     </div>
   );
@@ -8107,7 +8102,7 @@ function SourceOnHoldTab({ orders, hub, onHoldResponses }) {
         {pending.length} order{pending.length !== 1 ? "s" : ""} waiting for next-day stock
       </div>
 
-      {/* Show / Hide Completed toggle (per hub, session state) */}
+      {/* Show / Hide Completed toggle (session state) */}
       {completed.length > 0 && (
         <CompletedTogglePill on={showCompleted} count={completed.length} onClick={() => setShowCompleted(v => !v)} />
       )}
@@ -8119,7 +8114,7 @@ function SourceOnHoldTab({ orders, hub, onHoldResponses }) {
             <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
           </svg>
           <div style={{ color:"#fff", fontSize:14, fontWeight:700, marginTop:10 }}>All caught up</div>
-          <div style={{ color:"rgba(255,255,255,.55)", fontSize:12, marginTop:4 }}>{completed.length} order{completed.length !== 1 ? "s" : ""} completed in this hub.</div>
+          <div style={{ color:"rgba(255,255,255,.55)", fontSize:12, marginTop:4 }}>{completed.length} order{completed.length !== 1 ? "s" : ""} completed.</div>
           <button onClick={() => setShowCompleted(true)}
                   style={{ marginTop:14, padding:"8px 16px", borderRadius:10, border:"1px solid rgba(60,110,255,.5)", background:"rgba(60,110,255,.12)", color:BLUE_L, fontWeight:600, fontSize:12, cursor:"pointer" }}>
             Show Completed
@@ -8129,7 +8124,7 @@ function SourceOnHoldTab({ orders, hub, onHoldResponses }) {
 
       {/* Active list */}
       {pending.map(({ order }) => (
-        <div key={`${hub}-onhold-${order.id}`} style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"1.1rem 1.25rem", boxShadow:"0 0 16px rgba(60,110,255,.15)", borderLeft:`3px solid ${BLUE}` }}>
+        <div key={`onhold-${order.id}`} style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"1.1rem 1.25rem", boxShadow:"0 0 16px rgba(60,110,255,.15)", borderLeft:`3px solid ${BLUE}` }}>
           <div style={{ display:"flex", alignItems:"center", gap:"1rem", marginBottom:"0.85rem" }}>
             <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={8}/>
             <div style={{ flex:1, minWidth:0 }}>
@@ -8173,7 +8168,7 @@ function SourceOnHoldTab({ orders, hub, onHoldResponses }) {
             const tint   = isSent ? "rgba(74,222,128,.08)" : "rgba(248,113,113,.08)";
             const text   = isSent ? "#4ADE80"              : "#F87171";
             return (
-              <div key={`${hub}-onhold-done-${order.id}`} style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:"1.1rem 1.25rem", opacity:0.85 }}>
+              <div key={`onhold-done-${order.id}`} style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:"1.1rem 1.25rem", opacity:0.85 }}>
                 <div style={{ display:"flex", alignItems:"center", gap:"1rem", marginBottom:"0.6rem" }}>
                   <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={8}/>
                   <div style={{ flex:1, minWidth:0 }}>
@@ -8459,14 +8454,17 @@ function ClothingSoldView({ products }) {
   const [fullPhoto, setFullPhoto] = useState(null); // GalleryLightbox photos array | null
   const [search, setSearch] = useState("");
 
+  // Per-store daily tabs cover today + yesterday (the actionable "sold, refill it"
+  // window); Backlog is everything strictly older than yesterday. So the split
+  // cutoff the tabs filter on is YESTERDAY, not today.
+  const perStoreCutoff = getSAPastDateString(1);   // yesterday — daily = saDate >= this
+  const dayBeforeYest  = getSAPastDateString(2);   // backlog upper bound (strictly < yesterday)
   // Backlog date window (SA-dates). Default: the recent BACKLOG_DAYS window ending
-  // yesterday (backlog is strictly before today). The picker widens it back to the
-  // 90-day cap or narrows to a single day (from === to).
-  const today     = clothingSoldCutoff();
-  const yesterday = getSAPastDateString(1);
+  // the day before yesterday. The picker widens it back to the 90-day cap or
+  // narrows to a single day (from === to).
   const maxBack   = getSAPastDateString(CLOTHING_SOLD_MAX_RANGE_DAYS);
   const defaultFrom = getSAPastDateString(CLOTHING_SOLD_BACKLOG_DAYS);
-  const [backlogWindow, setBacklogWindow] = useState(() => ({ from: defaultFrom, to: yesterday }));
+  const [backlogWindow, setBacklogWindow] = useState(() => ({ from: defaultFrom, to: dayBeforeYest }));
 
   // The movements query starts at the backlog window's `from` (clamped in the
   // hook to ≤ 90 days) and stays open-ended to now, so the daily tabs always see
@@ -8480,19 +8478,20 @@ function ClothingSoldView({ products }) {
     return m;
   }, [products]);
 
-  // Groups per scope. Daily tabs use today's sales; Backlog is bounded to the
-  // picked [from, to] window (and strictly < today).
+  // Groups per scope. Daily tabs cover today + yesterday (saDate >= perStoreCutoff);
+  // Backlog is everything strictly older than yesterday, bounded to the picked
+  // [from, to] window.
   const eventsByScope = useMemo(() => {
     const out = {};
     CLOTHING_SOLD_STORES.forEach(s => {
-      out[s] = clothingSoldEventsForPeriod({ movements, productsById, cutoff: today, store: s });
+      out[s] = clothingSoldEventsForPeriod({ movements, productsById, cutoff: perStoreCutoff, store: s });
     });
     out.backlog = clothingSoldEventsForPeriod({
-      movements, productsById, cutoff: today, store: null, stores: CLOTHING_SOLD_STORES,
+      movements, productsById, cutoff: perStoreCutoff, store: null, stores: CLOTHING_SOLD_STORES,
       fromSaDate: backlogWindow.from, toSaDate: backlogWindow.to,
     });
     return out;
-  }, [movements, productsById, today, backlogWindow.from, backlogWindow.to]);
+  }, [movements, productsById, perStoreCutoff, backlogWindow.from, backlogWindow.to]);
 
   const pendingUnits = (evs) => evs.reduce(
     (n, g) => n + (isGroupRefilled(g, refills) ? 0 : g.total), 0
@@ -8519,7 +8518,7 @@ function ClothingSoldView({ products }) {
   const handleRefill = (g) => saveClothingRefill(g.store, g.productId);
   const handleUndo   = (g) => clearClothingRefill(g.store, g.productId);
 
-  // Date-picker clamps: keep maxBack ≤ from ≤ to ≤ yesterday and the span ≤ cap.
+  // Date-picker clamps: keep maxBack ≤ from ≤ to ≤ dayBeforeYest and the span ≤ cap.
   const addDays  = (d, n) => new Date(new Date(`${d}T00:00:00.000Z`).getTime() + n * 86400000).toISOString().slice(0, 10);
   const spanDays = (a, b) => Math.round((new Date(`${b}T00:00:00.000Z`).getTime() - new Date(`${a}T00:00:00.000Z`).getTime()) / 86400000);
   const clamp    = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
@@ -8529,12 +8528,12 @@ function ClothingSoldView({ products }) {
     return { ...w, from };
   });
   const setTo = (v) => setBacklogWindow(w => {
-    let to = clamp(v, w.from, yesterday);
+    let to = clamp(v, w.from, dayBeforeYest);
     if (spanDays(w.from, to) > CLOTHING_SOLD_MAX_RANGE_DAYS) to = addDays(w.from, CLOTHING_SOLD_MAX_RANGE_DAYS);
     return { ...w, to };
   });
-  const resetWindow    = () => { setBacklogWindow({ from: defaultFrom, to: yesterday }); setSearch(""); };
-  const isDefaultWindow = backlogWindow.from === defaultFrom && backlogWindow.to === yesterday;
+  const resetWindow    = () => { setBacklogWindow({ from: defaultFrom, to: dayBeforeYest }); setSearch(""); };
+  const isDefaultWindow = backlogWindow.from === defaultFrom && backlogWindow.to === dayBeforeYest;
 
   const dateInput = { padding:"7px 9px", borderRadius:10, border:"1px solid rgba(60,110,255,.25)", background:"rgba(255,255,255,.03)", color:"#fff", fontSize:12, colorScheme:"dark", outline:"none" };
   const isBacklog = scope === "backlog";
@@ -8594,7 +8593,7 @@ function ClothingSoldView({ products }) {
             <input type="date" value={backlogWindow.from} min={maxBack} max={backlogWindow.to}
                    onChange={e => e.target.value && setFrom(e.target.value)} style={dateInput} />
             <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>to</span>
-            <input type="date" value={backlogWindow.to} min={backlogWindow.from} max={yesterday}
+            <input type="date" value={backlogWindow.to} min={backlogWindow.from} max={dayBeforeYest}
                    onChange={e => e.target.value && setTo(e.target.value)} style={dateInput} />
             {!(isDefaultWindow && !search) && (
               <button onClick={resetWindow}
@@ -8609,7 +8608,7 @@ function ClothingSoldView({ products }) {
         </div>
       ) : (
         <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginBottom:14, lineHeight:1.4 }}>
-          {`Sold today at ${SHOP_LABELS[scope] || scope} — refill it.`}
+          {`Sold today & yesterday at ${SHOP_LABELS[scope] || scope} — refill it.`}
         </div>
       )}
 
@@ -8814,9 +8813,9 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           </div>
         ))}
       </div>
-      {/* HUB SUB-TABS — segmented pill, shared across the three order-refill tabs.
-          Hidden for Clothing Sold, which carries its own store scope pills. */}
-      {tab !== "clothing" && (
+      {/* HUB SUB-TABS — segmented pill, shared by Today + History. Hidden for
+          Clothing Sold (own store pills) and On Hold (shows all hubs together). */}
+      {tab !== "clothing" && tab !== "onhold" && (
       <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
         {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
           const active = hub === val;
@@ -8865,7 +8864,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
                               allResponses={allResponses}
                               hub={hub}
                               onResponse={handleResponse} />}
-        {tab==="onhold"  && <SourceOnHoldTab orders={orders} hub={hub} onHoldResponses={onHoldResponses} />}
+        {tab==="onhold"  && <SourceOnHoldTab orders={orders} onHoldResponses={onHoldResponses} />}
         {tab==="clothing" && <ClothingSoldView products={products} />}
       </div>
     </div>
