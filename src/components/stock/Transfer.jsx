@@ -13,15 +13,17 @@
 // warehouse→hub, hub→shop, any→any. Open Source refill requests can be prefilled
 // and are closed atomically on a successful transfer.
 
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { ref, update, push, child } from "firebase/database";
 import { database } from "../../firebase";
 import { applyMovement } from "./applyMovement";
+import { lookupBarcode } from "./barcodeLookup";
 import { useRefillRequests, useStockCells } from "./useStock";
 import { transferTargets, labelFor } from "./locations";
 import { Toast, Empty } from "./widgets";
 import { GLASS, GLASS_SOLID, CARD, BLUE_L, GREEN, GRAY, AMBER, BORDER, FONT, input, bGreen, bGhost } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
+import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
 import FilterPicker from "./FilterPicker";
 
@@ -101,6 +103,71 @@ export default function Transfer({ products, registry, actorRole }) {
   };
   const bump = (product, size, delta) => setQty(product, size, (basket[keyOf(product.id, size)]?.qty || 0) + delta);
   const clearBasket = () => { setBasket({}); setRefillId(null); };
+
+  // ── SCAN-TO-CART ────────────────────────────────────────────────────────────
+  // A NETUM scanner is a keyboard-wedge: it types the barcode then Enter into the
+  // focused input. The persistent scan box below the search bar holds focus and
+  // handles Enter itself. Each resolved scan adds ONE unit to the running basket
+  // (same as a manual +), incrementing an existing line rather than duplicating.
+  const [scanVal, setScanVal] = useState("");
+  const scanRef = useRef(null);
+  const scanSize = (raw) => (raw == null || raw === "" || raw === "_" ? "" : formatSize(raw));
+
+  // Resolve a scanned code → product + raw size via the shared /barcodes index,
+  // then add to the basket (clamped to source on-hand). Rejects — never crashes —
+  // on unknown codes, unknown products, or 0-stock-at-source, keeping the session
+  // alive so the user just keeps scanning.
+  const scanAdd = useCallback(async (rawCode) => {
+    const code = String(rawCode || "").trim();
+    if (!code) return;
+    if (!from) { flash("err", "Pick a source location first."); return; }
+
+    let rec;
+    try { rec = await lookupBarcode(code); }
+    catch { flash("err", `Couldn't read barcode ${code} — try again.`); return; }
+    if (!rec || !rec.productId) { flash("err", `No product linked to barcode ${code}`); return; }
+
+    const product = (products || []).find((p) => p.id === rec.productId);
+    if (!product) { flash("err", `Barcode ${code} → product not found`); return; }
+
+    // Raw size from the index (omitted for one-size). Validate it's a real variant.
+    const sizes = Array.isArray(product.sizes) ? product.sizes : [];
+    const sized = rec.size != null && rec.size !== "";
+    if (sized && sizes.length && !sizes.includes(rec.size)) {
+      flash("err", `${product.name}: size ${scanSize(rec.size)} isn't on this product`); return;
+    }
+    const size = sized ? rec.size : (sizes.length ? sizes[0] : "_");
+    const lbl = scanSize(size);
+
+    const max = avail(product.id, size);
+    if (max <= 0) { flash("err", `${product.name}${lbl ? ` · ${lbl}` : ""} — 0 at ${labelFor(from, registry)}`); return; }
+    const cur = basket[keyOf(product.id, size)]?.qty || 0;
+    if (cur >= max) { flash("err", `Only ${max} at ${labelFor(from, registry)} — ${product.name}${lbl ? ` · ${lbl}` : ""}`); return; }
+
+    // Functional updater so back-to-back scans accumulate correctly.
+    setBasket((b) => {
+      const k = keyOf(product.id, size);
+      const q = Math.min(max, (b[k]?.qty || 0) + 1);
+      return { ...b, [k]: { productId: product.id, productName: product.name, size, qty: q } };
+    });
+    flash("ok", `+1 ${product.name}${lbl ? ` · ${lbl}` : ""} (${cur + 1})`);
+    scanRef.current?.focus();
+  }, [from, products, srcCells, registry, basket]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onScanKey = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const v = scanVal;
+    setScanVal("");
+    scanAdd(v);
+  };
+
+  // Cart-line controls reuse the same clamped add path with a light product shim.
+  const cartBump = (line, delta) => setQty({ id: line.productId, name: line.productName }, line.size, (basket[keyOf(line.productId, line.size)]?.qty || 0) + delta);
+  const cartRemove = (line) => setQty({ id: line.productId, name: line.productName }, line.size, 0);
+
+  // Keep the scan box focused whenever a source is active (unless a modal is up).
+  useEffect(() => { if (from && !picking) scanRef.current?.focus(); }, [from, picking]);
 
   // Changing the source invalidates the basket (its lines were counted at the old
   // source). Reset so quantities always reflect what's actually available here.
@@ -183,7 +250,45 @@ export default function Transfer({ products, registry, actorRole }) {
 
       {/* Search */}
       <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search in ${labelFor(from, registry)}…`}
-             style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 12 }} />
+             style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 8 }} />
+
+      {/* Scan box — persistent, holds focus; each scan adds a unit to the cart. */}
+      <div style={{ position: "relative", marginBottom: lines.length ? 8 : 12 }}>
+        <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 15, pointerEvents: "none", opacity: 0.7 }}>▚</span>
+        <input ref={scanRef} value={scanVal} onChange={(e) => setScanVal(e.target.value)} onKeyDown={onScanKey}
+               inputMode="numeric" autoComplete="off" spellCheck={false}
+               placeholder="Scan barcode — keep scanning…"
+               style={{ ...input, width: "100%", boxSizing: "border-box", paddingLeft: 34, borderColor: "rgba(74,222,128,.5)", background: "rgba(74,222,128,.05)" }} />
+      </div>
+
+      {/* Cart — every scanned/added line, editable qty + remove, running total. */}
+      {lines.length > 0 && (
+        <div style={{ ...GLASS, padding: 10, marginBottom: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <span style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em" }}>Cart · {lines.length} line{lines.length === 1 ? "" : "s"} · {totalUnits} unit{totalUnits === 1 ? "" : "s"}</span>
+            <button onClick={clearBasket} style={{ ...bGhost, padding: "4px 10px", fontSize: 11 }}>Clear</button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {lines.map((ln) => {
+              const max = avail(ln.productId, ln.size);
+              return (
+                <div key={keyOf(ln.productId, ln.size)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: BORDER }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ln.productName}</div>
+                    <div style={{ fontSize: 11, color: GRAY }}><SizeTag size={ln.size} /> · {max} at {labelFor(from, registry)}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <button onClick={() => cartBump(ln, -1)} style={stepBtn}>−</button>
+                    <span style={{ minWidth: 26, textAlign: "center", fontSize: 14, fontWeight: 700, color: "#fff" }}>{ln.qty}</span>
+                    <button onClick={() => cartBump(ln, +1)} style={{ ...stepBtn, opacity: ln.qty >= max ? 0.4 : 1 }}>+</button>
+                  </div>
+                  <button onClick={() => cartRemove(ln)} aria-label="Remove" style={{ ...bGhost, padding: "6px 9px", fontSize: 13, color: "#FF8B8B" }}>✕</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Product list — only products with stock at the source. */}
       {shown.length === 0 ? (
