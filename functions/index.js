@@ -2345,6 +2345,25 @@ async function loadStyleKit(db) {
   return out;
 }
 
+// Map a raw per-product error into a short, aggregatable reason the Studio UI can
+// show (so a failed run isn't silent). Keeps the common cases legible; falls back
+// to a truncated raw message for anything unrecognised.
+function classifyPhotoError(msg, engName) {
+  const m = String(msg || "").trim();
+  if (/HTTP 429|credits are depleted|rate|quota|RESOURCE_EXHAUSTED/i.test(m)) {
+    const provider = engName === "openai" ? "OpenAI" : "Gemini";  // gemini + nbpro → Gemini
+    return `AI credits depleted or rate-limited (429) — check ${provider} billing`;
+  }
+  const kit = m.match(/no usable (\w+) Style Kit references/i);
+  if (kit) return `No ${kit[1]} Style Kit references — add & enable refs for that template`;
+  if (/image fetch HTTP|untrusted image host|invalid image url/i.test(m)) return "Couldn't fetch the product image";
+  if (/image too large/i.test(m)) return "Product image too large";
+  if (/timed out/i.test(m)) return "AI request timed out";
+  if (/returned no image/i.test(m)) return "AI returned no image";
+  if (/HTTP 5\d\d/i.test(m)) return "AI service error (5xx) — try again";
+  return (m || "failed").slice(0, 140);
+}
+
 exports.generateProductPhotos = onCall(
   {
     region: "europe-west1",
@@ -2412,6 +2431,7 @@ exports.generateProductPhotos = onCall(
     let processed = 0, failed = 0, estCostUSD = 0;
     const costByEngine = { openai: 0, gemini: 0, nbpro: 0 };
     const sample = [];
+    const failures = [];   // { id, name, reason } — surfaced to the Studio UI (capped)
 
     let cursor = 0;
     async function worker() {
@@ -2473,6 +2493,7 @@ exports.generateProductPhotos = onCall(
           if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName });
         } catch (err) {
           failed++;
+          if (failures.length < 50) failures.push({ id, name: p.name || "", reason: classifyPhotoError(err && err.message, engName) });
           console.warn(`generateProductPhotos: ${id} (${engName}) failed:`, err && err.message);
         }
       }
@@ -2487,7 +2508,7 @@ exports.generateProductPhotos = onCall(
       engine: style === "house" ? "nbpro" : (engineOverride || "auto"), style, costByEngine,
     });
 
-    return { processed, failed, total: ids.length, estCostUSD, costByEngine, sample };
+    return { processed, failed, total: ids.length, estCostUSD, costByEngine, sample, failures };
   }
 );
 
