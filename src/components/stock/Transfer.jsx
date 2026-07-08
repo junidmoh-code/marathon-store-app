@@ -18,7 +18,7 @@ import { ref, update, push, child } from "firebase/database";
 import { database } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { useRefillRequests, useStockCells } from "./useStock";
-import { transferTargets, labelFor, RECEIVING_DEFAULT } from "./locations";
+import { transferTargets, labelFor } from "./locations";
 import { Toast, Empty } from "./widgets";
 import { GLASS, GLASS_SOLID, CARD, BLUE_L, GREEN, GRAY, AMBER, BORDER, FONT, input, bGreen, bGhost } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
@@ -42,7 +42,10 @@ function Thumb({ product, size = 44 }) {
 }
 
 export default function Transfer({ products, registry, actorRole }) {
-  const [from, setFrom] = useState(RECEIVING_DEFAULT);   // SOURCE — picked first
+  // SOURCE — REQUIRED, no default. Every transfer must consciously pick where the
+  // stock leaves from (defaulting to Central silently mis-sourced transfers), so
+  // this starts empty and the product grid stays hidden until a source is chosen.
+  const [from, setFrom] = useState("");
   const [cat, setCat] = useState("all");
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState(null);            // expanded product id
@@ -53,7 +56,10 @@ export default function Transfer({ products, registry, actorRole }) {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const openRefills = useRefillRequests("open");
-  const srcCells = useStockCells(from);                  // { pid: { size: cell } } at the source
+  // Guard: an empty `from` would make useStockCells subscribe to the WHOLE /stock
+  // node (and return a different shape). Feed a non-existent id so it resolves to
+  // {} until a real source is picked.
+  const srcCells = useStockCells(from || "__no_source__"); // { pid: { size: cell } } at the source
 
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3000); };
 
@@ -113,7 +119,8 @@ export default function Transfer({ products, registry, actorRole }) {
   useEffect(() => { if (to && to === from) setTo(""); }, [from, to]);
 
   const doTransfer = async () => {
-    if (!from || !to) return flash("err", "Pick a destination.");
+    if (!from) return flash("err", "Pick a source location.");
+    if (!to) return flash("err", "Pick a destination.");
     if (from === to) return flash("err", "Source and destination must differ.");
     if (!lines.length) return flash("err", "Add at least one quantity.");
     setBusy(true);
@@ -161,8 +168,14 @@ export default function Transfer({ products, registry, actorRole }) {
 
       {/* Source (pick first — the grid shows only what's here) + Category, as
           collapsible cards. Category only shows categories present at the source. */}
-      <FilterPicker label="Transfer from" value={from} onChange={pickSource}
+      <FilterPicker label="Transfer from" value={from} onChange={pickSource} placeholder="Choose source…" defaultOpen={!from}
         options={locations.map((l) => ({ id: l.id, label: labelFor(l.id, registry) }))} />
+
+      {!from ? (
+        /* Source is required — nothing loads until it's chosen. */
+        <Empty>Pick a source location above to start a transfer.</Empty>
+      ) : (
+      <>
       {categories.length > 1 && (
         <FilterPicker label="Category" value={cat} onChange={setCat}
           options={[{ id: "all", label: "All" }, ...categories.map((c) => ({ id: c, label: c }))]} />
@@ -219,6 +232,8 @@ export default function Transfer({ products, registry, actorRole }) {
             );
           })}
         </div>
+      )}
+      </>
       )}
 
       {/* Sticky action bar */}
