@@ -4918,7 +4918,7 @@ const REFILL_STATUS = {
   ready:   { label: "Ready",        fg: "#4ADE80", bg: "rgba(74,222,128,.12)",  bd: "rgba(74,222,128,.4)"  },
   oos:     { label: "Out of stock", fg: "#FF8B8B", bg: "rgba(255,90,90,.12)",   bd: "rgba(255,90,90,.4)"   },
 };
-function RefillTrackingCard({ orders = [], shop, registry }) {
+function RefillTrackingCard({ orders = [], shop, registry, showEmpty = false }) {
   const [open, setOpen] = useState(true);
   const mine = useMemo(() => {
     const rank = { pending: 0, oos: 1, ready: 2 }; // waiting-on first, then resolved
@@ -4940,7 +4940,17 @@ function RefillTrackingCard({ orders = [], shop, registry }) {
     return c;
   }, [mine]);
 
-  if (mine.length === 0) return null;
+  if (mine.length === 0) {
+    // Discoverable empty state (CR mode only) so staff know the tracker exists
+    // even before their shop has placed a refill; silent in other modes.
+    if (!showEmpty) return null;
+    return (
+      <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(60,110,255,.25)", borderRadius:RADIUS, marginBottom:"1.5rem", padding:"12px 14px" }}>
+        <div style={{ fontSize:12.5, fontWeight:700, color:"#fff", letterSpacing:".02em" }}>My refill requests · {labelFor(shop, registry)}</div>
+        <div style={{ fontSize:11.5, color:"#777", marginTop:5 }}>No refill requests yet — placed refills will show their status here.</div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(60,110,255,.25)", borderRadius:RADIUS, marginBottom:"1.5rem", overflow:"hidden" }}>
@@ -5586,9 +5596,12 @@ function AssistantView({ products, onExit, orders = [] }) {
         );
       })()}
 
-      {/* Refill order tracking — CR mode only. Live status of this shop's refill
-          requests so staff aren't blind after submitting (pending/ready/OOS). */}
-      {mode === "cr" && <RefillTrackingCard orders={orders} shop={effectiveShop} registry={shopRegistry} />}
+      {/* Refill order tracking — live status of this shop's refill requests so
+          staff aren't blind after submitting (pending/ready/OOS). Shows in every
+          mode when there are refills; in CR mode it also shows an empty state so
+          the tracker is discoverable before the first request. */}
+      <RefillTrackingCard orders={orders} shop={effectiveShop} registry={shopRegistry} showEmpty={mode === "cr"} />
+
 
       {/* Inline cart summary removed (Phase 12B) — the floating bottom bar
           below the screen is now the single cart trigger. Sneaker users still
