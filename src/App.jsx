@@ -1959,6 +1959,23 @@ function costByEngineStr(cbe) {
   return parts.length ? ` · ${parts.join(", ")}` : "";
 }
 
+// Aggregate generateProductPhotos per-product failure reasons into a short "why"
+// suffix so a failed run isn't silent (e.g. " — why: AI credits depleted… ×11;
+// No sneaker Style Kit references… ×1"). Empty when the run had no failures or an
+// older function build returned no `failures` array.
+function photoFailureSuffix(failures) {
+  if (!Array.isArray(failures) || !failures.length) return "";
+  const byReason = new Map();
+  for (const f of failures) {
+    const r = (f && f.reason) || "failed";
+    byReason.set(r, (byReason.get(r) || 0) + 1);
+  }
+  const parts = [...byReason.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([r, n]) => `${r} ×${n}`);
+  return ` — why: ${parts.join("; ")}`;
+}
+
 // One-tap fix shortcuts for a regenerate: a short label the user taps → a clear,
 // expanded instruction the image engine understands, appended to the run note. Tap
 // several to combine; free text can be added too. Keeps "make gemini understand
@@ -2142,7 +2159,7 @@ function AdminReviewPhotosTab({ products = [] }) {
     try {
       const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: ids, reprocess: true, quality, ...engineArg, ...styleArg });
       const d = res?.data || {};
-      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
+      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}${photoFailureSuffix(d.failures)}.`);
       setSelectedIds(new Set()); setPicking(false);
     } catch (e) {
       const m = String(e?.message || e);
@@ -2253,7 +2270,7 @@ function AdminReviewPhotosTab({ products = [] }) {
     try {
       const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg, ...styleArg });
       const d = res?.data || {};
-      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}.`);
+      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}${photoFailureSuffix(d.failures)}.`);
     } catch (e) {
       const m = String(e?.message || e);
       setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
@@ -2271,7 +2288,7 @@ function AdminReviewPhotosTab({ products = [] }) {
     try {
       const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...thisEngine, ...thisNote, ...styleArg });
       const d = res?.data || {};
-      setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”.`);
+      setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”${photoFailureSuffix(d.failures)}.`);
     } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }
     finally { setRegenIds(s => { const n = new Set(s); n.delete(row.id); return n; }); }
   };
