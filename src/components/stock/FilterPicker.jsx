@@ -7,9 +7,13 @@
 import React, { useState } from "react";
 import { GRAY, BLUE_L, BORDER, FONT } from "./ui";
 
-export default function FilterPicker({ label, value, options, onChange }) {
-  const [open, setOpen] = useState(false);
-  const current = options.find((o) => o.id === value)?.label ?? value;
+export default function FilterPicker({ label, value, options, onChange, placeholder, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const match = options.find((o) => o.id === value)?.label;
+  // No match + a placeholder + no value → show the placeholder (dimmed) so a
+  // required, un-defaulted picker reads "Choose …" instead of blank.
+  const isPlaceholder = match == null && !value && !!placeholder;
+  const current = match ?? (value || placeholder || "");
   return (
     <div style={{ borderRadius: 12, border: BORDER, background: "rgba(255,255,255,.03)", marginBottom: 10, overflow: "hidden" }}>
       <button onClick={() => setOpen((o) => !o)}
@@ -17,7 +21,7 @@ export default function FilterPicker({ label, value, options, onChange }) {
                  background: "none", border: "none", padding: "11px 14px", cursor: "pointer", fontFamily: FONT }}>
         <span style={{ fontSize: 10, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>{label}</span>
         <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          <span style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{current}</span>
+          <span style={{ fontSize: 13.5, fontWeight: 700, color: isPlaceholder ? GRAY : "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{current}</span>
           <span style={{ color: BLUE_L, fontSize: 11, transform: open ? "rotate(180deg)" : "none", transition: "transform .15s" }}>▾</span>
         </span>
       </button>
