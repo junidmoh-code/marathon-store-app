@@ -10,7 +10,7 @@
 // Admin-only. Read-only against /stock (display of on-hand); the only write is the
 // barcode reservation at print, via the shared barcodeStore.
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { ref, set } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells, useLocations } from "./useStock";
@@ -26,6 +26,18 @@ import { SizeTag } from "../SizeTag";
 
 const keyOf = (pid, size) => `${pid}|${size}`;
 
+// Laptop breakpoint — switches Barcodes into the centered workspace layout.
+function useWide(px = 1024) {
+  const [wide, setWide] = useState(() => typeof window !== "undefined" && window.matchMedia(`(min-width:${px}px)`).matches);
+  useEffect(() => {
+    const m = window.matchMedia(`(min-width:${px}px)`);
+    const on = () => setWide(m.matches);
+    m.addEventListener("change", on);
+    return () => m.removeEventListener("change", on);
+  }, [px]);
+  return wide;
+}
+
 // Product thumbnail — same pattern as Transfer/Locator (product.photoUrl). Tap to open full.
 function Thumb({ product, size = 40, onOpen }) {
   const url = product?.photoUrl;
@@ -36,6 +48,7 @@ function Thumb({ product, size = 40, onOpen }) {
 }
 
 export default function BarcodeCatalog({ products, canMint, onExit }) {
+  const wide = useWide();
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState(null);
   const [sel, setSel] = useState({});   // { "pid|size": { productId, productName, size, count } }
@@ -176,14 +189,39 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
-      <div style={{ padding: "14px 16px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <button onClick={onExit} style={{ background: "none", border: "none", padding: 0, color: BLUE_L, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: FONT }}>← Home</button>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>Barcodes</div>
-        <div style={{ minWidth: 48 }} />
-      </div>
-      <div style={{ padding: "4px 14px 40px" }}>
-      {!canMint && <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>Re-print existing labels — new barcodes are created by warehouse/admin.</div>}
+    <div style={{ minHeight: "100vh", background: wide ? "#000" : BG, color: "#fff", fontFamily: FONT, position: "relative" }}>
+      {wide && <>
+        <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "radial-gradient(1100px 520px at 84% -12%, rgba(60,110,255,.10), transparent 58%), radial-gradient(900px 500px at 4% 0%, rgba(127,90,240,.08), transparent 52%)" }} />
+        <style>{`
+          .bc-card{transition:transform .18s cubic-bezier(.2,.7,.2,1),border-color .18s,box-shadow .18s}
+          .bc-card:hover{transform:translateY(-3px);border-color:rgba(74,127,255,.45);box-shadow:0 16px 34px -22px rgba(60,110,255,.55)}
+          @media(prefers-reduced-motion:reduce){.bc-card{transition:none}}
+        `}</style>
+      </>}
+
+      {wide ? (
+        <div style={{ position: "relative", maxWidth: 1080, margin: "0 auto", padding: "26px 30px 8px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 22 }}>
+            <button onClick={onExit} style={{ display: "flex", alignItems: "center", gap: 7, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(233,238,255,.7)", borderRadius: 10, padding: "8px 13px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT }}>← Home</button>
+            <div style={{ flex: 1 }} />
+            <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: -.5 }}>marathon</span>
+            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
+          </div>
+          <div style={{ fontSize: 25, fontWeight: 800, letterSpacing: -.5 }}>Barcodes</div>
+          <div style={{ fontSize: 13, color: "rgba(233,238,255,.5)", marginTop: 4 }}>
+            {canMint ? "Browse the catalogue, pick sizes, and batch-print labels." : "Re-print existing labels — new barcodes are created by warehouse/admin."}
+          </div>
+        </div>
+      ) : (
+        <div style={{ padding: "14px 16px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <button onClick={onExit} style={{ background: "none", border: "none", padding: 0, color: BLUE_L, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: FONT }}>← Home</button>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>Barcodes</div>
+          <div style={{ minWidth: 48 }} />
+        </div>
+      )}
+
+      <div style={{ position: "relative", maxWidth: wide ? 1080 : "none", margin: "0 auto", padding: wide ? "16px 30px 60px" : "4px 14px 40px", boxSizing: "border-box" }}>
+      {!canMint && !wide && <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>Re-print existing labels — new barcodes are created by warehouse/admin.</div>}
       <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"
         style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 10 }} />
 
@@ -228,12 +266,12 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
       )}
 
       {filtered.length === 0 ? <Empty>No products match.</Empty> : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: selList.length ? 84 : 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: wide ? "repeat(auto-fill, minmax(320px, 1fr))" : "1fr", gap: wide ? 12 : 8, alignItems: "start", paddingBottom: selList.length ? 88 : 8 }}>
           {filtered.map(p => {
             const expanded = openId === p.id;
             const selCount = p.sizes.filter(s => sel[keyOf(p.id, s)]).length;
             return (
-              <div key={p.id} style={{ ...GLASS, padding: 0, overflow: "hidden" }}>
+              <div key={p.id} className="bc-card" style={{ ...GLASS, padding: 0, overflow: "hidden" }}>
                 <div onClick={() => setOpenId(expanded ? null : p.id)} style={{ display: "flex", alignItems: "center", gap: 11, padding: 11, cursor: "pointer" }}>
                   <Thumb product={p} onOpen={p.photoUrl ? () => setLightbox(p.photoUrl) : undefined} />
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -271,7 +309,9 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
       )}
 
       {selList.length > 0 && (
-        <div style={{ position: "fixed", left: 12, right: 12, bottom: 14, zIndex: 40, ...GLASS, padding: 10, display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ position: "fixed", bottom: wide ? 20 : 14, zIndex: 40, ...GLASS, padding: 10, display: "flex", alignItems: "center", gap: 10,
+                      left: wide ? "50%" : 12, right: wide ? "auto" : 12, transform: wide ? "translateX(-50%)" : "none", width: wide ? "min(640px, calc(100% - 60px))" : "auto",
+                      boxShadow: wide ? "0 18px 44px -16px rgba(0,0,0,.7)" : undefined }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{selList.length} size{selList.length > 1 ? "s" : ""} selected</div>
             <div style={{ fontSize: 11, color: GRAY }}>copies default to on-hand</div>
