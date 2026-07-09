@@ -255,9 +255,6 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
               </button>
             );
           })}
-          {transport === "phomemo" && (
-            <button onClick={doTest} disabled={busy} style={{ marginTop: 4, padding: "8px 11px", borderRadius: 10, cursor: busy ? "default" : "pointer", fontSize: 12, fontWeight: 600, textAlign: "left", fontFamily: FONT, background: "rgba(245,158,11,.12)", border: "1px solid rgba(245,158,11,.35)", color: AMBER }}>🔧 Test print</button>
-          )}
           {diagText && (
             <div style={{ marginTop: 8, padding: "9px 10px", borderRadius: 9, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", fontSize: 10.5, color: "#fff", wordBreak: "break-word", fontFamily: "monospace", display: "flex", gap: 6 }}>
               <span style={{ flex: 1 }}>{diagText}</span>
@@ -387,12 +384,21 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
             })}
           </div>
           <div style={{ borderTop: "1px solid rgba(255,255,255,.08)", padding: "15px 16px" }}>
-            <button onClick={doPrint} disabled={busy || !totalCopies}
-              style={{ width: "100%", padding: 14, border: 0, borderRadius: 12, fontSize: 14, fontWeight: 800, color: "#04120a", cursor: (busy || !totalCopies) ? "not-allowed" : "pointer",
-                       background: (busy || !totalCopies) ? "rgba(255,255,255,.06)" : "linear-gradient(90deg,#6e7bff,#7f5af0)", boxShadow: (busy || !totalCopies) ? "none" : "0 10px 26px -8px rgba(127,90,240,.7)",
-                       opacity: (busy || !totalCopies) ? .5 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-              {busy ? "Printing…" : `Print ${totalCopies} label${totalCopies !== 1 ? "s" : ""}`}
-            </button>
+            {(() => {
+              const off = busy || !totalCopies;
+              return (
+                <button onClick={doPrint} disabled={off}
+                  style={{ width: "100%", padding: 14, borderRadius: 12, fontSize: 14, fontWeight: 800, cursor: off ? "not-allowed" : "pointer",
+                           display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                           border: off ? "1px solid rgba(74,127,255,.3)" : "0",
+                           background: off ? "rgba(74,127,255,.1)" : "linear-gradient(90deg,#6e7bff,#7f5af0)",
+                           color: off ? "rgba(157,188,255,.85)" : "#04120a",
+                           boxShadow: off ? "none" : "0 10px 26px -8px rgba(127,90,240,.7)" }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                  {busy ? "Printing…" : `Print ${totalCopies} label${totalCopies !== 1 ? "s" : ""}`}
+                </button>
+              );
+            })()}
           </div>
         </aside>
 
