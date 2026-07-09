@@ -5409,6 +5409,18 @@ function AssistantView({ products, onExit, orders = [] }) {
   const addClothingLines = (lines) =>
     setCart(c => [...c, ...lines.map(l => ({ ...l, intent: "refill" }))]);
 
+  // Laptop quick-add: a hover/focus-revealed size chip on the product card adds
+  // that size straight to the cart (qty 1) — the pointer+keyboard shortcut past
+  // the bottom sheet. Same line shapes as addToCart (clothing→customer order,
+  // else sneaker); the sheet stays available for qty>1 / Display Partner.
+  const quickAdd = (p, size) => {
+    const isClothingCustomer = (p.productType || "sneaker") === "clothing";
+    const line = isClothingCustomer
+      ? { product: p, size, productType: "clothing", intent: "customer" }
+      : { product: p, size, requestDisplay: false, requestDisplayPartner: false };
+    setCart(c => [...c, line]);
+  };
+
   const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
 
   const openCheckout = () => { resetSheet(); setCheckoutOpen(true); };
@@ -5658,6 +5670,34 @@ function AssistantView({ products, onExit, orders = [] }) {
           .mc-grid-photo  { grid-template-columns: repeat(5, 1fr); }
           .mc-grid-refill { grid-template-columns: repeat(2, 1fr); }
         }
+        /* ── LAPTOP CARD ── bigger 4-up grid + hover/focus size quick-add.
+           Gated to real pointer devices at laptop width, so phone + iPad keep
+           the existing tap→bottom-sheet flow untouched. */
+        .mc-quickadd { display: none; }
+        @media (min-width: 1024px) {
+          .mc-grid-photo { grid-template-columns: repeat(4, 1fr); gap: 16px; }
+        }
+        @media (hover: hover) and (min-width: 1024px) {
+          .mc-card { transition: transform .2s cubic-bezier(.2,.7,.2,1), box-shadow .2s, border-color .2s; }
+          .mc-card:hover, .mc-card:focus-visible, .mc-card:focus-within {
+            transform: translateY(-5px);
+            border-color: rgba(74,127,255,.55) !important;
+            box-shadow: 0 16px 40px -18px rgba(60,110,255,.5);
+          }
+          .mc-card:focus-visible { outline: 2px solid #4A7FFF; outline-offset: 2px; }
+          .mc-card:hover .mc-taphint, .mc-card:focus-within .mc-taphint { display: none; }
+          .mc-card:hover .mc-plusbadge, .mc-card:focus-within .mc-plusbadge { display: none; }
+          .mc-quickadd { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows .22s ease, opacity .18s ease; }
+          .mc-quickadd > .mc-qin { overflow: hidden; min-height: 0; }
+          .mc-card:hover .mc-quickadd, .mc-card:focus-within .mc-quickadd { grid-template-rows: 1fr; opacity: 1; }
+          .mc-sz { font-family: inherit; font-size: 12px; font-weight: 700; padding: 6px 9px; min-width: 34px; text-align: center; border-radius: 8px; cursor: pointer; color: #dfe7ff; background: rgba(74,127,255,.08); border: 1px solid rgba(60,110,255,.25); transition: background .14s, border-color .14s, transform .1s; }
+          .mc-sz:hover { background: rgba(74,127,255,.22); border-color: rgba(74,127,255,.55); color: #fff; transform: translateY(-1px); }
+          .mc-sz:active { transform: scale(.94); }
+          .mc-sz:focus-visible { outline: 2px solid #4A7FFF; outline-offset: 1px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .mc-card, .mc-quickadd, .mc-sz { transition: none; }
+        }
         /* Siri-style price: all 4 candidate hues mixed into one animated,
            iridescent gradient that drifts across the text. */
         .mc-price-siri {
@@ -5833,8 +5873,12 @@ function AssistantView({ products, onExit, orders = [] }) {
         <div className="mc-grid-photo" style={{ display:"grid", gap:10 }}>
           {filtered.map(p => {
             const isSel = selected && selected.id === p.id;
+            const cardSizes = (Array.isArray(p.sizes) ? p.sizes : []).filter(s => s && String(s).trim() && s !== "_");
+            const chipSizes = cardSizes.length ? cardSizes : ["Free Size"];
             return (
-              <div key={p.id} onClick={() => { resetSheet(); setSelected(p); }}
+              <div key={p.id} className="mc-card" role="button" tabIndex={0}
+                   onClick={() => { resetSheet(); setSelected(p); }}
+                   onKeyDown={(e) => { if (e.key === "Enter") { resetSheet(); setSelected(p); } }}
                    style={{ background: isSel ? "rgba(20,40,100,.25)" : "rgba(255,255,255,.03)",
                             border: isSel ? "2px solid #4A7FFF" : "1px solid rgba(255,255,255,.06)",
                             borderRadius:12, overflow:"hidden", cursor:"pointer", position:"relative",
@@ -5869,9 +5913,21 @@ function AssistantView({ products, onExit, orders = [] }) {
                   ) : (
                     <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>
                   )}
-                  <div style={{ fontSize:13, fontWeight:500, color:"#4A7FFF" }}>Tap to add →</div>
+                  <div className="mc-taphint" style={{ fontSize:13, fontWeight:500, color:"#4A7FFF" }}>Tap to add →</div>
+                  {/* Laptop-only (pointer + ≥1024px): hover/focus reveals size
+                      chips that add straight to the cart, skipping the sheet. */}
+                  <div className="mc-quickadd"><div className="mc-qin">
+                    <div style={{ fontSize:9.5, letterSpacing:".14em", textTransform:"uppercase", color:"rgba(255,255,255,.3)", margin:"2px 0 6px" }}>Add a size</div>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                      {chipSizes.map(sz => (
+                        <button key={sz} className="mc-sz" onClick={(e) => { e.stopPropagation(); quickAdd(p, sz); }}>
+                          {sz === "Free Size" ? "One size" : <SizeTag size={sz} />}
+                        </button>
+                      ))}
+                    </div>
+                  </div></div>
                 </div>
-                <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
+                <div className="mc-plusbadge" style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
                               background: isSel ? "rgba(60,110,255,.2)" : "rgba(60,110,255,.1)",
                               border: isSel ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.3)",
                               borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", color:"#4A7FFF", fontSize:16, fontWeight:600 }}>+</div>
