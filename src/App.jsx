@@ -5169,10 +5169,12 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // is sneakers only. Committed dark — the POS's world.
 function AssistantDesktop({ products, effectiveShop, availableShops, onSelectShop, shopRegistry,
                             search, setSearch, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
-                            onViewPhoto, onSwitchView, onSignOut, userEmail, onGoRefill,
+                            onViewPhoto, onSwitchView, onSignOut, userEmail, mode, setMode,
                             customerName, setCustomerName, customerPhone, setCustomerPhone,
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
-                            customerIndex, onPickCustomer }) {
+                            customerIndex, onPickCustomer,
+                            onAddClothing, onPlaceRefill, onOpenTracking, trackingPending }) {
+  const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   const [brand, setBrand] = useState("All");
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
@@ -5185,31 +5187,36 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
   const [pendingShop, setPendingShop] = useState(null); // shop-switch confirm
   const searchRef = useRef(null);
 
-  const sneakers = useMemo(() =>
-    (products || []).filter(p => p && p.id && p.name && (p.productType || "sneaker") !== "clothing"),
-    [products]);
+  // order flow = sneakers (clothing is refill-only); refill flow = clothing.
+  const catalog = useMemo(() => {
+    const isClothing = p => (p.productType || "sneaker") === "clothing";
+    return (products || []).filter(p => p && p.id && p.name && (flow === "refill" ? isClothing(p) : !isClothing(p)));
+  }, [products, flow]);
 
   // Brand dropdown options FROM the data (product.brand), counted, most-stocked
   // first; unbranded/code-only (brand == null) collapse into "Other".
   const brandOpts = useMemo(() => {
     const m = new Map();
-    sneakers.forEach(p => { const k = p.brand || "Other"; m.set(k, (m.get(k) || 0) + 1); });
+    catalog.forEach(p => { const k = p.brand || "Other"; m.set(k, (m.get(k) || 0) + 1); });
     const other = m.get("Other") || 0; m.delete("Other");
     const ranked = [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    const out = [["All", sneakers.length], ...ranked];
+    const out = [["All", catalog.length], ...ranked];
     if (other) out.push(["Other", other]);
     return out;
-  }, [sneakers]);
+  }, [catalog]);
 
   const shown = useMemo(() => {
-    let list = sneakers.filter(p =>
+    let list = catalog.filter(p =>
       (brand === "All" || (brand === "Other" ? !p.brand : p.brand === brand)) &&
       (!search.trim() || p.name.toLowerCase().includes(search.toLowerCase())));
     if (sort === "ph") list = [...list].sort((a, b) => (b.retailPrice || 0) - (a.retailPrice || 0));
     else if (sort === "pl") list = [...list].sort((a, b) => (a.retailPrice || 0) - (b.retailPrice || 0));
     else if (sort === "az") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     return list;
-  }, [sneakers, brand, search, sort]);
+  }, [catalog, brand, search, sort]);
+
+  // Reset the brand filter when switching flows (brands differ per catalog).
+  useEffect(() => { setBrand("All"); }, [flow]);
 
   // Cart → grouped by product+size for the drawer (the cart is one line per unit).
   const grouped = useMemo(() => {
@@ -5224,6 +5231,18 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
     return [...m.values()];
   }, [cart]);
   const units = grouped.reduce((s, g) => s + g.qty, 0);
+  // Refill cart (intent:"refill") — each line carries its own qty; sum per size.
+  const groupedRefill = useMemo(() => {
+    const m = new Map();
+    (cart || []).forEach(l => {
+      if (l.intent !== "refill") return;
+      const key = `${l.product?.id}__${l.size}`;
+      if (!m.has(key)) m.set(key, { key, product: l.product, size: l.size, qty: 0 });
+      m.get(key).qty += (l.qty || 1);
+    });
+    return [...m.values()];
+  }, [cart]);
+  const refillUnits = groupedRefill.reduce((s, g) => s + g.qty, 0);
   const fmtR = n => "R" + Number(n).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
   const sizesOf = p => { const s = (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"); return s.length ? s : ["Free Size"]; };
 
@@ -5236,7 +5255,11 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
     return () => window.removeEventListener("keydown", h);
   }, []);
 
-  const openQv = (p) => { setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); };
+  const [qvRefill, setQvRefill] = useState({});   // { size: qty } for refill quick-view
+  const openQv = (p) => {
+    setQv(p); setQvSize(null); setQvQty(1); setQvDP(false);
+    setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
+  };
   const Photo = ({ p, big }) => p.photoUrl
     ? <img src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} />
     : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
@@ -5321,7 +5344,17 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
         .ad-svadd{flex:1;padding:14px;border:0;border-radius:12px;font-size:14px;font-weight:800;color:#04120a;background:linear-gradient(90deg,#6e7bff,#7f5af0);cursor:pointer;box-shadow:0 8px 22px -8px rgba(127,90,240,.7)}
         .ad-svadd:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.5);box-shadow:none}
         .ad-svclose{position:absolute;top:12px;right:12px;width:34px;height:34px;border:0;border-radius:10px;background:rgba(0,0,0,.5);color:#fff;font-size:16px;cursor:pointer;z-index:2}
-        @media(prefers-reduced-motion:reduce){.ad-price,.ad-svprice{animation:none} .ad-card,.ad-quick{transition:none}}
+        @keyframes adFade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+        .ad-scroll{animation:adFade .26s ease}
+        .ad-dbody{display:flex;flex-direction:column;flex:1;overflow:hidden;animation:adFade .26s ease}
+        .ad-trackbar{width:100%;display:flex;align-items:center;gap:10px;padding:11px 13px;margin-bottom:14px;border-radius:12px;cursor:pointer;background:rgba(60,110,255,.08);border:1px solid rgba(60,110,255,.35);color:#fff;font-family:inherit;font-size:13px;font-weight:700}
+        .ad-trackbar:hover{background:rgba(60,110,255,.14)}
+        .ad-trackn{background:rgba(245,196,81,.15);color:#F5C451;border:1px solid rgba(245,196,81,.4);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:700}
+        .ad-hint2{font-size:12px;font-weight:600;color:#4A7FFF}
+        .ad-rqty{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden}
+        .ad-rqty button{width:28px;height:32px;border:0;background:rgba(255,255,255,.04);color:#fff;cursor:pointer;font-size:15px}
+        .ad-rqty input{width:40px;height:32px;text-align:center;border:0;background:rgba(0,0,0,.3);color:#fff;font-size:13px;font-weight:700;outline:none;font-family:inherit}
+        @media(prefers-reduced-motion:reduce){.ad-price,.ad-svprice{animation:none} .ad-card,.ad-quick,.ad-scroll,.ad-dbody{animation:none;transition:none}}
       `}</style>
 
       {/* SIDEBAR */}
@@ -5336,11 +5369,11 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
           </button>
         ))}
         <div className="ad-lab">Flow</div>
-        <button className="ad-nav" aria-current={true}>
+        <button className="ad-nav" aria-current={flow === "order"} onClick={() => setMode("sneaker")}>
           <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>
           Customer order
         </button>
-        <button className="ad-nav" onClick={onGoRefill}>
+        <button className="ad-nav" aria-current={flow === "refill"} onClick={() => setMode("cr")}>
           <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4"/></svg>
           Clothing refill
         </button>
@@ -5379,10 +5412,18 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
             <option value="az">Name · A–Z</option>
           </select>
         </div>
-        <div className="ad-scroll">
-          <div className="ad-count">{shown.length} product{shown.length !== 1 ? "s" : ""}</div>
+        <div className="ad-scroll" key={flow}>
+          {flow === "refill" && (
+            <button className="ad-trackbar" onClick={onOpenTracking}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+              <span style={{ flex: 1, textAlign: "left" }}>Track requests</span>
+              {trackingPending > 0 && <span className="ad-trackn">{trackingPending} pending</span>}
+              <span style={{ color: "#4A7FFF" }}>→</span>
+            </button>
+          )}
+          <div className="ad-count">{shown.length} {flow === "refill" ? "clothing item" : "product"}{shown.length !== 1 ? "s" : ""}</div>
           {shown.length === 0 ? (
-            <div style={{ textAlign: "center", color: "#444", padding: "3rem", fontSize: 14 }}>No products match.</div>
+            <div style={{ textAlign: "center", color: "#444", padding: "3rem", fontSize: 14 }}>{flow === "refill" ? "No clothing products yet." : "No products match."}</div>
           ) : (
             <div className="ad-grid">
               {shown.map(p => {
@@ -5392,7 +5433,7 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
                   <article key={p.id} className="ad-card" tabIndex={0}
                            onClick={() => openQv(p)} onKeyDown={e => { if (e.key === "Enter") openQv(p); }}>
                     <div className="ad-thumb">
-                      <span className="ad-cat">{p.brand || p.subcategory || "Sneakers"}</span>
+                      <span className="ad-cat">{p.brand || p.subcategory || (flow === "refill" ? "Clothing" : "Sneakers")}</span>
                       {p.photoUrl && (
                         <button className="ad-zoom" aria-label="Quick view" onClick={e => { e.stopPropagation(); onViewPhoto(productPhotos(p)); }}>
                           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
@@ -5406,18 +5447,24 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
                         {priced ? <span className="ad-price">{fmtR(p.retailPrice)}</span> : <span className="ad-price no">No price set</span>}
                         <span className="ad-szn">{szs.length} size{szs.length !== 1 ? "s" : ""}</span>
                       </div>
-                      <div className="ad-quick"><div>
-                        <div className="ad-qlab">Add a size</div>
-                        <div className="ad-szrow">
-                          {szs.map(sz => (
-                            <button key={sz} className="ad-sz" onClick={e => {
-                              e.stopPropagation(); onQuickAdd(p, sz, 1);
-                              const b = e.currentTarget, t = b.textContent; b.classList.add("flash"); b.textContent = "✓";
-                              setTimeout(() => { b.classList.remove("flash"); b.textContent = t; }, 430);
-                            }}>{sz === "Free Size" ? "OS" : sz}</button>
-                          ))}
-                        </div>
-                      </div></div>
+                      {/* Order flow: hover reveals per-size quick-add. Refill flow:
+                          multi-size qty is set in the quick-view (tap the card). */}
+                      {flow === "order" ? (
+                        <div className="ad-quick"><div>
+                          <div className="ad-qlab">Add a size</div>
+                          <div className="ad-szrow">
+                            {szs.map(sz => (
+                              <button key={sz} className="ad-sz" onClick={e => {
+                                e.stopPropagation(); onQuickAdd(p, sz, 1);
+                                const b = e.currentTarget, t = b.textContent; b.classList.add("flash"); b.textContent = "✓";
+                                setTimeout(() => { b.classList.remove("flash"); b.textContent = t; }, 430);
+                              }}>{sz === "Free Size" ? "OS" : sz}</button>
+                            ))}
+                          </div>
+                        </div></div>
+                      ) : (
+                        <div className="ad-hint2">Set quantities →</div>
+                      )}
                     </div>
                   </article>
                 );
@@ -5427,40 +5474,75 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
         </div>
       </div>
 
-      {/* ORDER DRAWER */}
+      {/* DRAWER — order cart (→ checkout) or refill cart (→ place refill request),
+          cross-fading with the flow. */}
       <aside className="ad-drawer">
-        <div className="ad-dhead"><h2>Order</h2><span className="ad-dn">{units}</span></div>
-        <div className="ad-dlist">
-          {grouped.length === 0 ? (
-            <div className="ad-empty">
-              <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: .5, marginBottom: 10 }}><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>
-              <div style={{ fontWeight: 600 }}>Order is empty</div>
-              <div style={{ marginTop: 4, fontSize: 11 }}>Hover a product and tap a size.</div>
-            </div>
-          ) : grouped.map(g => (
-            <div key={g.key} className="ad-line">
-              <div className="ad-li">{g.product?.photoUrl ? <img src={g.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👟")}</div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="ad-ln">{g.product?.name}</div>
-                <div className="ad-lm">
-                  {g.dp
-                    ? <span style={{ color: "#9DBCFF" }}>Display Partner{g.size ? ` · Sz ${formatSize(g.size)}` : ""}</span>
-                    : `Size ${g.size === "Free Size" ? "OS" : formatSize(g.size)} · ${typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice) : "—"}`}
-                </div>
-                <div className="ad-step">
-                  <button onClick={() => onRemoveOne(g.product.id, g.size, g.dp)}>−</button>
-                  <span>{g.qty}</span>
-                  <button onClick={() => g.dp ? onAddDisplayPartner(g.product, g.size) : onQuickAdd(g.product, g.size, 1)}>+</button>
-                </div>
+        <div className="ad-dhead"><h2>{flow === "refill" ? "Refill request" : "Order"}</h2><span className="ad-dn">{flow === "refill" ? refillUnits : units}</span></div>
+        <div className="ad-dbody" key={flow}>
+          {flow === "order" ? (
+            <>
+              <div className="ad-dlist">
+                {grouped.length === 0 ? (
+                  <div className="ad-empty">
+                    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: .5, marginBottom: 10 }}><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>
+                    <div style={{ fontWeight: 600 }}>Order is empty</div>
+                    <div style={{ marginTop: 4, fontSize: 11 }}>Hover a product and tap a size.</div>
+                  </div>
+                ) : grouped.map(g => (
+                  <div key={g.key} className="ad-line">
+                    <div className="ad-li">{g.product?.photoUrl ? <img src={g.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👟")}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="ad-ln">{g.product?.name}</div>
+                      <div className="ad-lm">
+                        {g.dp
+                          ? <span style={{ color: "#9DBCFF" }}>Display Partner{g.size ? ` · Sz ${formatSize(g.size)}` : ""}</span>
+                          : `Size ${g.size === "Free Size" ? "OS" : formatSize(g.size)} · ${typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice) : "—"}`}
+                      </div>
+                      <div className="ad-step">
+                        <button onClick={() => onRemoveOne(g.product.id, g.size, g.dp)}>−</button>
+                        <span>{g.qty}</span>
+                        <button onClick={() => g.dp ? onAddDisplayPartner(g.product, g.size) : onQuickAdd(g.product, g.size, 1)}>+</button>
+                      </div>
+                    </div>
+                    <div className="ad-lp">{g.dp ? "—" : (typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice * g.qty) : "—")}</div>
+                  </div>
+                ))}
               </div>
-              <div className="ad-lp">{g.dp ? "—" : (typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice * g.qty) : "—")}</div>
-            </div>
-          ))}
-        </div>
-        <div className="ad-dfoot">
-          {/* Ordering system, not POS — no money total. */}
-          <div className="ad-trow"><span>{units} item{units !== 1 ? "s" : ""}</span><span>{grouped.length} line{grouped.length !== 1 ? "s" : ""}</span></div>
-          <button className="ad-place" disabled={!units} onClick={() => setCoOpen(true)}>Place order</button>
+              <div className="ad-dfoot">
+                {/* Ordering system, not POS — no money total. */}
+                <div className="ad-trow"><span>{units} item{units !== 1 ? "s" : ""}</span><span>{grouped.length} line{grouped.length !== 1 ? "s" : ""}</span></div>
+                <button className="ad-place" disabled={!units} onClick={() => setCoOpen(true)}>Place order</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="ad-dlist">
+                {groupedRefill.length === 0 ? (
+                  <div className="ad-empty">
+                    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: .5, marginBottom: 10 }}><path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4"/></svg>
+                    <div style={{ fontWeight: 600 }}>No refills yet</div>
+                    <div style={{ marginTop: 4, fontSize: 11 }}>Open a product and set per-size quantities.</div>
+                  </div>
+                ) : groupedRefill.map(g => (
+                  <div key={g.key} className="ad-line">
+                    <div className="ad-li">{g.product?.photoUrl ? <img src={g.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👕")}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="ad-ln">{g.product?.name}</div>
+                      <div className="ad-lm">Size {formatSize(g.size)}</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 800, color: "#9DBCFF", fontVariantNumeric: "tabular-nums" }}>×{g.qty}</span>
+                      <button onClick={() => onRemoveOne(g.product.id, g.size)} aria-label="Remove" style={{ background: "transparent", border: 0, color: "rgba(233,238,255,.4)", cursor: "pointer", fontSize: 14 }}>✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="ad-dfoot">
+                <div className="ad-trow"><span>{refillUnits} unit{refillUnits !== 1 ? "s" : ""}</span><span>{groupedRefill.length} line{groupedRefill.length !== 1 ? "s" : ""}</span></div>
+                <button className="ad-place" disabled={!refillUnits || submitting} onClick={() => onPlaceRefill()}>{submitting ? "Placing…" : "Place refill request"}</button>
+              </div>
+            </>
+          )}
         </div>
       </aside>
 
@@ -5470,7 +5552,7 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
           <div className="ad-sv">
             <button className="ad-svclose" onClick={() => setQv(null)} aria-label="Close">✕</button>
             <div className="ad-svimg" onClick={() => qv.photoUrl && onViewPhoto(productPhotos(qv))} style={{ cursor: qv.photoUrl ? "zoom-in" : "default" }}>
-              <span className="ad-cat" style={{ top: 14, left: 14 }}>{qv.brand || "Sneakers"}</span>
+              <span className="ad-cat" style={{ top: 14, left: 14 }}>{qv.brand || (flow === "refill" ? "Clothing" : "Sneakers")}</span>
               <Photo p={qv} big />
             </div>
             <div className="ad-svbody">
@@ -5480,43 +5562,83 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
                   ? <div className="ad-svprice" style={{ marginTop: 6 }}>{fmtR(qv.retailPrice)}</div>
                   : <div style={{ marginTop: 6, color: "rgba(233,238,255,.35)", fontWeight: 700 }}>No price set</div>}
               </div>
-              <div>
-                <div className="ad-qlab">Select a size</div>
-                <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {sizesOf(qv).map(sz => (
-                    <button key={sz} aria-pressed={qvSize === sz} onClick={() => setQvSize(sz)}>{sz === "Free Size" ? "One size" : formatSize(sz)}</button>
-                  ))}
-                </div>
-              </div>
-              {/* Display Partner request — sneakers only; one line, size optional. */}
-              <div>
-                <div className="ad-qlab">Display Partner (optional)</div>
-                <button onClick={() => setQvDP(v => !v)}
-                        style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                                 border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
-                                 background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
-                                 color: qvDP ? "#9DBCFF" : "rgba(233,238,255,.55)", display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ width: 15, height: 15, borderRadius: 4, border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.25)"}`, background: qvDP ? "#4A7FFF" : "transparent", color: "#04120a", fontSize: 11, fontWeight: 900, display: "grid", placeItems: "center" }}>{qvDP ? "✓" : ""}</span>
-                  Request Display Partner
-                </button>
-              </div>
-              {(() => {
-                const canAdd = !!qvSize || qvDP;
-                const doAdd = () => { if (!canAdd) return; if (qvDP) onAddDisplayPartner(qv, qvSize || null); else onQuickAdd(qv, qvSize, qvQty); setQv(null); };
-                const label = qvDP
-                  ? (qvSize ? `Add size ${formatSize(qvSize)} + Display Partner` : "Add Display Partner request")
-                  : (qvSize ? `Add ${qvQty} × ${qvSize === "Free Size" ? "OS" : formatSize(qvSize)} to order` : "Select a size or Display Partner");
-                return (
-                  <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: "auto" }}>
-                    <div className="ad-step" style={{ height: 48, opacity: qvDP ? .4 : 1 }}>
-                      <button style={{ width: 34, height: 46, fontSize: 18 }} disabled={qvDP} onClick={() => setQvQty(q => Math.max(1, q - 1))}>−</button>
-                      <span style={{ minWidth: 34, fontSize: 14 }}>{qvQty}</span>
-                      <button style={{ width: 34, height: 46, fontSize: 18 }} disabled={qvDP} onClick={() => setQvQty(q => Math.min(10, q + 1))}>+</button>
+              {flow === "order" ? (
+                <>
+                  <div>
+                    <div className="ad-qlab">Select a size</div>
+                    <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {sizesOf(qv).map(sz => (
+                        <button key={sz} aria-pressed={qvSize === sz} onClick={() => setQvSize(sz)}>{sz === "Free Size" ? "One size" : formatSize(sz)}</button>
+                      ))}
                     </div>
-                    <button className="ad-svadd" disabled={!canAdd} onClick={doAdd}>{label}</button>
                   </div>
-                );
-              })()}
+                  {/* Display Partner request — sneakers only; one line, size optional. */}
+                  <div>
+                    <div className="ad-qlab">Display Partner (optional)</div>
+                    <button onClick={() => setQvDP(v => !v)}
+                            style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                     border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
+                                     background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
+                                     color: qvDP ? "#9DBCFF" : "rgba(233,238,255,.55)", display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ width: 15, height: 15, borderRadius: 4, border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.25)"}`, background: qvDP ? "#4A7FFF" : "transparent", color: "#04120a", fontSize: 11, fontWeight: 900, display: "grid", placeItems: "center" }}>{qvDP ? "✓" : ""}</span>
+                      Request Display Partner
+                    </button>
+                  </div>
+                  {(() => {
+                    const canAdd = !!qvSize || qvDP;
+                    const doAdd = () => { if (!canAdd) return; if (qvDP) onAddDisplayPartner(qv, qvSize || null); else onQuickAdd(qv, qvSize, qvQty); setQv(null); };
+                    const label = qvDP
+                      ? (qvSize ? `Add size ${formatSize(qvSize)} + Display Partner` : "Add Display Partner request")
+                      : (qvSize ? `Add ${qvQty} × ${qvSize === "Free Size" ? "OS" : formatSize(qvSize)} to order` : "Select a size or Display Partner");
+                    return (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: "auto" }}>
+                        <div className="ad-step" style={{ height: 48, opacity: qvDP ? .4 : 1 }}>
+                          <button style={{ width: 34, height: 46, fontSize: 18 }} disabled={qvDP} onClick={() => setQvQty(q => Math.max(1, q - 1))}>−</button>
+                          <span style={{ minWidth: 34, fontSize: 14 }}>{qvQty}</span>
+                          <button style={{ width: 34, height: 46, fontSize: 18 }} disabled={qvDP} onClick={() => setQvQty(q => Math.min(10, q + 1))}>+</button>
+                        </div>
+                        <button className="ad-svadd" disabled={!canAdd} onClick={doAdd}>{label}</button>
+                      </div>
+                    );
+                  })()}
+                </>
+              ) : (
+                <>
+                  {/* Refill: multi-size quantity grid (mirrors ClothingCard). */}
+                  <div>
+                    <div className="ad-qlab">Quantities per size</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(118px,1fr))", gap: 8 }}>
+                      {sizesOf(qv).map(sz => {
+                        const n = qvRefill[sz] || 0;
+                        const setN = v => setQvRefill(q => ({ ...q, [sz]: Math.max(0, Math.min(99, Math.floor(Number(v) || 0))) }));
+                        return (
+                          <div key={sz} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, background: "rgba(255,255,255,.03)", border: `1px solid ${n ? "rgba(74,222,128,.4)" : "rgba(255,255,255,.1)"}`, borderRadius: 10, padding: "6px 8px" }}>
+                            <span style={{ fontSize: 12.5, fontWeight: 700, color: "#dfe7ff" }}>{sz === "Free Size" ? "OS" : formatSize(sz)}</span>
+                            <div className="ad-rqty">
+                              <button onClick={() => setN(n - 1)}>−</button>
+                              <input value={n || ""} placeholder="0" inputMode="numeric" onChange={e => setN(e.target.value)} />
+                              <button onClick={() => setN(n + 1)}>+</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {(() => {
+                    const totalR = Object.values(qvRefill).reduce((s, v) => s + (v || 0), 0);
+                    const doAddR = () => {
+                      const lines = Object.entries(qvRefill).filter(([, n]) => n > 0).map(([size, n]) => ({ product: qv, size, qty: n, productType: "clothing" }));
+                      if (!lines.length) return;
+                      onAddClothing(lines); setQv(null);
+                    };
+                    return (
+                      <button className="ad-svadd" style={{ marginTop: "auto" }} disabled={!totalR} onClick={doAddR}>
+                        {totalR ? `Add ${totalR} unit${totalR !== 1 ? "s" : ""} to refill` : "Set a quantity"}
+                      </button>
+                    );
+                  })()}
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -6110,19 +6232,21 @@ function AssistantView({ products, onExit, orders = [] }) {
           overlay reusing this view's cart + checkout. Phone/iPad + CR fall
           through to the existing layout below. The shared Checkout sheet and
           photo lightbox (rendered later) surface over it. */}
-      {isDesktop && !isRefillMode && !noStoreAccess && (
+      {isDesktop && !noStoreAccess && (
         <AssistantDesktop
           products={products} effectiveShop={effectiveShop} availableShops={availableShops}
           onSelectShop={selectShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
           onViewPhoto={setFullPhoto} onSwitchView={onExit} onSignOut={assistantSignOut}
-          userEmail={assistantUser?.email || ""} onGoRefill={() => setMode("cr")}
+          userEmail={assistantUser?.email || ""} mode={mode} setMode={setMode}
           customerName={customerName} setCustomerName={setCustomerName}
           customerPhone={customerPhone} setCustomerPhone={setCustomerPhone}
           marketingOptIn={marketingOptIn} setMarketingOptIn={setMarketingOptIn}
           submitting={submitting} onPlaceOrder={placeOrders}
-          customerIndex={customerIndex} onPickCustomer={pickCustomer} />
+          customerIndex={customerIndex} onPickCustomer={pickCustomer}
+          onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
+          onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
@@ -6575,7 +6699,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
 
       {/* ── Phase 12B: Floating cart trigger ── (desktop has its own drawer) */}
-      {cart.length > 0 && !checkoutOpen && !selected && !(isDesktop && !isRefillMode) && (
+      {cart.length > 0 && !checkoutOpen && !selected && !isDesktop && (
         <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"12px 14px 14px", background:"linear-gradient(transparent, rgba(0,0,0,.92) 30%)", zIndex:50, pointerEvents:"none" }}>
           <div style={{ maxWidth:880, margin:"0 auto", pointerEvents:"auto" }}>
             <button
@@ -6601,7 +6725,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Scroll-to-top FAB ── appears after scrolling down; one tap returns
           to the search box. Sits above the floating cart bar when it's shown. */}
-      {showScrollTop && !(isDesktop && !isRefillMode) && (
+      {showScrollTop && !isDesktop && (
         <button onClick={scrollToTop} aria-label="Scroll to top"
           style={{ position:"fixed", right:16, bottom: cart.length > 0 && !checkoutOpen && !selected ? 92 : 24, zIndex:60,
                    width:46, height:46, borderRadius:"50%", cursor:"pointer",
@@ -13138,6 +13262,9 @@ function AppInner() {
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
+  // The desktop Assistant workspace carries its own sign-out in the sidebar, so
+  // the global top-right pill is suppressed there (≥1024px) to avoid two.
+  const isNarrowApp = useIsNarrow(1024);
   const wantAdmin = hash === "#admin";
   // /#admin/users (list) and /#admin/users/<uid> (detail) both mount the
   // UserManagement view. The component itself gates non-super-admin viewers
@@ -13405,7 +13532,8 @@ function AppInner() {
   const indicatorLabel = isSuperAdmin
     ? (authUser?.email?.split("@")[0] || "Admin")
     : (permRecord?.displayName || permRecord?.username || authUser?.email?.split("@")[0] || "Staff");
-  const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY;
+  const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
+    && !(role === ROLES.ASSISTANT && !isNarrowApp);
 
   return (
     <>
