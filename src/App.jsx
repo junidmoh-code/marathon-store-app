@@ -13695,7 +13695,7 @@ function AppInner() {
   // Studio) carry their own top-bar / Home nav, so the global pill is suppressed
   // there to avoid a stray floating sign-out.
   const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
-    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === null));
+    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === null));
 
   return (
     <>
