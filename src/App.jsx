@@ -1900,24 +1900,48 @@ function GroupSection({ label, children }) {
   );
 }
 
-// Desktop home tile — glass card in the workspace language (icon · name · desc ·
-// badge · arrow), hover-lift + blue glow. Mobile keeps the RoleCard list.
+// Desktop home tiles (bento) — the featured HeroTile spends the one moment of
+// colour; HomeTile is the standard workspace tile; MiniTile the dense secondary
+// row. Mobile keeps the hero image + RoleCard list.
+function HeroTile({ icon, name, desc, badge, onClick }) {
+  return (
+    <button className="hm-tile hm-hero" onClick={onClick}>
+      <span className="hm-ic">{icon}</span>
+      {badge > 0 && <span className="hm-bd">{badge} today</span>}
+      <span>
+        <span className="hm-nm">{name}</span>
+        <span className="hm-ds">{desc}</span>
+        <span className="hm-cta">Open workspace →</span>
+      </span>
+    </button>
+  );
+}
 function HomeTile({ icon, name, desc, badge, onClick }) {
   return (
     <button className="hm-tile" onClick={onClick}>
       <span className="hm-ic">{icon}</span>
-      <span className="hm-tx">
-        <span className="hm-nm">{name}</span>
-        <span className="hm-ds">{desc}</span>
-      </span>
       {badge > 0 && <span className="hm-bd">{badge}</span>}
+      <span className="hm-nm">{name}</span>
+      <span className="hm-ds">{desc}</span>
       <span className="hm-ar">→</span>
+    </button>
+  );
+}
+function MiniTile({ icon, name, desc, onClick }) {
+  return (
+    <button className="hm-mini" onClick={onClick}>
+      <span className="hm-mic">{icon}</span>
+      <span style={{ minWidth: 0 }}>
+        <span className="hm-mnm">{name}</span>
+        <span className="hm-mds">{desc}</span>
+      </span>
     </button>
   );
 }
 
 function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessStock, isSuperAdmin }) {
   const isDesktop = !useIsNarrow(1024);
+  const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
   // Source badge = today's restock requests + on-hold (Tomorrow), excluding OOS.
@@ -1967,44 +1991,113 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
   ];
   const anyCards = groups.some(g => g.cards.length > 0);
 
-  // ── DESKTOP HOME (≥1024px) — workspace language: wordmark, greeting, glass
-  //    tile grid grouped by section. Mobile keeps the hero + RoleCard list. ──
+  // ── DESKTOP HOME (≥1024px) — a live retail-ops dashboard: greeting, today's
+  //    numbers, and a BENTO of workspaces (featured primary + weighted rest).
+  //    Mobile keeps the hero image + RoleCard list. ──
   if (isDesktop) {
+    const hr = new Date().getHours();
+    const greet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
+    const name = homePerm?.displayName || homePerm?.username || homeUser?.email?.split("@")[0] || "there";
+    const dateStr = new Date().toLocaleDateString("en-ZA", { weekday: "long", day: "numeric", month: "long" });
+    const ops = groups[0].cards;                                   // Operations
+    const featured = ops.find(c => c.key === "assistant") || ops[0] || null;
+    const opsRest = ops.filter(c => c !== featured);
+    const others = groups.slice(1).filter(g => g.cards.length > 0); // Insights, Admin
+    const stats = [
+      { k: "Orders today", v: assistantBadge },
+      { k: "In queue", v: incoming },
+      { k: "To restock", v: sourceBadge, warn: sourceBadge > 0 },
+      { k: "Returns", v: returnedToday.size },
+    ];
     return (
-      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, position:"relative" }}>
-        <div style={{ position:"absolute", inset:0, background:"radial-gradient(1100px 520px at 82% -10%, rgba(60,110,255,.10), transparent 60%), radial-gradient(900px 480px at 6% 2%, rgba(127,90,240,.08), transparent 55%)", pointerEvents:"none" }} />
+      <div style={{ minHeight:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, position:"relative" }}>
+        <div style={{ position:"absolute", inset:0, pointerEvents:"none", background:"radial-gradient(1200px 560px at 84% -12%, rgba(60,110,255,.12), transparent 58%), radial-gradient(900px 520px at 4% 0%, rgba(127,90,240,.09), transparent 52%)" }} />
         <style>{`
-          .hm-tile{position:relative;display:flex;align-items:center;gap:13px;width:100%;text-align:left;cursor:pointer;font-family:inherit;
-            background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 60%),rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:15px;padding:15px 15px;
-            transition:transform .2s cubic-bezier(.2,.7,.2,1),border-color .2s,box-shadow .2s}
-          .hm-tile:hover,.hm-tile:focus-visible{transform:translateY(-4px);border-color:rgba(74,127,255,.55);box-shadow:0 16px 38px -20px rgba(60,110,255,.6);outline:none}
-          .hm-ic{width:42px;height:42px;flex:0 0 auto;border-radius:12px;display:grid;place-items:center;color:#9DBCFF;background:rgba(74,127,255,.12);border:1px solid rgba(74,127,255,.28)}
+          @keyframes hmRise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+          .hm-r{opacity:0;animation:hmRise .55s cubic-bezier(.2,.7,.2,1) forwards}
+          .hm-tile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:5px;width:100%;text-align:left;cursor:pointer;font-family:inherit;color:#f3f6ff;
+            background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 60%),rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:16px;overflow:hidden;
+            transition:transform .22s cubic-bezier(.2,.7,.2,1),border-color .22s,box-shadow .22s}
+          .hm-tile:hover,.hm-tile:focus-visible{transform:translateY(-5px);border-color:rgba(74,127,255,.5);box-shadow:0 20px 46px -22px rgba(60,110,255,.6);outline:none}
+          .hm-ic{position:absolute;top:15px;left:15px;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;color:#9DBCFF;background:rgba(74,127,255,.12);border:1px solid rgba(74,127,255,.28)}
           .hm-ic svg{width:20px;height:20px}
-          .hm-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
-          .hm-nm{font-size:14.5px;font-weight:750;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-          .hm-ds{font-size:11.5px;color:rgba(233,238,255,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-          .hm-bd{flex:0 0 auto;font-size:11px;font-weight:800;color:#9DBCFF;background:rgba(74,127,255,.2);border-radius:999px;padding:2px 9px;font-variant-numeric:tabular-nums}
-          .hm-ar{flex:0 0 auto;color:#4A7FFF;font-size:15px;opacity:0;transform:translateX(-4px);transition:.2s}
+          .hm-nm{font-size:15px;font-weight:750;letter-spacing:-.01em;color:#fff}
+          .hm-ds{display:block;font-size:11.5px;color:rgba(233,238,255,.5)}
+          .hm-bd{position:absolute;top:16px;right:15px;font-size:12px;font-weight:800;color:#9DBCFF;background:rgba(74,127,255,.2);border-radius:999px;padding:2px 10px;font-variant-numeric:tabular-nums}
+          .hm-ar{position:absolute;bottom:15px;right:16px;color:#4A7FFF;font-size:15px;opacity:0;transform:translateX(-4px);transition:.2s}
           .hm-tile:hover .hm-ar,.hm-tile:focus-visible .hm-ar{opacity:1;transform:none}
-          @media(prefers-reduced-motion:reduce){.hm-tile,.hm-ar{transition:none}}
+          .hm-hero{grid-column:span 2;grid-row:span 2;justify-content:space-between;padding:22px;
+            background:radial-gradient(120% 120% at 100% 0,rgba(127,90,240,.22),transparent 55%),linear-gradient(160deg,rgba(74,127,255,.14),rgba(10,12,22,.4));border-color:rgba(122,110,255,.4)}
+          .hm-hero .hm-ic{position:static;width:52px;height:52px;border-radius:15px;background:linear-gradient(135deg,#6e7bff,#7f5af0);color:#fff;border:0;box-shadow:0 10px 26px -8px rgba(127,90,240,.7)}
+          .hm-hero .hm-ic svg{width:26px;height:26px}
+          .hm-hero .hm-nm{font-size:23px;font-weight:800;letter-spacing:-.02em}
+          .hm-hero .hm-ds{font-size:13px;margin-top:2px}
+          .hm-hero .hm-bd{top:22px;right:20px;background:rgba(255,255,255,.14);color:#fff}
+          .hm-cta{display:inline-flex;align-items:center;margin-top:13px;font-size:12.5px;font-weight:800;color:#fff;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);border-radius:10px;padding:8px 13px}
+          .hm-mini{position:relative;display:flex;align-items:center;gap:12px;width:100%;text-align:left;cursor:pointer;font-family:inherit;color:#f3f6ff;
+            background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.08);border-radius:15px;padding:13px 14px;transition:transform .2s,border-color .2s,box-shadow .2s}
+          .hm-mini:hover,.hm-mini:focus-visible{transform:translateY(-3px);border-color:rgba(74,127,255,.45);box-shadow:0 14px 32px -20px rgba(60,110,255,.55);outline:none}
+          .hm-mic{width:38px;height:38px;flex:0 0 auto;border-radius:11px;display:grid;place-items:center;color:#9DBCFF;background:rgba(74,127,255,.1);border:1px solid rgba(74,127,255,.24)}
+          .hm-mic svg{width:18px;height:18px}
+          .hm-mnm{display:block;font-size:13.5px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          .hm-mds{display:block;font-size:11px;color:rgba(233,238,255,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          @media(prefers-reduced-motion:reduce){.hm-r{animation:none;opacity:1}.hm-tile,.hm-mini,.hm-ar{transition:none}}
         `}</style>
-        <div style={{ position:"relative", maxWidth:1060, margin:"0 auto", padding:"56px 30px 70px" }}>
-          <div style={{ display:"flex", alignItems:"baseline", gap:12 }}>
-            <span style={{ fontSize:34, fontWeight:800, fontStyle:"italic", letterSpacing:-1, color:"#fff" }}>marathon</span>
-            <span style={{ fontSize:13, fontWeight:700, letterSpacing:6, color:"#4A7FFF" }}>CLUB</span>
-          </div>
-          <div style={{ fontSize:14, color:"rgba(233,238,255,.5)", marginTop:8, marginBottom:40 }}>Choose a workspace to get started.</div>
-          {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
-            <div key={g.label} style={{ marginBottom:34 }}>
-              <div style={{ fontSize:11, letterSpacing:".22em", textTransform:"uppercase", color:"rgba(233,238,255,.4)", fontWeight:700, margin:"0 2px 14px" }}>{g.label}</div>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(250px, 1fr))", gap:13 }}>
-                {g.cards.map(c => <HomeTile key={c.key} icon={c.icon} name={c.name} desc={c.desc} badge={c.badge} onClick={c.onClick} />)}
-              </div>
+        <div style={{ position:"relative", maxWidth:1100, margin:"0 auto", padding:"28px 30px 72px" }}>
+          {/* Top bar */}
+          <div className="hm-r" style={{ display:"flex", alignItems:"center", gap:14, marginBottom:38, animationDelay:".02s" }}>
+            <span style={{ fontSize:20, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:10, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+            <div style={{ flex:1 }} />
+            <span style={{ fontSize:12.5, color:"rgba(233,238,255,.5)" }}>{dateStr}</span>
+            <div style={{ display:"flex", alignItems:"center", gap:9, padding:"6px 8px 6px 6px", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, background:"rgba(255,255,255,.022)" }}>
+              <span style={{ width:26, height:26, borderRadius:"50%", background:"rgba(74,127,255,.2)", border:"1px solid rgba(74,127,255,.5)", color:"#9DBCFF", fontSize:11, fontWeight:800, display:"grid", placeItems:"center" }}>{(name[0] || "?").toUpperCase()}</span>
+              <span style={{ fontSize:12, fontWeight:700 }}>{name}</span>
+              <button onClick={homeSignOut} title="Sign out" aria-label="Sign out" style={{ border:0, background:"transparent", color:"rgba(233,238,255,.4)", cursor:"pointer", display:"grid", placeItems:"center", padding:2 }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+              </button>
             </div>
-          )) : (
+          </div>
+
+          {/* Greeting */}
+          <div className="hm-r" style={{ animationDelay:".08s" }}>
+            <div style={{ fontSize:"clamp(26px,3.4vw,38px)", fontWeight:800, letterSpacing:"-.02em", lineHeight:1.05, textWrap:"balance" }}>
+              {greet}, <span style={{ background:"linear-gradient(90deg,#6e7bff,#8a6dff,#7f5af0)", WebkitBackgroundClip:"text", backgroundClip:"text", WebkitTextFillColor:"transparent" }}>{name}</span>.
+            </div>
+            <div style={{ fontSize:13.5, color:"rgba(233,238,255,.5)", marginTop:9 }}>Here's what's moving at Marathon today.</div>
+          </div>
+
+          {/* Today's numbers */}
+          <div className="hm-r" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, margin:"22px 0 34px", animationDelay:".14s" }}>
+            {stats.map(s => (
+              <div key={s.k} style={{ background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"14px 15px" }}>
+                <div style={{ fontSize:10.5, letterSpacing:".14em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700 }}>{s.k}</div>
+                <div style={{ fontSize:28, fontWeight:800, letterSpacing:"-.02em", fontVariantNumeric:"tabular-nums", marginTop:6, color: s.warn ? "#F5A623" : "#fff" }}>{s.v}</div>
+              </div>
+            ))}
+          </div>
+
+          {!anyCards ? (
             <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
               No tools assigned to your account yet. Ask an admin to update your permissions.
             </div>
+          ) : (
+            <>
+              <div className="hm-r" style={{ fontSize:11, letterSpacing:".22em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700, margin:"0 2px 14px", animationDelay:".2s" }}>Workspaces</div>
+              <div className="hm-r" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gridAutoRows:118, gridAutoFlow:"dense", gap:13, marginBottom:34, animationDelay:".24s" }}>
+                {featured && <HeroTile icon={featured.icon} name={featured.name} desc={featured.desc} badge={featured.badge} onClick={featured.onClick} />}
+                {opsRest.map(c => <HomeTile key={c.key} icon={c.icon} name={c.name} desc={c.desc} badge={c.badge} onClick={c.onClick} />)}
+              </div>
+
+              {others.map((g, gi) => (
+                <div key={g.label} className="hm-r" style={{ animationDelay: `${.3 + gi * .06}s` }}>
+                  <div style={{ fontSize:11, letterSpacing:".22em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700, margin:"0 2px 14px" }}>{g.label}</div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(224px, 1fr))", gap:12, marginBottom:30 }}>
+                    {g.cards.map(c => <MiniTile key={c.key} icon={c.icon} name={c.name} desc={c.desc} onClick={c.onClick} />)}
+                  </div>
+                </div>
+              ))}
+            </>
           )}
         </div>
       </div>
@@ -13588,8 +13681,10 @@ function AppInner() {
   const indicatorLabel = isSuperAdmin
     ? (authUser?.email?.split("@")[0] || "Admin")
     : (permRecord?.displayName || permRecord?.username || authUser?.email?.split("@")[0] || "Staff");
+  // On desktop, the home dashboard and the Assistant workspace carry their own
+  // sign-out (top-right chip), so the global pill is suppressed there.
   const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
-    && !(role === ROLES.ASSISTANT && !isNarrowApp);
+    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === null));
 
   return (
     <>
