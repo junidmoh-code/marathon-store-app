@@ -5344,6 +5344,10 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
         .ad-svadd{flex:1;padding:14px;border:0;border-radius:12px;font-size:14px;font-weight:800;color:#04120a;background:linear-gradient(90deg,#6e7bff,#7f5af0);cursor:pointer;box-shadow:0 8px 22px -8px rgba(127,90,240,.7)}
         .ad-svadd:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.5);box-shadow:none}
         .ad-svclose{position:absolute;top:12px;right:12px;width:34px;height:34px;border:0;border-radius:10px;background:rgba(0,0,0,.5);color:#fff;font-size:16px;cursor:pointer;z-index:2}
+        .ad-danger{border:1px solid rgba(255,70,70,.55)!important;box-shadow:0 40px 120px rgba(0,0,0,.7),0 0 60px rgba(255,40,40,.28)!important;animation:adShake .5s cubic-bezier(.36,.07,.19,.97)}
+        @keyframes adShake{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(2px)}30%,50%,70%{transform:translateX(-5px)}40%,60%{transform:translateX(5px)}}
+        .ad-warnpulse{animation:adPulse 1.3s ease-in-out infinite}
+        @keyframes adPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,60,60,.45)}50%{box-shadow:0 0 0 12px rgba(255,60,60,0)}}
         @keyframes adFade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
         .ad-scroll{animation:adFade .26s ease}
         .ad-dbody{display:flex;flex-direction:column;flex:1;overflow:hidden;animation:adFade .26s ease}
@@ -5354,7 +5358,7 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
         .ad-rqty{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden}
         .ad-rqty button{width:28px;height:32px;border:0;background:rgba(255,255,255,.04);color:#fff;cursor:pointer;font-size:15px}
         .ad-rqty input{width:40px;height:32px;text-align:center;border:0;background:rgba(0,0,0,.3);color:#fff;font-size:13px;font-weight:700;outline:none;font-family:inherit}
-        @media(prefers-reduced-motion:reduce){.ad-price,.ad-svprice{animation:none} .ad-card,.ad-quick,.ad-scroll,.ad-dbody{animation:none;transition:none}}
+        @media(prefers-reduced-motion:reduce){.ad-price,.ad-svprice{animation:none} .ad-card,.ad-quick,.ad-scroll,.ad-dbody,.ad-danger,.ad-warnpulse{animation:none;transition:none}}
       `}</style>
 
       {/* SIDEBAR */}
@@ -5690,23 +5694,23 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
         </div>
       )}
 
-      {/* SHOP SWITCH — warn + confirm before changing where orders route. */}
+      {/* SHOP SWITCH — a deliberately ALARMING confirm: changing shop re-routes
+          every order to a different physical store. */}
       {pendingShop && (
         <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setPendingShop(null); }}>
-          <div className="ad-sv" style={{ gridTemplateColumns: "1fr", width: "min(400px,100%)" }}>
-            <div className="ad-svbody" style={{ gap: 14 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, background: "rgba(245,166,35,.15)", border: "1px solid rgba(245,166,35,.4)", display: "grid", placeItems: "center" }}>
-                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#F5A623" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                </span>
-                <div className="ad-svname" style={{ fontSize: 18 }}>Switch shop?</div>
+          <div className="ad-sv ad-danger" style={{ gridTemplateColumns: "1fr", width: "min(430px,100%)" }}>
+            <div className="ad-svbody" style={{ gap: 15, alignItems: "center", textAlign: "center", padding: "30px 26px 26px" }}>
+              <span className="ad-warnpulse" style={{ width: 64, height: 64, borderRadius: "50%", flexShrink: 0, background: "rgba(255,60,60,.14)", border: "2px solid rgba(255,70,70,.6)", display: "grid", placeItems: "center" }}>
+                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FF5A5A" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+              </span>
+              <div style={{ fontSize: 11, letterSpacing: ".18em", textTransform: "uppercase", color: "#FF6B6B", fontWeight: 800 }}>Warning · this re-routes orders</div>
+              <div className="ad-svname" style={{ fontSize: 21, color: "#fff" }}>Change shop to {labelFor(pendingShop, shopRegistry)}?</div>
+              <div style={{ fontSize: 13.5, color: "rgba(233,238,255,.72)", lineHeight: 1.55 }}>
+                You're ordering for <b style={{ color: "#fff" }}>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ color: "#FF8B8B" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b style={{ color: "#fff" }}>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart.` : ""}
               </div>
-              <div style={{ fontSize: 13, color: "rgba(233,238,255,.62)", lineHeight: 1.5 }}>
-                You're ordering for <b style={{ color: "#fff" }}>{labelFor(effectiveShop, shopRegistry)}</b>. New orders will route to <b style={{ color: "#9DBCFF" }}>{labelFor(pendingShop, shopRegistry)}</b>{units ? `. Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart` : ""}.
-              </div>
-              <div style={{ display: "flex", gap: 10 }}>
-                <button onClick={() => setPendingShop(null)} style={{ flex: 1, padding: 12, borderRadius: 11, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.03)", color: "#dfe7ff", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-                <button onClick={() => { onSelectShop(pendingShop); setPendingShop(null); }} style={{ flex: 1, padding: 12, borderRadius: 11, border: 0, background: "linear-gradient(90deg,#6e7bff,#7f5af0)", color: "#04120a", fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>Switch shop</button>
+              <div style={{ display: "flex", gap: 10, width: "100%", marginTop: 4 }}>
+                <button onClick={() => setPendingShop(null)} style={{ flex: 1, padding: 13, borderRadius: 11, border: "1px solid rgba(255,255,255,.2)", background: "rgba(255,255,255,.05)", color: "#fff", fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+                <button onClick={() => { onSelectShop(pendingShop); setPendingShop(null); }} style={{ flex: "0 0 auto", padding: "13px 20px", borderRadius: 11, border: "1px solid rgba(255,80,80,.7)", background: "rgba(230,40,40,.92)", color: "#fff", fontWeight: 800, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 8px 26px -8px rgba(255,50,50,.75)" }}>Yes, switch</button>
               </div>
             </div>
           </div>
