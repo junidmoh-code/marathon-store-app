@@ -247,10 +247,11 @@ export default function Transfer({ products, registry, actorRole }) {
     const transferId = push(child(ref(database), "transfers")).key;
     let ok = 0, fail = 0;
     for (const ln of lines) {
-      // ONE_SIZE ("_") → null so stockSizeKey maps it back to the "_" cell cleanly.
-      const size = ln.size === ONE_SIZE ? null : ln.size;
+      // Pass ln.size straight through — ONE_SIZE is "_" (truthy, so applyMovement's
+      // required-size check passes) and stockSizeKey("_") === "_" hits the no-size
+      // cell. Mapping it to null would trip missing_product_or_size before encoding.
       const res = await applyMovement({
-        type: "transfer_out", productId: ln.productId, size, qty: ln.qty,
+        type: "transfer_out", productId: ln.productId, size: ln.size, qty: ln.qty,
         from, to, actorRole, link: { transferId, refillId: refillId || null },
       });
       res.ok ? ok++ : fail++;
