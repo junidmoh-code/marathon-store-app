@@ -515,6 +515,13 @@ const clothingChoicesFor = (sizes) => (isWaistSizeSet(sizes) ? BOTTOMS_SIZES : C
 // the product editor. To retire the trial, drop hubC here and the few hubC
 // branches in AssistantView.placeOrders + WarehouseView.
 const HUB_LABELS = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", hubC: "Hub C" };
+// CR (Shop Refill) routing — THE single map from a store universe to the hub that
+// fulfils its clothing refills: PE/Trophy (central) → hub2, Pine → hub3. The
+// warehouse "CR Orders" tab exists on exactly these hubs (CR_HUBS), each
+// fulfilling from its OWN stock. Adding a future store/hub is one line here
+// (shopUniverse(shop) → universe → hub); everything downstream derives from it.
+const CR_HUB_BY_UNIVERSE = { central: "hub2", pine: "hub3" };
+const CR_HUBS = [...new Set(Object.values(CR_HUB_BY_UNIVERSE))];
 function getProductHubs(product) {
   return product?.hubs || (product?.hub ? [product.hub] : []);
 }
@@ -5452,8 +5459,8 @@ function AssistantView({ products, onExit, orders = [] }) {
       const placed = [];
       for (const item of clothingCart) {
         const orderNum = await getNextOrderNumber();
-        // Phase 14B: Pine clothing refills route to hub3; Central stays on hub2.
-        const placedHub = effectiveStoreMode === "pine" ? "hub3" : "hub2";
+        // CR routing is THE one map: Pine → hub3, Central (PE/Trophy) → hub2.
+        const placedHub = CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2";
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -6026,13 +6033,14 @@ function WarehouseView({ products = [], orders, onExit }) {
   const [onHoldExpanded, setOnHoldExpanded] = useState(false);
   const [selectedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
   // Phase 12C/14B: clamp mainTab when the user switches hubs and the previously
-  // selected tab no longer exists for the new hub (Restock on hub1/hub3 vs
-  // Clothing on hub2). Fall back to Order Queue. NOTE: must come AFTER
+  // selected tab no longer exists for the new hub (Restock on hub1/hub3; CR
+  // Orders on the CR hubs, hub2+hub3). Fall back to Order Queue. NOTE: must come AFTER
   // selectedHub's declaration — placing this useEffect before it triggers a
   // TDZ ReferenceError on the dependency array evaluation at render time.
   useEffect(() => {
     if (selectedHub === "hub2" && mainTab === "restock")  setMainTab("queue");
-    if ((selectedHub === "hub1" || selectedHub === "hub3") && mainTab === "clothing") setMainTab("queue");
+    // CR Orders exists on every CR hub (hub2 + hub3, from CR_HUBS); clamp the rest.
+    if (!CR_HUBS.includes(selectedHub) && mainTab === "clothing") setMainTab("queue");
     // Trial: hubC has only the Order Queue tab — clamp anything else back.
     if (selectedHub === "hubC" && mainTab !== "queue") setMainTab("queue");
     // Phase 15: the Depleted tab was removed from the warehouse (moved to the
@@ -6131,7 +6139,10 @@ function WarehouseView({ products = [], orders, onExit }) {
     const byKey = new Map();
     (orders || []).forEach(o => {
       if (o.productType !== "clothing") return;
-      if ((o.hub || "hub2") !== "hub2") return;
+      // Each CR hub sees ONLY its own requests: PE/Trophy CRs land on hub2,
+      // Pine CRs on hub3 (placedAtHub, written by placeRefillRequests via
+      // CR_HUB_BY_UNIVERSE; o.hub fallback covers legacy hub2-era orders).
+      if ((o.placedAtHub || o.hub || "hub2") !== selectedHub) return;
       const key = `${o.productId}__${o.createdAt}`;
       if (!byKey.has(key)) {
         byKey.set(key, {
@@ -6188,7 +6199,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     active.sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt));
     completed.sort((a, b) => tsMs(b.resolvedAt) - tsMs(a.resolvedAt));
     return { clothingActiveBatches: active, clothingCompletedBatches: completed };
-  }, [orders, nowTick]);
+  }, [orders, nowTick, selectedHub]);
   const [showClothingCompleted, setShowClothingCompleted] = useState(false);
   // CR fulfil (Approach B): firing a real hub2→store transfer needs a stock-capable
   // role (applyMovement is rule-gated on stockRole), plus live Hub 2 on-hand to cap
@@ -6196,10 +6207,10 @@ function WarehouseView({ products = [], orders, onExit }) {
   const { permRecord: whStockPerm, isSuperAdmin: whStockSuper } = usePermissions();
   const crActorRole = whStockSuper ? "admin" : (whStockPerm?.stockRole || null);
   const canFulfilCR = crActorRole === "admin" || crActorRole === "warehouse";
-  // Subscribe to Hub 2 stock only when this device is actually ON hub2 (the CR
-  // tab is hub2-only) — "__off__" resolves to an empty node for other hubs, so
-  // hub1/hub3/hubC devices don't stream the warehouse's biggest stock subtree.
-  const hub2Cells = useStockCells(selectedHub === "hub2" ? "hub2" : "__off__"); // { pid: { size: cell } }
+  // Subscribe to THIS hub's stock only when it's a CR hub (hub2/hub3) — the CR
+  // tab fulfils from the selected hub's own cells. "__off__" resolves to an
+  // empty node elsewhere, so hub1/hubC devices don't stream a stock subtree.
+  const crHubCells = useStockCells(CR_HUBS.includes(selectedHub) ? selectedHub : "__off__"); // { pid: { size: cell } }
   const [crPhoto, setCrPhoto] = useState(null);
 
   // Hub selector screen — shown until staff pick a hub
@@ -6544,7 +6555,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // alongside the other hoisted hooks — see the Rules-of-Hooks note above.
   const refillsBadge = dueRefills.length;
 
-  // ── Clothing refill batches (Phase 12C, hub2 only) ────────────────────────
+  // ── Clothing refill (CR) batches — per CR hub: hub2 = PE/Trophy, hub3 = Pine ──
   // Hook + helpers (clothingActiveBatches/Completed, CANONICAL_SIZE_ORDER,
   // sizeRank) live at the top of this function alongside the other hoisted
   // hooks — see the Rules-of-Hooks note above.
@@ -6584,7 +6595,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2" });
         } else {
           fail++;
-          errors.push(`${formatSize(it.size)}: ${res && res.reason === "insufficient_stock" ? `only ${res.available} at Hub 2` : (res && res.reason) || "transfer failed"}`);
+          errors.push(`${formatSize(it.size)}: ${res && res.reason === "insufficient_stock" ? `only ${res.available} at ${HUB_LABELS[it.placedAtHub] || "the hub"}` : (res && res.reason) || "transfer failed"}`);
         }
       } else if (reject) {
         // Reject is a flag-only write (no stock) — allowed without a stockRole.
@@ -6764,9 +6775,8 @@ function WarehouseView({ products = [], orders, onExit }) {
           onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
       )}
 
-      {/* TABS — middle slot is Restock Status on hub1/hub3, Clothing on hub2
-          (Phase 12C / 14B). hub3 mirrors hub1's tab set; if a clothing tab is
-          needed for Pine later, add it here. */}
+      {/* TABS — CR Orders exists on the CR hubs (hub2 for PE/Trophy, hub3 for
+          Pine — see CR_HUB_BY_UNIVERSE); Restock Status on hub1/hub3. */}
       <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
         {(selectedHub === "hubC"
           ? [
@@ -6778,6 +6788,16 @@ function WarehouseView({ products = [], orders, onExit }) {
           ? [
               ["queue",    "Order Queue",     null],
               ["clothing", "CR Orders",       clothingBadge],
+              ["refills",  "Display Refills", refillsBadge],
+              ["layby",    "Layby",           laybyBadge],
+            ]
+          : selectedHub === "hub3"
+          ? [
+              // Pine's hub: mirrors hub2's CR Orders (fulfils from hub3 stock)
+              // alongside the hub1/hub3 Restock Status tab.
+              ["queue",    "Order Queue",     null],
+              ["clothing", "CR Orders",       clothingBadge],
+              ["restock",  "Restock Status",  null],
               ["refills",  "Display Refills", refillsBadge],
               ["layby",    "Layby",           laybyBadge],
             ]
@@ -7021,7 +7041,8 @@ function WarehouseView({ products = [], orders, onExit }) {
             setShowCompleted={setShowClothingCompleted}
             onFulfill={fulfillCRBatch}
             onUndo={undoClothingRefill}
-            hub2Cells={hub2Cells}
+            hubCells={crHubCells}
+            hubLabel={HUB_LABELS[selectedHub] || selectedHub}
             canFulfil={canFulfilCR}
             onViewPhoto={setCrPhoto}
             products={products}
@@ -7227,12 +7248,12 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
   );
 }
 
-// ─── CLOTHING REFILLS TAB (Phase 12C, hub2 only) ──────────────────────────────
+// ─── CR ORDERS TAB (per CR hub: hub2 = PE/Trophy, hub3 = Pine) ────────────────
 // Each card represents one refill batch — clothing orders that share a
 // (productId, createdAt) pair. The Phase 12B writer puts all sizes from one
 // "Place Refill Request" tap into a single loop with one shared timestamp,
-// so this groups by batch cleanly. The two card actions (Available / Out of
-// Stock) resolve every order in the batch atomically.
+// so this groups by batch cleanly. Fulfilment is per size from the SELECTED
+// hub's own stock (hubCells/hubLabel props); the same engine serves both hubs.
 //
 // Active list: last 3 days (strict, no Older bucket — clothing requests don't
 // stay due indefinitely like display refills do).
@@ -7275,14 +7296,14 @@ function SizeStatusChips({ items }) {
 // per-size fulfil/reject steppers + Send; the parent keeps one card open at a time.
 // Send fires a real hub2→store transfer per fulfilled size (onFulfill →
 // fulfillCRBatch, idempotent per line+generation).
-function CRFulfillCard({ batch, hub2Cells, canFulfil, onFulfill, onViewPhoto, products, fmtTime, open, onToggle }) {
+function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onViewPhoto, products, fmtTime, open, onToggle }) {
   const [qtys, setQtys]       = useState({});   // { orderId: qty } (only for touched lines)
   const [touched, setTouched] = useState({});   // { orderId: true }
   const [rejects, setRejects] = useState({});   // { orderId: true }
   const [busy, setBusy]       = useState(false);
   const [msg, setMsg]         = useState(null);
 
-  const availAt = (size) => Number(hub2Cells?.[batch.productId]?.[size]?.qty) || 0;
+  const availAt = (size) => Number(hubCells?.[batch.productId]?.[size]?.qty) || 0;
   const pending  = batch.items.filter(it => !it.status);
   const resolved = batch.items.filter(it => it.status);
 
@@ -7366,7 +7387,7 @@ function CRFulfillCard({ batch, hub2Cells, canFulfil, onFulfill, onViewPhoto, pr
                 <div key={it.orderId} style={{ display:"flex", alignItems:"center", gap:10 }}>
                   <div style={{ minWidth:54, fontSize:12.5, fontWeight:700, color:"#fff" }}>Size <SizeTag size={it.size} /></div>
                   <div style={{ flex:1, minWidth:0, fontSize:11, color:"rgba(255,255,255,.5)" }}>
-                    need {it.qty} · {avail} at Hub 2
+                    need {it.qty} · {avail} at {hubLabel}
                   </div>
                   {rejected ? (
                     <button onClick={() => toggleReject(it.orderId)}
@@ -7383,7 +7404,7 @@ function CRFulfillCard({ batch, hub2Cells, canFulfil, onFulfill, onViewPhoto, pr
                           <button onClick={() => setQ(it.orderId, q + 1, cap)} disabled={q >= cap} style={{ ...crStep, opacity: q >= cap ? 0.4 : 1 }}>+</button>
                         </div>
                       ) : (
-                        <span style={{ fontSize:11, color:"#F5A623", fontWeight:600 }}>{cap > 0 ? "" : "none at Hub 2"}</span>
+                        <span style={{ fontSize:11, color:"#F5A623", fontWeight:600 }}>{cap > 0 ? "" : `none at ${hubLabel}`}</span>
                       )}
                       <button onClick={() => toggleReject(it.orderId)}
                               style={{ padding:"6px 10px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", background:"rgba(150,20,20,.12)", border:"1px solid rgba(180,40,40,.35)", color:"#F87171" }}>
@@ -7446,7 +7467,7 @@ function UndoCRButton({ batch, onUndo }) {
   );
 }
 
-function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, setShowCompleted, onFulfill, onUndo, hub2Cells, canFulfil, onViewPhoto, products }) {
+function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, setShowCompleted, onFulfill, onUndo, hubCells, hubLabel, canFulfil, onViewPhoto, products }) {
   // Accordion — one request expanded at a time so the whole queue stays scannable.
   const [openKey, setOpenKey] = useState(null);
   const fmtTime = (iso) => {
@@ -7470,7 +7491,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
           <div style={{ fontWeight:800, fontSize:30, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1px" }}>{activeBatches.length}</div>
           <div style={{ flex:1 }}>
             <div style={{ fontWeight:700, color:"#fff", fontSize:13 }}>Clothing Refill{activeBatches.length !== 1 ? "s" : ""} Pending</div>
-            <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:2 }}>Fulfil per size from Hub 2 — reject what you can't cover.</div>
+            <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:2 }}>Fulfil per size from {hubLabel} — reject what you can't cover.</div>
           </div>
         </div>
       )}
@@ -7488,7 +7509,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
           includeOlder
           emptyMessage="No clothing refills pending."
           renderItem={(batch) => (
-            <CRFulfillCard batch={batch} hub2Cells={hub2Cells} canFulfil={canFulfil}
+            <CRFulfillCard batch={batch} hubCells={hubCells} hubLabel={hubLabel} canFulfil={canFulfil}
                            onFulfill={onFulfill} onViewPhoto={onViewPhoto} products={products} fmtTime={fmtTime}
                            open={openKey === batch.batchKey}
                            onToggle={() => setOpenKey(k => k === batch.batchKey ? null : batch.batchKey)} />
