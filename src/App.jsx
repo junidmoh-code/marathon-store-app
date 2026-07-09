@@ -527,6 +527,34 @@ function getProductHubs(product) {
   return product?.hubs || (product?.hub ? [product.hub] : []);
 }
 
+// Hubs that hold sellable stock (hubC is a clothing-trial destination, NOT a
+// stock location). Used to validate a return's origin hub before any reversal.
+const STOCK_HUBS = ["hub1", "hub2", "hub3"];
+
+// resolveReturnDestination — where a returned order's stock belongs WHEN no
+// recorded disp_ transfer exists to reverse. Mirrors recordDispatchTransfer's
+// origin logic (destShop = the shop it shipped to; placedAtHub = the origin hub).
+//   • "stay"              — clothing / accessories / perfume (incl. hubC trials):
+//                           these never moved as a tracked hub→shop transfer, so a
+//                           return has nothing to reverse in the hub ledger (the
+//                           shop reconciles its own cell). Processed as success.
+//   • "footwear_no_ledger"— a shoe with no disp_ record: the outbound leg was
+//                           never ledgered (pre-transfer-era or a failed dispatch),
+//                           so firing a reverse would credit a hub that never lost
+//                           the unit — a phantom +1 that HIDES a shortage. We surface
+//                           it for manual routing instead; historical restock is the
+//                           reconciliation pass's job. originHub (when resolvable) is
+//                           returned so staff know where the shoe belongs.
+function resolveReturnDestination(order) {
+  const cat = categorize(order.productName, [order.size]).category;
+  const staysAtShop =
+    order.productType === "clothing" ||
+    cat === "Clothing" || cat === "Accessories" || cat === "Perfume";
+  if (staysAtShop) return { mode: "stay", reason: `${cat.toLowerCase()}_stays_at_shop` };
+  const to = order.placedAtHub || order.hub;
+  return { mode: "footwear_no_ledger", originHub: STOCK_HUBS.includes(to) ? to : null };
+}
+
 // inferProductType, dedupeByOrderNumber, returnedOrderNumberSet,
 // excludeReturnedOrderNumbers + oosEventsForPeriod now live in ./utils/insights
 // (single definition, unit-testable). Imported at the top of this file.
@@ -1176,17 +1204,22 @@ function returnedOrderIdsOnSADate(returnsLog, saDate) {
   return set;
 }
 
-// Composite "this exact order was returned" lookup — `${SA-date}::${orderNumber}`.
-// orderNumber is DAILY-SCOPED (it resets each day), so a bare all-time set of
-// returned numbers wrongly flags today's freshly-SOLD #001 as returned just
-// because some PAST day's #001 was returned. Keying by the return's own SA-date
-// (same basis as returnedOrderIdsOnSADate above) and matching on the order side
-// via orderSaleDate(o) confines each match to a single day. Returns intact —
-// this only changes how the Returns view READS the log, never what it writes.
+// Composite "this exact order was SUCCESSFULLY returned" lookup —
+// `${SA-date}::${orderNumber}`. orderNumber is DAILY-SCOPED (it resets each day),
+// so a bare all-time set of returned numbers wrongly flags today's freshly-SOLD
+// #001 as returned just because some PAST day's #001 was returned. Keying by the
+// return's own SA-date (same basis as returnedOrderIdsOnSADate above) and matching
+// on the order side via orderSaleDate(o) confines each match to a single day.
+// Only rows that actually LEDGERED (ledgered === true — a reversed transfer, an
+// idempotent re-tap, or a clothing/accessory "stays at shop" that needs no move)
+// mark the card green. A failed reverse (write error) or an unresolved footwear
+// return stays actionable so it can be RETRIED — otherwise a silent failure would
+// read as "Returned" and could never be re-run (the original PE-negative bug).
 function returnedCompositeKeySet(returnsLog) {
   const set = new Set();
   (returnsLog || []).forEach(r => {
     if (!r.orderNumber || !r.timestamp) return;
+    if (r.ledgered !== true) return;   // failures / unledgered stay actionable
     const d = new Date(new Date(r.timestamp).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
     set.add(`${d}::${r.orderNumber}`);
   });
@@ -9636,6 +9669,7 @@ const RETURN_REASONS = ["Too Small", "Too Big", "Wrong Item", "Other"];
 function ReturnsView({ orders, onExit }) {
   const [search,      setSearch]      = useState("");
   const [expandedId,  setExpandedId]  = useState(null);
+  const [failure,     setFailure]     = useState(null);  // { orderId, kind, message } — a return that did NOT ledger
   const returnsLog = useReturnsLog();
   const todayDate  = getSADateString();
 
@@ -9680,12 +9714,19 @@ function ReturnsView({ orders, onExit }) {
   const submitReturn = async (order) => {
     const scrub = (s) => s.replace(/[.#$[\]/\s:]/g, "_");
     const dispId = scrub(`disp_${order.id}_${order.createdAt || ""}`);
+    const retId  = scrub(`ret_${order.id}_${order.createdAt || ""}`);
     let ledgered = false;
     let ledgerNote = "no_dispatch_transfer";
+    let failMsg = null;          // set → surfaced in the UI; card stays actionable
+    let failKind = "error";      // "error" (retryable write fail) | "notice" (route by hand)
     try {
       const dispSnap = await get(ref(database, `stock_movements/${dispId}`));
       const disp = dispSnap.val();
       if (disp && disp.type === "transfer_out" && disp.from && disp.to) {
+        // PRIMARY — reverse the recorded dispatch EXACTLY (shop→origin hub, same
+        // qty/size). The unit demonstrably left the shop, so the shop cell may
+        // legitimately pass through negative (allowNegative; the rule now permits
+        // a transfer_out leg to go negative, matching sold/return).
         const res = await applyMovement({
           type: "transfer_out",
           productId: disp.productId,
@@ -9697,16 +9738,35 @@ function ReturnsView({ orders, onExit }) {
           reason: "order return (reverses dispatch)",
           link: { orderId: order.id, reverses: dispId },
           ts: new Date().toISOString(),
-          movementId: scrub(`ret_${order.id}_${order.createdAt || ""}`),
-          // Reversing a recorded ledger fact: the unit demonstrably left the
-          // shop, so the shop cell may legitimately pass through negative.
+          movementId: retId,
           allowNegative: true,
         });
         if (res?.ok) { ledgered = true; ledgerNote = res.idempotent ? "already_reversed" : "reversed"; }
-        else ledgerNote = `reverse_failed:${res?.reason || "unknown"}`;
+        else {
+          ledgerNote = `reverse_failed:${res?.reason || "unknown"}`;
+          failMsg = `Stock NOT returned (${res?.reason || "write failed"}). Not marked returned — tap Confirm again to retry.`;
+        }
+      } else {
+        // FALLBACK — no recorded dispatch transfer to reverse. Resolve intent.
+        const dest = resolveReturnDestination(order);
+        if (dest.mode === "stay") {
+          // Clothing / accessory / perfume: never a tracked hub→shop transfer, so
+          // there is nothing to reverse in the hub ledger. Processed successfully.
+          ledgered = true;
+          ledgerNote = `no_transfer_needed:${dest.reason}`;
+        } else {
+          // Footwear with no disp_ record — do NOT fire a phantom hub credit
+          // (would hide a shortage). Surface it for manual routing; the recon pass
+          // restocks the backlog honestly.
+          ledgerNote = "no_dispatch_transfer";
+          failKind = "notice";
+          const where = dest.originHub ? (HUB_LABELS[dest.originHub] || dest.originHub) : "its origin hub";
+          failMsg = `No recorded dispatch to reverse. Restock this shoe to ${where} by hand (Lightspeed) — not marked returned.`;
+        }
       }
     } catch (err) {
       ledgerNote = `reverse_failed:${String(err?.message || err).slice(0, 60)}`;
+      failMsg = `Return error — stock not moved. Not marked returned.`;
     }
     logReturn({
       timestamp:   new Date().toISOString(),
@@ -9722,7 +9782,13 @@ function ReturnsView({ orders, onExit }) {
       ledgered,
       ledgerNote,
     });
-    setExpandedId(null);
+    if (failMsg) {
+      // Keep the card expanded so the operator sees the reason and can act/retry.
+      setFailure({ orderId: order.id, kind: failKind, message: failMsg });
+    } else {
+      setFailure(f => (f && f.orderId === order.id ? null : f));
+      setExpandedId(null);
+    }
   };
 
   return (
@@ -9743,6 +9809,22 @@ function ReturnsView({ orders, onExit }) {
           value={search} onChange={e => setSearch(e.target.value)}
           style={{ ...inputStyle, marginBottom:"1.25rem" }}
         />
+
+        {failure && (
+          <div
+            role="alert"
+            style={{
+              marginBottom:"1.25rem", padding:"0.75rem 1rem", borderRadius:RADIUS,
+              fontSize:"0.82rem", lineHeight:1.45, display:"flex", gap:"0.6rem", alignItems:"flex-start",
+              background: failure.kind === "notice" ? "rgba(245,158,11,.10)" : "rgba(239,68,68,.10)",
+              border:     failure.kind === "notice" ? "1px solid rgba(245,158,11,.35)" : "1px solid rgba(239,68,68,.35)",
+              color:      failure.kind === "notice" ? "#FBBF24" : "#F87171",
+            }}
+          >
+            <span style={{ flex:1 }}><strong>#{failure.orderId}</strong> — {failure.message}</span>
+            <span onClick={() => setFailure(null)} style={{ cursor:"pointer", opacity:.7, fontWeight:700 }}>×</span>
+          </div>
+        )}
 
         <DayCollapsible
           sectionKey="returns"
@@ -9772,7 +9854,7 @@ function ReturnsView({ orders, onExit }) {
                     </span>
                   ) : (
                     <button
-                      onClick={() => setExpandedId(isExpanded ? null : order.id)}
+                      onClick={() => { setExpandedId(isExpanded ? null : order.id); setFailure(null); }}
                       style={ isExpanded ? { ...bGray, padding:"0.5rem 1.1rem" } : { ...bBlue, padding:"0.5rem 1.1rem" } }>
                       {isExpanded ? "Cancel" : "Log Return"}
                     </button>
