@@ -1900,7 +1900,24 @@ function GroupSection({ label, children }) {
   );
 }
 
+// Desktop home tile — glass card in the workspace language (icon · name · desc ·
+// badge · arrow), hover-lift + blue glow. Mobile keeps the RoleCard list.
+function HomeTile({ icon, name, desc, badge, onClick }) {
+  return (
+    <button className="hm-tile" onClick={onClick}>
+      <span className="hm-ic">{icon}</span>
+      <span className="hm-tx">
+        <span className="hm-nm">{name}</span>
+        <span className="hm-ds">{desc}</span>
+      </span>
+      {badge > 0 && <span className="hm-bd">{badge}</span>}
+      <span className="hm-ar">→</span>
+    </button>
+  );
+}
+
 function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessStock, isSuperAdmin }) {
+  const isDesktop = !useIsNarrow(1024);
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
   // Source badge = today's restock requests + on-hold (Tomorrow), excluding OOS.
@@ -1923,6 +1940,77 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
     o.createdAt && o.createdAt.slice(0,10) === today
   ).length : 0;
 
+  // Shared, permission-gated role data — rendered as a desktop tile grid or the
+  // mobile RoleCard list.
+  const groups = [
+    { label: "Operations", cards: [
+      hasPermission(ROLE_TO_PERMISSION[ROLES.ASSISTANT]) && { key:"assistant", icon:RoleIcons.assistant, name:"Store Assistant", desc:"Place customer orders", badge:assistantBadge, onClick:()=>onSelect(ROLES.ASSISTANT) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) && { key:"warehouse", icon:RoleIcons.warehouse, name:"Warehouse", desc:"Manage order queue", badge:incoming, onClick:()=>onSelect(ROLES.WAREHOUSE) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])    && { key:"source", icon:RoleIcons.source, name:"Source", desc:"Restock requests", badge:sourceBadge, onClick:()=>onSelect(ROLES.SOURCE) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && { key:"returns", icon:RoleIcons.returns, name:"Returns", desc:"Log returned items", onClick:()=>onSelect(ROLES.RETURNS) },
+      { key:"barcodes", icon:RoleIcons.stock, name:"Barcodes", desc:"Print product barcodes", onClick:()=>onSelect(ROLES.BARCODES) },
+      { key:"label_print", icon:RoleIcons.stock, name:"Print Labels", desc:"Product labels · name, price, barcode", onClick:()=>onSelect(ROLES.LABEL_PRINT) },
+    ].filter(Boolean) },
+    { label: "Insights & Display", cards: [
+      hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && { key:"insights", icon:RoleIcons.insights, name:"Internal Insights", desc:"Business analytics", onClick:()=>onSelect(ROLES.INSIGHTS) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.DISPLAY])  && { key:"display", icon:RoleIcons.display, name:"TV Display", desc:"Customer queue screen", onClick:()=>onSelect(ROLES.DISPLAY) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && { key:"customer", icon:RoleIcons.customer, name:"Customer", desc:"Check order status", onClick:()=>onSelect(ROLES.CUSTOMER) },
+    ].filter(Boolean) },
+    { label: "Administration", cards: [
+      hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && { key:"customers", icon:RoleIcons.customers_db, name:"Customers", desc:"Customer database", onClick:()=>onSelect(ROLES.CUSTOMERS_DB) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && { key:"admin", icon:RoleIcons.admin, name:"Admin", desc:"Manage products", onClick:()=>onSelect(ROLES.ADMIN) },
+      canAccessStock                                           && { key:"stock", icon:RoleIcons.stock, name:"Stock", desc:"Inventory & transfers", onClick:()=>onSelect(ROLES.STOCK) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
+      isSuperAdmin && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc:"Photos · Names · Reorder · Voice", onClick:()=>onSelect(ROLES.AI_STUDIO) },
+    ].filter(Boolean) },
+  ];
+  const anyCards = groups.some(g => g.cards.length > 0);
+
+  // ── DESKTOP HOME (≥1024px) — workspace language: wordmark, greeting, glass
+  //    tile grid grouped by section. Mobile keeps the hero + RoleCard list. ──
+  if (isDesktop) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, position:"relative" }}>
+        <div style={{ position:"absolute", inset:0, background:"radial-gradient(1100px 520px at 82% -10%, rgba(60,110,255,.10), transparent 60%), radial-gradient(900px 480px at 6% 2%, rgba(127,90,240,.08), transparent 55%)", pointerEvents:"none" }} />
+        <style>{`
+          .hm-tile{position:relative;display:flex;align-items:center;gap:13px;width:100%;text-align:left;cursor:pointer;font-family:inherit;
+            background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 60%),rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:15px;padding:15px 15px;
+            transition:transform .2s cubic-bezier(.2,.7,.2,1),border-color .2s,box-shadow .2s}
+          .hm-tile:hover,.hm-tile:focus-visible{transform:translateY(-4px);border-color:rgba(74,127,255,.55);box-shadow:0 16px 38px -20px rgba(60,110,255,.6);outline:none}
+          .hm-ic{width:42px;height:42px;flex:0 0 auto;border-radius:12px;display:grid;place-items:center;color:#9DBCFF;background:rgba(74,127,255,.12);border:1px solid rgba(74,127,255,.28)}
+          .hm-ic svg{width:20px;height:20px}
+          .hm-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+          .hm-nm{font-size:14.5px;font-weight:750;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          .hm-ds{font-size:11.5px;color:rgba(233,238,255,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          .hm-bd{flex:0 0 auto;font-size:11px;font-weight:800;color:#9DBCFF;background:rgba(74,127,255,.2);border-radius:999px;padding:2px 9px;font-variant-numeric:tabular-nums}
+          .hm-ar{flex:0 0 auto;color:#4A7FFF;font-size:15px;opacity:0;transform:translateX(-4px);transition:.2s}
+          .hm-tile:hover .hm-ar,.hm-tile:focus-visible .hm-ar{opacity:1;transform:none}
+          @media(prefers-reduced-motion:reduce){.hm-tile,.hm-ar{transition:none}}
+        `}</style>
+        <div style={{ position:"relative", maxWidth:1060, margin:"0 auto", padding:"56px 30px 70px" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:12 }}>
+            <span style={{ fontSize:34, fontWeight:800, fontStyle:"italic", letterSpacing:-1, color:"#fff" }}>marathon</span>
+            <span style={{ fontSize:13, fontWeight:700, letterSpacing:6, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <div style={{ fontSize:14, color:"rgba(233,238,255,.5)", marginTop:8, marginBottom:40 }}>Choose a workspace to get started.</div>
+          {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
+            <div key={g.label} style={{ marginBottom:34 }}>
+              <div style={{ fontSize:11, letterSpacing:".22em", textTransform:"uppercase", color:"rgba(233,238,255,.4)", fontWeight:700, margin:"0 2px 14px" }}>{g.label}</div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(250px, 1fr))", gap:13 }}>
+                {g.cards.map(c => <HomeTile key={c.key} icon={c.icon} name={c.name} desc={c.desc} badge={c.badge} onClick={c.onClick} />)}
+              </div>
+            </div>
+          )) : (
+            <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
+              No tools assigned to your account yet. Ask an admin to update your permissions.
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight:"100vh", background:"#000", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden" }}>
       {/* MARATHON HERO */}
@@ -1944,58 +2032,22 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
         </div>
       </div>
 
-      {/* ROLE GROUPS — each tile gated by hasPermission. Empty groups are
-          hidden so staff with limited permissions don't see empty headings. */}
-      {(() => {
-        const ops = [
-          hasPermission(ROLE_TO_PERMISSION[ROLES.ASSISTANT]) && <RoleCard key="assistant" icon={RoleIcons.assistant} name="Store Assistant" desc="Place customer orders" badge={assistantBadge}  onClick={() => onSelect(ROLES.ASSISTANT)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) && <RoleCard key="warehouse" icon={RoleIcons.warehouse} name="Warehouse"        desc="Manage order queue"   badge={incoming}        onClick={() => onSelect(ROLES.WAREHOUSE)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])    && <RoleCard key="source"    icon={RoleIcons.source}    name="Source"           desc="Restock requests"     badge={sourceBadge}     onClick={() => onSelect(ROLES.SOURCE)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && <RoleCard key="returns"   icon={RoleIcons.returns}   name="Returns"          desc="Log returned items"   onClick={() => onSelect(ROLES.RETURNS)} />,
-          // Open to everyone — reprinting an existing barcode is read-only. Minting
-          // a NEW code is gated by stockRole inside the screen.
-          <RoleCard key="barcodes" icon={RoleIcons.stock} name="Barcodes" desc="Print product barcodes" onClick={() => onSelect(ROLES.BARCODES)} />,
-          // Open to everyone — browse the catalogue and print a single name · price ·
-          // barcode label. Minting a new code is stockRole-gated inside the view.
-          <RoleCard key="label_print" icon={RoleIcons.stock} name="Print Labels" desc="Product labels · name, price, barcode" onClick={() => onSelect(ROLES.LABEL_PRINT)} />,
-        ].filter(Boolean);
-        const insightsDisplay = [
-          hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && <RoleCard key="insights" icon={RoleIcons.insights} name="Internal Insights" desc="Business analytics"    onClick={() => onSelect(ROLES.INSIGHTS)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.DISPLAY])  && <RoleCard key="display"  icon={RoleIcons.display}  name="TV Display"        desc="Customer queue screen" onClick={() => onSelect(ROLES.DISPLAY)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && <RoleCard key="customer" icon={RoleIcons.customer} name="Customer"          desc="Check order status"    onClick={() => onSelect(ROLES.CUSTOMER)} />,
-        ].filter(Boolean);
-        const admin = [
-          hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && <RoleCard key="customers" icon={RoleIcons.customers_db}     name="Customers"       desc="Customer database"       onClick={() => onSelect(ROLES.CUSTOMERS_DB)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && <RoleCard key="admin"     icon={RoleIcons.admin}            name="Admin"           desc="Manage products"         onClick={() => onSelect(ROLES.ADMIN)} />,
-          canAccessStock                                           && <RoleCard key="stock"     icon={RoleIcons.stock}            name="Stock"           desc="Inventory & transfers"   onClick={() => onSelect(ROLES.STOCK)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && <RoleCard key="broadcast" icon={RoleIcons.broadcast_groups} name="Group Broadcast" desc="Send to WhatsApp groups" onClick={() => onSelect(ROLES.BROADCAST_GROUPS)} />,
-          // User Management is hash-routed (not role-routed) — the screen mounts
-          // on wantUserMgmt in the App view cascade. Tap → set hash → mount.
-          hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && <RoleCard key="user_mgmt" icon={RoleIcons.user_management} name="User Management" desc="Manage staff accounts" onClick={() => (window.location.hash = "#admin/users")} />,
-          // AI Studio: every AI tool (Photo Studio, Names, Reorder, Voice) in
-          // one super-admin-only view. Gated on the REAL isSuperAdmin flag —
-          // not a permission string a /users record could ever grant — and the
-          // view mount re-checks it, so this is render + route enforcement.
-          // (The AI Cloud Functions are assertAdmin server-side anyway.)
-          isSuperAdmin && <RoleCard key="ai_studio" icon={RoleIcons.ai_studio} name="AI Studio" desc="Photos · Names · Reorder · Voice" onClick={() => onSelect(ROLES.AI_STUDIO)} />,
-        ].filter(Boolean);
-        // `last` on the final card in each group removes the trailing divider.
-        const withLast = (cards) => cards.map((card, i) =>
-          i === cards.length - 1 ? <card.type {...card.props} last /> : card
-        );
-        return (
-          <div style={{ padding:"10px 14px 36px", background:"#000" }}>
-            {ops.length > 0              && <GroupSection label="Operations">{withLast(ops)}</GroupSection>}
-            {insightsDisplay.length > 0  && <GroupSection label="Insights & Display">{withLast(insightsDisplay)}</GroupSection>}
-            {admin.length > 0            && <GroupSection label="Administration">{withLast(admin)}</GroupSection>}
-            {ops.length + insightsDisplay.length + admin.length === 0 && (
-              <div style={{ textAlign:"center", color:"#555", padding:"3rem 1rem", fontSize:14 }}>
-                No tools assigned to your account yet. Ask an admin to update your permissions.
-              </div>
-            )}
+      {/* ROLE GROUPS — each tile gated by hasPermission (shared `groups` data).
+          Empty groups are hidden so staff with limited permissions don't see
+          empty headings. */}
+      <div style={{ padding:"10px 14px 36px", background:"#000" }}>
+        {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
+          <GroupSection key={g.label} label={g.label}>
+            {g.cards.map((c, i) => (
+              <RoleCard key={c.key} icon={c.icon} name={c.name} desc={c.desc} badge={c.badge} onClick={c.onClick} last={i === g.cards.length - 1} />
+            ))}
+          </GroupSection>
+        )) : (
+          <div style={{ textAlign:"center", color:"#555", padding:"3rem 1rem", fontSize:14 }}>
+            No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
-        );
-      })()}
+        )}
+      </div>
     </div>
   );
 }
