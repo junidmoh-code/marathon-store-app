@@ -5,44 +5,46 @@
 // and keeps the Stock module independently testable / portable to the POS app).
 // If the app-wide tokens ever change, update both — they are intentionally a copy.
 
+// Refreshed to the AI Studio / workspace language: near-neutral white-on-black
+// glass, blue accent reserved for state (active / interactive), softer radii.
 export const FONT   = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 export const BG     = "#000000";
-export const CARD   = "rgba(4,5,10,1)";
+export const CARD   = "rgba(255,255,255,.024)";
 export const BLUE   = "#4A7FFF";
-export const BLUE_L = "#6A9FFF";
-export const BORDER = "1px solid rgba(60,110,255,.12)";
-export const BORDER_BRIGHT = "1px solid rgba(60,110,255,.6)";
-export const RADIUS = "14px";
+export const BLUE_L = "#9DBCFF";
+export const BORDER = "1px solid rgba(255,255,255,.08)";
+export const BORDER_BRIGHT = "1px solid rgba(74,127,255,.55)";
+export const RADIUS = "15px";
 export const GLOW   = "0 0 12px rgba(60,110,255,.15)";
 
-// Glass finish — translucent + blurred surface for the reworked Stock screens.
-// Falls back gracefully where backdrop-filter is unsupported (still a dark card).
+// Glass finish — subtle translucent surface for the reworked Stock screens.
 export const GLASS = {
-  background: "rgba(12,16,30,.55)",
+  background: "linear-gradient(180deg, rgba(255,255,255,.02), transparent 55%), rgba(255,255,255,.022)",
   backdropFilter: "blur(14px)",
   WebkitBackdropFilter: "blur(14px)",
-  border: "1px solid rgba(120,150,255,.16)",
+  border: "1px solid rgba(255,255,255,.08)",
   borderRadius: RADIUS,
-  boxShadow: "0 8px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05)",
+  boxShadow: "0 10px 30px -18px rgba(0,0,0,.6)",
 };
 
 // OPAQUE variant for floating overlays/sheets — the translucent GLASS lets the list
 // behind bleed through and become unreadable. Same finish, solid background.
-export const GLASS_SOLID = { ...GLASS, background: "#0b0f1e", backdropFilter: "none", WebkitBackdropFilter: "none" };
+export const GLASS_SOLID = { ...GLASS, background: "#0a0e18", backdropFilter: "none", WebkitBackdropFilter: "none", boxShadow: "0 30px 80px -20px rgba(0,0,0,.8)" };
 
 export const GREEN = "#4ADE80";
 export const RED   = "#F87171";
 export const GRAY  = "#9CA3AF";
 export const AMBER = "#FBBF24";
 
-// Button presets (match App.jsx bGreen/bRed/bBlue/bGray families).
-export const bGreen = { background:"rgba(0,150,70,.2)",     border:"1px solid rgba(0,150,70,.5)",     color:GREEN, borderRadius:RADIUS, fontWeight:"600", cursor:"pointer", fontSize:"0.85rem", padding:"10px 14px" };
-export const bRed   = { background:"rgba(150,20,20,.15)",   border:"1px solid rgba(150,20,20,.4)",    color:RED,   borderRadius:RADIUS, fontWeight:"600", cursor:"pointer", fontSize:"0.85rem", padding:"10px 14px" };
-export const bBlue  = { background:"rgba(60,110,255,.08)",  border:"1px solid rgba(60,110,255,.25)",  color:BLUE,  borderRadius:RADIUS, fontWeight:"600", cursor:"pointer", fontSize:"0.85rem", padding:"10px 14px" };
-export const bGray  = { background:"rgba(100,100,100,.12)", border:"1px solid rgba(100,100,100,.25)", color:GRAY,  borderRadius:RADIUS, fontWeight:"600", cursor:"pointer", fontSize:"0.85rem", padding:"10px 14px" };
-export const bGhost = { background:"transparent",           border:"1px solid rgba(60,110,255,.25)",  color:BLUE,  borderRadius:RADIUS, fontWeight:"600", cursor:"pointer", fontSize:"0.85rem", padding:"10px 14px" };
+// Button presets — pill radius, cleaner tints.
+const BR = "11px";
+export const bGreen = { background:"rgba(74,222,128,.16)",  border:"1px solid rgba(74,222,128,.45)",  color:GREEN, borderRadius:BR, fontWeight:"700", cursor:"pointer", fontSize:"0.85rem", padding:"10px 14px", fontFamily:FONT };
+export const bRed   = { background:"rgba(248,113,113,.14)", border:"1px solid rgba(248,113,113,.4)",  color:RED,   borderRadius:BR, fontWeight:"700", cursor:"pointer", fontSize:"0.85rem", padding:"10px 14px", fontFamily:FONT };
+export const bBlue  = { background:"rgba(74,127,255,.12)",  border:"1px solid rgba(74,127,255,.4)",   color:BLUE_L,borderRadius:BR, fontWeight:"700", cursor:"pointer", fontSize:"0.85rem", padding:"10px 14px", fontFamily:FONT };
+export const bGray  = { background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.14)", color:"#dfe7ff", borderRadius:BR, fontWeight:"700", cursor:"pointer", fontSize:"0.85rem", padding:"10px 14px", fontFamily:FONT };
+export const bGhost = { background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.14)", color:"#dfe7ff", borderRadius:BR, fontWeight:"700", cursor:"pointer", fontSize:"0.85rem", padding:"10px 14px", fontFamily:FONT };
 
-export const tabOn  = { background:"rgba(60,110,255,.15)", border:"1px solid rgba(60,110,255,.45)", color:BLUE_L, borderRadius:"10px", padding:"7px 12px", fontWeight:600, cursor:"pointer", fontSize:"0.8rem" };
-export const tabOff = { background:"transparent",          border:"1px solid rgba(60,110,255,.15)", color:GRAY,   borderRadius:"10px", padding:"7px 12px", fontWeight:600, cursor:"pointer", fontSize:"0.8rem" };
+export const tabOn  = { background:"rgba(74,127,255,.16)", border:"1px solid rgba(74,127,255,.45)", color:BLUE_L, borderRadius:"999px", padding:"7px 14px", fontWeight:700, cursor:"pointer", fontSize:"0.8rem", fontFamily:FONT };
+export const tabOff = { background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.1)", color:GRAY,  borderRadius:"999px", padding:"7px 14px", fontWeight:700, cursor:"pointer", fontSize:"0.8rem", fontFamily:FONT };
 
-export const input  = { background:"rgba(255,255,255,.04)", border:BORDER, color:"#fff", borderRadius:"10px", padding:"9px 11px", fontSize:"0.9rem", fontFamily:FONT, outline:"none" };
+export const input  = { background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.14)", color:"#fff", borderRadius:"12px", padding:"11px 13px", fontSize:"0.92rem", fontFamily:FONT, outline:"none" };
