@@ -246,12 +246,10 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
             const supported = t.supported(); const on = transport === t.id;
             return (
               <button key={t.id} onClick={() => supported && setTransport(t.id)} disabled={!supported}
-                style={{ display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left", cursor: supported ? "pointer" : "not-allowed", fontFamily: FONT, fontSize: 12.5, fontWeight: 600, borderRadius: 10, padding: "9px 11px",
+                style={{ display: "flex", alignItems: "center", width: "100%", textAlign: "left", cursor: supported ? "pointer" : "not-allowed", fontFamily: FONT, fontSize: 12.5, fontWeight: 600, borderRadius: 10, padding: "9px 11px",
                          background: on ? "rgba(74,127,255,.12)" : "transparent", border: on ? "1px solid rgba(74,127,255,.4)" : "1px solid transparent",
                          color: supported ? (on ? "#9DBCFF" : "rgba(233,238,255,.55)") : "rgba(255,255,255,.25)", opacity: supported ? 1 : .6 }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                <span style={{ flex: 1 }}>{t.label}</span>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: supported ? "#4ADE80" : "#555", boxShadow: supported ? "0 0 8px #4ADE80" : "none" }} />
+                {t.label}
               </button>
             );
           })}
