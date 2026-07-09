@@ -4987,6 +4987,23 @@ function RefillTrackingProductCard({ group, onViewPhoto }) {
   const open = userOpen ?? hasPending;
   const setOpen = (fn) => setUserOpen(prev => fn(prev ?? hasPending));
   const hasPhotos = onViewPhoto && group.photos.length > 0;
+
+  // Combine identical (size, status) lines — a shop that re-requested the same
+  // size across days shows as ONE chip with the summed qty — then lay them out
+  // sideways (wrap) instead of a long vertical run. Pending first, then ready,
+  // then rejected.
+  const combined = useMemo(() => {
+    const map = new Map();
+    for (const r of group.lines) {
+      const key = `${r.size}__${r.status}`;
+      if (!map.has(key)) map.set(key, { key, size: r.size, status: r.status, qty: 0, sent: 0, sentUnknown: false });
+      const c = map.get(key);
+      c.qty += r.qty;
+      if (r.status === "ready") { if (r.sentQty == null) c.sentUnknown = true; else c.sent += r.sentQty; }
+    }
+    const rank = { pending: 0, ready: 1, oos: 2 };
+    return [...map.values()].sort((a, b) => rank[a.status] - rank[b.status]);
+  }, [group.lines]);
   return (
     <div style={{ background:CARD, border:"1px solid rgba(60,110,255,.45)", borderRadius:RADIUS, boxShadow:"0 0 10px rgba(60,110,255,.12)", overflow:"hidden" }}>
       <div style={{ display:"flex", alignItems:"center", gap:11, padding:11 }}>
@@ -5013,20 +5030,17 @@ function RefillTrackingProductCard({ group, onViewPhoto }) {
         <span onClick={() => setOpen(o => !o)} style={{ color:"#4A7FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s", fontSize:14, cursor:"pointer", padding:"0 4px" }}>▸</span>
       </div>
       {open && (
-        <div style={{ padding:"0 11px 8px" }}>
-          {group.lines.map(r => {
-            const s = REFILL_STATUS[r.status];
-            const partial = r.status === "ready" && r.sentQty != null && r.sentQty < r.qty;
+        <div style={{ padding:"2px 11px 10px", display:"flex", flexWrap:"wrap", gap:6, borderTop:"1px solid rgba(255,255,255,.06)" }}>
+          {combined.map(c => {
+            const s = REFILL_STATUS[c.status];
+            const qtyText = c.status === "ready"
+              ? (c.sentUnknown || c.sent >= c.qty ? `✓${c.qty}` : `✓${c.sent}/${c.qty}`)
+              : c.status === "oos" ? `✕${c.qty}` : `×${c.qty}`;
             return (
-              <div key={r.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderTop:"1px solid rgba(255,255,255,.06)" }}>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:12.5, color:"#eee" }}>
-                    <SizeTag size={r.size} /> · ×{r.qty}{partial ? ` (${r.sentQty} sent)` : ""}
-                  </div>
-                  <div style={{ fontSize:10, color:"#777" }}>#{r.id} · {relativeTimeFromIso(r.ts)}</div>
-                </div>
-                <span style={{ fontSize:11, fontWeight:700, color:s.fg, background:s.bg, border:`1px solid ${s.bd}`, borderRadius:999, padding:"3px 10px", whiteSpace:"nowrap" }}>{s.label}</span>
-              </div>
+              <span key={c.key} title={s.label}
+                    style={{ display:"inline-flex", alignItems:"center", gap:5, fontSize:12, fontWeight:700, color:s.fg, background:s.bg, border:`1px solid ${s.bd}`, borderRadius:8, padding:"4px 9px" }}>
+                <SizeTag size={c.size} /><span style={{ fontSize:10.5 }}>{qtyText}</span>
+              </span>
             );
           })}
         </div>
