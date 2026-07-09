@@ -969,13 +969,20 @@ async function reverseClothingRefill({ store, productId, size, qty, hub, batchId
 const CLOTHING_CR_REASON      = "clothing_cr";
 const CLOTHING_CR_UNDO_REASON = "clothing_cr_undo";
 
-// IDEMPOTENCY: both directions are keyed on the order line + its fulfil
-// GENERATION (clothingRefillGen on the order, bumped by each undo). Within one
-// generation, `cr_{orderId}_g{gen}` / `crundo_{orderId}_g{gen}` are stable, so
-// a re-tapped Send, a flag-write that failed after the transfer landed, or two
-// devices racing the same batch all collapse into ONE ledger movement — while a
-// later undo→re-fulfil cycle (next gen) still moves stock again as it should.
-async function fireCRRefill({ store, productId, size, qty, from, actorRole, orderId, gen = 0 }) {
+// IDEMPOTENCY: both directions are keyed on the order line + its CREATION DATE +
+// fulfil GENERATION (clothingRefillGen, bumped by each undo). order.id is only a
+// DAILY counter (001–999, reused every day), so createdAt MUST be threaded in —
+// otherwise two same-numbered Shop-Refill orders on different days collide and
+// the later transfer is silently swallowed as idempotent (stock/order diverge).
+// Same scrub as the dispatch path (RTDB keys can't hold . # $ [ ] / : space).
+// Within one (order,date,gen): a re-tapped Send, a flag-write that failed after
+// the transfer landed, or two devices racing the batch all collapse into ONE
+// ledger movement — while a later undo→re-fulfil cycle (next gen) moves stock
+// again as it should.
+const crMovementId = (prefix, orderId, createdAt, gen) =>
+  `${prefix}_${orderId}_${createdAt || ""}_g${gen}`.replace(/[.#$[\]/\s:]/g, "_");
+
+async function fireCRRefill({ store, productId, size, qty, from, actorRole, orderId, createdAt, gen = 0 }) {
   return applyMovement({
     type: "transfer_out",
     productId, size, qty,
@@ -983,12 +990,12 @@ async function fireCRRefill({ store, productId, size, qty, from, actorRole, orde
     reason: CLOTHING_CR_REASON,
     actorRole: actorRole || null,
     link: { orderId, refillId: `cr_${store}_${productId}` },
-    movementId: `cr_${orderId}_g${gen}`,
+    movementId: crMovementId("cr", orderId, createdAt, gen),
   });
 }
 
 // Reverse ONE fulfilled CR size: store→hub, netted against the forward move.
-async function reverseCRRefill({ store, productId, size, qty, hub, orderId, gen = 0, actorRole }) {
+async function reverseCRRefill({ store, productId, size, qty, hub, orderId, createdAt, gen = 0, actorRole }) {
   return applyMovement({
     type: "transfer_out",
     productId, size, qty,
@@ -996,7 +1003,7 @@ async function reverseCRRefill({ store, productId, size, qty, hub, orderId, gen 
     reason: CLOTHING_CR_UNDO_REASON,
     actorRole: actorRole || null,
     link: { orderId, refillId: `cr_${store}_${productId}` },
-    movementId: `crundo_${orderId}_g${gen}`,
+    movementId: crMovementId("crundo", orderId, createdAt, gen),
   });
 }
 
@@ -6640,7 +6647,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       if (qty > 0) {
         if (!store) { fail++; errors.push(`${formatSize(it.size)}: no destination shop on this request`); continue; }
         let res;
-        try { res = await fireCRRefill({ store, productId: batch.productId, size: it.size, qty, from: it.placedAtHub || "hub2", actorRole: crActorRole, orderId: it.orderId, gen: it.gen }); }
+        try { res = await fireCRRefill({ store, productId: batch.productId, size: it.size, qty, from: it.placedAtHub || "hub2", actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }); }
         catch { res = { ok: false, reason: "network error" }; }
         if (res && res.ok) {
           ok++;
@@ -6672,7 +6679,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     for (const it of batch.items) {
       if (it.status === "available" && (it.refilledQty || 0) > 0 && batch.destShop) {
         let res;
-        try { res = await reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: it.refilledQty, hub: it.placedAtHub || "hub2", orderId: it.orderId, gen: it.gen, actorRole: crActorRole }); }
+        try { res = await reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: it.refilledQty, hub: it.placedAtHub || "hub2", orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }); }
         catch { res = { ok: false, reason: "network error" }; }
         if (!res || !res.ok) {
           fail++;
