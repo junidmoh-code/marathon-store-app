@@ -18,6 +18,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import { ref, update, push, child, get } from "firebase/database";
 import { database } from "../../firebase";
 import { applyMovement } from "./applyMovement";
+import { transferMovementId, loadDraft, saveDraft, clearDraft } from "./transferDraft";
 import { useRefillRequests, useStockCells } from "./useStock";
 import { transferTargets, labelFor } from "./locations";
 import { Toast, Empty } from "./widgets";
@@ -90,6 +91,16 @@ export default function Transfer({ products, registry, actorRole }) {
   const [sizePrompt, setSizePrompt] = useState(null);    // { product } awaiting a size after a scan
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+  // Stable transfer id for the CURRENT cart. Minted at the first Confirm and kept
+  // across retries so every line's movement id is deterministic (idempotent retry).
+  const [transferId, setTransferId] = useState(null);
+  // Per-line outcome of the last Confirm attempt: { key: { status:'sent'|'failed', reason, kind } }.
+  // Persisted with the draft so a reload mid-transfer restores which lines already moved.
+  const [lineResults, setLineResults] = useState({});
+  // Transient summary of the just-finished attempt, for the "N of M" banner phrasing.
+  const [lastAttempt, setLastAttempt] = useState(null); // { sent, failed, total }
+  // A draft found in storage on mount, awaiting the user's Restore / Discard choice.
+  const [draftToRestore, setDraftToRestore] = useState(null);
   const scanRef = useRef(null);
   const openRefills = useRefillRequests("open");
   // Guard: an empty `from` would make useStockCells subscribe to the WHOLE /stock
@@ -127,6 +138,14 @@ export default function Transfer({ products, registry, actorRole }) {
   const lines = useMemo(() => Object.values(basket).filter((l) => l.qty > 0), [basket]);
   const totalUnits = lines.reduce((s, l) => s + l.qty, 0);
   const overCount = lines.filter((l) => l.qty > avail(l.productId, l.size)).length;
+  // Lines still in the cart that failed the last attempt, split by cause so the
+  // banner can tell "network — just retry" apart from "not enough stock — fix qty".
+  const failedLines = useMemo(
+    () => lines.filter((l) => lineResults[keyOf(l.productId, l.size)]?.status === "failed"),
+    [lines, lineResults],
+  );
+  const stockFails = failedLines.filter((l) => lineResults[keyOf(l.productId, l.size)]?.kind === "stock").length;
+  const networkFails = failedLines.length - stockFails;
 
   // Cart grouped ONE card per product, sizes broken out underneath (M×2, L×1 …) —
   // mirrors the Clothing-Sold grouped card. The underlying per-size basket lines are
@@ -147,13 +166,18 @@ export default function Transfer({ products, registry, actorRole }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lines, srcCells]);
 
+  // Editing/scanning a line invalidates any prior failed/sent mark for it — it's a
+  // fresh attempt, so drop its result (this also updates the incomplete banner).
+  const clearLineResult = (k) => setLineResults((r) => { if (!r[k]) return r; const n = { ...r }; delete n[k]; return n; });
+
   // Manual grid: capped at source stock (you can't browse-add more than is here).
   const setQty = (product, size, qty) => {
     const max = avail(product.id, size);
     const n = Math.max(0, Math.min(max, parseInt(qty, 10) || 0));
+    const k = keyOf(product.id, size);
+    clearLineResult(k);
     setBasket((b) => {
       const next = { ...b };
-      const k = keyOf(product.id, size);
       if (n <= 0) delete next[k];
       else next[k] = { productId: product.id, productName: product.name, size, qty: n };
       return next;
@@ -163,13 +187,16 @@ export default function Transfer({ products, registry, actorRole }) {
 
   // Cart line qty (scan/edit path): UNCAPPED so over-scan is allowed (and flagged);
   // 0 removes the line.
-  const setLineQty = (k, qty) => setBasket((b) => {
-    const line = b[k]; if (!line) return b;
-    const n = Math.max(0, parseInt(qty, 10) || 0);
-    if (n <= 0) { const nb = { ...b }; delete nb[k]; return nb; }
-    return { ...b, [k]: { ...line, qty: n } };
-  });
-  const removeLine = (k) => setBasket((b) => { const nb = { ...b }; delete nb[k]; return nb; });
+  const setLineQty = (k, qty) => {
+    clearLineResult(k);
+    setBasket((b) => {
+      const line = b[k]; if (!line) return b;
+      const n = Math.max(0, parseInt(qty, 10) || 0);
+      if (n <= 0) { const nb = { ...b }; delete nb[k]; return nb; }
+      return { ...b, [k]: { ...line, qty: n } };
+    });
+  };
+  const removeLine = (k) => { clearLineResult(k); setBasket((b) => { const nb = { ...b }; delete nb[k]; return nb; }); };
   const removeProduct = (pid) => setBasket((b) => {
     const nb = {}; for (const [k, v] of Object.entries(b)) if (v.productId !== pid) nb[k] = v; return nb;
   });
@@ -177,6 +204,7 @@ export default function Transfer({ products, registry, actorRole }) {
   // Add ONE unit for a (product, size) via a scan — uncapped (over-scan allowed).
   const scanAdd = (product, size) => {
     const sz = size == null || size === "" ? ONE_SIZE : String(size);
+    clearLineResult(keyOf(product.id, sz));
     setBasket((b) => {
       const k = keyOf(product.id, sz);
       const cur = b[k]?.qty || 0;
@@ -185,11 +213,23 @@ export default function Transfer({ products, registry, actorRole }) {
     flash("ok", `+1 ${product.name}${sizeLabel(sz) ? "" : " · " + sz}`);
   };
 
-  const clearBasket = () => { setBasket({}); setRefillId(null); };
+  // Full reset of the transfer session (cart + idempotency context + persisted draft).
+  const clearBasket = () => {
+    setBasket({}); setRefillId(null);
+    setTransferId(null); setLineResults({}); setLastAttempt(null);
+    clearDraft();
+  };
 
   // Changing the source invalidates the basket (its lines were counted at the old
   // source). Reset so quantities always reflect what's actually available here.
-  const pickSource = (id) => { if (id === from) return; setFrom(id); setBasket({}); setOpenId(null); setRefillId(null); if (to === id) setTo(""); };
+  // Picking a source also dismisses any restore banner — the user is starting fresh.
+  const pickSource = (id) => {
+    setDraftToRestore(null);
+    if (id === from) return;
+    setFrom(id); setBasket({}); setOpenId(null); setRefillId(null);
+    setTransferId(null); setLineResults({}); setLastAttempt(null);
+    if (to === id) setTo("");
+  };
 
   // Resolve a scanned/typed barcode → INSTANT cart add (POS sell-scan feel). A
   // hardware SCAN is matched EXACTLY; a slowly-TYPED code also tries leading-zero
@@ -232,47 +272,153 @@ export default function Transfer({ products, registry, actorRole }) {
     setRefillId(r.id);
     setTo(r.requestingLocation || "");
     setOpenId(r.productId);
+    setTransferId(null); setLineResults({}); setLastAttempt(null);
     flash("ok", "Prefilled from refill — check the source has stock, then confirm.");
   };
 
   // Clear a stale destination if it ends up equal to the source.
   useEffect(() => { if (to && to === from) setTo(""); }, [from, to]);
 
+  // ── DRAFT PERSISTENCE ───────────────────────────────────────────────────────
+  // On mount, surface any unsent cart left by a prior crash / reload / network
+  // drop — the user chooses Restore or Discard (see the banner below). We never
+  // auto-apply, so a stale draft can't silently overwrite a fresh session.
+  useEffect(() => {
+    const d = loadDraft();
+    if (d) setDraftToRestore(d);
+  }, []);
+
+  // Persist the cart on every change. saveDraft removes the key when the cart is
+  // empty (full success / manual Clear leave nothing to restore). Paused while a
+  // restore decision is pending so the empty initial cart can't clobber the draft.
+  useEffect(() => {
+    if (draftToRestore) return;
+    saveDraft({ from, to, refillId, transferId, basket, lineResults });
+  }, [from, to, refillId, transferId, basket, lineResults, draftToRestore]);
+
+  const restoreDraft = () => {
+    const d = draftToRestore;
+    if (!d) return;
+    setFrom(d.from || "");                 // direct set (not pickSource) so the cart survives
+    setBasket(d.basket || {});
+    setTo(d.to || "");
+    setRefillId(d.refillId || null);
+    setTransferId(d.transferId || null);
+    setLineResults(d.lineResults || {});
+    setLastAttempt(null);
+    setDraftToRestore(null);
+  };
+  const discardDraft = () => { clearDraft(); setDraftToRestore(null); };
+
+  // Fire the transfer line-by-line. Each line is one atomic `transfer_out`
+  // (applyMovement moves −from/+to in a single update — unchanged). This wrapper
+  // adds the failure protection AROUND that atomic write:
+  //   • a STABLE transferId (reused across retries) → deterministic movement ids
+  //     → a resend of a line that already landed is a no-op (never double-moves);
+  //   • per-line result tracking, persisted after every line, so a crash mid-loop
+  //     leaves a resumable draft;
+  //   • on partial failure the succeeded lines are dropped and the FAILED/unsent
+  //     lines stay in the cart (+ draft) for a targeted Retry — never a blanket wipe.
   const doTransfer = async () => {
     if (!from) return flash("err", "Pick a source location.");
     if (!to) return flash("err", "Pick a destination.");
     if (from === to) return flash("err", "Source and destination must differ.");
     if (!lines.length) return flash("err", "Add at least one quantity.");
     setBusy(true);
-    const transferId = push(child(ref(database), "transfers")).key;
-    let ok = 0, fail = 0;
+
+    // Reuse the cart's transferId across retries so movement ids stay deterministic.
+    let tId = transferId;
+    if (!tId) { tId = push(child(ref(database), "transfers")).key; setTransferId(tId); }
+
+    // Snapshot the lines up front (the loop persists against this fixed basket).
+    const snapshot = { ...basket };
+    const results = { ...lineResults };
+    // Persist BEFORE the first write: a crash mid-loop still leaves the transferId
+    // and which lines were already sent, so a restored retry resumes idempotently.
+    saveDraft({ from, to, refillId, transferId: tId, basket: snapshot, lineResults: results });
+
+    let sent = 0;
+    const failed = [];
     for (const ln of lines) {
-      // Pass ln.size straight through — ONE_SIZE is "_" (truthy, so applyMovement's
-      // required-size check passes) and stockSizeKey("_") === "_" hits the no-size
-      // cell. Mapping it to null would trip missing_product_or_size before encoding.
-      const res = await applyMovement({
-        type: "transfer_out", productId: ln.productId, size: ln.size, qty: ln.qty,
-        from, to, actorRole, link: { transferId, refillId: refillId || null },
-      });
-      res.ok ? ok++ : fail++;
+      const k = keyOf(ln.productId, ln.size);
+      if (results[k]?.status === "sent") { sent++; continue; } // already moved — skip
+      let res;
+      try {
+        // Pass ln.size straight through — ONE_SIZE is "_" (truthy, so applyMovement's
+        // required-size check passes) and stockSizeKey("_") === "_" hits the no-size
+        // cell. Mapping it to null would trip missing_product_or_size before encoding.
+        res = await applyMovement({
+          type: "transfer_out", productId: ln.productId, size: ln.size, qty: ln.qty,
+          from, to, actorRole,
+          movementId: transferMovementId(tId, ln.productId, ln.size), // idempotency key
+          link: { transferId: tId, refillId: refillId || null },
+        });
+      } catch (e) {
+        res = { ok: false, reason: "write_failed", error: String(e?.message || e) };
+      }
+      if (res.ok) {
+        results[k] = { status: "sent" };
+        sent++;
+      } else {
+        const kind = res.reason === "insufficient_stock" ? "stock"
+          : res.reason === "write_failed" ? "network" : "other";
+        results[k] = { status: "failed", reason: res.reason, kind };
+        failed.push({ key: k });
+      }
+      setLineResults({ ...results });
+      saveDraft({ from, to, refillId, transferId: tId, basket: snapshot, lineResults: results });
     }
-    if (refillId && ok > 0) {
+
+    // Only mark the refill fulfilled when EVERY line moved — a partial transfer
+    // must not close the request.
+    if (refillId && failed.length === 0 && sent > 0) {
       await update(ref(database), {
         [`refill_requests/${refillId}/status`]: "fulfilled",
-        [`refill_requests/${refillId}/fulfilledBy`]: { transferId },
+        [`refill_requests/${refillId}/fulfilledBy`]: { transferId: tId },
         [`refill_requests/${refillId}/resolvedAt`]: new Date().toISOString(),
       }).catch(() => {});
     }
+
     setBusy(false);
     setPicking(false);
-    if (ok > 0) { clearBasket(); setTo(""); }
-    flash(fail ? "err" : "ok",
-      fail ? `${ok} moved, ${fail} failed (insufficient stock at ${labelFor(from, registry)} or no permission)`
-           : `Transferred ${ok} line(s) → ${labelFor(to, registry)}`);
+    setLastAttempt({ sent, failed: failed.length, total: lines.length });
+
+    if (failed.length === 0) {
+      // Full success — clear the cart, idempotency context and draft.
+      clearBasket();
+      setTo("");
+      flash("ok", `Transferred ${sent} line(s) → ${labelFor(to, registry)}`);
+    } else {
+      // Partial / total failure — keep ONLY the unsent lines so they can be retried.
+      const remaining = {};
+      for (const [key, ln] of Object.entries(snapshot)) if (results[key]?.status !== "sent") remaining[key] = ln;
+      setBasket(remaining);
+      saveDraft({ from, to, refillId, transferId: tId, basket: remaining, lineResults: results });
+      flash("err", `Transfer incomplete — ${sent}/${lines.length} moved, ${failed.length} saved to retry`);
+    }
   };
 
   return (
     <div>
+      {/* Restore banner — an unsent cart survived a crash / reload / network drop. */}
+      {draftToRestore && (() => {
+        const dl = Object.values(draftToRestore.basket || {}).filter((l) => l.qty > 0);
+        const units = dl.reduce((s, l) => s + l.qty, 0);
+        return (
+          <div style={{ ...GLASS, padding: 12, marginBottom: 12, border: "1px solid rgba(74,222,128,.5)", background: "rgba(74,222,128,.06)" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 3 }}>Unsent transfer found</div>
+            <div style={{ fontSize: 12, color: GRAY, marginBottom: 10 }}>
+              {dl.length} line{dl.length === 1 ? "" : "s"} · {units} unit{units === 1 ? "" : "s"}
+              {draftToRestore.from ? <> from <span style={{ color: "#fff" }}>{labelFor(draftToRestore.from, registry)}</span></> : null}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={restoreDraft} style={{ ...bGreen, flex: 2, padding: "8px 12px" }}>Restore cart</button>
+              <button onClick={discardDraft} style={{ ...bGhost, flex: 1, padding: "8px 12px" }}>Discard</button>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Open refill requests (Source chain) — prefill a transfer */}
       {openRefills.length > 0 && (
         <div style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
@@ -310,6 +456,24 @@ export default function Transfer({ products, registry, actorRole }) {
       </div>
       <div style={{ fontSize: 10.5, color: GRAY, marginBottom: 10 }}>Scanner armed — scan any item and it drops into the cart. Same product + size stacks.</div>
 
+      {/* Transfer-incomplete banner — moved lines are gone from the cart; the
+          failed/unsent lines remain here for a targeted, idempotent retry. */}
+      {failedLines.length > 0 && !busy && (
+        <div style={{ ...GLASS, padding: 12, marginBottom: 12, border: "1px solid rgba(255,139,139,.5)", background: "rgba(255,139,139,.07)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 3 }}>
+            Transfer incomplete{lastAttempt ? ` — ${lastAttempt.sent}/${lastAttempt.total} moved` : ""}
+          </div>
+          <div style={{ fontSize: 12, color: GRAY, marginBottom: 8 }}>
+            {failedLines.length} line{failedLines.length === 1 ? "" : "s"} saved — already-moved lines are done and won’t re-send.
+          </div>
+          {networkFails > 0 && <div style={{ fontSize: 12, color: "#FFB4B4", marginBottom: 4 }}>{networkFails} didn’t send (network) — tap Retry.</div>}
+          {stockFails > 0 && <div style={{ fontSize: 12, color: AMBER, marginBottom: 4 }}>{stockFails} exceed stock at {labelFor(from, registry)} — lower the qty, then retry.</div>}
+          <button onClick={doTransfer} disabled={busy || !to} style={{ ...bGreen, marginTop: 6, padding: "8px 14px", opacity: to ? 1 : 0.5 }}>
+            Retry {failedLines.length} line{failedLines.length === 1 ? "" : "s"}
+          </button>
+        </div>
+      )}
+
       {/* CART — ONE card per product, sizes broken out (M×2, L×1 …) + product total.
           Per-size ± / remove and remove-whole-product. Confirm still moves each size
           cell exactly. Over-source sizes are flagged (floor blocks them at commit). */}
@@ -332,10 +496,16 @@ export default function Transfer({ products, registry, actorRole }) {
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {g.sizes.map((s) => {
                     const k = keyOf(g.productId, s.size);
+                    const lr = lineResults[k];
+                    const failedLine = lr?.status === "failed";
                     return (
                       <div key={s.size} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderTop: BORDER }}>
                         <div style={{ minWidth: 62 }}><SizeChip size={s.size} /></div>
-                        <div style={{ flex: 1, fontSize: 10.5, color: s.over ? AMBER : GRAY }}>{s.here} at source{s.over ? " · over!" : ""}</div>
+                        <div style={{ flex: 1, fontSize: 10.5, color: failedLine ? (lr.kind === "stock" ? AMBER : "#FF8B8B") : (s.over ? AMBER : GRAY) }}>
+                          {failedLine
+                            ? (lr.kind === "stock" ? "not enough stock — lower qty" : lr.kind === "network" ? "didn’t send — retry" : "failed — retry")
+                            : <>{s.here} at source{s.over ? " · over!" : ""}</>}
+                        </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                           <button onClick={() => setLineQty(k, s.qty - 1)} style={stepBtn}>−</button>
                           <input type="number" inputMode="numeric" min="0" value={s.qty}
