@@ -5658,6 +5658,17 @@ function AssistantView({ products, onExit, orders = [] }) {
           .mc-grid-photo  { grid-template-columns: repeat(5, 1fr); }
           .mc-grid-refill { grid-template-columns: repeat(2, 1fr); }
         }
+        /* Siri-style price: all 4 candidate hues mixed into one animated,
+           iridescent gradient that drifts across the text. */
+        .mc-price-siri {
+          background: linear-gradient(90deg, #6E7BFF, #5D8BFF, #8A6DFF, #7F5AF0, #8A6DFF, #5D8BFF, #6E7BFF);
+          background-size: 300% 100%;
+          -webkit-background-clip: text; background-clip: text;
+          -webkit-text-fill-color: transparent; color: transparent;
+          animation: mcPriceSiri 4s linear infinite;
+        }
+        @keyframes mcPriceSiri { from { background-position: 0% 0; } to { background-position: 300% 0; } }
+        @media (prefers-reduced-motion: reduce) { .mc-price-siri { animation: none; } }
       `}</style>
       {/* TOP BAR */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
@@ -5852,7 +5863,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                 <div style={{ padding:"12px 13px 14px" }}>
                   <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>{p.name}</div>
                   {typeof p.retailPrice === "number" && p.retailPrice > 0 ? (
-                    <div style={{ fontSize:16, fontWeight:800, color:"#8A6DFF", marginBottom:4 }}>
+                    <div className="mc-price-siri" style={{ fontSize:16, fontWeight:800, marginBottom:4, width:"fit-content" }}>
                       R{p.retailPrice.toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
                     </div>
                   ) : (
