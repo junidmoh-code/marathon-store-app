@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { realSizesOf, resolveScan } from "./scanResolve";
+import { realSizesOf, resolveScan, forgivingBarcodeCandidates } from "./scanResolve";
 
 const sneaker  = { id: "s1", name: "Air Max", sizes: ["7", "8", "9.5"] };
 const clothing = { id: "c1", name: "Nike Tee", sizes: ["S", "M", "L", "XL"] };
@@ -30,5 +30,23 @@ describe("resolveScan", () => {
   it("genuinely unsized product + no size → one-size ('_' cell is correct)", () => {
     expect(resolveScan(oneSize, undefined)).toEqual({ kind: "onesize" });
     expect(resolveScan(placeholder, null)).toEqual({ kind: "onesize" });
+  });
+});
+
+describe("forgivingBarcodeCandidates (typed leading-zero tolerance)", () => {
+  it("zero-pads the stripped number, excludes the exact code, never substring", () => {
+    const c = forgivingBarcodeCandidates("1385");
+    expect(c).toContain("01385");
+    expect(c).toContain("00001385");
+    expect(c).not.toContain("1385");     // exact code excluded (already tried)
+    expect(c).not.toContain("13850");    // never a substring/suffix match
+    expect(c.every(x => /^\d+$/.test(x))).toBe(true);
+  });
+  it("strips leading zeros first so '00001385' and '1385' share candidates", () => {
+    expect(forgivingBarcodeCandidates("00001385")).toContain("1385");
+  });
+  it("non-numeric input → no candidates (names/junk skip)", () => {
+    expect(forgivingBarcodeCandidates("abc")).toEqual([]);
+    expect(forgivingBarcodeCandidates("")).toEqual([]);
   });
 });

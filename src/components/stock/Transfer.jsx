@@ -24,12 +24,34 @@ import { Toast, Empty } from "./widgets";
 import { GLASS, GLASS_SOLID, CARD, BLUE_L, GREEN, GRAY, AMBER, BORDER, FONT, input, bGreen, bGhost } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
 import { SizeTag } from "../SizeTag";
-import { resolveScan, realSizesOf } from "./scanResolve";
+import { resolveScan, realSizesOf, forgivingBarcodeCandidates } from "./scanResolve";
+import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import FilterPicker from "./FilterPicker";
+
+// RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found", not a
+// mis-pathed read. (Mirrors the POS barcodeLookup reader.)
+const RTDB_RESERVED = /[.#$[\]/]/;
+async function lookupBarcode(code) {
+  const key = String(code ?? "").trim();
+  if (!key || RTDB_RESERVED.test(key)) return null;
+  const snap = await get(ref(database, `barcodes/${key}`));
+  return snap.exists() ? snap.val() : null;
+}
 
 const ONE_SIZE = "_";                                  // the no-size /stock cell key
 const keyOf = (pid, size) => `${pid}__${size}`;
 const sizeLabel = (size) => (size === ONE_SIZE || size == null || size === "" ? "One size" : null);
+
+// Size display order for the grouped cart card: letter sizes, then numeric, then
+// "One size" last — so a product's breakdown reads S·M·L·… like the rest of the app.
+const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL", "5XL", "6XL"];
+function sizeRank(s) {
+  if (s === ONE_SIZE) return 1000;
+  const i = SIZE_ORDER.indexOf(String(s).toUpperCase());
+  if (i >= 0) return i;
+  const n = Number(s);
+  return Number.isFinite(n) ? 100 + n : 999;
+}
 
 // Compact filter chip (destination row).
 const chip = (on) => ({
@@ -106,6 +128,25 @@ export default function Transfer({ products, registry, actorRole }) {
   const totalUnits = lines.reduce((s, l) => s + l.qty, 0);
   const overCount = lines.filter((l) => l.qty > avail(l.productId, l.size)).length;
 
+  // Cart grouped ONE card per product, sizes broken out underneath (M×2, L×1 …) —
+  // mirrors the Clothing-Sold grouped card. The underlying per-size basket lines are
+  // untouched, so Confirm still fires one exact transfer_out per size.
+  const cartGroups = useMemo(() => {
+    const byPid = new Map();
+    for (const l of lines) {
+      if (!byPid.has(l.productId)) byPid.set(l.productId, { productId: l.productId, productName: l.productName, sizes: [], total: 0, over: false });
+      const g = byPid.get(l.productId);
+      const here = avail(l.productId, l.size);
+      g.sizes.push({ size: l.size, qty: l.qty, here, over: l.qty > here });
+      g.total += l.qty;
+      if (l.qty > here) g.over = true;
+    }
+    const groups = [...byPid.values()];
+    groups.forEach((g) => g.sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size)));
+    return groups.sort((a, b) => a.productName.localeCompare(b.productName));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lines, srcCells]);
+
   // Manual grid: capped at source stock (you can't browse-add more than is here).
   const setQty = (product, size, qty) => {
     const max = avail(product.id, size);
@@ -129,6 +170,9 @@ export default function Transfer({ products, registry, actorRole }) {
     return { ...b, [k]: { ...line, qty: n } };
   });
   const removeLine = (k) => setBasket((b) => { const nb = { ...b }; delete nb[k]; return nb; });
+  const removeProduct = (pid) => setBasket((b) => {
+    const nb = {}; for (const [k, v] of Object.entries(b)) if (v.productId !== pid) nb[k] = v; return nb;
+  });
 
   // Add ONE unit for a (product, size) via a scan — uncapped (over-scan allowed).
   const scanAdd = (product, size) => {
@@ -147,16 +191,21 @@ export default function Transfer({ products, registry, actorRole }) {
   // source). Reset so quantities always reflect what's actually available here.
   const pickSource = (id) => { if (id === from) return; setFrom(id); setBasket({}); setOpenId(null); setRefillId(null); if (to === id) setTo(""); };
 
-  // Resolve a scanned/typed barcode → add to the cart. Unknown code → "not found"
-  // but the session stays alive (input cleared, focus kept) so scanning continues.
-  const onScanCode = async (raw) => {
+  // Resolve a scanned/typed barcode → INSTANT cart add (POS sell-scan feel). A
+  // hardware SCAN is matched EXACTLY; a slowly-TYPED code also tries leading-zero
+  // variants (forgiving). Unknown code → "not found", session stays alive.
+  const onScanCode = async (raw, { forgiving = false } = {}) => {
     const code = String(raw || "").trim();
-    setScan("");
     if (!code) return;
+    if (sizePrompt) return;                                   // finish the open size prompt first
     if (!from) { flash("err", "Pick a source location first."); return; }
     let rec = null;
-    try { const snap = await get(ref(database, `barcodes/${code}`)); rec = snap.exists() ? snap.val() : null; }
-    catch { rec = null; }
+    try {
+      rec = await lookupBarcode(code);
+      if (!rec && forgiving) {
+        for (const cand of forgivingBarcodeCandidates(code)) { rec = await lookupBarcode(cand); if (rec) break; }
+      }
+    } catch { rec = null; }
     if (!rec || !rec.productId) { flash("err", `Barcode not found: ${code}`); return; }
     const product = productsById[rec.productId];
     if (!product) { flash("err", `Scanned product not in catalogue (${rec.productId}).`); return; }
@@ -164,6 +213,18 @@ export default function Transfer({ products, registry, actorRole }) {
     if (r.kind === "prompt") { setSizePrompt({ product }); return; }   // sized clothing, code had no size
     scanAdd(product, r.kind === "add" ? r.size : ONE_SIZE);
   };
+
+  // Mirror the POS omni-input: a WINDOW-level listener catches the gun's burst
+  // anywhere on the screen and drops the item straight into the cart — no focused
+  // box, so you can scan-scan-scan continuously. onScanRef always points at the
+  // latest handler so it reads current `from`/`products` without re-subscribing.
+  const onScanRef = useRef();
+  onScanRef.current = onScanCode;
+  useEffect(() => {
+    const uninstall = installBarcodeListener();
+    const unsub = subscribeBarcode((value) => onScanRef.current?.(value, { forgiving: false }));
+    return () => { unsub(); uninstall(); };
+  }, []);
 
   const prefillRefill = (r) => {
     const p = productsById[r.productId];
@@ -235,47 +296,59 @@ export default function Transfer({ products, registry, actorRole }) {
         <Empty>Pick a source location above to start a transfer.</Empty>
       ) : (
       <>
-      {/* SCAN — a barcode gun (or manual entry) adds straight to the cart below.
-          Sits above search; both feed the same cart. */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+      {/* SCAN — the gun works ANYWHERE on this screen (global omni-listener, POS
+          sell-scan feel): each scan drops straight into the cart, no focus needed,
+          so you can scan-scan-scan. The box is a manual-entry fallback (leading
+          zeros optional) and stays armed. */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
         <input ref={scanRef} value={scan} onChange={(e) => setScan(e.target.value)} autoFocus
-               onKeyDown={(e) => { if (e.key === "Enter") onScanCode(e.currentTarget.value); }}
+               onKeyDown={(e) => { if (e.key === "Enter") { onScanCode(e.currentTarget.value, { forgiving: true }); setScan(""); requestAnimationFrame(() => scanRef.current?.focus()); } }}
                placeholder="Scan or type a barcode… ↵"
                style={{ ...input, flex: 1, boxSizing: "border-box", borderColor: "rgba(74,222,128,.4)" }} />
-        <button onClick={() => onScanCode(scan)} style={{ ...bGreen, padding: "0 16px", whiteSpace: "nowrap" }}>Add</button>
+        <button onClick={() => { onScanCode(scan, { forgiving: true }); setScan(""); scanRef.current?.focus(); }} style={{ ...bGreen, padding: "0 16px", whiteSpace: "nowrap" }}>Add</button>
       </div>
+      <div style={{ fontSize: 10.5, color: GRAY, marginBottom: 10 }}>Scanner armed — scan any item and it drops into the cart. Same product + size stacks.</div>
 
-      {/* CART — scanned + manually-added lines. Per-line size, qty and remove.
-          Over-source lines are flagged (commit is still blocked by the floor). */}
-      {lines.length > 0 && (
-        <div style={{ ...GLASS, padding: 10, marginBottom: 12 }}>
+      {/* CART — ONE card per product, sizes broken out (M×2, L×1 …) + product total.
+          Per-size ± / remove and remove-whole-product. Confirm still moves each size
+          cell exactly. Over-source sizes are flagged (floor blocks them at commit). */}
+      {cartGroups.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>
-            Cart · {lines.length} line(s) · {totalUnits} unit(s){overCount > 0 ? ` · ${overCount} over source` : ""}
+            Cart · {cartGroups.length} product{cartGroups.length !== 1 ? "s" : ""} · {totalUnits} unit(s){overCount > 0 ? ` · ${overCount} over source` : ""}
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {lines.map((l) => {
-              const k = keyOf(l.productId, l.size);
-              const here = avail(l.productId, l.size);
-              const over = l.qty > here;
-              return (
-                <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 4px", borderTop: BORDER }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {cartGroups.map((g) => (
+              <div key={g.productId} style={{ ...GLASS, padding: 11 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 8 }}>
+                  <Thumb product={productsById[g.productId]} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, color: "#fff", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.productName}</div>
-                    <div style={{ fontSize: 11, color: over ? AMBER : GRAY, marginTop: 1 }}>
-                      <SizeChip size={l.size} /> · {here} at source{over ? " · over!" : ""}
-                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.productName}</div>
+                    <div style={{ fontSize: 11, color: g.over ? AMBER : GRAY }}>{g.total} unit{g.total !== 1 ? "s" : ""} · {g.sizes.length} size{g.sizes.length !== 1 ? "s" : ""}{g.over ? " · over source" : ""}</div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <button onClick={() => setLineQty(k, l.qty - 1)} style={stepBtn}>−</button>
-                    <input type="number" inputMode="numeric" min="0" value={l.qty}
-                           onChange={(e) => setLineQty(k, e.target.value)}
-                           style={{ ...input, width: 46, minWidth: 0, boxSizing: "border-box", textAlign: "center", padding: "6px 2px", borderColor: over ? "rgba(245,158,11,.5)" : undefined }} />
-                    <button onClick={() => setLineQty(k, l.qty + 1)} style={stepBtn}>+</button>
-                  </div>
-                  <button onClick={() => removeLine(k)} title="Remove" style={{ ...bGhost, padding: "6px 9px", fontSize: 13, lineHeight: 1 }}>×</button>
+                  <button onClick={() => removeProduct(g.productId)} title="Remove product" style={{ ...bGhost, padding: "6px 10px", fontSize: 13, lineHeight: 1 }}>Remove</button>
                 </div>
-              );
-            })}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {g.sizes.map((s) => {
+                    const k = keyOf(g.productId, s.size);
+                    return (
+                      <div key={s.size} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderTop: BORDER }}>
+                        <div style={{ minWidth: 62 }}><SizeChip size={s.size} /></div>
+                        <div style={{ flex: 1, fontSize: 10.5, color: s.over ? AMBER : GRAY }}>{s.here} at source{s.over ? " · over!" : ""}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <button onClick={() => setLineQty(k, s.qty - 1)} style={stepBtn}>−</button>
+                          <input type="number" inputMode="numeric" min="0" value={s.qty}
+                                 onChange={(e) => setLineQty(k, e.target.value)}
+                                 style={{ ...input, width: 44, minWidth: 0, boxSizing: "border-box", textAlign: "center", padding: "6px 2px", borderColor: s.over ? "rgba(245,158,11,.5)" : undefined }} />
+                          <button onClick={() => setLineQty(k, s.qty + 1)} style={stepBtn}>+</button>
+                        </div>
+                        <button onClick={() => removeLine(k)} title="Remove size" style={{ ...bGhost, padding: "5px 8px", fontSize: 13, lineHeight: 1 }}>×</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

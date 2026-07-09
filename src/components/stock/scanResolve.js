@@ -26,3 +26,22 @@ export function resolveScan(product, indexedSize) {
   if (isRealSize(indexedSize)) return { kind: "add", size: String(indexedSize) };
   return realSizesOf(product).length ? { kind: "prompt" } : { kind: "onesize" };
 }
+
+// Forgiving TYPED entry (ported from POS forgivingBarcode): leading zeros are
+// optional when a code is typed by hand — "1385" should find "00001385". A real
+// hardware SCAN delivers the full code and is matched EXACTLY (untouched); only a
+// manual miss falls back to these zero-padded variants, each looked up in the EXACT
+// /barcodes index (never a substring match, so "1385" can't wrongly hit "13850").
+const MAX_BARCODE_LEN = 14; // EAN-13 / UPC-A + margin
+export function forgivingBarcodeCandidates(code) {
+  const raw = String(code ?? "").trim();
+  if (!/^\d+$/.test(raw)) return [];            // non-numeric (names/junk) → skip
+  const base = raw.replace(/^0+/, "") || "0";   // zero-stripped ("0" if all zeros)
+  const seen = new Set([raw]);                  // never re-try the exact code
+  const out = [];
+  for (let len = base.length; len <= MAX_BARCODE_LEN; len++) {
+    const cand = base.padStart(len, "0");
+    if (!seen.has(cand)) { seen.add(cand); out.push(cand); }
+  }
+  return out;
+}
