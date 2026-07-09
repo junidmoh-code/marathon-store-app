@@ -5850,7 +5850,14 @@ function AssistantView({ products, onExit, orders = [] }) {
                   )}
                 </div>
                 <div style={{ padding:"12px 13px 14px" }}>
-                  <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:5 }}>{p.name}</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>{p.name}</div>
+                  {typeof p.retailPrice === "number" && p.retailPrice > 0 ? (
+                    <div style={{ fontSize:16, fontWeight:800, color:"#4ADE80", marginBottom:4 }}>
+                      R{p.retailPrice.toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>
+                  )}
                   <div style={{ fontSize:13, fontWeight:500, color:"#4A7FFF" }}>Tap to add →</div>
                 </div>
                 <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
