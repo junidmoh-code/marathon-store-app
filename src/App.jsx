@@ -7402,7 +7402,9 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
   return (
     <div style={{ background:CARD, border: open ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(60,110,255,.3)", borderLeft:"3px solid #4A7FFF", borderRadius:RADIUS, boxShadow: open ? "0 0 12px rgba(60,110,255,.15)" : "none", overflow:"hidden" }}>
       {/* Compact header row — always visible; tap to expand/collapse. */}
-      <div onClick={onToggle} style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 11px", cursor:"pointer" }}>
+      <div onClick={onToggle} role="button" tabIndex={0} aria-expanded={open}
+           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } }}
+           style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 11px", cursor:"pointer" }}>
         <div onClick={hasPhotos ? (e) => { e.stopPropagation(); onViewPhoto(photos); } : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:8 }}>
