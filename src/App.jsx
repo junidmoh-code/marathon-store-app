@@ -2004,10 +2004,10 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
     const opsRest = ops.filter(c => c !== featured);
     const others = groups.slice(1).filter(g => g.cards.length > 0); // Insights, Admin
     const stats = [
-      { k: "Orders today", v: assistantBadge },
-      { k: "In queue", v: incoming },
-      { k: "To restock", v: sourceBadge, warn: sourceBadge > 0 },
-      { k: "Returns", v: returnedToday.size },
+      { k: "Orders today", v: assistantBadge, role: ROLES.WAREHOUSE },
+      { k: "In queue", v: incoming, role: ROLES.WAREHOUSE },
+      { k: "To restock", v: sourceBadge, warn: sourceBadge > 0, role: ROLES.SOURCE },
+      { k: "Returns", v: returnedToday.size, role: ROLES.RETURNS },
     ];
     return (
       <div style={{ minHeight:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, position:"relative" }}>
@@ -2015,6 +2015,11 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
         <style>{`
           @keyframes hmRise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
           .hm-r{opacity:0;animation:hmRise .55s cubic-bezier(.2,.7,.2,1) forwards}
+          .hm-stat{position:relative;width:100%;text-align:left;font-family:inherit;color:#f3f6ff;background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:14px 15px}
+          .hm-stat.clk{cursor:pointer;transition:transform .18s cubic-bezier(.2,.7,.2,1),border-color .18s,box-shadow .18s}
+          .hm-stat.clk:hover,.hm-stat.clk:focus-visible{transform:translateY(-3px);border-color:rgba(74,127,255,.5);box-shadow:0 14px 30px -20px rgba(60,110,255,.55);outline:none}
+          .hm-sgo{position:absolute;top:13px;right:14px;color:#4A7FFF;font-size:13px;opacity:0;transform:translateX(-3px);transition:.18s}
+          .hm-stat.clk:hover .hm-sgo,.hm-stat.clk:focus-visible .hm-sgo{opacity:1;transform:none}
           .hm-tile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:5px;width:100%;text-align:left;cursor:pointer;font-family:inherit;color:#f3f6ff;
             background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 60%),rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:16px;overflow:hidden;
             transition:transform .22s cubic-bezier(.2,.7,.2,1),border-color .22s,box-shadow .22s}
@@ -2041,7 +2046,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
           .hm-mic svg{width:18px;height:18px}
           .hm-mnm{display:block;font-size:13.5px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
           .hm-mds{display:block;font-size:11px;color:rgba(233,238,255,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-          @media(prefers-reduced-motion:reduce){.hm-r{animation:none;opacity:1}.hm-tile,.hm-mini,.hm-ar{transition:none}}
+          @media(prefers-reduced-motion:reduce){.hm-r{animation:none;opacity:1}.hm-tile,.hm-mini,.hm-ar,.hm-stat{transition:none}}
         `}</style>
         <div style={{ position:"relative", maxWidth:1100, margin:"0 auto", padding:"28px 30px 72px" }}>
           {/* Top bar */}
@@ -2067,14 +2072,19 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
             <div style={{ fontSize:13.5, color:"rgba(233,238,255,.5)", marginTop:9 }}>Here's what's moving at Marathon today.</div>
           </div>
 
-          {/* Today's numbers */}
+          {/* Today's numbers — each jumps to its queue when you have access. */}
           <div className="hm-r" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, margin:"22px 0 34px", animationDelay:".14s" }}>
-            {stats.map(s => (
-              <div key={s.k} style={{ background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"14px 15px" }}>
-                <div style={{ fontSize:10.5, letterSpacing:".14em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700 }}>{s.k}</div>
-                <div style={{ fontSize:28, fontWeight:800, letterSpacing:"-.02em", fontVariantNumeric:"tabular-nums", marginTop:6, color: s.warn ? "#F5A623" : "#fff" }}>{s.v}</div>
-              </div>
-            ))}
+            {stats.map(s => {
+              const can = hasPermission(ROLE_TO_PERMISSION[s.role]);
+              const El = can ? "button" : "div";
+              return (
+                <El key={s.k} className={"hm-stat" + (can ? " clk" : "")} onClick={can ? () => onSelect(s.role) : undefined}>
+                  {can && <span className="hm-sgo">→</span>}
+                  <div style={{ fontSize:10.5, letterSpacing:".14em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700 }}>{s.k}</div>
+                  <div style={{ fontSize:28, fontWeight:800, letterSpacing:"-.02em", fontVariantNumeric:"tabular-nums", marginTop:6, color: s.warn ? "#F5A623" : "#fff" }}>{s.v}</div>
+                </El>
+              );
+            })}
           </div>
 
           {!anyCards ? (
