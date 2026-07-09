@@ -5168,13 +5168,21 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // props (onQuickAdd/onRemoveOne/onCheckout); clothing is CR-only, so the catalog
 // is sneakers only. Committed dark — the POS's world.
 function AssistantDesktop({ products, effectiveShop, availableShops, onSelectShop, shopRegistry,
-                            search, setSearch, cart, onQuickAdd, onRemoveOne, onCheckout,
-                            onViewPhoto, onSwitchView, userEmail, onGoRefill }) {
+                            search, setSearch, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
+                            onViewPhoto, onSwitchView, onSignOut, userEmail, onGoRefill,
+                            customerName, setCustomerName, customerPhone, setCustomerPhone,
+                            marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
+                            customerIndex, onPickCustomer }) {
   const [brand, setBrand] = useState("All");
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
   const [qvSize, setQvSize] = useState(null);
   const [qvQty, setQvQty] = useState(1);
+  const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
+  const [coOpen, setCoOpen] = useState(false); // desktop checkout modal
+  const [nameDD, setNameDD] = useState(false);
+  const [phoneDD, setPhoneDD] = useState(false);
+  const [pendingShop, setPendingShop] = useState(null); // shop-switch confirm
   const searchRef = useRef(null);
 
   const sneakers = useMemo(() =>
@@ -5208,14 +5216,14 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
     const m = new Map();
     (cart || []).forEach(l => {
       if (l.intent === "refill") return;                 // desktop = customer orders
-      const key = `${l.product?.id}__${l.size}`;
-      if (!m.has(key)) m.set(key, { key, product: l.product, size: l.size, qty: 0 });
+      const dp = !!l.requestDisplayPartner;
+      const key = `${l.product?.id}__${l.size}__${dp ? "dp" : ""}`;
+      if (!m.has(key)) m.set(key, { key, product: l.product, size: l.size, dp, qty: 0 });
       m.get(key).qty++;
     });
     return [...m.values()];
   }, [cart]);
   const units = grouped.reduce((s, g) => s + g.qty, 0);
-  const total = grouped.reduce((s, g) => s + (typeof g.product?.retailPrice === "number" ? g.product.retailPrice * g.qty : 0), 0);
   const fmtR = n => "R" + Number(n).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
   const sizesOf = p => { const s = (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"); return s.length ? s : ["Free Size"]; };
 
@@ -5228,7 +5236,7 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
     return () => window.removeEventListener("keydown", h);
   }, []);
 
-  const openQv = (p) => { setQv(p); setQvSize(null); setQvQty(1); };
+  const openQv = (p) => { setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); };
   const Photo = ({ p, big }) => p.photoUrl
     ? <img src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} />
     : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
@@ -5321,7 +5329,8 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
         <div className="ad-wm" style={{ padding: "0 8px 14px" }}><div className="m">marathon</div><div className="c">CLUB</div></div>
         <div className="ad-lab">Order for</div>
         {(availableShops || []).map(s => (
-          <button key={s.id} className="ad-nav" aria-current={effectiveShop === s.id} onClick={() => onSelectShop(s.id)}>
+          <button key={s.id} className="ad-nav" aria-current={effectiveShop === s.id}
+                  onClick={() => { if (s.id !== effectiveShop) setPendingShop(s.id); }}>
             <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
             {labelFor(s.id, shopRegistry)}
           </button>
@@ -5342,10 +5351,14 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
         </button>
         <div className="ad-who">
           <span className="ad-av">{(userEmail || "?")[0].toUpperCase()}</span>
-          <span style={{ minWidth: 0 }}>
+          <span style={{ minWidth: 0, flex: 1 }}>
             <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{(userEmail || "").split("@")[0] || "assistant"}</span>
             <span style={{ display: "block", fontSize: 10, color: "rgba(233,238,255,.4)" }}>Store assistant</span>
           </span>
+          <button onClick={onSignOut} title="Sign out" aria-label="Sign out"
+                  style={{ width: 28, height: 28, flexShrink: 0, borderRadius: 8, border: "1px solid rgba(255,255,255,.12)", background: "transparent", color: "rgba(233,238,255,.5)", cursor: "pointer", display: "grid", placeItems: "center" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+          </button>
         </div>
       </aside>
 
@@ -5393,7 +5406,6 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
                         {priced ? <span className="ad-price">{fmtR(p.retailPrice)}</span> : <span className="ad-price no">No price set</span>}
                         <span className="ad-szn">{szs.length} size{szs.length !== 1 ? "s" : ""}</span>
                       </div>
-                      <div className="ad-hint">Hover to add →</div>
                       <div className="ad-quick"><div>
                         <div className="ad-qlab">Add a size</div>
                         <div className="ad-szrow">
@@ -5430,21 +5442,25 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
               <div className="ad-li">{g.product?.photoUrl ? <img src={g.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👟")}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="ad-ln">{g.product?.name}</div>
-                <div className="ad-lm">Size {g.size === "Free Size" ? "OS" : formatSize(g.size)} · {typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice) : "—"}</div>
+                <div className="ad-lm">
+                  {g.dp
+                    ? <span style={{ color: "#9DBCFF" }}>Display Partner{g.size ? ` · Sz ${formatSize(g.size)}` : ""}</span>
+                    : `Size ${g.size === "Free Size" ? "OS" : formatSize(g.size)} · ${typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice) : "—"}`}
+                </div>
                 <div className="ad-step">
-                  <button onClick={() => onRemoveOne(g.product.id, g.size)}>−</button>
+                  <button onClick={() => onRemoveOne(g.product.id, g.size, g.dp)}>−</button>
                   <span>{g.qty}</span>
-                  <button onClick={() => onQuickAdd(g.product, g.size, 1)}>+</button>
+                  <button onClick={() => g.dp ? onAddDisplayPartner(g.product, g.size) : onQuickAdd(g.product, g.size, 1)}>+</button>
                 </div>
               </div>
-              <div className="ad-lp">{typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice * g.qty) : "—"}</div>
+              <div className="ad-lp">{g.dp ? "—" : (typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice * g.qty) : "—")}</div>
             </div>
           ))}
         </div>
         <div className="ad-dfoot">
+          {/* Ordering system, not POS — no money total. */}
           <div className="ad-trow"><span>{units} item{units !== 1 ? "s" : ""}</span><span>{grouped.length} line{grouped.length !== 1 ? "s" : ""}</span></div>
-          <div className="ad-trow tot"><span>Total</span><span>{fmtR(total)}</span></div>
-          <button className="ad-place" disabled={!units} onClick={onCheckout}>Place order</button>
+          <button className="ad-place" disabled={!units} onClick={() => setCoOpen(true)}>Place order</button>
         </div>
       </aside>
 
@@ -5472,15 +5488,103 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
                   ))}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: "auto" }}>
-                <div className="ad-step" style={{ height: 48 }}>
-                  <button style={{ width: 34, height: 46, fontSize: 18 }} onClick={() => setQvQty(q => Math.max(1, q - 1))}>−</button>
-                  <span style={{ minWidth: 34, fontSize: 14 }}>{qvQty}</span>
-                  <button style={{ width: 34, height: 46, fontSize: 18 }} onClick={() => setQvQty(q => Math.min(10, q + 1))}>+</button>
-                </div>
-                <button className="ad-svadd" disabled={!qvSize} onClick={() => { onQuickAdd(qv, qvSize, qvQty); setQv(null); }}>
-                  {qvSize ? `Add ${qvQty} × ${qvSize === "Free Size" ? "OS" : formatSize(qvSize)} to order` : "Select a size"}
+              {/* Display Partner request — sneakers only; one line, size optional. */}
+              <div>
+                <div className="ad-qlab">Display Partner (optional)</div>
+                <button onClick={() => setQvDP(v => !v)}
+                        style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                 border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
+                                 background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
+                                 color: qvDP ? "#9DBCFF" : "rgba(233,238,255,.55)", display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 15, height: 15, borderRadius: 4, border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.25)"}`, background: qvDP ? "#4A7FFF" : "transparent", color: "#04120a", fontSize: 11, fontWeight: 900, display: "grid", placeItems: "center" }}>{qvDP ? "✓" : ""}</span>
+                  Request Display Partner
                 </button>
+              </div>
+              {(() => {
+                const canAdd = !!qvSize || qvDP;
+                const doAdd = () => { if (!canAdd) return; if (qvDP) onAddDisplayPartner(qv, qvSize || null); else onQuickAdd(qv, qvSize, qvQty); setQv(null); };
+                const label = qvDP
+                  ? (qvSize ? `Add size ${formatSize(qvSize)} + Display Partner` : "Add Display Partner request")
+                  : (qvSize ? `Add ${qvQty} × ${qvSize === "Free Size" ? "OS" : formatSize(qvSize)} to order` : "Select a size or Display Partner");
+                return (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: "auto" }}>
+                    <div className="ad-step" style={{ height: 48, opacity: qvDP ? .4 : 1 }}>
+                      <button style={{ width: 34, height: 46, fontSize: 18 }} disabled={qvDP} onClick={() => setQvQty(q => Math.max(1, q - 1))}>−</button>
+                      <span style={{ minWidth: 34, fontSize: 14 }}>{qvQty}</span>
+                      <button style={{ width: 34, height: 46, fontSize: 18 }} disabled={qvDP} onClick={() => setQvQty(q => Math.min(10, q + 1))}>+</button>
+                    </div>
+                    <button className="ad-svadd" disabled={!canAdd} onClick={doAdd}>{label}</button>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CHECKOUT — ordering system (NO money total). Summary + customer + place. */}
+      {coOpen && (
+        <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target && !submitting) setCoOpen(false); }}>
+          <div className="ad-sv" style={{ gridTemplateColumns: "1fr", width: "min(460px,100%)" }}>
+            <button className="ad-svclose" onClick={() => !submitting && setCoOpen(false)} aria-label="Close">✕</button>
+            <div className="ad-svbody" style={{ gap: 13 }}>
+              <div className="ad-svname" style={{ fontSize: 19 }}>Confirm order</div>
+              <div style={{ background: "rgba(74,127,255,.05)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, padding: "9px 12px", maxHeight: 172, overflow: "auto" }}>
+                <div className="ad-qlab" style={{ margin: "0 0 6px" }}>Order · {units} item{units !== 1 ? "s" : ""}</div>
+                {grouped.map(g => (
+                  <div key={g.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, color: "#dfe7ff", padding: "4px 0" }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.product?.name}</span>
+                    <span style={{ color: "#9DBCFF", fontWeight: 700, flexShrink: 0 }}>{g.dp ? "Display" : `Sz ${formatSize(g.size)}`}{g.qty > 1 ? ` ×${g.qty}` : ""}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ position: "relative" }}>
+                <div className="ad-qlab">Customer name *</div>
+                <input value={customerName} placeholder="e.g. Ahmed" style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                       onChange={e => { setCustomerName(e.target.value); setNameDD(true); }}
+                       onFocus={() => setNameDD(true)} onBlur={() => setTimeout(() => setNameDD(false), 150)} />
+                {nameDD && <CustomerSuggestionDropdown query={customerName} mode="name" customers={customerIndex} onPick={p => { onPickCustomer(p); setNameDD(false); }} onAddNew={() => setNameDD(false)} />}
+              </div>
+              <div style={{ position: "relative" }}>
+                <div className="ad-qlab">Phone *</div>
+                <input value={customerPhone} placeholder="0712345678" inputMode="numeric" maxLength={10} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                       onChange={e => { setCustomerPhone(e.target.value.replace(/\D/g, "").slice(0, 10)); setPhoneDD(true); }}
+                       onFocus={() => setPhoneDD(true)} onBlur={() => setTimeout(() => setPhoneDD(false), 150)} />
+                {phoneDD && <CustomerSuggestionDropdown query={customerPhone} mode="phone" customers={customerIndex} onPick={p => { onPickCustomer(p); setPhoneDD(false); }} onAddNew={() => setPhoneDD(false)} />}
+                {customerPhone && !isValidLocalSAPhone(customerPhone) && <div style={{ color: "#FF6B6B", fontSize: 11, marginTop: 5 }}>Enter a 10-digit number starting with 0.</div>}
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 12.5, color: "#dfe7ff" }}>
+                <input type="checkbox" checked={marketingOptIn} onChange={e => setMarketingOptIn(e.target.checked)} style={{ width: 17, height: 17, accentColor: "#4A7FFF" }} />
+                Customer wants Marathon Club deals
+              </label>
+              {(() => {
+                const phoneOk = isValidLocalSAPhone(customerPhone);
+                const canPlace = customerName && phoneOk && units && !submitting;
+                const label = !customerName ? "Enter customer name" : !phoneOk ? "Enter a valid phone" : `Place ${grouped.length} order${grouped.length > 1 ? "s" : ""}`;
+                return <button className="ad-svadd" disabled={!canPlace} onClick={async () => { await onPlaceOrder(); setCoOpen(false); }}>{submitting ? "Placing…" : label}</button>;
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SHOP SWITCH — warn + confirm before changing where orders route. */}
+      {pendingShop && (
+        <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setPendingShop(null); }}>
+          <div className="ad-sv" style={{ gridTemplateColumns: "1fr", width: "min(400px,100%)" }}>
+            <div className="ad-svbody" style={{ gap: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, background: "rgba(245,166,35,.15)", border: "1px solid rgba(245,166,35,.4)", display: "grid", placeItems: "center" }}>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#F5A623" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                </span>
+                <div className="ad-svname" style={{ fontSize: 18 }}>Switch shop?</div>
+              </div>
+              <div style={{ fontSize: 13, color: "rgba(233,238,255,.62)", lineHeight: 1.5 }}>
+                You're ordering for <b style={{ color: "#fff" }}>{labelFor(effectiveShop, shopRegistry)}</b>. New orders will route to <b style={{ color: "#9DBCFF" }}>{labelFor(pendingShop, shopRegistry)}</b>{units ? `. Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart` : ""}.
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => setPendingShop(null)} style={{ flex: 1, padding: 12, borderRadius: 11, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.03)", color: "#dfe7ff", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+                <button onClick={() => { onSelectShop(pendingShop); setPendingShop(null); }} style={{ flex: 1, padding: 12, borderRadius: 11, border: 0, background: "linear-gradient(90deg,#6e7bff,#7f5af0)", color: "#04120a", fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>Switch shop</button>
               </div>
             </div>
           </div>
@@ -5527,7 +5631,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // `availableShops` expands that assignment into the physical shops the user may
   // pick: a "central" user → Marathon PE + Trophy; "pine" → Pine. Drives the
   // toggle below: 0 → block screen, 1 → auto-select + hide toggle, ≥2 → show.
-  const { user: assistantUser, storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin, hasPermission: stockHasPermission } = usePermissions();
+  const { user: assistantUser, signOut: assistantSignOut, storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin, hasPermission: stockHasPermission } = usePermissions();
   // Desktop workspace kicks in at ≥1024px (laptop); phone + iPad keep tap→sheet.
   const isDesktop = !useIsNarrow(1024);
   // Shop-stock visibility: stock permission OR a stock-capable stockRole (mirrors the
@@ -5752,11 +5856,16 @@ function AssistantView({ products, onExit, orders = [] }) {
       : { product: p, size, requestDisplay: false, requestDisplayPartner: false };
     setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
   };
-  // Remove one cart line matching a product+size (desktop drawer − / remove).
-  const removeOneLine = (productId, size) => setCart(c => {
-    const i = c.findIndex(l => l.product?.id === productId && l.size === size);
+  // Remove one cart line matching a product+size (+ display-partner flag) — the
+  // desktop drawer − / remove.
+  const removeOneLine = (productId, size, dp = false) => setCart(c => {
+    const i = c.findIndex(l => l.product?.id === productId && l.size === size && !!l.requestDisplayPartner === !!dp);
     return i < 0 ? c : [...c.slice(0, i), ...c.slice(i + 1)];
   });
+  // Desktop Display-Partner request — ONE line, size optional (sneakers only),
+  // mirroring addToCart's requestDisplayPartner branch.
+  const addDisplayPartner = (p, size) =>
+    setCart(c => [...c, { product: p, size: size || null, requestDisplay: false, requestDisplayPartner: true }]);
 
   const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
 
@@ -6006,9 +6115,14 @@ function AssistantView({ products, onExit, orders = [] }) {
           products={products} effectiveShop={effectiveShop} availableShops={availableShops}
           onSelectShop={selectShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch}
-          cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onCheckout={openCheckout}
-          onViewPhoto={setFullPhoto} onSwitchView={onExit}
-          userEmail={assistantUser?.email || ""} onGoRefill={() => setMode("cr")} />
+          cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
+          onViewPhoto={setFullPhoto} onSwitchView={onExit} onSignOut={assistantSignOut}
+          userEmail={assistantUser?.email || ""} onGoRefill={() => setMode("cr")}
+          customerName={customerName} setCustomerName={setCustomerName}
+          customerPhone={customerPhone} setCustomerPhone={setCustomerPhone}
+          marketingOptIn={marketingOptIn} setMarketingOptIn={setMarketingOptIn}
+          submitting={submitting} onPlaceOrder={placeOrders}
+          customerIndex={customerIndex} onPickCustomer={pickCustomer} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
