@@ -949,6 +949,43 @@ async function reverseClothingRefill({ store, productId, size, qty, hub, batchId
   });
 }
 
+// ── CR (Clothing Refill / "Shop Refill") fulfilment = a REAL hub→store transfer ──
+// A shop's CR request is fulfilled per-size by the warehouse. Each fulfilled size
+// moves stock hub→store through the single writer, on its OWN reason so it stays
+// separable from the Clothing-SOLD replenishment ledger (which tallyRefills nets
+// under CLOTHING_REFILL_REASON). Negative-guarded — applyMovement refuses to drive
+// the hub cell below zero (returns insufficient_stock instead).
+const CLOTHING_CR_REASON      = "clothing_cr";
+const CLOTHING_CR_UNDO_REASON = "clothing_cr_undo";
+
+async function fireCRRefill({ store, productId, size, qty, from, actorRole, orderId }) {
+  return applyMovement({
+    type: "transfer_out",
+    productId, size, qty,
+    from, to: store,
+    reason: CLOTHING_CR_REASON,
+    actorRole: actorRole || null,
+    link: { orderId, refillId: `cr_${store}_${productId}` },
+    // No movementId — a fresh push per Send (mirrors fireClothingRefill). The
+    // sheet's busy-guard + the order's status flip to "available" prevent re-sends.
+  });
+}
+
+// Reverse ONE fulfilled CR size: store→hub, netted against the forward move.
+// undoId (a per-undo timestamp) keys the idempotent movementId so a double-tap
+// can't double-reverse, while still allowing a later re-fulfil→re-undo cycle.
+async function reverseCRRefill({ store, productId, size, qty, hub, orderId, undoId, actorRole }) {
+  return applyMovement({
+    type: "transfer_out",
+    productId, size, qty,
+    from: store, to: hub,
+    reason: CLOTHING_CR_UNDO_REASON,
+    actorRole: actorRole || null,
+    link: { orderId, refillId: `cr_${store}_${productId}` },
+    movementId: `crundo_${undoId}_${orderId}`,
+  });
+}
+
 // Bounded read of /stock_movements: a ts-windowed query over the last
 // CLOTHING_SOLD_BACKLOG_DAYS days — NEVER an unbounded whole-ledger subscription.
 // Requires the stock_movements `.indexOn:["ts"]` rule (server-side sort); without
@@ -4916,68 +4953,56 @@ function ShopStockPanel({ products }) {
 const REFILL_STATUS = {
   pending: { label: "Pending",      fg: "#F5C451", bg: "rgba(245,196,81,.12)",  bd: "rgba(245,196,81,.35)" },
   ready:   { label: "Ready",        fg: "#4ADE80", bg: "rgba(74,222,128,.12)",  bd: "rgba(74,222,128,.4)"  },
-  oos:     { label: "Out of stock", fg: "#FF8B8B", bg: "rgba(255,90,90,.12)",   bd: "rgba(255,90,90,.4)"   },
+  oos:     { label: "Rejected",     fg: "#FF8B8B", bg: "rgba(255,90,90,.12)",   bd: "rgba(255,90,90,.4)"   },
 };
-function RefillTrackingCard({ orders = [], shop, registry, showEmpty = false }) {
-  const [open, setOpen] = useState(true);
-  const mine = useMemo(() => {
-    const rank = { pending: 0, oos: 1, ready: 2 }; // waiting-on first, then resolved
-    return (orders || [])
-      .filter(o => o && o.customerName === "Shop Refill" && o.destShop === shop)
-      .map(o => {
-        const st = o.clothingRefillStatus;
-        const status = st === "available" ? "ready" : st === "outOfStock" ? "oos" : "pending";
-        const ts = (status === "ready" ? o.clothingRefilledAt : status === "oos" ? o.clothingOutOfStockAt : o.createdAt) || o.createdAt;
-        return { id: o.id, name: o.productName, size: o.size, qty: o.qty || 1, status, ts };
-      })
-      .sort((a, b) => (rank[a.status] - rank[b.status]) || String(b.ts || "").localeCompare(String(a.ts || "")))
-      .slice(0, 40);
-  }, [orders, shop]);
+const refillStatusOf = (o) => {
+  const st = o.clothingRefillStatus;
+  return st === "available" ? "ready" : (st === "rejected" || st === "outOfStock") ? "oos" : "pending";
+};
 
-  const counts = useMemo(() => {
-    const c = { pending: 0, ready: 0, oos: 0 };
-    for (const r of mine) c[r.status]++;
-    return c;
-  }, [mine]);
-
-  if (mine.length === 0) {
-    // Discoverable empty state (CR mode only) so staff know the tracker exists
-    // even before their shop has placed a refill; silent in other modes.
-    if (!showEmpty) return null;
-    return (
-      <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(60,110,255,.25)", borderRadius:RADIUS, marginBottom:"1.5rem", padding:"12px 14px" }}>
-        <div style={{ fontSize:12.5, fontWeight:700, color:"#fff", letterSpacing:".02em" }}>My refill requests · {labelFor(shop, registry)}</div>
-        <div style={{ fontSize:11.5, color:"#777", marginTop:5 }}>No refill requests yet — placed refills will show their status here.</div>
-      </div>
-    );
-  }
-
+// One collapsible card per product (Marathon Glass, matching Source/Clothing-Sold):
+// photo (tap → shared lightbox) + name + status-count chips; expand for per-size
+// status rows. Waiting-on (pending) sizes first.
+function RefillTrackingProductCard({ group, onViewPhoto }) {
+  const [open, setOpen] = useState(group.counts.pending > 0);
+  const hasPhotos = onViewPhoto && group.photos.length > 0;
   return (
-    <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(60,110,255,.25)", borderRadius:RADIUS, marginBottom:"1.5rem", overflow:"hidden" }}>
-      <div onClick={() => setOpen(o => !o)} style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 14px", cursor:"pointer" }}>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontSize:12.5, fontWeight:700, color:"#fff", letterSpacing:".02em" }}>My refill requests · {labelFor(shop, registry)}</div>
-          <div style={{ display:"flex", gap:6, marginTop:6, flexWrap:"wrap" }}>
-            {(["pending","ready","oos"]).filter(k => counts[k] > 0).map(k => (
-              <span key={k} style={{ fontSize:11, fontWeight:700, color:REFILL_STATUS[k].fg, background:REFILL_STATUS[k].bg, border:`1px solid ${REFILL_STATUS[k].bd}`, borderRadius:999, padding:"2px 9px" }}>
-                {counts[k]} {REFILL_STATUS[k].label}
+    <div style={{ background:CARD, border:"1px solid rgba(60,110,255,.45)", borderRadius:RADIUS, boxShadow:"0 0 10px rgba(60,110,255,.12)", overflow:"hidden" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:11, padding:11 }}>
+        <div onClick={hasPhotos ? (e) => { e.stopPropagation(); onViewPhoto(group.photos); } : undefined}
+             title={hasPhotos ? "Tap to enlarge" : undefined}
+             style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
+          <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+          {hasPhotos && (
+            <div style={{ position:"absolute", right:-4, bottom:-4, width:18, height:18, borderRadius:9, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
+          )}
+        </div>
+        <div onClick={() => setOpen(o => !o)} style={{ flex:1, minWidth:0, cursor:"pointer" }}>
+          <div style={{ fontSize:14, fontWeight:700, color:"#fff", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{group.name}</div>
+          <div style={{ display:"flex", gap:5, marginTop:5, flexWrap:"wrap" }}>
+            {(["pending","ready","oos"]).filter(k => group.counts[k] > 0).map(k => (
+              <span key={k} style={{ fontSize:10.5, fontWeight:700, color:REFILL_STATUS[k].fg, background:REFILL_STATUS[k].bg, border:`1px solid ${REFILL_STATUS[k].bd}`, borderRadius:999, padding:"2px 8px" }}>
+                {group.counts[k]} {REFILL_STATUS[k].label}
               </span>
             ))}
           </div>
         </div>
-        <span style={{ color:"#4A7FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s", fontSize:14 }}>▸</span>
+        <span onClick={() => setOpen(o => !o)} style={{ color:"#4A7FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s", fontSize:14, cursor:"pointer", padding:"0 4px" }}>▸</span>
       </div>
       {open && (
-        <div style={{ padding:"0 14px 10px", display:"flex", flexDirection:"column" }}>
-          {mine.map(r => {
+        <div style={{ padding:"0 11px 8px" }}>
+          {group.lines.map(r => {
             const s = REFILL_STATUS[r.status];
+            const partial = r.status === "ready" && r.sentQty != null && r.sentQty < r.qty;
             return (
-              <div key={r.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderTop:"1px solid rgba(255,255,255,.06)" }}>
+              <div key={r.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderTop:"1px solid rgba(255,255,255,.06)" }}>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:13, color:"#eee", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
-                    {r.name}{r.size ? ` · Sz ${formatSize(r.size)}` : ""}{r.qty > 1 ? ` × ${r.qty}` : ""}
+                  <div style={{ fontSize:12.5, color:"#eee" }}>
+                    <SizeTag size={r.size} /> · ×{r.qty}{partial ? ` (${r.sentQty} sent)` : ""}
                   </div>
-                  <div style={{ fontSize:10.5, color:"#777" }}>#{r.id} · {relativeTimeFromIso(r.ts)}</div>
+                  <div style={{ fontSize:10, color:"#777" }}>#{r.id} · {relativeTimeFromIso(r.ts)}</div>
                 </div>
                 <span style={{ fontSize:11, fontWeight:700, color:s.fg, background:s.bg, border:`1px solid ${s.bd}`, borderRadius:999, padding:"3px 10px", whiteSpace:"nowrap" }}>{s.label}</span>
               </div>
@@ -4985,6 +5010,58 @@ function RefillTrackingCard({ orders = [], shop, registry, showEmpty = false }) 
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function RefillTrackingCard({ orders = [], shop, registry, products = [], onViewPhoto, showEmpty = false }) {
+  const groups = useMemo(() => {
+    const rank = { pending: 0, oos: 1, ready: 2 };
+    const byProduct = new Map();
+    (orders || [])
+      .filter(o => o && o.customerName === "Shop Refill" && o.destShop === shop)
+      .forEach(o => {
+        const status = refillStatusOf(o);
+        const ts = (status === "ready" ? o.clothingRefilledAt : status === "oos" ? o.clothingOutOfStockAt : o.createdAt) || o.createdAt;
+        if (!byProduct.has(o.productId)) {
+          const product = (products || []).find(p => p.id === o.productId);
+          byProduct.set(o.productId, {
+            productId: o.productId, name: o.productName,
+            photoUrl: o.productPhotoUrl, photo: o.productPhoto,
+            photos: product ? productPhotos(product) : (o.productPhotoUrl ? [o.productPhotoUrl] : []),
+            lines: [], counts: { pending: 0, ready: 0, oos: 0 }, latestTs: ts,
+          });
+        }
+        const g = byProduct.get(o.productId);
+        g.lines.push({ id: o.id, size: o.size, qty: o.qty || 1, sentQty: o.clothingRefilledQty ?? null, status, ts });
+        g.counts[status]++;
+        if (String(ts) > String(g.latestTs)) g.latestTs = ts;
+      });
+    const list = [...byProduct.values()];
+    list.forEach(g => g.lines.sort((a, b) => (rank[a.status] - rank[b.status]) || String(b.ts).localeCompare(String(a.ts))));
+    // Products with pending lines first (what the shop is waiting on), then recent.
+    list.sort((a, b) => (Number(b.counts.pending > 0) - Number(a.counts.pending > 0)) || String(b.latestTs).localeCompare(String(a.latestTs)));
+    return list.slice(0, 30);
+  }, [orders, shop, products]);
+
+  if (groups.length === 0) {
+    if (!showEmpty) return null;
+    return (
+      <div style={{ background:CARD, border:"1px solid rgba(60,110,255,.3)", borderRadius:RADIUS, marginBottom:"1.25rem", padding:"12px 14px" }}>
+        <div style={{ fontSize:12.5, fontWeight:700, color:"#fff", letterSpacing:".02em" }}>My refill requests · {labelFor(shop, registry)}</div>
+        <div style={{ fontSize:11.5, color:"#777", marginTop:5 }}>No refill requests yet — placed refills will show their status here.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginBottom:"1.25rem" }}>
+      <div style={{ fontSize:11, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:".05em", fontWeight:700, margin:"0 2px 8px" }}>
+        My refill requests · {labelFor(shop, registry)}
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {groups.map(g => <RefillTrackingProductCard key={g.productId} group={g} onViewPhoto={onViewPhoto} />)}
+      </div>
     </div>
   );
 }
@@ -5596,11 +5673,13 @@ function AssistantView({ products, onExit, orders = [] }) {
         );
       })()}
 
-      {/* Refill order tracking — live status of this shop's refill requests so
-          staff aren't blind after submitting (pending/ready/OOS). Shows in every
-          mode when there are refills; in CR mode it also shows an empty state so
-          the tracker is discoverable before the first request. */}
-      <RefillTrackingCard orders={orders} shop={effectiveShop} registry={shopRegistry} showEmpty={mode === "cr"} />
+      {/* Refill order tracking — lives ONLY in the CR tab. Live status of this
+          shop's refill requests (pending / ready / rejected) so staff aren't blind
+          after submitting. One collapsible card per product; photo → lightbox. */}
+      {mode === "cr" && (
+        <RefillTrackingCard orders={orders} shop={effectiveShop} registry={shopRegistry}
+                            products={products} onViewPhoto={setFullPhoto} showEmpty />
+      )}
 
 
       {/* Inline cart summary removed (Phase 12B) — the floating bottom bar
@@ -6052,27 +6131,36 @@ function WarehouseView({ products = [], orders, onExit }) {
           items: [],
         });
       }
-      byKey.get(key).items.push({
+      const b = byKey.get(key);
+      // destShop drives the hub→shop transfer on fulfil; all lines of one request
+      // share it, so stamp the batch from the first line that carries it.
+      if (!b.destShop && o.destShop) b.destShop = o.destShop;
+      b.items.push({
         orderId: o.id,
         size: o.size,
         qty: o.qty || 1,
         status: o.clothingRefillStatus || null,
+        refilledQty: o.clothingRefilledQty ?? null,   // units actually sent (partial-aware)
         refilledAt: o.clothingRefilledAt || null,
         outOfStockAt: o.clothingOutOfStockAt || null,
         placedAtHub: o.placedAtHub || o.hub || "hub2",
+        destShop: o.destShop || null,
       });
     });
     const active = [];
     const completed = [];
     byKey.forEach(batch => {
       batch.items.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+      // Per-size fulfil (Approach B): a batch can now resolve to a MIX — some
+      // sizes fulfilled (available), some declined (rejected/outOfStock). It's
+      // "resolved" once every line has a status; batch.status rolls up to
+      // available | partial | rejected for the completed card.
+      const isDeclined = (s) => s === "rejected" || s === "outOfStock";
       const allResolved = batch.items.length > 0 && batch.items.every(it => it.status);
       if (allResolved) {
-        // Mixed batches (some available, some OOS) shouldn't happen in
-        // practice — we resolve all items together. If they ever do (admin
-        // edit), treat the batch as the majority status.
-        const oosCount = batch.items.filter(it => it.status === "outOfStock").length;
-        batch.status = oosCount > batch.items.length / 2 ? "outOfStock" : "available";
+        const availCount = batch.items.filter(it => it.status === "available").length;
+        const declCount  = batch.items.filter(it => isDeclined(it.status)).length;
+        batch.status = availCount === 0 ? "rejected" : declCount === 0 ? "available" : "partial";
         // Pick the most recent resolution timestamp as the batch's resolvedAt.
         const stamps = batch.items.map(it => it.refilledAt || it.outOfStockAt).filter(Boolean);
         batch.resolvedAt = stamps.sort().pop() || batch.createdAt;
@@ -6089,6 +6177,14 @@ function WarehouseView({ products = [], orders, onExit }) {
     return { clothingActiveBatches: active, clothingCompletedBatches: completed };
   }, [orders, nowTick]);
   const [showClothingCompleted, setShowClothingCompleted] = useState(false);
+  // CR fulfil (Approach B): firing a real hub2→store transfer needs a stock-capable
+  // role (applyMovement is rule-gated on stockRole), plus live Hub 2 on-hand to cap
+  // per-size fulfil qty, plus a photo lightbox for the cards.
+  const { permRecord: whStockPerm, isSuperAdmin: whStockSuper } = usePermissions();
+  const crActorRole = whStockSuper ? "admin" : (whStockPerm?.stockRole || null);
+  const canFulfilCR = crActorRole === "admin" || crActorRole === "warehouse";
+  const hub2Cells = useStockCells("hub2");   // { pid: { size: cell } } — fulfil source
+  const [crPhoto, setCrPhoto] = useState(null);
 
   // Hub selector screen — shown until staff pick a hub
   if (!selectedHub) {
@@ -6447,57 +6543,52 @@ function WarehouseView({ products = [], orders, onExit }) {
     laybyHubOf(l) === selectedHub && (l.status || LAYBY_STATUS.IN_TRANSIT) === LAYBY_STATUS.IN_TRANSIT
   ).length;
 
-  // Resolve a batch — patch every item with the same status + timestamp.
-  // Phase 12D: also writes one insights_log entry per item so historical
-  // Insights (week/month/year/All Time) see the event in the immutable log.
-  // Reuses action="ready" for Available and action="out_of_stock" for OOS so
-  // clothing events flow into the existing OOS Tracker tab's historical path
-  // automatically (distinguished by productType:"clothing").
-  const setClothingRefillStatus = (batch, status) => {
+  // PER-SIZE CR FULFIL (Approach B). plan = { qtys:{orderId:qty}, rejects:{orderId:true} }.
+  // For each still-pending line: qty>0 → fire a REAL hub2→store transfer_out then
+  // mark it available (recording the sent qty); rejected → mark rejected; else leave
+  // pending. One insights_log entry per resolved line (action "ready"/"out_of_stock")
+  // so historical Insights + the OOS Tracker see it, exactly as before.
+  // Returns { ok, fail, errors[] } so the sheet can surface partial failures.
+  const fulfillCRBatch = async (batch, plan) => {
     const now = new Date().toISOString();
-    const patch = {
-      clothingRefillStatus: status,
-      clothingRefilledBy:   selectedHub,
-      updatedAt:            now,
-    };
-    if (status === "available") {
-      patch.clothingRefilledAt   = now;
-      patch.clothingOutOfStockAt = null;
-    } else if (status === "outOfStock") {
-      patch.clothingOutOfStockAt = now;
-      patch.clothingRefilledAt   = null;
+    const store = batch.destShop;
+    let ok = 0, fail = 0; const errors = [];
+    for (const it of batch.items) {
+      if (it.status) continue;                                   // already resolved
+      const qty = Math.max(0, Math.floor(plan.qtys?.[it.orderId] || 0));
+      const reject = !!plan.rejects?.[it.orderId];
+      if (qty > 0) {
+        if (!store) { fail++; errors.push(`${formatSize(it.size)}: no destination shop on this request`); continue; }
+        const res = await fireCRRefill({ store, productId: batch.productId, size: it.size, qty, from: it.placedAtHub || "hub2", actorRole: crActorRole, orderId: it.orderId });
+        if (res && res.ok) {
+          ok++;
+          updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: qty, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, updatedAt: now });
+          logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2" });
+        } else {
+          fail++;
+          errors.push(`${formatSize(it.size)}: ${res && res.reason === "insufficient_stock" ? `only ${res.available} at Hub 2` : (res && res.reason) || "transfer failed"}`);
+        }
+      } else if (reject) {
+        ok++;
+        updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
+        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2" });
+      }
+      // qty 0 & not rejected → left pending for a later pass.
     }
-    const insightAction = status === "available" ? "ready" : status === "outOfStock" ? "out_of_stock" : null;
-    batch.items.forEach(it => {
-      updateOrder(it.orderId, patch);
-      if (insightAction) logInsight({
-        timestamp: now,
-        // productId joins analytics on the durable key; see the note at the
-        // checkout logInsight site. Older events fall back to productName.
-        // ?? null keeps the key present for legacy batches (RTDB drops undefined).
-        productId: batch.productId ?? null,
-        productName: batch.productName,
-        productCategory: "",
-        productType: "clothing",
-        size: it.size,
-        customerName: "Shop Refill",
-        customerPhone: null,
-        orderNumber: it.orderId,
-        action: insightAction,
-        placedAtHub: it.placedAtHub || "hub2",
-      });
-    });
+    return { ok, fail, errors };
   };
-  // Reverse — clear status + both timestamps + by. Item returns to active.
-  const undoClothingRefill = (batch) => {
+  // Undo a resolved batch — reverse the REAL stock for every fulfilled line
+  // (store→hub2, idempotent per undo), then clear all status fields so the request
+  // returns to the active list for re-fulfil.
+  const undoClothingRefill = async (batch) => {
     const now = new Date().toISOString();
-    batch.items.forEach(it => updateOrder(it.orderId, {
-      clothingRefillStatus: null,
-      clothingRefilledAt:   null,
-      clothingOutOfStockAt: null,
-      clothingRefilledBy:   null,
-      updatedAt:            now,
-    }));
+    const undoId = String(Date.now());
+    for (const it of batch.items) {
+      if (it.status === "available" && (it.refilledQty || 0) > 0 && batch.destShop) {
+        await reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: it.refilledQty, hub: it.placedAtHub || "hub2", orderId: it.orderId, undoId, actorRole: crActorRole });
+      }
+      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingOutOfStockAt: null, clothingRefilledBy: null, updatedAt: now });
+    }
   };
 
   const onHoldOrders = hubOrders.filter(o => o.status === STATUS.COMING_TOMORROW);
@@ -6897,11 +6988,17 @@ function WarehouseView({ products = [], orders, onExit }) {
             completedBatches={clothingCompletedBatches}
             showCompleted={showClothingCompleted}
             setShowCompleted={setShowClothingCompleted}
-            onSetStatus={setClothingRefillStatus}
+            onFulfill={fulfillCRBatch}
             onUndo={undoClothingRefill}
+            hub2Cells={hub2Cells}
+            canFulfil={canFulfilCR}
+            onViewPhoto={setCrPhoto}
+            products={products}
           />
         </div>
       )}
+
+      {crPhoto && <GalleryLightbox photos={crPhoto} onClose={() => setCrPhoto(null)} />}
 
       {mainTab === "refills" && (
         <div style={{ padding:"0 13px" }}>
@@ -7111,7 +7208,157 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
 // Completed list: 24h window after resolution (mirrors Phase 9.5 cleanup),
 // applied upstream in the parent memo. Undo clears the status fields and
 // returns the batch to the active list.
-function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, setShowCompleted, onSetStatus, onUndo }) {
+const crStep = {
+  width:28, height:30, flexShrink:0, borderRadius:8, border:"1px solid rgba(60,110,255,.3)",
+  background:"rgba(60,110,255,.1)", color:"#9CB8FF", fontSize:16, fontWeight:700, cursor:"pointer",
+  fontFamily:FONT, lineHeight:1, display:"flex", alignItems:"center", justifyContent:"center",
+};
+
+// Per-size status chips for a batch's items (green ✓ fulfilled · red ✕ rejected ·
+// blue ×qty still pending). Shared by the active resolved-row and completed cards.
+function SizeStatusChips({ items }) {
+  return (
+    <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginTop:6 }}>
+      {items.map(it => {
+        const done = it.status === "available";
+        const rej  = it.status === "rejected" || it.status === "outOfStock";
+        const border = done ? "rgba(74,222,128,.4)" : rej ? "rgba(248,113,113,.4)" : "rgba(60,110,255,.25)";
+        const bg     = done ? "rgba(74,222,128,.08)" : rej ? "rgba(248,113,113,.08)" : "rgba(60,110,255,.08)";
+        const badge  = done ? { c:"#4ADE80", t:`✓${it.refilledQty ?? it.qty}${(it.refilledQty != null && it.refilledQty < it.qty) ? `/${it.qty}` : ""}` }
+                     : rej  ? { c:"#F87171", t:"rejected" }
+                     :        { c:BLUE_L, t:`×${it.qty}` };
+        return (
+          <span key={it.orderId} style={{ display:"inline-flex", alignItems:"center", gap:5, background:bg, border:`1px solid ${border}`, borderRadius:7, padding:"3px 8px", fontSize:11, fontWeight:600, color:"#fff" }}>
+            <SizeTag size={it.size} />
+            <span style={{ color:badge.c, fontSize:10, fontWeight:700 }}>{badge.t}</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// One CR request = a card. Per-size fulfil (qty capped at Hub 2 on-hand, editable)
+// + per-size reject; already-resolved sizes show as read-only chips. Send fires a
+// real hub2→store transfer per fulfilled size (via onFulfill → fulfillCRBatch).
+function CRFulfillCard({ batch, hub2Cells, canFulfil, onFulfill, onViewPhoto, products, fmtTime }) {
+  const [qtys, setQtys]       = useState({});   // { orderId: qty } (only for touched lines)
+  const [touched, setTouched] = useState({});   // { orderId: true }
+  const [rejects, setRejects] = useState({});   // { orderId: true }
+  const [busy, setBusy]       = useState(false);
+  const [msg, setMsg]         = useState(null);
+
+  const availAt = (size) => Number(hub2Cells?.[batch.productId]?.[size]?.qty) || 0;
+  const pending  = batch.items.filter(it => !it.status);
+  const resolved = batch.items.filter(it => it.status);
+
+  // Untouched lines default to "as much as Hub 2 has, up to requested" and track
+  // live stock; once the user edits/rejects a line we honour their value (clamped).
+  const capOf   = (it) => Math.min(it.qty, availAt(it.size));
+  const displayQ = (it) => rejects[it.orderId] ? 0 : (touched[it.orderId] ? Math.min(qtys[it.orderId] || 0, capOf(it)) : capOf(it));
+  const setQ = (orderId, v, max) => { setTouched(t => ({ ...t, [orderId]: true })); setQtys(q => ({ ...q, [orderId]: Math.max(0, Math.min(max, Math.floor(Number(v) || 0))) })); };
+  const toggleReject = (orderId) => setRejects(r => { const n = { ...r }; if (n[orderId]) delete n[orderId]; else n[orderId] = true; return n; });
+
+  const product = (products || []).find(p => p.id === batch.productId);
+  const photos = product ? productPhotos(product) : (batch.productPhotoUrl ? [batch.productPhotoUrl] : []);
+  const hasPhotos = onViewPhoto && photos.length > 0;
+
+  const totalSend   = pending.reduce((s, it) => s + displayQ(it), 0);
+  const totalReject = pending.filter(it => rejects[it.orderId]).length;
+  const canSend = canFulfil && !busy && (totalSend > 0 || totalReject > 0);
+
+  const send = async () => {
+    if (!canSend) return;
+    setBusy(true); setMsg(null);
+    const plan = { qtys: {}, rejects };
+    pending.forEach(it => { plan.qtys[it.orderId] = displayQ(it); });
+    const res = await onFulfill(batch, plan);
+    setBusy(false);
+    if (res?.errors?.length) setMsg(`${res.ok} done · ${res.fail} failed — ${res.errors.join("; ")}`);
+    else { setTouched({}); setRejects({}); setQtys({}); }
+  };
+
+  return (
+    <div style={{ background:CARD, border:"1px solid rgba(60,110,255,.45)", borderLeft:"3px solid #4A7FFF", borderRadius:RADIUS, padding:14, boxShadow:"0 0 12px rgba(60,110,255,.12)" }}>
+      <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:12 }}>
+        <div onClick={hasPhotos ? () => onViewPhoto(photos) : undefined} title={hasPhotos ? "Tap to enlarge" : undefined}
+             style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
+          <ProductPhoto url={batch.productPhotoUrl} photo={batch.productPhoto} size={56} radius={10}/>
+          {hasPhotos && (
+            <div style={{ position:"absolute", right:-4, bottom:-4, width:18, height:18, borderRadius:9, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
+          )}
+        </div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{batch.productName}</div>
+          <div style={{ color:"rgba(255,255,255,.45)", fontSize:10, marginTop:2 }}>
+            Submitted {fmtTime(batch.createdAt)}{batch.destShop ? ` · → ${labelFor(batch.destShop)}` : ""}
+          </div>
+          {resolved.length > 0 && <SizeStatusChips items={resolved} />}
+        </div>
+      </div>
+
+      {/* Per-size fulfil rows (still-pending sizes only). */}
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {pending.map(it => {
+          const avail = availAt(it.size);
+          const cap = capOf(it);
+          const rejected = !!rejects[it.orderId];
+          const q = displayQ(it);
+          return (
+            <div key={it.orderId} style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <div style={{ minWidth:54, fontSize:12.5, fontWeight:700, color:"#fff" }}>Size <SizeTag size={it.size} /></div>
+              <div style={{ flex:1, minWidth:0, fontSize:11, color:"rgba(255,255,255,.5)" }}>
+                need {it.qty} · {avail} at Hub 2
+              </div>
+              {rejected ? (
+                <button onClick={() => toggleReject(it.orderId)}
+                        style={{ padding:"6px 12px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", background:"rgba(248,113,113,.14)", border:"1px solid rgba(248,113,113,.5)", color:"#F87171", display:"flex", alignItems:"center", gap:5 }}>
+                  Rejected · undo
+                </button>
+              ) : (
+                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                  {cap > 0 ? (
+                    <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                      <button onClick={() => setQ(it.orderId, q - 1, cap)} disabled={q <= 0} style={{ ...crStep, opacity: q <= 0 ? 0.4 : 1 }}>−</button>
+                      <input value={q} onChange={e => setQ(it.orderId, e.target.value, cap)} inputMode="numeric"
+                             style={{ width:38, textAlign:"center", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.3)", borderRadius:8, color:"#fff", fontSize:13, fontWeight:700, padding:"6px 2px", fontFamily:FONT }}/>
+                      <button onClick={() => setQ(it.orderId, q + 1, cap)} disabled={q >= cap} style={{ ...crStep, opacity: q >= cap ? 0.4 : 1 }}>+</button>
+                    </div>
+                  ) : (
+                    <span style={{ fontSize:11, color:"#F5A623", fontWeight:600 }}>none at Hub 2</span>
+                  )}
+                  <button onClick={() => toggleReject(it.orderId)}
+                          style={{ padding:"6px 10px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", background:"rgba(150,20,20,.12)", border:"1px solid rgba(180,40,40,.35)", color:"#F87171" }}>
+                    Reject
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {msg && <div style={{ marginTop:10, fontSize:11.5, color:"#F5A623" }}>{msg}</div>}
+
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:12 }}>
+        <div style={{ flex:1, fontSize:11, color:"rgba(255,255,255,.45)" }}>
+          {canFulfil ? `Send ${totalSend} unit(s)${totalReject ? ` · reject ${totalReject}` : ""} → ${batch.destShop ? labelFor(batch.destShop) : "shop"}` : "Needs a stock role to transfer."}
+        </div>
+        <button onClick={send} disabled={!canSend}
+                style={{ padding:"11px 20px", borderRadius:10, fontSize:12.5, fontWeight:700, cursor: canSend ? "pointer" : "not-allowed",
+                         background: canSend ? "rgba(0,150,70,.22)" : "rgba(255,255,255,.04)",
+                         border: `1px solid ${canSend ? "rgba(0,180,80,.5)" : "rgba(255,255,255,.1)"}`,
+                         color: canSend ? "#4ADE80" : "rgba(255,255,255,.35)", display:"flex", alignItems:"center", gap:6 }}>
+          {busy ? "Sending…" : "Send"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, setShowCompleted, onFulfill, onUndo, hub2Cells, canFulfil, onViewPhoto, products }) {
   const fmtTime = (iso) => {
     if (!iso) return "—";
     return new Date(iso).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
@@ -7125,18 +7372,6 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
     </div>
   );
 
-  // Renders the sizes-with-qty chips line, e.g. "M ×5 · L ×3 · XL ×2".
-  const renderItemsLine = (items) => (
-    <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginTop:6 }}>
-      {items.map(it => (
-        <span key={it.orderId} style={{ display:"inline-flex", alignItems:"center", gap:4, background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.25)", borderRadius:7, padding:"3px 8px", fontSize:11, fontWeight:600, color:"#fff" }}>
-          <span><SizeTag size={it.size} /></span>
-          <span style={{ background:"rgba(60,110,255,.25)", color:BLUE_L, borderRadius:999, padding:"0 6px", fontSize:10, fontWeight:700 }}>×{it.qty}</span>
-        </span>
-      ))}
-    </div>
-  );
-
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
       {/* Header summary */}
@@ -7145,7 +7380,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
           <div style={{ fontWeight:800, fontSize:30, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1px" }}>{activeBatches.length}</div>
           <div style={{ flex:1 }}>
             <div style={{ fontWeight:700, color:"#fff", fontSize:13 }}>Clothing Refill{activeBatches.length !== 1 ? "s" : ""} Pending</div>
-            <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:2 }}>Internal shop requests waiting for Hub 2 fulfillment.</div>
+            <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:2 }}>Fulfil per size from Hub 2 — reject what you can't cover.</div>
           </div>
         </div>
       )}
@@ -7158,28 +7393,8 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
           dateOf={(b) => b.createdAt}
           emptyMessage="No clothing refills pending."
           renderItem={(batch) => (
-            <div style={{ background:CARD, border:"1px solid rgba(60,110,255,.45)", borderLeft:"3px solid #4A7FFF", borderRadius:RADIUS, padding:14, boxShadow:"0 0 12px rgba(60,110,255,.12)" }}>
-              <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:10 }}>
-                <ProductPhoto url={batch.productPhotoUrl} photo={batch.productPhoto} size={56} radius={10}/>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{batch.productName}</div>
-                  <div style={{ color:"rgba(255,255,255,.45)", fontSize:10, marginTop:2 }}>Submitted {fmtTime(batch.createdAt)}</div>
-                  {renderItemsLine(batch.items)}
-                </div>
-              </div>
-              <div style={{ display:"flex", gap:8 }}>
-                <button onClick={() => onSetStatus(batch, "available")}
-                        style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.4)", color:"#4ADE80" }}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                  Available
-                </button>
-                <button onClick={() => onSetStatus(batch, "outOfStock")}
-                        style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.4)", color:"#F87171" }}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  Out of Stock
-                </button>
-              </div>
-            </div>
+            <CRFulfillCard batch={batch} hub2Cells={hub2Cells} canFulfil={canFulfil}
+                           onFulfill={onFulfill} onViewPhoto={onViewPhoto} products={products} fmtTime={fmtTime} />
           )}
         />
       )}
@@ -7220,10 +7435,11 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
           dateOf={(b) => b.resolvedAt || b.createdAt}
           emptyMessage="No completed clothing refills."
           renderItem={(batch) => {
-            const isOOS = batch.status === "outOfStock";
-            const accent = isOOS ? "rgba(248,113,113,.5)"  : "rgba(74,222,128,.5)";
-            const tint   = isOOS ? "rgba(248,113,113,.1)"  : "rgba(74,222,128,.1)";
-            const text   = isOOS ? "#F87171"               : "#4ADE80";
+            const st = batch.status;                         // "available" | "partial" | "rejected"
+            const accent = st === "rejected" ? "rgba(248,113,113,.5)" : st === "partial" ? "rgba(245,166,35,.5)" : "rgba(74,222,128,.5)";
+            const tint   = st === "rejected" ? "rgba(248,113,113,.1)"  : st === "partial" ? "rgba(245,166,35,.1)"  : "rgba(74,222,128,.1)";
+            const text   = st === "rejected" ? "#F87171"              : st === "partial" ? "#F5A623"              : "#4ADE80";
+            const label  = st === "rejected" ? "Rejected" : st === "partial" ? "Partial" : "Fulfilled";
             return (
               <div style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:14, opacity:0.85 }}>
                 <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:8 }}>
@@ -7232,16 +7448,13 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
                     <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                       <span style={{ fontWeight:700, color:"rgba(255,255,255,.85)", fontSize:13 }}>{batch.productName}</span>
                       <span style={{ display:"inline-flex", alignItems:"center", gap:4, background:tint, color:text, border:`1px solid ${accent}`, borderRadius:999, padding:"1px 7px", fontSize:9, fontWeight:700, textTransform:"uppercase", letterSpacing:".5px" }}>
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
-                          {isOOS
-                            ? <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>
-                            : <polyline points="20 6 9 17 4 12"/>}
-                        </svg>
-                        {isOOS ? "Out of Stock" : "Available"}
+                        {label}
                       </span>
                     </div>
-                    <div style={{ color:"rgba(255,255,255,.4)", fontSize:10 }}>Submitted {fmtTime(batch.createdAt)}</div>
-                    {renderItemsLine(batch.items)}
+                    <div style={{ color:"rgba(255,255,255,.4)", fontSize:10 }}>
+                      Submitted {fmtTime(batch.createdAt)}{batch.destShop ? ` · → ${labelFor(batch.destShop)}` : ""}
+                    </div>
+                    <SizeStatusChips items={batch.items} />
                   </div>
                 </div>
                 <div style={{ display:"flex", justifyContent:"flex-end" }}>
