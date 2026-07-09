@@ -5067,20 +5067,39 @@ function RefillTrackingCard({ orders = [], shop, registry, products = [], onView
   if (groups.length === 0) {
     if (!showEmpty) return null;
     return (
-      <div style={{ background:CARD, border:"1px solid rgba(60,110,255,.3)", borderRadius:RADIUS, marginBottom:"1.25rem", padding:"12px 14px" }}>
-        <div style={{ fontSize:12.5, fontWeight:700, color:"#fff", letterSpacing:".02em" }}>My refill requests · {labelFor(shop, registry)}</div>
-        <div style={{ fontSize:11.5, color:"#777", marginTop:5 }}>No refill requests yet — placed refills will show their status here.</div>
+      <div style={{ textAlign:"center", padding:"3rem 1rem" }}>
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeOpacity="0.4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>
+        <div style={{ fontSize:"0.95rem", marginTop:"0.75rem", color:"rgba(255,255,255,.55)" }}>No refill requests yet.</div>
+        <div style={{ fontSize:"0.8rem", color:"#333", marginTop:"0.4rem" }}>Placed refills will show their live status here.</div>
       </div>
     );
   }
 
   return (
-    <div style={{ marginBottom:"1.25rem" }}>
-      <div style={{ fontSize:11, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:".05em", fontWeight:700, margin:"0 2px 8px" }}>
-        My refill requests · {labelFor(shop, registry)}
+    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+      {groups.map(g => <RefillTrackingProductCard key={g.productId} group={g} onViewPhoto={onViewPhoto} />)}
+    </div>
+  );
+}
+
+// Full-screen TRACKING PAGE (shop side) — reached via the "Track requests" button
+// in the CR tab, not inlined there. Header + back, then the per-product status
+// cards. Sits under the GalleryLightbox (z 2000) so photo taps still enlarge.
+function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onClose }) {
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:1500, background:BG, overflowY:"auto", fontFamily:FONT }}>
+      <div style={{ position:"sticky", top:0, zIndex:1, background:"rgba(0,0,0,.85)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", borderBottom:"1px solid rgba(60,110,255,.2)", display:"flex", alignItems:"center", gap:10, padding:"14px 14px" }}>
+        <button onClick={onClose} aria-label="Back"
+                style={{ width:34, height:34, borderRadius:10, border:"1px solid rgba(60,110,255,.35)", background:"rgba(60,110,255,.1)", color:"#9CB8FF", fontSize:16, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+          ←
+        </button>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:14, fontWeight:800, color:"#fff", letterSpacing:".02em" }}>Refill tracking</div>
+          <div style={{ fontSize:10.5, color:"rgba(255,255,255,.45)" }}>{labelFor(shop, registry)} · live status &amp; availability</div>
+        </div>
       </div>
-      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-        {groups.map(g => <RefillTrackingProductCard key={g.productId} group={g} onViewPhoto={onViewPhoto} />)}
+      <div style={{ padding:"12px 13px 40px" }}>
+        <RefillTrackingCard orders={orders} shop={shop} registry={registry} products={products} onViewPhoto={onViewPhoto} showEmpty />
       </div>
     </div>
   );
@@ -5154,6 +5173,12 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Tapping a product photo opens a full-screen lightbox so staff can see the
   // complete (uncropped) image. Holds the photo URL to show, or null.
   const [fullPhoto, setFullPhoto]                       = useState(null);
+  // Refill tracking page (CR tab) — opened via the "Track requests" button.
+  const [trackingOpen, setTrackingOpen]                 = useState(false);
+  const trackingPending = useMemo(
+    () => (orders || []).filter(o => o && o.customerName === "Shop Refill" && o.destShop === effectiveShop && !o.clothingRefillStatus).length,
+    [orders, effectiveShop]
+  );
   // Scroll-to-top FAB: appears once the user has scrolled past the search box so
   // a single tap returns to the top (the search bar) after browsing the grid.
   const [showScrollTop, setShowScrollTop]               = useState(false);
@@ -5693,12 +5718,19 @@ function AssistantView({ products, onExit, orders = [] }) {
         );
       })()}
 
-      {/* Refill order tracking — lives ONLY in the CR tab. Live status of this
-          shop's refill requests (pending / ready / rejected) so staff aren't blind
-          after submitting. One collapsible card per product; photo → lightbox. */}
+      {/* Refill tracking — a BUTTON in the CR tab opens the dedicated tracking
+          page (status + availability per request); nothing is inlined here. */}
       {mode === "cr" && (
-        <RefillTrackingCard orders={orders} shop={effectiveShop} registry={shopRegistry}
-                            products={products} onViewPhoto={setFullPhoto} showEmpty />
+        <button onClick={() => setTrackingOpen(true)}
+                style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"11px 14px", marginBottom:"1rem", borderRadius:12, cursor:"pointer",
+                         background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.35)", color:"#fff", fontFamily:FONT }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+          <span style={{ flex:1, textAlign:"left", fontSize:13, fontWeight:700 }}>Track requests</span>
+          {trackingPending > 0 && (
+            <span style={{ background:"rgba(245,196,81,.15)", color:"#F5C451", border:"1px solid rgba(245,196,81,.4)", borderRadius:999, padding:"2px 9px", fontSize:11, fontWeight:700 }}>{trackingPending} pending</span>
+          )}
+          <span style={{ color:"#4A7FFF", fontSize:13 }}>▸</span>
+        </button>
       )}
 
 
@@ -5982,6 +6014,13 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       )}
 
+      {/* ── Refill tracking page ── full-screen, opened from the CR tab button.
+          Rendered below the lightbox so photo taps inside it still enlarge. */}
+      {trackingOpen && (
+        <RefillTrackingPage orders={orders} shop={effectiveShop} registry={shopRegistry}
+                            products={products} onViewPhoto={setFullPhoto} onClose={() => setTrackingOpen(false)} />
+      )}
+
       {/* ── Full-photo lightbox ── tap a product photo to see the complete,
           uncropped image; tap anywhere (or ✕) to dismiss. */}
       {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
@@ -6200,7 +6239,6 @@ function WarehouseView({ products = [], orders, onExit }) {
     completed.sort((a, b) => tsMs(b.resolvedAt) - tsMs(a.resolvedAt));
     return { clothingActiveBatches: active, clothingCompletedBatches: completed };
   }, [orders, nowTick, selectedHub]);
-  const [showClothingCompleted, setShowClothingCompleted] = useState(false);
   // CR fulfil (Approach B): firing a real hub2→store transfer needs a stock-capable
   // role (applyMovement is rule-gated on stockRole), plus live Hub 2 on-hand to cap
   // per-size fulfil qty, plus a photo lightbox for the cards.
@@ -7037,8 +7075,6 @@ function WarehouseView({ products = [], orders, onExit }) {
           <ClothingRefillsTab
             activeBatches={clothingActiveBatches}
             completedBatches={clothingCompletedBatches}
-            showCompleted={showClothingCompleted}
-            setShowCompleted={setShowClothingCompleted}
             onFulfill={fulfillCRBatch}
             onUndo={undoClothingRefill}
             hubCells={crHubCells}
@@ -7260,12 +7296,6 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
 // Completed list: 24h window after resolution (mirrors Phase 9.5 cleanup),
 // applied upstream in the parent memo. Undo clears the status fields and
 // returns the batch to the active list.
-const crStep = {
-  width:28, height:30, flexShrink:0, borderRadius:8, border:"1px solid rgba(60,110,255,.3)",
-  background:"rgba(60,110,255,.1)", color:"#9CB8FF", fontSize:16, fontWeight:700, cursor:"pointer",
-  fontFamily:FONT, lineHeight:1, display:"flex", alignItems:"center", justifyContent:"center",
-};
-
 // Per-size status chips for a batch's items (green ✓ fulfilled · red ✕ rejected ·
 // blue ×qty still pending). Shared by the active resolved-row and completed cards.
 function SizeStatusChips({ items }) {
@@ -7376,7 +7406,9 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
         <div style={{ padding:"2px 11px 11px", borderTop:"1px solid rgba(60,110,255,.12)" }}>
           {resolved.length > 0 && <SizeStatusChips items={resolved} />}
 
-          {/* Per-size fulfil rows (still-pending sizes only). */}
+          {/* Per-size fulfil rows — ONE dense line per size, mirroring the
+              size-refill sheet: size tag · need/avail · joined −/input/+ stepper
+              (partial qty within the size, capped at hub stock) · ✕ reject. */}
           <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:8 }}>
             {pending.map(it => {
               const avail = availAt(it.size);
@@ -7385,33 +7417,25 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
               const q = displayQ(it);
               return (
                 <div key={it.orderId} style={{ display:"flex", alignItems:"center", gap:10 }}>
-                  <div style={{ minWidth:54, fontSize:12.5, fontWeight:700, color:"#fff" }}>Size <SizeTag size={it.size} /></div>
-                  <div style={{ flex:1, minWidth:0, fontSize:11, color:"rgba(255,255,255,.5)" }}>
-                    need {it.qty} · {avail} at {hubLabel}
+                  <div style={{ minWidth:56 }}><span style={{ fontSize:13, fontWeight:700, color: rejected ? "rgba(255,255,255,.35)" : "#fff", textDecoration: rejected ? "line-through" : "none" }}>Size <SizeTag size={it.size} /></span></div>
+                  <div style={{ flex:1, minWidth:0, fontSize:11, color: rejected ? "#F87171" : avail > 0 ? "rgba(255,255,255,.45)" : "#F5A623" }}>
+                    {rejected ? "rejected — tap ✕ to undo" : `need ${it.qty} · ${avail} at ${hubLabel}`}
                   </div>
-                  {rejected ? (
-                    <button onClick={() => toggleReject(it.orderId)}
-                            style={{ padding:"6px 12px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", background:"rgba(248,113,113,.14)", border:"1px solid rgba(248,113,113,.5)", color:"#F87171", display:"flex", alignItems:"center", gap:5 }}>
-                      Rejected · undo
-                    </button>
-                  ) : (
-                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                      {cap > 0 && canFulfil ? (
-                        <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                          <button onClick={() => setQ(it.orderId, q - 1, cap)} disabled={q <= 0} style={{ ...crStep, opacity: q <= 0 ? 0.4 : 1 }}>−</button>
-                          <input value={q} onChange={e => setQ(it.orderId, e.target.value, cap)} inputMode="numeric"
-                                 style={{ width:38, textAlign:"center", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.3)", borderRadius:8, color:"#fff", fontSize:13, fontWeight:700, padding:"6px 2px", fontFamily:FONT }}/>
-                          <button onClick={() => setQ(it.orderId, q + 1, cap)} disabled={q >= cap} style={{ ...crStep, opacity: q >= cap ? 0.4 : 1 }}>+</button>
-                        </div>
-                      ) : (
-                        <span style={{ fontSize:11, color:"#F5A623", fontWeight:600 }}>{cap > 0 ? "" : `none at ${hubLabel}`}</span>
-                      )}
-                      <button onClick={() => toggleReject(it.orderId)}
-                              style={{ padding:"6px 10px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", background:"rgba(150,20,20,.12)", border:"1px solid rgba(180,40,40,.35)", color:"#F87171" }}>
-                        Reject
-                      </button>
+                  {!rejected && cap > 0 && canFulfil && (
+                    <div style={{ display:"flex", alignItems:"center", gap:0, border:"1px solid rgba(60,110,255,.3)", borderRadius:8, overflow:"hidden", flexShrink:0 }}>
+                      <button onClick={() => setQ(it.orderId, q - 1, cap)} disabled={q <= 0} style={{ width:28, height:30, border:"none", background:"rgba(255,255,255,.04)", color:"#fff", cursor: q <= 0 ? "default" : "pointer", fontSize:16 }}>−</button>
+                      <input value={q} onChange={e => setQ(it.orderId, e.target.value, cap)} inputMode="numeric"
+                             style={{ width:34, height:30, textAlign:"center", border:"none", background:"rgba(0,0,0,.3)", color:"#fff", fontSize:13, fontWeight:700, outline:"none" }} />
+                      <button onClick={() => setQ(it.orderId, q + 1, cap)} disabled={q >= cap} style={{ width:28, height:30, border:"none", background:"rgba(255,255,255,.04)", color:"#fff", cursor: q >= cap ? "default" : "pointer", fontSize:16 }}>+</button>
                     </div>
                   )}
+                  <button onClick={() => toggleReject(it.orderId)} title={rejected ? "Undo reject" : "Reject this size"}
+                          style={{ width:30, height:30, flexShrink:0, borderRadius:8, fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center",
+                                   background: rejected ? "rgba(248,113,113,.2)" : "rgba(150,20,20,.1)",
+                                   border: rejected ? "1px solid rgba(248,113,113,.6)" : "1px solid rgba(180,40,40,.35)",
+                                   color:"#F87171" }}>
+                    ✕
+                  </button>
                 </div>
               );
             })}
@@ -7467,40 +7491,37 @@ function UndoCRButton({ batch, onUndo }) {
   );
 }
 
-function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, setShowCompleted, onFulfill, onUndo, hubCells, hubLabel, canFulfil, onViewPhoto, products }) {
+function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo, hubCells, hubLabel, canFulfil, onViewPhoto, products }) {
   // Accordion — one request expanded at a time so the whole queue stays scannable.
   const [openKey, setOpenKey] = useState(null);
+  // Open = the working queue (only unresolved requests); History = resolved ones
+  // (24h window upstream). Resolved requests LEAVE the main page entirely.
+  const [view, setView] = useState("open");
   const fmtTime = (iso) => {
     if (!iso) return "—";
     return new Date(iso).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
   };
 
-  if (!activeBatches.length && !completedBatches.length) return (
-    <div style={{ textAlign:"center", color:"#444", padding:"4rem" }}>
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeOpacity="0.4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>
-      <div style={{ fontSize:"1rem", marginTop:"0.75rem", color:"rgba(255,255,255,.55)" }}>No clothing refills pending.</div>
-      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Internal refill requests placed by the shop appear here.</div>
-    </div>
-  );
+  const pill = (on) => ({
+    padding:"7px 16px", borderRadius:999, fontSize:12, fontWeight:700, cursor:"pointer",
+    border: on ? "1px solid rgba(60,110,255,.5)" : "1px solid rgba(255,255,255,.1)",
+    background: on ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.03)",
+    color: on ? BLUE_L : "rgba(255,255,255,.45)",
+  });
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-      {/* Header summary */}
-      {activeBatches.length > 0 && (
-        <div style={{ background:"rgba(20,40,100,.3)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"12px 14px", display:"flex", alignItems:"center", gap:12 }}>
-          <div style={{ fontWeight:800, fontSize:30, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1px" }}>{activeBatches.length}</div>
-          <div style={{ flex:1 }}>
-            <div style={{ fontWeight:700, color:"#fff", fontSize:13 }}>Clothing Refill{activeBatches.length !== 1 ? "s" : ""} Pending</div>
-            <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:2 }}>Fulfil per size from {hubLabel} — reject what you can't cover.</div>
-          </div>
-        </div>
-      )}
+      {/* Open / History pills */}
+      <div style={{ display:"flex", gap:6 }}>
+        <button onClick={() => setView("open")} style={pill(view === "open")}>Open{activeBatches.length ? ` (${activeBatches.length})` : ""}</button>
+        <button onClick={() => setView("history")} style={pill(view === "history")}>History{completedBatches.length ? ` (${completedBatches.length})` : ""}</button>
+      </div>
 
-      {/* Active list — day-grouped. includeOlder keeps half-resolved requests
-          (some sizes deliberately left pending) reachable past the 3-day window
-          instead of silently orphaning them. keyOf pins each STATEFUL card to its
-          batch so same-timestamp neighbours can't inherit each other's state. */}
-      {activeBatches.length > 0 && (
+      {/* OPEN — the working queue. includeOlder keeps half-resolved requests
+          (some sizes deliberately left pending) reachable past the 3-day window;
+          keyOf pins each STATEFUL card to its batch so same-timestamp neighbours
+          can't inherit each other's state. */}
+      {view === "open" && (activeBatches.length > 0 ? (
         <DayCollapsible
           sectionKey="clothing-due"
           items={activeBatches}
@@ -7515,38 +7536,18 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
                            onToggle={() => setOpenKey(k => k === batch.batchKey ? null : batch.batchKey)} />
           )}
         />
-      )}
-
-      {/* Show / Hide Completed toggle pill (single useState — Hub 2 only). */}
-      {completedBatches.length > 0 && (
-        <button onClick={() => setShowCompleted(v => !v)}
-                style={{ alignSelf:"flex-start", display:"flex", alignItems:"center", gap:6, padding:"7px 11px", borderRadius:999,
-                         border: showCompleted ? "1px solid rgba(60,110,255,.5)" : "1px solid rgba(255,255,255,.1)",
-                         background: showCompleted ? "rgba(60,110,255,.12)" : "rgba(255,255,255,.03)",
-                         color: showCompleted ? BLUE_L : "rgba(255,255,255,.55)",
-                         fontWeight:600, fontSize:12, cursor:"pointer" }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            {showCompleted
-              ? <><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></>
-              : <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>}
-          </svg>
-          {showCompleted ? "Hide" : "Show"} Completed ({completedBatches.length})
-        </button>
-      )}
-
-      {/* All-caught-up state when active is empty but completed has items. */}
-      {activeBatches.length === 0 && completedBatches.length > 0 && !showCompleted && (
-        <div style={{ background:CARD, border:"1px solid rgba(74,222,128,.4)", borderRadius:14, padding:"22px 18px", textAlign:"center", boxShadow:"0 0 12px rgba(74,222,128,.12)" }}>
-          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
-            <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
-          </svg>
-          <div style={{ color:"#fff", fontSize:14, fontWeight:700, marginTop:10 }}>All caught up</div>
-          <div style={{ color:"rgba(255,255,255,.55)", fontSize:12, marginTop:4 }}>{completedBatches.length} batch{completedBatches.length !== 1 ? "es" : ""} resolved.</div>
+      ) : (
+        <div style={{ textAlign:"center", color:"#444", padding:"3rem 1rem" }}>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeOpacity="0.6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/></svg>
+          <div style={{ fontSize:"0.95rem", marginTop:"0.75rem", color:"rgba(255,255,255,.55)" }}>No open CR requests.</div>
+          <div style={{ fontSize:"0.8rem", color:"#333", marginTop:"0.4rem" }}>Shop refill requests appear here; resolved ones move to History.</div>
         </div>
-      )}
+      ))}
 
-      {/* Completed list — day-grouped, 24h cap upstream. */}
-      {showCompleted && completedBatches.length > 0 && (
+      {/* HISTORY — resolved requests (fulfilled / partial / rejected), day-grouped. */}
+      {view === "history" && (completedBatches.length === 0 ? (
+        <div style={{ textAlign:"center", color:"#444", padding:"3rem 1rem", fontSize:"0.9rem" }}>Nothing resolved recently.</div>
+      ) : (
         <DayCollapsible
           sectionKey="clothing-done"
           items={completedBatches}
@@ -7583,7 +7584,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
             );
           }}
         />
-      )}
+      ))}
     </div>
   );
 }
