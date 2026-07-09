@@ -5852,7 +5852,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                 <div style={{ padding:"12px 13px 14px" }}>
                   <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>{p.name}</div>
                   {typeof p.retailPrice === "number" && p.retailPrice > 0 ? (
-                    <div style={{ fontSize:16, fontWeight:800, color:"#6E7BFF", marginBottom:4 }}>
+                    <div style={{ fontSize:16, fontWeight:800, color:"#5D8BFF", marginBottom:4 }}>
                       R{p.retailPrice.toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
                     </div>
                   ) : (
