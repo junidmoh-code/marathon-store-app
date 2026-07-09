@@ -13691,10 +13691,11 @@ function AppInner() {
   const indicatorLabel = isSuperAdmin
     ? (authUser?.email?.split("@")[0] || "Admin")
     : (permRecord?.displayName || permRecord?.username || authUser?.email?.split("@")[0] || "Staff");
-  // On desktop, the home dashboard and the Assistant workspace carry their own
-  // sign-out (top-right chip), so the global pill is suppressed there.
+  // On desktop, the redesigned workspaces (home dashboard, Assistant, Barcode
+  // Studio) carry their own top-bar / Home nav, so the global pill is suppressed
+  // there to avoid a stray floating sign-out.
   const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
-    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === null));
+    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === null));
 
   return (
     <>
