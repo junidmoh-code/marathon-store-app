@@ -23,6 +23,7 @@ import AppErrorBoundary from "./AppErrorBoundary";
 import StockView from "./components/stock/StockView";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
+import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets } from "./components/stock/locations";
 import { useStockCells, useLocations } from "./components/stock/useStock";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
@@ -7296,6 +7297,15 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
 // Completed list: 24h window after resolution (mirrors Phase 9.5 cleanup),
 // applied upstream in the parent memo. Undo clears the status fields and
 // returns the batch to the active list.
+// Stepper button — verbatim copy of the Transfer screen's stepBtn
+// (components/stock/Transfer.jsx) so the CR size boxes match it exactly.
+// (Copied, not imported: Transfer.jsx is being modified on another branch.)
+const crStepBtn = {
+  width: 26, height: 30, flexShrink: 0, borderRadius: 8, border: "1px solid rgba(60,110,255,.3)",
+  background: "rgba(60,110,255,.1)", color: "#9CB8FF", fontSize: 16, fontWeight: 700, cursor: "pointer",
+  fontFamily: FONT, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
+};
+
 // Per-size status chips for a batch's items (green ✓ fulfilled · red ✕ rejected ·
 // blue ×qty still pending). Shared by the active resolved-row and completed cards.
 function SizeStatusChips({ items }) {
@@ -7406,36 +7416,42 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
         <div style={{ padding:"2px 11px 11px", borderTop:"1px solid rgba(60,110,255,.12)" }}>
           {resolved.length > 0 && <SizeStatusChips items={resolved} />}
 
-          {/* Per-size fulfil rows — ONE dense line per size, mirroring the
-              size-refill sheet: size tag · need/avail · joined −/input/+ stepper
-              (partial qty within the size, capped at hub stock) · ✕ reject. */}
-          <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:8 }}>
+          {/* Per-size stepper GRID — verbatim the Transfer screen's size boxes
+              (Transfer.jsx expanded product: compact box per size, several per
+              row, −/[number]/+ capped at hub stock) plus a corner ✕ to reject
+              the size. Stepper is ALWAYS visible — 0-stock sizes just cap at 0
+              ("0 here" in amber) instead of hiding the input. */}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(118px, 1fr))", gap:8, marginTop:10 }}>
             {pending.map(it => {
               const avail = availAt(it.size);
               const cap = capOf(it);
               const rejected = !!rejects[it.orderId];
               const q = displayQ(it);
               return (
-                <div key={it.orderId} style={{ display:"flex", alignItems:"center", gap:10 }}>
-                  <div style={{ minWidth:56 }}><span style={{ fontSize:13, fontWeight:700, color: rejected ? "rgba(255,255,255,.35)" : "#fff", textDecoration: rejected ? "line-through" : "none" }}>Size <SizeTag size={it.size} /></span></div>
-                  <div style={{ flex:1, minWidth:0, fontSize:11, color: rejected ? "#F87171" : avail > 0 ? "rgba(255,255,255,.45)" : "#F5A623" }}>
-                    {rejected ? "rejected — tap ✕ to undo" : `need ${it.qty} · ${avail} at ${hubLabel}`}
-                  </div>
-                  {!rejected && cap > 0 && canFulfil && (
-                    <div style={{ display:"flex", alignItems:"center", gap:0, border:"1px solid rgba(60,110,255,.3)", borderRadius:8, overflow:"hidden", flexShrink:0 }}>
-                      <button onClick={() => setQ(it.orderId, q - 1, cap)} disabled={q <= 0} style={{ width:28, height:30, border:"none", background:"rgba(255,255,255,.04)", color:"#fff", cursor: q <= 0 ? "default" : "pointer", fontSize:16 }}>−</button>
-                      <input value={q} onChange={e => setQ(it.orderId, e.target.value, cap)} inputMode="numeric"
-                             style={{ width:34, height:30, textAlign:"center", border:"none", background:"rgba(0,0,0,.3)", color:"#fff", fontSize:13, fontWeight:700, outline:"none" }} />
-                      <button onClick={() => setQ(it.orderId, q + 1, cap)} disabled={q >= cap} style={{ width:28, height:30, border:"none", background:"rgba(255,255,255,.04)", color:"#fff", cursor: q >= cap ? "default" : "pointer", fontSize:16 }}>+</button>
-                    </div>
-                  )}
+                <div key={it.orderId} style={{ position:"relative", background:CARD, border: rejected ? "1px solid rgba(248,113,113,.5)" : q ? "1px solid rgba(74,222,128,.4)" : "1px solid rgba(60,110,255,.12)", borderRadius:10, padding:"7px 8px" }}>
+                  {/* Corner ✕ — reject this size (tap again to undo). */}
                   <button onClick={() => toggleReject(it.orderId)} title={rejected ? "Undo reject" : "Reject this size"}
-                          style={{ width:30, height:30, flexShrink:0, borderRadius:8, fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center",
-                                   background: rejected ? "rgba(248,113,113,.2)" : "rgba(150,20,20,.1)",
-                                   border: rejected ? "1px solid rgba(248,113,113,.6)" : "1px solid rgba(180,40,40,.35)",
-                                   color:"#F87171" }}>
+                          style={{ position:"absolute", top:-7, right:-7, width:20, height:20, borderRadius:10, fontSize:10, fontWeight:700, cursor:"pointer", lineHeight:1, display:"flex", alignItems:"center", justifyContent:"center", padding:0,
+                                   border: rejected ? "1px solid rgba(248,113,113,.7)" : "1px solid rgba(180,40,40,.45)",
+                                   background: rejected ? "rgba(248,113,113,.3)" : "rgba(15,6,6,.95)", color:"#F87171" }}>
                     ✕
                   </button>
+                  <div style={{ display:"flex", alignItems:"baseline", justifyContent:"space-between", marginBottom:5 }}>
+                    <span style={{ fontSize:12, color:BLUE_L, fontWeight:700 }}><SizeTag size={it.size} /></span>
+                    <span style={{ fontSize:9, color: avail > 0 ? "rgba(255,255,255,.4)" : "#F5A623" }}>×{it.qty} · {avail} here</span>
+                  </div>
+                  {rejected ? (
+                    <div style={{ height:30, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:"#F87171" }}>rejected</div>
+                  ) : (
+                    <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                      <button onClick={() => setQ(it.orderId, q - 1, cap)} style={{ ...crStepBtn, opacity: q <= 0 ? 0.4 : 1 }}>−</button>
+                      <input type="number" inputMode="numeric" min="0" max={cap} value={q || ""} placeholder="0"
+                             disabled={!canFulfil || cap <= 0}
+                             onChange={(e) => setQ(it.orderId, e.target.value, cap)}
+                             style={{ ...stockInput, width:"100%", minWidth:0, boxSizing:"border-box", textAlign:"center", padding:"6px 2px", opacity: (!canFulfil || cap <= 0) ? 0.5 : 1 }} />
+                      <button onClick={() => setQ(it.orderId, q + 1, cap)} style={{ ...crStepBtn, opacity: q >= cap ? 0.4 : 1 }}>+</button>
+                    </div>
+                  )}
                 </div>
               );
             })}
