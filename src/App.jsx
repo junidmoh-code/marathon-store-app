@@ -5160,6 +5160,336 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
   );
 }
 
+// ─── ASSISTANT · DESKTOP WORKSPACE ────────────────────────────────────────────
+// Full-screen laptop layout (AI Studio shell): sidebar (shop + flow) · sneaker
+// catalog (search · brand-from-data · sort · hover quick-add) · live order drawer
+// · quick-view stage. Rendered by AssistantView only when NOT narrow; phone/iPad
+// keep the existing tap→sheet flow. Reuses AssistantView's cart + checkout via
+// props (onQuickAdd/onRemoveOne/onCheckout); clothing is CR-only, so the catalog
+// is sneakers only. Committed dark — the POS's world.
+function AssistantDesktop({ products, effectiveShop, availableShops, onSelectShop, shopRegistry,
+                            search, setSearch, cart, onQuickAdd, onRemoveOne, onCheckout,
+                            onViewPhoto, onSwitchView, userEmail, onGoRefill }) {
+  const [brand, setBrand] = useState("All");
+  const [sort, setSort]   = useState("feat");
+  const [qv, setQv]       = useState(null);   // quick-view product
+  const [qvSize, setQvSize] = useState(null);
+  const [qvQty, setQvQty] = useState(1);
+  const searchRef = useRef(null);
+
+  const sneakers = useMemo(() =>
+    (products || []).filter(p => p && p.id && p.name && (p.productType || "sneaker") !== "clothing"),
+    [products]);
+
+  // Brand dropdown options FROM the data (product.brand), counted, most-stocked
+  // first; unbranded/code-only (brand == null) collapse into "Other".
+  const brandOpts = useMemo(() => {
+    const m = new Map();
+    sneakers.forEach(p => { const k = p.brand || "Other"; m.set(k, (m.get(k) || 0) + 1); });
+    const other = m.get("Other") || 0; m.delete("Other");
+    const ranked = [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const out = [["All", sneakers.length], ...ranked];
+    if (other) out.push(["Other", other]);
+    return out;
+  }, [sneakers]);
+
+  const shown = useMemo(() => {
+    let list = sneakers.filter(p =>
+      (brand === "All" || (brand === "Other" ? !p.brand : p.brand === brand)) &&
+      (!search.trim() || p.name.toLowerCase().includes(search.toLowerCase())));
+    if (sort === "ph") list = [...list].sort((a, b) => (b.retailPrice || 0) - (a.retailPrice || 0));
+    else if (sort === "pl") list = [...list].sort((a, b) => (a.retailPrice || 0) - (b.retailPrice || 0));
+    else if (sort === "az") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    return list;
+  }, [sneakers, brand, search, sort]);
+
+  // Cart → grouped by product+size for the drawer (the cart is one line per unit).
+  const grouped = useMemo(() => {
+    const m = new Map();
+    (cart || []).forEach(l => {
+      if (l.intent === "refill") return;                 // desktop = customer orders
+      const key = `${l.product?.id}__${l.size}`;
+      if (!m.has(key)) m.set(key, { key, product: l.product, size: l.size, qty: 0 });
+      m.get(key).qty++;
+    });
+    return [...m.values()];
+  }, [cart]);
+  const units = grouped.reduce((s, g) => s + g.qty, 0);
+  const total = grouped.reduce((s, g) => s + (typeof g.product?.retailPrice === "number" ? g.product.retailPrice * g.qty : 0), 0);
+  const fmtR = n => "R" + Number(n).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
+  const sizesOf = p => { const s = (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"); return s.length ? s : ["Free Size"]; };
+
+  useEffect(() => {
+    const h = e => {
+      if (e.key === "/" && document.activeElement !== searchRef.current) { e.preventDefault(); searchRef.current?.focus(); }
+      if (e.key === "Escape") setQv(null);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
+
+  const openQv = (p) => { setQv(p); setQvSize(null); setQvQty(1); };
+  const Photo = ({ p, big }) => p.photoUrl
+    ? <img src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} />
+    : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
+
+  return (
+    <div className="ad-root">
+      <style>{`
+        .ad-root{position:fixed;inset:0;z-index:50;background:#000;color:#f4f6ff;font-family:${FONT.replace(/`/g,"")};display:grid;grid-template-columns:184px minmax(0,1fr) 288px;overflow:hidden}
+        .ad-root *{box-sizing:border-box}
+        @media(max-width:1180px){.ad-root{grid-template-columns:184px minmax(0,1fr)} .ad-drawer{position:fixed;right:0;top:0;bottom:0;width:288px}}
+        .ad-side{background:rgba(255,255,255,.015);border-right:1px solid rgba(255,255,255,.08);padding:22px 12px 16px;display:flex;flex-direction:column;gap:4px;overflow:auto}
+        .ad-wm .m{font-size:21px;font-weight:800;font-style:italic;letter-spacing:-.6px;color:#fff}
+        .ad-wm .c{font-size:10px;font-weight:700;letter-spacing:5px;color:#4A7FFF;margin-top:1px}
+        .ad-lab{font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:rgba(233,238,255,.3);padding:14px 10px 6px}
+        .ad-nav{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:transparent;border:1px solid transparent;color:rgba(233,238,255,.55);border-radius:10px;padding:9px 11px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s;font-family:inherit}
+        .ad-nav:hover{background:rgba(255,255,255,.04);color:#fff}
+        .ad-nav[aria-current="true"]{background:rgba(74,127,255,.14);border-color:rgba(74,127,255,.45);color:#9DBCFF}
+        .ad-nav .ic{width:16px;height:16px;flex:0 0 auto;opacity:.9}
+        .ad-who{display:flex;align-items:center;gap:9px;margin-top:8px;padding:9px 11px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:11px}
+        .ad-av{width:28px;height:28px;border-radius:50%;flex:0 0 auto;background:rgba(74,127,255,.2);border:1px solid rgba(74,127,255,.5);color:#9DBCFF;font-size:12px;font-weight:800;display:grid;place-items:center}
+        .ad-main{min-width:0;display:flex;flex-direction:column;overflow:hidden}
+        .ad-top{padding:16px 22px 13px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;gap:10px;align-items:center;background:radial-gradient(900px 260px at 18% -60%,rgba(74,127,255,.08),transparent)}
+        .ad-search{flex:1;position:relative;min-width:0}
+        .ad-search svg{position:absolute;left:13px;top:50%;transform:translateY(-50%);opacity:.4}
+        .ad-search input{width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:12px;color:#fff;font-size:13.5px;padding:11px 14px 11px 38px;outline:none;font-family:inherit}
+        .ad-search input:focus{border-color:rgba(74,127,255,.6);box-shadow:0 0 0 3px rgba(74,127,255,.12)}
+        .ad-sel{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:12px;color:rgba(233,238,255,.75);font-size:12.5px;font-weight:600;padding:10px 12px;cursor:pointer;font-family:inherit}
+        .ad-scroll{flex:1;overflow:auto;padding:16px 22px 40px}
+        .ad-count{font-size:11px;color:rgba(233,238,255,.3);margin:0 2px 12px}
+        .ad-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px}
+        .ad-card{position:relative;background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 45%),rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:16px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column;transition:transform .2s cubic-bezier(.2,.7,.2,1),border-color .2s,box-shadow .2s}
+        .ad-card:hover,.ad-card:focus-visible{transform:translateY(-5px);border-color:rgba(74,127,255,.55);box-shadow:0 18px 42px -20px rgba(60,110,255,.6);outline:none}
+        .ad-thumb{aspect-ratio:16/11;position:relative;overflow:hidden;background:#0a1020;display:grid;place-items:center}
+        .ad-cat{position:absolute;top:9px;left:9px;font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#9DBCFF;background:rgba(4,6,14,.72);border:1px solid rgba(255,255,255,.08);padding:3px 8px;border-radius:999px}
+        .ad-zoom{position:absolute;top:8px;right:8px;width:29px;height:29px;border:0;border-radius:9px;background:rgba(0,0,0,.5);color:#fff;display:grid;place-items:center;cursor:pointer;opacity:0;transform:translateY(-4px);transition:.18s}
+        .ad-card:hover .ad-zoom,.ad-card:focus-within .ad-zoom{opacity:1;transform:none}
+        .ad-body{padding:11px 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1}
+        .ad-name{font-size:13.5px;font-weight:650;line-height:1.25;min-height:2.5em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+        .ad-crow{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:auto}
+        .ad-price{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;background:linear-gradient(90deg,#6e7bff,#5d8bff,#8a6dff,#7f5af0,#8a6dff,#5d8bff,#6e7bff);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:adSiri 4s linear infinite}
+        @keyframes adSiri{from{background-position:0 0}to{background-position:300% 0}}
+        .ad-price.no{-webkit-text-fill-color:initial;color:rgba(233,238,255,.3);font-size:12px}
+        .ad-szn{font-size:10px;color:rgba(233,238,255,.3);font-weight:700}
+        .ad-hint{font-size:12px;font-weight:600;color:#4A7FFF}
+        .ad-quick{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .22s ease,opacity .18s}
+        .ad-card:hover .ad-quick,.ad-card:focus-within .ad-quick{grid-template-rows:1fr;opacity:1}
+        .ad-card:hover .ad-hint,.ad-card:focus-within .ad-hint{display:none}
+        .ad-quick>div{overflow:hidden;min-height:0}
+        .ad-qlab{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:rgba(233,238,255,.3);margin:2px 0 6px}
+        .ad-szrow{display:flex;flex-wrap:wrap;gap:5px}
+        .ad-sz{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;padding:6px 9px;min-width:34px;text-align:center;border-radius:8px;cursor:pointer;color:#dfe7ff;background:rgba(74,127,255,.08);border:1px solid rgba(255,255,255,.12);transition:.13s;font-family:inherit}
+        .ad-sz:hover{background:rgba(74,127,255,.24);border-color:rgba(74,127,255,.6);color:#fff;transform:translateY(-1px)}
+        .ad-sz.flash{background:#4ADE80;border-color:#4ADE80;color:#04120a}
+        .ad-drawer{background:rgba(255,255,255,.015);border-left:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;overflow:hidden;z-index:40}
+        .ad-dhead{padding:18px 16px 13px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:9px}
+        .ad-dhead h2{margin:0;font-size:15px;font-weight:800}
+        .ad-dn{font-size:11px;font-weight:800;background:rgba(74,127,255,.2);color:#9DBCFF;border-radius:999px;padding:2px 9px;font-variant-numeric:tabular-nums}
+        .ad-dlist{flex:1;overflow:auto;padding:12px 13px;display:flex;flex-direction:column;gap:9px}
+        .ad-empty{margin:auto;text-align:center;color:rgba(233,238,255,.3);padding:36px 16px;font-size:12.5px}
+        .ad-line{display:flex;gap:10px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:8px}
+        .ad-li{width:44px;height:44px;border-radius:9px;background:#0a1020;display:grid;place-items:center;font-size:20px;flex:0 0 auto;overflow:hidden}
+        .ad-ln{font-size:12px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .ad-lm{font-size:10px;color:rgba(233,238,255,.5);margin-top:1px}
+        .ad-step{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden;margin-top:5px}
+        .ad-step button{width:22px;height:22px;border:0;background:rgba(255,255,255,.04);color:#fff;cursor:pointer;font-size:13px}
+        .ad-step span{min-width:24px;text-align:center;font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums}
+        .ad-lp{font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;color:#9DBCFF;text-align:right}
+        .ad-dfoot{border-top:1px solid rgba(255,255,255,.08);padding:15px 16px 16px;display:flex;flex-direction:column;gap:11px}
+        .ad-trow{display:flex;justify-content:space-between;font-size:12.5px;color:rgba(233,238,255,.55)}
+        .ad-trow.tot{color:#fff;font-size:15px;font-weight:800}
+        .ad-place{width:100%;padding:13px;border:0;border-radius:12px;font-size:13.5px;font-weight:800;color:#04120a;background:linear-gradient(90deg,#6e7bff,#7f5af0);cursor:pointer;box-shadow:0 8px 22px -8px rgba(127,90,240,.7)}
+        .ad-place:disabled{opacity:.4;box-shadow:none;cursor:not-allowed;filter:grayscale(.5)}
+        .ad-stage{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.72);display:grid;place-items:center;padding:26px}
+        .ad-sv{width:min(820px,100%);max-height:86vh;overflow:auto;background:#06080f;border:1px solid rgba(255,255,255,.12);border-radius:22px;display:grid;grid-template-columns:1.1fr 1fr;box-shadow:0 40px 120px rgba(0,0,0,.7);position:relative}
+        @media(max-width:680px){.ad-sv{grid-template-columns:1fr}}
+        .ad-svimg{position:relative;background:#0a1020;min-height:320px;display:grid;place-items:center;overflow:hidden}
+        .ad-svbody{padding:24px 24px 22px;display:flex;flex-direction:column;gap:15px}
+        .ad-svname{font-size:21px;font-weight:800;letter-spacing:-.4px;line-height:1.15}
+        .ad-svprice{font-size:25px;font-weight:800;font-variant-numeric:tabular-nums;background:linear-gradient(90deg,#6e7bff,#5d8bff,#8a6dff,#7f5af0,#8a6dff,#5d8bff,#6e7bff);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:adSiri 5s linear infinite}
+        .ad-svsz button{min-width:46px;padding:11px 12px;border-radius:10px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;color:#dfe7ff;background:rgba(74,127,255,.06);border:1px solid rgba(255,255,255,.12);transition:.13s;font-family:inherit}
+        .ad-svsz button[aria-pressed="true"]{background:rgba(74,127,255,.22);border-color:#4A7FFF;color:#fff}
+        .ad-svadd{flex:1;padding:14px;border:0;border-radius:12px;font-size:14px;font-weight:800;color:#04120a;background:linear-gradient(90deg,#6e7bff,#7f5af0);cursor:pointer;box-shadow:0 8px 22px -8px rgba(127,90,240,.7)}
+        .ad-svadd:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.5);box-shadow:none}
+        .ad-svclose{position:absolute;top:12px;right:12px;width:34px;height:34px;border:0;border-radius:10px;background:rgba(0,0,0,.5);color:#fff;font-size:16px;cursor:pointer;z-index:2}
+        @media(prefers-reduced-motion:reduce){.ad-price,.ad-svprice{animation:none} .ad-card,.ad-quick{transition:none}}
+      `}</style>
+
+      {/* SIDEBAR */}
+      <aside className="ad-side">
+        <div className="ad-wm" style={{ padding: "0 8px 14px" }}><div className="m">marathon</div><div className="c">CLUB</div></div>
+        <div className="ad-lab">Order for</div>
+        {(availableShops || []).map(s => (
+          <button key={s.id} className="ad-nav" aria-current={effectiveShop === s.id} onClick={() => onSelectShop(s.id)}>
+            <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            {labelFor(s.id, shopRegistry)}
+          </button>
+        ))}
+        <div className="ad-lab">Flow</div>
+        <button className="ad-nav" aria-current={true}>
+          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>
+          Customer order
+        </button>
+        <button className="ad-nav" onClick={onGoRefill}>
+          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4"/></svg>
+          Clothing refill
+        </button>
+        <div style={{ flex: 1 }} />
+        <button className="ad-nav" onClick={onSwitchView}>
+          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M18 2l4 4-9 9H9v-4z"/></svg>
+          Switch view
+        </button>
+        <div className="ad-who">
+          <span className="ad-av">{(userEmail || "?")[0].toUpperCase()}</span>
+          <span style={{ minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{(userEmail || "").split("@")[0] || "assistant"}</span>
+            <span style={{ display: "block", fontSize: 10, color: "rgba(233,238,255,.4)" }}>Store assistant</span>
+          </span>
+        </div>
+      </aside>
+
+      {/* MAIN */}
+      <div className="ad-main">
+        <div className="ad-top">
+          <div className="ad-search">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…  ( / )" autoComplete="off" />
+          </div>
+          <select className="ad-sel" value={brand} onChange={e => setBrand(e.target.value)} aria-label="Brand">
+            {brandOpts.map(([b, n]) => <option key={b} value={b}>{b === "All" ? "All brands" : b} ({n})</option>)}
+          </select>
+          <select className="ad-sel" value={sort} onChange={e => setSort(e.target.value)} aria-label="Sort">
+            <option value="feat">Featured</option>
+            <option value="ph">Price · high</option>
+            <option value="pl">Price · low</option>
+            <option value="az">Name · A–Z</option>
+          </select>
+        </div>
+        <div className="ad-scroll">
+          <div className="ad-count">{shown.length} product{shown.length !== 1 ? "s" : ""}</div>
+          {shown.length === 0 ? (
+            <div style={{ textAlign: "center", color: "#444", padding: "3rem", fontSize: 14 }}>No products match.</div>
+          ) : (
+            <div className="ad-grid">
+              {shown.map(p => {
+                const priced = typeof p.retailPrice === "number" && p.retailPrice > 0;
+                const szs = sizesOf(p);
+                return (
+                  <article key={p.id} className="ad-card" tabIndex={0}
+                           onClick={() => openQv(p)} onKeyDown={e => { if (e.key === "Enter") openQv(p); }}>
+                    <div className="ad-thumb">
+                      <span className="ad-cat">{p.brand || p.subcategory || "Sneakers"}</span>
+                      {p.photoUrl && (
+                        <button className="ad-zoom" aria-label="Quick view" onClick={e => { e.stopPropagation(); onViewPhoto(productPhotos(p)); }}>
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+                        </button>
+                      )}
+                      <Photo p={p} />
+                    </div>
+                    <div className="ad-body">
+                      <div className="ad-name">{p.name}</div>
+                      <div className="ad-crow">
+                        {priced ? <span className="ad-price">{fmtR(p.retailPrice)}</span> : <span className="ad-price no">No price set</span>}
+                        <span className="ad-szn">{szs.length} size{szs.length !== 1 ? "s" : ""}</span>
+                      </div>
+                      <div className="ad-hint">Hover to add →</div>
+                      <div className="ad-quick"><div>
+                        <div className="ad-qlab">Add a size</div>
+                        <div className="ad-szrow">
+                          {szs.map(sz => (
+                            <button key={sz} className="ad-sz" onClick={e => {
+                              e.stopPropagation(); onQuickAdd(p, sz, 1);
+                              const b = e.currentTarget, t = b.textContent; b.classList.add("flash"); b.textContent = "✓";
+                              setTimeout(() => { b.classList.remove("flash"); b.textContent = t; }, 430);
+                            }}>{sz === "Free Size" ? "OS" : sz}</button>
+                          ))}
+                        </div>
+                      </div></div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ORDER DRAWER */}
+      <aside className="ad-drawer">
+        <div className="ad-dhead"><h2>Order</h2><span className="ad-dn">{units}</span></div>
+        <div className="ad-dlist">
+          {grouped.length === 0 ? (
+            <div className="ad-empty">
+              <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: .5, marginBottom: 10 }}><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>
+              <div style={{ fontWeight: 600 }}>Order is empty</div>
+              <div style={{ marginTop: 4, fontSize: 11 }}>Hover a product and tap a size.</div>
+            </div>
+          ) : grouped.map(g => (
+            <div key={g.key} className="ad-line">
+              <div className="ad-li">{g.product?.photoUrl ? <img src={g.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👟")}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="ad-ln">{g.product?.name}</div>
+                <div className="ad-lm">Size {g.size === "Free Size" ? "OS" : formatSize(g.size)} · {typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice) : "—"}</div>
+                <div className="ad-step">
+                  <button onClick={() => onRemoveOne(g.product.id, g.size)}>−</button>
+                  <span>{g.qty}</span>
+                  <button onClick={() => onQuickAdd(g.product, g.size, 1)}>+</button>
+                </div>
+              </div>
+              <div className="ad-lp">{typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice * g.qty) : "—"}</div>
+            </div>
+          ))}
+        </div>
+        <div className="ad-dfoot">
+          <div className="ad-trow"><span>{units} item{units !== 1 ? "s" : ""}</span><span>{grouped.length} line{grouped.length !== 1 ? "s" : ""}</span></div>
+          <div className="ad-trow tot"><span>Total</span><span>{fmtR(total)}</span></div>
+          <button className="ad-place" disabled={!units} onClick={onCheckout}>Place order</button>
+        </div>
+      </aside>
+
+      {/* QUICK-VIEW STAGE */}
+      {qv && (
+        <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setQv(null); }}>
+          <div className="ad-sv">
+            <button className="ad-svclose" onClick={() => setQv(null)} aria-label="Close">✕</button>
+            <div className="ad-svimg" onClick={() => qv.photoUrl && onViewPhoto(productPhotos(qv))} style={{ cursor: qv.photoUrl ? "zoom-in" : "default" }}>
+              <span className="ad-cat" style={{ top: 14, left: 14 }}>{qv.brand || "Sneakers"}</span>
+              <Photo p={qv} big />
+            </div>
+            <div className="ad-svbody">
+              <div>
+                <div className="ad-svname">{qv.name}</div>
+                {typeof qv.retailPrice === "number" && qv.retailPrice > 0
+                  ? <div className="ad-svprice" style={{ marginTop: 6 }}>{fmtR(qv.retailPrice)}</div>
+                  : <div style={{ marginTop: 6, color: "rgba(233,238,255,.35)", fontWeight: 700 }}>No price set</div>}
+              </div>
+              <div>
+                <div className="ad-qlab">Select a size</div>
+                <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {sizesOf(qv).map(sz => (
+                    <button key={sz} aria-pressed={qvSize === sz} onClick={() => setQvSize(sz)}>{sz === "Free Size" ? "One size" : formatSize(sz)}</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: "auto" }}>
+                <div className="ad-step" style={{ height: 48 }}>
+                  <button style={{ width: 34, height: 46, fontSize: 18 }} onClick={() => setQvQty(q => Math.max(1, q - 1))}>−</button>
+                  <span style={{ minWidth: 34, fontSize: 14 }}>{qvQty}</span>
+                  <button style={{ width: 34, height: 46, fontSize: 18 }} onClick={() => setQvQty(q => Math.min(10, q + 1))}>+</button>
+                </div>
+                <button className="ad-svadd" disabled={!qvSize} onClick={() => { onQuickAdd(qv, qvSize, qvQty); setQv(null); }}>
+                  {qvSize ? `Add ${qvQty} × ${qvSize === "Free Size" ? "OS" : formatSize(qvSize)} to order` : "Select a size"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AssistantView({ products, onExit, orders = [] }) {
   const [search, setSearch]                             = useState("");
   // Single 3-way mode selector (replaces the old Sneakers/Clothing toggle +
@@ -5197,7 +5527,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // `availableShops` expands that assignment into the physical shops the user may
   // pick: a "central" user → Marathon PE + Trophy; "pine" → Pine. Drives the
   // toggle below: 0 → block screen, 1 → auto-select + hide toggle, ≥2 → show.
-  const { storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin, hasPermission: stockHasPermission } = usePermissions();
+  const { user: assistantUser, storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin, hasPermission: stockHasPermission } = usePermissions();
+  // Desktop workspace kicks in at ≥1024px (laptop); phone + iPad keep tap→sheet.
+  const isDesktop = !useIsNarrow(1024);
   // Shop-stock visibility: stock permission OR a stock-capable stockRole (mirrors the
   // Stock section gate).
   const canAccessStock = stockIsSuperAdmin || ["warehouse", "admin"].includes(stockPermRecord?.stockRole) || stockHasPermission("stock_management");
@@ -5409,17 +5741,22 @@ function AssistantView({ products, onExit, orders = [] }) {
   const addClothingLines = (lines) =>
     setCart(c => [...c, ...lines.map(l => ({ ...l, intent: "refill" }))]);
 
-  // Laptop quick-add: a hover/focus-revealed size chip on the product card adds
-  // that size straight to the cart (qty 1) — the pointer+keyboard shortcut past
-  // the bottom sheet. Same line shapes as addToCart (clothing→customer order,
-  // else sneaker); the sheet stays available for qty>1 / Display Partner.
-  const quickAdd = (p, size) => {
+  // Desktop quick-add: add a size straight to the cart (qty lines) — the pointer
+  // shortcut past the bottom sheet. Same line shapes as addToCart (clothing→
+  // customer order, else sneaker); the sheet stays available on mobile.
+  const quickAdd = (p, size, qty = 1) => {
+    const reps = Math.max(1, Math.min(10, qty | 0 || 1));
     const isClothingCustomer = (p.productType || "sneaker") === "clothing";
     const line = isClothingCustomer
       ? { product: p, size, productType: "clothing", intent: "customer" }
       : { product: p, size, requestDisplay: false, requestDisplayPartner: false };
-    setCart(c => [...c, line]);
+    setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
   };
+  // Remove one cart line matching a product+size (desktop drawer − / remove).
+  const removeOneLine = (productId, size) => setCart(c => {
+    const i = c.findIndex(l => l.product?.id === productId && l.size === size);
+    return i < 0 ? c : [...c.slice(0, i), ...c.slice(i + 1)];
+  });
 
   const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
 
@@ -5660,6 +5997,19 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:880, margin:"0 auto", overflowX:"hidden", paddingBottom: cart.length > 0 ? 90 : 40 }}>
+      {/* Desktop workspace (≥1024px, sneaker customer orders) — full-screen
+          overlay reusing this view's cart + checkout. Phone/iPad + CR fall
+          through to the existing layout below. The shared Checkout sheet and
+          photo lightbox (rendered later) surface over it. */}
+      {isDesktop && !isRefillMode && !noStoreAccess && (
+        <AssistantDesktop
+          products={products} effectiveShop={effectiveShop} availableShops={availableShops}
+          onSelectShop={selectShop} shopRegistry={shopRegistry}
+          search={search} setSearch={setSearch}
+          cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onCheckout={openCheckout}
+          onViewPhoto={setFullPhoto} onSwitchView={onExit}
+          userEmail={assistantUser?.email || ""} onGoRefill={() => setMode("cr")} />
+      )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
           so it's exactly 5 across on tablet regardless of orientation. */}
@@ -5669,34 +6019,6 @@ function AssistantView({ products, onExit, orders = [] }) {
         @media (min-width: 768px) {
           .mc-grid-photo  { grid-template-columns: repeat(5, 1fr); }
           .mc-grid-refill { grid-template-columns: repeat(2, 1fr); }
-        }
-        /* ── LAPTOP CARD ── bigger 4-up grid + hover/focus size quick-add.
-           Gated to real pointer devices at laptop width, so phone + iPad keep
-           the existing tap→bottom-sheet flow untouched. */
-        .mc-quickadd { display: none; }
-        @media (min-width: 1024px) {
-          .mc-grid-photo { grid-template-columns: repeat(4, 1fr); gap: 16px; }
-        }
-        @media (hover: hover) and (min-width: 1024px) {
-          .mc-card { transition: transform .2s cubic-bezier(.2,.7,.2,1), box-shadow .2s, border-color .2s; }
-          .mc-card:hover, .mc-card:focus-visible, .mc-card:focus-within {
-            transform: translateY(-5px);
-            border-color: rgba(74,127,255,.55) !important;
-            box-shadow: 0 16px 40px -18px rgba(60,110,255,.5);
-          }
-          .mc-card:focus-visible { outline: 2px solid #4A7FFF; outline-offset: 2px; }
-          .mc-card:hover .mc-taphint, .mc-card:focus-within .mc-taphint { display: none; }
-          .mc-card:hover .mc-plusbadge, .mc-card:focus-within .mc-plusbadge { display: none; }
-          .mc-quickadd { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows .22s ease, opacity .18s ease; }
-          .mc-quickadd > .mc-qin { overflow: hidden; min-height: 0; }
-          .mc-card:hover .mc-quickadd, .mc-card:focus-within .mc-quickadd { grid-template-rows: 1fr; opacity: 1; }
-          .mc-sz { font-family: inherit; font-size: 12px; font-weight: 700; padding: 6px 9px; min-width: 34px; text-align: center; border-radius: 8px; cursor: pointer; color: #dfe7ff; background: rgba(74,127,255,.08); border: 1px solid rgba(60,110,255,.25); transition: background .14s, border-color .14s, transform .1s; }
-          .mc-sz:hover { background: rgba(74,127,255,.22); border-color: rgba(74,127,255,.55); color: #fff; transform: translateY(-1px); }
-          .mc-sz:active { transform: scale(.94); }
-          .mc-sz:focus-visible { outline: 2px solid #4A7FFF; outline-offset: 1px; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .mc-card, .mc-quickadd, .mc-sz { transition: none; }
         }
         /* Siri-style price: all 4 candidate hues mixed into one animated,
            iridescent gradient that drifts across the text. */
@@ -5873,12 +6195,8 @@ function AssistantView({ products, onExit, orders = [] }) {
         <div className="mc-grid-photo" style={{ display:"grid", gap:10 }}>
           {filtered.map(p => {
             const isSel = selected && selected.id === p.id;
-            const cardSizes = (Array.isArray(p.sizes) ? p.sizes : []).filter(s => s && String(s).trim() && s !== "_");
-            const chipSizes = cardSizes.length ? cardSizes : ["Free Size"];
             return (
-              <div key={p.id} className="mc-card" role="button" tabIndex={0}
-                   onClick={() => { resetSheet(); setSelected(p); }}
-                   onKeyDown={(e) => { if (e.key === "Enter") { resetSheet(); setSelected(p); } }}
+              <div key={p.id} onClick={() => { resetSheet(); setSelected(p); }}
                    style={{ background: isSel ? "rgba(20,40,100,.25)" : "rgba(255,255,255,.03)",
                             border: isSel ? "2px solid #4A7FFF" : "1px solid rgba(255,255,255,.06)",
                             borderRadius:12, overflow:"hidden", cursor:"pointer", position:"relative",
@@ -5913,21 +6231,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                   ) : (
                     <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>
                   )}
-                  <div className="mc-taphint" style={{ fontSize:13, fontWeight:500, color:"#4A7FFF" }}>Tap to add →</div>
-                  {/* Laptop-only (pointer + ≥1024px): hover/focus reveals size
-                      chips that add straight to the cart, skipping the sheet. */}
-                  <div className="mc-quickadd"><div className="mc-qin">
-                    <div style={{ fontSize:9.5, letterSpacing:".14em", textTransform:"uppercase", color:"rgba(255,255,255,.3)", margin:"2px 0 6px" }}>Add a size</div>
-                    <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
-                      {chipSizes.map(sz => (
-                        <button key={sz} className="mc-sz" onClick={(e) => { e.stopPropagation(); quickAdd(p, sz); }}>
-                          {sz === "Free Size" ? "One size" : <SizeTag size={sz} />}
-                        </button>
-                      ))}
-                    </div>
-                  </div></div>
+                  <div style={{ fontSize:13, fontWeight:500, color:"#4A7FFF" }}>Tap to add →</div>
                 </div>
-                <div className="mc-plusbadge" style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
+                <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
                               background: isSel ? "rgba(60,110,255,.2)" : "rgba(60,110,255,.1)",
                               border: isSel ? "1px solid #4A7FFF" : "1px solid rgba(60,110,255,.3)",
                               borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", color:"#4A7FFF", fontSize:16, fontWeight:600 }}>+</div>
@@ -6154,8 +6460,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           uncropped image; tap anywhere (or ✕) to dismiss. */}
       {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
 
-      {/* ── Phase 12B: Floating cart trigger ── */}
-      {cart.length > 0 && !checkoutOpen && !selected && (
+      {/* ── Phase 12B: Floating cart trigger ── (desktop has its own drawer) */}
+      {cart.length > 0 && !checkoutOpen && !selected && !(isDesktop && !isRefillMode) && (
         <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"12px 14px 14px", background:"linear-gradient(transparent, rgba(0,0,0,.92) 30%)", zIndex:50, pointerEvents:"none" }}>
           <div style={{ maxWidth:880, margin:"0 auto", pointerEvents:"auto" }}>
             <button
@@ -6181,7 +6487,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Scroll-to-top FAB ── appears after scrolling down; one tap returns
           to the search box. Sits above the floating cart bar when it's shown. */}
-      {showScrollTop && (
+      {showScrollTop && !(isDesktop && !isRefillMode) && (
         <button onClick={scrollToTop} aria-label="Scroll to top"
           style={{ position:"fixed", right:16, bottom: cart.length > 0 && !checkoutOpen && !selected ? 92 : 24, zIndex:60,
                    width:46, height:46, borderRadius:"50%", cursor:"pointer",
