@@ -244,12 +244,13 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
           <div style={{ fontSize: 9.5, letterSpacing: ".2em", textTransform: "uppercase", color: "rgba(233,238,255,.3)", padding: "12px 8px 7px", fontWeight: 700 }}>Printer</div>
           {TRANSPORTS.map(t => {
             const supported = t.supported(); const on = transport === t.id;
+            const cleanLabel = t.label.replace(/\s*\((?:bluetooth|usb|ble)\)\s*$/i, "");
             return (
               <button key={t.id} onClick={() => supported && setTransport(t.id)} disabled={!supported}
                 style={{ display: "flex", alignItems: "center", width: "100%", textAlign: "left", cursor: supported ? "pointer" : "not-allowed", fontFamily: FONT, fontSize: 12.5, fontWeight: 600, borderRadius: 10, padding: "9px 11px",
                          background: on ? "rgba(74,127,255,.12)" : "transparent", border: on ? "1px solid rgba(74,127,255,.4)" : "1px solid transparent",
                          color: supported ? (on ? "#9DBCFF" : "rgba(233,238,255,.55)") : "rgba(255,255,255,.25)", opacity: supported ? 1 : .6 }}>
-                {t.label}
+                {cleanLabel}
               </button>
             );
           })}
