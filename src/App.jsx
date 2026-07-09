@@ -709,7 +709,7 @@ function toKey(str) {
 //   emptyMessage — string shown when all buckets are empty
 //   includeOlder — when true, items older than 2-days-ago land in an "Older"
 //                  bucket (default collapsed). When false, they're dropped.
-function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, includeOlder = false }) {
+function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, includeOlder = false, keyOf = null }) {
   // Read initial open state from sessionStorage. Default: today open, rest closed.
   const STORAGE_KEY = `dayCollapsible:${sectionKey}`;
   const [openMap, setOpenMap] = useState(() => {
@@ -781,8 +781,11 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
             </div>
             <div style={{ maxHeight: open ? 5000 : 0, overflow:"hidden", transition:"max-height 150ms ease" }}>
               <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 8px 12px", display:"flex", flexDirection:"column", gap:10 }}>
+                {/* keyOf gives STATEFUL cards a stable identity — the date-index
+                    fallback reuses component state across neighbours when items
+                    sharing a timestamp shift position (fine for stateless rows). */}
                 {s.items.map((item, i) => (
-                  <div key={dateOf(item) ? `${dateOf(item)}-${i}` : i}>
+                  <div key={keyOf ? keyOf(item) : (dateOf(item) ? `${dateOf(item)}-${i}` : i)}>
                     {renderItem(item)}
                   </div>
                 ))}
@@ -958,7 +961,13 @@ async function reverseClothingRefill({ store, productId, size, qty, hub, batchId
 const CLOTHING_CR_REASON      = "clothing_cr";
 const CLOTHING_CR_UNDO_REASON = "clothing_cr_undo";
 
-async function fireCRRefill({ store, productId, size, qty, from, actorRole, orderId }) {
+// IDEMPOTENCY: both directions are keyed on the order line + its fulfil
+// GENERATION (clothingRefillGen on the order, bumped by each undo). Within one
+// generation, `cr_{orderId}_g{gen}` / `crundo_{orderId}_g{gen}` are stable, so
+// a re-tapped Send, a flag-write that failed after the transfer landed, or two
+// devices racing the same batch all collapse into ONE ledger movement — while a
+// later undo→re-fulfil cycle (next gen) still moves stock again as it should.
+async function fireCRRefill({ store, productId, size, qty, from, actorRole, orderId, gen = 0 }) {
   return applyMovement({
     type: "transfer_out",
     productId, size, qty,
@@ -966,15 +975,12 @@ async function fireCRRefill({ store, productId, size, qty, from, actorRole, orde
     reason: CLOTHING_CR_REASON,
     actorRole: actorRole || null,
     link: { orderId, refillId: `cr_${store}_${productId}` },
-    // No movementId — a fresh push per Send (mirrors fireClothingRefill). The
-    // sheet's busy-guard + the order's status flip to "available" prevent re-sends.
+    movementId: `cr_${orderId}_g${gen}`,
   });
 }
 
 // Reverse ONE fulfilled CR size: store→hub, netted against the forward move.
-// undoId (a per-undo timestamp) keys the idempotent movementId so a double-tap
-// can't double-reverse, while still allowing a later re-fulfil→re-undo cycle.
-async function reverseCRRefill({ store, productId, size, qty, hub, orderId, undoId, actorRole }) {
+async function reverseCRRefill({ store, productId, size, qty, hub, orderId, gen = 0, actorRole }) {
   return applyMovement({
     type: "transfer_out",
     productId, size, qty,
@@ -982,7 +988,7 @@ async function reverseCRRefill({ store, productId, size, qty, hub, orderId, undo
     reason: CLOTHING_CR_UNDO_REASON,
     actorRole: actorRole || null,
     link: { orderId, refillId: `cr_${store}_${productId}` },
-    movementId: `crundo_${undoId}_${orderId}`,
+    movementId: `crundo_${orderId}_g${gen}`,
   });
 }
 
@@ -4964,7 +4970,14 @@ const refillStatusOf = (o) => {
 // photo (tap → shared lightbox) + name + status-count chips; expand for per-size
 // status rows. Waiting-on (pending) sizes first.
 function RefillTrackingProductCard({ group, onViewPhoto }) {
-  const [open, setOpen] = useState(group.counts.pending > 0);
+  // Auto-open while the shop has pending lines; a manual toggle overrides until
+  // the pending state CHANGES (new request / resolution), which resets the
+  // override so fresh activity is never hidden behind a stale collapse.
+  const [userOpen, setUserOpen] = useState(null);
+  const hasPending = group.counts.pending > 0;
+  useEffect(() => { setUserOpen(null); }, [hasPending]);
+  const open = userOpen ?? hasPending;
+  const setOpen = (fn) => setUserOpen(prev => fn(prev ?? hasPending));
   const hasPhotos = onViewPhoto && group.photos.length > 0;
   return (
     <div style={{ background:CARD, border:"1px solid rgba(60,110,255,.45)", borderRadius:RADIUS, boxShadow:"0 0 10px rgba(60,110,255,.12)", overflow:"hidden" }}>
@@ -6144,7 +6157,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         refilledAt: o.clothingRefilledAt || null,
         outOfStockAt: o.clothingOutOfStockAt || null,
         placedAtHub: o.placedAtHub || o.hub || "hub2",
-        destShop: o.destShop || null,
+        gen: o.clothingRefillGen || 0,                // fulfil generation — keys idempotent movementIds
       });
     });
     const active = [];
@@ -6183,7 +6196,10 @@ function WarehouseView({ products = [], orders, onExit }) {
   const { permRecord: whStockPerm, isSuperAdmin: whStockSuper } = usePermissions();
   const crActorRole = whStockSuper ? "admin" : (whStockPerm?.stockRole || null);
   const canFulfilCR = crActorRole === "admin" || crActorRole === "warehouse";
-  const hub2Cells = useStockCells("hub2");   // { pid: { size: cell } } — fulfil source
+  // Subscribe to Hub 2 stock only when this device is actually ON hub2 (the CR
+  // tab is hub2-only) — "__off__" resolves to an empty node for other hubs, so
+  // hub1/hub3/hubC devices don't stream the warehouse's biggest stock subtree.
+  const hub2Cells = useStockCells(selectedHub === "hub2" ? "hub2" : "__off__"); // { pid: { size: cell } }
   const [crPhoto, setCrPhoto] = useState(null);
 
   // Hub selector screen — shown until staff pick a hub
@@ -6559,7 +6575,9 @@ function WarehouseView({ products = [], orders, onExit }) {
       const reject = !!plan.rejects?.[it.orderId];
       if (qty > 0) {
         if (!store) { fail++; errors.push(`${formatSize(it.size)}: no destination shop on this request`); continue; }
-        const res = await fireCRRefill({ store, productId: batch.productId, size: it.size, qty, from: it.placedAtHub || "hub2", actorRole: crActorRole, orderId: it.orderId });
+        let res;
+        try { res = await fireCRRefill({ store, productId: batch.productId, size: it.size, qty, from: it.placedAtHub || "hub2", actorRole: crActorRole, orderId: it.orderId, gen: it.gen }); }
+        catch { res = { ok: false, reason: "network error" }; }
         if (res && res.ok) {
           ok++;
           updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: qty, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, updatedAt: now });
@@ -6569,6 +6587,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           errors.push(`${formatSize(it.size)}: ${res && res.reason === "insufficient_stock" ? `only ${res.available} at Hub 2` : (res && res.reason) || "transfer failed"}`);
         }
       } else if (reject) {
+        // Reject is a flag-only write (no stock) — allowed without a stockRole.
         ok++;
         updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
         logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2" });
@@ -6578,17 +6597,29 @@ function WarehouseView({ products = [], orders, onExit }) {
     return { ok, fail, errors };
   };
   // Undo a resolved batch — reverse the REAL stock for every fulfilled line
-  // (store→hub2, idempotent per undo), then clear all status fields so the request
-  // returns to the active list for re-fulfil.
+  // (store→hub2). A line's flags are cleared ONLY if its reversal succeeded (or it
+  // never moved stock): a refused reversal (e.g. the shop already sold the units)
+  // keeps the line resolved so re-fulfil can't double-deduct the hub. Each cleared
+  // line bumps clothingRefillGen, giving the next fulfil cycle fresh idempotency
+  // keys. Returns { ok, fail, errors } for the button to surface.
   const undoClothingRefill = async (batch) => {
     const now = new Date().toISOString();
-    const undoId = String(Date.now());
+    let ok = 0, fail = 0; const errors = [];
     for (const it of batch.items) {
       if (it.status === "available" && (it.refilledQty || 0) > 0 && batch.destShop) {
-        await reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: it.refilledQty, hub: it.placedAtHub || "hub2", orderId: it.orderId, undoId, actorRole: crActorRole });
+        let res;
+        try { res = await reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: it.refilledQty, hub: it.placedAtHub || "hub2", orderId: it.orderId, gen: it.gen, actorRole: crActorRole }); }
+        catch { res = { ok: false, reason: "network error" }; }
+        if (!res || !res.ok) {
+          fail++;
+          errors.push(`${formatSize(it.size)}: ${res && res.reason === "insufficient_stock" ? `shop only has ${res.available} left` : (res && res.reason) || "reverse failed"}`);
+          continue;                                              // keep the line resolved — stock stands
+        }
       }
-      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingOutOfStockAt: null, clothingRefilledBy: null, updatedAt: now });
+      ok++;
+      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingOutOfStockAt: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
     }
+    return { ok, fail, errors };
   };
 
   const onHoldOrders = hubOrders.filter(o => o.status === STATUS.COMING_TOMORROW);
@@ -6746,7 +6777,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           : selectedHub === "hub2"
           ? [
               ["queue",    "Order Queue",     null],
-              ["clothing", "Clothing",        clothingBadge],
+              ["clothing", "CR Orders",       clothingBadge],
               ["refills",  "Display Refills", refillsBadge],
               ["layby",    "Layby",           laybyBadge],
             ]
@@ -7238,10 +7269,13 @@ function SizeStatusChips({ items }) {
   );
 }
 
-// One CR request = a card. Per-size fulfil (qty capped at Hub 2 on-hand, editable)
-// + per-size reject; already-resolved sizes show as read-only chips. Send fires a
-// real hub2→store transfer per fulfilled size (via onFulfill → fulfillCRBatch).
-function CRFulfillCard({ batch, hub2Cells, canFulfil, onFulfill, onViewPhoto, products, fmtTime }) {
+// One CR request = ONE COMPACT card (accordion). Collapsed: small photo (tap →
+// lightbox), name, destination shop, and a coverage summary chip — many fit on
+// screen, scannable like the Clothing-Sold list. Tap to expand THAT card into the
+// per-size fulfil/reject steppers + Send; the parent keeps one card open at a time.
+// Send fires a real hub2→store transfer per fulfilled size (onFulfill →
+// fulfillCRBatch, idempotent per line+generation).
+function CRFulfillCard({ batch, hub2Cells, canFulfil, onFulfill, onViewPhoto, products, fmtTime, open, onToggle }) {
   const [qtys, setQtys]       = useState({});   // { orderId: qty } (only for touched lines)
   const [touched, setTouched] = useState({});   // { orderId: true }
   const [rejects, setRejects] = useState({});   // { orderId: true }
@@ -7254,8 +7288,10 @@ function CRFulfillCard({ batch, hub2Cells, canFulfil, onFulfill, onViewPhoto, pr
 
   // Untouched lines default to "as much as Hub 2 has, up to requested" and track
   // live stock; once the user edits/rejects a line we honour their value (clamped).
+  // Without a stock role, fulfil qtys are forced to 0 — reject stays available
+  // (it's a flag-only write, no stock moves).
   const capOf   = (it) => Math.min(it.qty, availAt(it.size));
-  const displayQ = (it) => rejects[it.orderId] ? 0 : (touched[it.orderId] ? Math.min(qtys[it.orderId] || 0, capOf(it)) : capOf(it));
+  const displayQ = (it) => (!canFulfil || rejects[it.orderId]) ? 0 : (touched[it.orderId] ? Math.min(qtys[it.orderId] || 0, capOf(it)) : capOf(it));
   const setQ = (orderId, v, max) => { setTouched(t => ({ ...t, [orderId]: true })); setQtys(q => ({ ...q, [orderId]: Math.max(0, Math.min(max, Math.floor(Number(v) || 0))) })); };
   const toggleReject = (orderId) => setRejects(r => { const n = { ...r }; if (n[orderId]) delete n[orderId]; else n[orderId] = true; return n; });
 
@@ -7265,100 +7301,154 @@ function CRFulfillCard({ batch, hub2Cells, canFulfil, onFulfill, onViewPhoto, pr
 
   const totalSend   = pending.reduce((s, it) => s + displayQ(it), 0);
   const totalReject = pending.filter(it => rejects[it.orderId]).length;
-  const canSend = canFulfil && !busy && (totalSend > 0 || totalReject > 0);
+  const canSend = !busy && (totalSend > 0 || totalReject > 0);
+
+  // Collapsed-row coverage summary: how much of this request Hub 2 can cover NOW.
+  const fullCover  = pending.filter(it => availAt(it.size) >= it.qty).length;
+  const shortCover = pending.length - fullCover;
 
   const send = async () => {
     if (!canSend) return;
     setBusy(true); setMsg(null);
-    const plan = { qtys: {}, rejects };
-    pending.forEach(it => { plan.qtys[it.orderId] = displayQ(it); });
-    const res = await onFulfill(batch, plan);
-    setBusy(false);
-    if (res?.errors?.length) setMsg(`${res.ok} done · ${res.fail} failed — ${res.errors.join("; ")}`);
-    else { setTouched({}); setRejects({}); setQtys({}); }
+    try {
+      const plan = { qtys: {}, rejects };
+      pending.forEach(it => { plan.qtys[it.orderId] = displayQ(it); });
+      const res = await onFulfill(batch, plan);
+      if (res?.errors?.length) setMsg(`${res.ok} done · ${res.fail} failed — ${res.errors.join("; ")}`);
+      else { setTouched({}); setRejects({}); setQtys({}); }
+    } catch (e) {
+      setMsg("Send failed — check your connection and try again.");
+      console.warn("CR send failed:", e);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <div style={{ background:CARD, border:"1px solid rgba(60,110,255,.45)", borderLeft:"3px solid #4A7FFF", borderRadius:RADIUS, padding:14, boxShadow:"0 0 12px rgba(60,110,255,.12)" }}>
-      <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:12 }}>
-        <div onClick={hasPhotos ? () => onViewPhoto(photos) : undefined} title={hasPhotos ? "Tap to enlarge" : undefined}
-             style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
-          <ProductPhoto url={batch.productPhotoUrl} photo={batch.productPhoto} size={56} radius={10}/>
+    <div style={{ background:CARD, border: open ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(60,110,255,.3)", borderLeft:"3px solid #4A7FFF", borderRadius:RADIUS, boxShadow: open ? "0 0 12px rgba(60,110,255,.15)" : "none", overflow:"hidden" }}>
+      {/* Compact header row — always visible; tap to expand/collapse. */}
+      <div onClick={onToggle} style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 11px", cursor:"pointer" }}>
+        <div onClick={hasPhotos ? (e) => { e.stopPropagation(); onViewPhoto(photos); } : undefined}
+             title={hasPhotos ? "Tap to enlarge" : undefined}
+             style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:8 }}>
+          <ProductPhoto url={batch.productPhotoUrl} photo={batch.productPhoto} size={38} radius={8}/>
           {hasPhotos && (
-            <div style={{ position:"absolute", right:-4, bottom:-4, width:18, height:18, borderRadius:9, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <div style={{ position:"absolute", right:-3, bottom:-3, width:14, height:14, borderRadius:7, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="3" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </div>
           )}
         </div>
         <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{batch.productName}</div>
-          <div style={{ color:"rgba(255,255,255,.45)", fontSize:10, marginTop:2 }}>
-            Submitted {fmtTime(batch.createdAt)}{batch.destShop ? ` · → ${labelFor(batch.destShop)}` : ""}
+          <div style={{ fontWeight:700, color:"#fff", fontSize:13, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{batch.productName}</div>
+          <div style={{ color:"rgba(255,255,255,.45)", fontSize:10, marginTop:1 }}>
+            {batch.destShop ? `${labelFor(batch.destShop)} · ` : ""}{fmtTime(batch.createdAt)}
           </div>
+        </div>
+        <span style={{ flexShrink:0, fontSize:10.5, fontWeight:700, color:BLUE_L, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"3px 9px", whiteSpace:"nowrap" }}>
+          {pending.length} size{pending.length === 1 ? "" : "s"}{shortCover > 0 ? ` · ${fullCover} ready · ${shortCover} short` : ""}
+          {resolved.length > 0 ? ` · ${resolved.length} done` : ""}
+        </span>
+        <span style={{ color:"#4A7FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s", fontSize:13, flexShrink:0 }}>▸</span>
+      </div>
+
+      {open && (
+        <div style={{ padding:"2px 11px 11px", borderTop:"1px solid rgba(60,110,255,.12)" }}>
           {resolved.length > 0 && <SizeStatusChips items={resolved} />}
-        </div>
-      </div>
 
-      {/* Per-size fulfil rows (still-pending sizes only). */}
-      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-        {pending.map(it => {
-          const avail = availAt(it.size);
-          const cap = capOf(it);
-          const rejected = !!rejects[it.orderId];
-          const q = displayQ(it);
-          return (
-            <div key={it.orderId} style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <div style={{ minWidth:54, fontSize:12.5, fontWeight:700, color:"#fff" }}>Size <SizeTag size={it.size} /></div>
-              <div style={{ flex:1, minWidth:0, fontSize:11, color:"rgba(255,255,255,.5)" }}>
-                need {it.qty} · {avail} at Hub 2
-              </div>
-              {rejected ? (
-                <button onClick={() => toggleReject(it.orderId)}
-                        style={{ padding:"6px 12px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", background:"rgba(248,113,113,.14)", border:"1px solid rgba(248,113,113,.5)", color:"#F87171", display:"flex", alignItems:"center", gap:5 }}>
-                  Rejected · undo
-                </button>
-              ) : (
-                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                  {cap > 0 ? (
-                    <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                      <button onClick={() => setQ(it.orderId, q - 1, cap)} disabled={q <= 0} style={{ ...crStep, opacity: q <= 0 ? 0.4 : 1 }}>−</button>
-                      <input value={q} onChange={e => setQ(it.orderId, e.target.value, cap)} inputMode="numeric"
-                             style={{ width:38, textAlign:"center", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.3)", borderRadius:8, color:"#fff", fontSize:13, fontWeight:700, padding:"6px 2px", fontFamily:FONT }}/>
-                      <button onClick={() => setQ(it.orderId, q + 1, cap)} disabled={q >= cap} style={{ ...crStep, opacity: q >= cap ? 0.4 : 1 }}>+</button>
-                    </div>
+          {/* Per-size fulfil rows (still-pending sizes only). */}
+          <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:8 }}>
+            {pending.map(it => {
+              const avail = availAt(it.size);
+              const cap = capOf(it);
+              const rejected = !!rejects[it.orderId];
+              const q = displayQ(it);
+              return (
+                <div key={it.orderId} style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <div style={{ minWidth:54, fontSize:12.5, fontWeight:700, color:"#fff" }}>Size <SizeTag size={it.size} /></div>
+                  <div style={{ flex:1, minWidth:0, fontSize:11, color:"rgba(255,255,255,.5)" }}>
+                    need {it.qty} · {avail} at Hub 2
+                  </div>
+                  {rejected ? (
+                    <button onClick={() => toggleReject(it.orderId)}
+                            style={{ padding:"6px 12px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", background:"rgba(248,113,113,.14)", border:"1px solid rgba(248,113,113,.5)", color:"#F87171", display:"flex", alignItems:"center", gap:5 }}>
+                      Rejected · undo
+                    </button>
                   ) : (
-                    <span style={{ fontSize:11, color:"#F5A623", fontWeight:600 }}>none at Hub 2</span>
+                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                      {cap > 0 && canFulfil ? (
+                        <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                          <button onClick={() => setQ(it.orderId, q - 1, cap)} disabled={q <= 0} style={{ ...crStep, opacity: q <= 0 ? 0.4 : 1 }}>−</button>
+                          <input value={q} onChange={e => setQ(it.orderId, e.target.value, cap)} inputMode="numeric"
+                                 style={{ width:38, textAlign:"center", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.3)", borderRadius:8, color:"#fff", fontSize:13, fontWeight:700, padding:"6px 2px", fontFamily:FONT }}/>
+                          <button onClick={() => setQ(it.orderId, q + 1, cap)} disabled={q >= cap} style={{ ...crStep, opacity: q >= cap ? 0.4 : 1 }}>+</button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize:11, color:"#F5A623", fontWeight:600 }}>{cap > 0 ? "" : "none at Hub 2"}</span>
+                      )}
+                      <button onClick={() => toggleReject(it.orderId)}
+                              style={{ padding:"6px 10px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", background:"rgba(150,20,20,.12)", border:"1px solid rgba(180,40,40,.35)", color:"#F87171" }}>
+                        Reject
+                      </button>
+                    </div>
                   )}
-                  <button onClick={() => toggleReject(it.orderId)}
-                          style={{ padding:"6px 10px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer", background:"rgba(150,20,20,.12)", border:"1px solid rgba(180,40,40,.35)", color:"#F87171" }}>
-                    Reject
-                  </button>
                 </div>
-              )}
+              );
+            })}
+          </div>
+
+          {msg && <div style={{ marginTop:10, fontSize:11.5, color:"#F5A623" }}>{msg}</div>}
+
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:12 }}>
+            <div style={{ flex:1, fontSize:11, color:"rgba(255,255,255,.45)" }}>
+              {canFulfil
+                ? `Send ${totalSend} unit(s)${totalReject ? ` · reject ${totalReject}` : ""} → ${batch.destShop ? labelFor(batch.destShop) : "shop"}`
+                : "No stock role — you can Reject; transfers need a warehouse/admin stock role."}
             </div>
-          );
-        })}
-      </div>
-
-      {msg && <div style={{ marginTop:10, fontSize:11.5, color:"#F5A623" }}>{msg}</div>}
-
-      <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:12 }}>
-        <div style={{ flex:1, fontSize:11, color:"rgba(255,255,255,.45)" }}>
-          {canFulfil ? `Send ${totalSend} unit(s)${totalReject ? ` · reject ${totalReject}` : ""} → ${batch.destShop ? labelFor(batch.destShop) : "shop"}` : "Needs a stock role to transfer."}
+            <button onClick={send} disabled={!canSend}
+                    style={{ padding:"11px 20px", borderRadius:10, fontSize:12.5, fontWeight:700, cursor: canSend ? "pointer" : "not-allowed",
+                             background: canSend ? "rgba(0,150,70,.22)" : "rgba(255,255,255,.04)",
+                             border: `1px solid ${canSend ? "rgba(0,180,80,.5)" : "rgba(255,255,255,.1)"}`,
+                             color: canSend ? "#4ADE80" : "rgba(255,255,255,.35)", display:"flex", alignItems:"center", gap:6 }}>
+              {busy ? "Sending…" : "Send"}
+            </button>
+          </div>
         </div>
-        <button onClick={send} disabled={!canSend}
-                style={{ padding:"11px 20px", borderRadius:10, fontSize:12.5, fontWeight:700, cursor: canSend ? "pointer" : "not-allowed",
-                         background: canSend ? "rgba(0,150,70,.22)" : "rgba(255,255,255,.04)",
-                         border: `1px solid ${canSend ? "rgba(0,180,80,.5)" : "rgba(255,255,255,.1)"}`,
-                         color: canSend ? "#4ADE80" : "rgba(255,255,255,.35)", display:"flex", alignItems:"center", gap:6 }}>
-          {busy ? "Sending…" : "Send"}
-        </button>
-      </div>
+      )}
     </div>
   );
 }
 
+// Busy-guarded Undo for completed CR batches — undo now reverses REAL stock, so
+// the button disables while in flight and surfaces refused reversals.
+function UndoCRButton({ batch, onUndo }) {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await onUndo(batch);
+      if (res?.errors?.length) alert(`Undo: ${res.ok} line(s) reversed, ${res.fail} kept — ${res.errors.join("; ")}`);
+    } catch (e) {
+      alert("Undo failed — check your connection and try again.");
+      console.warn("CR undo failed:", e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button onClick={run} disabled={busy}
+            style={{ padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor: busy ? "wait" : "pointer", opacity: busy ? 0.6 : 1, display:"flex", alignItems:"center", gap:5 }}>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+      </svg>
+      {busy ? "Undoing…" : "Undo"}
+    </button>
+  );
+}
+
 function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, setShowCompleted, onFulfill, onUndo, hub2Cells, canFulfil, onViewPhoto, products }) {
+  // Accordion — one request expanded at a time so the whole queue stays scannable.
+  const [openKey, setOpenKey] = useState(null);
   const fmtTime = (iso) => {
     if (!iso) return "—";
     return new Date(iso).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
@@ -7385,16 +7475,23 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
         </div>
       )}
 
-      {/* Active list — day-grouped, last 3 days only. */}
+      {/* Active list — day-grouped. includeOlder keeps half-resolved requests
+          (some sizes deliberately left pending) reachable past the 3-day window
+          instead of silently orphaning them. keyOf pins each STATEFUL card to its
+          batch so same-timestamp neighbours can't inherit each other's state. */}
       {activeBatches.length > 0 && (
         <DayCollapsible
           sectionKey="clothing-due"
           items={activeBatches}
           dateOf={(b) => b.createdAt}
+          keyOf={(b) => b.batchKey}
+          includeOlder
           emptyMessage="No clothing refills pending."
           renderItem={(batch) => (
             <CRFulfillCard batch={batch} hub2Cells={hub2Cells} canFulfil={canFulfil}
-                           onFulfill={onFulfill} onViewPhoto={onViewPhoto} products={products} fmtTime={fmtTime} />
+                           onFulfill={onFulfill} onViewPhoto={onViewPhoto} products={products} fmtTime={fmtTime}
+                           open={openKey === batch.batchKey}
+                           onToggle={() => setOpenKey(k => k === batch.batchKey ? null : batch.batchKey)} />
           )}
         />
       )}
@@ -7433,6 +7530,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
           sectionKey="clothing-done"
           items={completedBatches}
           dateOf={(b) => b.resolvedAt || b.createdAt}
+          keyOf={(b) => b.batchKey}
           emptyMessage="No completed clothing refills."
           renderItem={(batch) => {
             const st = batch.status;                         // "available" | "partial" | "rejected"
@@ -7458,13 +7556,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, showCompleted, se
                   </div>
                 </div>
                 <div style={{ display:"flex", justifyContent:"flex-end" }}>
-                  <button onClick={() => onUndo(batch)}
-                          style={{ padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
-                    </svg>
-                    Undo
-                  </button>
+                  <UndoCRButton batch={batch} onUndo={onUndo} />
                 </div>
               </div>
             );
