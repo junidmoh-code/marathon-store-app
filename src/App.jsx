@@ -10663,6 +10663,8 @@ function ReturnsView({ orders, onExit }) {
   const [failure,     setFailure]     = useState(null);  // { orderId, kind, message } — a return that did NOT ledger
   const returnsLog = useReturnsLog();
   const todayDate  = getSADateString();
+  // Desktop workspace gate (>=1024px). Mobile keeps the single column.
+  const isWide = !useIsNarrow(1024);
 
   // Ready/Collected orders from the last 3 days (Phase 10). DayCollapsible
   // buckets these into Today / Yesterday / 2 days ago. SA-time slices match
@@ -10782,23 +10784,12 @@ function ReturnsView({ orders, onExit }) {
     }
   };
 
-  return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-      {/* TOP BAR */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
-        <div onClick={onExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
-        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>RETURNS</div>
-        </div>
-        <div style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>{last3DaysOrders.length} done</div>
-      </div>
-
-      <div style={{ padding:"1.5rem" }}>
+  const content = (
+    <>
         <input
           placeholder="Search by order number or customer name…"
           value={search} onChange={e => setSearch(e.target.value)}
-          style={{ ...inputStyle, marginBottom:"1.25rem" }}
+          style={{ ...inputStyle, marginBottom:"1.25rem", maxWidth:520, width:"100%", boxSizing:"border-box" }}
         />
 
         {failure && (
@@ -10820,6 +10811,7 @@ function ReturnsView({ orders, onExit }) {
         <DayCollapsible
           sectionKey="returns"
           items={filtered}
+          columns={isWide ? 2 : 1}
           dateOf={(o) => o.readyAt || o.updatedAt}
           emptyMessage={
             last3DaysOrders.length === 0
@@ -10832,7 +10824,7 @@ function ReturnsView({ orders, onExit }) {
             const isReturned = returnedKeys.has(`${orderSaleDate(order)}::${order.id}`);
             const isExpanded = expandedId === order.id;
             return (
-              <div style={{ background:CARD, border: isReturned ? "1px solid rgba(74,222,128,.25)" : isExpanded ? BORDER_BRIGHT : BORDER, borderRadius:RADIUS, padding:"1.25rem", transition:"border-color 0.2s", boxShadow: isExpanded ? "0 0 12px rgba(60,110,255,.12)" : "none" }}>
+              <div style={{ background:"rgba(255,255,255,.024)", border: isReturned ? "1px solid rgba(74,222,128,.25)" : isExpanded ? BORDER_BRIGHT : BORDER, borderRadius:RADIUS, padding:"1.25rem", transition:"border-color 0.2s", boxShadow: isExpanded ? "0 0 12px rgba(60,110,255,.12)" : "none" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:"1rem", flexWrap:"wrap" }}>
                   <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.9rem", color:BLUE_L, lineHeight:1, minWidth:"60px", letterSpacing:"0.05em" }}>#{order.id}</div>
                   <div style={{ flex:1, minWidth:"140px" }}>
@@ -10867,6 +10859,67 @@ function ReturnsView({ orders, onExit }) {
             );
           }}
         />
+    </>
+  );
+
+  // ── DESKTOP WORKSPACE (>=1024px). Mobile keeps the single column below. ──
+  if (isWide) {
+    const returnedInView = filtered.filter(o => returnedKeys.has(`${orderSaleDate(o)}::${o.id}`)).length;
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+        {/* RAIL */}
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:10 }}>&larr; Exit</button>
+          <div style={{ display:"flex", alignItems:"center", gap:10, background:"rgba(74,127,255,.1)", border:"1px solid rgba(74,127,255,.32)", borderRadius:11, padding:"10px 12px" }}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#9DBCFF" strokeWidth="2" strokeLinecap="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+            <div style={{ fontSize:13.5, fontWeight:800, color:"#cfe0ff" }}>Returns</div>
+          </div>
+          <div style={{ flex:1 }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color:"#9DBCFF", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{last3DaysOrders.length}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Eligible</div>
+            </div>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: returnedInView ? "#4ADE80" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{returnedInView}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Returned</div>
+            </div>
+          </div>
+        </aside>
+        {/* MAIN */}
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 30px 16px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>Returns</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>Find a recent sale, then confirm the return &mdash; it reverses the dispatch and restocks the item.</div>
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
+            <div style={{ maxWidth:1160, margin:"0 auto" }}>
+              {content}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      {/* TOP BAR */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
+        <div onClick={onExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>RETURNS</div>
+        </div>
+        <div style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>{last3DaysOrders.length} done</div>
+      </div>
+
+      <div style={{ padding:"1.5rem" }}>
+        {content}
       </div>
     </div>
   );
