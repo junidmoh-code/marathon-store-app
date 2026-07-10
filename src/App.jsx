@@ -3898,6 +3898,8 @@ function AdminView({ products, orders, onExit }) {
   // context line. orders[] alone isn't enough — it's daily-counter-ephemeral
   // (see project-insights-past-days-pattern memory).
   const insightsLog = useInsightsLog();
+  // Desktop workspace gate (≥1024px). Mobile keeps the single column.
+  const isWide = !useIsNarrow(1024);
 
   // Saved product categories — a shared, growable list backed by RTDB so the
   // category field is a dropdown (no free-text typos) that persists across
@@ -4221,22 +4223,10 @@ function AdminView({ products, orders, onExit }) {
     </div>
   );
 
-  if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
-
-  return (
-    <div style={ADMIN_WRAP}>
-      {/* TOP BAR with Switch View */}
-      {adminTopBar}
-
-      {/* ADMIN HERO IMAGE */}
-      <div style={{ position:"relative", height:200, overflow:"hidden" }}>
-        <img src="/hero/admin.jpg" alt="Admin Panel" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"left center" }}/>
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:70, background:"linear-gradient(transparent,#000)" }}/>
-      </div>
-
-      <div style={{ height:12 }}/>
-      {sectionToggle}
-
+  // Products body — header + add form + type filter + search + list + print sheet.
+  // Shared by the mobile column and the desktop main pane.
+  const productsBody = (
+    <>
       <div>
         {/* PRODUCTS HEADER ROW */}
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 14px 12px" }}>
@@ -4418,7 +4408,9 @@ function AdminView({ products, orders, onExit }) {
             {productSearch.trim() ? "No products match your search." : `No ${typeFilter === "clothing" ? "clothing" : "sneaker"} products yet. Add one above.`}
           </div>
         )}
-        {filteredProducts.map(p => <AdminProductRow key={p.id} product={p} />)}
+        <div style={isWide ? { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10, alignItems:"start" } : undefined}>
+          {filteredProducts.map(p => <AdminProductRow key={p.id} product={p} />)}
+        </div>
       </div>
       <div style={{ height:20 }}/>
         </div>
@@ -4433,6 +4425,97 @@ function AdminView({ products, orders, onExit }) {
           onClose={() => setPrintOpen(false)}
         />
       )}
+    </>
+  );
+
+  // ── DESKTOP WORKSPACE (>=1024px) — rail of sections + titled main pane.
+  //    Handles both admin sections; mobile keeps the single column below. ──
+  if (isWide) {
+    const NAV = [["products", "Products", products.length], ["review-categories", "Categories", pendingCategoryCount]];
+    const navItem = ([key, label, count]) => {
+      const on = adminSection === key;
+      return (
+        <button key={key} onClick={() => setAdminSection(key)}
+          style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
+                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition:"background .14s, color .14s" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:.9 }}>
+            {key === "products"
+              ? <><path d="M20 7h-9M20 12h-9M20 17h-9" /><circle cx="4" cy="7" r="1.6" /><circle cx="4" cy="12" r="1.6" /><circle cx="4" cy="17" r="1.6" /></>
+              : <><path d="M3 7h4l2 3h9a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></>}
+          </svg>
+          <span style={{ flex:1 }}>{label}</span>
+          {count > 0 && (
+            <span style={{ background: on ? "rgba(74,127,255,.3)" : "rgba(255,255,255,.06)", color: on ? "#fff" : "rgba(233,238,255,.5)", fontSize:11, fontWeight:800, minWidth:20, textAlign:"center", borderRadius:999, padding:"1px 6px", fontVariantNumeric:"tabular-nums" }}>{count}</span>
+          )}
+        </button>
+      );
+    };
+    const title = adminSection === "review-categories" ? "Categories" : "Products";
+    const subtitle = adminSection === "review-categories"
+      ? "Sort uncategorised products into the browse tree."
+      : "Add products, set sizes & pricing, and manage the catalogue.";
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+        {/* RAIL */}
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:6 }}>&larr; Exit</button>
+          <button onClick={() => { setAdminSection("products"); setShowAdd(true); }}
+            style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:7, background:"rgba(74,127,255,.14)", border:"1px solid rgba(74,127,255,.4)", color:"#9DBCFF", borderRadius:10, padding:"10px 12px", fontSize:12.5, fontWeight:700, cursor:"pointer", fontFamily:FONT, marginBottom:8 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New product
+          </button>
+          <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"6px 9px", fontWeight:700 }}>Manage</div>
+          {NAV.map(navItem)}
+          <div style={{ flex:1 }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color:"#9DBCFF", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{products.length}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Products</div>
+            </div>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: pendingCategoryCount ? "#FBBF24" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{pendingCategoryCount}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>To sort</div>
+            </div>
+          </div>
+        </aside>
+        {/* MAIN */}
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 30px 16px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{title}</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>{subtitle}</div>
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
+            <div style={{ maxWidth:1160, margin:"0 auto" }}>
+              {adminSection === "review-categories" ? <AdminReviewCategoriesTab products={products} /> : productsBody}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
+
+  return (
+    <div style={ADMIN_WRAP}>
+      {/* TOP BAR with Switch View */}
+      {adminTopBar}
+
+      {/* ADMIN HERO IMAGE */}
+      <div style={{ position:"relative", height:200, overflow:"hidden" }}>
+        <img src="/hero/admin.jpg" alt="Admin Panel" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"left center" }}/>
+        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:70, background:"linear-gradient(transparent,#000)" }}/>
+      </div>
+
+      <div style={{ height:12 }}/>
+      {sectionToggle}
+
+      {productsBody}
     </div>
   );
 }
