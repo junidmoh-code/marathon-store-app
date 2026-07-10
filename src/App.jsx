@@ -8933,13 +8933,19 @@ function CustomerView({ orders, onExit }) {
         <span style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", textAlign: "right", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</span>
       </div>
     );
+    // Frosted-glass panel — needs the ambient blobs behind it to refract.
+    const glass = { background: "rgba(255,255,255,.06)", backdropFilter: "blur(26px) saturate(140%)", WebkitBackdropFilter: "blur(26px) saturate(140%)", border: "1px solid rgba(255,255,255,.14)", boxShadow: "0 30px 70px -34px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.18)" };
     return (
-      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "340px minmax(0,1fr)", overflow: "hidden" }}>
+      <div style={{ height: "100vh", color: "#f3f6ff", fontFamily: FONT, position: "relative", overflow: "hidden", background: "#070810" }}>
+        {/* Ambient light — soft colour blobs the glass panels blur over */}
+        <div style={{ position: "absolute", inset: 0, zIndex: 0, pointerEvents: "none",
+                      background: "radial-gradient(680px 460px at 12% 6%, rgba(74,127,255,.30), transparent 60%), radial-gradient(720px 520px at 92% 12%, rgba(138,109,255,.24), transparent 62%), radial-gradient(760px 640px at 68% 108%, rgba(56,140,255,.18), transparent 60%), radial-gradient(500px 500px at 30% 90%, rgba(120,90,240,.14), transparent 60%)" }} />
+        <div style={{ position: "relative", zIndex: 1, height: "100%", display: "grid", gridTemplateColumns: "340px minmax(0,1fr)" }}>
         <style>{`@keyframes otPulse{0%,100%{box-shadow:0 0 0 0 rgba(74,127,255,.5)}50%{box-shadow:0 0 0 6px rgba(74,127,255,0)}}
           .ot-press{transition:transform .1s ease, filter .12s ease}.ot-press:active{transform:scale(.98)}.ot-press:hover{filter:brightness(1.08)}
-          .ot-row{transition:background .12s ease, border-color .12s ease}.ot-row:hover{background:rgba(255,255,255,.05)}`}</style>
+          .ot-row{transition:background .12s ease, border-color .12s ease, box-shadow .12s ease}.ot-row:hover{background:rgba(255,255,255,.08)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.12)}`}</style>
         {/* RAIL — search + orders */}
-        <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <aside style={{ background: "rgba(255,255,255,.04)", backdropFilter: "blur(26px) saturate(140%)", WebkitBackdropFilter: "blur(26px) saturate(140%)", borderRight: "1px solid rgba(255,255,255,.1)", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "inset -1px 0 0 rgba(255,255,255,.04)" }}>
           <div style={{ padding: "22px 16px 12px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
               <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
@@ -8981,7 +8987,7 @@ function CustomerView({ orders, onExit }) {
           {found && cfg ? (
             <div style={{ padding: "36px 40px 60px", maxWidth: 880, margin: "0 auto" }}>
               {/* HERO — compact, cohesive */}
-              <div style={{ display: "flex", gap: 20, alignItems: "center", background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 22, padding: 20, boxShadow: "0 26px 60px -36px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.08)", marginBottom: 16 }}>
+              <div style={{ ...glass, display: "flex", gap: 20, alignItems: "center", background: "linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.04))", borderRadius: 24, padding: 22, marginBottom: 16 }}>
                 <div style={{ width: 116, height: 116, borderRadius: 18, overflow: "hidden", border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 50, flexShrink: 0 }}>
                   {found.productPhotoUrl ? <img src={found.productPhotoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} /> : (found.productPhoto || "👟")}
                 </div>
@@ -9004,13 +9010,13 @@ function CustomerView({ orders, onExit }) {
               </div>
 
               {/* Status message strip */}
-              <div style={{ background: `linear-gradient(90deg, ${cfg.color}22, transparent)`, borderLeft: `3px solid ${cfg.color}`, borderRadius: 12, padding: "13px 16px", marginBottom: 16, fontSize: 13.5, color: "rgba(233,238,255,.85)", lineHeight: 1.5 }}>
+              <div style={{ background: `linear-gradient(90deg, ${cfg.color}2e, rgba(255,255,255,.05))`, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,.1)", borderLeft: `3px solid ${cfg.color}`, borderRadius: 14, padding: "14px 16px", marginBottom: 16, fontSize: 13.5, color: "rgba(233,238,255,.9)", lineHeight: 1.5, boxShadow: "inset 0 1px 0 rgba(255,255,255,.1)" }}>
                 <b style={{ color: cfg.color }}>{cfg.label}{statusAt ? ` · ${relTime(statusAt)}` : ""}</b> — {STATUS_MSG[found.status] || ""}
               </div>
 
               {/* Two columns: timeline + details */}
               <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, alignItems: "start" }}>
-                <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: "20px 22px 8px" }}>
+                <div style={{ ...glass, borderRadius: 20, padding: "20px 22px 8px" }}>
                   <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 18 }}>Progress</div>
                   {steps.map((st, i) => {
                     const c = STEP_C[st.state];
@@ -9036,7 +9042,7 @@ function CustomerView({ orders, onExit }) {
                   })}
                 </div>
 
-                <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: "20px 20px 8px" }}>
+                <div style={{ ...glass, borderRadius: 20, padding: "20px 20px 8px" }}>
                   <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 6 }}>Details</div>
                   {detailRow("Customer", found.customerName)}
                   {detailRow("Phone", found.customerPhone)}
@@ -9053,6 +9059,7 @@ function CustomerView({ orders, onExit }) {
               <div style={{ fontSize: 13, maxWidth: 340, lineHeight: 1.5 }}>{searched ? "Double-check the number on the slip, or pick one from the list." : "Search by order number or customer, or pick one from the list on the left."}</div>
             </div>
           )}
+        </div>
         </div>
       </div>
     );
