@@ -10319,11 +10319,22 @@ function ClothingSoldView({ products }) {
   );
 }
 
+// Per-tab nav glyphs for the Source desktop workspace rail.
+const SOURCE_TAB_ICON = {
+  today:    <><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></>,
+  history:  <><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></>,
+  onhold:   <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
+  clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
+};
+const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Clothing Sold"]];
+
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [tab, setTab] = usePersistedTab("source", "today");
   // Active hub — shared across all three top tabs. Defaults to Hub 1.
   const [hub, setHub] = useState("hub1");
   const todayDate   = getSADateString();
+  // Desktop workspace gate (>=1024px). Mobile keeps the single-column layout.
+  const isWide = !useIsNarrow(1024);
 
   // On Hold response state — read once here so badges and the On Hold tab
   // share the same source of truth (no duplicate Firebase listeners).
@@ -10482,32 +10493,9 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     clearSourceResponse(date, productKey, size);
   };
 
-  return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-      {/* TOP BAR */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px", position:"relative" }}>
-        <div onClick={onExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
-        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>SOURCE</div>
-        </div>
-        <div style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.08)", borderRadius:14, padding:"4px 8px" }}>
-          <span style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>On Hold</span>
-          <span style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", fontSize:10, fontWeight:600, width:20, height:20, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 6px rgba(60,110,255,.25)" }}>{onHoldCount}</span>
-        </div>
-      </div>
-      <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
-      {/* TOP TABS — Today / History / On Hold */}
-      <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8 }}>
-        {[["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Clothing Sold"]].map(([key, label]) => (
-          <div key={key} onClick={() => setTab(key)}
-               style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
-            {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
-          </div>
-        ))}
-      </div>
-      {/* HUB SUB-TABS — segmented pill, shared by Today + History. Hidden for
-          Clothing Sold (own store pills) and On Hold (shows all hubs together). */}
+  // Shared between the mobile column and the desktop rail/pane.
+  const hubSelector = (
+    <>
       {tab !== "clothing" && tab !== "onhold" && (
       <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
         {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
@@ -10543,7 +10531,10 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         })}
       </div>
       )}
-      <div style={{ padding:"1.5rem" }}>
+    </>
+  );
+  const content = (
+    <>
         {tab==="today"   && <SourceTodayTab
                               rawCounts={rawCounts}
                               responses={allResponses[todayDate] || {}}
@@ -10559,6 +10550,99 @@ function SourceView({ onExit, orders, returnsLog, products }) {
                               onResponse={handleResponse} />}
         {tab==="onhold"  && <SourceOnHoldTab orders={orders} onHoldResponses={onHoldResponses} />}
         {tab==="clothing" && <ClothingSoldView products={products} />}
+    </>
+  );
+
+  // ── DESKTOP WORKSPACE (>=1024px) — left rail of restock queues + main pane. ──
+  if (isWide) {
+    const activeTab = SOURCE_TABS.some(([k]) => k === tab) ? tab : "today";
+    const activeLabel = (SOURCE_TABS.find(([k]) => k === activeTab) || [null, "Today's Request"])[1];
+    const totalPending = (hubBadges.hub1 || 0) + (hubBadges.hub2 || 0);
+    const navItem = ([key, label]) => {
+      const on = activeTab === key;
+      const badge = key === "onhold" ? onHoldCount : 0;
+      return (
+        <button key={key} onClick={() => setTab(key)}
+          style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
+                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition:"background .14s, color .14s" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:.9 }}>{SOURCE_TAB_ICON[key]}</svg>
+          <span style={{ flex:1 }}>{label}</span>
+          {badge > 0 && (
+            <span style={{ background:"#F59E0B", color:"#000", fontSize:10.5, fontWeight:800, minWidth:19, height:19, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
+          )}
+        </button>
+      );
+    };
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+        {/* RAIL */}
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:8 }}>&larr; Exit</button>
+          <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"6px 9px", fontWeight:700 }}>Restock</div>
+          {SOURCE_TABS.map(navItem)}
+          <div style={{ flex:1 }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: totalPending ? "#9DBCFF" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{totalPending}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>To restock</div>
+            </div>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: onHoldCount ? "#F59E0B" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{onHoldCount}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>On hold</div>
+            </div>
+          </div>
+        </aside>
+        {/* MAIN */}
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 30px 14px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{activeLabel}</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>What sold &mdash; and what to restock.</div>
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"6px 30px 48px" }}>
+            <div style={{ maxWidth:1000, margin:"0 auto" }}>
+              {hubSelector}
+              {content}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      {/* TOP BAR */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px", position:"relative" }}>
+        <div onClick={onExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>SOURCE</div>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.08)", borderRadius:14, padding:"4px 8px" }}>
+          <span style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>On Hold</span>
+          <span style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", fontSize:10, fontWeight:600, width:20, height:20, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 6px rgba(60,110,255,.25)" }}>{onHoldCount}</span>
+        </div>
+      </div>
+      <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
+      {/* TOP TABS — Today / History / On Hold */}
+      <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8 }}>
+        {[["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Clothing Sold"]].map(([key, label]) => (
+          <div key={key} onClick={() => setTab(key)}
+               style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
+            {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
+          </div>
+        ))}
+      </div>
+      {/* HUB SUB-TABS — segmented pill, shared by Today + History. Hidden for
+          Clothing Sold (own store pills) and On Hold (shows all hubs together). */}
+      {hubSelector}
+      <div style={{ padding:"1.5rem" }}>
+        {content}
       </div>
     </div>
   );
