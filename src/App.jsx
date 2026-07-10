@@ -8837,60 +8837,219 @@ function WarehouseRestockTab({ rawCounts, responses }) {
 }
 
 // ─── CUSTOMER VIEW ────────────────────────────────────────────────────────────
+// Shop the order was placed for. destShop is the source of truth; fall back to
+// the Pine universe for legacy orders that only carry placedAtHub.
+function orderShopLabel(o) {
+  if (o?.destShop && SHOP_LABELS[o.destShop]) return SHOP_LABELS[o.destShop];
+  if (o?.placedAtHub === "hub3") return "Pine";
+  return null;
+}
+// "2h ago" / "just now" relative time (recomputed on render).
+function relTime(iso) {
+  if (!iso) return null;
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+function absTime(iso) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+}
+
 function CustomerView({ orders, onExit }) {
   const [orderId, setOrderId] = useState("");
   const [found, setFound] = useState(null);
   const [searched, setSearched] = useState(false);
 
-  const doSearch = () => {
-    const clean = orderId.trim().replace(/^#/, "");
-    const o = orders.find(o => o.id === clean.padStart(3,"0") || o.id === clean);
+  const doSearch = (idOverride) => {
+    const raw = (idOverride ?? orderId).toString();
+    const clean = raw.trim().replace(/^#/, "");
+    if (!clean) return;
+    const o = orders.find(o => o.id === clean.padStart(3, "0") || o.id === clean);
+    setOrderId(clean);
     setFound(o || null);
     setSearched(true);
   };
+  const reset = () => { setFound(null); setSearched(false); setOrderId(""); };
 
   const cfg = found ? STATUS_CONFIG[found.status] : null;
 
+  // Lifecycle timeline — adapts to the order's status/branch. Each step:
+  // { label, time, state: done | current | pending | error }.
+  const steps = useMemo(() => {
+    if (!found) return [];
+    const s = found.status;
+    const out = [{ label: "Order placed", sub: "Sent to the warehouse", time: found.createdAt, state: "done" }];
+    if (s === STATUS.OUT_OF_STOCK) {
+      out.push({ label: "Out of stock", sub: "Speak to an assistant", time: found.outOfStockAt, state: "error" });
+    } else if (s === STATUS.COMING_TOMORROW) {
+      out.push({ label: "Preparing", sub: "Being picked", time: null, state: "done" });
+      out.push({ label: "Available tomorrow", sub: "Come back tomorrow to collect", time: found.comingTomorrowAt, state: "current" });
+    } else {
+      const readyDone = s === STATUS.READY || s === STATUS.COLLECTED;
+      out.push({ label: "Preparing", sub: "Being picked & checked", time: null, state: readyDone ? "done" : "current" });
+      out.push({ label: "Ready to collect", sub: "Waiting for you at the store", time: found.readyAt, state: readyDone ? (s === STATUS.COLLECTED ? "done" : "current") : "pending" });
+      out.push({ label: "Collected", sub: "Enjoy!", time: found.collectedAt, state: s === STATUS.COLLECTED ? "done" : "pending" });
+    }
+    return out;
+  }, [found]);
+
+  const STEP_C = {
+    done:    { dot: "#4ADE80", ring: "rgba(74,222,128,.25)", text: "#fff" },
+    current: { dot: "#4A7FFF", ring: "rgba(74,127,255,.3)",  text: "#fff" },
+    error:   { dot: "#F87171", ring: "rgba(248,113,113,.25)", text: "#FCA5A5" },
+    pending: { dot: "rgba(255,255,255,.18)", ring: "transparent", text: "rgba(255,255,255,.4)" },
+  };
+
+  const shopLabel = found ? orderShopLabel(found) : null;
+
   return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 20px" }}>
-      <div style={{ marginBottom:14, filter:"drop-shadow(0 0 14px rgba(60,110,255,.4))" }}>
-        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+    <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: 480, margin: "0 auto", padding: "34px 18px 48px", boxSizing: "border-box" }}>
+      <style>{`@keyframes otPulse{0%,100%{box-shadow:0 0 0 0 rgba(74,127,255,.5)}50%{box-shadow:0 0 0 6px rgba(74,127,255,0)}}
+        .ot-press{transition:transform .1s ease, filter .12s ease}.ot-press:active{transform:scale(.98)}.ot-press:hover{filter:brightness(1.08)}`}</style>
+
+      {/* Brand header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span style={{ fontSize: 20, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
+        </div>
+        {onExit && <button onClick={onExit} className="ot-press" style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(233,238,255,.6)", borderRadius: 9, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: FONT }}>← Back</button>}
       </div>
-      <h1 style={{ fontSize:22, fontWeight:600, marginBottom:6, color:"#fff" }}>Track Your Order</h1>
-      <div style={{ fontSize:12, color:"rgba(255,255,255,.3)", marginBottom:36, textAlign:"center" }}>Enter your 3-digit order number</div>
 
-      <input placeholder="000" value={orderId} onChange={e => setOrderId(e.target.value)}
-             onKeyDown={e => e.key==="Enter" && doSearch()} maxLength={3}
-             style={{ width:"100%", maxWidth:360, background:"rgba(6,9,20,1)", border:"1px solid rgba(60,110,255,.2)", borderRadius:12, padding:18, color:"#fff", fontSize:32, fontWeight:700, textAlign:"center", letterSpacing:"10px", outline:"none", marginBottom:10 }}/>
-      <button onClick={doSearch} style={{ width:"100%", maxWidth:360, background:"rgba(60,110,255,.85)", color:"#fff", border:"none", borderRadius:9, padding:14, fontSize:14, fontWeight:600, cursor:"pointer" }}>Check Status →</button>
-      {onExit && <div onClick={onExit} style={{ marginTop:18, color:"rgba(255,255,255,.25)", fontSize:12, cursor:"pointer" }}>← Back</div>}
-      <div style={{ height:20 }}/>
+      <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.5px", marginBottom: 4 }}>Order Tracking</h1>
+      <div style={{ fontSize: 13, color: "rgba(233,238,255,.5)", marginBottom: 22 }}>Enter your order number to see live status.</div>
 
-      {searched && !found && <div style={{ color:"#F87171", background:"rgba(150,20,20,.15)", border:"1px solid rgba(150,20,20,.4)", borderRadius:RADIUS, padding:"1rem 2rem" }}>Order not found. Check your number.</div>}
+      {/* Search */}
+      {!found && (
+        <>
+          <input placeholder="000" value={orderId} onChange={e => setOrderId(e.target.value.replace(/[^0-9]/g, ""))}
+                 onKeyDown={e => e.key === "Enter" && doSearch()} maxLength={4} inputMode="numeric"
+                 style={{ width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 16, padding: "18px", color: "#fff", fontSize: 34, fontWeight: 800, textAlign: "center", letterSpacing: "12px", outline: "none", marginBottom: 10, fontVariantNumeric: "tabular-nums" }} />
+          <button onClick={() => doSearch()} className="ot-press"
+                  style={{ width: "100%", background: "linear-gradient(180deg, #5A8BFF, #4A7FFF)", color: "#fff", border: "none", borderRadius: 13, padding: 15, fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, boxShadow: "0 10px 24px -10px rgba(74,127,255,.8)" }}>
+            Track order →
+          </button>
+        </>
+      )}
 
-      {found && cfg && (
-        <div style={{ background:CARD, border:`2px solid ${cfg.color}33`, borderRadius:RADIUS, padding:"2rem", maxWidth:"420px", width:"100%", textAlign:"center", boxShadow:GLOW }}>
-          <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"5rem", color:BLUE, lineHeight:1, marginBottom:"0.25rem", letterSpacing:"0.05em" }}>#{found.id}</div>
-          <div style={{ background:cfg.bg, color:cfg.color, border:`1px solid ${cfg.border}`, borderRadius:"999px", padding:"0.5rem 1.5rem", display:"inline-block", fontWeight:"700", fontSize:"1.1rem", marginBottom:"1rem" }}>{cfg.icon} {cfg.label}</div>
-          <div style={{ fontWeight:"600", fontSize:"1.1rem", marginBottom:"0.25rem" }}>{found.productName} · Size <SizeTag size={found.size} /></div>
-          <div style={{ color:"#666", fontSize:"0.85rem" }}>For {found.customerName}</div>
-          {found.status===STATUS.INCOMING        && <div style={{ marginTop:"1.5rem", color:"#4A7FFF", fontSize:"0.9rem", background:"rgba(60,110,255,.1)", borderRadius:"10px", padding:"0.75rem" }}>Your order is being prepared. We'll have it ready soon.</div>}
-          {found.status===STATUS.READY           && <div style={{ marginTop:"1.5rem", color:"#4ADE80", fontSize:"0.9rem", background:"rgba(74,222,128,.1)", borderRadius:"10px", padding:"0.75rem" }}>Your order is ready. Please collect it at the store.</div>}
-          {found.status===STATUS.OUT_OF_STOCK    && <div style={{ marginTop:"1.5rem", color:"#F87171", fontSize:"0.9rem", background:"rgba(248,113,113,.1)", borderRadius:"10px", padding:"0.75rem" }}>Sorry, this item is out of stock. Please speak to an assistant.</div>}
-          {found.status===STATUS.COLLECTED       && <div style={{ marginTop:"1.5rem", color:"#9CA3AF", fontSize:"0.9rem", background:"rgba(156,163,175,.1)", borderRadius:"10px", padding:"0.75rem" }}>This order has been collected. Thank you.</div>}
-          {found.status===STATUS.COMING_TOMORROW && <div style={{ marginTop:"1.5rem", color:BLUE_L, fontSize:"0.9rem", background:"rgba(74,130,255,.1)", borderRadius:"10px", padding:"0.75rem" }}>Your item will be available tomorrow. Please come back then.</div>}
+      {searched && !found && (
+        <div style={{ marginTop: 16, color: "#F87171", background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.35)", borderRadius: 14, padding: "14px 16px", fontSize: 13.5, textAlign: "center" }}>
+          No order <b>#{orderId}</b> found. Double-check the number on your slip.
         </div>
       )}
 
-      {!searched && orders.length > 0 && (
-        <div style={{ maxWidth:"420px", width:"100%", marginTop:"1.5rem" }}>
-          <div style={{ color:"#444", fontSize:"0.8rem", textAlign:"center", marginBottom:"0.75rem" }}>Recent orders</div>
-          {orders.slice(0,4).map(o => (
-            <button key={o.id} onClick={() => setOrderId(o.id)} style={{ width:"100%", background:CARD, border:BORDER, borderRadius:"10px", padding:"0.75rem 1rem", marginBottom:"0.5rem", color:"#888", fontSize:"0.85rem", cursor:"pointer", textAlign:"left", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.3rem", color:BLUE, letterSpacing:"0.05em" }}>#{o.id}</span>
-              <span>{o.customerName} · {o.productName}</span>
-            </button>
-          ))}
+      {/* Result */}
+      {found && cfg && (
+        <div>
+          {/* Hero card — photo, product, shop, status */}
+          <div style={{ background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 20, padding: 18, boxShadow: "0 20px 50px -24px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08)", marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase" }}>Order</div>
+                <div style={{ fontSize: 30, fontWeight: 800, color: "#fff", lineHeight: 1, letterSpacing: ".02em", fontVariantNumeric: "tabular-nums" }}>#{found.id}</div>
+              </div>
+              <div style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, borderRadius: 999, padding: "7px 15px", fontWeight: 700, fontSize: 13.5, display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: cfg.color, boxShadow: `0 0 8px ${cfg.color}` }} />
+                {cfg.label}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+              <ProductPhoto url={found.productPhotoUrl} photo={found.productPhoto} size={78} radius={14} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", lineHeight: 1.25 }}>{found.productName}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 7, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#cfe0ff", background: "rgba(74,127,255,.12)", border: "1px solid rgba(74,127,255,.25)", borderRadius: 7, padding: "2px 9px" }}>Size <SizeTag size={found.size} /></span>
+                  {found.qty > 1 && <span style={{ fontSize: 12, fontWeight: 700, color: "rgba(233,238,255,.6)", background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 7, padding: "2px 9px" }}>×{found.qty}</span>}
+                </div>
+              </div>
+            </div>
+            {/* Meta row: shop + placed time + customer */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 18px", marginTop: 16, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,.07)" }}>
+              {shopLabel && (
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, color: "rgba(233,238,255,.4)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", marginBottom: 3, display: "flex", alignItems: "center", gap: 5 }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l1-5h16l1 5M4 9v11a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9M3 9h18" /></svg>
+                    Ordered from
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>{shopLabel}</div>
+                </div>
+              )}
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 10, color: "rgba(233,238,255,.4)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", marginBottom: 3 }}>Placed</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>{relTime(found.createdAt) || "—"}</div>
+              </div>
+              {found.customerName && (
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, color: "rgba(233,238,255,.4)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", marginBottom: 3 }}>Customer</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{found.customerName}</div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Timeline */}
+          <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: "18px 18px 8px" }}>
+            <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 14 }}>Progress</div>
+            {steps.map((st, i) => {
+              const c = STEP_C[st.state];
+              const last = i === steps.length - 1;
+              return (
+                <div key={st.label} style={{ display: "flex", gap: 14, position: "relative" }}>
+                  {/* dot + connector */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+                    <div style={{ width: 18, height: 18, borderRadius: "50%", background: c.dot, border: `2px solid ${c.ring === "transparent" ? "rgba(255,255,255,.14)" : c.ring}`, display: "flex", alignItems: "center", justifyContent: "center",
+                                  animation: st.state === "current" ? "otPulse 1.8s infinite" : "none" }}>
+                      {st.state === "done" && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#04120a" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>}
+                      {st.state === "error" && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#1a0606" strokeWidth="4" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>}
+                    </div>
+                    {!last && <div style={{ width: 2, flex: 1, minHeight: 26, background: st.state === "done" ? "rgba(74,222,128,.35)" : "rgba(255,255,255,.08)", margin: "3px 0" }} />}
+                  </div>
+                  {/* label + time */}
+                  <div style={{ flex: 1, paddingBottom: last ? 10 : 16, marginTop: -2 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                      <div style={{ fontSize: 14.5, fontWeight: 700, color: c.text }}>{st.label}</div>
+                      {st.time && <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{absTime(st.time)}</div>}
+                    </div>
+                    <div style={{ fontSize: 12, color: st.state === "pending" ? "rgba(233,238,255,.3)" : "rgba(233,238,255,.55)", marginTop: 2 }}>{st.sub}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Search another */}
+          <button onClick={reset} className="ot-press"
+                  style={{ width: "100%", marginTop: 16, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(233,238,255,.75)", borderRadius: 13, padding: 14, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
+            Track another order
+          </button>
+        </div>
+      )}
+
+      {/* Recent orders (before searching) */}
+      {!found && !searched && orders.length > 0 && (
+        <div style={{ marginTop: 26 }}>
+          <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 10 }}>Recent orders</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {orders.slice(0, 5).map(o => {
+              const c = STATUS_CONFIG[o.status];
+              return (
+                <button key={o.id} onClick={() => doSearch(o.id)} className="ot-press"
+                        style={{ width: "100%", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 14, padding: 10, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 11, fontFamily: FONT }}>
+                  <ProductPhoto url={o.productPhotoUrl} photo={o.productPhoto} size={44} radius={10} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>#{o.id} · {o.productName}</div>
+                    <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.45)", marginTop: 2 }}>{o.customerName || "—"}{orderShopLabel(o) ? ` · ${orderShopLabel(o)}` : ""}</div>
+                  </div>
+                  {c && <span style={{ flexShrink: 0, background: c.bg, color: c.color, border: `1px solid ${c.border}`, borderRadius: 999, padding: "3px 10px", fontSize: 11, fontWeight: 700 }}>{c.label}</span>}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
