@@ -4170,14 +4170,20 @@ function AdminView({ products, orders, onExit }) {
   }, [detailId, products.length, detailProduct]);
 
   // When the detail page is mounted, render JUST the detail (no list chrome).
+  // Desktop: the detail carries its own full-width workspace shell, so skip the
+  // 640px mobile column wrapper.
   if (detailProduct) {
+    const detail = (
+      <AdminProductDetail
+        product={detailProduct}
+        insightsLog={insightsLog}
+        onBack={() => window.history.back()}
+      />
+    );
+    if (isWide) return detail;
     return (
       <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-        <AdminProductDetail
-          product={detailProduct}
-          insightsLog={insightsLog}
-          onBack={() => window.history.back()}
-        />
+        {detail}
       </div>
     );
   }
@@ -4564,6 +4570,8 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     ? product.sizes
     : (isClothing && product.stock ? Object.keys(product.stock) : []);
   const productHubs = getProductHubs(product);
+  // Desktop workspace gate (≥1024px). Mobile keeps the single column.
+  const isWide = !useIsNarrow(1024);
   // Clothing products may use letters (tops) or the waist set (bottoms); a
   // sneaker whose sizes are ≥20 is a Kids product (26–35). Infer the breakdown
   // from the product's own sizes so editing shows the right buttons.
@@ -4798,29 +4806,14 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     if (savedItems.length) { setLastReceived({ productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems }); setPrintOpen(true); }
   };
 
-  const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding:"24px 18px 8px" };
-  const card         = { background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, margin:"0 14px", overflow:"hidden" };
+  const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding: isWide ? "14px 2px 8px" : "24px 18px 8px" };
+  const card         = { background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, margin: isWide ? 0 : "0 14px", overflow:"hidden" };
   const cardInner    = { padding:"14px 16px" };
 
-  return (
-    <div>
-      {/* TOP BAR with back chevron */}
-      <div style={{ padding:"44px 8px 8px", display:"flex", alignItems:"center" }}>
-        <button onClick={onBack}
-                style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, fontWeight:500, cursor:"pointer", padding:"6px 10px" }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6"/>
-          </svg>
-          Products
-        </button>
-      </div>
-
-      {/* HEADER */}
-      <div style={{ padding:"4px 18px 8px" }}>
-        <div style={{ fontSize:22, fontWeight:700, color:"#fff", lineHeight:1.2 }}>{product.name}</div>
-        <div style={{ fontSize:13, color:"rgba(255,255,255,.45)", marginTop:6 }}>{activity}</div>
-      </div>
-
+  // Section cards — shared by the mobile column and the desktop two-column flow.
+  const detailSections = (
+    <>
+      <div style={{ breakInside:"avoid" }}>
       {/* PHOTO */}
       <div style={sectionTitle}>Photo{photos.length > 1 ? ` · ${photos.length}` : ""}</div>
       <div style={card}>
@@ -4882,6 +4875,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       {galleryView && <GalleryLightbox photos={galleryView} onClose={() => setGalleryView(null)} />}
 
       {/* NAME */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Name</div>
       <div style={card}>
         <div style={cardInner}>
@@ -4894,6 +4890,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       </div>
 
       {/* TYPE */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Type</div>
       <div style={card}>
         <div style={{ display:"flex", padding:"6px" }}>
@@ -4912,6 +4911,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       </div>
 
       {/* SIZES */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Available sizes</div>
       <div style={card}>
         <div style={{ ...cardInner, display:"flex", gap:6, flexWrap:"wrap" }}>
@@ -4928,6 +4930,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       {/* RECEIVE STOCK (restock existing) — Stock rework. Optional per-size
           receive into a chosen location for a re-order; independent of the edits
           above, never required. Mirrors the product-add opening-stock section. */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Receive stock</div>
       <div style={card}>
         <div style={cardInner}>
@@ -4963,6 +4968,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
 
       {/* PRICING — POS Phase 2. Two optional ZAR price inputs (saved on blur)
           plus a shoebox checkbox. Blank input is allowed and writes null. */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Pricing (ZAR)</div>
       <div style={card}>
         <div style={{ display:"flex", padding:"0", borderBottom:"1px solid rgba(255,255,255,.06)" }}>
@@ -5011,6 +5019,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           intentionally not exposed: a manual change would break the
           sequential invariant the POS scanner workflow depends on. Legacy
           products that pre-date the backfill render "—" until PR B runs. */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Identifiers</div>
       <div style={card}>
         <div style={{ display:"flex", padding:"0" }}>
@@ -5030,6 +5041,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       </div>
 
       {/* HUBS — iOS-style grouped list */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Hubs</div>
       <div style={card}>
         {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3 — Pine"]].map(([val, label], i) => {
@@ -5087,6 +5101,84 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           onClose={() => setPrintOpen(false)}
         />
       )}
+      </div>
+    </>
+  );
+  // Two-column CSS multi-column on desktop (each section kept intact via
+  // break-inside), single column on mobile.
+  const detailColumns = (
+    <div style={{ columnCount: isWide ? 2 : 1, columnGap: 28 }}>
+      {detailSections}
+    </div>
+  );
+
+  // ── DESKTOP WORKSPACE (>=1024px) — rail with product summary + main pane. ──
+  if (isWide) {
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"250px minmax(0,1fr)", overflow:"hidden" }}>
+        {/* RAIL */}
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 15px 18px", display:"flex", flexDirection:"column", gap:12, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 3px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onBack} style={{ display:"flex", alignItems:"center", gap:7, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.65)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            All products
+          </button>
+          <div style={{ display:"flex", justifyContent:"center", padding:"4px 0" }}>
+            <div onClick={photos.length ? () => setGalleryView(photos) : undefined} style={{ cursor: photos.length ? "zoom-in" : "default" }}>
+              <ProductPhoto url={product.photoUrl} photo={product.photo} size={168} radius={16}/>
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize:15, fontWeight:800, color:"#fff", lineHeight:1.25 }}>{product.name}</div>
+            <div style={{ fontSize:11.5, color:"rgba(233,238,255,.45)", marginTop:5, lineHeight:1.4 }}>{activity}</div>
+          </div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+            <span style={{ fontSize:10.5, fontWeight:700, color:"#9DBCFF", background:"rgba(74,127,255,.12)", border:"1px solid rgba(74,127,255,.25)", borderRadius:7, padding:"3px 9px", textTransform:"capitalize" }}>{product.productType || "sneaker"}</span>
+            <span style={{ fontSize:10.5, fontWeight:700, color:"rgba(233,238,255,.6)", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:7, padding:"3px 9px" }}>{productSizes.length} size{productSizes.length !== 1 ? "s" : ""}</span>
+            <span style={{ fontSize:10.5, fontWeight:700, color:"rgba(233,238,255,.6)", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:7, padding:"3px 9px" }}>{productHubs.length} hub{productHubs.length !== 1 ? "s" : ""}</span>
+          </div>
+          <div style={{ flex:1 }} />
+          <button onClick={handleDelete} style={{ background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:12.5, fontWeight:700, padding:"10px", borderRadius:11, cursor:"pointer", fontFamily:FONT }}>Delete product</button>
+        </aside>
+        {/* MAIN */}
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 32px 16px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4, lineHeight:1.2 }}>{product.name}</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>{activity}</div>
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"14px 32px 48px" }}>
+            <div style={{ maxWidth:980, margin:"0 auto" }}>
+              {detailColumns}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* TOP BAR with back chevron */}
+      <div style={{ padding:"44px 8px 8px", display:"flex", alignItems:"center" }}>
+        <button onClick={onBack}
+                style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, fontWeight:500, cursor:"pointer", padding:"6px 10px" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+          Products
+        </button>
+      </div>
+
+      {/* HEADER */}
+      <div style={{ padding:"4px 18px 8px" }}>
+        <div style={{ fontSize:22, fontWeight:700, color:"#fff", lineHeight:1.2 }}>{product.name}</div>
+        <div style={{ fontSize:13, color:"rgba(255,255,255,.45)", marginTop:6 }}>{activity}</div>
+      </div>
+
+      {detailColumns}
     </div>
   );
 }
