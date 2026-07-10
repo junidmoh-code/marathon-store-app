@@ -227,10 +227,35 @@ export default function UserManagement({ authUser, onExit }) {
       .um-root button:disabled { cursor: not-allowed; }
       .um-press { cursor: pointer; transition: transform .12s ease, background .14s ease; }
       .um-press:active { transform: translateY(1px); }
-      /* Buttery 3D — action buttons & toggle cards raise on hover and press in on click */
-      .um-3d { transition: transform .16s cubic-bezier(.34,1.56,.5,1), box-shadow .16s ease, background .16s ease, border-color .16s ease; box-shadow: 0 2px 6px -2px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05); transform: translateZ(0); }
-      .um-3d:hover { transform: translateY(-2px); box-shadow: 0 12px 24px -8px rgba(0,0,0,.66), inset 0 1px 0 rgba(255,255,255,.09); }
-      .um-3d:active { transform: translateY(1px) scale(.99); box-shadow: 0 2px 5px -3px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.03); transition-duration: .07s; }
+      /* Hard 3D — cards sit on a solid bottom edge (physical thickness); they
+         rise on hover and depress into the surface on click. */
+      .um-3d {
+        transition: transform .18s cubic-bezier(.34,1.56,.5,1), box-shadow .18s ease, background .18s ease, border-color .16s ease, filter .16s ease;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.09),
+          inset 0 -1px 0 rgba(0,0,0,.35),
+          0 4px 0 rgba(0,0,0,.4),
+          0 8px 18px -5px rgba(0,0,0,.6);
+        transform: translateZ(0);
+      }
+      .um-3d:hover {
+        transform: translateY(-5px);
+        filter: brightness(1.05);
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.14),
+          inset 0 -1px 0 rgba(0,0,0,.35),
+          0 8px 0 rgba(0,0,0,.4),
+          0 26px 44px -10px rgba(0,0,0,.72);
+      }
+      .um-3d:active {
+        transform: translateY(3px) scale(.985);
+        box-shadow:
+          inset 0 2px 7px rgba(0,0,0,.5),
+          inset 0 1px 0 rgba(255,255,255,.04),
+          0 1px 0 rgba(0,0,0,.35),
+          0 3px 8px -4px rgba(0,0,0,.6);
+        transition-duration: .05s;
+      }
       @media (prefers-reduced-motion: reduce) { .um-root button:active, .um-press:active, .um-3d:hover, .um-3d:active { transform: none; } }
     `}</style>
   );
@@ -610,30 +635,12 @@ function UserDetailView({ user, onBack, embedded = false }) {
         {error && <ErrorBanner onDismiss={() => setError(null)}>{error}</ErrorBanner>}
 
         {/* Identity */}
-        <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16, padding: 18, display: "flex", alignItems: "center", gap: 14, marginBottom: 22 }}>
+        <div style={{ background: "linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 18, padding: 20, display: "flex", alignItems: "center", gap: 14, marginBottom: 26, boxShadow: "0 10px 30px -18px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.08)" }}>
           <AvatarCircle name={user.displayName} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <InlineEditField value={user.displayName || ""} onSave={setDisplayName} placeholder="Display name" style={{ fontSize: 19, fontWeight: 700, color: "#fff" }} />
             <div style={{ fontSize: 13, color: TEXT_2, marginTop: 2 }}>@{user.username}</div>
           </div>
-        </div>
-
-        {/* Stock role — gates inventory writes (app role is derived from the permissions below) */}
-        <SectionLabel>Stock role</SectionLabel>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-          {STOCK_ROLES.map((r) => {
-            const on = (user.stockRole || "") === r.key;
-            return (
-              <button key={r.key || "none"} className="um-3d" onClick={() => setStockRole(r.key)}
-                style={{ padding: "10px 18px", borderRadius: 12, fontFamily: FONT, fontSize: 13, fontWeight: 700,
-                         border: `1px solid ${on ? BLUE : "rgba(255,255,255,.1)"}`, background: on ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.03)", color: on ? "#cfe0ff" : TEXT_2 }}>
-                {r.label}
-              </button>
-            );
-          })}
-        </div>
-        <div style={{ fontSize: 11.5, color: TEXT_2, padding: "0 2px", marginBottom: 26, lineHeight: 1.5 }}>
-          Gates inventory writes. <span style={{ color: "#fff" }}>Receiving</span> needs <b>Warehouse</b> or <b>Admin</b>; <span style={{ color: "#fff" }}>transfers</span> need Store, Warehouse, or Admin.
         </div>
 
         {/* Permissions — each one its own toggle card */}
@@ -644,8 +651,9 @@ function UserDetailView({ user, onBack, embedded = false }) {
             return (
               <button key={p.key} className="um-3d"
                 onClick={() => { if (p.warn && !on) setPendingWarnFor(p.key); else togglePermission(p.key, !on); }}
-                style={{ textAlign: "left", padding: "13px 14px", borderRadius: 14, fontFamily: FONT, color: "#fff",
-                         border: `1px solid ${on ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.08)"}`, background: on ? "rgba(74,127,255,.1)" : "rgba(255,255,255,.03)",
+                style={{ textAlign: "left", padding: "15px 15px", borderRadius: 16, fontFamily: FONT, color: "#fff",
+                         border: `1px solid ${on ? "rgba(74,127,255,.6)" : "rgba(255,255,255,.09)"}`,
+                         background: on ? "linear-gradient(180deg, rgba(74,127,255,.22), rgba(74,127,255,.07))" : "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))",
                          display: "flex", flexDirection: "column", gap: 5 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                   <span style={{ fontSize: 14, fontWeight: 700 }}>{p.label}</span>
@@ -668,8 +676,9 @@ function UserDetailView({ user, onBack, embedded = false }) {
             const on = (localDestShop || "") === opt.id;
             return (
               <button key={opt.id || "none"} className="um-3d" onClick={() => chooseDestShop(opt.id)}
-                style={{ textAlign: "left", padding: "13px 14px", borderRadius: 14, fontFamily: FONT, color: "#fff",
-                         border: `1px solid ${on ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.08)"}`, background: on ? "rgba(74,127,255,.1)" : "rgba(255,255,255,.03)",
+                style={{ textAlign: "left", padding: "15px 15px", borderRadius: 16, fontFamily: FONT, color: "#fff",
+                         border: `1px solid ${on ? "rgba(74,127,255,.6)" : "rgba(255,255,255,.09)"}`,
+                         background: on ? "linear-gradient(180deg, rgba(74,127,255,.22), rgba(74,127,255,.07))" : "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))",
                          display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ width: 18, height: 18, borderRadius: "50%", flexShrink: 0, border: `2px solid ${on ? BLUE : DIVIDER}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   {on && <span style={{ width: 9, height: 9, borderRadius: "50%", background: BLUE }} />}
