@@ -10661,6 +10661,7 @@ function ReturnsView({ orders, onExit }) {
   const [search,      setSearch]      = useState("");
   const [expandedId,  setExpandedId]  = useState(null);
   const [failure,     setFailure]     = useState(null);  // { orderId, kind, message } — a return that did NOT ledger
+  const [retFilter,   setRetFilter]   = useState("all"); // all | toreturn | returned
   const returnsLog = useReturnsLog();
   const todayDate  = getSADateString();
   // Desktop workspace gate (>=1024px). Mobile keeps the single column.
@@ -10784,87 +10785,133 @@ function ReturnsView({ orders, onExit }) {
     }
   };
 
-  const content = (
-    <>
-        <input
-          placeholder="Search by order number or customer name…"
-          value={search} onChange={e => setSearch(e.target.value)}
-          style={{ ...inputStyle, marginBottom:"1.25rem", maxWidth:520, width:"100%", boxSizing:"border-box" }}
-        />
+  // Returned-state test + derived lists for the filter chips.
+  const isRet = (o) => returnedKeys.has(`${orderSaleDate(o)}::${o.id}`);
+  const returnedCount = filtered.filter(isRet).length;
+  const toReturnCount = filtered.length - returnedCount;
+  const viewList = retFilter === "returned" ? filtered.filter(isRet)
+                 : retFilter === "toreturn" ? filtered.filter(o => !isRet(o))
+                 : filtered;
 
-        {failure && (
-          <div
-            role="alert"
-            style={{
-              marginBottom:"1.25rem", padding:"0.75rem 1rem", borderRadius:RADIUS,
-              fontSize:"0.82rem", lineHeight:1.45, display:"flex", gap:"0.6rem", alignItems:"flex-start",
-              background: failure.kind === "notice" ? "rgba(245,158,11,.10)" : "rgba(239,68,68,.10)",
-              border:     failure.kind === "notice" ? "1px solid rgba(245,158,11,.35)" : "1px solid rgba(239,68,68,.35)",
-              color:      failure.kind === "notice" ? "#FBBF24" : "#F87171",
-            }}
-          >
-            <span style={{ flex:1 }}><strong>#{failure.orderId}</strong> — {failure.message}</span>
-            <span onClick={() => setFailure(null)} style={{ cursor:"pointer", opacity:.7, fontWeight:700 }}>×</span>
+  // Search box (icon + input) — sits in the header on desktop, in the body on mobile.
+  const searchEl = (
+    <div style={{ position:"relative", width:"100%", maxWidth: isWide ? 300 : 560 }}>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", opacity:.4 }}><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search order # or customer…"
+        style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.14)", borderRadius:11, color:"#fff", fontSize:13.5, padding:"10px 12px 10px 36px", outline:"none" }}/>
+    </div>
+  );
+
+  // Filter chips with live counts.
+  const filterEl = (
+    <div style={{ display:"flex", gap:7, marginBottom:16, flexWrap:"wrap" }}>
+      {[["all","All",filtered.length],["toreturn","To return",toReturnCount],["returned","Returned",returnedCount]].map(([key,label,n]) => {
+        const on = retFilter === key;
+        return (
+          <button key={key} onClick={() => setRetFilter(key)}
+            style={{ display:"inline-flex", alignItems:"center", gap:7, padding:"7px 13px", borderRadius:999, fontSize:12.5, fontWeight:700, cursor:"pointer",
+                     background: on ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.03)",
+                     border: "1px solid " + (on ? "rgba(74,127,255,.45)" : "rgba(255,255,255,.1)"),
+                     color: on ? "#9DBCFF" : "rgba(233,238,255,.55)" }}>
+            {label}
+            <span style={{ fontSize:11, fontWeight:800, minWidth:18, textAlign:"center", borderRadius:999, padding:"1px 6px", fontVariantNumeric:"tabular-nums",
+                           background: on ? "rgba(74,127,255,.3)" : "rgba(255,255,255,.06)", color: on ? "#fff" : "rgba(233,238,255,.5)" }}>{n}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const failureEl = failure ? (
+    <div role="alert" style={{ marginBottom:16, padding:"11px 14px", borderRadius:12, fontSize:12.5, lineHeight:1.5, display:"flex", gap:10, alignItems:"flex-start",
+        background: failure.kind === "notice" ? "rgba(245,158,11,.1)" : "rgba(239,68,68,.1)",
+        border: "1px solid " + (failure.kind === "notice" ? "rgba(245,158,11,.35)" : "rgba(239,68,68,.35)"),
+        color: failure.kind === "notice" ? "#FBBF24" : "#F87171" }}>
+      <span style={{ flex:1 }}><strong>#{failure.orderId}</strong> — {failure.message}</span>
+      <span onClick={() => setFailure(null)} style={{ cursor:"pointer", opacity:.7, fontWeight:700 }}>×</span>
+    </div>
+  ) : null;
+
+  // Purpose-built return card — product photo, order/size/customer, status, and a
+  // confirm panel that spells out exactly what the reversal does.
+  const returnCard = (order) => {
+    const isReturned = isRet(order);
+    const isExpanded = expandedId === order.id;
+    return (
+      <div style={{ background:"rgba(255,255,255,.024)", border: isReturned ? "1px solid rgba(74,222,128,.28)" : isExpanded ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.08)", borderRadius:16, overflow:"hidden", transition:"border-color .18s, box-shadow .18s", boxShadow: isExpanded ? "0 18px 44px -26px rgba(74,127,255,.55)" : "none", opacity: isReturned ? .78 : 1 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:13, padding:14 }}>
+          <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={52} radius={11}/>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span className="ret-siri" style={{ fontSize:14, fontWeight:800, letterSpacing:".04em", fontVariantNumeric:"tabular-nums" }}>#{order.id}</span>
+              <span style={{ fontSize:9.5, fontWeight:700, color:"rgba(233,238,255,.4)", textTransform:"uppercase", letterSpacing:".07em" }}>{order.status === STATUS.COLLECTED ? "Collected" : "Ready"}</span>
+            </div>
+            <div style={{ fontSize:14, fontWeight:600, color:"#fff", marginTop:3, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{order.productName}</div>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:6, minWidth:0 }}>
+              <span style={{ flexShrink:0, fontSize:11, fontWeight:700, color:"#cfe0ff", background:"rgba(74,127,255,.12)", border:"1px solid rgba(74,127,255,.25)", borderRadius:7, padding:"2px 8px" }}>Size <SizeTag size={order.size}/></span>
+              <span style={{ fontSize:11.5, color:"rgba(233,238,255,.5)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0 }}>{order.customerName || "—"}</span>
+            </div>
+          </div>
+          <div style={{ flexShrink:0 }}>
+            {isReturned ? (
+              <span style={{ display:"inline-flex", alignItems:"center", gap:5, color:"#4ADE80", fontSize:12, fontWeight:700, background:"rgba(74,222,128,.12)", border:"1px solid rgba(74,222,128,.3)", borderRadius:999, padding:"5px 13px" }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                Returned
+              </span>
+            ) : (
+              <button onClick={() => { setExpandedId(isExpanded ? null : order.id); setFailure(null); }}
+                style={{ background: isExpanded ? "rgba(255,255,255,.05)" : "rgba(74,127,255,.14)", border: isExpanded ? "1px solid rgba(255,255,255,.15)" : "1px solid rgba(74,127,255,.4)", color: isExpanded ? "rgba(233,238,255,.75)" : "#9DBCFF", borderRadius:10, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>
+                {isExpanded ? "Cancel" : "Log Return"}
+              </button>
+            )}
+          </div>
+        </div>
+        {isExpanded && !isReturned && (
+          <div style={{ borderTop:"1px solid rgba(255,255,255,.07)", padding:14, background:"rgba(74,127,255,.04)" }}>
+            <div style={{ display:"flex", gap:9, alignItems:"flex-start", marginBottom:12 }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, marginTop:1 }}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <div style={{ fontSize:12, color:"rgba(233,238,255,.7)", lineHeight:1.5 }}>Confirming reverses the dispatch and restocks <strong style={{ color:"#fff" }}>Size {order.size}</strong> to its origin hub.</div>
+            </div>
+            <button onClick={() => submitReturn(order)}
+              style={{ width:"100%", background:"rgba(74,127,255,.92)", border:"none", color:"#fff", borderRadius:10, padding:"11px", fontSize:13, fontWeight:800, cursor:"pointer", letterSpacing:".01em" }}>
+              Confirm return · #{order.id}
+            </button>
           </div>
         )}
+      </div>
+    );
+  };
 
-        <DayCollapsible
-          sectionKey="returns"
-          items={filtered}
-          columns={isWide ? 2 : 1}
-          dateOf={(o) => o.readyAt || o.updatedAt}
-          emptyMessage={
-            last3DaysOrders.length === 0
-              ? "No orders marked Ready or Collected in the last 3 days."
-              : "No orders match your search."
-          }
-          renderItem={(order) => {
-            // Match by the order's OWN sale day + number, so a past day's return
-            // of the same number can't mark today's sale as returned.
-            const isReturned = returnedKeys.has(`${orderSaleDate(order)}::${order.id}`);
-            const isExpanded = expandedId === order.id;
-            return (
-              <div style={{ background:"rgba(255,255,255,.024)", border: isReturned ? "1px solid rgba(74,222,128,.25)" : isExpanded ? BORDER_BRIGHT : BORDER, borderRadius:RADIUS, padding:"1.25rem", transition:"border-color 0.2s", boxShadow: isExpanded ? "0 0 12px rgba(60,110,255,.12)" : "none" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:"1rem", flexWrap:"wrap" }}>
-                  <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.9rem", color:BLUE_L, lineHeight:1, minWidth:"60px", letterSpacing:"0.05em" }}>#{order.id}</div>
-                  <div style={{ flex:1, minWidth:"140px" }}>
-                    <div style={{ fontWeight:"600", fontSize:"0.95rem" }}>{order.productName} · Size <SizeTag size={order.size} /></div>
-                    <div style={{ color:"#666", fontSize:"0.82rem", marginTop:"2px" }}>{order.customerName}</div>
-                  </div>
-                  {isReturned ? (
-                    <span style={{ color:"#4ADE80", fontSize:"0.82rem", fontWeight:"600", background:"rgba(74,222,128,.12)", border:"1px solid rgba(74,222,128,.3)", borderRadius:"999px", padding:"4px 14px" }}>
-                      Returned
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => { setExpandedId(isExpanded ? null : order.id); setFailure(null); }}
-                      style={ isExpanded ? { ...bGray, padding:"0.5rem 1.1rem" } : { ...bBlue, padding:"0.5rem 1.1rem" } }>
-                      {isExpanded ? "Cancel" : "Log Return"}
-                    </button>
-                  )}
-                </div>
+  const listEl = (
+    <DayCollapsible
+      sectionKey="returns"
+      items={viewList}
+      columns={isWide ? 2 : 1}
+      dateOf={(o) => o.readyAt || o.updatedAt}
+      emptyMessage={
+        last3DaysOrders.length === 0
+          ? "No orders marked Ready or Collected in the last 3 days."
+          : retFilter === "returned" ? "Nothing returned in this window yet."
+          : retFilter === "toreturn" ? "Everything in view has been returned."
+          : "No orders match your search."
+      }
+      renderItem={returnCard}
+    />
+  );
 
-                {isExpanded && !isReturned && (
-                  <div style={{ marginTop:"1rem", paddingTop:"1rem", borderTop:"1px solid rgba(60,110,255,.08)" }}>
-                    <div style={{ color:"rgba(255,255,255,.6)", fontSize:"0.82rem", marginBottom:"0.75rem" }}>Confirm this order is being returned:</div>
-                    <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
-                      <button onClick={() => submitReturn(order)}
-                              style={{ ...bBlue, padding:"0.6rem 1.5rem", flex:1 }}>
-                        Confirm Return
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          }}
-        />
+  const body = (
+    <>
+      <style>{`
+        .ret-siri{background:linear-gradient(90deg,#6e7bff,#5d8bff,#8a6dff,#7f5af0,#8a6dff,#5d8bff,#6e7bff);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:retSiri 4s linear infinite}
+        @keyframes retSiri{from{background-position:0 0}to{background-position:300% 0}}
+        @media (prefers-reduced-motion: reduce){.ret-siri{animation:none}}
+      `}</style>
+      {failureEl}{filterEl}{listEl}
     </>
   );
 
   // ── DESKTOP WORKSPACE (>=1024px). Mobile keeps the single column below. ──
   if (isWide) {
-    const returnedInView = filtered.filter(o => returnedKeys.has(`${orderSaleDate(o)}::${o.id}`)).length;
     return (
       <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
@@ -10881,24 +10928,27 @@ function ReturnsView({ orders, onExit }) {
           <div style={{ flex:1 }} />
           <div style={{ display:"flex", gap:8 }}>
             <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
-              <div style={{ fontSize:18, fontWeight:800, color:"#9DBCFF", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{last3DaysOrders.length}</div>
-              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Eligible</div>
+              <div style={{ fontSize:18, fontWeight:800, color: toReturnCount ? "#9DBCFF" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{toReturnCount}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>To return</div>
             </div>
             <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
-              <div style={{ fontSize:18, fontWeight:800, color: returnedInView ? "#4ADE80" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{returnedInView}</div>
+              <div style={{ fontSize:18, fontWeight:800, color: returnedCount ? "#4ADE80" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{returnedCount}</div>
               <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Returned</div>
             </div>
           </div>
         </aside>
         {/* MAIN */}
         <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-          <div style={{ padding:"20px 30px 16px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
-            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>Returns</div>
-            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>Find a recent sale, then confirm the return &mdash; it reverses the dispatch and restocks the item.</div>
+          <div style={{ padding:"20px 30px 18px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)", display:"flex", alignItems:"center", gap:24 }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>Returns</div>
+              <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>Find a recent sale, then confirm — it reverses the dispatch and restocks the item.</div>
+            </div>
+            {searchEl}
           </div>
-          <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
+          <div style={{ flex:1, overflow:"auto", padding:"20px 30px 48px" }}>
             <div style={{ maxWidth:1160, margin:"0 auto" }}>
-              {content}
+              {body}
             </div>
           </div>
         </div>
@@ -10918,8 +10968,9 @@ function ReturnsView({ orders, onExit }) {
         <div style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>{last3DaysOrders.length} done</div>
       </div>
 
-      <div style={{ padding:"1.5rem" }}>
-        {content}
+      <div style={{ padding:"1.25rem" }}>
+        <div style={{ marginBottom:14 }}>{searchEl}</div>
+        {body}
       </div>
     </div>
   );
