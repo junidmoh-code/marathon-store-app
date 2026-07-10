@@ -117,6 +117,20 @@ function friendlyError(err) {
   return msg || "Something went wrong. Try again.";
 }
 
+// Inventory-write role is DERIVED from the permission cards (the manual Stock
+// Role picker was removed). `stockRole` gates writes at the RTDB rules layer:
+// receiving needs warehouse|admin, transfers need store|warehouse|admin,
+// adjustments admin. Admins keep full access; a stock-adding/warehouse grant
+// implies receive+transfer; a Stock (screen) grant implies transfers only.
+function deriveStockRole(user, permissions) {
+  if ((user?.role || "") === "admin") return "admin";
+  const p = new Set(permissions || []);
+  if (p.has("stock_add") || p.has("warehouse")) return "warehouse";
+  if (p.has("stock_management")) return "store";
+  return null;
+}
+const STOCK_ROLE_LABEL = { admin: "Admin — full", warehouse: "Warehouse — receive + transfer", store: "Store — transfers", pos: "POS", "": "None" };
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Top-level component
 // ─────────────────────────────────────────────────────────────────────────────
@@ -585,7 +599,16 @@ function UserDetailView({ user, onBack, embedded = false }) {
   async function togglePermission(permKey, on) {
     const current = Array.isArray(user.permissions) ? user.permissions : [];
     const next = on ? Array.from(new Set([...current, permKey])) : current.filter((p) => p !== permKey);
-    await saveField("permissions", next);
+    // Keep the derived stock-write role in sync in the SAME write, so a stock
+    // permission actually enables receiving/transfers (writing null clears it).
+    const derivedStock = deriveStockRole(user, next);
+    try {
+      await update(ref(database, `users/${user.uid}`), { permissions: next, stockRole: derivedStock });
+      flashSaved("Permissions updated");
+    } catch (err) {
+      console.error("UserDetail: togglePermission failed:", err);
+      setError(friendlyError(err));
+    }
   }
   // Per-user single-shop assignment. "" clears the field (RTDB drops null) → no
   // restriction (all stores). A real shop id locks the user to that store — reads
@@ -667,6 +690,10 @@ function UserDetailView({ user, onBack, embedded = false }) {
               </button>
             );
           })}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, color: TEXT_2, padding: "0 2px", marginBottom: 26, lineHeight: 1.5 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /></svg>
+          Inventory writes: <span style={{ color: "#fff", fontWeight: 600 }}>{STOCK_ROLE_LABEL[deriveStockRole(user, user.permissions) || ""]}</span> — set automatically from the permissions above.
         </div>
 
         {/* Store access — individual radio cards */}
@@ -784,9 +811,14 @@ function InlineEditField({ value, onSave, placeholder, style }) {
 
   if (!editing) {
     return (
-      <div onClick={() => setEditing(true)} style={{ ...style, cursor: "text" }}>
-        {value || <span style={{ color: TEXT_2 }}>{placeholder}</span>}
-      </div>
+      <button type="button" onClick={() => setEditing(true)} title="Edit name"
+              style={{ ...style, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8,
+                       background: "transparent", border: "none", padding: 0, fontFamily: FONT }}>
+        <span>{value || <span style={{ color: TEXT_2 }}>{placeholder}</span>}</span>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: .45, flexShrink: 0 }}>
+          <path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+        </svg>
+      </button>
     );
   }
   return (
@@ -944,7 +976,15 @@ function AddStaffModal({ onClose, onCreated }) {
         role,
         permissions,
       });
-      onCreated(result.data?.uid);
+      const uid = result.data?.uid;
+      // Seed the derived inventory-write role so a new hire with stock/warehouse
+      // permissions can receive/transfer straight away (mirrors the auto-derive
+      // on the detail screen). Best-effort — the account already exists.
+      if (uid) {
+        const derivedStock = deriveStockRole({ role }, permissions);
+        if (derivedStock) { try { await update(ref(database, `users/${uid}`), { stockRole: derivedStock }); } catch { /* non-fatal */ } }
+      }
+      onCreated(uid);
     } catch (err) {
       console.error("AddStaff: createStaffUser failed:", err);
       const msg = friendlyError(err);
