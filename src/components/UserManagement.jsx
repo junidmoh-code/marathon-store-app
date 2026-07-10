@@ -219,15 +219,19 @@ export default function UserManagement({ authUser, onExit }) {
   // style. Rendered once inside each root below.
   const pressCss = (
     <style>{`
-      .um-root button, .um-press { transition: transform .1s cubic-bezier(.2,.7,.2,1), filter .12s ease, background .12s ease; -webkit-tap-highlight-color: transparent; }
+      .um-root button, .um-press, .um-3d { -webkit-tap-highlight-color: transparent; }
       .um-root button:not(:disabled) { cursor: pointer; }
-      .um-root button:not(:disabled):hover { filter: brightness(1.12); }
-      .um-root button:not(:disabled):active { transform: scale(.97); }
+      .um-root button:not(.um-3d):not(:disabled) { transition: transform .12s cubic-bezier(.34,1.4,.5,1), filter .14s ease, background .14s ease; }
+      .um-root button:not(.um-3d):not(:disabled):hover { filter: brightness(1.1); }
+      .um-root button:not(.um-3d):not(:disabled):active { transform: translateY(1px); }
       .um-root button:disabled { cursor: not-allowed; }
-      .um-press { cursor: pointer; }
-      .um-press:hover { filter: brightness(1.08); }
-      .um-press:active { transform: scale(.99); }
-      @media (prefers-reduced-motion: reduce) { .um-root button:active, .um-press:active { transform: none; } }
+      .um-press { cursor: pointer; transition: transform .12s ease, background .14s ease; }
+      .um-press:active { transform: translateY(1px); }
+      /* Buttery 3D — action buttons & toggle cards raise on hover and press in on click */
+      .um-3d { transition: transform .16s cubic-bezier(.34,1.56,.5,1), box-shadow .16s ease, background .16s ease, border-color .16s ease; box-shadow: 0 2px 6px -2px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05); transform: translateZ(0); }
+      .um-3d:hover { transform: translateY(-2px); box-shadow: 0 12px 24px -8px rgba(0,0,0,.66), inset 0 1px 0 rgba(255,255,255,.09); }
+      .um-3d:active { transform: translateY(1px) scale(.99); box-shadow: 0 2px 5px -3px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.03); transition-duration: .07s; }
+      @media (prefers-reduced-motion: reduce) { .um-root button:active, .um-press:active, .um-3d:hover, .um-3d:active { transform: none; } }
     `}</style>
   );
 
@@ -253,7 +257,7 @@ export default function UserManagement({ authUser, onExit }) {
               <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: "-0.3px" }}>Staff
                 <span style={{ fontSize: 13, fontWeight: 600, color: "rgba(233,238,255,.4)", marginLeft: 8 }}>{loading ? "…" : users.length}</span>
               </div>
-              <button onClick={() => setShowAdd(true)} style={{ ...primaryBtn, padding: "7px 12px", fontSize: 12.5 }}>+ Add</button>
+              <button className="um-3d" onClick={() => setShowAdd(true)} style={{ ...primaryBtn, padding: "7px 12px", fontSize: 12.5 }}>+ Add</button>
             </div>
             <div style={{ position: "relative" }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", opacity: .4 }}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
@@ -601,128 +605,100 @@ function UserDetailView({ user, onBack, embedded = false }) {
       {!embedded && <TopBar title="Staff" onBack={onBack} />}
 
       <div style={embedded
-              ? { maxWidth: 780, margin: "0 auto", padding: "22px 30px 48px" }
+              ? { maxWidth: 900, margin: "0 auto", padding: "22px 30px 48px" }
               : { maxWidth: 600, margin: "0 auto", padding: "8px 16px 24px" }}>
         {error && <ErrorBanner onDismiss={() => setError(null)}>{error}</ErrorBanner>}
 
-        {/* Identity card */}
-        <div style={{ background: CARD, borderRadius: 12, padding: "20px 16px",
-                      display: "flex", alignItems: "center", gap: 14, marginBottom: 22 }}>
+        {/* Identity */}
+        <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16, padding: 18, display: "flex", alignItems: "center", gap: 14, marginBottom: 22 }}>
           <AvatarCircle name={user.displayName} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <InlineEditField
-              value={user.displayName || ""}
-              onSave={setDisplayName}
-              placeholder="Display name"
-              style={{ fontSize: 19, fontWeight: 600, color: "#fff" }}
-            />
+            <InlineEditField value={user.displayName || ""} onSave={setDisplayName} placeholder="Display name" style={{ fontSize: 19, fontWeight: 700, color: "#fff" }} />
             <div style={{ fontSize: 13, color: TEXT_2, marginTop: 2 }}>@{user.username}</div>
           </div>
         </div>
 
-        <SectionLabel>Role</SectionLabel>
-        <div style={{ background: CARD, borderRadius: 12, padding: 4, marginBottom: 22,
-                      display: "flex", gap: 2 }}>
-          {ROLES.map((r) => (
-            <button key={r.key}
-                    onClick={() => setRole(r.key)}
-                    style={{ flex: 1, padding: "8px 6px", border: "none",
-                             background: user.role === r.key ? "#48484a" : "transparent",
-                             color: user.role === r.key ? "#fff" : TEXT_2,
-                             borderRadius: 9, fontSize: 13, fontWeight: 500, cursor: "pointer",
-                             transition: "all 120ms" }}>
-              {r.label}
-            </button>
-          ))}
-        </div>
-
-        <SectionLabel>Stock Role</SectionLabel>
-        <div style={{ background: CARD, borderRadius: 12, padding: 4, marginBottom: 6,
-                      display: "flex", gap: 2 }}>
+        {/* Stock role — gates inventory writes (app role is derived from the permissions below) */}
+        <SectionLabel>Stock role</SectionLabel>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
           {STOCK_ROLES.map((r) => {
-            const cur = user.stockRole || "";
+            const on = (user.stockRole || "") === r.key;
             return (
-              <button key={r.key || "none"}
-                      onClick={() => setStockRole(r.key)}
-                      style={{ flex: 1, padding: "8px 4px", border: "none",
-                               background: cur === r.key ? "#48484a" : "transparent",
-                               color: cur === r.key ? "#fff" : TEXT_2,
-                               borderRadius: 9, fontSize: 12.5, fontWeight: 500, cursor: "pointer",
-                               transition: "all 120ms" }}>
+              <button key={r.key || "none"} className="um-3d" onClick={() => setStockRole(r.key)}
+                style={{ padding: "10px 18px", borderRadius: 12, fontFamily: FONT, fontSize: 13, fontWeight: 700,
+                         border: `1px solid ${on ? BLUE : "rgba(255,255,255,.1)"}`, background: on ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.03)", color: on ? "#cfe0ff" : TEXT_2 }}>
                 {r.label}
               </button>
             );
           })}
         </div>
-        <div style={{ fontSize: 11, color: TEXT_2, padding: "0 4px", marginBottom: 22, lineHeight: 1.5 }}>
-          Gates inventory writes. <span style={{ color: "#fff" }}>Receiving</span> (incl. opening stock on product-add) needs <b>Warehouse</b> or <b>Admin</b>; <span style={{ color: "#fff" }}>transfers</span> need Store, Warehouse, or Admin.
+        <div style={{ fontSize: 11.5, color: TEXT_2, padding: "0 2px", marginBottom: 26, lineHeight: 1.5 }}>
+          Gates inventory writes. <span style={{ color: "#fff" }}>Receiving</span> needs <b>Warehouse</b> or <b>Admin</b>; <span style={{ color: "#fff" }}>transfers</span> need Store, Warehouse, or Admin.
         </div>
 
+        {/* Permissions — each one its own toggle card */}
         <SectionLabel>Permissions</SectionLabel>
-        <div style={{ background: CARD, borderRadius: 12, overflow: "hidden", marginBottom: 22 }}>
-          {ALL_PERMISSIONS.map((p, i) => {
+        <div style={{ display: "grid", gridTemplateColumns: embedded ? "repeat(auto-fill, minmax(232px, 1fr))" : "1fr", gap: 10, marginBottom: 26 }}>
+          {ALL_PERMISSIONS.map((p) => {
             const on = (user.permissions || []).includes(p.key);
             return (
-              <PermissionRow
-                key={p.key}
-                perm={p}
-                checked={on}
-                onToggle={(next) => {
-                  if (p.warn && next) {
-                    // Show inline warn-and-confirm in the row
-                    setPendingWarnFor(p.key);
-                  } else {
-                    togglePermission(p.key, next);
-                  }
-                }}
-                pendingWarn={pendingWarnFor === p.key}
-                onWarnConfirm={() => { togglePermission(p.key, true); setPendingWarnFor(null); }}
-                onWarnCancel={() => setPendingWarnFor(null)}
-                divider={i < ALL_PERMISSIONS.length - 1}
-              />
+              <button key={p.key} className="um-3d"
+                onClick={() => { if (p.warn && !on) setPendingWarnFor(p.key); else togglePermission(p.key, !on); }}
+                style={{ textAlign: "left", padding: "13px 14px", borderRadius: 14, fontFamily: FONT, color: "#fff",
+                         border: `1px solid ${on ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.08)"}`, background: on ? "rgba(74,127,255,.1)" : "rgba(255,255,255,.03)",
+                         display: "flex", flexDirection: "column", gap: 5 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700 }}>{p.label}</span>
+                  {p.warn && <span style={{ fontSize: 8.5, color: RED, border: `1px solid ${RED}`, padding: "1px 5px", borderRadius: 4, fontWeight: 700, letterSpacing: ".04em" }}>SENSITIVE</span>}
+                  <span style={{ marginLeft: "auto", flexShrink: 0, width: 22, height: 22, borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center",
+                                 background: on ? BLUE : "rgba(255,255,255,.06)", border: on ? "none" : "1px solid rgba(255,255,255,.18)" }}>
+                    {on && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>}
+                  </span>
+                </div>
+                <span style={{ fontSize: 11.5, color: on ? "rgba(207,224,255,.7)" : TEXT_2, lineHeight: 1.4 }}>{p.desc}</span>
+              </button>
             );
           })}
         </div>
 
-        <SectionLabel>Store Access</SectionLabel>
-        <div style={{ background: CARD, borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
-          {[{ id: "", label: "All stores (no restriction)" },
-            ...SHOP_IDS.map((id) => ({ id, label: SHOP_LABELS[id] }))].map((opt, i, arr) => {
+        {/* Store access — individual radio cards */}
+        <SectionLabel>Store access</SectionLabel>
+        <div style={{ display: "grid", gridTemplateColumns: embedded ? "repeat(auto-fill, minmax(210px, 1fr))" : "1fr", gap: 10, marginBottom: 8 }}>
+          {[{ id: "", label: "All stores (no restriction)" }, ...SHOP_IDS.map((id) => ({ id, label: SHOP_LABELS[id] }))].map((opt) => {
             const on = (localDestShop || "") === opt.id;
             return (
-              <div key={opt.id || "none"} className="um-press" onClick={() => chooseDestShop(opt.id)}
-                   style={{ display: "flex", alignItems: "center", padding: "12px 16px", cursor: "pointer",
-                            borderBottom: i < arr.length - 1 ? `1px solid ${DIVIDER}` : "none" }}>
-                <div style={{ flex: 1, minWidth: 0, fontSize: 15, color: "#fff" }}>{opt.label}</div>
-                <div style={{ width: 20, height: 20, borderRadius: "50%", flexShrink: 0,
-                              border: `2px solid ${on ? BLUE : DIVIDER}`,
-                              display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {on && <div style={{ width: 10, height: 10, borderRadius: "50%", background: BLUE }} />}
-                </div>
-              </div>
+              <button key={opt.id || "none"} className="um-3d" onClick={() => chooseDestShop(opt.id)}
+                style={{ textAlign: "left", padding: "13px 14px", borderRadius: 14, fontFamily: FONT, color: "#fff",
+                         border: `1px solid ${on ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.08)"}`, background: on ? "rgba(74,127,255,.1)" : "rgba(255,255,255,.03)",
+                         display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ width: 18, height: 18, borderRadius: "50%", flexShrink: 0, border: `2px solid ${on ? BLUE : DIVIDER}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {on && <span style={{ width: 9, height: 9, borderRadius: "50%", background: BLUE }} />}
+                </span>
+                <span style={{ fontSize: 13.5, fontWeight: 600 }}>{opt.label}</span>
+              </button>
             );
           })}
         </div>
-        <div style={{ fontSize: 11, color: TEXT_2, padding: "0 4px", marginBottom: 22, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 11.5, color: TEXT_2, padding: "0 2px", marginBottom: 26, lineHeight: 1.5 }}>
           {localDestShop
             ? <>Sees &amp; acts on <span style={{ color: BLUE_L }}>{SHOP_LABELS[localDestShop]}</span> orders only — enforced at the database. Keep warehouse &amp; admin on “All stores”.</>
             : "All stores — no restriction (correct for warehouse & admin). Pick a shop to lock a store assistant to one store."}
         </div>
 
-        <SectionLabel>Security</SectionLabel>
-        <div style={{ background: CARD, borderRadius: 12, overflow: "hidden", marginBottom: 32 }}>
-          <button onClick={() => setShowResetPin(true)}
-                  style={tappableRow}>
-            <span style={{ color: BLUE }}>Reset PIN</span>
-            <ChevronRight />
+        {/* Account actions */}
+        <SectionLabel>Account</SectionLabel>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="um-3d" onClick={() => setShowResetPin(true)}
+            style={{ padding: "12px 20px", borderRadius: 12, fontFamily: FONT, fontSize: 13.5, fontWeight: 700,
+                     border: "1px solid rgba(74,127,255,.4)", background: "rgba(74,127,255,.14)", color: "#9DBCFF" }}>
+            Reset PIN
+          </button>
+          <button className="um-3d" onClick={() => setShowConfirmDelete(true)}
+            style={{ padding: "12px 20px", borderRadius: 12, fontFamily: FONT, fontSize: 13.5, fontWeight: 700,
+                     border: "1px solid rgba(255,69,58,.4)", background: "rgba(255,69,58,.1)", color: "#FF6961" }}>
+            Delete user
           </button>
         </div>
-
-        {/* Danger zone */}
-        <button onClick={() => setShowConfirmDelete(true)}
-                style={{ ...tappableRow, background: CARD, borderRadius: 12, color: RED, fontWeight: 500 }}>
-          Delete user
-        </button>
       </div>
 
       {/* Saved-confirmation toast — fires after every successful edit. */}
@@ -736,6 +712,16 @@ function UserDetailView({ user, onBack, embedded = false }) {
         </div>
       )}
 
+      {pendingWarnFor && (
+        <ConfirmDialog
+          title="Grant User Management?"
+          body="This lets the account create, edit, and delete other staff accounts."
+          confirmLabel="Grant"
+          danger
+          onConfirm={() => { togglePermission(pendingWarnFor, true); setPendingWarnFor(null); }}
+          onCancel={() => setPendingWarnFor(null)}
+        />
+      )}
       {showResetPin && (
         <ResetPinModal
           userName={user.displayName}
