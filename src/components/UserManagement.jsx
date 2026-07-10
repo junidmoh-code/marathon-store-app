@@ -214,6 +214,23 @@ export default function UserManagement({ authUser, onExit }) {
     }
   };
 
+  // Tactile press feedback — scoped to `.um-root`, so every button/row inside
+  // User Management gets a hover-lift + click-scale without editing each inline
+  // style. Rendered once inside each root below.
+  const pressCss = (
+    <style>{`
+      .um-root button, .um-press { transition: transform .1s cubic-bezier(.2,.7,.2,1), filter .12s ease, background .12s ease; -webkit-tap-highlight-color: transparent; }
+      .um-root button:not(:disabled) { cursor: pointer; }
+      .um-root button:not(:disabled):hover { filter: brightness(1.12); }
+      .um-root button:not(:disabled):active { transform: scale(.97); }
+      .um-root button:disabled { cursor: not-allowed; }
+      .um-press { cursor: pointer; }
+      .um-press:hover { filter: brightness(1.08); }
+      .um-press:active { transform: scale(.99); }
+      @media (prefers-reduced-motion: reduce) { .um-root button:active, .um-press:active { transform: none; } }
+    `}</style>
+  );
+
   // ── DESKTOP WORKSPACE (≥1024px) — a staff-list rail beside a live detail pane.
   //    Selecting a row swaps the pane in place (no full-page navigation). ──
   if (isWide) {
@@ -222,7 +239,8 @@ export default function UserManagement({ authUser, onExit }) {
       ? users.filter((u) => (u.displayName || "").toLowerCase().includes(q) || (u.username || "").toLowerCase().includes(q))
       : users;
     return (
-      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "320px minmax(0,1fr)", overflow: "hidden" }}>
+      <div className="um-root" style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "320px minmax(0,1fr)", overflow: "hidden" }}>
+        {pressCss}
         {/* RAIL — staff list */}
         <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <div style={{ padding: "22px 16px 12px" }}>
@@ -286,7 +304,8 @@ export default function UserManagement({ authUser, onExit }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, paddingBottom: 60 }}>
+    <div className="um-root" style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, paddingBottom: 60 }}>
+      {pressCss}
       {!isDetail && selfNeedsStock && (
         <div style={{ margin: "8px 16px 0", background: "rgba(60,110,255,.10)", border: "1px solid rgba(60,110,255,.35)",
                       borderRadius: 12, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 }}>
@@ -671,7 +690,7 @@ function UserDetailView({ user, onBack, embedded = false }) {
             ...SHOP_IDS.map((id) => ({ id, label: SHOP_LABELS[id] }))].map((opt, i, arr) => {
             const on = (localDestShop || "") === opt.id;
             return (
-              <div key={opt.id || "none"} onClick={() => chooseDestShop(opt.id)}
+              <div key={opt.id || "none"} className="um-press" onClick={() => chooseDestShop(opt.id)}
                    style={{ display: "flex", alignItems: "center", padding: "12px 16px", cursor: "pointer",
                             borderBottom: i < arr.length - 1 ? `1px solid ${DIVIDER}` : "none" }}>
                 <div style={{ flex: 1, minWidth: 0, fontSize: 15, color: "#fff" }}>{opt.label}</div>
