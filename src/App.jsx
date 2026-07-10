@@ -9121,7 +9121,12 @@ function CompletedTogglePill({ on, count, onClick }) {
 // rawCounts  = { productKey: { productName, photo, photoUrl, sizes: { size: count } } }
 // responses  = { productKey: { size: { response, respondedOn } } }  — live from Firebase
 // hub        = "hub1" | "hub2"  — used only for keying/labels; data is already filtered upstream.
-function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo }) {
+function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, wide = false }) {
+  // Desktop lays the pending / completed cells in a responsive grid so the wide
+  // pane isn't a single stretched column; mobile stays a vertical stack.
+  const listStyle = wide
+    ? { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(300px, 1fr))", gap:12, alignItems:"start" }
+    : { display:"flex", flexDirection:"column", gap:10 };
   // Per-hub toggle — each hub remembers whether its completed list is open.
   const [showCompletedByHub, setShowCompletedByHub] = useState({ hub1: false, hub2: false });
   const showCompleted = !!showCompletedByHub[hub];
@@ -9168,7 +9173,7 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
   return (
     <div>
       {/* Summary headline — pending units, falls to "all done" tone when zero */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"14px 16px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.2)" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:16, padding:"14px 16px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
         <div style={{ fontWeight:800, fontSize:36, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1px" }}>{pendingUnits}</div>
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Refill Pending</div>
@@ -9185,7 +9190,7 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
 
       {/* Empty-active-but-completed state */}
       {pending.length === 0 && completed.length > 0 && !showCompleted && (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(74,222,128,.4)", borderRadius:14, padding:"22px 18px", textAlign:"center", boxShadow:"0 0 12px rgba(74,222,128,.12)" }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,222,128,.4)", borderRadius:16, padding:"22px 18px", textAlign:"center", boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
             <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
           </svg>
@@ -9199,7 +9204,7 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
       )}
 
       {/* Active list — pending cells only. Cards vanish on response. */}
-      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+      <div style={listStyle}>
         {pending.map(cell => (
           <PendingCard
             key={`${hub}-${cell.key}-${cell.size}`}
@@ -9220,7 +9225,7 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
             <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>COMPLETED</div>
             <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
           </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          <div style={listStyle}>
             {completed.map(cell => (
               <CompletedCard
                 key={`${hub}-done-${cell.key}-${cell.size}`}
@@ -9544,7 +9549,7 @@ function SourceOnHoldTab({ orders, onHoldResponses }) {
 
       {/* Empty-active-but-completed state */}
       {pending.length === 0 && completed.length > 0 && !showCompleted && (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(74,222,128,.4)", borderRadius:14, padding:"22px 18px", textAlign:"center", boxShadow:"0 0 12px rgba(74,222,128,.12)" }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,222,128,.4)", borderRadius:16, padding:"22px 18px", textAlign:"center", boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
             <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
           </svg>
@@ -9999,7 +10004,7 @@ function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, regi
       )}
 
       {pending.length === 0 && completed.length > 0 && !showCompleted && (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(74,222,128,.4)", borderRadius:14, padding:"22px 18px", textAlign:"center", boxShadow:"0 0 12px rgba(74,222,128,.12)" }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,222,128,.4)", borderRadius:16, padding:"22px 18px", textAlign:"center", boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
             <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
           </svg>
@@ -10540,6 +10545,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
                               responses={allResponses[todayDate] || {}}
                               date={todayDate}
                               hub={hub}
+                              wide={isWide}
                               onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
                               onUndo={(key, size) => handleUndo(todayDate, key, size)} />}
         {tab==="history" && <SourceHistoryTab
@@ -10603,9 +10609,9 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{activeLabel}</div>
             <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>What sold &mdash; and what to restock.</div>
           </div>
-          <div style={{ flex:1, overflow:"auto", padding:"6px 30px 48px" }}>
-            <div style={{ maxWidth:1000, margin:"0 auto" }}>
-              {hubSelector}
+          <div style={{ flex:1, overflow:"auto", padding:"14px 30px 48px" }}>
+            <div style={{ maxWidth:1160, margin:"0 auto", display:"flex", flexDirection:"column", gap:16 }}>
+              <div style={{ maxWidth:380, width:"100%" }}>{hubSelector}</div>
               {content}
             </div>
           </div>
