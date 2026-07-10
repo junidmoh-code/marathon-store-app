@@ -23,6 +23,7 @@ import { ref, onValue, update, remove } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../firebase";
 import { SHOP_IDS, SHOP_LABELS } from "../utils/stores";
+import { useWide } from "./stock/hooks";
 
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 
@@ -126,7 +127,10 @@ export default function UserManagement({ authUser, onExit }) {
   const [route,     setRoute]     = useState(() => parseHash() || { view: "list", uid: null });
   const [showAdd,   setShowAdd]   = useState(false);
   const [granting,  setGranting]  = useState(false);
+  const [search,    setSearch]    = useState("");
   const listScrollRef = useRef(0);
+  // Desktop workspace gate (≥1024px) — master-detail; mobile keeps the stacked flow.
+  const isWide = useWide(1024);
 
   // /users subscription
   useEffect(() => {
@@ -209,6 +213,77 @@ export default function UserManagement({ authUser, onExit }) {
       setGranting(false);
     }
   };
+
+  // ── DESKTOP WORKSPACE (≥1024px) — a staff-list rail beside a live detail pane.
+  //    Selecting a row swaps the pane in place (no full-page navigation). ──
+  if (isWide) {
+    const q = search.trim().toLowerCase();
+    const shown = q
+      ? users.filter((u) => (u.displayName || "").toLowerCase().includes(q) || (u.username || "").toLowerCase().includes(q))
+      : users;
+    return (
+      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "320px minmax(0,1fr)", overflow: "hidden" }}>
+        {/* RAIL — staff list */}
+        <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ padding: "22px 16px 12px" }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 12 }}>
+              <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
+              <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
+            </div>
+            <button onClick={onExit} style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", color: "rgba(233,238,255,.6)", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT }}>← Exit</button>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "16px 2px 10px" }}>
+              <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: "-0.3px" }}>Staff
+                <span style={{ fontSize: 13, fontWeight: 600, color: "rgba(233,238,255,.4)", marginLeft: 8 }}>{loading ? "…" : users.length}</span>
+              </div>
+              <button onClick={() => setShowAdd(true)} style={{ ...primaryBtn, padding: "7px 12px", fontSize: 12.5 }}>+ Add</button>
+            </div>
+            <div style={{ position: "relative" }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", opacity: .4 }}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search staff…"
+                style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px 9px 34px", borderRadius: 10, fontSize: 13, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.12)", color: "#fff", outline: "none", fontFamily: FONT }} />
+            </div>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "2px 8px 16px" }}>
+            {shown.map((u) => (
+              <UserRow key={u.uid} user={u} onClick={() => goToDetail(u.uid)} divider={false} selected={route.uid === u.uid} />
+            ))}
+            {!loading && shown.length === 0 && (
+              <div style={{ padding: 24, textAlign: "center", color: "rgba(233,238,255,.4)", fontSize: 13 }}>
+                {q ? "No staff match your search." : "No staff yet — tap + Add."}
+              </div>
+            )}
+          </div>
+        </aside>
+        {/* MAIN — detail pane */}
+        <div style={{ minWidth: 0, overflow: "auto" }}>
+          {selfNeedsStock && (
+            <div style={{ margin: "16px 30px 0", background: "rgba(60,110,255,.10)", border: "1px solid rgba(60,110,255,.35)", borderRadius: 12, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: "#cfe0ff", lineHeight: 1.5 }}>
+                You have no <b>stock role</b>, so receiving/transfers will be denied for your account. Grant yourself Admin stock access?
+              </div>
+              <button onClick={grantSelfStock} disabled={granting} style={{ background: "rgba(60,110,255,.25)", border: "1px solid rgba(60,110,255,.5)", color: "#fff", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", opacity: granting ? 0.6 : 1 }}>
+                {granting ? "Granting…" : "Grant Admin"}
+              </button>
+            </div>
+          )}
+          {selectedUser ? (
+            <UserDetailView key={selectedUser.uid} user={selectedUser} onBack={goToList} embedded />
+          ) : isDetail && !loading ? (
+            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(233,238,255,.4)" }}>That user no longer exists.</div>
+          ) : (
+            <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, textAlign: "center", padding: 40, color: "rgba(233,238,255,.4)" }}>
+              <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="rgba(74,127,255,.55)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "rgba(233,238,255,.7)" }}>Select a staff member</div>
+              <div style={{ fontSize: 12.5, maxWidth: 320, lineHeight: 1.5 }}>Pick someone on the left to view and edit their role, permissions, and store access.</div>
+            </div>
+          )}
+        </div>
+        {showAdd && (
+          <AddStaffModal onClose={() => setShowAdd(false)} onCreated={(uid) => { setShowAdd(false); goToDetail(uid); }} />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, paddingBottom: 60 }}>
@@ -334,7 +409,7 @@ function UserListView({ users, loading, onSelect, onAdd, onExit }) {
   );
 }
 
-function UserRow({ user, onClick, divider }) {
+function UserRow({ user, onClick, divider, selected = false }) {
   const [hover,  setHover]  = useState(false);
   const [active, setActive] = useState(false);
   const permCount = Array.isArray(user.permissions) ? user.permissions.length : 0;
@@ -353,13 +428,16 @@ function UserRow({ user, onClick, divider }) {
          onTouchStart={() => setActive(true)}
          onTouchEnd={() => setActive(false)}
          onTouchCancel={() => setActive(false)}
-         style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px",
+         style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px",
                   cursor: "pointer",
-                  background: active ? "#3a3a3c" : hover ? CARD_HOVER : "transparent",
+                  background: selected ? "rgba(74,127,255,.14)" : active ? "#3a3a3c" : hover ? CARD_HOVER : "transparent",
+                  borderTop: "none", borderRight: "none",
                   borderBottom: divider ? `1px solid ${DIVIDER}` : "none",
+                  borderLeft: selected ? "2px solid #4A7FFF" : "2px solid transparent",
+                  borderRadius: selected ? 10 : 0,
                   transition: "background 80ms",
                   width: "100%", textAlign: "left",
-                  border: "none", color: "inherit", font: "inherit",
+                  color: "inherit", font: "inherit",
                   appearance: "none" }}>
       <AvatarCircle name={user.displayName} />
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -410,11 +488,21 @@ function RoleBadge({ role }) {
 
 // ─── Detail view ─────────────────────────────────────────────────────────────
 
-function UserDetailView({ user, onBack }) {
+const SAVED_MSG = { displayName: "Name updated", role: "Role updated", stockRole: "Stock role updated", permissions: "Permissions updated", destShop: "Store access updated" };
+
+function UserDetailView({ user, onBack, embedded = false }) {
   const [showResetPin,    setShowResetPin]    = useState(false);
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
   const [error, setError] = useState(null);
   const [busy,  setBusy]  = useState(false);
+  const [toast, setToast] = useState(null);   // "Saved ✓" confirmation after an edit
+  const toastTimer = useRef(null);
+  const flashSaved = (msg) => {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2200);
+  };
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
   const [pendingWarnFor, setPendingWarnFor] = useState(null); // permission key awaiting warn-confirm
   // Single-shop assignment (store-access restriction). Optimistic local mirror so
   // the radio updates instantly before the /users subscription echoes. "" = no
@@ -426,6 +514,7 @@ function UserDetailView({ user, onBack }) {
   async function saveField(field, value) {
     try {
       await update(ref(database, `users/${user.uid}`), { [field]: value });
+      flashSaved(SAVED_MSG[field] || "Saved");
     } catch (err) {
       console.error("UserDetail: saveField failed:", err);
       setError(friendlyError(err));
@@ -478,6 +567,7 @@ function UserDetailView({ user, onBack }) {
     try {
       await updateStaffPasswordFn({ uid: user.uid, pin });
       setShowResetPin(false);
+      flashSaved("PIN reset");
     } catch (err) {
       console.error("UserDetail: reset PIN failed:", err);
       setError(friendlyError(err));
@@ -489,9 +579,11 @@ function UserDetailView({ user, onBack }) {
 
   return (
     <>
-      <TopBar title="Staff" onBack={onBack} />
+      {!embedded && <TopBar title="Staff" onBack={onBack} />}
 
-      <div style={{ maxWidth: 600, margin: "0 auto", padding: "8px 16px 24px" }}>
+      <div style={embedded
+              ? { maxWidth: 780, margin: "0 auto", padding: "22px 30px 48px" }
+              : { maxWidth: 600, margin: "0 auto", padding: "8px 16px 24px" }}>
         {error && <ErrorBanner onDismiss={() => setError(null)}>{error}</ErrorBanner>}
 
         {/* Identity card */}
@@ -613,6 +705,17 @@ function UserDetailView({ user, onBack }) {
           Delete user
         </button>
       </div>
+
+      {/* Saved-confirmation toast — fires after every successful edit. */}
+      {toast && (
+        <div style={{ position: "fixed", left: "50%", bottom: 26, transform: "translateX(-50%)", zIndex: 9999,
+                      display: "flex", alignItems: "center", gap: 8, background: "rgba(6,20,12,.97)",
+                      border: "1px solid rgba(74,222,128,.4)", color: "#fff", borderRadius: 999,
+                      padding: "10px 18px", fontSize: 13, fontWeight: 700, boxShadow: "0 18px 44px -18px rgba(0,0,0,.8)" }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+          {toast}
+        </div>
+      )}
 
       {showResetPin && (
         <ResetPinModal
