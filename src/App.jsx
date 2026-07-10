@@ -8909,6 +8909,154 @@ function CustomerView({ orders, onExit }) {
 
   const shopLabel = found ? orderShopLabel(found) : null;
 
+  const STATUS_MSG = {
+    [STATUS.INCOMING]:        "Your order is being prepared. We'll have it ready soon.",
+    [STATUS.READY]:           "Your order is ready. Please collect it at the store.",
+    [STATUS.OUT_OF_STOCK]:    "Sorry, this item is out of stock. Please speak to an assistant.",
+    [STATUS.COLLECTED]:       "This order has been collected. Thank you.",
+    [STATUS.COMING_TOMORROW]: "Your item will be available tomorrow. Please come back then.",
+  };
+
+  // ── FULL-SCREEN DESKTOP WORKSPACE (≥1024px) — search/recent rail + rich pane ──
+  if (isWide) {
+    const q = orderId.trim().toLowerCase();
+    const railList = (q ? orders.filter(o => o.id.includes(q) || (o.customerName || "").toLowerCase().includes(q)) : orders).slice(0, 60);
+    const statusAt = found ? ({ [STATUS.INCOMING]: found.createdAt, [STATUS.READY]: found.readyAt, [STATUS.OUT_OF_STOCK]: found.outOfStockAt, [STATUS.COMING_TOMORROW]: found.comingTomorrowAt, [STATUS.COLLECTED]: found.collectedAt }[found.status] || found.updatedAt) : null;
+    const subbed = found && found.sentSize && found.sentSize !== found.size ? found.sentSize : null;
+    const tags = [];
+    if (found?.isLayby) tags.push("Layby");
+    if (found?.requestDisplayPartner) tags.push("Display Partner");
+    else if (found?.requestDisplay) tags.push("Display");
+    const detailRow = (label, value) => value == null || value === "" ? null : (
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 14, padding: "11px 0", borderBottom: "1px solid rgba(255,255,255,.06)" }}>
+        <span style={{ fontSize: 12.5, color: "rgba(233,238,255,.5)", flexShrink: 0 }}>{label}</span>
+        <span style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", textAlign: "right", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</span>
+      </div>
+    );
+    return (
+      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "340px minmax(0,1fr)", overflow: "hidden" }}>
+        <style>{`@keyframes otPulse{0%,100%{box-shadow:0 0 0 0 rgba(74,127,255,.5)}50%{box-shadow:0 0 0 6px rgba(74,127,255,0)}}
+          .ot-press{transition:transform .1s ease, filter .12s ease}.ot-press:active{transform:scale(.98)}.ot-press:hover{filter:brightness(1.08)}
+          .ot-row{transition:background .12s ease, border-color .12s ease}.ot-row:hover{background:rgba(255,255,255,.05)}`}</style>
+        {/* RAIL — search + orders */}
+        <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ padding: "22px 16px 12px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
+                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
+              </div>
+              {onExit && <button onClick={onExit} className="ot-press" style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(233,238,255,.6)", borderRadius: 9, padding: "6px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: FONT }}>← Exit</button>}
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.3px", marginBottom: 12 }}>Order Tracking</div>
+            <div style={{ position: "relative" }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", opacity: .4 }}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
+              <input value={orderId} onChange={e => setOrderId(e.target.value)} onKeyDown={e => e.key === "Enter" && doSearch()} placeholder="Order # or customer…"
+                style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px 10px 34px", borderRadius: 11, fontSize: 13.5, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.12)", color: "#fff", outline: "none", fontFamily: FONT }} />
+            </div>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "4px 10px 16px", display: "flex", flexDirection: "column", gap: 7 }}>
+            {railList.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "rgba(233,238,255,.4)", fontSize: 13 }}>No matching orders.</div>}
+            {railList.map(o => {
+              const c = STATUS_CONFIG[o.status];
+              const on = found && found.id === o.id;
+              return (
+                <button key={o.id} className="ot-row" onClick={() => { setOrderId(o.id); setFound(o); setSearched(true); }}
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, cursor: "pointer", textAlign: "left", fontFamily: FONT,
+                           background: on ? "rgba(74,127,255,.14)" : "transparent", border: on ? "1px solid rgba(74,127,255,.45)" : "1px solid transparent" }}>
+                  <ProductPhoto url={o.productPhotoUrl} photo={o.productPhoto} size={40} radius={9} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>#{o.id} · {o.productName}</div>
+                    <div style={{ fontSize: 11, color: "rgba(233,238,255,.45)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.customerName || "—"}</div>
+                  </div>
+                  {c && <span style={{ flexShrink: 0, width: 8, height: 8, borderRadius: "50%", background: c.color, boxShadow: `0 0 6px ${c.color}` }} title={c.label} />}
+                </button>
+              );
+            })}
+          </div>
+        </aside>
+
+        {/* MAIN — detail or empty state */}
+        <div style={{ minWidth: 0, overflow: "auto" }}>
+          {found && cfg ? (
+            <div style={{ padding: "34px 44px 60px", maxWidth: 1120, margin: "0 auto" }}>
+              {/* header */}
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 20, marginBottom: 26 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase" }}>Order</div>
+                  <div style={{ fontSize: 44, fontWeight: 800, lineHeight: 1, letterSpacing: ".01em", fontVariantNumeric: "tabular-nums" }}>#{found.id}</div>
+                  <div style={{ fontSize: 16, color: "rgba(233,238,255,.7)", marginTop: 8 }}>{found.productName}</div>
+                </div>
+                <div style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, borderRadius: 999, padding: "9px 18px", fontWeight: 800, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: cfg.color, boxShadow: `0 0 8px ${cfg.color}` }} />
+                  {cfg.label}
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 400px) minmax(0, 1fr)", gap: 22, alignItems: "start" }}>
+                {/* LEFT — photo + details */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                  <div style={{ width: "100%", aspectRatio: "1 / 1", borderRadius: 20, overflow: "hidden", border: "1px solid rgba(255,255,255,.1)", background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 96, boxShadow: "0 24px 60px -30px rgba(0,0,0,.9)" }}>
+                    {found.productPhotoUrl ? <img src={found.productPhotoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} /> : (found.productPhoto || "👟")}
+                  </div>
+                  <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16, padding: "6px 16px 12px" }}>
+                    {detailRow("Size", <SizeTag size={found.size} />)}
+                    {subbed && detailRow("Sent instead", <span style={{ color: "#FBBF24" }}><SizeTag size={subbed} /> (substituted)</span>)}
+                    {found.qty > 1 && detailRow("Quantity", `×${found.qty}`)}
+                    {detailRow("Ordered from", shopLabel)}
+                    {detailRow("Customer", found.customerName)}
+                    {detailRow("Phone", found.customerPhone)}
+                    {tags.length > 0 && detailRow("Type", tags.join(" · "))}
+                    {detailRow("Placed", absTime(found.createdAt))}
+                  </div>
+                </div>
+
+                {/* RIGHT — status callout + timeline */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                  <div style={{ background: `linear-gradient(180deg, ${cfg.color}1f, ${cfg.color}08)`, border: `1px solid ${cfg.border}`, borderRadius: 18, padding: "18px 20px" }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: cfg.color, marginBottom: 4 }}>{cfg.label}{statusAt ? ` · ${relTime(statusAt)}` : ""}</div>
+                    <div style={{ fontSize: 13.5, color: "rgba(233,238,255,.8)", lineHeight: 1.5 }}>{STATUS_MSG[found.status] || ""}</div>
+                  </div>
+                  <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: "20px 20px 10px" }}>
+                    <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 16 }}>Progress</div>
+                    {steps.map((st, i) => {
+                      const c = STEP_C[st.state];
+                      const last = i === steps.length - 1;
+                      return (
+                        <div key={st.label} style={{ display: "flex", gap: 16 }}>
+                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+                            <div style={{ width: 20, height: 20, borderRadius: "50%", background: c.dot, border: `2px solid ${c.ring === "transparent" ? "rgba(255,255,255,.14)" : c.ring}`, display: "flex", alignItems: "center", justifyContent: "center", animation: st.state === "current" ? "otPulse 1.8s infinite" : "none" }}>
+                              {st.state === "done" && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#04120a" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>}
+                              {st.state === "error" && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#1a0606" strokeWidth="4" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>}
+                            </div>
+                            {!last && <div style={{ width: 2, flex: 1, minHeight: 34, background: st.state === "done" ? "rgba(74,222,128,.35)" : "rgba(255,255,255,.08)", margin: "4px 0" }} />}
+                          </div>
+                          <div style={{ flex: 1, paddingBottom: last ? 12 : 20, marginTop: -1 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+                              <div style={{ fontSize: 15.5, fontWeight: 700, color: c.text }}>{st.label}</div>
+                              {st.time && <div style={{ fontSize: 12, color: "rgba(233,238,255,.45)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{absTime(st.time)}</div>}
+                            </div>
+                            <div style={{ fontSize: 12.5, color: st.state === "pending" ? "rgba(233,238,255,.3)" : "rgba(233,238,255,.55)", marginTop: 3 }}>{st.sub}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, textAlign: "center", padding: 40, color: "rgba(233,238,255,.4)" }}>
+              <svg width="54" height="54" viewBox="0 0 24 24" fill="none" stroke="rgba(74,127,255,.55)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
+              <div style={{ fontSize: 17, fontWeight: 700, color: "rgba(233,238,255,.7)" }}>{searched ? `No order #${orderId} found` : "Select an order to track"}</div>
+              <div style={{ fontSize: 13, maxWidth: 340, lineHeight: 1.5 }}>{searched ? "Double-check the number on the slip, or pick one from the list." : "Search by order number or customer, or pick one from the list on the left."}</div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: isWide ? 1120 : 480, margin: "0 auto", padding: isWide ? "40px 40px 64px" : "34px 18px 48px", boxSizing: "border-box" }}>
       <style>{`@keyframes otPulse{0%,100%{box-shadow:0 0 0 0 rgba(74,127,255,.5)}50%{box-shadow:0 0 0 6px rgba(74,127,255,0)}}
@@ -14500,7 +14648,7 @@ function AppInner() {
   // Studio) carry their own top-bar / Home nav, so the global pill is suppressed
   // there to avoid a stray floating sign-out.
   const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
-    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === ROLES.WAREHOUSE || role === ROLES.LABEL_PRINT || role === null))
+    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === ROLES.WAREHOUSE || role === ROLES.LABEL_PRINT || role === ROLES.CUSTOMER || role === null))
     && !(!isNarrowApp && wantUserMgmt);   // desktop User Management carries its own rail Exit
 
   return (
