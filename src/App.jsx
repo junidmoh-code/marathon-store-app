@@ -745,7 +745,7 @@ function toKey(str) {
 //   emptyMessage — string shown when all buckets are empty
 //   includeOlder — when true, items older than 2-days-ago land in an "Older"
 //                  bucket (default collapsed). When false, they're dropped.
-function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, includeOlder = false, keyOf = null }) {
+function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, includeOlder = false, keyOf = null, columns = 1 }) {
   // Read initial open state from sessionStorage. Default: today open, rest closed.
   const STORAGE_KEY = `dayCollapsible:${sectionKey}`;
   const [openMap, setOpenMap] = useState(() => {
@@ -816,7 +816,9 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
               </svg>
             </div>
             <div style={{ maxHeight: open ? 5000 : 0, overflow:"hidden", transition:"max-height 150ms ease" }}>
-              <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 8px 12px", display:"flex", flexDirection:"column", gap:10 }}>
+              <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 8px 12px", ...(columns > 1
+                     ? { display:"grid", gridTemplateColumns:`repeat(${columns}, minmax(0,1fr))`, gap:12, alignItems:"start" }
+                     : { display:"flex", flexDirection:"column", gap:10 }) }}>
                 {/* keyOf gives STATEFUL cards a stable identity — the date-index
                     fallback reuses component state across neighbours when items
                     sharing a timestamp shift position (fine for stateless rows). */}
@@ -6897,6 +6899,16 @@ function AssistantView({ products, onExit, orders = [] }) {
   );
 }
 
+// Per-queue nav glyphs for the desktop workspace rail (mirrors the mobile tab
+// strip icons). Keyed by the same tab keys used in tabDefs.
+const WH_TAB_ICON = {
+  queue:    <><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></>,
+  restock:  <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,
+  clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
+  refills:  <><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></>,
+  layby:    <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/>,
+};
+
 // ─── WAREHOUSE VIEW ───────────────────────────────────────────────────────────
 function WarehouseView({ products = [], orders, onExit }) {
   const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
@@ -7082,6 +7094,9 @@ function WarehouseView({ products = [], orders, onExit }) {
   // empty node elsewhere, so hub1/hubC devices don't stream a stock subtree.
   const crHubCells = useStockCells(CR_HUBS.includes(selectedHub) ? selectedHub : "__off__"); // { pid: { size: cell } }
   const [crPhoto, setCrPhoto] = useState(null);
+  // Desktop workspace gate (≥1024px). Mobile keeps the existing single-column
+  // layout below; wide screens get a left rail of queues + a titled main pane.
+  const isWide = !useIsNarrow(1024);
 
   // Hub selector screen — shown until staff pick a hub
   if (!selectedHub) {
@@ -7527,72 +7542,18 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Tally for the incoming pill at top right
   const incomingCount = hubOrders.filter(o => o.status === STATUS.INCOMING).length;
 
-  return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-      {/* Dispatch-label print toast — auto-print result on "Mark as Sent" (non-blocking). */}
-      {printToast && (
-        <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
-                      padding:"11px 14px", borderRadius:10, fontSize:12, fontWeight:600, textAlign:"center",
-                      background: printToast.kind === "ok" ? "rgba(0,150,70,.92)" : "rgba(150,30,30,.94)",
-                      color:"#fff", border:"1px solid rgba(255,255,255,.18)", boxShadow:"0 6px 24px rgba(0,0,0,.4)" }}>
-          {printToast.text}
-        </div>
-      )}
-      {/* TOP BAR */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
-        <div onClick={onExit}
-             style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>
-          ← Switch View
-        </div>
-        <div style={{ textAlign:"center" }}>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
-          <div style={{ fontSize:15, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>WAREHOUSE</div>
-        </div>
-        <div style={{ background:"rgba(20,40,100,.6)", border:"1px solid rgba(60,110,255,.35)", borderRadius:12, padding:"7px 12px", display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
-          <div style={{ width:7, height:7, background:"#4A7FFF", borderRadius:"50%", boxShadow:"0 0 6px rgba(60,110,255,.8)" }}/>
-          <div>
-            <div style={{ fontSize:14, fontWeight:700, color:"#fff", lineHeight:1 }}>{incomingCount}</div>
-            <div style={{ fontSize:9, color:"rgba(255,255,255,.5)" }}>incoming</div>
-          </div>
-          <span style={{ color:"#4A7FFF", fontSize:13 }}>›</span>
-        </div>
-      </div>
+  // Tab set for the active hub — shared by the mobile strip and the desktop rail.
+  const tabDefs = (selectedHub === "hubC"
+    ? [["queue", "Order Queue", null]]
+    : selectedHub === "hub2"
+    ? [["queue","Order Queue",null],["clothing","CR Orders",clothingBadge],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]
+    : selectedHub === "hub3"
+    ? [["queue","Order Queue",null],["clothing","CR Orders",clothingBadge],["restock","Restock Status",null],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]
+    : [["queue","Order Queue",null],["restock","Restock Status",null],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]);
 
-      {/* CIRCUIT LINE */}
-      <div style={{ height:20, padding:"0 14px", margin:"4px 0 2px", overflow:"hidden" }}>
-        <svg width="100%" height="100%" viewBox="0 0 400 20" preserveAspectRatio="none">
-          <path d="M0,10 L60,10 L80,3 L140,3 L160,10 L220,10 L240,17 L300,17 L320,10 L400,10" stroke="rgba(60,110,255,.4)" strokeWidth="1" fill="none" strokeLinecap="round"/>
-          <circle cx="80" cy="3" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="160" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="240" cy="17" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="320" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
-        </svg>
-      </div>
-
-      {/* WAREHOUSE QUEUE HERO IMAGE */}
-      <div style={{ position:"relative", width:"100%", height:130, overflow:"hidden", margin:"4px 0 0" }}>
-        <img src="/hero/warehouse.jpg" alt="Warehouse Queue" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"center" }}/>
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:50, background:"linear-gradient(transparent,#000)" }}/>
-        <div style={{ position:"absolute", top:0, left:0, right:0, height:20, background:"linear-gradient(#000,transparent)" }}/>
-      </div>
-
-      {/* HUB ROW */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px 10px" }}>
-        <div style={{ background:"rgba(20,40,120,.5)", border:"1px solid rgba(60,110,255,.5)", borderRadius:10, padding:"7px 16px", color:"#4A7FFF", fontSize:13, fontWeight:700 }}>
-          {HUB_LABELS[selectedHub] || selectedHub}
-        </div>
-        <div onClick={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }}
-             style={{ background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"7px 16px", color:"rgba(255,255,255,.7)", fontSize:12, fontWeight:500, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2">
-            <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/>
-          </svg>
-          Switch Hub
-        </div>
-      </div>
-
-      <div style={{ fontSize:12, color:"rgba(255,255,255,.3)", padding:"2px 14px 10px" }}>Update order status in real time.</div>
-
-      {/* ON HOLD CARD */}
+  // ON-HOLD card — actionable next-day follow-up list, shared by both layouts.
+  const onHoldCard = (
+    <>
       {onHoldOrders.length > 0 && (
         <div style={{ margin:"0 13px 10px", background:"rgba(20,40,100,.3)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"13px 14px" }}>
           <div onClick={() => setOnHoldExpanded(e => !e)} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"pointer" }}>
@@ -7636,66 +7597,12 @@ function WarehouseView({ products = [], orders, onExit }) {
           )}
         </div>
       )}
+    </>
+  );
 
-      {/* LAYBY EXCEPTIONS — loud banner above the tabs on every tab. Self-hides
-          when there are no missing-in-transit parcels. Tap → Layby tab,
-          Exceptions sub-queue. (hubC never stores laybys, so skip it there.) */}
-      {selectedHub !== "hubC" && (
-        <LaybyExceptionsBanner laybys={laybys} selectedHub={selectedHub} nowMs={nowTick}
-          onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
-      )}
-
-      {/* TABS — CR Orders exists on the CR hubs (hub2 for PE/Trophy, hub3 for
-          Pine — see CR_HUB_BY_UNIVERSE); Restock Status on hub1/hub3. */}
-      <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
-        {(selectedHub === "hubC"
-          ? [
-              // Trial: Hub C only fulfils customer clothing orders, so it gets
-              // the Order Queue and nothing else.
-              ["queue",    "Order Queue",     null],
-            ]
-          : selectedHub === "hub2"
-          ? [
-              ["queue",    "Order Queue",     null],
-              ["clothing", "CR Orders",       clothingBadge],
-              ["refills",  "Display Refills", refillsBadge],
-              ["layby",    "Layby",           laybyBadge],
-            ]
-          : selectedHub === "hub3"
-          ? [
-              // Pine's hub: mirrors hub2's CR Orders (fulfils from hub3 stock)
-              // alongside the hub1/hub3 Restock Status tab.
-              ["queue",    "Order Queue",     null],
-              ["clothing", "CR Orders",       clothingBadge],
-              ["restock",  "Restock Status",  null],
-              ["refills",  "Display Refills", refillsBadge],
-              ["layby",    "Layby",           laybyBadge],
-            ]
-          : [
-              ["queue",   "Order Queue",     null],
-              ["restock", "Restock Status",  null],
-              ["refills", "Display Refills", refillsBadge],
-              ["layby",   "Layby",           laybyBadge],
-            ]
-        ).map(([key, label, badge]) => (
-          <div key={key} onClick={() => setMainTab(key)}
-               style={{ flex:1, padding:"10px 6px", borderRadius:10, fontSize:11.5, fontWeight:600, textAlign:"center", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5,
-                        background: mainTab===key ? "rgba(60,110,255,.12)" : "rgba(6,9,20,1)",
-                        border: mainTab===key ? "1px solid rgba(60,110,255,.4)" : "1px solid rgba(255,255,255,.07)",
-                        color: mainTab===key ? "#4A7FFF" : "rgba(255,255,255,.3)" }}>
-            {key === "queue"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>}
-            {key === "restock"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>}
-            {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
-            {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
-            {key === "layby"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/></svg>}
-            <span>{label}</span>
-            {badge != null && badge > 0 && (
-              <span style={{ background: mainTab===key ? "#F59E0B" : "rgba(245,158,11,.85)", color:"#000", fontSize:10, fontWeight:800, minWidth:18, height:18, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
-            )}
-          </div>
-        ))}
-      </div>
-
+  // Active-tab content — shared by the mobile column and the desktop main pane.
+  const content = (
+    <>
       {mainTab === "queue" && (
         <>
           {/* PILLS */}
@@ -7723,6 +7630,7 @@ function WarehouseView({ products = [], orders, onExit }) {
               sectionKey={`wh-${filter}`}
               items={filtered}
               dateOf={queueDateOf}
+              columns={isWide ? 2 : 1}
               emptyMessage="No orders in the last 3 days."
               renderItem={(order) => {
             // Layby pull request — render the real PullCard inline (same L-xxxxx
@@ -7947,6 +7855,222 @@ function WarehouseView({ products = [], orders, onExit }) {
           initialSub={laybySub}
         />
       )}
+    </>
+  );
+
+  // ── DESKTOP WORKSPACE (>=1024px) — left rail of queues + titled main pane.
+  //    Mobile keeps the single-column layout below. ──
+  if (isWide) {
+    const activeTab = tabDefs.some(([k]) => k === mainTab) ? mainTab : "queue";
+    const activeLabel = (tabDefs.find(([k]) => k === activeTab) || [null, "Order Queue"])[1];
+    const navItem = ([key, label, badge]) => {
+      const on = activeTab === key;
+      return (
+        <button key={key} onClick={() => setMainTab(key)}
+          style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
+                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition:"background .14s, color .14s" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:.9 }}>{WH_TAB_ICON[key]}</svg>
+          <span style={{ flex:1 }}>{label}</span>
+          {badge != null && badge > 0 && (
+            <span style={{ background:"#F59E0B", color:"#000", fontSize:10.5, fontWeight:800, minWidth:19, height:19, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
+          )}
+        </button>
+      );
+    };
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+        {printToast && (
+          <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
+                        background: printToast.kind === "ok" ? "rgba(6,20,12,.97)" : "rgba(24,8,8,.97)",
+                        border:"1px solid " + (printToast.kind === "ok" ? "rgba(74,222,128,.4)" : "rgba(248,113,113,.4)"),
+                        color:"#fff", borderRadius:12, padding:"12px 16px", fontSize:13, fontWeight:600, boxShadow:"0 20px 50px -20px rgba(0,0,0,.8)" }}>
+            {printToast.text}
+          </div>
+        )}
+        {/* RAIL */}
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:6 }}>&larr; Exit</button>
+          {/* Hub chip + switch */}
+          <div style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(74,127,255,.1)", border:"1px solid rgba(74,127,255,.32)", borderRadius:11, padding:"9px 12px", marginBottom:8 }}>
+            <span style={{ width:7, height:7, borderRadius:"50%", background:"#4A7FFF", boxShadow:"0 0 8px #4A7FFF", flexShrink:0 }}/>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:9, letterSpacing:".14em", textTransform:"uppercase", color:"rgba(233,238,255,.4)", fontWeight:700 }}>Hub</div>
+              <div style={{ fontSize:13.5, fontWeight:800, color:"#cfe0ff", lineHeight:1.1 }}>{HUB_LABELS[selectedHub] || selectedHub}</div>
+            </div>
+            <button onClick={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }} title="Switch hub"
+              style={{ background:"transparent", border:"none", color:"#9DBCFF", cursor:"pointer", padding:4, display:"flex" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+            </button>
+          </div>
+          <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"6px 9px", fontWeight:700 }}>Queues</div>
+          {tabDefs.map(navItem)}
+          <div style={{ flex:1 }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color:"#9DBCFF", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{incomingCount}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Incoming</div>
+            </div>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: onHoldOrders.length ? "#F59E0B" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{onHoldOrders.length}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>On hold</div>
+            </div>
+          </div>
+        </aside>
+        {/* MAIN */}
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 30px 16px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{activeLabel}</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>{HUB_LABELS[selectedHub] || selectedHub} &middot; real-time order status</div>
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
+            <div style={{ maxWidth:1200, margin:"0 auto" }}>
+              {selectedHub !== "hubC" && (
+                <LaybyExceptionsBanner laybys={laybys} selectedHub={selectedHub} nowMs={nowTick}
+                  onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
+              )}
+              {activeTab === "queue" && onHoldCard}
+              {content}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      {/* Dispatch-label print toast — auto-print result on "Mark as Sent" (non-blocking). */}
+      {printToast && (
+        <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
+                      padding:"11px 14px", borderRadius:10, fontSize:12, fontWeight:600, textAlign:"center",
+                      background: printToast.kind === "ok" ? "rgba(0,150,70,.92)" : "rgba(150,30,30,.94)",
+                      color:"#fff", border:"1px solid rgba(255,255,255,.18)", boxShadow:"0 6px 24px rgba(0,0,0,.4)" }}>
+          {printToast.text}
+        </div>
+      )}
+      {/* TOP BAR */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
+        <div onClick={onExit}
+             style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>
+          ← Switch View
+        </div>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
+          <div style={{ fontSize:15, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>WAREHOUSE</div>
+        </div>
+        <div style={{ background:"rgba(20,40,100,.6)", border:"1px solid rgba(60,110,255,.35)", borderRadius:12, padding:"7px 12px", display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
+          <div style={{ width:7, height:7, background:"#4A7FFF", borderRadius:"50%", boxShadow:"0 0 6px rgba(60,110,255,.8)" }}/>
+          <div>
+            <div style={{ fontSize:14, fontWeight:700, color:"#fff", lineHeight:1 }}>{incomingCount}</div>
+            <div style={{ fontSize:9, color:"rgba(255,255,255,.5)" }}>incoming</div>
+          </div>
+          <span style={{ color:"#4A7FFF", fontSize:13 }}>›</span>
+        </div>
+      </div>
+
+      {/* CIRCUIT LINE */}
+      <div style={{ height:20, padding:"0 14px", margin:"4px 0 2px", overflow:"hidden" }}>
+        <svg width="100%" height="100%" viewBox="0 0 400 20" preserveAspectRatio="none">
+          <path d="M0,10 L60,10 L80,3 L140,3 L160,10 L220,10 L240,17 L300,17 L320,10 L400,10" stroke="rgba(60,110,255,.4)" strokeWidth="1" fill="none" strokeLinecap="round"/>
+          <circle cx="80" cy="3" r="2.5" fill="rgba(74,127,255,.7)"/>
+          <circle cx="160" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
+          <circle cx="240" cy="17" r="2.5" fill="rgba(74,127,255,.7)"/>
+          <circle cx="320" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
+        </svg>
+      </div>
+
+      {/* WAREHOUSE QUEUE HERO IMAGE */}
+      <div style={{ position:"relative", width:"100%", height:130, overflow:"hidden", margin:"4px 0 0" }}>
+        <img src="/hero/warehouse.jpg" alt="Warehouse Queue" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"center" }}/>
+        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:50, background:"linear-gradient(transparent,#000)" }}/>
+        <div style={{ position:"absolute", top:0, left:0, right:0, height:20, background:"linear-gradient(#000,transparent)" }}/>
+      </div>
+
+      {/* HUB ROW */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px 10px" }}>
+        <div style={{ background:"rgba(20,40,120,.5)", border:"1px solid rgba(60,110,255,.5)", borderRadius:10, padding:"7px 16px", color:"#4A7FFF", fontSize:13, fontWeight:700 }}>
+          {HUB_LABELS[selectedHub] || selectedHub}
+        </div>
+        <div onClick={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }}
+             style={{ background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"7px 16px", color:"rgba(255,255,255,.7)", fontSize:12, fontWeight:500, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2">
+            <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/>
+          </svg>
+          Switch Hub
+        </div>
+      </div>
+
+      <div style={{ fontSize:12, color:"rgba(255,255,255,.3)", padding:"2px 14px 10px" }}>Update order status in real time.</div>
+
+      {/* ON HOLD CARD */}
+      {onHoldCard}
+
+      {/* LAYBY EXCEPTIONS — loud banner above the tabs on every tab. Self-hides
+          when there are no missing-in-transit parcels. Tap → Layby tab,
+          Exceptions sub-queue. (hubC never stores laybys, so skip it there.) */}
+      {selectedHub !== "hubC" && (
+        <LaybyExceptionsBanner laybys={laybys} selectedHub={selectedHub} nowMs={nowTick}
+          onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
+      )}
+
+      {/* TABS — CR Orders exists on the CR hubs (hub2 for PE/Trophy, hub3 for
+          Pine — see CR_HUB_BY_UNIVERSE); Restock Status on hub1/hub3. */}
+      <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
+        {(selectedHub === "hubC"
+          ? [
+              // Trial: Hub C only fulfils customer clothing orders, so it gets
+              // the Order Queue and nothing else.
+              ["queue",    "Order Queue",     null],
+            ]
+          : selectedHub === "hub2"
+          ? [
+              ["queue",    "Order Queue",     null],
+              ["clothing", "CR Orders",       clothingBadge],
+              ["refills",  "Display Refills", refillsBadge],
+              ["layby",    "Layby",           laybyBadge],
+            ]
+          : selectedHub === "hub3"
+          ? [
+              // Pine's hub: mirrors hub2's CR Orders (fulfils from hub3 stock)
+              // alongside the hub1/hub3 Restock Status tab.
+              ["queue",    "Order Queue",     null],
+              ["clothing", "CR Orders",       clothingBadge],
+              ["restock",  "Restock Status",  null],
+              ["refills",  "Display Refills", refillsBadge],
+              ["layby",    "Layby",           laybyBadge],
+            ]
+          : [
+              ["queue",   "Order Queue",     null],
+              ["restock", "Restock Status",  null],
+              ["refills", "Display Refills", refillsBadge],
+              ["layby",   "Layby",           laybyBadge],
+            ]
+        ).map(([key, label, badge]) => (
+          <div key={key} onClick={() => setMainTab(key)}
+               style={{ flex:1, padding:"10px 6px", borderRadius:10, fontSize:11.5, fontWeight:600, textAlign:"center", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5,
+                        background: mainTab===key ? "rgba(60,110,255,.12)" : "rgba(6,9,20,1)",
+                        border: mainTab===key ? "1px solid rgba(60,110,255,.4)" : "1px solid rgba(255,255,255,.07)",
+                        color: mainTab===key ? "#4A7FFF" : "rgba(255,255,255,.3)" }}>
+            {key === "queue"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>}
+            {key === "restock"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>}
+            {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
+            {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
+            {key === "layby"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/></svg>}
+            <span>{label}</span>
+            {badge != null && badge > 0 && (
+              <span style={{ background: mainTab===key ? "#F59E0B" : "rgba(245,158,11,.85)", color:"#000", fontSize:10, fontWeight:800, minWidth:18, height:18, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {content}
     </div>
   );
 }
@@ -13804,7 +13928,7 @@ function AppInner() {
   // Studio) carry their own top-bar / Home nav, so the global pill is suppressed
   // there to avoid a stray floating sign-out.
   const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
-    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === null));
+    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === ROLES.WAREHOUSE || role === null));
 
   return (
     <>
