@@ -6349,7 +6349,12 @@ function WarehouseView({ products = [], orders, onExit }) {
       return null; // rejected / returnedToStock → resolved, not shown in the queue
     })
     .filter(Boolean);
-  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub)), ...hubLaybyOrders];
+  // CR / clothing-refill requests (customerName "Shop Refill") live in the SAME
+  // /orders node but belong only in the CR Orders tab — exclude them from the main
+  // queue feeder so both the visible list AND every pill count/badge drop them in
+  // one place. Regular orders always carry a validated non-empty customerName, and
+  // layby pull rows have no customerName, so this can't hide a real order.
+  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill"), ...hubLaybyOrders];
 
   // extraPatch is merged into the Firebase update — used to stamp sentSize when
   // the warehouse picks a substitute size. Insights/restock logs continue to
