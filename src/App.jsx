@@ -10693,24 +10693,24 @@ function InsightStatCard({ icon, label, value, color=BLUE, sub, photoEl }) {
 }
 
 function InsightBarChart({ items, color=BLUE, emptyMsg="No data yet", photoMap }) {
-  if (!items.length) return <div style={{ color:"#444", textAlign:"center", padding:"2rem", fontSize:"0.9rem" }}>{emptyMsg}</div>;
+  if (!items.length) return <div style={{ color:"rgba(233,238,255,.3)", textAlign:"center", padding:"2rem", fontSize:"0.9rem" }}>{emptyMsg}</div>;
   const max = Math.max(...items.map(i=>i.value), 1);
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"0.7rem" }}>
-      {items.map(({ label, value }) => {
-        // Support both exact product-name labels and "Product — Size X" labels
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      {items.map(({ label, value }, idx) => {
         const lookupName = label.includes(" — Size ") ? label.split(" — Size ")[0] : label;
         return (
           <div key={label}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.25rem", gap:"0.5rem" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:"0.45rem", flex:1, minWidth:0 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6, gap:8 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:9, flex:1, minWidth:0 }}>
+                {idx < 3 && <span style={{ fontSize:10, fontWeight:800, color:"rgba(233,238,255,.3)", fontVariantNumeric:"tabular-nums", width:12 }}>{idx+1}</span>}
                 {photoMap && <ProductThumb name={lookupName} photoMap={photoMap} size={28} />}
-                <span style={{ color:"#ccc", fontSize:"0.82rem", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}</span>
+                <span style={{ color:"#e7ecff", fontSize:12.5, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}</span>
               </div>
-              <span style={{ fontWeight:"700", color, fontSize:"0.82rem", flexShrink:0 }}>{value}</span>
+              <span style={{ fontWeight:800, color:"#fff", fontSize:12.5, flexShrink:0, fontVariantNumeric:"tabular-nums" }}>{value}</span>
             </div>
-            <div style={{ background:"rgba(60,110,255,.08)", borderRadius:"4px", height:"9px" }}>
-              <div style={{ background:color, borderRadius:"4px", height:"9px", width:`${Math.max(2,(value/max)*100)}%`, transition:"width 0.4s" }} />
+            <div style={{ background:"rgba(255,255,255,.05)", borderRadius:5, height:8 }}>
+              <div style={{ background:`linear-gradient(90deg, ${color}, ${color}cc)`, borderRadius:5, height:8, width:`${Math.max(3,(value/max)*100)}%`, transition:"width .5s cubic-bezier(.2,.7,.2,1)" }} />
             </div>
           </div>
         );
@@ -11064,17 +11064,17 @@ function InsightProductSearchTab({ log, productPhotoMap, filterStart, filterEnd,
       </div>
       {query.trim() && (
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem", marginBottom:"1rem" }}>
-          <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.25rem" }}>
+          <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:RADIUS, padding:"1.25rem" }}>
             <div style={{ fontWeight:"700", marginBottom:"0.75rem", color:"#fff", fontSize:"0.9rem" }}>Orders by Product</div>
             <InsightBarChart items={productCounts} color={BLUE} emptyMsg="No orders found" photoMap={productPhotoMap} />
           </div>
-          <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.25rem" }}>
+          <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:RADIUS, padding:"1.25rem" }}>
             <div style={{ fontWeight:"700", marginBottom:"0.75rem", color:"#fff", fontSize:"0.9rem" }}>Size Breakdown</div>
             <InsightBarChart items={sizeCounts} color="#4A7FFF" emptyMsg="No orders found" />
           </div>
         </div>
       )}
-      <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.25rem" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:RADIUS, padding:"1.25rem" }}>
         <div style={{ fontWeight:"700", marginBottom:"0.75rem", color:"#fff", fontSize:"0.9rem" }}>
           Order History {query?`· "${query}"`:""}
           <span style={{ color:"#555", marginLeft:"0.5rem", fontWeight:"400", fontSize:"0.8rem" }}>{filtered.length} entries</span>
@@ -11146,7 +11146,7 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
 
   if (oosLog.length === 0) {
     return (
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
         <ProductIcon size={32} opacity={0.4}/>
         <div style={{ marginTop:12 }}>No out-of-stock events in this period</div>
       </div>
@@ -11156,7 +11156,7 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
   return (
     <div>
       {/* SUMMARY BOX */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.18)" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
         <div style={{ fontWeight:800, fontSize:42, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1.5px" }}>{totalOOS}</div>
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Total Out of Stock</div>
@@ -11170,7 +11170,7 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
           const isOpen = openProduct === p.name;
           const sizes = Object.entries(p.sizes).sort((a, b) => b[1] - a[1]);
           return (
-            <div key={p.name} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, overflow:"hidden", transition:"all 0.2s" }}>
+            <div key={p.name} style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, overflow:"hidden", transition:"all 0.2s" }}>
               <div onClick={() => setOpenProduct(isOpen ? null : p.name)}
                    style={{ display:"flex", alignItems:"center", padding:"12px 14px", cursor:"pointer", gap:12 }}>
                 <ProductThumb name={p.name} photoMap={productPhotoMap} size={36}/>
@@ -11178,13 +11178,13 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
                   <div style={{ fontWeight:700, fontSize:14, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
                   <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:2 }}>{Object.keys(p.sizes).length} size{Object.keys(p.sizes).length !== 1 ? "s" : ""} affected</div>
                 </div>
-                <div style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"4px 12px", fontSize:13, fontWeight:700 }}>{p.total}</div>
+                <div style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, padding:"4px 12px", fontSize:13, fontWeight:700 }}>{p.total}</div>
                 <span style={{ color:"#4A7FFF", fontSize:14, transition:"transform 0.2s", display:"inline-block", transform: isOpen ? "rotate(90deg)" : "rotate(0deg)" }}>›</span>
               </div>
               {isOpen && (
                 <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 14px 14px", display:"flex", flexWrap:"wrap", gap:6 }}>
                   {sizes.map(([size, count]) => (
-                    <div key={size} style={{ background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px", display:"flex", alignItems:"center", gap:6 }}>
+                    <div key={size} style={{ background:"rgba(60,110,255,.08)", border:"1px solid rgba(255,255,255,.08)", borderRadius:8, padding:"6px 10px", display:"flex", alignItems:"center", gap:6 }}>
                       <span style={{ fontSize:12, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
                       <span style={{ background:"rgba(60,110,255,.2)", color:"#4A7FFF", borderRadius:999, padding:"2px 7px", fontSize:10, fontWeight:700 }}>×{count}</span>
                     </div>
@@ -11245,7 +11245,7 @@ function InsightSizePopularityTab({ log, filterStart, filterEnd, filterLabel, ca
   const Panel = ({ heading, sizes }) => {
     const max = sizes.length ? Math.max(...sizes.map(s => s.value)) : 1;
     return (
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:18 }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:18 }}>
         <div style={{ marginBottom:14 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{heading}</div>
           <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:2 }}>{catFilter === "all" ? "All categories" : catFilter} · {sizes.reduce((n, s) => n + s.value, 0)} order{sizes.reduce((n, s) => n + s.value, 0) !== 1 ? "s" : ""} placed</div>
@@ -11298,7 +11298,7 @@ function InsightSizePopularityTab({ log, filterStart, filterEnd, filterLabel, ca
 
       {/* No data in either group → single empty state. */}
       {!showSneaker && !showClothing && (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
           No orders in this period
         </div>
       )}
@@ -11359,7 +11359,7 @@ function InsightBusiestTimesTab({ log, filterStart, filterEnd, filterLabel, cate
   return (
     <div>
       {/* BUSIEST HOURS — vertical bar chart */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:18, marginBottom:12 }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:18, marginBottom:12 }}>
         <div style={{ marginBottom:14 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Busiest Hours</div>
           <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:2 }}>
@@ -11401,7 +11401,7 @@ function InsightBusiestTimesTab({ log, filterStart, filterEnd, filterLabel, cate
       </div>
 
       {/* BUSIEST DAYS */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:18 }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:18 }}>
         <div style={{ marginBottom:14 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Busiest Days</div>
           <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:2 }}>
@@ -11446,14 +11446,14 @@ function InsightReturnsTab({ returnsLog, productPhotoMap, filterStart, filterEnd
   return (
     <div>
       {filtered.length === 0 ? (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
           <ProductIcon size={32} opacity={0.4}/>
           <div style={{ marginTop:12 }}>No returns in this period</div>
         </div>
       ) : (
         <>
           {/* Summary card */}
-          <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.18)" }}>
+          <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
             <div style={{ fontWeight:800, fontSize:42, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1.5px" }}>{filtered.length}</div>
             <div style={{ flex:1 }}>
               <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Total Returns</div>
@@ -11462,13 +11462,13 @@ function InsightReturnsTab({ returnsLog, productPhotoMap, filterStart, filterEnd
           </div>
 
           {/* Most returned products bar chart */}
-          <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:16, marginBottom:12 }}>
+          <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:16, marginBottom:12 }}>
             <div style={{ fontWeight:700, marginBottom:12, color:"#fff", fontSize:13 }}>Most Returned Products</div>
             <InsightBarChart items={byProduct} color={BLUE} photoMap={productPhotoMap} />
           </div>
 
           {/* Return Log */}
-          <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.2)", borderRadius:14, padding:16 }}>
+          <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:16 }}>
             <div style={{ fontWeight:700, marginBottom:10, color:"#fff", fontSize:13 }}>Return Log <span style={{ color:"rgba(255,255,255,.4)", fontWeight:400, fontSize:11 }}>· {filtered.length} entries</span></div>
             <div style={{ maxHeight:"380px", overflowY:"auto" }}>
               {filtered.slice(0, 50).map((r, i) => (
@@ -11548,7 +11548,7 @@ function InsightClothingRefillsTab({ orders, log, productPhotoMap, filterStart, 
   return (
     <div>
       {/* SUMMARY CARD — mirrors OOS Tracker visual */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.18)" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
         <div style={{ fontWeight:800, fontSize:42, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1.5px" }}>{totalUnits}</div>
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Clothing Units Requested</div>
@@ -11557,7 +11557,7 @@ function InsightClothingRefillsTab({ orders, log, productPhotoMap, filterStart, 
       </div>
 
       {rows.length === 0 ? (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
           <ProductIcon size={32} opacity={0.4}/>
           <div style={{ marginTop:12 }}>No clothing refill requests in this period</div>
         </div>
@@ -11566,7 +11566,7 @@ function InsightClothingRefillsTab({ orders, log, productPhotoMap, filterStart, 
           {rows.map(r => {
             const sizeEntries = Object.entries(r.sizes).sort((a, b) => b[1] - a[1]);
             return (
-              <div key={r.productName} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.25)", borderLeft:"3px solid rgba(60,110,255,.55)", borderRadius:12, padding:"12px 14px" }}>
+              <div key={r.productName} style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderLeft:"3px solid rgba(60,110,255,.55)", borderRadius:12, padding:"12px 14px" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:12 }}>
                   <ProductThumb name={r.productName} photoMap={productPhotoMap} size={40}/>
                   <div style={{ flex:1, minWidth:0 }}>
@@ -11680,7 +11680,7 @@ function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, fi
   return (
     <div>
       {/* SUMMARY BOX — mirrors InsightOOSTrackerTab layout */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(248,113,113,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(248,113,113,.15)" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(248,113,113,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
         <div style={{ fontWeight:800, fontSize:42, color:"#F87171", lineHeight:1, letterSpacing:"-1.5px" }}>{totalEvents}</div>
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Stock Depleted Events</div>
@@ -11713,19 +11713,19 @@ function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, fi
 
       {/* EMPTY STATE / LIST */}
       {rows.length === 0 ? (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
           <ProductIcon size={32} opacity={0.4}/>
           <div style={{ marginTop:12 }}>No display stock depletions in this period{searchTerm || hubFilter !== "all" ? " for the current filters" : ""}.</div>
         </div>
       ) : (
         <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
           {rows.map((r, i) => (
-            <div key={`${r.productName}__${r.size}`} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(248,113,113,.3)", borderLeft:"3px solid rgba(248,113,113,.6)", borderRadius:12, padding:"12px 14px", display:"flex", alignItems:"center", gap:12 }}>
+            <div key={`${r.productName}__${r.size}`} style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(248,113,113,.3)", borderLeft:"3px solid rgba(248,113,113,.6)", borderRadius:12, padding:"12px 14px", display:"flex", alignItems:"center", gap:12 }}>
               <ProductThumb name={r.productName} photoMap={productPhotoMap} size={36}/>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontWeight:700, fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.productName}</div>
                 <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:4, flexWrap:"wrap" }}>
-                  <span style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#fff", borderRadius:8, padding:"2px 8px", fontSize:11, fontWeight:600 }}>Size <SizeTag size={r.size} /></span>
+                  <span style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(255,255,255,.08)", color:"#fff", borderRadius:8, padding:"2px 8px", fontSize:11, fontWeight:600 }}>Size <SizeTag size={r.size} /></span>
                   {r.hubs.map(h => (
                     <span key={h} style={{ background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", color:"rgba(255,255,255,.6)", borderRadius:8, padding:"2px 8px", fontSize:10, fontWeight:600 }}>{hubLabel(h)}</span>
                   ))}
@@ -11805,7 +11805,7 @@ function InsightSalesSummaryTab({ log, returnsLog, productPhotoMap, filterStart,
   return (
     <div>
       {/* ── Headline ── */}
-      <div style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:14, padding:"16px 18px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.18)" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:14, padding:"16px 18px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
         <div style={{ fontWeight:800, fontSize:42, color:BLUE, lineHeight:1, flexShrink:0, letterSpacing:"-1.5px" }}>{totalNet}</div>
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Net Sales · {filterLabel}</div>
@@ -11815,11 +11815,11 @@ function InsightSalesSummaryTab({ log, returnsLog, productPhotoMap, filterStart,
 
       {/* ── Ranked product list ── */}
       {ranked.length === 0 ? (
-        <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"3rem", textAlign:"center", color:"#444", fontSize:"0.9rem" }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:RADIUS, padding:"3rem", textAlign:"center", color:"#444", fontSize:"0.9rem" }}>
           No sales recorded in this period
         </div>
       ) : (
-        <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.5rem", display:"flex", flexDirection:"column", gap:"0" }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:RADIUS, padding:"1.5rem", display:"flex", flexDirection:"column", gap:"0" }}>
           {ranked.map(({ name, net }, idx) => {
             const isOpen  = expanded.has(name);
             const sizes   = sizesByProduct[name] || {};
@@ -12002,7 +12002,7 @@ function InsightReorderTab({ productPhotoMap }) {
   }, [latest && latest.generatedAt]);
 
   // ── Style fragments reused inside the render below.
-  const cardBase = { background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:14, padding:"14px 16px", marginBottom:10 };
+  const cardBase = { background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"14px 16px", marginBottom:10 };
   const sectionLabel = { fontSize:10, fontWeight:700, color:"rgba(255,255,255,.35)", textTransform:"uppercase", letterSpacing:"1.5px", marginBottom:8 };
   const runBtnStyle = (disabled) => ({
     background: disabled ? "rgba(60,110,255,.15)" : "rgba(60,110,255,.22)",
@@ -12176,7 +12176,7 @@ function InsightReorderTab({ productPhotoMap }) {
                       ? Object.entries(rec.suggestedQuantity).filter(([, q]) => q > 0)
                       : [];
                     return (
-                      <div key={rec.productId || rec.productName} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.22)", borderLeft:`3px solid ${style.border}`, borderRadius:12, padding:"12px 14px" }}>
+                      <div key={rec.productId || rec.productName} style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(60,110,255,.22)", borderLeft:`3px solid ${style.border}`, borderRadius:12, padding:"12px 14px" }}>
                         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
                           <ProductThumb name={rec.productName} photoMap={productPhotoMap} size={40}/>
                           <div style={{ flex:1, minWidth:0 }}>
