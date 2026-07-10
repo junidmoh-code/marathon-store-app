@@ -8979,69 +8979,70 @@ function CustomerView({ orders, onExit }) {
         {/* MAIN — detail or empty state */}
         <div style={{ minWidth: 0, overflow: "auto" }}>
           {found && cfg ? (
-            <div style={{ padding: "34px 44px 60px", maxWidth: 1120, margin: "0 auto" }}>
-              {/* header */}
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 20, marginBottom: 26 }}>
-                <div>
-                  <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase" }}>Order</div>
-                  <div style={{ fontSize: 44, fontWeight: 800, lineHeight: 1, letterSpacing: ".01em", fontVariantNumeric: "tabular-nums" }}>#{found.id}</div>
-                  <div style={{ fontSize: 16, color: "rgba(233,238,255,.7)", marginTop: 8 }}>{found.productName}</div>
+            <div style={{ padding: "36px 40px 60px", maxWidth: 880, margin: "0 auto" }}>
+              {/* HERO — compact, cohesive */}
+              <div style={{ display: "flex", gap: 20, alignItems: "center", background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 22, padding: 20, boxShadow: "0 26px 60px -36px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.08)", marginBottom: 16 }}>
+                <div style={{ width: 116, height: 116, borderRadius: 18, overflow: "hidden", border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 50, flexShrink: 0 }}>
+                  {found.productPhotoUrl ? <img src={found.productPhotoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} /> : (found.productPhoto || "👟")}
                 </div>
-                <div style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, borderRadius: 999, padding: "9px 18px", fontWeight: 800, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: cfg.color, boxShadow: `0 0 8px ${cfg.color}` }} />
-                  {cfg.label}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: "#9DBCFF", letterSpacing: ".02em", fontVariantNumeric: "tabular-nums" }}>#{found.id}</span>
+                    <span style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, borderRadius: 999, padding: "5px 13px", fontWeight: 800, fontSize: 12.5, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: cfg.color, boxShadow: `0 0 7px ${cfg.color}` }} />
+                      {cfg.label}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: "#fff", marginTop: 7, lineHeight: 1.2 }}>{found.productName}</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 12 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 700, color: "#cfe0ff", background: "rgba(74,127,255,.14)", border: "1px solid rgba(74,127,255,.28)", borderRadius: 8, padding: "3px 10px" }}>Size <SizeTag size={found.size} /></span>
+                    {found.qty > 1 && <span style={{ fontSize: 11.5, fontWeight: 700, color: "rgba(233,238,255,.7)", background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 8, padding: "3px 10px" }}>×{found.qty}</span>}
+                    {shopLabel && <span style={{ fontSize: 11.5, fontWeight: 700, color: "rgba(233,238,255,.7)", background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 8, padding: "3px 10px" }}>{shopLabel}</span>}
+                    {tags.map(t => <span key={t} style={{ fontSize: 11.5, fontWeight: 700, color: "#FBBF24", background: "rgba(251,191,36,.12)", border: "1px solid rgba(251,191,36,.3)", borderRadius: 8, padding: "3px 10px" }}>{t}</span>)}
+                  </div>
                 </div>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 400px) minmax(0, 1fr)", gap: 22, alignItems: "start" }}>
-                {/* LEFT — photo + details */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  <div style={{ width: "100%", aspectRatio: "1 / 1", borderRadius: 20, overflow: "hidden", border: "1px solid rgba(255,255,255,.1)", background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 96, boxShadow: "0 24px 60px -30px rgba(0,0,0,.9)" }}>
-                    {found.productPhotoUrl ? <img src={found.productPhotoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} /> : (found.productPhoto || "👟")}
-                  </div>
-                  <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16, padding: "6px 16px 12px" }}>
-                    {detailRow("Size", <SizeTag size={found.size} />)}
-                    {subbed && detailRow("Sent instead", <span style={{ color: "#FBBF24" }}><SizeTag size={subbed} /> (substituted)</span>)}
-                    {found.qty > 1 && detailRow("Quantity", `×${found.qty}`)}
-                    {detailRow("Ordered from", shopLabel)}
-                    {detailRow("Customer", found.customerName)}
-                    {detailRow("Phone", found.customerPhone)}
-                    {tags.length > 0 && detailRow("Type", tags.join(" · "))}
-                    {detailRow("Placed", absTime(found.createdAt))}
-                  </div>
+              {/* Status message strip */}
+              <div style={{ background: `linear-gradient(90deg, ${cfg.color}22, transparent)`, borderLeft: `3px solid ${cfg.color}`, borderRadius: 12, padding: "13px 16px", marginBottom: 16, fontSize: 13.5, color: "rgba(233,238,255,.85)", lineHeight: 1.5 }}>
+                <b style={{ color: cfg.color }}>{cfg.label}{statusAt ? ` · ${relTime(statusAt)}` : ""}</b> — {STATUS_MSG[found.status] || ""}
+              </div>
+
+              {/* Two columns: timeline + details */}
+              <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, alignItems: "start" }}>
+                <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: "20px 22px 8px" }}>
+                  <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 18 }}>Progress</div>
+                  {steps.map((st, i) => {
+                    const c = STEP_C[st.state];
+                    const last = i === steps.length - 1;
+                    return (
+                      <div key={st.label} style={{ display: "flex", gap: 15 }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+                          <div style={{ width: 20, height: 20, borderRadius: "50%", background: c.dot, border: `2px solid ${c.ring === "transparent" ? "rgba(255,255,255,.14)" : c.ring}`, display: "flex", alignItems: "center", justifyContent: "center", animation: st.state === "current" ? "otPulse 1.8s infinite" : "none" }}>
+                            {st.state === "done" && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#04120a" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>}
+                            {st.state === "error" && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#1a0606" strokeWidth="4" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>}
+                          </div>
+                          {!last && <div style={{ width: 2, flex: 1, minHeight: 30, background: st.state === "done" ? "rgba(74,222,128,.35)" : "rgba(255,255,255,.08)", margin: "4px 0" }} />}
+                        </div>
+                        <div style={{ flex: 1, paddingBottom: last ? 12 : 18, marginTop: -1 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+                            <div style={{ fontSize: 15, fontWeight: 700, color: c.text }}>{st.label}</div>
+                            {st.time && <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.45)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{absTime(st.time)}</div>}
+                          </div>
+                          <div style={{ fontSize: 12.5, color: st.state === "pending" ? "rgba(233,238,255,.3)" : "rgba(233,238,255,.55)", marginTop: 3 }}>{st.sub}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                {/* RIGHT — status callout + timeline */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  <div style={{ background: `linear-gradient(180deg, ${cfg.color}1f, ${cfg.color}08)`, border: `1px solid ${cfg.border}`, borderRadius: 18, padding: "18px 20px" }}>
-                    <div style={{ fontSize: 15, fontWeight: 800, color: cfg.color, marginBottom: 4 }}>{cfg.label}{statusAt ? ` · ${relTime(statusAt)}` : ""}</div>
-                    <div style={{ fontSize: 13.5, color: "rgba(233,238,255,.8)", lineHeight: 1.5 }}>{STATUS_MSG[found.status] || ""}</div>
-                  </div>
-                  <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: "20px 20px 10px" }}>
-                    <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 16 }}>Progress</div>
-                    {steps.map((st, i) => {
-                      const c = STEP_C[st.state];
-                      const last = i === steps.length - 1;
-                      return (
-                        <div key={st.label} style={{ display: "flex", gap: 16 }}>
-                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
-                            <div style={{ width: 20, height: 20, borderRadius: "50%", background: c.dot, border: `2px solid ${c.ring === "transparent" ? "rgba(255,255,255,.14)" : c.ring}`, display: "flex", alignItems: "center", justifyContent: "center", animation: st.state === "current" ? "otPulse 1.8s infinite" : "none" }}>
-                              {st.state === "done" && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#04120a" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>}
-                              {st.state === "error" && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#1a0606" strokeWidth="4" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>}
-                            </div>
-                            {!last && <div style={{ width: 2, flex: 1, minHeight: 34, background: st.state === "done" ? "rgba(74,222,128,.35)" : "rgba(255,255,255,.08)", margin: "4px 0" }} />}
-                          </div>
-                          <div style={{ flex: 1, paddingBottom: last ? 12 : 20, marginTop: -1 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
-                              <div style={{ fontSize: 15.5, fontWeight: 700, color: c.text }}>{st.label}</div>
-                              {st.time && <div style={{ fontSize: 12, color: "rgba(233,238,255,.45)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{absTime(st.time)}</div>}
-                            </div>
-                            <div style={{ fontSize: 12.5, color: st.state === "pending" ? "rgba(233,238,255,.3)" : "rgba(233,238,255,.55)", marginTop: 3 }}>{st.sub}</div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: "20px 20px 8px" }}>
+                  <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 6 }}>Details</div>
+                  {detailRow("Customer", found.customerName)}
+                  {detailRow("Phone", found.customerPhone)}
+                  {detailRow("Ordered from", shopLabel)}
+                  {subbed && detailRow("Sent instead", <span style={{ color: "#FBBF24" }}><SizeTag size={subbed} /></span>)}
+                  {detailRow("Placed", absTime(found.createdAt))}
                 </div>
               </div>
             </div>
