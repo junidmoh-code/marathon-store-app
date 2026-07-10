@@ -1515,15 +1515,14 @@ async function getNextOrderNumber() {
 const CUSTOMERS_SESSION_KEY = "customersAuth";
 
 function CustomersView({ onExit }) {
-  // ── Auth gate (sessionStorage so refresh doesn't re-ask) ──
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem(CUSTOMERS_SESSION_KEY) === "true");
-  const [cpw, setCpw]       = useState("");
-  const [cpwError, setCpwError] = useState(false);
-
-  const [tab, setTab] = usePersistedTab("customers", "list");
+  const [tab, setTab] = usePersistedTab("customers", "insights");
   const insightsLog  = useInsightsLog();
   const customersDb  = useCustomersDb();
   const broadcasts   = useBroadcastHistory();
+  const returnsLog   = useReturnsLog();
+  const isWide       = !useIsNarrow(1024);
+  const [period, setPeriod] = useState("all");    // insights window: all | month
+  const [drill,  setDrill]  = useState(null);     // customer being dug into (or null)
 
   // ── Customer list: deduplicate by phone from insights_log ──
   const customerList = useMemo(() => {
@@ -1596,34 +1595,67 @@ function CustomersView({ onExit }) {
   }, [customerList, search]);
 
   const fmt = iso => iso ? new Date(iso).toLocaleDateString([], { day:"numeric", month:"short", year:"numeric" }) : "—";
+  const handleExit = () => onExit();
 
-  const checkCpw = () => {
-    if (cpw === "1551") { sessionStorage.setItem(CUSTOMERS_SESSION_KEY, "true"); setAuthed(true); }
-    else { setCpwError(true); setTimeout(() => setCpwError(false), 1500); }
-  };
-  const handleExit = () => { sessionStorage.removeItem(CUSTOMERS_SESSION_KEY); onExit(); };
+  // ── Customer insights ─────────────────────────────────────────────────────
+  // All derived from insights_log "placed" events (the durable per-order feed).
+  const stats = useMemo(() => {
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    const startMs = period === "month" ? monthStart.getTime() : 0;
+    const placed = insightsLog.filter(e => e.action === "placed" && (e.customerPhone || e.customerName));
+    const byKey = {};
+    placed.forEach(e => {
+      const key = phoneToKey(e.customerPhone) !== "unknown" ? phoneToKey(e.customerPhone) : `name:${(e.customerName || "").toLowerCase()}`;
+      if (!byKey[key]) byKey[key] = { key, phone: e.customerPhone || "", name: e.customerName || "Unknown", first: e.timestamp, last: e.timestamp, all: 0, inPeriod: 0 };
+      const c = byKey[key];
+      if (e.timestamp < c.first) c.first = e.timestamp;
+      if (e.timestamp > c.last)  c.last  = e.timestamp;
+      c.all++;
+      if (tsMs(e.timestamp) >= startMs) c.inPeriod++;
+      if (!c.name || c.name === "Unknown") c.name = e.customerName || c.name;
+    });
+    const arr = Object.values(byKey);
+    const newInPeriod = arr.filter(c => tsMs(c.first) >= startMs);
+    const repeat = arr.filter(c => c.all > 1);
+    // Busiest weekday for NEW customers (by first-order day-of-week).
+    const dow = [0, 0, 0, 0, 0, 0, 0];
+    newInPeriod.forEach(c => { dow[new Date(c.first).getDay()]++; });
+    const dowMax = Math.max(...dow, 1);
+    const peakDow = dow.indexOf(Math.max(...dow));
+    // Avg new/day over the elapsed window.
+    const firstEver = arr.length ? Math.min(...arr.map(c => tsMs(c.first))) : Date.now();
+    const spanDays = period === "month" ? Math.max(1, new Date().getDate()) : Math.max(1, Math.ceil((Date.now() - firstEver) / 86400000));
+    const avgNewPerDay = newInPeriod.length / spanDays;
+    // Leaderboards
+    const orderKey = period === "month" ? "inPeriod" : "all";
+    const mostOrders = [...arr].filter(c => c[orderKey] > 0).sort((a, b) => b[orderKey] - a[orderKey]).slice(0, 12);
+    const newest = [...newInPeriod].sort((a, b) => tsMs(b.first) - tsMs(a.first)).slice(0, 12);
+    // Returns per customer (from returns_log, matched by name).
+    const retMap = {};
+    returnsLog.filter(r => period === "all" || tsMs(r.timestamp) >= startMs).forEach(r => {
+      const n = (r.customerName || "Unknown").trim(); const k = n.toLowerCase();
+      if (!retMap[k]) retMap[k] = { name: n, count: 0 };
+      retMap[k].count++;
+    });
+    const mostReturns = Object.values(retMap).sort((a, b) => b.count - a.count).slice(0, 12);
+    return { arr, total: arr.length, newInPeriod, repeat, dow, dowMax, peakDow, avgNewPerDay, mostOrders, newest, mostReturns, orderKey };
+  }, [insightsLog, returnsLog, period]);
 
-  if (!authed) return (
-    <div style={{ minHeight:"100vh", background:BG, color:"#fff", fontFamily:FONT, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"2rem" }}>
-      <div style={{ marginBottom:"0.5rem" }}>
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-      </div>
-      <h1 style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"3rem", letterSpacing:"0.05em", margin:"0 0 0.5rem" }}>CUSTOMERS</h1>
-      <p style={{ color:"#666", marginBottom:"2rem" }}>Enter password to continue</p>
-      <div style={{ display:"flex", gap:"0.75rem", width:"100%", maxWidth:"360px" }}>
-        <input type="password" placeholder="Password" value={cpw}
-          onChange={e => setCpw(e.target.value)} onKeyDown={e => e.key === "Enter" && checkCpw()}
-          style={{ ...inputStyle, flex:1, borderColor:cpwError ? "#F87171" : "rgba(60,110,255,.2)" }} />
-        <button onClick={checkCpw} style={{ ...bBlue, padding:"0 1.25rem", fontSize:"1rem" }}>Enter</button>
-      </div>
-      {cpwError && <div style={{ color:"#F87171", marginTop:"0.75rem", fontSize:"0.9rem" }}>Incorrect password</div>}
-      <button onClick={onExit} style={{ ...bGhost, marginTop:"2rem", padding:"0.4rem 1rem" }}>← Back</button>
-    </div>
-  );
+  const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  // Orders + returns for the drilled-in customer.
+  const drillDetail = useMemo(() => {
+    if (!drill) return null;
+    const key = drill.key;
+    const orders = insightsLog.filter(e => e.action === "placed" &&
+      (phoneToKey(e.customerPhone) === key || `name:${(e.customerName || "").toLowerCase()}` === key))
+      .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp));
+    const rets = returnsLog.filter(r => (r.customerName || "").trim().toLowerCase() === (drill.name || "").trim().toLowerCase());
+    return { orders, rets };
+  }, [drill, insightsLog, returnsLog]);
 
   return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth: isWide ? 1120 : 430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding: isWide ? "34px 24px 10px" : "50px 14px 10px" }}>
         <div onClick={handleExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
         <div style={{ display:"flex", alignItems:"center", gap:5 }}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
@@ -1631,15 +1663,20 @@ function CustomersView({ onExit }) {
         </div>
         <div style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>{customerList.length} · {optedInList.length} opt-in</div>
       </div>
-      <div style={{ borderBottom:"1px solid rgba(60,110,255,.08)", padding:"0 1.5rem", display:"flex" }}>
-        {[["list","Customer List"],["broadcast","Broadcast"]].map(([k,l]) => (
+      <div style={{ borderBottom:"1px solid rgba(60,110,255,.08)", padding: isWide ? "0 24px" : "0 1.5rem", display:"flex" }}>
+        {[["insights","Insights"],["list","Customer List"],["broadcast","Broadcast"]].map(([k,l]) => (
           <button key={k} onClick={() => setTab(k)} style={{ ...(tab===k ? ulTabOn : ulTabOff) }}>
             {l}
           </button>
         ))}
       </div>
 
-      <div style={{ padding:"1.5rem" }}>
+      <div style={{ padding: isWide ? "1.5rem 24px" : "1.5rem" }}>
+
+        {/* ── TAB 0: INSIGHTS ── */}
+        {tab === "insights" && (
+          <CustomerInsights stats={stats} period={period} setPeriod={setPeriod} isWide={isWide} DOW={DOW} onDrill={setDrill} fmt={fmt} />
+        )}
 
         {/* ── TAB 1: CUSTOMER LIST ── */}
         {tab === "list" && (
@@ -1749,6 +1786,157 @@ function CustomersView({ onExit }) {
             )}
           </div>
         )}
+      </div>
+      {drill && <CustomerDrillModal drill={drill} detail={drillDetail} onClose={() => setDrill(null)} fmt={fmt} />}
+    </div>
+  );
+}
+
+// ─── CUSTOMER INSIGHTS ────────────────────────────────────────────────────────
+function CustomerInsights({ stats, period, setPeriod, isWide, DOW, onDrill, fmt }) {
+  const card = { background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16, boxShadow: "0 16px 40px -30px rgba(0,0,0,.85)" };
+  const kpi = (value, label, sub, color) => (
+    <div style={{ ...card, padding: "16px 18px" }}>
+      <div style={{ fontSize: 30, fontWeight: 800, color: color || "#9DBCFF", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff", marginTop: 8 }}>{label}</div>
+      {sub && <div style={{ fontSize: 11, color: "rgba(233,238,255,.45)", marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+  const rankRow = (i, name, sub, value, onClick) => (
+    <button key={i + name} onClick={onClick} disabled={!onClick}
+      style={{ display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left", padding: "10px 14px", background: "transparent", border: "none", borderTop: i > 0 ? "1px solid rgba(255,255,255,.05)" : "none", cursor: onClick ? "pointer" : "default", fontFamily: FONT }}>
+      <span style={{ width: 18, fontSize: 12, fontWeight: 800, color: i < 3 ? "#9DBCFF" : "rgba(233,238,255,.3)", textAlign: "right", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{i + 1}</span>
+      <div style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(74,127,255,.12)", border: "1px solid rgba(74,127,255,.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, color: "#9DBCFF", flexShrink: 0 }}>{(name || "?")[0].toUpperCase()}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+        {sub && <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{value}</div>
+      {onClick && <span style={{ color: "rgba(233,238,255,.3)", flexShrink: 0, fontSize: 15 }}>›</span>}
+    </button>
+  );
+  const board = (title, subtitle, items, render) => (
+    <div style={{ ...card, overflow: "hidden" }}>
+      <div style={{ padding: "14px 16px 11px", borderBottom: "1px solid rgba(255,255,255,.06)" }}>
+        <div style={{ fontSize: 13.5, fontWeight: 800, color: "#fff" }}>{title}</div>
+        {subtitle && <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", marginTop: 2 }}>{subtitle}</div>}
+      </div>
+      <div>
+        {items.length === 0 ? <div style={{ padding: 22, textAlign: "center", color: "rgba(233,238,255,.35)", fontSize: 12.5 }}>Nothing yet in this window.</div> : items.map((it, i) => render(it, i))}
+      </div>
+    </div>
+  );
+
+  const repeatPct = stats.total ? Math.round(stats.repeat.length / stats.total * 100) : 0;
+  const recentActive = [...stats.arr].sort((a, b) => tsMs(b.last) - tsMs(a.last)).slice(0, 12);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Period toggle */}
+      <div style={{ display: "inline-flex", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 12, padding: 3, alignSelf: "flex-start" }}>
+        {[["all", "All time"], ["month", "This month"]].map(([k, l]) => {
+          const on = period === k;
+          return <button key={k} onClick={() => setPeriod(k)} style={{ padding: "7px 16px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700, fontFamily: FONT, background: on ? "rgba(74,127,255,.22)" : "transparent", color: on ? "#cfe0ff" : "rgba(233,238,255,.5)" }}>{l}</button>;
+        })}
+      </div>
+
+      {/* KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: isWide ? "repeat(4,1fr)" : "repeat(2,1fr)", gap: 12 }}>
+        {kpi(stats.total, "Total customers", "all time")}
+        {kpi(stats.newInPeriod.length, period === "month" ? "New this month" : "New (all-time)", period === "month" ? "joined this month" : "distinct customers")}
+        {kpi(stats.avgNewPerDay.toFixed(1), "New / day", period === "month" ? "avg this month" : "avg all-time", "#4ADE80")}
+        {kpi(`${repeatPct}%`, "Repeat rate", `${stats.repeat.length} with 2+ orders`, "#FBBF24")}
+      </div>
+
+      {/* Busiest weekday */}
+      <div style={{ ...card, padding: "16px 18px 14px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 800, color: "#fff" }}>New customers by weekday</div>
+          <div style={{ fontSize: 12, color: "rgba(233,238,255,.5)" }}>Busiest: <b style={{ color: "#9DBCFF" }}>{stats.newInPeriod.length ? DOW[stats.peakDow] : "—"}</b></div>
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 128 }}>
+          {stats.dow.map((v, d) => {
+            const peak = d === stats.peakDow && v > 0;
+            const h = v === 0 ? 0 : Math.max(6, v / stats.dowMax * 100);
+            return (
+              <div key={d} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: peak ? "#9DBCFF" : "rgba(233,238,255,.5)", marginBottom: 4 }}>{v || ""}</div>
+                <div style={{ width: "100%", height: `${h}%`, borderRadius: "6px 6px 0 0", background: peak ? "linear-gradient(180deg,#6A9FFF,#4A7FFF)" : "linear-gradient(180deg,rgba(74,127,255,.5),rgba(74,127,255,.14))", boxShadow: peak ? "0 0 14px rgba(74,127,255,.5)" : "none" }} />
+                <div style={{ fontSize: 10.5, color: peak ? "#9DBCFF" : "rgba(233,238,255,.4)", marginTop: 6, fontWeight: peak ? 700 : 500 }}>{DOW[d]}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Leaderboards */}
+      <div style={{ display: "grid", gridTemplateColumns: isWide ? "1fr 1fr" : "1fr", gap: 16 }}>
+        {board("Most orders", "Top customers — tap to dig in", stats.mostOrders, (c, i) => rankRow(i, c.name, c.phone || "no phone", c[stats.orderKey], () => onDrill(c)))}
+        {board("Most returns", "By customer (from returns)", stats.mostReturns, (c, i) => rankRow(i, c.name, null, c.count, () => onDrill({ key: `name:${(c.name || "").toLowerCase()}`, name: c.name })))}
+        {board("Newest customers", period === "month" ? "Joined this month" : "Most recent first order", stats.newest, (c, i) => rankRow(i, c.name, fmt(c.first), `${c.all}×`, () => onDrill(c)))}
+        {board("Recently active", "Last order first", recentActive, (c, i) => rankRow(i, c.name, fmt(c.last), `${c.all}×`, () => onDrill(c)))}
+      </div>
+    </div>
+  );
+}
+
+// Drill-in sheet for a single customer — their orders + returns.
+function CustomerDrillModal({ drill, detail, onClose, fmt }) {
+  const orders = detail?.orders || [];
+  const rets = detail?.rets || [];
+  const chip = (label, value) => (
+    <div style={{ flex: 1, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, padding: "10px 12px", minWidth: 0 }}>
+      <div style={{ fontSize: 18, fontWeight: 800, color: "#fff", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{ fontSize: 10.5, color: "rgba(233,238,255,.45)", marginTop: 4, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 600 }}>{label}</div>
+    </div>
+  );
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,.62)", backdropFilter: "blur(5px)", WebkitBackdropFilter: "blur(5px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: 560, maxHeight: "84vh", overflow: "auto", background: "#0b0f18", border: "1px solid rgba(255,255,255,.12)", borderRadius: 20, boxShadow: "0 40px 100px -30px rgba(0,0,0,.9)", fontFamily: FONT }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 13, padding: "18px 18px 14px", borderBottom: "1px solid rgba(255,255,255,.07)", position: "sticky", top: 0, background: "#0b0f18", zIndex: 1 }}>
+          <div style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(74,127,255,.14)", border: "1px solid rgba(74,127,255,.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, color: "#9DBCFF", flexShrink: 0 }}>{(drill.name || "?")[0].toUpperCase()}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{drill.name || "Unknown"}</div>
+            <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.5)" }}>{drill.phone || "No phone on file"}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(233,238,255,.7)", borderRadius: 9, width: 30, height: 30, cursor: "pointer", fontSize: 16, lineHeight: 1, fontFamily: FONT }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+            {chip("Orders", orders.length)}
+            {chip("Returns", rets.length)}
+            {chip("First", orders.length ? fmt(orders[orders.length - 1].timestamp) : "—")}
+            {chip("Last", orders.length ? fmt(orders[0].timestamp) : "—")}
+          </div>
+          <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", margin: "4px 0 8px" }}>Orders</div>
+          {orders.length === 0 ? <div style={{ color: "rgba(233,238,255,.35)", fontSize: 12.5, padding: "8px 0" }}>No orders on record.</div> : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {orders.slice(0, 40).map((o, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.07)", borderRadius: 11, padding: "9px 12px" }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: "#9DBCFF", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>#{o.orderNumber || "—"}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.productName}{o.size ? ` · Sz ${o.size}` : ""}</div>
+                  </div>
+                  <span style={{ fontSize: 11, color: "rgba(233,238,255,.4)", flexShrink: 0 }}>{new Date(o.timestamp).toLocaleDateString([], { day: "numeric", month: "short" })}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {rets.length > 0 && (
+            <>
+              <div style={{ fontSize: 11, color: "rgba(248,113,113,.7)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", margin: "16px 0 8px" }}>Returns</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                {rets.slice(0, 20).map((r, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(248,113,113,.07)", border: "1px solid rgba(248,113,113,.2)", borderRadius: 11, padding: "9px 12px" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 800, color: "#F87171", flexShrink: 0 }}>#{r.orderNumber || "—"}</span>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.productName}{r.size ? ` · Sz ${r.size}` : ""}</div>
+                    <span style={{ fontSize: 11, color: "rgba(233,238,255,.4)", flexShrink: 0 }}>{r.timestamp ? new Date(r.timestamp).toLocaleDateString([], { day: "numeric", month: "short" }) : ""}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
