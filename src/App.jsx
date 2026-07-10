@@ -9010,7 +9010,7 @@ function CustomerView({ orders, onExit }) {
 
               {/* Two columns: timeline + details */}
               <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, alignItems: "start" }}>
-                <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: "20px 22px 8px" }}>
+                <div style={{ background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.09)", borderRadius: 18, padding: "20px 22px 8px", boxShadow: "0 18px 44px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.05)" }}>
                   <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 18 }}>Progress</div>
                   {steps.map((st, i) => {
                     const c = STEP_C[st.state];
@@ -9036,7 +9036,7 @@ function CustomerView({ orders, onExit }) {
                   })}
                 </div>
 
-                <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: "20px 20px 8px" }}>
+                <div style={{ background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.09)", borderRadius: 18, padding: "20px 20px 8px", boxShadow: "0 18px 44px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.05)" }}>
                   <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 6 }}>Details</div>
                   {detailRow("Customer", found.customerName)}
                   {detailRow("Phone", found.customerPhone)}
