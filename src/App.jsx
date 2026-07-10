@@ -12300,7 +12300,7 @@ function InsightsView({ onExit }) {
   // Phase 12D: product-type filter ("sneaker" | "clothing" | "both"). Applied
   // in 6 of 9 tabs; hidden on tabs where it doesn't make sense (sizes,
   // depleted, clothing-refills).
-  const [category,   setCategory]   = useState("both");
+  const category = "both";   // category toggle removed — reports show all types
   // Phase 14C: top-level store filter — slices every Insights tab to a
   // subset of events tagged with placedAtHub. "all" is current behavior,
   // "central" keeps hub1/hub2 events, "pine" keeps hub3 events. Events
@@ -12472,9 +12472,6 @@ function InsightsView({ onExit }) {
     { key:"depleted",         label:"Stock Depleted" },
     { key:"reorder",          label:"AI Reorder" },
   ];
-  // Tabs where the Sneaker/Clothing/Both toggle is NOT applicable.
-  // "reorder" is AI-driven across the whole catalog — the toggle doesn't bind.
-  const CATEGORY_HIDDEN_TABS = new Set(["depleted", "clothing-refills", "reorder"]);
   const tabKeys = TABS.map(t => t.key);
 
   const handleSwipe = (e) => {
@@ -12520,7 +12517,6 @@ function InsightsView({ onExit }) {
     </div>
   );
   const storePills = () => (tab === "reorder" ? null : seg(STORE_OPTS, storeFilter, setStoreFilter));
-  const categoryPills = () => (!CATEGORY_HIDDEN_TABS.has(tab) && seg([["both", "Both"], ["sneaker", "Sneakers"], ["clothing", "Clothing"]], category, setCategory));
   const auditBtn = (
     <button onClick={() => setAuditOpen(true)}
       style={{ background: audit.diff !== 0 ? "rgba(248,113,113,.12)" : "rgba(74,127,255,.08)",
@@ -12568,7 +12564,6 @@ function InsightsView({ onExit }) {
             <div style={{ fontSize:12.5, color:"rgba(233,238,255,.5)", marginTop:3 }}>Internal insights · {filterLabel}</div>
             <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", marginTop:14 }}>
               {storePills()}
-              {categoryPills()}
               <div style={{ flex:1 }} />
               {auditBtn}
             </div>
@@ -12629,24 +12624,6 @@ function InsightsView({ onExit }) {
           );
         })}
       </div>
-      {/* Phase 12D: category toggle. Hidden on tabs where it doesn't apply
-          (size popularity, stock depleted, clothing refills). */}
-      {!CATEGORY_HIDDEN_TABS.has(tab) && (
-        <div style={{ padding:"0 14px 10px", display:"flex", gap:6 }}>
-          {[["both","Both"],["sneaker","Sneakers"],["clothing","Clothing"]].map(([val, label]) => {
-            const on = category === val;
-            return (
-              <button key={val} onClick={() => setCategory(val)}
-                style={{ flex:1, padding:"7px 10px", borderRadius:10, fontSize:11.5, fontWeight:700, cursor:"pointer",
-                         background: on ? "rgba(60,110,255,.18)" : "rgba(255,255,255,.03)",
-                         border: "1px solid " + (on ? "rgba(60,110,255,.5)" : "rgba(255,255,255,.08)"),
-                         color: on ? "#fff" : "rgba(255,255,255,.5)" }}>
-                {label}
-              </button>
-            );
-          })}
-        </div>
-      )}
       {/* Date picker is hidden on the reorder tab — InsightReorderTab does not
           consume filterMode/filterDate, so showing it would imply a filter that
           is actually a no-op. CR finding (outside-diff). */}
