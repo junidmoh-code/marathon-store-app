@@ -12320,10 +12320,15 @@ function InsightsView({ onExit }) {
   // Central treats missing placedAtHub as Central — historical events
   // pre-date Phase 14B and were all placed in the central universe, so the
   // filter is self-healing without a backfill. Pine stays strict.
+  // Stores are now three: Marathon PE, Trophy, Pine. Events tag placedAtHub
+  // (hub1/hub2 = the central pair, hub3 = Pine) and newer ones a destShop. Pine =
+  // hub3. Trophy = events explicitly tagged trophy. Marathon PE = the main store:
+  // its own destShop OR the untagged central history (so nothing goes missing).
   const matchesStore = useMemo(() => {
     if (storeFilter === "all") return () => true;
-    if (storeFilter === "pine") return (e) => e && e.placedAtHub === "hub3";
-    return (e) => e && (!e.placedAtHub || e.placedAtHub === "hub1" || e.placedAtHub === "hub2");
+    if (storeFilter === "pine")   return (e) => e && (e.destShop === "marathon-pine" || e.placedAtHub === "hub3");
+    if (storeFilter === "trophy") return (e) => e && e.destShop === "trophy";
+    return (e) => e && (e.destShop === "marathon-pe" || (e.destShop == null && e.placedAtHub !== "hub3")); // marathon-pe
   }, [storeFilter]);
   const filteredLog        = useMemo(() => log.filter(matchesStore),         [log, matchesStore]);
   const filteredReturnsLog = useMemo(() => returnsLog.filter(matchesStore),  [returnsLog, matchesStore]);
@@ -12498,35 +12503,24 @@ function InsightsView({ onExit }) {
     </>
   );
 
-  // Pill-row builders reused by both layouts.
-  const storePills = (compact) => (
-    <div style={{ display:"flex", gap:6, visibility: tab === "reorder" ? "hidden" : "visible" }}>
-      {[["all","All"],["central","Central"],["pine","Pine"]].map(([val, label]) => {
-        const on = storeFilter === val;
+  // Segmented control — one grouped track, active segment lit. Cleaner than a
+  // row of separate pills, and reused for store + category.
+  const STORE_OPTS = [["all", "All"], ["marathon-pe", "Marathon PE"], ["trophy", "Trophy"], ["pine", "Pine"]];
+  const seg = (options, val, setVal) => (
+    <div style={{ display: "inline-flex", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 12, padding: 3, gap: 2 }}>
+      {options.map(([v, l]) => {
+        const on = val === v;
         return (
-          <button key={val} onClick={() => setStoreFilter(val)}
-            style={{ flex: compact ? "none" : 1, padding:"7px 13px", borderRadius:999, fontSize:11.5, fontWeight:700, cursor:"pointer",
-                     background: on ? "rgba(74,127,255,.2)" : "rgba(255,255,255,.03)",
-                     border: "1px solid " + (on ? "rgba(74,127,255,.55)" : "rgba(255,255,255,.1)"),
-                     color: on ? "#fff" : "rgba(255,255,255,.5)" }}>{label}</button>
+          <button key={v} onClick={() => setVal(v)}
+            style={{ border: 0, background: on ? "rgba(74,127,255,.22)" : "transparent", color: on ? "#fff" : "rgba(233,238,255,.5)",
+                     fontSize: 12, fontWeight: 700, padding: "7px 14px", borderRadius: 9, cursor: "pointer", fontFamily: FONT,
+                     boxShadow: on ? "0 0 8px rgba(60,110,255,.3)" : "none", whiteSpace: "nowrap" }}>{l}</button>
         );
       })}
     </div>
   );
-  const categoryPills = (compact) => (!CATEGORY_HIDDEN_TABS.has(tab) && (
-    <div style={{ display:"flex", gap:6 }}>
-      {[["both","Both"],["sneaker","Sneakers"],["clothing","Clothing"]].map(([val, label]) => {
-        const on = category === val;
-        return (
-          <button key={val} onClick={() => setCategory(val)}
-            style={{ flex: compact ? "none" : 1, padding:"7px 13px", borderRadius:999, fontSize:11.5, fontWeight:700, cursor:"pointer",
-                     background: on ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.03)",
-                     border: "1px solid " + (on ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.1)"),
-                     color: on ? "#fff" : "rgba(255,255,255,.5)" }}>{label}</button>
-        );
-      })}
-    </div>
-  ));
+  const storePills = () => (tab === "reorder" ? null : seg(STORE_OPTS, storeFilter, setStoreFilter));
+  const categoryPills = () => (!CATEGORY_HIDDEN_TABS.has(tab) && seg([["both", "Both"], ["sneaker", "Sneakers"], ["clothing", "Clothing"]], category, setCategory));
   const auditBtn = (
     <button onClick={() => setAuditOpen(true)}
       style={{ background: audit.diff !== 0 ? "rgba(248,113,113,.12)" : "rgba(74,127,255,.08)",
@@ -12573,8 +12567,8 @@ function InsightsView({ onExit }) {
             <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{(TABS.find(t=>t.key===tab)||{}).label || "Insights"}</div>
             <div style={{ fontSize:12.5, color:"rgba(233,238,255,.5)", marginTop:3 }}>Internal insights · {filterLabel}</div>
             <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", marginTop:14 }}>
-              {storePills(true)}
-              {tab !== "reorder" && categoryPills(true)}
+              {storePills()}
+              {categoryPills()}
               <div style={{ flex:1 }} />
               {auditBtn}
             </div>
@@ -12606,15 +12600,14 @@ function InsightsView({ onExit }) {
         </div>
         <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{filteredLog.length} entries</div>
       </div>
-      {/* Phase 14C: Store filter — All / Central / Pine. Hidden on the AI
-          Reorder tab: that data is a global analysis, not store-sliced, so
-          showing the pill there would be misleading. CR finding #2. */}
-      <div style={{ padding:"10px 14px 0", display:"flex", gap:6, visibility: tab === "reorder" ? "hidden" : "visible" }}>
-        {[["all","All"],["central","Central"],["pine","Pine"]].map(([val, label]) => {
+      {/* Store filter — All / Marathon PE / Trophy / Pine. Hidden on the AI
+          Reorder tab (global analysis, not store-sliced). */}
+      <div style={{ padding:"10px 14px 0", display:"flex", gap:6, overflowX:"auto", visibility: tab === "reorder" ? "hidden" : "visible" }}>
+        {[["all","All"],["marathon-pe","Marathon PE"],["trophy","Trophy"],["pine","Pine"]].map(([val, label]) => {
           const on = storeFilter === val;
           return (
             <button key={val} onClick={() => setStoreFilter(val)}
-              style={{ flex:1, padding:"7px 10px", borderRadius:10, fontSize:11.5, fontWeight:700, cursor:"pointer",
+              style={{ flexShrink:0, padding:"7px 12px", borderRadius:999, fontSize:11.5, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap",
                        background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)",
                        border: "1px solid " + (on ? "rgba(60,110,255,.55)" : "rgba(255,255,255,.08)"),
                        color: on ? "#fff" : "rgba(255,255,255,.5)",
