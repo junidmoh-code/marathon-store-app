@@ -10805,6 +10805,52 @@ function InsightsDatePicker({ mode, setMode, dateStr, setDateStr }) {
 }
 
 // ─── INSIGHTS: OVERVIEW TAB ───────────────────────────────────────────────────
+// Single-series trend (area + line) with a hover crosshair + tooltip. One hue
+// (magnitude over time → no legend; the card title names it), recessive grid,
+// HTML labels/tooltip so nothing distorts under the stretched viewBox.
+function InsightTrendChart({ data, accent = "#4A7FFF", height = 172 }) {
+  const [hi, setHi] = useState(null);
+  if (!data || data.length === 0) return <div style={{ color: "rgba(233,238,255,.3)", textAlign: "center", padding: "2.5rem 1rem", fontSize: 13 }}>No sales in this period.</div>;
+  const W = 620, H = 150, PL = 6, PR = 6, PT = 10, PB = 8;
+  const iw = W - PL - PR, ih = H - PT - PB;
+  const n = data.length;
+  const max = Math.max(1, ...data.map(d => d.value));
+  const X = i => (n === 1 ? PL + iw / 2 : PL + (i / (n - 1)) * iw);
+  const Y = v => PT + ih - (v / max) * ih;
+  const pts = data.map((d, i) => [X(i), Y(d.value)]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  const area = `M ${pts[0][0].toFixed(1)} ${(PT + ih).toFixed(1)} ` + pts.map(p => `L ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ") + ` L ${pts[n - 1][0].toFixed(1)} ${(PT + ih).toFixed(1)} Z`;
+  const grid = [0.5, 1];
+  const labelIdx = n <= 7 ? data.map((_, i) => i) : [0, Math.floor((n - 1) / 2), n - 1];
+  return (
+    <div style={{ position: "relative" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={height} preserveAspectRatio="none" style={{ display: "block", overflow: "visible" }}>
+        <defs><linearGradient id="itgrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={accent} stopOpacity="0.3" /><stop offset="100%" stopColor={accent} stopOpacity="0" /></linearGradient></defs>
+        {grid.map((f, i) => <line key={i} x1={PL} x2={W - PR} y1={PT + ih - f * ih} y2={PT + ih - f * ih} stroke="rgba(255,255,255,.06)" strokeWidth="1" />)}
+        <path d={area} fill="url(#itgrad)" />
+        <path d={line} fill="none" stroke={accent} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        <circle cx={pts[n - 1][0]} cy={pts[n - 1][1]} r="3.5" fill={accent} />
+        {hi !== null && <>
+          <line x1={pts[hi][0]} x2={pts[hi][0]} y1={PT} y2={PT + ih} stroke="rgba(255,255,255,.2)" strokeWidth="1" />
+          <circle cx={pts[hi][0]} cy={pts[hi][1]} r="4" fill="#fff" stroke={accent} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+        </>}
+        {data.map((d, i) => { const bw = iw / Math.max(1, n); return <rect key={i} x={X(i) - bw / 2} y={PT} width={bw} height={ih} fill="transparent" onMouseEnter={() => setHi(i)} onMouseLeave={() => setHi(null)} style={{ cursor: "crosshair" }} />; })}
+      </svg>
+      {/* x-axis labels (HTML — no viewBox distortion) */}
+      <div style={{ position: "relative", height: 14, marginTop: 4 }}>
+        {labelIdx.map(i => (
+          <span key={i} style={{ position: "absolute", left: `${(pts[i][0] / W) * 100}%`, transform: "translateX(-50%)", fontSize: 9.5, color: "rgba(233,238,255,.35)", whiteSpace: "nowrap" }}>{data[i].label}</span>
+        ))}
+      </div>
+      {hi !== null && (
+        <div style={{ position: "absolute", top: -6, left: `${(pts[hi][0] / W) * 100}%`, transform: "translate(-50%,-100%)", pointerEvents: "none", background: "rgba(10,14,24,.96)", border: "1px solid rgba(255,255,255,.14)", borderRadius: 8, padding: "5px 9px", whiteSpace: "nowrap", fontSize: 11, boxShadow: "0 8px 20px rgba(0,0,0,.5)" }}>
+          <span style={{ color: "rgba(233,238,255,.55)" }}>{data[hi].label}</span> · <b style={{ color: "#fff", fontVariantNumeric: "tabular-nums" }}>{data[hi].value}</b>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, filterEnd, filterLabel, orders, filterMode, filterDate, category = "both" }) {
   // Phase 12D: every reads-from-log path also filters by category. Live-order
   // paths (today's day-mode branch) filter by category at point-of-use below.
@@ -10842,143 +10888,111 @@ function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, fil
     return Array.from({length:24},(_,h)=>({ label:`${h%12||12}${h<12?"am":"pm"}`, value:counts[h]||0 })).filter(c=>c.value>0);
   }, [netSales]);
   const topHour = hourData.reduce((b,c)=>c.value>(b?.value||0)?c:b, null);
+  const topProducts = useMemo(() => groupCount(netSales, e => e.productName).slice(0, 7), [netSales]);
+  // Real net-sales trend: hourly when viewing today, daily (contiguous) otherwise.
+  const trend = useMemo(() => {
+    const saDay = ts => new Date(new Date(ts).getTime() + 7200000).toISOString().slice(0, 10);
+    if (isToday) {
+      const c = {}; netSales.forEach(e => { const h = new Date(e.timestamp).getHours(); c[h] = (c[h] || 0) + 1; });
+      const hs = Object.keys(c).map(Number);
+      if (!hs.length) return [];
+      const lo = Math.min(8, ...hs), hi = Math.max(18, ...hs);
+      const out = []; for (let h = lo; h <= hi; h++) out.push({ label: `${h % 12 || 12}${h < 12 ? "a" : "p"}`, value: c[h] || 0 });
+      return out;
+    }
+    const c = {}; netSales.forEach(e => { const d = saDay(e.timestamp); c[d] = (c[d] || 0) + 1; });
+    const days = Object.keys(c).sort();
+    if (!days.length) return [];
+    const out = []; let d = new Date(days[0] + "T00:00:00Z"); const end = new Date(days[days.length - 1] + "T00:00:00Z");
+    while (d <= end && out.length < 92) { const key = d.toISOString().slice(0, 10); out.push({ label: key.slice(5).replace("-", "/"), value: c[key] || 0 }); d.setUTCDate(d.getUTCDate() + 1); }
+    return out;
+  }, [netSales, isToday]);
+  const maxHour = Math.max(1, ...hourData.map(h => h.value));
+  const GLASS_STOCK = { background: "rgba(255,255,255,.022)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16 };
+
+  const kpi = (color, glyph, value, label, sub) => (
+    <div style={{ ...GLASS_STOCK, padding: "15px 16px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 9 }}>
+        <span style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 11, display: "grid", placeItems: "center", background: `${color}22`, border: `1px solid ${color}55`, color, overflow: "hidden" }}>{glyph}</span>
+        <div style={{ fontSize: 30, fontWeight: 800, color: "#fff", letterSpacing: "-.02em", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      </div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>{label}</div>
+      <div style={{ fontSize: 10.5, color: "rgba(233,238,255,.4)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>
+    </div>
+  );
 
   return (
-    <div>
-      {/* OVERVIEW LEGEND CARD with circuit decoration */}
-      <div style={{ margin:"0 0 10px", background:"rgba(15,25,60,.6)", border:"1px solid rgba(60,110,255,.25)", borderRadius:14, padding:16, position:"relative", overflow:"hidden" }}>
-        <svg style={{ position:"absolute", top:0, right:0, opacity:0.3 }} width="80" height="60" viewBox="0 0 80 60">
-          <path d="M80,10 L60,10 L50,20 L40,20 L30,30" stroke="rgba(60,110,255,.8)" strokeWidth="1" fill="none"/>
-          <circle cx="60" cy="10" r="2" fill="rgba(60,110,255,.8)"/>
-          <circle cx="40" cy="20" r="2" fill="rgba(60,110,255,.8)"/>
-          <path d="M80,35 L65,35 L55,25" stroke="rgba(60,110,255,.5)" strokeWidth="1" fill="none"/>
-        </svg>
-        <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.3)", textTransform:"uppercase", letterSpacing:"1.5px", textAlign:"center", marginBottom:14 }}>OVERVIEW LEGEND</div>
-        <div style={{ display:"flex", gap:6 }}>
-          <div style={{ flex:1, textAlign:"center" }}>
-            <div style={{ marginBottom:8, display:"flex", justifyContent:"center" }}>
-              <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#4ACA7A" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 7px rgba(0,200,80,.6))" }}>
-                <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/>
-              </svg>
-            </div>
-            <div style={{ fontSize:12, fontWeight:600, color:"#fff", marginBottom:4 }}>Net Sales</div>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,.35)", lineHeight:1.4 }}>Orders marked <span style={{ color:"#4ACA7A", fontWeight:600 }}>Ready</span> minus returns</div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* KPI tiles */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(158px, 1fr))", gap: 12 }}>
+        {kpi("#4ADE80", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" /><line x1="3" y1="6" x2="21" y2="6" /><path d="M16 10a4 4 0 01-8 0" /></svg>, netSales.length, "Net Sales", "Ready − Returns")}
+        {kpi("#F87171", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" /><polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" y1="22.08" x2="12" y2="12" /></svg>, oosLog.length, "Out of Stock", filterLabel)}
+        {kpi("#4A7FFF", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 102.13-9.36L1 10" /></svg>, filteredReturns.length, "Returns", filterLabel)}
+        <div style={{ ...GLASS_STOCK, padding: "15px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 9 }}>
+            <span style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 11, display: "grid", placeItems: "center", background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.12)", overflow: "hidden" }}>
+              {topProd ? <ProductThumb name={topProd.label} photoMap={productPhotoMap} size={40} /> : <ProductIcon size={20} />}
+            </span>
+            <div style={{ fontSize: 30, fontWeight: 800, color: "#fff", letterSpacing: "-.02em", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{topProd?.value || "—"}</div>
           </div>
-          <div style={{ flex:1, textAlign:"center" }}>
-            <div style={{ marginBottom:8, display:"flex", justifyContent:"center" }}>
-              <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 9px rgba(248,113,113,.5))" }}>
-                <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>
-              </svg>
-            </div>
-            <div style={{ fontSize:12, fontWeight:600, color:"#fff", marginBottom:4 }}>Out of Stock</div>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,.35)", lineHeight:1.4 }}>Orders marked <span style={{ color:"#FF6B6B", fontWeight:600 }}>Out of Stock</span> by Floor</div>
-          </div>
-          <div style={{ flex:1, textAlign:"center" }}>
-            <div style={{ marginBottom:8, display:"flex", justifyContent:"center" }}>
-              <div style={{ width:40, height:40, background:"rgba(60,110,255,.15)", border:"1.5px solid rgba(60,110,255,.5)", borderRadius:11, display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 12px rgba(60,110,255,.3)" }}>
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 5px rgba(60,110,255,.7))" }}>
-                  <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>
-                </svg>
-              </div>
-            </div>
-            <div style={{ fontSize:12, fontWeight:600, color:"#fff", marginBottom:4 }}>Returns</div>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,.35)", lineHeight:1.4 }}>Logged via <span style={{ color:"#4A7FFF", fontWeight:600 }}>Returns</span> view</div>
-          </div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>Top Product</div>
+          <div style={{ fontSize: 10.5, color: "rgba(233,238,255,.4)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{topProd?.label || "No orders yet"}</div>
         </div>
       </div>
 
-      {/* STAT CARDS 2x2 — clean SVG icons, no emojis */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:10 }}>
-        <div style={{ background:"rgba(10,20,50,.7)", border:"1px solid rgba(60,110,255,.15)", borderRadius:14, padding:"16px 14px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-            <div style={{ width:44, height:44, background:"rgba(74,222,128,.15)", border:"1.5px solid rgba(74,222,128,.4)", borderRadius:11, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
-            </div>
-            <div style={{ fontSize:38, fontWeight:800, color:"#fff", letterSpacing:"-1.5px", lineHeight:1 }}>{netSales.length}</div>
-          </div>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>Net Sales</div>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.5)", marginTop:3, lineHeight:1.4 }}>Ready orders − Returns ({filterLabel}). Matches Sales Summary total.</div>
+      {/* Sales trend (hero) */}
+      <div style={{ ...GLASS_STOCK, padding: "16px 17px 12px" }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 750, color: "#fff" }}>Net sales <span style={{ color: "rgba(233,238,255,.4)", fontWeight: 600 }}>· {filterLabel}</span></div>
+          <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.5)" }}>{netSales.length} total{topHour ? ` · peak ${topHour.label.toUpperCase()}` : ""}</div>
         </div>
+        <InsightTrendChart data={trend} />
+      </div>
 
-        <div style={{ background:"rgba(10,20,50,.7)", border:"1px solid rgba(60,110,255,.15)", borderRadius:14, padding:"16px 14px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-            <div style={{ width:44, height:44, background:"rgba(248,113,113,.15)", border:"1.5px solid rgba(248,113,113,.4)", borderRadius:11, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-            </div>
-            <div style={{ fontSize:38, fontWeight:800, color:"#fff", letterSpacing:"-1.5px", lineHeight:1 }}>{oosLog.length}</div>
-          </div>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>Out of Stock</div>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.5)", marginTop:3, lineHeight:1.4 }}>Orders marked OOS by Warehouse ({filterLabel})</div>
+      {/* Top products + busiest hours */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+        <div style={{ ...GLASS_STOCK, padding: "16px 17px" }}>
+          <div style={{ fontSize: 13.5, fontWeight: 750, color: "#fff", marginBottom: 12 }}>Top products</div>
+          <InsightBarChart items={topProducts} color={BLUE} emptyMsg="No sales yet" photoMap={productPhotoMap} />
         </div>
-
-        <div style={{ background:"rgba(10,20,50,.7)", border:"1px solid rgba(60,110,255,.15)", borderRadius:14, padding:"16px 14px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-            <div style={{ width:44, height:44, background:"rgba(60,110,255,.18)", border:"1.5px solid rgba(60,110,255,.5)", borderRadius:11, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+        <div style={{ ...GLASS_STOCK, padding: "16px 17px" }}>
+          <div style={{ fontSize: 13.5, fontWeight: 750, color: "#fff", marginBottom: 14 }}>Busiest hours</div>
+          {hourData.length === 0 ? <div style={{ color: "rgba(233,238,255,.3)", textAlign: "center", padding: "1.5rem", fontSize: 13 }}>No sales yet.</div> : (
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 5, height: 120 }}>
+              {hourData.map((h, i) => {
+                const peak = topHour && h.label === topHour.label;
+                return (
+                  <div key={i} title={`${h.label} · ${h.value}`} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 5, minWidth: 0 }}>
+                    <div style={{ fontSize: 9, color: peak ? "#9DBCFF" : "rgba(233,238,255,.35)", fontWeight: 700 }}>{h.value}</div>
+                    <div style={{ width: "100%", height: `${Math.max(4, (h.value / maxHour) * 92)}px`, borderRadius: "4px 4px 2px 2px", background: peak ? "linear-gradient(180deg,#6A9FFF,#4A7FFF)" : "rgba(74,127,255,.35)" }} />
+                    <div style={{ fontSize: 8.5, color: "rgba(233,238,255,.3)", whiteSpace: "nowrap" }}>{h.label}</div>
+                  </div>
+                );
+              })}
             </div>
-            <div style={{ fontSize:38, fontWeight:800, color:"#fff", letterSpacing:"-1.5px", lineHeight:1 }}>{filteredReturns.length}</div>
-          </div>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>Returns</div>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.5)", marginTop:3, lineHeight:1.4 }}>Items logged in Returns view ({filterLabel})</div>
-        </div>
-
-        <div style={{ background:"rgba(10,20,50,.7)", border:"1px solid rgba(60,110,255,.15)", borderRadius:14, padding:"16px 14px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-            <div style={{ width:44, height:44, borderRadius:10, background:"rgba(255,255,255,.08)", border:"1.5px solid rgba(60,110,255,.3)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
-              {topProd ? <ProductThumb name={topProd.label} photoMap={productPhotoMap} size={44}/> : <ProductIcon size={22}/>}
-            </div>
-            <div style={{ fontSize:38, fontWeight:800, color:"#fff", letterSpacing:"-1.5px", lineHeight:1 }}>{topProd?.value || "—"}</div>
-          </div>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>Top Product</div>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.5)", marginTop:3, lineHeight:1.4, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{topProd?.label || "No orders yet"}</div>
+          )}
         </div>
       </div>
 
-      {/* BUSIEST HOUR CARD */}
-      <div style={{ margin:"0 0 16px", background:"rgba(10,20,55,.7)", border:"1px solid rgba(60,110,255,.2)", borderRadius:14, padding:16, position:"relative", overflow:"hidden" }}>
-        <svg style={{ position:"absolute", bottom:0, right:0, opacity:0.2 }} width="100" height="60" viewBox="0 0 100 60">
-          <path d="M100,20 L80,20 L70,30 L50,30 L40,40 L20,40" stroke="rgba(60,110,255,1)" strokeWidth="1" fill="none"/>
-          <circle cx="80" cy="20" r="2" fill="rgba(60,110,255,1)"/>
-          <circle cx="50" cy="30" r="2" fill="rgba(60,110,255,1)"/>
-          <circle cx="20" cy="40" r="2" fill="rgba(60,110,255,1)"/>
-        </svg>
-        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 4px rgba(60,110,255,.5))" }}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-          <span style={{ fontSize:14, fontWeight:700, color:"#fff" }}>Busiest Hour</span>
-        </div>
-        <div style={{ fontSize:48, fontWeight:800, color:"#4A7FFF", letterSpacing:"-2px", lineHeight:1 }}>{topHour?.label?.toUpperCase() || "—"}</div>
-        <div style={{ fontSize:12, color:"rgba(255,255,255,.4)", marginTop:4, marginBottom:12 }}>{topHour ? `${topHour.value} orders` : ""}</div>
-        <svg width="100%" height="70" viewBox="0 0 300 70" preserveAspectRatio="none">
-          <defs>
-            <linearGradient id="wg2" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(60,110,255,.3)"/>
-              <stop offset="100%" stopColor="rgba(60,110,255,0)"/>
-            </linearGradient>
-          </defs>
-          <path d="M0,65 L20,62 L40,55 L60,45 L80,30 L100,18 L120,10 L140,15 L160,28 L180,42 L200,52 L220,48 L240,55 L260,60 L280,63 L300,65 L300,70 L0,70 Z" fill="url(#wg2)"/>
-          <path d="M0,65 L20,62 L40,55 L60,45 L80,30 L100,18 L120,10 L140,15 L160,28 L180,42 L200,52 L220,48 L240,55 L260,60 L280,63 L300,65" fill="none" stroke="rgba(74,127,255,.7)" strokeWidth="1.5"/>
-          <circle cx="120" cy="10" r="5" fill="#4A7FFF"/>
-          <circle cx="120" cy="10" r="9" fill="rgba(60,110,255,.25)"/>
-        </svg>
-      </div>
-      <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.5rem" }}>
-        <div style={{ fontWeight:"700", marginBottom:"1rem", color:"#fff" }}>Recent Activity · {filterLabel}</div>
+      {/* Recent activity */}
+      <div style={{ ...GLASS_STOCK, padding: "16px 17px" }}>
+        <div style={{ fontSize: 13.5, fontWeight: 750, color: "#fff", marginBottom: 10 }}>Recent activity <span style={{ color: "rgba(233,238,255,.35)", fontWeight: 600 }}>· {filterLabel}</span></div>
         {periodLog.length === 0
-          ? <div style={{ color:"#444", textAlign:"center", padding:"1.5rem", fontSize:"0.9rem" }}>No activity in this period</div>
-          : periodLog.slice(0,30).map((e,i) => {
-              const ac = INSIGHT_ACTION[e.action]||{color:"#666",bg:"#333",label:e.action};
+          ? <div style={{ color: "rgba(233,238,255,.3)", textAlign: "center", padding: "1.5rem", fontSize: 13 }}>No activity in this period.</div>
+          : periodLog.slice(0, 30).map((e, i) => {
+              const ac = INSIGHT_ACTION[e.action] || { color: "#888", bg: "rgba(255,255,255,.06)", label: e.action };
               return (
-                <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.5rem 0", borderBottom:"1px solid rgba(60,110,255,.08)" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:"0.5rem" }}>
-                    <ProductThumb name={e.productName} photoMap={productPhotoMap} size={36} />
-                    <div>
-                      <span style={{ fontWeight:"600", color:"#fff", fontSize:"0.88rem" }}>{e.productName}</span>
-                      <span style={{ color:"#555", marginLeft:"0.4rem", fontSize:"0.78rem" }}>Sz {e.size}</span>
-                      <span style={{ marginLeft:"0.4rem", background:ac.bg, color:ac.color, borderRadius:"999px", padding:"1px 8px", fontSize:"0.7rem", fontWeight:"600" }}>{ac.label}</span>
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderTop: i ? "1px solid rgba(255,255,255,.06)" : "none" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                    <ProductThumb name={e.productName} photoMap={productPhotoMap} size={34} />
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ fontWeight: 600, color: "#fff", fontSize: "0.88rem" }}>{e.productName}</span>
+                      <span style={{ color: "rgba(233,238,255,.35)", marginLeft: "0.4rem", fontSize: "0.78rem" }}>Sz {e.size}</span>
+                      <span style={{ marginLeft: "0.4rem", background: ac.bg, color: ac.color, borderRadius: "999px", padding: "1px 8px", fontSize: "0.7rem", fontWeight: 700 }}>{ac.label}</span>
                     </div>
                   </div>
-                  <div style={{ color:"#555", fontSize:"0.72rem", whiteSpace:"nowrap" }}>
-                    #{e.orderNumber} · {new Date(e.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+                  <div style={{ color: "rgba(233,238,255,.35)", fontSize: "0.72rem", whiteSpace: "nowrap", flexShrink: 0 }}>
+                    #{e.orderNumber} · {new Date(e.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                   </div>
                 </div>
               );
