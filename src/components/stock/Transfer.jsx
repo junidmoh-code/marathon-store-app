@@ -280,21 +280,30 @@ export default function Transfer({ products, registry, actorRole }) {
   useEffect(() => { if (to && to === from) setTo(""); }, [from, to]);
 
   // ── DRAFT PERSISTENCE ───────────────────────────────────────────────────────
-  // On mount, surface any unsent cart left by a prior crash / reload / network
-  // drop — the user chooses Restore or Discard (see the banner below). We never
-  // auto-apply, so a stale draft can't silently overwrite a fresh session.
+  // Covers ALL ways the cart can leave the screen: a crash, a reload, a network
+  // drop, AND simply navigating to another stock tab (unmount). Persistence is
+  // CONTINUOUS — every scan writes the draft below — so an unmount keeps whatever
+  // was last scanned; the mount handler here re-offers it. `hydrated` gates the
+  // first paint so the empty initial cart can't wipe the draft before we've read it.
+  const [hydrated, setHydrated] = useState(false);
+
+  // On mount, surface any unsent cart left behind — the user chooses Restore or
+  // Discard (see the banner below). We never auto-apply, so a stale draft can't
+  // silently overwrite a fresh session.
   useEffect(() => {
     const d = loadDraft();
     if (d) setDraftToRestore(d);
+    setHydrated(true);
   }, []);
 
   // Persist the cart on every change. saveDraft removes the key when the cart is
-  // empty (full success / manual Clear leave nothing to restore). Paused while a
-  // restore decision is pending so the empty initial cart can't clobber the draft.
+  // empty (full success / manual Clear leave nothing to restore). Gated until
+  // hydration AND paused while a restore decision is pending, so the empty cart on
+  // the first render (or while the restore banner is up) can never clobber the draft.
   useEffect(() => {
-    if (draftToRestore) return;
+    if (!hydrated || draftToRestore) return;
     saveDraft({ from, to, refillId, transferId, basket, lineResults });
-  }, [from, to, refillId, transferId, basket, lineResults, draftToRestore]);
+  }, [hydrated, draftToRestore, from, to, refillId, transferId, basket, lineResults]);
 
   const restoreDraft = () => {
     const d = draftToRestore;
