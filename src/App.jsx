@@ -505,6 +505,12 @@ const isWaistSizeSet = (sizes) =>
   Array.isArray(sizes) && sizes.length > 0 && sizes.every(s => BOTTOMS_SIZES.includes(String(s)));
 // The size choices for a CLOTHING product: waist set for bottoms, letters otherwise.
 const clothingChoicesFor = (sizes) => (isWaistSizeSet(sizes) ? BOTTOMS_SIZES : CLOTHING_SIZES);
+// Kids sneaker breakdown — EU kids sizes. A sneaker-type product (same routing/
+// hubs/shoebox as adult sneakers) that uses this set instead of 3–11. Adult
+// sneakers top out at 11, so a sneaker whose sizes are ≥20 is a kids product.
+const KIDS_SIZES = ["26", "27", "28", "29", "30", "31", "32", "33", "34", "35"];
+const isKidsSizeSet = (sizes) =>
+  Array.isArray(sizes) && sizes.length > 0 && sizes.some(s => Number(s) >= 20);
 
 // Phase 14A: products can belong to multiple hubs. New shape is `hubs: [...]`,
 // values from { "hub1", "hub2", "hub3" }. Legacy products only have a single
@@ -3893,6 +3899,30 @@ function AdminView({ products, orders, onExit }) {
   // (see project-insights-past-days-pattern memory).
   const insightsLog = useInsightsLog();
 
+  // Saved product categories — a shared, growable list backed by RTDB so the
+  // category field is a dropdown (no free-text typos) that persists across
+  // devices. Seeded from the canonical TOP_CATEGORIES + whatever the catalogue
+  // already uses, then merged with any admin-added customs.
+  const [savedCategories, setSavedCategories] = useState([]);
+  useEffect(() => {
+    const u = onValue(ref(database, "product_categories"),
+      snap => { const v = snap.val(); setSavedCategories(v ? Object.values(v).map(String) : []); },
+      () => setSavedCategories([]));
+    return () => u();
+  }, []);
+  const categoryOptions = useMemo(() => {
+    const set = new Set(TOP_CATEGORIES);
+    (products || []).forEach(p => { if (p?.category) set.add(String(p.category)); });
+    savedCategories.forEach(c => c && set.add(String(c)));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [products, savedCategories]);
+  const addCategory = async () => {
+    const name = (window.prompt("New category name") || "").trim();
+    if (!name) return;
+    try { await push(ref(database, "product_categories"), name); } catch { /* falls back to local selection */ }
+    setCategory(name);
+  };
+
   const addProduct = async () => {
     if (!form.name || form.sizes.length === 0) return;
     // Opening stock requires an explicitly-picked destination — no default location.
@@ -3921,9 +3951,10 @@ function AdminView({ products, orders, onExit }) {
       // respected as the top level; subcategory + brand are always auto-derived.
       const auto = categorize(form.name, form.sizes);
       const manualCat = (form.category || "").trim();
-      // Respect a manual category ONLY when it's a real top-level; otherwise the
-      // auto value wins (so free-text junk can't land in the browse-able field).
-      const useManual = TOP_CATEGORIES.includes(manualCat);
+      // Respect a manual category when it's a known/saved category (picked from the
+      // dropdown); otherwise the auto value wins so free-text junk can't land in
+      // the browse-able field. Saved customs are honoured alongside the top-levels.
+      const useManual = TOP_CATEGORIES.includes(manualCat) || savedCategories.includes(manualCat) || categoryOptions.includes(manualCat);
       const newProduct = {
         name: form.name,
         category: useManual ? manualCat : auto.category,
@@ -4044,6 +4075,7 @@ function AdminView({ products, orders, onExit }) {
   // maps to productType "clothing" with sizeStyle "waist".
   const SIZE_TYPE_OPTIONS = [
     { key: "shoe",    label: "Sneaker",  productType: "sneaker"  },
+    { key: "kids",    label: "Kids",     productType: "sneaker"  },
     { key: "letters", label: "Clothing", productType: "clothing" },
     { key: "waist",   label: "Bottoms",  productType: "clothing" },
   ];
@@ -4054,8 +4086,10 @@ function AdminView({ products, orders, onExit }) {
     setForm(f => ({ ...f, sizeStyle: opt.key, sizes: [] }));
     setRecvQtys({});
   };
-  // Size buttons for the form, driven by the chosen breakdown.
+  // Size buttons for the form, driven by the chosen breakdown. The Kids (26–35)
+  // breakdown only appears once "Kids" is the selected size type.
   const formSizeChoices = form.sizeStyle === "shoe" ? SNEAKER_SIZES
+    : form.sizeStyle === "kids" ? KIDS_SIZES
     : form.sizeStyle === "waist" ? BOTTOMS_SIZES : CLOTHING_SIZES;
   // POS Phase 2: category onChange handler. Auto-sets the shoebox flag based
   // on category text (footwear / shoe / sneaker → true; everything else →
@@ -4226,7 +4260,13 @@ function AdminView({ products, orders, onExit }) {
           <div style={{ fontWeight:"700", fontSize:"0.95rem", marginBottom:"1rem", color:"#ccc" }}>New Product</div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))", gap:"1rem", marginBottom:"1rem" }}>
             <input placeholder="Product name" value={form.name} onChange={e => setForm(f=>({...f,name:e.target.value}))} style={inputStyle} />
-            <input placeholder="Category (e.g. Sneakers)" value={form.category} onChange={e => setCategory(e.target.value)} style={inputStyle} />
+            <select value={categoryOptions.includes(form.category) ? form.category : ""}
+              onChange={e => { if (e.target.value === "__add__") addCategory(); else setCategory(e.target.value); }}
+              style={{ ...inputStyle, appearance:"auto", WebkitAppearance:"menulist", cursor:"pointer", color: form.category ? "#fff" : "rgba(255,255,255,.45)" }}>
+              <option value="" style={{ color:"#000" }}>Category…</option>
+              {categoryOptions.map(c => <option key={c} value={c} style={{ color:"#000" }}>{c}</option>)}
+              <option value="__add__" style={{ color:"#000" }}>＋ Add new category…</option>
+            </select>
             <div style={{ gridColumn:"1 / -1" }}>
               <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Product Photo</div>
               <div>
@@ -4441,9 +4481,11 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     ? product.sizes
     : (isClothing && product.stock ? Object.keys(product.stock) : []);
   const productHubs = getProductHubs(product);
-  // Clothing products may use letters (tops) or the waist set (bottoms) — infer which
-  // from the product's own sizes so editing shows the right breakdown.
-  const sizeChoices = isClothing ? clothingChoicesFor(productSizes) : SNEAKER_SIZES;
+  // Clothing products may use letters (tops) or the waist set (bottoms); a
+  // sneaker whose sizes are ≥20 is a Kids product (26–35). Infer the breakdown
+  // from the product's own sizes so editing shows the right buttons.
+  const sizeChoices = isClothing ? clothingChoicesFor(productSizes)
+    : isKidsSizeSet(productSizes) ? KIDS_SIZES : SNEAKER_SIZES;
 
   const [galleryView, setGalleryView] = useState(null); // open the photo gallery viewer
   const photos = productPhotos(product);
