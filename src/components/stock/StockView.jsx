@@ -151,7 +151,7 @@ export default function StockView({ products = [], onExit }) {
             <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.55)", marginTop: 3 }}>{sub}</div>
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "18px 28px 48px" }}>
-            <div style={{ maxWidth: 860, margin: "0 auto" }}>{content}</div>
+            <div style={{ maxWidth: 1120, margin: "0 auto" }}>{content}</div>
           </div>
         </div>
       </div>

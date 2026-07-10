@@ -26,6 +26,7 @@ import { searchProducts } from "../../utils/productSearch";
 import { SizeTag } from "../SizeTag";
 import { resolveScan, realSizesOf, forgivingBarcodeCandidates } from "./scanResolve";
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
+import { useWide } from "./hooks";
 import FilterPicker from "./FilterPicker";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found", not a
@@ -75,6 +76,7 @@ function SizeChip({ size }) {
 }
 
 export default function Transfer({ products, registry, actorRole }) {
+  const wide = useWide(1024);   // desktop → two-column (browse | cart rail)
   // SOURCE — REQUIRED, no default. Every transfer must consciously pick where the
   // stock leaves from, so this starts empty and the cart tools stay hidden until a
   // source is chosen.
@@ -271,107 +273,78 @@ export default function Transfer({ products, registry, actorRole }) {
            : `Transferred ${ok} line(s) → ${labelFor(to, registry)}`);
   };
 
-  return (
-    <div>
-      {/* Open refill requests (Source chain) — prefill a transfer */}
-      {openRefills.length > 0 && (
-        <div style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
-          <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>Open refill requests</div>
-          {openRefills.map((r) => {
-            const nm = productsById[r.productId]?.name || r.productId;
-            return (
-              <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderTop: BORDER, fontSize: 13 }}>
-                <span style={{ color: "#fff" }}>{nm} · <SizeTag size={r.size} /> ×{r.qty || 1}<span style={{ color: GRAY }}> → {labelFor(r.requestingLocation, registry)}</span></span>
-                <button onClick={() => prefillRefill(r)} style={{ ...bGhost, padding: "5px 10px", fontSize: 12 }}>Prefill</button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Source (pick first — the grid + scan act on this location). */}
-      <FilterPicker label="Transfer from" value={from} onChange={pickSource} placeholder="Choose source…" defaultOpen={!from}
-        options={locations.map((l) => ({ id: l.id, label: labelFor(l.id, registry) }))} />
-
-      {!from ? (
-        <Empty>Pick a source location above to start a transfer.</Empty>
-      ) : (
-      <>
-      {/* SCAN — the gun works ANYWHERE on this screen (global omni-listener, POS
-          sell-scan feel): each scan drops straight into the cart, no focus needed,
-          so you can scan-scan-scan. The box is a manual-entry fallback (leading
-          zeros optional) and stays armed. */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+  // ── Reusable pieces (shared by mobile stack + desktop two-column) ──
+  const scanPanel = (
+    <div style={{ ...GLASS, padding: 12, marginBottom: 12, borderColor: "rgba(74,222,128,.28)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9 }}>
+        <span style={{ width: 26, height: 26, borderRadius: 8, display: "grid", placeItems: "center", background: "rgba(74,222,128,.12)", border: "1px solid rgba(74,222,128,.35)", color: GREEN, flexShrink: 0 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M3 12h18" /></svg>
+        </span>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>Scan into cart</div>
+        <span style={{ marginLeft: "auto", fontSize: 10, color: GREEN, fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: GREEN, boxShadow: `0 0 7px ${GREEN}` }} />ARMED</span>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
         <input ref={scanRef} value={scan} onChange={(e) => setScan(e.target.value)} autoFocus
                onKeyDown={(e) => { if (e.key === "Enter") { onScanCode(e.currentTarget.value, { forgiving: true }); setScan(""); requestAnimationFrame(() => scanRef.current?.focus()); } }}
                placeholder="Scan or type a barcode… ↵"
                style={{ ...input, flex: 1, boxSizing: "border-box", borderColor: "rgba(74,222,128,.4)" }} />
-        <button onClick={() => { onScanCode(scan, { forgiving: true }); setScan(""); scanRef.current?.focus(); }} style={{ ...bGreen, padding: "0 16px", whiteSpace: "nowrap" }}>Add</button>
+        <button onClick={() => { onScanCode(scan, { forgiving: true }); setScan(""); scanRef.current?.focus(); }} style={{ ...bGreen, padding: "0 18px", whiteSpace: "nowrap" }}>Add</button>
       </div>
-      <div style={{ fontSize: 10.5, color: GRAY, marginBottom: 10 }}>Scanner armed — scan any item and it drops into the cart. Same product + size stacks.</div>
+      <div style={{ fontSize: 10.5, color: GRAY, marginTop: 8 }}>Scanner works anywhere on this screen — scan and it drops into the cart. Same product + size stacks.</div>
+    </div>
+  );
 
-      {/* CART — ONE card per product, sizes broken out (M×2, L×1 …) + product total.
-          Per-size ± / remove and remove-whole-product. Confirm still moves each size
-          cell exactly. Over-source sizes are flagged (floor blocks them at commit). */}
-      {cartGroups.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>
-            Cart · {cartGroups.length} product{cartGroups.length !== 1 ? "s" : ""} · {totalUnits} unit(s){overCount > 0 ? ` · ${overCount} over source` : ""}
+  // CART — ONE card per product, sizes broken out (M×2, L×1 …) + product total.
+  const cartInner = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {cartGroups.map((g) => (
+        <div key={g.productId} style={{ ...GLASS, padding: 11 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 8 }}>
+            <Thumb product={productsById[g.productId]} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.productName}</div>
+              <div style={{ fontSize: 11, color: g.over ? AMBER : GRAY }}>{g.total} unit{g.total !== 1 ? "s" : ""} · {g.sizes.length} size{g.sizes.length !== 1 ? "s" : ""}{g.over ? " · over source" : ""}</div>
+            </div>
+            <button onClick={() => removeProduct(g.productId)} title="Remove product" style={{ ...bGhost, padding: "6px 10px", fontSize: 13, lineHeight: 1 }}>Remove</button>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {cartGroups.map((g) => (
-              <div key={g.productId} style={{ ...GLASS, padding: 11 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 8 }}>
-                  <Thumb product={productsById[g.productId]} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.productName}</div>
-                    <div style={{ fontSize: 11, color: g.over ? AMBER : GRAY }}>{g.total} unit{g.total !== 1 ? "s" : ""} · {g.sizes.length} size{g.sizes.length !== 1 ? "s" : ""}{g.over ? " · over source" : ""}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {g.sizes.map((s) => {
+              const k = keyOf(g.productId, s.size);
+              return (
+                <div key={s.size} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderTop: BORDER }}>
+                  <div style={{ minWidth: 62 }}><SizeChip size={s.size} /></div>
+                  <div style={{ flex: 1, fontSize: 10.5, color: s.over ? AMBER : GRAY }}>{s.here} at source{s.over ? " · over!" : ""}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <button onClick={() => setLineQty(k, s.qty - 1)} style={stepBtn}>−</button>
+                    <input type="number" inputMode="numeric" min="0" value={s.qty}
+                           onChange={(e) => setLineQty(k, e.target.value)}
+                           style={{ ...input, width: 44, minWidth: 0, boxSizing: "border-box", textAlign: "center", padding: "6px 2px", borderColor: s.over ? "rgba(245,158,11,.5)" : undefined }} />
+                    <button onClick={() => setLineQty(k, s.qty + 1)} style={stepBtn}>+</button>
                   </div>
-                  <button onClick={() => removeProduct(g.productId)} title="Remove product" style={{ ...bGhost, padding: "6px 10px", fontSize: 13, lineHeight: 1 }}>Remove</button>
+                  <button onClick={() => removeLine(k)} title="Remove size" style={{ ...bGhost, padding: "5px 8px", fontSize: 13, lineHeight: 1 }}>×</button>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {g.sizes.map((s) => {
-                    const k = keyOf(g.productId, s.size);
-                    return (
-                      <div key={s.size} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderTop: BORDER }}>
-                        <div style={{ minWidth: 62 }}><SizeChip size={s.size} /></div>
-                        <div style={{ flex: 1, fontSize: 10.5, color: s.over ? AMBER : GRAY }}>{s.here} at source{s.over ? " · over!" : ""}</div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                          <button onClick={() => setLineQty(k, s.qty - 1)} style={stepBtn}>−</button>
-                          <input type="number" inputMode="numeric" min="0" value={s.qty}
-                                 onChange={(e) => setLineQty(k, e.target.value)}
-                                 style={{ ...input, width: 44, minWidth: 0, boxSizing: "border-box", textAlign: "center", padding: "6px 2px", borderColor: s.over ? "rgba(245,158,11,.5)" : undefined }} />
-                          <button onClick={() => setLineQty(k, s.qty + 1)} style={stepBtn}>+</button>
-                        </div>
-                        <button onClick={() => removeLine(k)} title="Remove size" style={{ ...bGhost, padding: "5px 8px", fontSize: 13, lineHeight: 1 }}>×</button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
-      )}
+      ))}
+    </div>
+  );
 
+  const browse = (
+    <>
       {categories.length > 1 && (
         <FilterPicker label="Category" value={cat} onChange={setCat}
           options={[{ id: "all", label: "All" }, ...categories.map((c) => ({ id: c, label: c }))]} />
       )}
-
-      {/* Search */}
       <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search in ${labelFor(from, registry)}…`}
              style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 12 }} />
-
-      {/* Product list — only products with stock at the source. */}
       {shown.length === 0 ? (
         <Empty>{search.trim() ? "No products match." : `Nothing in stock at ${labelFor(from, registry)}.`}</Empty>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: lines.length ? 84 : 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: wide ? "repeat(auto-fill, minmax(240px, 1fr))" : "1fr", gap: 8, alignItems: "start", paddingBottom: (!wide && lines.length) ? 84 : 8 }}>
           {shown.map((p) => {
             const expanded = openId === p.id;
-            // Real sizes with stock here, PLUS a synthetic "One size" cell when this
-            // product holds no-size ("_") stock — so one-size items are transferable.
             const realSizes = realSizesOf(p).filter((sz) => avail(p.id, sz) > 0);
             const sizes = avail(p.id, ONE_SIZE) > 0 ? [...realSizes, ONE_SIZE] : realSizes;
             const inBasket = sizes.reduce((s, sz) => s + (basket[keyOf(p.id, sz)]?.qty || 0), 0);
@@ -387,7 +360,7 @@ export default function Transfer({ products, registry, actorRole }) {
                   <span style={{ color: BLUE_L, transform: expanded ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▸</span>
                 </div>
                 {expanded && (
-                  <div style={{ padding: "0 11px 12px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))", gap: 8 }}>
+                  <div style={{ padding: "0 11px 12px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(104px, 1fr))", gap: 8 }}>
                     {sizes.map((sz) => {
                       const max = avail(p.id, sz);
                       const qty = basket[keyOf(p.id, sz)]?.qty || 0;
@@ -414,18 +387,82 @@ export default function Transfer({ products, registry, actorRole }) {
           })}
         </div>
       )}
-      </>
+    </>
+  );
+
+  // Cart summary + destination trigger (shared by rail footer + sticky bar).
+  const cartActions = (
+    <>
+      <button onClick={clearBasket} style={{ ...bGhost, padding: "8px 12px", fontSize: 12 }}>Clear</button>
+      <button onClick={() => setPicking(true)} style={{ ...bGreen, padding: "10px 18px", flex: wide ? 1 : "none" }}>Destination →</button>
+    </>
+  );
+
+  return (
+    <div>
+      {/* Open refill requests (Source chain) — prefill a transfer */}
+      {openRefills.length > 0 && (
+        <div style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>Open refill requests</div>
+          {openRefills.map((r) => {
+            const nm = productsById[r.productId]?.name || r.productId;
+            return (
+              <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderTop: BORDER, fontSize: 13 }}>
+                <span style={{ color: "#fff" }}>{nm} · <SizeTag size={r.size} /> ×{r.qty || 1}<span style={{ color: GRAY }}> → {labelFor(r.requestingLocation, registry)}</span></span>
+                <button onClick={() => prefillRefill(r)} style={{ ...bGhost, padding: "5px 10px", fontSize: 12 }}>Prefill</button>
+              </div>
+            );
+          })}
+        </div>
       )}
 
-      {/* Sticky action bar */}
-      {lines.length > 0 && (
+      {/* Source (pick first — the grid + scan act on this location). */}
+      <FilterPicker label="Transfer from" value={from} onChange={pickSource} placeholder="Choose source…" defaultOpen={!from}
+        options={locations.map((l) => ({ id: l.id, label: labelFor(l.id, registry) }))} />
+
+      {!from ? (
+        <Empty>Pick a source location above to start a transfer.</Empty>
+      ) : wide ? (
+        /* DESKTOP — browse left, live cart rail right. */
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 336px", gap: 16, alignItems: "start" }}>
+          <div style={{ minWidth: 0 }}>{scanPanel}{browse}</div>
+          <aside style={{ position: "sticky", top: 0, ...GLASS, padding: 12, display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 150px)" }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>Cart</div>
+              <div style={{ fontSize: 11, color: overCount ? AMBER : GRAY }}>{totalUnits} unit{totalUnits !== 1 ? "s" : ""}{overCount ? ` · ${overCount} over` : ""}</div>
+            </div>
+            <div style={{ flex: 1, overflowY: "auto", margin: "0 -4px", padding: "0 4px" }}>
+              {cartGroups.length === 0
+                ? <div style={{ color: GRAY, fontSize: 12, textAlign: "center", padding: "36px 8px" }}>Scan or search to add items.</div>
+                : cartInner}
+            </div>
+            {cartGroups.length > 0 && <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 12, borderTop: BORDER }}>{cartActions}</div>}
+          </aside>
+        </div>
+      ) : (
+        /* MOBILE — stacked, with the sticky action bar below. */
+        <>
+          {scanPanel}
+          {cartGroups.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>
+                Cart · {cartGroups.length} product{cartGroups.length !== 1 ? "s" : ""} · {totalUnits} unit(s){overCount > 0 ? ` · ${overCount} over source` : ""}
+              </div>
+              {cartInner}
+            </div>
+          )}
+          {browse}
+        </>
+      )}
+
+      {/* Sticky action bar — mobile only (desktop uses the rail footer). */}
+      {!wide && lines.length > 0 && (
         <div style={{ position: "fixed", left: 12, right: 12, bottom: 14, zIndex: 40, ...GLASS, padding: 10, display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{lines.length} line(s) · {totalUnits} unit(s)</div>
             <div style={{ fontSize: 11, color: overCount ? AMBER : GRAY }}>from {labelFor(from, registry)}{overCount ? ` · ${overCount} over source` : ""}</div>
           </div>
-          <button onClick={clearBasket} style={{ ...bGhost, padding: "8px 12px", fontSize: 12 }}>Clear</button>
-          <button onClick={() => setPicking(true)} style={{ ...bGreen, padding: "10px 18px" }}>Destination →</button>
+          {cartActions}
         </div>
       )}
 
