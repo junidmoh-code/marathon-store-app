@@ -1986,7 +1986,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
     { label: "Insights & Display", cards: [
       hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && { key:"insights", icon:RoleIcons.insights, name:"Internal Insights", desc:"Business analytics", onClick:()=>onSelect(ROLES.INSIGHTS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.DISPLAY])  && { key:"display", icon:RoleIcons.display, name:"TV Display", desc:"Customer queue screen", onClick:()=>onSelect(ROLES.DISPLAY) },
-      hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && { key:"customer", icon:RoleIcons.customer, name:"Customer", desc:"Check order status", onClick:()=>onSelect(ROLES.CUSTOMER) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && { key:"customer", icon:RoleIcons.customer, name:"Track Order", desc:"Live order status & timeline", onClick:()=>onSelect(ROLES.CUSTOMER) },
     ].filter(Boolean) },
     { label: "Administration", cards: [
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && { key:"customers", icon:RoleIcons.customers_db, name:"Customers", desc:"Customer database", onClick:()=>onSelect(ROLES.CUSTOMERS_DB) },
