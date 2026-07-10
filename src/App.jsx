@@ -12228,10 +12228,22 @@ function MetaRow({ label, value }) {
 const INSIGHTS_SESSION_KEY = "insightsAuth";
 
 // ─── INSIGHTS VIEW ────────────────────────────────────────────────────────────
+// Sidebar icons for the desktop Insights workspace (one per report).
+const INSIGHT_TAB_ICON = {
+  overview:         <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />,
+  sales:            <><path d="M3 17l6-6 4 4 8-8" /><path d="M17 7h4v4" /></>,
+  search:           <><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></>,
+  oos:              <><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>,
+  sizes:            <><path d="M2 12h20M6 12V8M10 12V6M14 12V6M18 12V8" /></>,
+  times:            <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
+  returns:          <><polyline points="9 14 4 9 9 4" /><path d="M20 20v-7a4 4 0 0 0-4-4H4" /></>,
+  "clothing-refills": <path d="M16 4l-4 4-4-4M4 8v12a1 1 0 001 1h14a1 1 0 001-1V8" />,
+  depleted:         <><path d="M21 8v13H3V8M1 3h22v5H1z" /><path d="M9 12h6" /></>,
+  reorder:          <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4L12 3z" />,
+};
+
 function InsightsView({ onExit }) {
-  const [authed,     setAuthed]     = useState(() => sessionStorage.getItem(INSIGHTS_SESSION_KEY) === "true");
-  const [pw,         setPw]         = useState("");
-  const [pwError,    setPwError]    = useState(false);
+  const isDesktop = !useIsNarrow(1024);
   const [tab,        setTab]        = usePersistedTab("insights", "overview");
   const [filterMode, setFilterMode] = useState("day");
   const [filterDate, setFilterDate] = useState(() => getSADateString());
@@ -12390,15 +12402,8 @@ function InsightsView({ onExit }) {
     return map;
   }, [products]);
 
-  const checkPw = () => {
-    if (pw === "1551") { sessionStorage.setItem(INSIGHTS_SESSION_KEY, "true"); setAuthed(true); }
-    else { setPwError(true); setTimeout(()=>setPwError(false), 1500); }
-  };
-
-  const handleExit = () => {
-    sessionStorage.removeItem(INSIGHTS_SESSION_KEY);
-    onExit();
-  };
+  // Password gate removed — access is governed by the Insights role permission.
+  const handleExit = () => { onExit(); };
 
   const TABS = [
     { key:"overview",         label:"Overview" },
@@ -12427,23 +12432,116 @@ function InsightsView({ onExit }) {
     if (dx > 0 && idx > 0)                  setTab(tabKeys[idx - 1]); // right → prev
   };
 
-  if (!authed) return (
-    <div style={{ minHeight:"100vh", background:BG, color:"#fff", fontFamily:FONT, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"2rem" }}>
-      <div style={{ marginBottom:"0.5rem" }}>
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-      </div>
-      <h1 style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"3rem", letterSpacing:"0.05em", margin:"0 0 0.5rem" }}>INTERNAL INSIGHTS</h1>
-      <p style={{ color:"#666", marginBottom:"2rem" }}>Enter password to continue</p>
-      <div style={{ display:"flex", gap:"0.75rem", width:"100%", maxWidth:"360px" }}>
-        <input type="password" placeholder="Password" value={pw}
-          onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&checkPw()}
-          style={{ ...inputStyle, flex:1, borderColor:pwError?"#F87171":"rgba(60,110,255,.2)" }} />
-        <button onClick={checkPw} style={{ ...bBlue, padding:"0 1.25rem", fontSize:"1rem" }}>Enter</button>
-      </div>
-      {pwError && <div style={{ color:"#F87171", marginTop:"0.75rem", fontSize:"0.9rem" }}>Incorrect password</div>}
-      <button onClick={handleExit} style={{ ...bGhost, marginTop:"2rem", padding:"0.4rem 1rem" }}>← Back</button>
+  // Shared tab content — rendered by both the desktop workspace and mobile.
+  const content = (
+    <>
+      {tab==="overview"         && <InsightOverviewTab        log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+      {tab==="sales"            && <InsightSalesSummaryTab    log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+      {tab==="search"           && <InsightProductSearchTab   log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} category={category} />}
+      {tab==="oos"              && <InsightOOSTrackerTab      log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+      {tab==="sizes"            && <InsightSizePopularityTab  log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+      {tab==="times"            && <InsightBusiestTimesTab    log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+      {tab==="returns"          && <InsightReturnsTab         returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+      {tab==="clothing-refills" && <InsightClothingRefillsTab orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
+      {tab==="depleted"         && <InsightStockDepletedTab   orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
+      {tab==="reorder"          && <InsightReorderTab          productPhotoMap={productPhotoMap} />}
+    </>
+  );
+
+  // Pill-row builders reused by both layouts.
+  const storePills = (compact) => (
+    <div style={{ display:"flex", gap:6, visibility: tab === "reorder" ? "hidden" : "visible" }}>
+      {[["all","All"],["central","Central"],["pine","Pine"]].map(([val, label]) => {
+        const on = storeFilter === val;
+        return (
+          <button key={val} onClick={() => setStoreFilter(val)}
+            style={{ flex: compact ? "none" : 1, padding:"7px 13px", borderRadius:999, fontSize:11.5, fontWeight:700, cursor:"pointer",
+                     background: on ? "rgba(74,127,255,.2)" : "rgba(255,255,255,.03)",
+                     border: "1px solid " + (on ? "rgba(74,127,255,.55)" : "rgba(255,255,255,.1)"),
+                     color: on ? "#fff" : "rgba(255,255,255,.5)" }}>{label}</button>
+        );
+      })}
     </div>
   );
+  const categoryPills = (compact) => (!CATEGORY_HIDDEN_TABS.has(tab) && (
+    <div style={{ display:"flex", gap:6 }}>
+      {[["both","Both"],["sneaker","Sneakers"],["clothing","Clothing"]].map(([val, label]) => {
+        const on = category === val;
+        return (
+          <button key={val} onClick={() => setCategory(val)}
+            style={{ flex: compact ? "none" : 1, padding:"7px 13px", borderRadius:999, fontSize:11.5, fontWeight:700, cursor:"pointer",
+                     background: on ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.03)",
+                     border: "1px solid " + (on ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.1)"),
+                     color: on ? "#fff" : "rgba(255,255,255,.5)" }}>{label}</button>
+        );
+      })}
+    </div>
+  ));
+  const auditBtn = (
+    <button onClick={() => setAuditOpen(true)}
+      style={{ background: audit.diff !== 0 ? "rgba(248,113,113,.12)" : "rgba(74,127,255,.08)",
+               border: audit.diff !== 0 ? "1px solid rgba(248,113,113,.4)" : "1px solid rgba(74,127,255,.3)",
+               color: audit.diff !== 0 ? "#F87171" : "#9DBCFF", borderRadius:11, padding:"9px 14px", fontSize:12.5, fontWeight:700, cursor:"pointer",
+               display:"flex", alignItems:"center", justifyContent:"center", gap:8, whiteSpace:"nowrap", fontFamily:FONT }}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 9v2m0 4h.01M5 19h14a2 2 0 002-2v-1a8 8 0 10-16 0v1a2 2 0 002 2z"/></svg>
+      Run Order Audit{audit.diff !== 0 && <span style={{ fontWeight:800 }}>· {audit.diff}</span>}
+    </button>
+  );
+
+  // ── DESKTOP INSIGHTS WORKSPACE (≥1024px) — sidebar of views + a filter toolbar
+  //    over the active report. Mobile keeps the tab strip below. ──
+  if (isDesktop) {
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 6px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={handleExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:8 }}>← Exit</button>
+          <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"10px 9px 6px", fontWeight:700 }}>Reports</div>
+          {TABS.map(t => {
+            const on = tab === t.key;
+            return (
+              <button key={t.key} onClick={() => setTab(t.key)}
+                style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
+                         background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                         color: on ? "#9DBCFF" : "rgba(233,238,255,.55)" }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ flexShrink:0, opacity:.9 }}>{INSIGHT_TAB_ICON[t.key] || <path d="M4 20V10M10 20V4M16 20v-7" />}</svg>
+                <span style={{ flex:1 }}>{t.label}</span>
+              </button>
+            );
+          })}
+          <div style={{ flex:1 }} />
+          <div style={{ padding:"9px 11px", borderRadius:11, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", fontSize:11, color:"rgba(233,238,255,.5)" }}>
+            <span style={{ color:"#9DBCFF", fontWeight:800, fontVariantNumeric:"tabular-nums" }}>{filteredLog.length.toLocaleString()}</span> events in view
+          </div>
+        </aside>
+
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 28px 14px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{(TABS.find(t=>t.key===tab)||{}).label || "Insights"}</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.5)", marginTop:3 }}>Internal insights · {filterLabel}</div>
+            <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", marginTop:14 }}>
+              {storePills(true)}
+              {tab !== "reorder" && categoryPills(true)}
+              <div style={{ flex:1 }} />
+              {auditBtn}
+            </div>
+            {tab !== "reorder" && (
+              <div style={{ marginTop:12 }}>
+                <InsightsDatePicker mode={filterMode} setMode={setFilterMode} dateStr={filterDate} setDateStr={setFilterDate} />
+              </div>
+            )}
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"18px 28px 48px" }}>
+            <div style={{ maxWidth:1080, margin:"0 auto" }}>{content}</div>
+          </div>
+        </div>
+        {auditOpen && <AuditModal audit={audit} onClose={() => setAuditOpen(false)} />}
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
@@ -12533,16 +12631,7 @@ function InsightsView({ onExit }) {
       <div style={{ padding:"0 14px 16px" }}
         onTouchStart={e => { touchStartX.current = e.touches[0].clientX; }}
         onTouchEnd={handleSwipe}>
-        {tab==="overview"         && <InsightOverviewTab        log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
-        {tab==="sales"            && <InsightSalesSummaryTab    log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
-        {tab==="search"           && <InsightProductSearchTab   log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} category={category} />}
-        {tab==="oos"              && <InsightOOSTrackerTab      log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="sizes"            && <InsightSizePopularityTab  log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="times"            && <InsightBusiestTimesTab    log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="returns"          && <InsightReturnsTab         returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="clothing-refills" && <InsightClothingRefillsTab orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
-        {tab==="depleted"         && <InsightStockDepletedTab   orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
-        {tab==="reorder"          && <InsightReorderTab          productPhotoMap={productPhotoMap} />}
+        {content}
       </div>
 
       {/* AUDIT MODAL */}
@@ -13695,7 +13784,7 @@ function AppInner() {
   // Studio) carry their own top-bar / Home nav, so the global pill is suppressed
   // there to avoid a stray floating sign-out.
   const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
-    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === null));
+    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === null));
 
   return (
     <>
