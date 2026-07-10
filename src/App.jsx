@@ -8864,6 +8864,8 @@ function CustomerView({ orders, onExit }) {
   const [orderId, setOrderId] = useState("");
   const [found, setFound] = useState(null);
   const [searched, setSearched] = useState(false);
+  // Use the whole screen on desktop (≥1024px); phones keep the single column.
+  const isWide = !useIsNarrow(1024);
 
   const doSearch = (idOverride) => {
     const raw = (idOverride ?? orderId).toString();
@@ -8908,7 +8910,7 @@ function CustomerView({ orders, onExit }) {
   const shopLabel = found ? orderShopLabel(found) : null;
 
   return (
-    <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: 480, margin: "0 auto", padding: "34px 18px 48px", boxSizing: "border-box" }}>
+    <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: isWide ? 1120 : 480, margin: "0 auto", padding: isWide ? "40px 40px 64px" : "34px 18px 48px", boxSizing: "border-box" }}>
       <style>{`@keyframes otPulse{0%,100%{box-shadow:0 0 0 0 rgba(74,127,255,.5)}50%{box-shadow:0 0 0 6px rgba(74,127,255,0)}}
         .ot-press{transition:transform .1s ease, filter .12s ease}.ot-press:active{transform:scale(.98)}.ot-press:hover{filter:brightness(1.08)}`}</style>
 
@@ -8926,7 +8928,7 @@ function CustomerView({ orders, onExit }) {
 
       {/* Search */}
       {!found && (
-        <>
+        <div style={{ maxWidth: isWide ? 460 : "100%" }}>
           <input placeholder="000" value={orderId} onChange={e => setOrderId(e.target.value.replace(/[^0-9]/g, ""))}
                  onKeyDown={e => e.key === "Enter" && doSearch()} maxLength={4} inputMode="numeric"
                  style={{ width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 16, padding: "18px", color: "#fff", fontSize: 34, fontWeight: 800, textAlign: "center", letterSpacing: "12px", outline: "none", marginBottom: 10, fontVariantNumeric: "tabular-nums" }} />
@@ -8934,20 +8936,20 @@ function CustomerView({ orders, onExit }) {
                   style={{ width: "100%", background: "linear-gradient(180deg, #5A8BFF, #4A7FFF)", color: "#fff", border: "none", borderRadius: 13, padding: 15, fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, boxShadow: "0 10px 24px -10px rgba(74,127,255,.8)" }}>
             Track order →
           </button>
-        </>
+        </div>
       )}
 
       {searched && !found && (
-        <div style={{ marginTop: 16, color: "#F87171", background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.35)", borderRadius: 14, padding: "14px 16px", fontSize: 13.5, textAlign: "center" }}>
+        <div style={{ maxWidth: isWide ? 460 : "100%", marginTop: 16, color: "#F87171", background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.35)", borderRadius: 14, padding: "14px 16px", fontSize: 13.5, textAlign: "center" }}>
           No order <b>#{orderId}</b> found. Double-check the number on your slip.
         </div>
       )}
 
       {/* Result */}
       {found && cfg && (
-        <div>
+        <div style={{ display: isWide ? "grid" : "block", gridTemplateColumns: isWide ? "minmax(0, 460px) minmax(0, 1fr)" : undefined, gap: isWide ? 18 : 0, alignItems: "start" }}>
           {/* Hero card — photo, product, shop, status */}
-          <div style={{ background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 20, padding: 18, boxShadow: "0 20px 50px -24px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08)", marginBottom: 14 }}>
+          <div style={{ background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 20, padding: isWide ? 22 : 18, boxShadow: "0 20px 50px -24px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08)", marginBottom: isWide ? 0 : 14 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
               <div>
                 <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase" }}>Order</div>
@@ -9024,8 +9026,8 @@ function CustomerView({ orders, onExit }) {
 
           {/* Search another */}
           <button onClick={reset} className="ot-press"
-                  style={{ width: "100%", marginTop: 16, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(233,238,255,.75)", borderRadius: 13, padding: 14, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
-            Track another order
+                  style={{ gridColumn: isWide ? "1 / -1" : undefined, width: isWide ? "auto" : "100%", justifySelf: isWide ? "start" : undefined, marginTop: 16, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(233,238,255,.75)", borderRadius: 13, padding: isWide ? "12px 22px" : 14, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
+            ← Track another order
           </button>
         </div>
       )}
@@ -9034,8 +9036,8 @@ function CustomerView({ orders, onExit }) {
       {!found && !searched && orders.length > 0 && (
         <div style={{ marginTop: 26 }}>
           <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 10 }}>Recent orders</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {orders.slice(0, 5).map(o => {
+          <div style={{ display: "grid", gridTemplateColumns: isWide ? "repeat(auto-fill, minmax(320px, 1fr))" : "1fr", gap: 10 }}>
+            {orders.slice(0, isWide ? 12 : 5).map(o => {
               const c = STATUS_CONFIG[o.status];
               return (
                 <button key={o.id} onClick={() => doSearch(o.id)} className="ot-press"
