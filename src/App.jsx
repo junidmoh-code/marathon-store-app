@@ -1602,43 +1602,80 @@ function CustomersView({ onExit }) {
   const stats = useMemo(() => {
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
     const startMs = period === "month" ? monthStart.getTime() : 0;
-    const placed = insightsLog.filter(e => e.action === "placed" && (e.customerPhone || e.customerName));
+    const custKeyOf = (phone, name) => phoneToKey(phone) !== "unknown" ? phoneToKey(phone) : `name:${(name || "").trim().toLowerCase()}`;
+
+    // Aggregate orders per customer, DEDUPED by order identity (date::orderNumber)
+    // so a double-fire checkout can't inflate a customer's count. Build an order
+    // map at the same time so returns attribute back to the exact customer.
+    const seen = new Set();
+    const orderByKey = {};  // `${date}::${orderNumber}` -> customer key
     const byKey = {};
-    placed.forEach(e => {
-      const key = phoneToKey(e.customerPhone) !== "unknown" ? phoneToKey(e.customerPhone) : `name:${(e.customerName || "").toLowerCase()}`;
-      if (!byKey[key]) byKey[key] = { key, phone: e.customerPhone || "", name: e.customerName || "Unknown", first: e.timestamp, last: e.timestamp, all: 0, inPeriod: 0 };
-      const c = byKey[key];
+    insightsLog.filter(e => e.action === "placed" && (e.customerPhone || e.customerName)).forEach(e => {
+      const d = (e.timestamp || "").slice(0, 10);
+      const ck = custKeyOf(e.customerPhone, e.customerName);
+      if (e.orderNumber != null) {
+        const ordKey = `${d}::${e.orderNumber}`;
+        if (seen.has(ordKey)) return;          // duplicate placed for the same order/day
+        seen.add(ordKey);
+        orderByKey[ordKey] = ck;
+      }
+      if (!byKey[ck]) byKey[ck] = { key: ck, phone: e.customerPhone || "", name: e.customerName || "Unknown", first: e.timestamp, last: e.timestamp, all: 0, inPeriod: 0, returns: 0 };
+      const c = byKey[ck];
       if (e.timestamp < c.first) c.first = e.timestamp;
       if (e.timestamp > c.last)  c.last  = e.timestamp;
+      if (e.customerName && (!c.name || c.name === "Unknown")) c.name = e.customerName;
+      if (e.customerPhone && !c.phone) c.phone = e.customerPhone;
       c.all++;
       if (tsMs(e.timestamp) >= startMs) c.inPeriod++;
-      if (!c.name || c.name === "Unknown") c.name = e.customerName || c.name;
     });
-    const arr = Object.values(byKey);
+
+    // Returns → attributed to the customer who owned the order (date::orderNumber),
+    // falling back to name. Deduped by order identity so a re-fire counts once.
+    const retSeen = new Set();
+    returnsLog.forEach(r => {
+      if (period === "month" && !(tsMs(r.timestamp) >= startMs)) return;
+      const d = r.date || (r.timestamp || "").slice(0, 10);
+      if (r.orderNumber != null) { const rk = `${d}::${r.orderNumber}`; if (retSeen.has(rk)) return; retSeen.add(rk); }
+      const mappedCk = (r.orderNumber != null && orderByKey[`${d}::${r.orderNumber}`]) || `name:${(r.customerName || "").trim().toLowerCase()}`;
+      if (!byKey[mappedCk]) byKey[mappedCk] = { key: mappedCk, phone: "", name: r.customerName || "Unknown", first: r.timestamp, last: r.timestamp, all: 0, inPeriod: 0, returns: 0 };
+      byKey[mappedCk].returns++;
+    });
+
+    const arr = Object.values(byKey).filter(c => c.all > 0);
     const newInPeriod = arr.filter(c => tsMs(c.first) >= startMs);
     const repeat = arr.filter(c => c.all > 1);
-    // Busiest weekday for NEW customers (by first-order day-of-week).
     const dow = [0, 0, 0, 0, 0, 0, 0];
     newInPeriod.forEach(c => { dow[new Date(c.first).getDay()]++; });
     const dowMax = Math.max(...dow, 1);
-    const peakDow = dow.indexOf(Math.max(...dow));
-    // Avg new/day over the elapsed window.
+    const peakDow = newInPeriod.length ? dow.indexOf(Math.max(...dow)) : -1;
     const firstEver = arr.length ? Math.min(...arr.map(c => tsMs(c.first))) : Date.now();
     const spanDays = period === "month" ? Math.max(1, new Date().getDate()) : Math.max(1, Math.ceil((Date.now() - firstEver) / 86400000));
     const avgNewPerDay = newInPeriod.length / spanDays;
-    // Leaderboards
     const orderKey = period === "month" ? "inPeriod" : "all";
-    const mostOrders = [...arr].filter(c => c[orderKey] > 0).sort((a, b) => b[orderKey] - a[orderKey]).slice(0, 12);
-    const newest = [...newInPeriod].sort((a, b) => tsMs(b.first) - tsMs(a.first)).slice(0, 12);
-    // Returns per customer (from returns_log, matched by name).
-    const retMap = {};
-    returnsLog.filter(r => period === "all" || tsMs(r.timestamp) >= startMs).forEach(r => {
-      const n = (r.customerName || "Unknown").trim(); const k = n.toLowerCase();
-      if (!retMap[k]) retMap[k] = { name: n, count: 0 };
-      retMap[k].count++;
-    });
-    const mostReturns = Object.values(retMap).sort((a, b) => b.count - a.count).slice(0, 12);
-    return { arr, total: arr.length, newInPeriod, repeat, dow, dowMax, peakDow, avgNewPerDay, mostOrders, newest, mostReturns, orderKey };
+    const mostOrders  = [...arr].filter(c => c[orderKey] > 0).sort((a, b) => b[orderKey] - a[orderKey]).slice(0, 12);
+    const mostReturns = [...arr].filter(c => c.returns > 0).sort((a, b) => b.returns - a.returns).slice(0, 12);
+    const newest      = [...newInPeriod].sort((a, b) => tsMs(b.first) - tsMs(a.first)).slice(0, 12);
+    const recentActive = [...arr].sort((a, b) => tsMs(b.last) - tsMs(a.last)).slice(0, 12);
+    const totalReturns = arr.reduce((n, c) => n + c.returns, 0);
+
+    // New-customer trend — day buckets (this month) or the last 12 months (all time).
+    const trend = [];
+    if (period === "month") {
+      const days = new Date().getDate();
+      const counts = {};
+      newInPeriod.forEach(c => { const dd = new Date(c.first).getDate(); counts[dd] = (counts[dd] || 0) + 1; });
+      for (let dd = 1; dd <= days; dd++) trend.push({ label: String(dd), value: counts[dd] || 0 });
+    } else {
+      const counts = {};
+      arr.forEach(c => { const m = (c.first || "").slice(0, 7); counts[m] = (counts[m] || 0) + 1; });
+      const now = new Date();
+      for (let i = 11; i >= 0; i--) {
+        const dt = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+        trend.push({ label: dt.toLocaleDateString([], { month: "short" }), value: counts[key] || 0 });
+      }
+    }
+    return { arr, total: arr.length, newInPeriod, repeat, dow, dowMax, peakDow, avgNewPerDay, mostOrders, mostReturns, newest, recentActive, totalReturns, orderKey, trend };
   }, [insightsLog, returnsLog, period]);
 
   const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -1653,26 +1690,8 @@ function CustomersView({ onExit }) {
     return { orders, rets };
   }, [drill, insightsLog, returnsLog]);
 
-  return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth: isWide ? 1120 : 430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding: isWide ? "34px 24px 10px" : "50px 14px 10px" }}>
-        <div onClick={handleExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
-        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>CUSTOMERS</div>
-        </div>
-        <div style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>{customerList.length} · {optedInList.length} opt-in</div>
-      </div>
-      <div style={{ borderBottom:"1px solid rgba(60,110,255,.08)", padding: isWide ? "0 24px" : "0 1.5rem", display:"flex" }}>
-        {[["insights","Insights"],["list","Customer List"],["broadcast","Broadcast"]].map(([k,l]) => (
-          <button key={k} onClick={() => setTab(k)} style={{ ...(tab===k ? ulTabOn : ulTabOff) }}>
-            {l}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ padding: isWide ? "1.5rem 24px" : "1.5rem" }}>
-
+  const content = (
+    <>
         {/* ── TAB 0: INSIGHTS ── */}
         {tab === "insights" && (
           <CustomerInsights stats={stats} period={period} setPeriod={setPeriod} isWide={isWide} DOW={DOW} onDrill={setDrill} fmt={fmt} />
@@ -1786,6 +1805,88 @@ function CustomersView({ onExit }) {
             )}
           </div>
         )}
+    </>
+  );
+
+  // ── FULL-SCREEN DESKTOP WORKSPACE (>=1024px) — nav rail + wide main pane ──
+  if (isWide) {
+    const NAV = [["insights", "Insights"], ["list", "Customer List"], ["broadcast", "Broadcast"]];
+    const NAV_ICON = {
+      insights: <><rect x="3" y="12" width="4" height="9" rx="1" /><rect x="10" y="6" width="4" height="15" rx="1" /><rect x="17" y="9" width="4" height="12" rx="1" /></>,
+      list:     <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /></>,
+      broadcast:<><path d="M3 11l18-5v12L3 14v-3z" /><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6" /></>,
+    };
+    const navItem = ([key, label]) => {
+      const on = tab === key;
+      return (
+        <button key={key} onClick={() => setTab(key)}
+          style={{ display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left", cursor: "pointer", fontFamily: FONT, fontSize: 13, fontWeight: 600, borderRadius: 10, padding: "9px 11px",
+                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition: "background .14s, color .14s" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: .9 }}>{NAV_ICON[key]}</svg>
+          <span style={{ flex: 1 }}>{label}</span>
+        </button>
+      );
+    };
+    return (
+      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "240px minmax(0,1fr)", overflow: "hidden" }}>
+        <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", padding: "22px 13px 16px", display: "flex", flexDirection: "column", gap: 3, overflow: "auto" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 10px" }}>
+            <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
+            <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={handleExit} style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", color: "rgba(233,238,255,.6)", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, marginBottom: 8 }}>&larr; Exit</button>
+          <div style={{ fontSize: 9, letterSpacing: ".2em", textTransform: "uppercase", color: "rgba(233,238,255,.3)", padding: "6px 9px", fontWeight: 700 }}>Customers</div>
+          {NAV.map(navItem)}
+          <div style={{ flex: 1 }} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ flex: 1, background: "rgba(255,255,255,.022)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 11, padding: "9px 10px" }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#9DBCFF", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{customerList.length}</div>
+              <div style={{ fontSize: 9.5, color: "rgba(233,238,255,.45)", marginTop: 3, letterSpacing: ".04em", textTransform: "uppercase", fontWeight: 600 }}>Total</div>
+            </div>
+            <div style={{ flex: 1, background: "rgba(255,255,255,.022)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 11, padding: "9px 10px" }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#4ADE80", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{optedInList.length}</div>
+              <div style={{ fontSize: 9.5, color: "rgba(233,238,255,.45)", marginTop: 3, letterSpacing: ".04em", textTransform: "uppercase", fontWeight: 600 }}>Opt-in</div>
+            </div>
+          </div>
+        </aside>
+        <div style={{ minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ padding: "20px 32px 16px", borderBottom: "1px solid rgba(255,255,255,.08)", background: "radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize: 23, fontWeight: 800, letterSpacing: "-0.4px" }}>{tab === "insights" ? "Customer Insights" : tab === "list" ? "Customer List" : "Broadcast"}</div>
+            <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.55)", marginTop: 3 }}>{tab === "insights" ? "Who your customers are, how they behave, and who to keep." : tab === "list" ? "Every customer, searchable, with marketing opt-in." : "Message your opted-in customers on WhatsApp."}</div>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "22px 32px 56px" }}>
+            <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+              {content}
+            </div>
+          </div>
+        </div>
+        {drill && <CustomerDrillModal drill={drill} detail={drillDetail} onClose={() => setDrill(null)} fmt={fmt} />}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth: isWide ? 1120 : 430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding: isWide ? "34px 24px 10px" : "50px 14px 10px" }}>
+        <div onClick={handleExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>CUSTOMERS</div>
+        </div>
+        <div style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>{customerList.length} · {optedInList.length} opt-in</div>
+      </div>
+      <div style={{ borderBottom:"1px solid rgba(60,110,255,.08)", padding: isWide ? "0 24px" : "0 1.5rem", display:"flex" }}>
+        {[["insights","Insights"],["list","Customer List"],["broadcast","Broadcast"]].map(([k,l]) => (
+          <button key={k} onClick={() => setTab(k)} style={{ ...(tab===k ? ulTabOn : ulTabOff) }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ padding: isWide ? "1.5rem 24px" : "1.5rem" }}>
+
+        {content}
       </div>
       {drill && <CustomerDrillModal drill={drill} detail={drillDetail} onClose={() => setDrill(null)} fmt={fmt} />}
     </div>
@@ -1828,7 +1929,31 @@ function CustomerInsights({ stats, period, setPeriod, isWide, DOW, onDrill, fmt 
   );
 
   const repeatPct = stats.total ? Math.round(stats.repeat.length / stats.total * 100) : 0;
-  const recentActive = [...stats.arr].sort((a, b) => tsMs(b.last) - tsMs(a.last)).slice(0, 12);
+  const recentActive = stats.recentActive;
+
+  // Area chart for the new-customer trend.
+  const TrendChart = ({ data }) => {
+    const max = Math.max(...data.map(d => d.value), 1);
+    const W = 720, H = 150, pad = 8;
+    const x = i => data.length > 1 ? (i / (data.length - 1)) * (W - pad * 2) + pad : W / 2;
+    const y = v => H - 10 - (v / max) * (H - 26);
+    const pts = data.map((d, i) => [x(i), y(d.value)]);
+    const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+    const area = `${line} L${x(data.length - 1).toFixed(1)},${H} L${x(0).toFixed(1)},${H} Z`;
+    return (
+      <div>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" width="100%" height={150} style={{ display: "block" }}>
+          <defs><linearGradient id="ctGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#4A7FFF" stopOpacity=".38" /><stop offset="1" stopColor="#4A7FFF" stopOpacity="0" /></linearGradient></defs>
+          <path d={area} fill="url(#ctGrad)" />
+          <path d={line} fill="none" stroke="#6A9FFF" strokeWidth="2.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+          {pts.map((p, i) => <circle key={i} cx={p[0]} cy={p[1]} r={2.6} fill="#9DBCFF" />)}
+        </svg>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+          {data.map((d, i) => <div key={i} style={{ flex: 1, textAlign: "center", fontSize: 9.5, color: "rgba(233,238,255,.4)", overflow: "hidden" }}>{data.length <= 12 || i % 3 === 0 ? d.label : ""}</div>)}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1848,10 +1973,20 @@ function CustomerInsights({ stats, period, setPeriod, isWide, DOW, onDrill, fmt 
         {kpi(`${repeatPct}%`, "Repeat rate", `${stats.repeat.length} with 2+ orders`, "#FBBF24")}
       </div>
 
+      {/* New-customer trend + weekday, side by side on desktop */}
+      <div style={{ display: "grid", gridTemplateColumns: isWide ? "1.55fr 1fr" : "1fr", gap: 16 }}>
+      <div style={{ ...card, padding: "16px 18px 14px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 800, color: "#fff" }}>New customers over time</div>
+          <div style={{ fontSize: 12, color: "rgba(233,238,255,.5)" }}>{period === "month" ? "this month, by day" : "last 12 months"}</div>
+        </div>
+        <TrendChart data={stats.trend} />
+      </div>
+
       {/* Busiest weekday */}
       <div style={{ ...card, padding: "16px 18px 14px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 800, color: "#fff" }}>New customers by weekday</div>
+          <div style={{ fontSize: 13.5, fontWeight: 800, color: "#fff" }}>By weekday</div>
           <div style={{ fontSize: 12, color: "rgba(233,238,255,.5)" }}>Busiest: <b style={{ color: "#9DBCFF" }}>{stats.newInPeriod.length ? DOW[stats.peakDow] : "—"}</b></div>
         </div>
         <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 128 }}>
@@ -1868,11 +2003,12 @@ function CustomerInsights({ stats, period, setPeriod, isWide, DOW, onDrill, fmt 
           })}
         </div>
       </div>
+      </div>
 
       {/* Leaderboards */}
       <div style={{ display: "grid", gridTemplateColumns: isWide ? "1fr 1fr" : "1fr", gap: 16 }}>
         {board("Most orders", "Top customers — tap to dig in", stats.mostOrders, (c, i) => rankRow(i, c.name, c.phone || "no phone", c[stats.orderKey], () => onDrill(c)))}
-        {board("Most returns", "By customer (from returns)", stats.mostReturns, (c, i) => rankRow(i, c.name, null, c.count, () => onDrill({ key: `name:${(c.name || "").toLowerCase()}`, name: c.name })))}
+        {board("Most returns", "Returns per customer — tap to dig in", stats.mostReturns, (c, i) => rankRow(i, c.name, `${c.all} order${c.all !== 1 ? "s" : ""} · ${Math.round(c.returns / Math.max(1, c.all) * 100)}% returned`, c.returns, () => onDrill(c)))}
         {board("Newest customers", period === "month" ? "Joined this month" : "Most recent first order", stats.newest, (c, i) => rankRow(i, c.name, fmt(c.first), `${c.all}×`, () => onDrill(c)))}
         {board("Recently active", "Last order first", recentActive, (c, i) => rankRow(i, c.name, fmt(c.last), `${c.all}×`, () => onDrill(c)))}
       </div>
@@ -14837,7 +14973,7 @@ function AppInner() {
   // Studio) carry their own top-bar / Home nav, so the global pill is suppressed
   // there to avoid a stray floating sign-out.
   const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
-    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === ROLES.WAREHOUSE || role === ROLES.LABEL_PRINT || role === ROLES.CUSTOMER || role === null))
+    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === ROLES.WAREHOUSE || role === ROLES.LABEL_PRINT || role === ROLES.CUSTOMER || role === ROLES.CUSTOMERS_DB || role === null))
     && !(!isNarrowApp && wantUserMgmt);   // desktop User Management carries its own rail Exit
 
   return (
