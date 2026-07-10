@@ -10805,48 +10805,52 @@ function InsightsDatePicker({ mode, setMode, dateStr, setDateStr }) {
 }
 
 // ─── INSIGHTS: OVERVIEW TAB ───────────────────────────────────────────────────
-// Single-series trend (area + line) with a hover crosshair + tooltip. One hue
-// (magnitude over time → no legend; the card title names it), recessive grid,
-// HTML labels/tooltip so nothing distorts under the stretched viewBox.
-function InsightTrendChart({ data, accent = "#4A7FFF", height = 172 }) {
+// Trend chart — 1–2 aligned series (area for the first, line for the rest),
+// recessive grid, a legend, and a hover crosshair whose tooltip lists every
+// series. One y-axis (both series are the same unit: order counts).
+function InsightTrendChart({ labels, series, height = 180 }) {
   const [hi, setHi] = useState(null);
-  if (!data || data.length === 0) return <div style={{ color: "rgba(233,238,255,.3)", textAlign: "center", padding: "2.5rem 1rem", fontSize: 13 }}>No sales in this period.</div>;
+  if (!labels || labels.length === 0) return <div style={{ color: "rgba(233,238,255,.3)", textAlign: "center", padding: "2.5rem 1rem", fontSize: 13 }}>No sales in this period.</div>;
   const W = 620, H = 150, PL = 6, PR = 6, PT = 10, PB = 8;
   const iw = W - PL - PR, ih = H - PT - PB;
-  const n = data.length;
-  const max = Math.max(1, ...data.map(d => d.value));
+  const n = labels.length;
+  const max = Math.max(1, ...series.flatMap(s => s.data));
   const X = i => (n === 1 ? PL + iw / 2 : PL + (i / (n - 1)) * iw);
   const Y = v => PT + ih - (v / max) * ih;
-  const pts = data.map((d, i) => [X(i), Y(d.value)]);
-  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-  const area = `M ${pts[0][0].toFixed(1)} ${(PT + ih).toFixed(1)} ` + pts.map(p => `L ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ") + ` L ${pts[n - 1][0].toFixed(1)} ${(PT + ih).toFixed(1)} Z`;
-  const grid = [0.5, 1];
-  const labelIdx = n <= 7 ? data.map((_, i) => i) : [0, Math.floor((n - 1) / 2), n - 1];
+  const built = series.map(s => {
+    const pts = s.data.map((v, i) => [X(i), Y(v)]);
+    const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+    const area = s.fill ? `M ${pts[0][0].toFixed(1)} ${(PT + ih).toFixed(1)} ` + pts.map(p => `L ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ") + ` L ${pts[n - 1][0].toFixed(1)} ${(PT + ih).toFixed(1)} Z` : null;
+    return { ...s, pts, line, area };
+  });
+  const labelIdx = n <= 7 ? labels.map((_, i) => i) : [0, Math.floor((n - 1) / 2), n - 1];
   return (
-    <div style={{ position: "relative" }}>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={height} preserveAspectRatio="none" style={{ display: "block", overflow: "visible" }}>
-        <defs><linearGradient id="itgrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={accent} stopOpacity="0.3" /><stop offset="100%" stopColor={accent} stopOpacity="0" /></linearGradient></defs>
-        {grid.map((f, i) => <line key={i} x1={PL} x2={W - PR} y1={PT + ih - f * ih} y2={PT + ih - f * ih} stroke="rgba(255,255,255,.06)" strokeWidth="1" />)}
-        <path d={area} fill="url(#itgrad)" />
-        <path d={line} fill="none" stroke={accent} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-        <circle cx={pts[n - 1][0]} cy={pts[n - 1][1]} r="3.5" fill={accent} />
-        {hi !== null && <>
-          <line x1={pts[hi][0]} x2={pts[hi][0]} y1={PT} y2={PT + ih} stroke="rgba(255,255,255,.2)" strokeWidth="1" />
-          <circle cx={pts[hi][0]} cy={pts[hi][1]} r="4" fill="#fff" stroke={accent} strokeWidth="2" vectorEffect="non-scaling-stroke" />
-        </>}
-        {data.map((d, i) => { const bw = iw / Math.max(1, n); return <rect key={i} x={X(i) - bw / 2} y={PT} width={bw} height={ih} fill="transparent" onMouseEnter={() => setHi(i)} onMouseLeave={() => setHi(null)} style={{ cursor: "crosshair" }} />; })}
-      </svg>
-      {/* x-axis labels (HTML — no viewBox distortion) */}
-      <div style={{ position: "relative", height: 14, marginTop: 4 }}>
-        {labelIdx.map(i => (
-          <span key={i} style={{ position: "absolute", left: `${(pts[i][0] / W) * 100}%`, transform: "translateX(-50%)", fontSize: 9.5, color: "rgba(233,238,255,.35)", whiteSpace: "nowrap" }}>{data[i].label}</span>
-        ))}
-      </div>
-      {hi !== null && (
-        <div style={{ position: "absolute", top: -6, left: `${(pts[hi][0] / W) * 100}%`, transform: "translate(-50%,-100%)", pointerEvents: "none", background: "rgba(10,14,24,.96)", border: "1px solid rgba(255,255,255,.14)", borderRadius: 8, padding: "5px 9px", whiteSpace: "nowrap", fontSize: 11, boxShadow: "0 8px 20px rgba(0,0,0,.5)" }}>
-          <span style={{ color: "rgba(233,238,255,.55)" }}>{data[hi].label}</span> · <b style={{ color: "#fff", fontVariantNumeric: "tabular-nums" }}>{data[hi].value}</b>
+    <div>
+      {series.length > 1 && (
+        <div style={{ display: "flex", gap: 14, marginBottom: 10 }}>
+          {series.map(s => <span key={s.name} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "rgba(233,238,255,.6)" }}><span style={{ width: 9, height: 9, borderRadius: 3, background: s.color }} />{s.name}</span>)}
         </div>
       )}
+      <div style={{ position: "relative" }}>
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={height} preserveAspectRatio="none" style={{ display: "block", overflow: "visible" }}>
+          <defs>{built.map((s, si) => s.area && <linearGradient key={si} id={`itg${si}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={s.color} stopOpacity="0.3" /><stop offset="100%" stopColor={s.color} stopOpacity="0" /></linearGradient>)}</defs>
+          {[0.5, 1].map((f, i) => <line key={i} x1={PL} x2={W - PR} y1={PT + ih - f * ih} y2={PT + ih - f * ih} stroke="rgba(255,255,255,.06)" strokeWidth="1" />)}
+          {built.map((s, si) => s.area && <path key={si} d={s.area} fill={`url(#itg${si})`} />)}
+          {built.map((s, si) => <path key={si} d={s.line} fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" opacity={s.fill ? 1 : 0.85} />)}
+          {hi !== null && <line x1={X(hi)} x2={X(hi)} y1={PT} y2={PT + ih} stroke="rgba(255,255,255,.2)" strokeWidth="1" />}
+          {hi !== null && built.map((s, si) => <circle key={si} cx={s.pts[hi][0]} cy={s.pts[hi][1]} r="4" fill="#fff" stroke={s.color} strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
+          {labels.map((d, i) => { const bw = iw / Math.max(1, n); return <rect key={i} x={X(i) - bw / 2} y={PT} width={bw} height={ih} fill="transparent" onMouseEnter={() => setHi(i)} onMouseLeave={() => setHi(null)} style={{ cursor: "crosshair" }} />; })}
+        </svg>
+        <div style={{ position: "relative", height: 14, marginTop: 4 }}>
+          {labelIdx.map(i => <span key={i} style={{ position: "absolute", left: `${(X(i) / W) * 100}%`, transform: "translateX(-50%)", fontSize: 9.5, color: "rgba(233,238,255,.35)", whiteSpace: "nowrap" }}>{labels[i]}</span>)}
+        </div>
+        {hi !== null && (
+          <div style={{ position: "absolute", top: -6, left: `${(X(hi) / W) * 100}%`, transform: "translate(-50%,-100%)", pointerEvents: "none", background: "rgba(10,14,24,.96)", border: "1px solid rgba(255,255,255,.14)", borderRadius: 8, padding: "6px 10px", whiteSpace: "nowrap", fontSize: 11, boxShadow: "0 8px 20px rgba(0,0,0,.5)", minWidth: 120 }}>
+            <div style={{ color: "rgba(233,238,255,.5)", marginBottom: 4 }}>{labels[hi]}</div>
+            {series.map(s => <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 2 }}><span style={{ width: 7, height: 7, borderRadius: 2, background: s.color }} /><span style={{ color: "rgba(233,238,255,.6)" }}>{s.name}</span><b style={{ color: "#fff", marginLeft: "auto", paddingLeft: 14, fontVariantNumeric: "tabular-nums" }}>{s.data[hi]}</b></div>)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -10889,45 +10893,61 @@ function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, fil
   }, [netSales]);
   const topHour = hourData.reduce((b,c)=>c.value>(b?.value||0)?c:b, null);
   const topProducts = useMemo(() => groupCount(netSales, e => e.productName).slice(0, 7), [netSales]);
-  // Real net-sales trend: hourly when viewing today, daily (contiguous) otherwise.
-  const trend = useMemo(() => {
+  // Aligned net-sales vs out-of-stock over time (hourly today, daily otherwise) —
+  // one x-axis, one unit (order counts), so it's a legit two-series overlay.
+  const series = useMemo(() => {
     const saDay = ts => new Date(new Date(ts).getTime() + 7200000).toISOString().slice(0, 10);
-    if (isToday) {
-      const c = {}; netSales.forEach(e => { const h = new Date(e.timestamp).getHours(); c[h] = (c[h] || 0) + 1; });
-      const hs = Object.keys(c).map(Number);
-      if (!hs.length) return [];
-      const lo = Math.min(8, ...hs), hi = Math.max(18, ...hs);
-      const out = []; for (let h = lo; h <= hi; h++) out.push({ label: `${h % 12 || 12}${h < 12 ? "a" : "p"}`, value: c[h] || 0 });
-      return out;
-    }
-    const c = {}; netSales.forEach(e => { const d = saDay(e.timestamp); c[d] = (c[d] || 0) + 1; });
-    const days = Object.keys(c).sort();
-    if (!days.length) return [];
-    const out = []; let d = new Date(days[0] + "T00:00:00Z"); const end = new Date(days[days.length - 1] + "T00:00:00Z");
-    while (d <= end && out.length < 92) { const key = d.toISOString().slice(0, 10); out.push({ label: key.slice(5).replace("-", "/"), value: c[key] || 0 }); d.setUTCDate(d.getUTCDate() + 1); }
-    return out;
-  }, [netSales, isToday]);
+    const keyOf = ts => isToday ? new Date(ts).getHours() : saDay(ts);
+    const labelOf = k => isToday ? `${k % 12 || 12}${k < 12 ? "a" : "p"}` : String(k).slice(5).replace("-", "/");
+    const cs = {}, co = {}, set = new Set();
+    netSales.forEach(e => { const k = keyOf(e.timestamp); set.add(k); cs[k] = (cs[k] || 0) + 1; });
+    oosLog.forEach(e => { const k = keyOf(e.timestamp); set.add(k); co[k] = (co[k] || 0) + 1; });
+    let keys = [...set];
+    if (!keys.length) return { labels: [], sales: [], oos: [] };
+    if (isToday) { const nums = keys.map(Number); const lo = Math.min(8, ...nums), hi = Math.max(18, ...nums); keys = []; for (let h = lo; h <= hi; h++) keys.push(h); }
+    else { keys.sort(); const out = []; let d = new Date(keys[0] + "T00:00:00Z"); const end = new Date(keys[keys.length - 1] + "T00:00:00Z"); while (d <= end && out.length < 92) { out.push(d.toISOString().slice(0, 10)); d.setUTCDate(d.getUTCDate() + 1); } keys = out; }
+    return { labels: keys.map(labelOf), sales: keys.map(k => cs[k] || 0), oos: keys.map(k => co[k] || 0) };
+  }, [netSales, oosLog, isToday]);
+  // Period-over-period deltas vs the previous equal-length window.
+  const deltas = useMemo(() => {
+    const a = new Date(filterStart).getTime(), b = new Date(filterEnd).getTime();
+    if (!(b > a)) return null;
+    const pStart = new Date(a - (b - a)).toISOString(), pEnd = filterStart;
+    const cm = e => category === "both" || inferProductType(e) === category;
+    return {
+      net: readyEventsForPeriod({ log, returnsLog, filterStart: pStart, filterEnd: pEnd, category }).length,
+      oos: oosEventsForPeriod({ log, returnsLog, filterStart: pStart, filterEnd: pEnd, category }).length,
+      ret: returnsLog.filter(r => (r.timestamp || "") >= pStart && (r.timestamp || "") < pEnd && cm(r)).length,
+    };
+  }, [log, returnsLog, filterStart, filterEnd, category]);
+  const pct = (cur, prev) => prev > 0 ? Math.round((cur - prev) / prev * 100) : null;
+  const lostPct = (netSales.length + oosLog.length) > 0 ? Math.round(oosLog.length / (netSales.length + oosLog.length) * 100) : 0;
   const maxHour = Math.max(1, ...hourData.map(h => h.value));
   const GLASS_STOCK = { background: "rgba(255,255,255,.022)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16 };
 
-  const kpi = (color, glyph, value, label, sub) => (
-    <div style={{ ...GLASS_STOCK, padding: "15px 16px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 9 }}>
-        <span style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 11, display: "grid", placeItems: "center", background: `${color}22`, border: `1px solid ${color}55`, color, overflow: "hidden" }}>{glyph}</span>
-        <div style={{ fontSize: 30, fontWeight: 800, color: "#fff", letterSpacing: "-.02em", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+  const kpi = (color, glyph, value, label, sub, dv, goodUp) => {
+    const show = deltas && dv !== null && dv !== 0;
+    const good = (dv > 0) === goodUp;
+    return (
+      <div style={{ ...GLASS_STOCK, padding: "15px 16px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 9 }}>
+          <span style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 11, display: "grid", placeItems: "center", background: `${color}22`, border: `1px solid ${color}55`, color, overflow: "hidden" }}>{glyph}</span>
+          <div style={{ fontSize: 30, fontWeight: 800, color: "#fff", letterSpacing: "-.02em", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+          {show && <span style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 800, color: good ? "#4ADE80" : "#F87171", fontVariantNumeric: "tabular-nums" }}>{dv > 0 ? "▲" : "▼"} {Math.abs(dv)}%</span>}
+        </div>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>{label}</div>
+        <div style={{ fontSize: 10.5, color: "rgba(233,238,255,.4)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}{deltas ? " · vs prev" : ""}</div>
       </div>
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>{label}</div>
-      <div style={{ fontSize: 10.5, color: "rgba(233,238,255,.4)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {/* KPI tiles */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(158px, 1fr))", gap: 12 }}>
-        {kpi("#4ADE80", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" /><line x1="3" y1="6" x2="21" y2="6" /><path d="M16 10a4 4 0 01-8 0" /></svg>, netSales.length, "Net Sales", "Ready − Returns")}
-        {kpi("#F87171", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" /><polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" y1="22.08" x2="12" y2="12" /></svg>, oosLog.length, "Out of Stock", filterLabel)}
-        {kpi("#4A7FFF", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 102.13-9.36L1 10" /></svg>, filteredReturns.length, "Returns", filterLabel)}
+        {kpi("#4ADE80", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" /><line x1="3" y1="6" x2="21" y2="6" /><path d="M16 10a4 4 0 01-8 0" /></svg>, netSales.length, "Net Sales", "Ready − Returns", pct(netSales.length, deltas?.net), true)}
+        {kpi("#F87171", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" /><polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" y1="22.08" x2="12" y2="12" /></svg>, oosLog.length, "Out of Stock", filterLabel, pct(oosLog.length, deltas?.oos), false)}
+        {kpi("#4A7FFF", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 102.13-9.36L1 10" /></svg>, filteredReturns.length, "Returns", filterLabel, pct(filteredReturns.length, deltas?.ret), false)}
         <div style={{ ...GLASS_STOCK, padding: "15px 16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 9 }}>
             <span style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 11, display: "grid", placeItems: "center", background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.12)", overflow: "hidden" }}>
@@ -10940,13 +10960,29 @@ function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, fil
         </div>
       </div>
 
-      {/* Sales trend (hero) */}
+      {/* Insight strip — demand lost to out-of-stock. */}
+      {oosLog.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 13, padding: "13px 16px", borderRadius: 14, background: "linear-gradient(90deg, rgba(248,113,113,.12), rgba(255,255,255,.02))", border: "1px solid rgba(248,113,113,.3)" }}>
+          <span style={{ width: 34, height: 34, flexShrink: 0, borderRadius: 10, display: "grid", placeItems: "center", background: "rgba(248,113,113,.16)", border: "1px solid rgba(248,113,113,.4)", color: "#F87171" }}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>Lost to out-of-stock</div>
+            <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.55)" }}><b style={{ color: "#F87171" }}>{oosLog.length}</b> orders couldn't be filled — that's <b style={{ color: "#fff" }}>{lostPct}%</b> of demand this period.</div>
+          </div>
+        </div>
+      )}
+
+      {/* Sales vs OOS trend (hero) */}
       <div style={{ ...GLASS_STOCK, padding: "16px 17px 12px" }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 750, color: "#fff" }}>Net sales <span style={{ color: "rgba(233,238,255,.4)", fontWeight: 600 }}>· {filterLabel}</span></div>
-          <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.5)" }}>{netSales.length} total{topHour ? ` · peak ${topHour.label.toUpperCase()}` : ""}</div>
+          <div style={{ fontSize: 13.5, fontWeight: 750, color: "#fff" }}>Sales vs out-of-stock <span style={{ color: "rgba(233,238,255,.4)", fontWeight: 600 }}>· {filterLabel}</span></div>
+          <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.5)" }}>{netSales.length} sold{topHour ? ` · peak ${topHour.label.toUpperCase()}` : ""}</div>
         </div>
-        <InsightTrendChart data={trend} />
+        <InsightTrendChart labels={series.labels} series={[
+          { name: "Net sales", color: "#4A7FFF", data: series.sales, fill: true },
+          { name: "Out of stock", color: "#F87171", data: series.oos },
+        ]} />
       </div>
 
       {/* Top products + busiest hours */}
