@@ -6379,6 +6379,12 @@ function WarehouseView({ products = [], orders, onExit }) {
         placedAtHub: o.placedAtHub || o.hub || "hub2",
         gen: o.clothingRefillGen || 0,                // fulfil generation — keys idempotent movementIds
         uncounted: !!o.clothingUncounted,             // fulfilled via the uncounted override (no source deduction)
+        // Locked split for a partially-attempted line: reused verbatim on retry so the
+        // counted/uncounted split can't be re-derived from a hub cell that changed between
+        // taps (guards the concurrency double-count). planGen ties the lock to this gen.
+        planGen: o.clothingPlanGen ?? null,
+        planCountedQty: o.clothingPlanCountedQty ?? null,
+        planUncountedQty: o.clothingPlanUncountedQty ?? null,
       });
     });
     const active = [];
@@ -6796,8 +6802,13 @@ function WarehouseView({ products = [], orders, onExit }) {
     let ok = 0, fail = 0; const errors = [];
     for (const it of batch.items) {
       if (it.status) continue;                                   // already resolved
-      const qty = Math.max(0, Math.floor(plan.qtys?.[it.orderId] || 0));
-      const reject = !!plan.rejects?.[it.orderId];
+      // A line whose split was LOCKED by a prior partial attempt (of this same gen) is
+      // driven by that locked plan, not the freshly-entered qty — see the split below.
+      const locked = it.planGen === it.gen && it.planCountedQty != null;
+      const qty = locked
+        ? (it.planCountedQty + it.planUncountedQty)
+        : Math.max(0, Math.floor(plan.qtys?.[it.orderId] || 0));
+      const reject = !locked && !!plan.rejects?.[it.orderId];
       if (qty > 0) {
         if (!store) { fail++; errors.push(`${formatSize(it.size)}: no destination shop on this request`); continue; }
         const from = it.placedAtHub || "hub2";
@@ -6805,9 +6816,19 @@ function WarehouseView({ products = [], orders, onExit }) {
         // hub→shop transfer (deducts the hub); any OVERAGE is booked as an uncounted
         // add to the shop (received — +shop, no deduction, the units weren't in the
         // system). The warehouse just typed a number and hit Send; it never sees this.
-        const availHere    = Number(crHubCells?.[batch.productId]?.[it.size]?.qty) || 0;
-        const countedQty   = Math.min(qty, Math.max(0, availHere));
-        const uncountedQty = qty - countedQty;
+        // The split is derived from the LIVE hub cell, so on a RETRY we must reuse the
+        // split LOCKED by the first attempt (below) — never re-derive it from a hub cell
+        // that a concurrent writer may have changed, which would misalign the per-leg
+        // idempotency keys and double-/under-count.
+        let countedQty, uncountedQty;
+        if (locked) {
+          countedQty = it.planCountedQty;
+          uncountedQty = it.planUncountedQty;
+        } else {
+          const availHere = Number(crHubCells?.[batch.productId]?.[it.size]?.qty) || 0;
+          countedQty = Math.min(qty, Math.max(0, availHere));
+          uncountedQty = qty - countedQty;
+        }
         // Fire both legs INDEPENDENTLY (a failed counted leg must not block the
         // uncounted overage). Each movementId is idempotent per line+gen, so re-tapping
         // Send after a transient failure completes the rest without double-moving stock.
@@ -6821,22 +6842,20 @@ function WarehouseView({ products = [], orders, onExit }) {
           if (r.ok) sentUncounted = uncountedQty; else legErr = r;
         }
         const sent = sentCounted + sentUncounted;
-        // RETRY SAFETY: the split is derived from the LIVE hub cell, so it must never be
-        // recomputed after that cell has moved. Once the counted leg lands (hub mutated),
-        // lock in exactly what was sent — a re-tap would re-split against the now-drained
-        // hub and re-add the overage under a fresh key (double-count). Only when the hub
-        // was NOT touched (sentCounted === 0) is it safe to leave the line pending: a
-        // re-tap then recomputes the IDENTICAL split and any landed leg idempotently
-        // no-ops while the failed leg completes.
+        // Once the counted leg lands (hub mutated), lock in exactly what was sent — a
+        // re-split of the now-drained hub would double-count. Otherwise leave the line
+        // pending AND persist the split (below) so the retry reuses it verbatim.
         const hubMutated = sentCounted > 0;
         if (sent === qty || hubMutated) {
           ok++;
-          updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, updatedAt: now });
+          updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
           logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2" });
           if (sent < qty) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — re-request the remaining ${qty - sent}`);
         } else {
-          // Nothing moved at the hub → safe to leave pending for an idempotent re-tap.
+          // Nothing moved at the hub → leave pending for an idempotent re-tap, and LOCK
+          // this split so the retry reuses it even if the hub cell changes in between.
           fail++;
+          if (!locked) updateOrder(it.orderId, { clothingPlanGen: it.gen, clothingPlanCountedQty: countedQty, clothingPlanUncountedQty: uncountedQty, updatedAt: now });
           errors.push(`${formatSize(it.size)}: ${legErr && legErr.reason === "insufficient_stock" ? `only ${legErr.available} at ${HUB_LABELS[from] || "the hub"}` : (legErr && legErr.reason) || "transfer failed"}`);
         }
       } else if (reject) {
@@ -6889,7 +6908,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         }
       }
       ok++;
-      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingOutOfStockAt: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
+      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, clothingOutOfStockAt: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
     }
     return { ok, fail, errors };
   };
@@ -7575,8 +7594,12 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
   // the overage as an uncounted add to the shop (received, no deduction). The warehouse
   // UI shows nothing about this — it just looks like a normal send.
   // Without a stock role, fulfil qtys are forced to 0 — reject stays available.
-  const defaultQ = (it) => Math.min(it.qty, availAt(it.size));   // pre-fill = counted here
-  const capOf    = (it) => it.qty;                               // but they can send up to the full request
+  // A line whose split is LOCKED (a prior partial attempt is being finished) defaults to
+  // its locked total so Send stays enabled and re-tapping completes exactly that plan —
+  // fulfillCRBatch ignores the entered qty for a locked line anyway.
+  const lockedTotal = (it) => (it.planGen === it.gen && it.planCountedQty != null) ? (it.planCountedQty + it.planUncountedQty) : null;
+  const defaultQ = (it) => lockedTotal(it) ?? Math.min(it.qty, availAt(it.size));   // pre-fill = counted here (or locked total)
+  const capOf    = (it) => lockedTotal(it) ?? it.qty;                               // they can send up to the full request
   const displayQ = (it) => (!canFulfil || rejects[it.orderId]) ? 0 : (touched[it.orderId] ? Math.min(qtys[it.orderId] || 0, capOf(it)) : defaultQ(it));
   const setQ = (orderId, v, max) => { setTouched(t => ({ ...t, [orderId]: true })); setQtys(q => ({ ...q, [orderId]: Math.max(0, Math.min(max, Math.floor(Number(v) || 0))) })); };
   const toggleReject = (orderId) => setRejects(r => { const n = { ...r }; if (n[orderId]) delete n[orderId]; else n[orderId] = true; return n; });
