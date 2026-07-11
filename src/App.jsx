@@ -996,6 +996,17 @@ async function reverseClothingRefill({ store, productId, size, qty, hub, batchId
 // the hub cell below zero (returns insufficient_stock instead).
 const CLOTHING_CR_REASON      = "clothing_cr";
 const CLOTHING_CR_UNDO_REASON = "clothing_cr_undo";
+// ── Uncounted send (the warehouse override) ───────────────────────────────────
+// The clothing buffer is scattered/uncounted: an item can be physically at the hub
+// yet have a 0 (or missing) /stock cell there, so the normal transfer_out is blocked
+// ("no stock"). The override lets a warehouse/admin add the requested units DIRECTLY
+// into the destination shop with NO source deduction — a `received` movement, whose
+// only cell effect is +to (see applyMovement.cellDeltas). Use ONLY when the goods are
+// physically present but uncounted; if the DB actually holds them elsewhere (Trophy/
+// Central) this creates a reconcilable overcount, so every such move is stamped
+// CLOTHING_CR_UNCOUNTED_REASON in the ledger to be found/reconciled later.
+const CLOTHING_CR_UNCOUNTED_REASON      = "clothing_cr_uncounted";
+const CLOTHING_CR_UNCOUNTED_UNDO_REASON = "clothing_cr_uncounted_undo";
 
 // IDEMPOTENCY: both directions are keyed on the order line + its CREATION DATE +
 // fulfil GENERATION (clothingRefillGen, bumped by each undo). order.id is only a
@@ -1032,6 +1043,35 @@ async function reverseCRRefill({ store, productId, size, qty, hub, orderId, crea
     actorRole: actorRole || null,
     link: { orderId, refillId: `cr_${store}_${productId}` },
     movementId: crMovementId("crundo", orderId, createdAt, gen),
+  });
+}
+
+// Uncounted send: add the requested units straight into the destination shop, NO
+// source deduction (type "received" → +to only). Idempotent on the same line/date/gen.
+async function fireCRUncounted({ store, productId, size, qty, actorRole, orderId, createdAt, gen = 0 }) {
+  return applyMovement({
+    type: "received",
+    productId, size, qty,
+    to: store,
+    reason: CLOTHING_CR_UNCOUNTED_REASON,
+    actorRole: actorRole || null,
+    link: { orderId, refillId: `cr_${store}_${productId}` },
+    movementId: crMovementId("cruncounted", orderId, createdAt, gen),
+  });
+}
+
+// Reverse an uncounted send: it was created from nothing, so undo destroys it — a
+// NEGATIVE adjustment on the shop cell (−from). Rules gate `adjustment` to admin, so
+// undoing an uncounted send needs an admin (warehouse can send, only admin can undo).
+async function reverseCRUncounted({ store, productId, size, qty, orderId, createdAt, gen = 0, actorRole }) {
+  return applyMovement({
+    type: "adjustment",
+    productId, size, qty,
+    from: store,
+    reason: CLOTHING_CR_UNCOUNTED_UNDO_REASON,
+    actorRole: actorRole || null,
+    link: { orderId, refillId: `cr_${store}_${productId}` },
+    movementId: crMovementId("cruncountedundo", orderId, createdAt, gen),
   });
 }
 
@@ -6329,6 +6369,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         outOfStockAt: o.clothingOutOfStockAt || null,
         placedAtHub: o.placedAtHub || o.hub || "hub2",
         gen: o.clothingRefillGen || 0,                // fulfil generation — keys idempotent movementIds
+        uncounted: !!o.clothingUncounted,             // fulfilled via the uncounted override (no source deduction)
       });
     });
     const active = [];
@@ -6750,12 +6791,19 @@ function WarehouseView({ products = [], orders, onExit }) {
       const reject = !!plan.rejects?.[it.orderId];
       if (qty > 0) {
         if (!store) { fail++; errors.push(`${formatSize(it.size)}: no destination shop on this request`); continue; }
+        // Uncounted override: add straight into the shop, no hub deduction. Otherwise
+        // the normal hub→shop transfer (capped at counted hub stock).
+        const isUncounted = !!plan.uncounted?.[it.orderId];
         let res;
-        try { res = await fireCRRefill({ store, productId: batch.productId, size: it.size, qty, from: it.placedAtHub || "hub2", actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }); }
+        try {
+          res = isUncounted
+            ? await fireCRUncounted({ store, productId: batch.productId, size: it.size, qty, actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen })
+            : await fireCRRefill({ store, productId: batch.productId, size: it.size, qty, from: it.placedAtHub || "hub2", actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen });
+        }
         catch { res = { ok: false, reason: "network error" }; }
         if (res && res.ok) {
           ok++;
-          updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: qty, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, updatedAt: now });
+          updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: qty, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, clothingUncounted: isUncounted, updatedAt: now });
           logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2" });
         } else {
           fail++;
@@ -6782,8 +6830,19 @@ function WarehouseView({ products = [], orders, onExit }) {
     let ok = 0, fail = 0; const errors = [];
     for (const it of batch.items) {
       if (it.status === "available" && (it.refilledQty || 0) > 0 && batch.destShop) {
+        // Uncounted sends created stock from nothing, so their undo DESTROYS it via a
+        // negative adjustment (admin-only per rules); normal sends reverse store→hub.
+        if (it.uncounted && crActorRole !== "admin") {
+          fail++;
+          errors.push(`${formatSize(it.size)}: undoing an uncounted send needs an admin`);
+          continue;                                              // keep resolved — don't leave phantom stock
+        }
         let res;
-        try { res = await reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: it.refilledQty, hub: it.placedAtHub || "hub2", orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }); }
+        try {
+          res = it.uncounted
+            ? await reverseCRUncounted({ store: batch.destShop, productId: batch.productId, size: it.size, qty: it.refilledQty, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole })
+            : await reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: it.refilledQty, hub: it.placedAtHub || "hub2", orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole });
+        }
         catch { res = { ok: false, reason: "network error" }; }
         if (!res || !res.ok) {
           fail++;
@@ -7465,6 +7524,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
   const [qtys, setQtys]       = useState({});   // { orderId: qty } (only for touched lines)
   const [touched, setTouched] = useState({});   // { orderId: true }
   const [rejects, setRejects] = useState({});   // { orderId: true }
+  const [uncounted, setUncounted] = useState({}); // { orderId: true } — send uncounted (no hub deduction)
   const [busy, setBusy]       = useState(false);
   const [msg, setMsg]         = useState(null);
 
@@ -7476,16 +7536,27 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
   // live stock; once the user edits/rejects a line we honour their value (clamped).
   // Without a stock role, fulfil qtys are forced to 0 — reject stays available
   // (it's a flag-only write, no stock moves).
-  const capOf   = (it) => Math.min(it.qty, availAt(it.size));
+  // UNCOUNTED override: the cap jumps to the full requested qty (stock isn't checked —
+  // the units are added to the shop from nothing), so a 0-here size becomes sendable.
+  const isUnc   = (it) => !!uncounted[it.orderId];
+  const capOf   = (it) => isUnc(it) ? it.qty : Math.min(it.qty, availAt(it.size));
   const displayQ = (it) => (!canFulfil || rejects[it.orderId]) ? 0 : (touched[it.orderId] ? Math.min(qtys[it.orderId] || 0, capOf(it)) : capOf(it));
   const setQ = (orderId, v, max) => { setTouched(t => ({ ...t, [orderId]: true })); setQtys(q => ({ ...q, [orderId]: Math.max(0, Math.min(max, Math.floor(Number(v) || 0))) })); };
   const toggleReject = (orderId) => setRejects(r => { const n = { ...r }; if (n[orderId]) delete n[orderId]; else n[orderId] = true; return n; });
+  // Flip a size into/out of uncounted mode. Turning it on clears any reject + re-seeds
+  // the qty to the full request (so the box fills to what's needed); off re-clamps.
+  const toggleUncounted = (orderId) => {
+    setUncounted(u => { const n = { ...u }; if (n[orderId]) delete n[orderId]; else n[orderId] = true; return n; });
+    setRejects(r => { const n = { ...r }; delete n[orderId]; return n; });
+    setTouched(t => { const n = { ...t }; delete n[orderId]; return n; });   // untouched → defaults to full cap
+  };
 
   const product = (products || []).find(p => p.id === batch.productId);
   const photos = product ? productPhotos(product) : (batch.productPhotoUrl ? [batch.productPhotoUrl] : []);
   const hasPhotos = onViewPhoto && photos.length > 0;
 
   const totalSend   = pending.reduce((s, it) => s + displayQ(it), 0);
+  const totalUncounted = pending.reduce((s, it) => s + (isUnc(it) ? displayQ(it) : 0), 0);
   const totalReject = pending.filter(it => rejects[it.orderId]).length;
   const canSend = !busy && (totalSend > 0 || totalReject > 0);
 
@@ -7497,11 +7568,11 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
     if (!canSend) return;
     setBusy(true); setMsg(null);
     try {
-      const plan = { qtys: {}, rejects };
-      pending.forEach(it => { plan.qtys[it.orderId] = displayQ(it); });
+      const plan = { qtys: {}, rejects, uncounted: {} };
+      pending.forEach(it => { plan.qtys[it.orderId] = displayQ(it); if (isUnc(it)) plan.uncounted[it.orderId] = true; });
       const res = await onFulfill(batch, plan);
       if (res?.errors?.length) setMsg(`${res.ok} done · ${res.fail} failed — ${res.errors.join("; ")}`);
-      else { setTouched({}); setRejects({}); setQtys({}); }
+      else { setTouched({}); setRejects({}); setQtys({}); setUncounted({}); }
     } catch (e) {
       setMsg("Send failed — check your connection and try again.");
       console.warn("CR send failed:", e);
@@ -7553,9 +7624,12 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
               const avail = availAt(it.size);
               const cap = capOf(it);
               const rejected = !!rejects[it.orderId];
+              const unc = isUnc(it);
+              const short = avail < it.qty;                    // hub can't fully cover from counted stock
               const q = displayQ(it);
               return (
-                <div key={it.orderId} style={{ position:"relative", background:CARD, border: rejected ? "1px solid rgba(248,113,113,.5)" : q ? "1px solid rgba(74,222,128,.4)" : "1px solid rgba(60,110,255,.12)", borderRadius:10, padding:"7px 8px" }}>
+                <div key={it.orderId} style={{ position:"relative", background:CARD, borderRadius:10, padding:"7px 8px",
+                       border: rejected ? "1px solid rgba(248,113,113,.5)" : unc ? "1px solid rgba(245,166,35,.55)" : q ? "1px solid rgba(74,222,128,.4)" : "1px solid rgba(60,110,255,.12)" }}>
                   {/* Corner ✕ — reject this size (tap again to undo). */}
                   <button onClick={() => toggleReject(it.orderId)} title={rejected ? "Undo reject" : "Reject this size"}
                           style={{ position:"absolute", top:-7, right:-7, width:20, height:20, borderRadius:10, fontSize:10, fontWeight:700, cursor:"pointer", lineHeight:1, display:"flex", alignItems:"center", justifyContent:"center", padding:0,
@@ -7565,7 +7639,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
                   </button>
                   <div style={{ display:"flex", alignItems:"baseline", justifyContent:"space-between", marginBottom:5 }}>
                     <span style={{ fontSize:12, color:BLUE_L, fontWeight:700 }}><SizeTag size={it.size} /></span>
-                    <span style={{ fontSize:9, color: avail > 0 ? "rgba(255,255,255,.4)" : "#F5A623" }}>×{it.qty} · {avail} here</span>
+                    <span style={{ fontSize:9, color: unc ? "#F5A623" : avail > 0 ? "rgba(255,255,255,.4)" : "#F5A623" }}>×{it.qty} · {unc ? "uncounted" : `${avail} here`}</span>
                   </div>
                   {rejected ? (
                     <div style={{ height:30, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:"#F87171" }}>rejected</div>
@@ -7579,6 +7653,18 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
                       <button onClick={() => setQ(it.orderId, q + 1, cap)} style={{ ...crStepBtn, opacity: q >= cap ? 0.4 : 1 }}>+</button>
                     </div>
                   )}
+                  {/* Uncounted override — only offered on a stock role, when the hub can't
+                      fully cover from counted stock. Adds straight to the shop, no
+                      deduction; ledger-stamped for later reconciliation. */}
+                  {canFulfil && !rejected && (short || unc) && (
+                    <button onClick={() => toggleUncounted(it.orderId)}
+                            title={unc ? "Switch back to counted stock" : "Physically here but not counted — send anyway (adds to shop, deducts nothing)"}
+                            style={{ marginTop:6, width:"100%", padding:"4px 6px", borderRadius:7, fontSize:9.5, fontWeight:700, cursor:"pointer", lineHeight:1.2,
+                                     border: unc ? "1px solid rgba(245,166,35,.7)" : "1px solid rgba(245,166,35,.3)",
+                                     background: unc ? "rgba(245,166,35,.22)" : "rgba(245,166,35,.06)", color:"#F5A623" }}>
+                      {unc ? "✓ uncounted — adds to shop" : "＋ send uncounted"}
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -7588,9 +7674,12 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
 
           <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:12 }}>
             <div style={{ flex:1, fontSize:11, color:"rgba(255,255,255,.45)" }}>
-              {canFulfil
-                ? `Send ${totalSend} unit(s)${totalReject ? ` · reject ${totalReject}` : ""} → ${batch.destShop ? labelFor(batch.destShop) : "shop"}`
-                : "No stock role — you can Reject; transfers need a warehouse/admin stock role."}
+              {canFulfil ? (
+                <>
+                  Send {totalSend} unit(s){totalReject ? ` · reject ${totalReject}` : ""} → {batch.destShop ? labelFor(batch.destShop) : "shop"}
+                  {totalUncounted > 0 && <span style={{ color:"#F5A623" }}> · {totalUncounted} uncounted (added, not deducted)</span>}
+                </>
+              ) : "No stock role — you can Reject; transfers need a warehouse/admin stock role."}
             </div>
             <button onClick={send} disabled={!canSend}
                     style={{ padding:"11px 20px", borderRadius:10, fontSize:12.5, fontWeight:700, cursor: canSend ? "pointer" : "not-allowed",
