@@ -36,7 +36,7 @@
 // Permission toggles bypass the Cloud Function — RTDB rules already require the
 // super-admin email on /users writes, and the UI is super-admin gated.
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { ref, onValue, update } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../firebase";
@@ -469,6 +469,44 @@ function RoleBadge({ role }) {
   );
 }
 
+// Unordered string-array equality (permissions lists).
+function sameStringSet(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  const s = new Set(a);
+  return b.every((x) => s.has(x));
+}
+
+// Optimistic field with an in-flight GUARD. Problem it solves: a Firebase
+// snapshot rebuilds the whole `user` object, so an unrelated field changing
+// (e.g. another admin edits destShop) hands us a fresh `permissions` array with
+// the OLD contents while our own toggle write is still in flight — the naive
+// "sync local from prop on every change" would momentarily revert the toggle
+// (a visible flicker that reads like the old "it resets itself" bug).
+//
+// Fix: after an optimistic set we remember what we wrote (`pending`). Prop
+// echoes that DON'T match `pending` are ignored (still waiting for our own echo,
+// or an unrelated snapshot); once the prop matches what we wrote, the guard
+// clears and normal syncing resumes. A write failure calls revert(), which also
+// clears the guard. When idle (no pending) the field tracks the prop exactly, so
+// genuine cross-device edits still win.
+function useOptimisticField(propValue, isEqual = Object.is) {
+  const [value, setValue] = useState(propValue);
+  const pending = useRef(null);   // { v } while our write is unconfirmed, else null
+  useEffect(() => {
+    if (pending.current) {
+      if (isEqual(propValue, pending.current.v)) { pending.current = null; setValue(propValue); }
+      return;                     // hold the optimistic value until our echo lands
+    }
+    setValue(propValue);
+    // isEqual is intentionally excluded — callers pass a stable module-level fn.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propValue]);
+  const setOptimistic = (v) => { pending.current = { v }; setValue(v); };
+  const revert        = (v) => { pending.current = null; setValue(v); };
+  return { value, setOptimistic, revert };
+}
+
 // ─── Detail view ─────────────────────────────────────────────────────────────
 
 function UserDetailView({ user, onBack }) {
@@ -480,28 +518,38 @@ function UserDetailView({ user, onBack }) {
   const [stockHint,   setStockHint]   = useState(null);   // "Stock role set to …" transient note
 
   // Optimistic local mirrors so every control responds INSTANTLY, before the
-  // /users subscription echoes the committed value back. Each mirror re-syncs
-  // to the record on prop change (the echo confirms our write, or a concurrent
-  // edit from another device wins).
-  const [localPerms,     setLocalPerms]     = useState(() => (Array.isArray(user.permissions) ? user.permissions : []));
-  const [localRole,      setLocalRole]      = useState(user.role || "");
-  const [localStockRole, setLocalStockRole] = useState(user.stockRole || "");
-  const [localDestShop,  setLocalDestShop]  = useState(user.destShop || "");
-  useEffect(() => { setLocalPerms(Array.isArray(user.permissions) ? user.permissions : []); }, [user.permissions]);
-  useEffect(() => { setLocalRole(user.role || ""); }, [user.role]);
-  useEffect(() => { setLocalStockRole(user.stockRole || ""); }, [user.stockRole]);
-  useEffect(() => { setLocalDestShop(user.destShop || ""); }, [user.destShop]);
+  // /users subscription echoes the committed value back. Each mirror re-syncs to
+  // the record on prop change, but holds its optimistic value while our own write
+  // is in flight (see useOptimisticField) so an unrelated snapshot rebuild can't
+  // flicker a toggle back mid-save.
+  const permProp = useMemo(() => (Array.isArray(user.permissions) ? user.permissions : []), [user.permissions]);
+  const permsF = useOptimisticField(permProp, sameStringSet);
+  const roleF  = useOptimisticField(user.role || "");
+  const stockF = useOptimisticField(user.stockRole || "");
+  const destF  = useOptimisticField(user.destShop || "");
+  const localPerms     = permsF.value;
+  const localRole      = roleF.value;
+  const localStockRole = stockF.value;
+  const localDestShop  = destF.value;
 
   // Per-control save status → drives the "Saved ✓" pulse and inline spinners.
-  const [savingKey, setSavingKey] = useState(null);
-  const [savedKey,  setSavedKey]  = useState(null);
-  const savedTimer = useRef(null);
-  const hintTimer  = useRef(null);
-  useEffect(() => () => { clearTimeout(savedTimer.current); clearTimeout(hintTimer.current); }, []);
+  // savedKeys is a Set so more than one control can show "Saved" at once — needed
+  // when a single write touches two controls (e.g. a Stock toggle that also
+  // auto-links the Stock level).
+  const [savingKey,  setSavingKey]  = useState(null);
+  const [savedKeys,  setSavedKeys]  = useState(() => new Set());
+  const savedTimers = useRef({});
+  const hintTimer   = useRef(null);
+  useEffect(() => {
+    const timers = savedTimers.current;
+    return () => { Object.values(timers).forEach(clearTimeout); clearTimeout(hintTimer.current); };
+  }, []);
   function flashSaved(key) {
-    setSavedKey(key);
-    clearTimeout(savedTimer.current);
-    savedTimer.current = setTimeout(() => setSavedKey((k) => (k === key ? null : k)), 1500);
+    setSavedKeys((prev) => { const n = new Set(prev); n.add(key); return n; });
+    clearTimeout(savedTimers.current[key]);
+    savedTimers.current[key] = setTimeout(() => {
+      setSavedKeys((prev) => { const n = new Set(prev); n.delete(key); return n; });
+    }, 1500);
   }
 
   // Persist a patch to /users/{uid} with per-control status. Returns true on
@@ -539,24 +587,35 @@ function UserDetailView({ user, onBack }) {
   async function applyRolePreset(roleKey) {
     const perms = ROLE_DEFAULT_PERMS[roleKey] || [];
     const stockRole = ROLE_STOCK_ROLE[roleKey] || "";
-    const prev = { role: localRole, perms: localPerms, stock: localStockRole };
-    setLocalRole(roleKey);
-    setLocalPerms(perms);          // toggles cascade to the preset (animated)
-    setLocalStockRole(stockRole);
     setPendingRole(null);
+    // No-op guard: if the account ALREADY exactly matches this preset, the
+    // update() would write identical data, which fires NO RTDB snapshot — the
+    // optimistic guards would then stay pending forever and swallow later
+    // cross-device edits. The other controls short-circuit on equality; this one
+    // must too. Just confirm visually and skip the write.
+    if (roleKey === localRole && stockRole === localStockRole && sameStringSet(perms, localPerms)) {
+      haptic(8);
+      flashSaved("permissions"); flashSaved("stockRole");
+      return;
+    }
+    const prev = { role: localRole, perms: localPerms, stock: localStockRole };
+    roleF.setOptimistic(roleKey);
+    permsF.setOptimistic(perms);   // toggles cascade to the preset (animated)
+    stockF.setOptimistic(stockRole);
     haptic(12);
     const ok = await writePatch(
       { role: roleKey, permissions: perms, stockRole: stockRole || null },
       "role",
     );
-    if (!ok) { setLocalRole(prev.role); setLocalPerms(prev.perms); setLocalStockRole(prev.stock); }
+    if (ok) { flashSaved("permissions"); flashSaved("stockRole"); }   // light every section the preset touched
+    else    { roleF.revert(prev.role); permsF.revert(prev.perms); stockF.revert(prev.stock); }
   }
 
   async function togglePermission(permKey, on) {
     const prevPerms = localPerms;
     const prevStock = localStockRole;
     const next = on ? Array.from(new Set([...prevPerms, permKey])) : prevPerms.filter((p) => p !== permKey);
-    setLocalPerms(next);           // optimistic — instant
+    permsF.setOptimistic(next);    // optimistic — instant
     haptic();
 
     const patch = { permissions: next };
@@ -566,7 +625,7 @@ function UserDetailView({ user, onBack }) {
     if (on && STOCK_PERM_KEYS.includes(permKey) && !prevStock) {
       autoStock = stockRoleForRole(localRole);
       patch.stockRole = autoStock;
-      setLocalStockRole(autoStock);
+      stockF.setOptimistic(autoStock);
       const label = STOCK_WORK.find((r) => r.key === autoStock)?.label || autoStock;
       setStockHint(`Stock set to ${label} so this works`);
       clearTimeout(hintTimer.current);
@@ -574,17 +633,25 @@ function UserDetailView({ user, onBack }) {
     }
 
     const ok = await writePatch(patch, permKey);
-    if (!ok) { setLocalPerms(prevPerms); if (autoStock) setLocalStockRole(prevStock); }
+    if (ok) { if (autoStock) flashSaved("stockRole"); }   // also confirm the auto-linked Stock level
+    else {
+      permsF.revert(prevPerms);
+      if (autoStock) {              // undo the optimistic auto-link + its now-wrong hint
+        stockF.revert(prevStock);
+        clearTimeout(hintTimer.current);
+        setStockHint(null);
+      }
+    }
   }
 
   async function setStockRole(stockRole) {
     if (stockRole === localStockRole) return;
     const prev = localStockRole;
-    setLocalStockRole(stockRole);  // optimistic
+    stockF.setOptimistic(stockRole);  // optimistic
     haptic();
     // Empty selection clears the field entirely (RTDB drops null) → no stock access.
     const ok = await writePatch({ stockRole: stockRole === "" ? null : stockRole }, "stockRole");
-    if (!ok) setLocalStockRole(prev);
+    if (!ok) stockF.revert(prev);
   }
 
   // Per-user single-shop assignment. "" clears the field (RTDB drops null) → no
@@ -593,10 +660,10 @@ function UserDetailView({ user, onBack }) {
   async function chooseDestShop(shop) {
     if (shop === localDestShop) return;
     const prev = localDestShop;
-    setLocalDestShop(shop);        // optimistic
+    destF.setOptimistic(shop);     // optimistic
     haptic();
     const ok = await writePatch({ destShop: shop === "" ? null : shop }, "destShop");
-    if (!ok) setLocalDestShop(prev);
+    if (!ok) destF.revert(prev);
   }
 
   async function handleDelete() {
@@ -674,7 +741,7 @@ function UserDetailView({ user, onBack }) {
           ))}
         </div>
 
-        <SectionRow label="Permissions" saved={savedKey != null && (savedKey === "role" || ALL_PERMISSIONS.some((p) => p.key === savedKey))} />
+        <SectionRow label="Permissions" saved={savedKeys.has("permissions") || ALL_PERMISSIONS.some((p) => savedKeys.has(p.key))} />
         {PERMISSION_GROUPS.map((group) => (
           <div key={group.title} style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11, color: TEXT_2, padding: "0 4px 6px", fontWeight: 600 }}>{group.title}</div>
@@ -685,7 +752,7 @@ function UserDetailView({ user, onBack }) {
                   perm={p}
                   checked={permSet.has(p.key)}
                   saving={savingKey === p.key}
-                  saved={savedKey === p.key}
+                  saved={savedKeys.has(p.key)}
                   onToggle={(next) => togglePermission(p.key, next)}
                   divider={i < group.perms.length - 1}
                 />
@@ -698,7 +765,7 @@ function UserDetailView({ user, onBack }) {
           <LockIcon /> Staff management is Super-Admin only and can't be granted here.
         </div>
 
-        <SectionRow label="Stock — what they can change" hint="pick one" saved={savedKey === "stockRole"} saving={savingKey === "stockRole"} />
+        <SectionRow label="Stock — what they can change" hint="pick one" saved={savedKeys.has("stockRole")} saving={savingKey === "stockRole"} />
         <RadioList
           options={STOCK_WORK}
           value={localStockRole}
@@ -709,7 +776,7 @@ function UserDetailView({ user, onBack }) {
           {stockHint || "The one thing that isn’t a toggle — you pick a single level, because the till & database enforce it as one. Auto-set when you switch on a Stock permission above."}
         </div>
 
-        <SectionRow label="Store Access" saved={savedKey === "destShop"} saving={savingKey === "destShop"} />
+        <SectionRow label="Store Access" saved={savedKeys.has("destShop")} saving={savingKey === "destShop"} />
         <div style={{ background: CARD, borderRadius: 12, overflow: "hidden", marginBottom: 8 }}>
           {[{ id: "", label: "All stores (no restriction)" },
             ...SHOP_IDS.map((id) => ({ id, label: SHOP_LABELS[id] }))].map((opt, i, arr) => {
