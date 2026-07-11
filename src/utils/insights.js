@@ -122,9 +122,17 @@ const sanitizeKey = (s) => (s || "").replace(/[.#$[\]/\s]/g, "_");
 // flipped order counts once. Photos aren't in the log — the component joins them
 // from the products catalog by name. returnedIds = orderNumbers returned on that
 // SA date (mirrors the live path's returned-order exclusion).
+//
+// SNEAKERS ONLY. Clothing-refill ("Shop Refill") fulfilment ALSO logs
+// action="ready" (productType "clothing", placedAtHub hub2/hub3) but resolves via
+// clothingRefillStatus and leaves the order's `status` at INCOMING — so the old
+// live path (status===READY||COLLECTED) never showed it in the footwear History.
+// Filtering to sneaker reproduces that exactly and keeps clothing refills out of
+// hub2's restock list (clothing has its own "Clothing Sold" tab).
 export function restockCountsFromLog({ log, dateStr, hub, returnedIds }) {
   const raw = (log || []).filter(
-    (e) => e && e.action === "ready" && saDateOf(e.timestamp) === dateStr && (e.placedAtHub || "hub1") === hub
+    (e) => e && e.action === "ready" && inferProductType(e) === "sneaker" &&
+           saDateOf(e.timestamp) === dateStr && (e.placedAtHub || "hub1") === hub
   );
   const result = {};
   for (const e of dedupeByOrderNumber(raw)) {

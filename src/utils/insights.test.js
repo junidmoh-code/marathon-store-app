@@ -216,6 +216,20 @@ describe("restockCountsFromLog (Source History rebuilt from the durable log)", (
     expect(out.Nike_Air.sizes).toEqual({ "8": 1 });
   });
 
+  it("EXCLUDES clothing-refill 'ready' events (Shop Refill) — footwear History only", () => {
+    // CR fulfil logs action=ready with productType clothing + placedAtHub hub2 but
+    // never flips the order to status READY, so the live footwear path never showed
+    // it. Clothing (explicit type OR letter-size heuristic) must not pollute hub2.
+    const log = [
+      rdy("001", "08", { placedAtHub: "hub2" }),                                              // sneaker → in
+      { action: "ready", orderNumber: "700", timestamp: "2026-06-16T08:30:00.000Z", size: "L", productName: "Marathon Tee", placedAtHub: "hub2", productType: "clothing", customerName: "Shop Refill" },
+      { action: "ready", orderNumber: "701", timestamp: "2026-06-16T09:00:00.000Z", size: "M", productName: "Marathon Tee", placedAtHub: "hub2", customerName: "Shop Refill" }, // no explicit type; letter size → clothing heuristic
+    ];
+    const out = restockCountsFromLog({ log, dateStr: DATE, hub: "hub2" });
+    expect(Object.keys(out)).toEqual(["Nike_Air"]);
+    expect(out.Marathon_Tee).toBeUndefined();
+  });
+
   it("dedupes a flapped order (same date+orderNumber counts once)", () => {
     const out = restockCountsFromLog({ log: [rdy("001", "08"), rdy("001", "09")], dateStr: DATE, hub: "hub1" });
     expect(out.Nike_Air.sizes).toEqual({ "8": 1 });
