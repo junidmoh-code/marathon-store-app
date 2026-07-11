@@ -5224,6 +5224,23 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Routing universe derived from the chosen shop. THIS keeps every downstream
   // consumer keyed on central/pine unchanged.
   const effectiveStoreMode = shopUniverse(effectiveShop);
+  // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
+  // The SHOP toggle silently re-routes EVERY order placed afterwards to that
+  // store's warehouse→shop transfer (order.destShop). A single mis-tap here
+  // (Trophy → Marathon PE, etc.) sends real stock to the wrong branch with no
+  // undo. So the toggle no longer switches on tap — it stages the target shop
+  // and a hard, red confirm modal stands between the tap and the switch.
+  // `pendingShopSwitch` holds the target shop id awaiting confirmation (null =
+  // no prompt showing).
+  const [pendingShopSwitch, setPendingShopSwitch] = useState(null);
+  const requestShopSwitch = (next) => {
+    if (!next || next === effectiveShop) return;   // tapping the current shop is a no-op
+    setPendingShopSwitch(next);
+  };
+  const confirmShopSwitch = () => {
+    if (pendingShopSwitch) selectShop(pendingShopSwitch);
+    setPendingShopSwitch(null);
+  };
   const [selected, setSelected]                         = useState(null);   // product in size picker
   // Tapping a product photo opens a full-screen lightbox so staff can see the
   // complete (uncropped) image. Holds the photo URL to show, or null.
@@ -5708,7 +5725,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           {availableShops.map((s) => {
             const on = effectiveShop === s.id;
             return (
-              <button key={s.id} onClick={() => selectShop(s.id)}
+              <button key={s.id} onClick={() => requestShopSwitch(s.id)}
                 style={{ padding:"6px 22px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
                          background: on ? "rgba(60,110,255,.25)" : "transparent",
                          color: on ? "#fff" : "rgba(255,255,255,.5)",
@@ -5720,6 +5737,59 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       </div>
       )}
+
+      {/* ── SHOP-SWITCH WARNING MODAL ──────────────────────────────────────────
+          Red, blocking, deliberately alarming. Fires when the assistant taps a
+          DIFFERENT shop on the toggle. Names the from/to shops in plain words,
+          spells out that every future order routes to the new store, and flags
+          any cart lines that would go with it. Only "Yes, switch" commits. */}
+      {pendingShopSwitch && (() => {
+        const fromLabel = labelFor(effectiveShop, shopRegistry);
+        const toLabel   = labelFor(pendingShopSwitch, shopRegistry);
+        const cartCount = cart.length;
+        return (
+          <div onClick={() => setPendingShopSwitch(null)}
+               style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,.8)", backdropFilter:"blur(3px)",
+                        display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+            <div onClick={e => e.stopPropagation()}
+                 style={{ width:"100%", maxWidth:380, background:"#1c0e0e", border:"2px solid rgba(255,70,70,.6)",
+                          borderRadius:18, padding:"26px 22px", textAlign:"center", fontFamily:FONT,
+                          boxShadow:"0 0 44px rgba(255,45,45,.4)" }}>
+              <div style={{ fontSize:46, lineHeight:1, marginBottom:12 }}>⚠️</div>
+              <div style={{ color:"#FF5C5C", fontWeight:800, fontSize:19, letterSpacing:".4px", marginBottom:12 }}>
+                CHANGING STORE
+              </div>
+              <div style={{ color:"#fff", fontSize:14.5, lineHeight:1.55, marginBottom:9 }}>
+                Switching from <strong style={{ color:"#FFD166" }}>{fromLabel}</strong> to{" "}
+                <strong style={{ color:"#FF8A8A" }}>{toLabel}</strong>.
+              </div>
+              <div style={{ color:"rgba(255,255,255,.78)", fontSize:13.5, lineHeight:1.55, marginBottom: cartCount ? 12 : 22 }}>
+                Every order you place will now go to <strong style={{ color:"#FF8A8A" }}>{toLabel}</strong>.
+                If this is the wrong store, the stock ships to the wrong branch.
+              </div>
+              {cartCount > 0 && (
+                <div style={{ color:"#FFD166", fontSize:12.5, fontWeight:700, marginBottom:22, lineHeight:1.5,
+                              background:"rgba(245,196,81,.1)", border:"1px solid rgba(245,196,81,.35)",
+                              borderRadius:10, padding:"9px 11px" }}>
+                  You have {cartCount} item{cartCount > 1 ? "s" : ""} in the cart — they’ll be placed for {toLabel}.
+                </div>
+              )}
+              <div style={{ display:"flex", gap:10 }}>
+                <button onClick={() => setPendingShopSwitch(null)}
+                        style={{ flex:1, padding:"13px 0", borderRadius:11, border:"1px solid rgba(255,255,255,.28)",
+                                 background:"transparent", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
+                  Cancel
+                </button>
+                <button onClick={confirmShopSwitch}
+                        style={{ flex:1.4, padding:"13px 8px", borderRadius:11, border:"none",
+                                 background:"#E03131", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
+                  Switch to {toLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Mode hint line — clarifies where CR refill orders go. (The customer
           "Clothing → Hub C" mode was removed; only Sneakers + CR remain.) */}
