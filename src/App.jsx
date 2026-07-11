@@ -1191,13 +1191,6 @@ function computeCollectedCounts(collectedOrders) {
   return result;
 }
 
-// Returns the SA-timezone YYYY-MM-DD date for an order's collected/updated timestamp.
-function orderCollectedDate(order) {
-  const ts = order.collectedAt || order.updatedAt;
-  if (!ts) return null;
-  return new Date(new Date(ts).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
-
 // Returns the SA-timezone YYYY-MM-DD date the warehouse marked the order READY.
 // Source uses this so its "Today's Request" matches Net Sales exactly:
 // both count items that hit READY on a specific day.
@@ -1548,6 +1541,33 @@ async function getNextOrderNumber() {
   });
   const counter = txResult.snapshot.val()?.counter ?? 1;
   return String(counter).padStart(3, "0");
+}
+
+// ─── SHOP-REFILL NUMBER COUNTER ───────────────────────────────────────────────
+// Clothing "Shop Refill" requests get their OWN daily counter, kept completely
+// separate from the sneaker orderCounter above. This is why:
+//   • The sneaker sequence (001–999) is what shows on the customer TV and gets
+//     written on shoeboxes — one shoe = one number. A busy day of clothing
+//     refills must NOT eat into (or fragment) that sequence.
+//   • Refill numbers are prefixed "R" (R001, R002 …) so a refill node key
+//     (/orders/R001-1) can never collide with a sneaker node key (/orders/001),
+//     and the two live in independent number spaces.
+// ONE R-number is drawn per refill CART (not per line — see placeRefillRequests),
+// so a 30-size refill burns exactly one refill number, never 30. Daily reset +
+// 001–999 cycle mirror the sneaker counter (refills are ephemeral too, and
+// /orders is daily-scoped by design). The per-line node keys are R{n}-{i}.
+async function getNextRefillNumber() {
+  const todayKey = getTodayKey();
+  const counterRef = ref(database, "refillCounter");
+  const txResult = await runTransaction(counterRef, (current) => {
+    if (!current || current.day !== todayKey) {
+      return { day: todayKey, counter: 1 };
+    }
+    const next = current.counter >= 999 ? 1 : current.counter + 1;
+    return { day: todayKey, counter: next };
+  });
+  const counter = txResult.snapshot.val()?.counter ?? 1;
+  return "R" + String(counter).padStart(3, "0");
 }
 
 // ─── CUSTOMERS VIEW ───────────────────────────────────────────────────────────
@@ -5601,8 +5621,15 @@ function AssistantView({ products, onExit, orders = [] }) {
     try {
       const now = new Date().toISOString();
       const placed = [];
+      // ONE refill number for the WHOLE cart (not per line) — clothing refills
+      // must not consume the sneaker sequence one-per-size. Each line still needs
+      // its own /orders node (per-size CR fulfilment + insights key off it), so
+      // the line id is R{n}-{i} — a unique node key under the single cart number.
+      const refillNum = await getNextRefillNumber();
+      let lineIdx = 0;
       for (const item of clothingCart) {
-        const orderNum = await getNextOrderNumber();
+        lineIdx += 1;
+        const orderNum = `${refillNum}-${lineIdx}`;
         // CR routing is THE one map: Pine → hub3, Central (PE/Trophy) → hub2.
         const placedHub = CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2";
         const order = {
@@ -6240,12 +6267,14 @@ function WarehouseView({ products = [], orders, onExit }) {
   const [onHoldExpanded, setOnHoldExpanded] = useState(false);
   const [selectedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
   // Phase 12C/14B: clamp mainTab when the user switches hubs and the previously
-  // selected tab no longer exists for the new hub (Restock on hub1/hub3; CR
-  // Orders on the CR hubs, hub2+hub3). Fall back to Order Queue. NOTE: must come AFTER
-  // selectedHub's declaration — placing this useEffect before it triggers a
-  // TDZ ReferenceError on the dependency array evaluation at render time.
+  // selected tab no longer exists for the new hub (CR Orders on the CR hubs,
+  // hub2+hub3). Fall back to Order Queue. NOTE: must come AFTER selectedHub's
+  // declaration — placing this useEffect before it triggers a TDZ
+  // ReferenceError on the dependency array evaluation at render time.
   useEffect(() => {
-    if (selectedHub === "hub2" && mainTab === "restock")  setMainTab("queue");
+    // The Restock Status tab was removed from the warehouse — Source owns
+    // restock now. Clamp any persisted "restock" selection back to the queue.
+    if (mainTab === "restock") setMainTab("queue");
     // CR Orders exists on every CR hub (hub2 + hub3, from CR_HUBS); clamp the rest.
     if (!CR_HUBS.includes(selectedHub) && mainTab === "clothing") setMainTab("queue");
     // Trial: hubC has only the Order Queue tab — clamp anything else back.
@@ -6261,18 +6290,6 @@ function WarehouseView({ products = [], orders, onExit }) {
   const orderInHub = (o, h) => (h === "hub3" || h === "hubC")
     ? o.placedAtHub === h
     : (o.hub || "hub1") === h;
-  const todayDate    = getSADateString();
-  // Restock tab: derive counts from COLLECTED orders only — no Firebase log needed.
-  // Hooks must stay above every conditional return (React rules).
-  const rawCounts    = useMemo(() => {
-    const todayCollected = orders.filter(o =>
-      o.status === STATUS.COLLECTED &&
-      (selectedHub ? orderInHub(o, selectedHub) : true) &&
-      orderCollectedDate(o) === todayDate
-    );
-    return computeCollectedCounts(todayCollected);
-  }, [orders, selectedHub, todayDate]);
-  const allResponses = useAllSourceResponses();
 
   const selectHub = (hub) => {
     localStorage.setItem("warehouseHub", hub);
@@ -7073,17 +7090,14 @@ function WarehouseView({ products = [], orders, onExit }) {
             ]
           : selectedHub === "hub3"
           ? [
-              // Pine's hub: mirrors hub2's CR Orders (fulfils from hub3 stock)
-              // alongside the hub1/hub3 Restock Status tab.
+              // Pine's hub: mirrors hub2's CR Orders (fulfils from hub3 stock).
               ["queue",    "Order Queue",     null],
               ["clothing", "CR Orders",       clothingBadge],
-              ["restock",  "Restock Status",  null],
               ["refills",  "Display Refills", refillsBadge],
               ["layby",    "Layby",           laybyBadge],
             ]
           : [
               ["queue",   "Order Queue",     null],
-              ["restock", "Restock Status",  null],
               ["refills", "Display Refills", refillsBadge],
               ["layby",   "Layby",           laybyBadge],
             ]
@@ -7304,12 +7318,6 @@ function WarehouseView({ products = [], orders, onExit }) {
             />
           </div>
         </>
-      )}
-
-      {mainTab === "restock" && (
-        <div style={{ padding:"0 13px" }}>
-          <WarehouseRestockTab rawCounts={rawCounts} responses={allResponses[todayDate] || {}} />
-        </div>
       )}
 
       {mainTab === "clothing" && (
@@ -7847,63 +7855,6 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
           }}
         />
       ))}
-    </div>
-  );
-}
-
-// ─── WAREHOUSE RESTOCK TAB (live OOS log for today) ──────────────────────────
-// Read-only view of today's OOS events and Source's responses to them.
-function WarehouseRestockTab({ rawCounts, responses }) {
-  const products = Object.entries(rawCounts);
-
-  if (!products.length) return (
-    <div style={{ textAlign:"center", color:"#444", padding:"4rem" }}>
-      <ProductIcon size={32} opacity={0.4}/>
-      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>No out-of-stock events today yet.</div>
-      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Items marked OOS appear here in real time.</div>
-    </div>
-  );
-
-  const totalUnits = products.reduce((n, [, p]) => n + Object.values(p.sizes).reduce((s,c)=>s+(typeof c==="number"?c:1),0), 0);
-
-  return (
-    <div>
-      <div style={{ color:"#555", fontSize:"0.85rem", marginBottom:"1.25rem" }}>
-        Live OOS log · {totalUnits} item{totalUnits !== 1 ? "s" : ""} logged today
-      </div>
-      <div style={{ display:"flex", flexDirection:"column", gap:"1rem" }}>
-        {products.map(([key, product]) => {
-          const sizes = Object.keys(product.sizes).sort((a,b)=>Number(a)-Number(b));
-          const productResponses = responses[key] || {};
-          return (
-            <div key={key} style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.25rem" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:"0.75rem", marginBottom:"0.75rem" }}>
-                <ProductPhoto url={product.photoUrl} photo={product.photo} size={40} radius={8}/>
-                <div style={{ fontWeight:"700", fontSize:"1rem" }}>{product.productName}</div>
-              </div>
-              <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
-                {sizes.map(size => {
-                  const count = typeof product.sizes[size] === "number" ? product.sizes[size] : 1;
-                  const resp = productResponses[size]?.response;
-                  return (
-                    <div key={size} style={{
-                      background: resp==="available"?"rgba(0,150,70,.15)":resp==="out_of_stock"?"rgba(150,20,20,.15)":CARD,
-                      border:`2px solid ${resp==="available"?"rgba(0,150,70,.5)":resp==="out_of_stock"?"rgba(150,20,20,.4)":"rgba(60,110,255,.15)"}`,
-                      borderRadius:"10px", padding:"0.5rem 0.75rem", textAlign:"center", minWidth:"64px",
-                    }}>
-                      <div style={{ fontWeight:"700", fontSize:"0.9rem", color:"#fff" }}>Sz <SizeTag size={size} /></div>
-                      {count > 1 && <div style={{ color:"#4A7FFF", fontSize:"0.68rem", fontWeight:"700" }}>×{count}</div>}
-                      {resp==="available"    && <div style={{ color:"#4ADE80", fontSize:"0.7rem", fontWeight:"600" }}>Avail</div>}
-                      {resp==="out_of_stock" && <div style={{ color:"#F87171", fontSize:"0.7rem", fontWeight:"600" }}>OOS</div>}
-                      {!resp                 && <div style={{ color:"#555", fontSize:"0.7rem" }}>Pending</div>}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -13206,6 +13157,13 @@ function laybyTvNumber(invoiceNo) {
 }
 
 const TV_VOICE_LS_KEY = "mc_tv_voice";
+// Master OFF switch for the whole pickup-voice feature (spoken announcements +
+// the on-screen enable/mute toggle). Turned off on request — no voice for now.
+// ALL the voice CODE below is intentionally kept intact (engine queue, admin
+// panel, callable); flip this to true to bring the feature back with no rebuild
+// of that logic. While false: the TV renders no voice control and enqueues no
+// announcement, so the speaker stays silent.
+const TV_VOICE_ENABLED = false;
 const ANNOUNCE_REPEATS = 3;      // say each order announcement this many times
 const ANNOUNCE_GAP_MS  = 550;    // pause between clips (repeats + back-to-back orders)
 // Pick a clear English voice for the spoken pickup announcements; falls back to the
@@ -13234,7 +13192,18 @@ function usePickupVoiceSetting() {
   return s;
 }
 
-function TvWithAutoCollect({ orders, onExit }) {
+function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
+  // The customer pickup board shows REAL customer orders only. "Shop Refill"
+  // rows are internal clothing-refill (CR) requests that live in the SAME
+  // /orders node — the warehouse Order Queue already excludes them (see the
+  // hubOrders filter), but the TV historically merged everything, so fulfilled
+  // refills leaked onto the customer board as stuck "Incoming" (their base
+  // status stays "incoming"; the CR flow resolves via clothingRefillStatus).
+  // Drop them here so they never reach the board, the announcer, or the timers.
+  const orders = useMemo(
+    () => (ordersRaw || []).filter(o => o && o.customerName !== "Shop Refill"),
+    [ordersRaw]
+  );
   // Dedupe markers are keyed by a composite of order.id + createdAt rather
   // than id alone. order.id is daily-scoped (it's the orderNumber, which
   // resets each day — see project memory project_order_number_daily_reset),
@@ -13386,7 +13355,7 @@ function TvWithAutoCollect({ orders, onExit }) {
       const k = announceKey(o);
       if (seen.has(k)) continue;
       seen.add(k);                                                          // mark announced even when off/muted so re-enabling won't dump a backlog
-      if (settingRef.current?.enabled !== false && voiceOn && voiceUnlocked) { // admin master switch AND TV mute AND unlocked
+      if (TV_VOICE_ENABLED && settingRef.current?.enabled !== false && voiceOn && voiceUnlocked) { // feature flag AND admin master switch AND TV mute AND unlocked
         const num = String(o.id ?? "").replace(/^0+(?=\d)/, "") || String(o.id ?? "");
         const line = `Order number ${num}, ${phrase}`;
         for (let i = 0; i < ANNOUNCE_REPEATS; i++) enqueueAnnounce(line); // repeat so it's not missed
@@ -13521,8 +13490,10 @@ function TvWithAutoCollect({ orders, onExit }) {
     <>
       <TvDisplayMockup orders={filteredOrders} onExit={onExit} />
       {/* Voice controls (overlay — never touches the tuned board layout). One-tap
-          "enable" on load unlocks audio for the session; then a discreet mute toggle. */}
-      {!voiceUnlocked ? (
+          "enable" on load unlocks audio for the session; then a discreet mute toggle.
+          Gated behind TV_VOICE_ENABLED (currently off) so nothing renders while the
+          voice feature is paused — the handler code is retained for a later re-enable. */}
+      {TV_VOICE_ENABLED && (!voiceUnlocked ? (
         <button
           type="button"
           onClick={enableVoice}
@@ -13553,7 +13524,7 @@ function TvWithAutoCollect({ orders, onExit }) {
         >
           {voiceOn ? "🔊" : "🔇"}
         </button>
-      )}
+      ))}
     </>
   );
 }
