@@ -40,7 +40,11 @@ export default function Locator({ products, registry }) {
       const sizeMap = {}; let total = 0;
       sizes.forEach(s => { const q = cell[s]?.qty; const n = typeof q === "number" ? q : 0; sizeMap[s] = n; total += n; });
       return { id: l.id, total, sizeMap };
-    }).filter(x => x.total !== 0);
+      // Show a location if ANY size is nonzero — not just when the net total is
+      // nonzero. With negative-stock cells, sizes can cancel to a net 0 (e.g.
+      // M:+3, L:−3) while the location physically holds stock; the aggregate
+      // filter used to hide those.
+    }).filter(x => Object.values(x.sizeMap).some(n => n !== 0));
   }, [product, allCells, locs, productId]);
   const grand = perLoc.reduce((s, x) => s + x.total, 0);
 

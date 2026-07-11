@@ -9200,18 +9200,35 @@ function absTime(iso) {
   return new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
 
+// Hold a Hub-2 order that's READY but before its reveal instant (notifyReadyAt)
+// so a customer-facing view reads "being prepared", not "ready", until the reveal
+// — same as the TV board. Restored: the desktop redesign had dropped this.
+function holdHub2Ready(o, nowMs) {
+  if (!o || o.status !== STATUS.READY || !o.notifyReadyAt) return o;
+  const revealMs = Date.parse(o.notifyReadyAt);
+  if (isNaN(revealMs)) return o;                 // malformed → don't hold (fail open)
+  if (nowMs < revealMs) return { ...o, status: STATUS.INCOMING };
+  return { ...o, readyAt: o.notifyReadyAt };
+}
+
 function CustomerView({ orders, onExit }) {
   const [orderId, setOrderId] = useState("");
   const [found, setFound] = useState(null);
   const [searched, setSearched] = useState(false);
   // Use the whole screen on desktop (≥1024px); phones keep the single column.
   const isWide = !useIsNarrow(1024);
+  // Respect the Hub-2 dispatch hold on this customer-facing page: a READY order
+  // whose reveal instant hasn't passed must read as "being prepared". Ticks every
+  // 10s so the hold releases at the reveal time (mirrors the TV board).
+  const [revealClock, setRevealClock] = useState(() => Date.now());
+  useEffect(() => { const id = setInterval(() => setRevealClock(Date.now()), 10000); return () => clearInterval(id); }, []);
+  const heldOrders = useMemo(() => (orders || []).map(o => holdHub2Ready(o, revealClock)), [orders, revealClock]);
 
   const doSearch = (idOverride) => {
     const raw = (idOverride ?? orderId).toString();
     const clean = raw.trim().replace(/^#/, "");
     if (!clean) return;
-    const o = orders.find(o => o.id === clean.padStart(3, "0") || o.id === clean);
+    const o = heldOrders.find(o => o.id === clean.padStart(3, "0") || o.id === clean);
     setOrderId(clean);
     setFound(o || null);
     setSearched(true);
@@ -9260,7 +9277,7 @@ function CustomerView({ orders, onExit }) {
   // ── FULL-SCREEN DESKTOP WORKSPACE (≥1024px) — search/recent rail + rich pane ──
   if (isWide) {
     const q = orderId.trim().toLowerCase();
-    const railList = (q ? orders.filter(o => o.id.includes(q) || (o.customerName || "").toLowerCase().includes(q)) : orders).slice(0, 60);
+    const railList = (q ? heldOrders.filter(o => o.id.includes(q) || (o.customerName || "").toLowerCase().includes(q)) : heldOrders).slice(0, 60);
     const statusAt = found ? ({ [STATUS.INCOMING]: found.createdAt, [STATUS.READY]: found.readyAt, [STATUS.OUT_OF_STOCK]: found.outOfStockAt, [STATUS.COMING_TOMORROW]: found.comingTomorrowAt, [STATUS.COLLECTED]: found.collectedAt }[found.status] || found.updatedAt) : null;
     const subbed = found && found.sentSize && found.sentSize !== found.size ? found.sentSize : null;
     const tags = [];

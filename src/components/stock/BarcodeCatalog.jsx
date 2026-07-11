@@ -378,7 +378,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
                     <div style={{ fontSize: 12, fontWeight: 650, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.productName}</div>
                     <div style={{ fontSize: 10.5, color: "rgba(233,238,255,.4)" }}>Size {formatSize(it.size)} · ×{it.count}</div>
                   </div>
-                  <button onClick={e => { e.stopPropagation(); toggle(p, it.size); if (lastKey === k) setLastKey(null); }} style={{ background: "transparent", border: 0, color: "rgba(233,238,255,.3)", cursor: "pointer", fontSize: 13 }}>✕</button>
+                  <button onClick={e => { e.stopPropagation(); toggle({ id: it.productId }, it.size); if (lastKey === k) setLastKey(null); }} style={{ background: "transparent", border: 0, color: "rgba(233,238,255,.3)", cursor: "pointer", fontSize: 13 }}>✕</button>
                 </div>
               );
             })}

@@ -104,7 +104,7 @@ export default function LabelPrintView({ products = [], onExit }) {
           const { code } = await ensureBarcode(product.id, null);
           items.push({ code, productName: product.name, price: RANDS(product.retailPrice), count: qty });
         } catch {
-          skipped.push(product.name);   // no barcode yet (needs a stock user once) — skip, keep the rest
+          skipped.push(product);   // no barcode yet (needs a stock user once) — skip, keep the rest
         }
       }
       if (items.length === 0) {
@@ -115,7 +115,9 @@ export default function LabelPrintView({ products = [], onExit }) {
       if (res.ok) {
         const n = items.reduce((s, i) => s + i.count, 0);
         flash("ok", `Printed ${n} label${n !== 1 ? "s" : ""}${skipped.length ? ` · ${skipped.length} skipped (no barcode)` : ""}`);
-        setCart({});
+        // Clear only what printed — keep the skipped (no-barcode) items in the
+        // queue so staff can see and fix them rather than lose track.
+        setCart(prev => { const next = {}; for (const p of skipped) if (prev[p.id]) next[p.id] = prev[p.id]; return next; });
       } else {
         flash("err", `Print failed: ${res.error}`);
       }
