@@ -355,6 +355,71 @@ exports.metaFallbackSweep = onSchedule(
   }
 );
 
+// Hub 2 dispatch-hold reveal sweep. A Hub 2 order marked READY holds its customer
+// "order_ready" WhatsApp until notifyReadyAt (= Sent + HUB2_DISPATCH_HOLD_MS, set
+// by the app) so the parcel has time to reach the shop. The warehouse tablet must
+// NOT be trusted to send it later — it sleeps / closes — so the SERVER owns the
+// delayed send. Every minute: send any pending order that is now due, and clear
+// the flag without sending if the order left READY (reverted / OOS / collected)
+// so a stale hold can never fire. enqueueWhatsApp writes to the same outbox as the
+// instant path (with its own 90s dedupe), so a re-run can't double-send.
+exports.dispatchHoldRevealSweep = onSchedule(
+  { schedule: "every 1 minutes", region: "europe-west1", timeoutSeconds: 120, memory: "256MiB" },
+  async () => {
+    const db = admin.database();
+    const orders = (await db.ref("orders").once("value")).val() || {};
+    const now = Date.now();
+    let sent = 0, cleared = 0;
+    for (const [id, o] of Object.entries(orders)) {
+      if (!o || id === "items" || o.readyNotifyPending !== true) continue;
+      // Left READY (reverted / OOS / collected) → clear, never send.
+      if (o.status !== "ready") {
+        await db.ref(`orders/${id}`).update({ readyNotifyPending: false }).catch(() => {});
+        cleared++;
+        continue;
+      }
+      // Not due yet — leave it for a later run.
+      if (o.notifyReadyAt && Date.parse(o.notifyReadyAt) > now) continue;
+      // CLAIM before sending: atomically flip readyNotifyPending true→false in a
+      // transaction. Only the run that wins the flip sends, so (a) two overlapping
+      // sweeps can't both send, and (b) a send whose later flag-clear write failed
+      // can't re-send — the flag is already cleared as part of the claim, BEFORE the
+      // enqueue. On enqueue failure we re-hold (set it back to true) so a later run
+      // retries — at-least-once, never the double-send of a send-then-clear-then-fail.
+      let claimed = false;
+      try {
+        // Update fn MUST be null-tolerant: in a Cloud Function the transaction first
+        // runs against a COLD local cache (cur === null, since the earlier once() tears
+        // its listener down), and returning undefined there aborts BEFORE the server is
+        // ever consulted — the claim would never commit and no held WhatsApp would send.
+        // So only abort on a confirmed false (already claimed); null/true both proceed,
+        // and the server CAS re-runs the fn with the real value to resolve the race.
+        const res = await db.ref(`orders/${id}/readyNotifyPending`).transaction(cur => (cur === false ? undefined : false));
+        claimed = res.committed && res.snapshot.val() === false;
+      } catch { claimed = false; }
+      if (!claimed) continue;                          // another run got it, or it changed under us
+      try {
+        if (o.customerPhone) {
+          await enqueueWhatsApp({
+            templateName:   "order_ready",
+            recipientPhone: o.customerPhone,
+            templateParams: [o.customerName || "there", id],
+          });
+        }
+        await db.ref(`orders/${id}/readyNotifiedAt`).set(new Date().toISOString()).catch(() => {});
+        sent++;
+      } catch (e) {
+        // Enqueue failed AFTER we claimed — re-hold so a later sweep retries. If the
+        // re-hold ALSO fails the message is lost (rare double-failure) — log loudly.
+        await db.ref(`orders/${id}/readyNotifyPending`).set(true)
+          .catch(err => console.error("dispatchHoldRevealSweep: re-hold FAILED, order_ready may be lost:", id, err.message));
+        console.warn("dispatchHoldRevealSweep: enqueue failed, re-holding:", id, e.message);
+      }
+    }
+    if (sent || cleared) console.log("dispatchHoldRevealSweep:", JSON.stringify({ sent, cleared, scanned: Object.keys(orders).length }));
+  }
+);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WhatsApp broadcast proxy (Phase 1)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2722,12 +2787,27 @@ exports.chatStream = onRequest(
 // Token transforms: toAuthPassword + usernameToEmail from ./lib/auth-utils.cjs
 // (the same module Login.jsx imports its ES-module mirror from).
 
+// Every permission the staff editor can grant. MUST stay a superset of the
+// client catalog in src/components/UserManagement.jsx — createStaffUser rejects
+// any permission not listed here, so a missing key silently blocks account
+// creation (that is exactly how Warehouse users became un-creatable: their
+// default set includes stock_management/stock_add/barcode, which used to be
+// absent from this list). `display_refills` is retained as a legacy no-op so
+// old records that still carry it don't fail validation on edit.
 const VALID_PERMISSIONS = [
-  "store_assistant", "warehouse",   "source",       "display_refills",
-  "place_orders",    "product_admin","insights",    "broadcast",
-  "customer_data",   "user_management",
+  "store_assistant", "warehouse",     "source",        "place_orders",
+  "product_admin",   "insights",      "broadcast",     "customer_data",
+  "stock_management","stock_add",     "barcode",       "user_management",
+  "display_refills", // legacy no-op — kept for back-compat only
 ];
 const VALID_ROLES = ["admin", "store_assistant", "warehouse"];
+// Stock role gates inventory WRITES in the RTDB rules, separate from the app
+// role. createStaffUser accepts an optional stockRole so a Warehouse account is
+// write-capable the moment it's created (no separate second step). "" / absent
+// clears it (no stock-write access).
+const VALID_STOCK_ROLES = ["", "store", "warehouse", "pos", "admin"];
+// Sensible stockRole per app role when the client doesn't send one explicitly.
+const DEFAULT_STOCK_ROLE = { admin: "admin", warehouse: "warehouse", store_assistant: "" };
 
 // ─── PICKUP-BOARD VOICE (natural TTS) ─────────────────────────────────────────
 // One callable, pluggable engines for the TV pickup board's spoken announcements:
@@ -2745,6 +2825,18 @@ const ELEVEN_MODEL = "eleven_turbo_v2_5";
 const ELEVEN_DEFAULT_VOICE = "EXAVITQu4vr4xnSDxMaL";  // "Sarah" — clear, friendly
 const ELEVEN_COST_PER_KCHAR = 0.10;                   // ≈ turbo pricing (approx, for logging)
 const VOICE_TEXT_RE = /^(Order number .{1,24}, (ready for collection|out of stock|scheduled for tomorrow)\.?|Pickup announcements on\.?)$/;
+
+// Fixed vocabulary the TV pickup board preloads and plays LOCALLY (digit-by-digit
+// number reading). token → exact words. MUST match VOICE_VOCAB in src/App.jsx.
+const VOICE_VOCAB = {
+  order_number: "Order number",
+  d0: "zero", d1: "one", d2: "two",   d3: "three", d4: "four",
+  d5: "five", d6: "six", d7: "seven", d8: "eight", d9: "nine",
+  ready:    "ready for collection",
+  oos:      "out of stock",
+  tomorrow: "scheduled for tomorrow",
+  enabled:  "Pickup announcements on",
+};
 
 function ttsCacheKey(engine, voice, text) {
   const t = String(text).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
@@ -2776,8 +2868,30 @@ async function ttsTokenUrl(file, path) {
   return `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
 }
 
+// Get (cache-hit) or generate+cache one OpenAI TTS clip. Deterministic Storage path
+// keyed by voice+text, so re-requesting the same word is free and idempotent. Used
+// by the vocab preload (and the legacy single-clip path). chars = billable chars
+// generated this call (0 on a cache hit).
+async function openaiTtsUrl(bucket, voice, text) {
+  const path = `tts/${ttsCacheKey("openai", voice, text)}.mp3`;
+  const file = bucket.file(path);
+  const [exists] = await file.exists();
+  if (exists) return { url: await ttsTokenUrl(file, path), cached: true, chars: 0 };
+  const res = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${openaiApiKey.value()}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: OPENAI_TTS_MODEL, voice: voice || "nova", input: text, response_format: "mp3" }),
+  });
+  if (!res.ok) throw new HttpsError("internal", `openai tts ${res.status}: ${(await res.text().catch(() => "")).slice(0, 120)}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  const token = require("crypto").randomUUID();
+  await file.save(buf, { resumable: false, contentType: "audio/mpeg", metadata: { metadata: { firebaseStorageDownloadTokens: token } } });
+  const url = `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+  return { url, cached: false, chars: text.length };
+}
+
 exports.pickupVoice = onCall(
-  { region: "europe-west1", secrets: [openaiApiKey], memory: "256MiB", timeoutSeconds: 30 },
+  { region: "europe-west1", secrets: [openaiApiKey], memory: "256MiB", timeoutSeconds: 120 },
   async (request) => {
     if (!request.auth) throw new HttpsError("unauthenticated", "Sign-in required.");
     const data = request.data || {};
@@ -2785,6 +2899,28 @@ exports.pickupVoice = onCall(
     // Status probe for the admin selector: which engines are usable right now.
     if (data.status) {
       return { engines: { browser: true, openai: true, elevenlabs: !!(await getElevenKey()) } };
+    }
+
+    // Vocab preload for the TV: generate (or cache-hit) the whole fixed vocabulary in
+    // one OpenAI voice and return { token → url }. The board fetches + decodes these
+    // once at startup and plays announcements locally. Idempotent: after the first
+    // generation every call is cache hits. Fixed internal wordlist, so it bypasses
+    // VOICE_TEXT_RE (it can't be abused for arbitrary paid TTS).
+    if (data.vocab) {
+      const vvoice = String(data.voice || "nova").trim().slice(0, 40) || "nova";
+      const bucket = admin.storage().bucket(STORAGE_BUCKET);
+      const entries = Object.entries(VOICE_VOCAB);
+      const results = await Promise.all(entries.map(async ([tok, words]) => {
+        const { url, chars } = await openaiTtsUrl(bucket, vvoice, words);
+        return [tok, url, chars];
+      }));
+      const urls = {};
+      let genChars = 0;
+      for (const [tok, url, chars] of results) { urls[tok] = url; genChars += chars; }
+      if (genChars) {
+        try { await logReorderUsage(admin.database(), new Date().toISOString().slice(0, 10), { at: Date.now(), kind: "pickupVoiceVocab", by: request.auth.uid, engine: "openai", chars: genChars, costUSD: +((genChars / 1e6) * OPENAI_TTS_COST_PER_MCHAR).toFixed(6) }); } catch { /* best-effort */ }
+      }
+      return { urls, voice: vvoice };
     }
 
     const text = String(data.text || "").trim();
@@ -2836,7 +2972,7 @@ exports.createStaffUser = onCall(
   async (request) => {
     assertAdmin(request);
 
-    const { username, displayName, pin, role, permissions } = request.data || {};
+    const { username, displayName, pin, role, permissions, stockRole } = request.data || {};
 
     // ── Validate ──────────────────────────────────────────────────────────
     if (typeof username !== "string" || !/^[a-z0-9_]{1,30}$/.test(username)) {
@@ -2853,6 +2989,14 @@ exports.createStaffUser = onCall(
     }
     if (!Array.isArray(permissions) || permissions.some((p) => typeof p !== "string" || !VALID_PERMISSIONS.includes(p))) {
       throw new HttpsError("invalid-argument", `Permissions must be an array of: ${VALID_PERMISSIONS.join(", ")}.`);
+    }
+    // stockRole is optional. If omitted, fall back to a sensible default for the
+    // role so a Warehouse/Admin account can write stock immediately.
+    const resolvedStockRole = (stockRole === undefined || stockRole === null)
+      ? (DEFAULT_STOCK_ROLE[role] || "")
+      : stockRole;
+    if (typeof resolvedStockRole !== "string" || !VALID_STOCK_ROLES.includes(resolvedStockRole)) {
+      throw new HttpsError("invalid-argument", `Stock role must be one of: ${VALID_STOCK_ROLES.filter(Boolean).join(", ")} (or empty).`);
     }
     const cleanDisplayName = displayName.trim();
 
@@ -2901,6 +3045,9 @@ exports.createStaffUser = onCall(
         displayName: cleanDisplayName,
         role,
         permissions,
+        // Only write stockRole when non-empty; an empty string means "no stock
+        // access" and we keep the key absent (matches how the editor clears it).
+        ...(resolvedStockRole ? { stockRole: resolvedStockRole } : {}),
         createdAt: admin.database.ServerValue.TIMESTAMP,
       });
     } catch (err) {

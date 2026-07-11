@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, equalTo, startAt } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
@@ -39,7 +39,7 @@ import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
-import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod } from "./utils/insights";
+import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
 import { printOrderSlips } from "./print/orderSlip";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
@@ -1005,6 +1005,17 @@ async function reverseClothingRefill({ store, productId, size, qty, hub, batchId
 // the hub cell below zero (returns insufficient_stock instead).
 const CLOTHING_CR_REASON      = "clothing_cr";
 const CLOTHING_CR_UNDO_REASON = "clothing_cr_undo";
+// ── Uncounted send (the warehouse override) ───────────────────────────────────
+// The clothing buffer is scattered/uncounted: an item can be physically at the hub
+// yet have a 0 (or missing) /stock cell there, so the normal transfer_out is blocked
+// ("no stock"). The override lets a warehouse/admin add the requested units DIRECTLY
+// into the destination shop with NO source deduction — a `received` movement, whose
+// only cell effect is +to (see applyMovement.cellDeltas). Use ONLY when the goods are
+// physically present but uncounted; if the DB actually holds them elsewhere (Trophy/
+// Central) this creates a reconcilable overcount, so every such move is stamped
+// CLOTHING_CR_UNCOUNTED_REASON in the ledger to be found/reconciled later.
+const CLOTHING_CR_UNCOUNTED_REASON      = "clothing_cr_uncounted";
+const CLOTHING_CR_UNCOUNTED_UNDO_REASON = "clothing_cr_uncounted_undo";
 
 // IDEMPOTENCY: both directions are keyed on the order line + its CREATION DATE +
 // fulfil GENERATION (clothingRefillGen, bumped by each undo). order.id is only a
@@ -1042,6 +1053,42 @@ async function reverseCRRefill({ store, productId, size, qty, hub, orderId, crea
     link: { orderId, refillId: `cr_${store}_${productId}` },
     movementId: crMovementId("crundo", orderId, createdAt, gen),
   });
+}
+
+// Uncounted send: add the requested units straight into the destination shop, NO
+// source deduction (type "received" → +to only). Idempotent on the same line/date/gen.
+async function fireCRUncounted({ store, productId, size, qty, actorRole, orderId, createdAt, gen = 0 }) {
+  return applyMovement({
+    type: "received",
+    productId, size, qty,
+    to: store,
+    reason: CLOTHING_CR_UNCOUNTED_REASON,
+    actorRole: actorRole || null,
+    link: { orderId, refillId: `cr_${store}_${productId}` },
+    movementId: crMovementId("cruncounted", orderId, createdAt, gen),
+  });
+}
+
+// Reverse an uncounted send: it was created from nothing, so undo destroys it — a
+// NEGATIVE adjustment on the shop cell (−from). Rules gate `adjustment` to admin, so
+// undoing an uncounted send needs an admin (warehouse can send, only admin can undo).
+async function reverseCRUncounted({ store, productId, size, qty, orderId, createdAt, gen = 0, actorRole }) {
+  return applyMovement({
+    type: "adjustment",
+    productId, size, qty,
+    from: store,
+    reason: CLOTHING_CR_UNCOUNTED_UNDO_REASON,
+    actorRole: actorRole || null,
+    link: { orderId, refillId: `cr_${store}_${productId}` },
+    movementId: crMovementId("cruncountedundo", orderId, createdAt, gen),
+  });
+}
+
+// Run ONE CR movement leg, normalising a thrown error or a void return into a
+// { ok:false, reason } result so callers can branch uniformly.
+async function runCRLeg(fn) {
+  try { return (await fn()) || { ok: false, reason: "transfer failed" }; }
+  catch { return { ok: false, reason: "network error" }; }
 }
 
 // Bounded read of /stock_movements: a ts-windowed query over the last
@@ -1151,13 +1198,6 @@ function computeCollectedCounts(collectedOrders) {
     if (displaySize) result[key].sizes[displaySize] = (result[key].sizes[displaySize] || 0) + 1;
   });
   return result;
-}
-
-// Returns the SA-timezone YYYY-MM-DD date for an order's collected/updated timestamp.
-function orderCollectedDate(order) {
-  const ts = order.collectedAt || order.updatedAt;
-  if (!ts) return null;
-  return new Date(new Date(ts).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 // Returns the SA-timezone YYYY-MM-DD date the warehouse marked the order READY.
@@ -1510,6 +1550,63 @@ async function getNextOrderNumber() {
   });
   const counter = txResult.snapshot.val()?.counter ?? 1;
   return String(counter).padStart(3, "0");
+}
+
+// ─── SHOP-REFILL NUMBER COUNTER ───────────────────────────────────────────────
+// Clothing "Shop Refill" requests get their OWN daily counter, kept completely
+// separate from the sneaker orderCounter above. This is why:
+//   • The sneaker sequence (001–999) is what shows on the customer TV and gets
+//     written on shoeboxes — one shoe = one number. A busy day of clothing
+//     refills must NOT eat into (or fragment) that sequence.
+//   • Refill numbers are prefixed "R" (R001, R002 …) so a refill node key
+//     (/orders/R001-1) can never collide with a sneaker node key (/orders/001),
+//     and the two live in independent number spaces.
+// ONE R-number is drawn per refill CART (not per line — see placeRefillRequests),
+// so a 30-size refill burns exactly one refill number, never 30. Daily reset +
+// 001–999 cycle mirror the sneaker counter (refills are ephemeral too, and
+// /orders is daily-scoped by design). The per-line node keys are R{n}-{i}.
+async function getNextRefillNumber() {
+  const todayKey = getTodayKey();
+  const counterRef = ref(database, "refillCounter");
+  const txResult = await runTransaction(counterRef, (current) => {
+    if (!current || current.day !== todayKey) {
+      return { day: todayKey, counter: 1 };
+    }
+    const next = current.counter >= 999 ? 1 : current.counter + 1;
+    return { day: todayKey, counter: next };
+  });
+  const counter = txResult.snapshot.val()?.counter ?? 1;
+  return "R" + String(counter).padStart(3, "0");
+}
+
+// ─── HUB 2 DISPATCH HOLD ──────────────────────────────────────────────────────
+// Hub 2 fulfils shop orders that physically TRAVEL to the shop, so telling the
+// customer the instant the warehouse taps Sent pulls them in before the parcel
+// lands. For Hub 2 "Ready" only, the customer-facing reveal (TV board + voice +
+// WhatsApp) is held this long after Sent; the warehouse side is unaffected (the
+// order is READY immediately, still POS-collectable). OOS / Tomorrow are never
+// held. The reveal instant is written once as notifyReadyAt (single source of
+// truth the TV gates on and the server sweep sends the WhatsApp at), so this
+// constant lives in exactly one place. Change here to retune (no other edits).
+const HUB2_DISPATCH_HOLD_MS = 6 * 60 * 1000;
+// Hubs whose parcels physically travel to the shop → hold the customer reveal.
+// Add "hub3"/"hubC" here (one line) if Pine / clothing-customer parcels also ride
+// the van. The server sweep is hub-agnostic (it keys off notifyReadyAt), so this
+// set is the ONLY place that decides which hubs are held.
+const HELD_DISPATCH_HUBS = new Set(["hub2"]);
+
+// Customer-facing view of an order under the Hub 2 dispatch hold. Only Hub 2
+// "Ready" orders carry notifyReadyAt (written by updateStatus), so this no-ops for
+// everything else. While held it reads as INCOMING ("being prepared") — not
+// announced, not on the ready timer; at reveal it becomes READY with readyAt moved
+// to the reveal instant, so the 8-min board window and the voice freshness check
+// both count from reveal, not from the earlier warehouse Sent.
+function holdHub2Ready(o, nowMs) {
+  if (!o || o.status !== STATUS.READY || !o.notifyReadyAt) return o;
+  const revealMs = Date.parse(o.notifyReadyAt);
+  if (isNaN(revealMs)) return o;                       // malformed → don't hold (fail open, customer still told)
+  if (nowMs < revealMs) return { ...o, status: STATUS.INCOMING };
+  return { ...o, readyAt: o.notifyReadyAt };
 }
 
 // ─── CUSTOMERS VIEW ───────────────────────────────────────────────────────────
@@ -3810,91 +3907,6 @@ function AdminReviewNamesTab({ products }) {
   );
 }
 
-// Admin control for the TV pickup board's spoken-announcement engine. Writes
-// /settings/pickupVoice live (RTDB); the TV reads it live so switching the voice
-// needs no redeploy. Browser + OpenAI are always usable; ElevenLabs shows "add API
-// key to activate" until the key exists in Secret Manager (probed via pickupVoice
-// status). Same pluggable idea as the photo studio's engine picker.
-const OPENAI_TTS_VOICES = ["nova", "coral", "shimmer", "alloy", "echo", "onyx"];
-function PickupVoiceAdmin() {
-  const setting = usePickupVoiceSetting(); // { engine, voice }
-  const [engines, setEngines] = useState({ browser: true, openai: true, elevenlabs: false });
-  const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    httpsCallable(functions, "pickupVoice")({ status: true })
-      .then(r => { if (alive && r?.data?.engines) setEngines(r.data.engines); })
-      .catch(() => { /* keep defaults */ });
-    return () => { alive = false; };
-  }, []);
-  const choose = async (engine, voice) => {
-    setSaving(true);
-    try { await update(ref(database, PICKUP_VOICE_PATH), { engine, voice: voice ?? (engine === "openai" ? (setting.voice || "nova") : "") }); }
-    catch (e) { console.warn("pickup voice save failed:", e); }
-    finally { setSaving(false); }
-  };
-  const setEnabled = async (en) => {
-    setSaving(true);
-    try { await update(ref(database, PICKUP_VOICE_PATH), { enabled: en }); }
-    catch (e) { console.warn("pickup voice enable save failed:", e); }
-    finally { setSaving(false); }
-  };
-  const enabled = setting.enabled !== false;
-  const OPTS = [
-    { id: "browser",    label: "Browser",    sub: "Free · robotic",      active: true },
-    { id: "openai",     label: "OpenAI",     sub: "Natural · tts-1",     active: engines.openai },
-    { id: "elevenlabs", label: "ElevenLabs", sub: engines.elevenlabs ? "Most human" : "Add API key to activate", active: engines.elevenlabs },
-  ];
-  return (
-    <div style={{ background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, padding:12 }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-        <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>🔊 Pickup board voice</span>
-        {/* Master switch — turns the board's spoken announcements on/off for everyone. */}
-        <div style={{ display:"flex", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", borderRadius:999, padding:2 }}>
-          {[["on", "On"], ["off", "Off"]].map(([val, lbl]) => {
-            const sel = (val === "on") === enabled;
-            return (
-              <button key={val} type="button" onClick={() => setEnabled(val === "on")} disabled={saving}
-                      style={{ background: sel ? (val === "on" ? "#4ACA7A" : "rgba(255,255,255,.18)") : "transparent",
-                               color: sel ? (val === "on" ? "#062" : "#fff") : "rgba(255,255,255,.6)",
-                               border:"none", borderRadius:999, padding:"4px 14px", fontSize:12, fontWeight:800, cursor:"pointer" }}>{lbl}</button>
-            );
-          })}
-        </div>
-      </div>
-      <div style={{ display:"flex", gap:8, flexWrap:"wrap", opacity: enabled ? 1 : 0.45, pointerEvents: enabled ? "auto" : "none" }}>
-        {OPTS.map(o => {
-          const on = setting.engine === o.id;
-          const disabled = o.id === "elevenlabs" && !o.active;
-          return (
-            <button key={o.id} type="button" onClick={() => !disabled && choose(o.id)} disabled={saving || disabled}
-                    style={{ flex:"1 1 92px", minWidth:92, textAlign:"left", background: on ? "rgba(74,127,255,.2)" : "rgba(255,255,255,.05)",
-                             border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.12)"), borderRadius:10, padding:"9px 11px",
-                             cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.55 : 1 }}>
-              <div style={{ fontSize:12.5, fontWeight:700, color: on ? "#fff" : "rgba(255,255,255,.85)" }}>{o.label}{on ? " ✓" : ""}</div>
-              <div style={{ fontSize:10.5, color:"rgba(255,255,255,.5)", marginTop:2 }}>{o.sub}</div>
-            </button>
-          );
-        })}
-      </div>
-      {setting.engine === "openai" && (
-        <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap", marginTop:10 }}>
-          <span style={{ fontSize:11, color:"rgba(255,255,255,.5)" }}>Voice:</span>
-          {OPENAI_TTS_VOICES.map(v => {
-            const on = (setting.voice || "nova") === v;
-            return (
-              <button key={v} type="button" onClick={() => choose("openai", v)} disabled={saving}
-                      style={{ background: on ? "rgba(74,127,255,.25)" : "rgba(255,255,255,.05)", color: on ? "#9DBBFF" : "rgba(255,255,255,.7)",
-                               border:"1px solid "+(on ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.13)"), borderRadius:999, padding:"3px 11px", fontSize:11, fontWeight:600, cursor:"pointer" }}>{v}</button>
-            );
-          })}
-        </div>
-      )}
-      <div style={{ fontSize:10.5, color:"rgba(255,255,255,.35)", marginTop:9 }}>The TV pickup board reads this live — switching the engine takes effect on the board with no redeploy. A paid engine that fails falls back to Browser (never silent).</div>
-    </div>
-  );
-}
-
 // Shared size→quantity entry grid — used by BOTH the Add-Product "Opening stock"
 // and the product-detail "Receive stock" blocks (identical layout, previously
 // copy-pasted). `sizes` is the already-filtered list; values/onChange bind to the
@@ -3945,11 +3957,6 @@ const AI_TOOL_ICON = {
       <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
     </svg>
   ),
-  voice: (
-    <svg viewBox="0 0 24 24" width="17" height="17" stroke="currentColor" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
-    </svg>
-  ),
   stylekit: (
     <svg viewBox="0 0 24 24" width="17" height="17" stroke="currentColor" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
@@ -3961,7 +3968,6 @@ const AI_TOOLS = [
   { id: "stylekit", label: "Style Kit",    desc: "House-style references" },
   { id: "names",    label: "Name Cleanup", desc: "Tidy product names" },
   { id: "reorder",  label: "Reorder",      desc: "Plan + slow movers" },
-  { id: "voice",    label: "Voice",        desc: "Pickup-board TTS" },
 ];
 
 // Matches the sidebar breakpoint: true below `px` wide (tablet and down).
@@ -4008,7 +4014,6 @@ function AiStudioView({ products, onExit }) {
   const photoProposals = usePhotoProposals();
   const pendingPhotos = useMemo(() => Object.values(photoProposals || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [photoProposals]);
   const pendingNames  = useMemo(() => Object.values(nameProposals  || {}).filter(v => v && v.status !== "approved" && v.status !== "rejected").length, [nameProposals]);
-  const voice = usePickupVoiceSetting();
   const [reorderStatus, setReorderStatus] = useState(null);
   useEffect(() => {
     const unsub = onValue(ref(database, "insights/reorderPlan/status"),
@@ -4036,7 +4041,6 @@ function AiStudioView({ products, onExit }) {
   }, [products]);
 
   const badgeOf = (id) => id === "photos" ? pendingPhotos : id === "names" ? pendingNames : 0;
-  const VOICE_LABELS = { browser: "Browser", openai: "OpenAI", elevenlabs: "ElevenLabs" };
 
   const navItem = (t) => {
     const on = tool === t.id;
@@ -4111,7 +4115,6 @@ function AiStudioView({ products, onExit }) {
   const toolBody =
     tool === "names"    ? <AdminReviewNamesTab products={products} /> :
     tool === "reorder"  ? <InsightReorderTab productPhotoMap={productPhotoMap} /> :
-    tool === "voice"    ? <div style={{ padding:"14px 14px 8px" }}><PickupVoiceAdmin /></div> :
     tool === "stylekit" ? <StyleKitPanel /> :
                           <AdminReviewPhotosTab products={products} />;
 
@@ -4135,7 +4138,6 @@ function AiStudioView({ products, onExit }) {
             <AiStatCard label="Photos to review" value={pendingPhotos} sub="awaiting approve / reject" tint="#4A7FFF" icon={AI_TOOL_ICON.photos}/>
             <AiStatCard label="Names to review"  value={pendingNames}  sub="awaiting approve / reject" tint="#A78BFA" icon={AI_TOOL_ICON.names}/>
             <AiStatCard label="Reorder plan"     value={reorderValue}  sub={reorderStatus?.state === "running" ? "analysis in progress" : "last analysis run"} tint="#4ACA7A" icon={AI_TOOL_ICON.reorder}/>
-            <AiStatCard label="Pickup voice"     value={VOICE_LABELS[voice.engine] || "Browser"} sub={voice.enabled ? "announcements on" : "announcements off"} tint="#F59E0B" icon={AI_TOOL_ICON.voice}/>
           </div>
 
           {narrow && chips}
@@ -6421,14 +6423,14 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
 
 function AssistantView({ products, onExit, orders = [] }) {
   const [search, setSearch]                             = useState("");
-  // Single 3-way mode selector (replaces the old Sneakers/Clothing toggle +
-  // separate Refill/Customer toggle):
+  // Mode selector — now a 2-way toggle (Sneakers / CR):
   //   "sneaker"  → sneakers, customer order (photo grid + size sheet)
-  //   "clothing" → clothing FOR A CUSTOMER → Hub C (same photo grid + size
-  //                 sheet UX as sneakers; full customer checkout + Order Queue)
   //   "cr"       → Clothing Refill (bulk multi-size qty list → hub2/hub3)
-  // Helpers below derive product-type filtering, the card layout, and the
-  // per-line intent from this one value.
+  // The customer-clothing mode ("clothing" → Hub C) was REMOVED from the
+  // assistant view; its code paths remain (harmless, keyed off mode which can
+  // no longer be "clothing") but the toggle no longer offers it. Helpers below
+  // derive product-type filtering, the card layout, and the per-line intent
+  // from this one value.
   const [mode, setMode]                                 = useState("sneaker");
   const wantsClothing = mode === "clothing" || mode === "cr"; // product-type filter
   const isRefillMode  = mode === "cr";                        // bulk refill card UX
@@ -6485,6 +6487,43 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Routing universe derived from the chosen shop. THIS keeps every downstream
   // consumer keyed on central/pine unchanged.
   const effectiveStoreMode = shopUniverse(effectiveShop);
+  // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
+  // The SHOP toggle silently re-routes EVERY order placed afterwards to that
+  // store's warehouse→shop transfer (order.destShop). A single mis-tap here
+  // (Trophy → Marathon PE, etc.) sends real stock to the wrong branch with no
+  // undo. So the toggle no longer switches on tap — it stages the target shop
+  // and a hard, red confirm modal stands between the tap and the switch.
+  // `pendingShopSwitch` holds the target shop id awaiting confirmation (null =
+  // no prompt showing).
+  const [pendingShopSwitch, setPendingShopSwitch] = useState(null);
+  const requestShopSwitch = (next) => {
+    if (!next || next === effectiveShop) return;   // tapping the current shop is a no-op
+    setPendingShopSwitch(next);
+  };
+  const confirmShopSwitch = () => {
+    // An explicit, confirmed switch IS an affirmation of the destination, so the
+    // placement guard below won't prompt again for the shop they just chose.
+    if (pendingShopSwitch) { selectShop(pendingShopSwitch); setAffirmedShop(pendingShopSwitch); }
+    setPendingShopSwitch(null);
+  };
+  // ── PLACEMENT DESTINATION GUARD ────────────────────────────────────────────
+  // The shop-switch modal above only fires when the toggle is TAPPED. It does
+  // nothing for a device left on the wrong shop from an earlier session that is
+  // never switched — the exact hole behind the cross-shop mis-routes (a device
+  // serving Marathon PE but stuck on "Trophy" silently shipped PE orders into
+  // Trophy's stock cell; PE then sold from a cell that never received the +1 and
+  // went negative). So for multi-shop users, the FIRST placement after load or a
+  // shop change must AFFIRM the destination shop before any order is written.
+  // Single-shop-locked users can't mis-route, so they are never prompted.
+  const [affirmedShop, setAffirmedShop] = useState(null);
+  const [destConfirm,  setDestConfirm]  = useState(null);   // { run } — a placement awaiting affirmation
+  const needsDestConfirm = !singleShop && !noStoreAccess && affirmedShop !== effectiveShop;
+  const runDestConfirm = () => {
+    setAffirmedShop(effectiveShop);
+    const pending = destConfirm;
+    setDestConfirm(null);
+    pending?.run?.();
+  };
   const [selected, setSelected]                         = useState(null);   // product in size picker
   // Tapping a product photo opens a full-screen lightbox so staff can see the
   // complete (uncropped) image. Holds the photo URL to show, or null.
@@ -6697,12 +6736,15 @@ function AssistantView({ products, onExit, orders = [] }) {
   const openCheckout = () => { resetSheet(); setCheckoutOpen(true); };
   const closeCheckout = () => { setCheckoutOpen(false); setCustomerName(""); setCustomerPhone(""); setMarketingOptIn(false); };
 
-  const placeOrders = async () => {
+  const placeOrders = async (bypassDestConfirm = false) => {
     if (!cart.length || !customerName || submitting) return;
     // Phone is required for customer orders and must be a valid 10-digit SA
     // number starting with 0 (the Place button enforces this too).
     if (!isValidLocalSAPhone(customerPhone)) return;
     if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
+    // Affirm the destination shop once per shop-session (see PLACEMENT
+    // DESTINATION GUARD). The modal's confirm re-invokes with bypass=true.
+    if (!bypassDestConfirm && needsDestConfirm) { setDestConfirm({ run: () => placeOrders(true) }); return; }
     setSubmitting(true);
     try {
       const normalizedPhone = normalizeSAPhone(customerPhone);
@@ -6812,7 +6854,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // info, no WhatsApp send, hub forced to hub2, qty stored on the order.
   // Clothing items are removed from the cart on success; any sneaker items
   // remain (rare — usually clothing-only cart triggers this path).
-  const placeRefillRequests = async () => {
+  const placeRefillRequests = async (bypassDestConfirm = false) => {
     // Refills are clothing lines NOT tagged "customer" (those go through
     // Checkout → Hub C). Call sites already gate on hasCustomerInCart, but
     // keep the filter intent-aware so it stays correct if that ever changes.
@@ -6820,12 +6862,22 @@ function AssistantView({ products, onExit, orders = [] }) {
     const clothingCart = cart.filter(isRefillLine);
     if (!clothingCart.length || submitting) return;
     if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
+    // CR refill orders also carry destShop:effectiveShop and ship on fulfil, so
+    // they mis-route the same way — affirm the destination shop here too.
+    if (!bypassDestConfirm && needsDestConfirm) { setDestConfirm({ run: () => placeRefillRequests(true) }); return; }
     setSubmitting(true);
     try {
       const now = new Date().toISOString();
       const placed = [];
+      // ONE refill number for the WHOLE cart (not per line) — clothing refills
+      // must not consume the sneaker sequence one-per-size. Each line still needs
+      // its own /orders node (per-size CR fulfilment + insights key off it), so
+      // the line id is R{n}-{i} — a unique node key under the single cart number.
+      const refillNum = await getNextRefillNumber();
+      let lineIdx = 0;
       for (const item of clothingCart) {
-        const orderNum = await getNextOrderNumber();
+        lineIdx += 1;
+        const orderNum = `${refillNum}-${lineIdx}`;
         // CR routing is THE one map: Pine → hub3, Central (PE/Trophy) → hub2.
         const placedHub = CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2";
         const order = {
@@ -6999,7 +7051,7 @@ function AssistantView({ products, onExit, orders = [] }) {
             CR        → Clothing Refill (bulk multi-size, → hub2/hub3) */}
       <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
         <div style={{ display:"flex", width:"100%", maxWidth:360, background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
-          {[["sneaker","Sneakers"],["clothing","Clothing"],["cr","CR"]].map(([val, label]) => {
+          {[["sneaker","Sneakers"],["cr","CR"]].map(([val, label]) => {
             const on = mode === val;
             return (
               <button key={val} onClick={() => { setMode(val); resetSheet(); }}
@@ -7026,7 +7078,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           {availableShops.map((s) => {
             const on = effectiveShop === s.id;
             return (
-              <button key={s.id} onClick={() => selectShop(s.id)}
+              <button key={s.id} onClick={() => requestShopSwitch(s.id)}
                 style={{ padding:"6px 22px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
                          background: on ? "rgba(60,110,255,.25)" : "transparent",
                          color: on ? "#fff" : "rgba(255,255,255,.5)",
@@ -7039,12 +7091,103 @@ function AssistantView({ products, onExit, orders = [] }) {
       </div>
       )}
 
-      {/* Mode hint line — clarifies where each clothing mode's orders go. */}
-      {mode === "clothing" && (
-        <div style={{ textAlign:"center", fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.3px", padding:"0 14px 8px" }}>
-          Customer clothing orders are sent to {HUB_LABELS.hubC}
-        </div>
-      )}
+      {/* ── SHOP-SWITCH WARNING MODAL ──────────────────────────────────────────
+          Red, blocking, deliberately alarming. Fires when the assistant taps a
+          DIFFERENT shop on the toggle. Names the from/to shops in plain words,
+          spells out that every future order routes to the new store, and flags
+          any cart lines that would go with it. Only "Yes, switch" commits. */}
+      {pendingShopSwitch && (() => {
+        const fromLabel = labelFor(effectiveShop, shopRegistry);
+        const toLabel   = labelFor(pendingShopSwitch, shopRegistry);
+        const cartCount = cart.length;
+        return (
+          <div onClick={() => setPendingShopSwitch(null)}
+               style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,.8)", backdropFilter:"blur(3px)",
+                        display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+            <div onClick={e => e.stopPropagation()}
+                 style={{ width:"100%", maxWidth:380, background:"#1c0e0e", border:"2px solid rgba(255,70,70,.6)",
+                          borderRadius:18, padding:"26px 22px", textAlign:"center", fontFamily:FONT,
+                          boxShadow:"0 0 44px rgba(255,45,45,.4)" }}>
+              <div style={{ fontSize:46, lineHeight:1, marginBottom:12 }}>⚠️</div>
+              <div style={{ color:"#FF5C5C", fontWeight:800, fontSize:19, letterSpacing:".4px", marginBottom:12 }}>
+                CHANGING STORE
+              </div>
+              <div style={{ color:"#fff", fontSize:14.5, lineHeight:1.55, marginBottom:9 }}>
+                Switching from <strong style={{ color:"#FFD166" }}>{fromLabel}</strong> to{" "}
+                <strong style={{ color:"#FF8A8A" }}>{toLabel}</strong>.
+              </div>
+              <div style={{ color:"rgba(255,255,255,.78)", fontSize:13.5, lineHeight:1.55, marginBottom: cartCount ? 12 : 22 }}>
+                Every order you place will now go to <strong style={{ color:"#FF8A8A" }}>{toLabel}</strong>.
+                If this is the wrong store, the stock ships to the wrong branch.
+              </div>
+              {cartCount > 0 && (
+                <div style={{ color:"#FFD166", fontSize:12.5, fontWeight:700, marginBottom:22, lineHeight:1.5,
+                              background:"rgba(245,196,81,.1)", border:"1px solid rgba(245,196,81,.35)",
+                              borderRadius:10, padding:"9px 11px" }}>
+                  You have {cartCount} item{cartCount > 1 ? "s" : ""} in the cart — they’ll be placed for {toLabel}.
+                </div>
+              )}
+              <div style={{ display:"flex", gap:10 }}>
+                <button onClick={() => setPendingShopSwitch(null)}
+                        style={{ flex:1, padding:"13px 0", borderRadius:11, border:"1px solid rgba(255,255,255,.28)",
+                                 background:"transparent", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
+                  Cancel
+                </button>
+                <button onClick={confirmShopSwitch}
+                        style={{ flex:1.4, padding:"13px 8px", borderRadius:11, border:"none",
+                                 background:"#E03131", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
+                  Switch to {toLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Placement destination confirm ── fires on the FIRST order of a shop-
+          session for multi-shop users (see PLACEMENT DESTINATION GUARD). Calmer
+          than the red switch modal — it's a routine "confirm where this ships",
+          the backstop for a device left on the wrong shop that never switched. */}
+      {destConfirm && (() => {
+        const toLabel = labelFor(effectiveShop, shopRegistry);
+        return (
+          <div onClick={() => { setDestConfirm(null); setCheckoutOpen(false); }}
+               style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,.8)", backdropFilter:"blur(3px)",
+                        display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+            <div onClick={e => e.stopPropagation()}
+                 style={{ width:"100%", maxWidth:380, background:"#0c1730", border:"2px solid rgba(74,127,255,.6)",
+                          borderRadius:18, padding:"26px 22px", textAlign:"center", fontFamily:FONT,
+                          boxShadow:"0 0 44px rgba(60,110,255,.35)" }}>
+              <div style={{ fontSize:42, lineHeight:1, marginBottom:12 }}>🏬</div>
+              <div style={{ color:"#6A9FFF", fontWeight:800, fontSize:18, letterSpacing:".4px", marginBottom:12 }}>
+                CONFIRM STORE
+              </div>
+              <div style={{ color:"#fff", fontSize:14.5, lineHeight:1.55, marginBottom:9 }}>
+                This order ships to <strong style={{ color:"#FFD166" }}>{toLabel}</strong>.
+              </div>
+              <div style={{ color:"rgba(255,255,255,.72)", fontSize:13, lineHeight:1.55, marginBottom:22 }}>
+                If the customer is at a different branch, tap <strong style={{ color:"#fff" }}>Wrong store</strong> and switch
+                stores first — otherwise the stock ships to the wrong shop.
+              </div>
+              <div style={{ display:"flex", gap:10 }}>
+                <button onClick={() => { setDestConfirm(null); setCheckoutOpen(false); }}
+                        style={{ flex:1, padding:"13px 0", borderRadius:11, border:"1px solid rgba(255,255,255,.28)",
+                                 background:"transparent", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
+                  Wrong store
+                </button>
+                <button onClick={runDestConfirm}
+                        style={{ flex:1.4, padding:"13px 8px", borderRadius:11, border:"none",
+                                 background:"#2F6FE0", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
+                  Send to {toLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Mode hint line — clarifies where CR refill orders go. (The customer
+          "Clothing → Hub C" mode was removed; only Sneakers + CR remain.) */}
       {mode === "cr" && (
         <div style={{ textAlign:"center", fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.3px", padding:"0 14px 8px" }}>
           Store refill — set quantities per size
@@ -7387,15 +7530,18 @@ function AssistantView({ products, onExit, orders = [] }) {
               const n = customerLines.length;
               const phoneOk = isValidLocalSAPhone(customerPhone);
               const canPlace = customerName && phoneOk && customerLines.length && !submitting;
+              // Multi-shop users see the destination shop on the button itself —
+              // a persistent, un-missable reminder of where this order ships.
+              const shopTag = singleShop ? "" : ` · ${labelFor(effectiveShop, shopRegistry)}`;
               const placeLabel = !customerName
                 ? "Enter customer name"
                 : !phoneOk
                   ? "Enter a valid phone number"
                   : singleSku && sample.size
-                    ? (n > 1 ? `Place order — size ${formatSize(sample.size)} × ${n}` : `Place order — size ${formatSize(sample.size)}`)
-                    : `Place ${n} Order${n > 1 ? "s" : ""} →`;
+                    ? (n > 1 ? `Place order${shopTag} — size ${formatSize(sample.size)} × ${n}` : `Place order${shopTag} — size ${formatSize(sample.size)}`)
+                    : `Place ${n} Order${n > 1 ? "s" : ""}${shopTag} →`;
               return (
-                <button onClick={placeOrders} disabled={!canPlace}
+                <button onClick={() => placeOrders()} disabled={!canPlace}
                   style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:canPlace?1:0.4, cursor:canPlace?"pointer":"not-allowed" }}>
                   {submitting ? "Placing orders…" : placeLabel}
                 </button>
@@ -7421,7 +7567,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"12px 14px 14px", background:"linear-gradient(transparent, rgba(0,0,0,.92) 30%)", zIndex:50, pointerEvents:"none" }}>
           <div style={{ maxWidth:880, margin:"0 auto", pointerEvents:"auto" }}>
             <button
-              onClick={hasCustomerInCart ? openCheckout : placeRefillRequests}
+              onClick={hasCustomerInCart ? openCheckout : () => placeRefillRequests()}
               disabled={submitting}
               style={{ width:"100%", padding:"13px 16px", borderRadius:12, border:"1px solid rgba(60,110,255,.55)",
                        background:"#4A7FFF", color:"#fff",
@@ -7432,7 +7578,9 @@ function AssistantView({ products, onExit, orders = [] }) {
               <span>
                 {submitting
                   ? (hasCustomerInCart ? "Placing orders…" : "Placing refill…")
-                  : (hasCustomerInCart ? `Checkout (${customerCount})` : `Place Refill Request (${refillCount})`)
+                  : (hasCustomerInCart
+                      ? `Checkout (${customerCount})`
+                      : `Place Refill Request (${refillCount})${singleShop ? "" : ` · ${labelFor(effectiveShop, shopRegistry)}`}`)
                 }
               </span>
               <span style={{ fontSize:16 }}>→</span>
@@ -7473,12 +7621,14 @@ function WarehouseView({ products = [], orders, onExit }) {
   const [onHoldExpanded, setOnHoldExpanded] = useState(false);
   const [selectedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
   // Phase 12C/14B: clamp mainTab when the user switches hubs and the previously
-  // selected tab no longer exists for the new hub (Restock on hub1/hub3; CR
-  // Orders on the CR hubs, hub2+hub3). Fall back to Order Queue. NOTE: must come AFTER
-  // selectedHub's declaration — placing this useEffect before it triggers a
-  // TDZ ReferenceError on the dependency array evaluation at render time.
+  // selected tab no longer exists for the new hub (CR Orders on the CR hubs,
+  // hub2+hub3). Fall back to Order Queue. NOTE: must come AFTER selectedHub's
+  // declaration — placing this useEffect before it triggers a TDZ
+  // ReferenceError on the dependency array evaluation at render time.
   useEffect(() => {
-    if (selectedHub === "hub2" && mainTab === "restock")  setMainTab("queue");
+    // The Restock Status tab was removed from the warehouse — Source owns
+    // restock now. Clamp any persisted "restock" selection back to the queue.
+    if (mainTab === "restock") setMainTab("queue");
     // CR Orders exists on every CR hub (hub2 + hub3, from CR_HUBS); clamp the rest.
     if (!CR_HUBS.includes(selectedHub) && mainTab === "clothing") setMainTab("queue");
     // Trial: hubC has only the Order Queue tab — clamp anything else back.
@@ -7494,18 +7644,6 @@ function WarehouseView({ products = [], orders, onExit }) {
   const orderInHub = (o, h) => (h === "hub3" || h === "hubC")
     ? o.placedAtHub === h
     : (o.hub || "hub1") === h;
-  const todayDate    = getSADateString();
-  // Restock tab: derive counts from COLLECTED orders only — no Firebase log needed.
-  // Hooks must stay above every conditional return (React rules).
-  const rawCounts    = useMemo(() => {
-    const todayCollected = orders.filter(o =>
-      o.status === STATUS.COLLECTED &&
-      (selectedHub ? orderInHub(o, selectedHub) : true) &&
-      orderCollectedDate(o) === todayDate
-    );
-    return computeCollectedCounts(todayCollected);
-  }, [orders, selectedHub, todayDate]);
-  const allResponses = useAllSourceResponses();
 
   const selectHub = (hub) => {
     localStorage.setItem("warehouseHub", hub);
@@ -7605,10 +7743,19 @@ function WarehouseView({ products = [], orders, onExit }) {
         qty: o.qty || 1,
         status: o.clothingRefillStatus || null,
         refilledQty: o.clothingRefilledQty ?? null,   // units actually sent (partial-aware)
+        refilledCountedQty: o.clothingRefilledCountedQty ?? null,     // portion that was a real hub transfer
+        refilledUncountedQty: o.clothingRefilledUncountedQty ?? null, // portion added to shop from nothing
         refilledAt: o.clothingRefilledAt || null,
         outOfStockAt: o.clothingOutOfStockAt || null,
         placedAtHub: o.placedAtHub || o.hub || "hub2",
         gen: o.clothingRefillGen || 0,                // fulfil generation — keys idempotent movementIds
+        uncounted: !!o.clothingUncounted,             // fulfilled via the uncounted override (no source deduction)
+        // Locked split for a partially-attempted line: reused verbatim on retry so the
+        // counted/uncounted split can't be re-derived from a hub cell that changed between
+        // taps (guards the concurrency double-count). planGen ties the lock to this gen.
+        planGen: o.clothingPlanGen ?? null,
+        planCountedQty: o.clothingPlanCountedQty ?? null,
+        planUncountedQty: o.clothingPlanUncountedQty ?? null,
       });
     });
     const active = [];
@@ -7698,7 +7845,12 @@ function WarehouseView({ products = [], orders, onExit }) {
       return null; // rejected / returnedToStock → resolved, not shown in the queue
     })
     .filter(Boolean);
-  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub)), ...hubLaybyOrders];
+  // CR / clothing-refill requests (customerName "Shop Refill") live in the SAME
+  // /orders node but belong only in the CR Orders tab — exclude them from the main
+  // queue feeder so both the visible list AND every pill count/badge drop them in
+  // one place. Regular orders always carry a validated non-empty customerName, and
+  // layby pull rows have no customerName, so this can't hide a real order.
+  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill"), ...hubLaybyOrders];
 
   // extraPatch is merged into the Firebase update — used to stamp sentSize when
   // the warehouse picks a substitute size. Insights/restock logs continue to
@@ -7725,6 +7877,17 @@ function WarehouseView({ products = [], orders, onExit }) {
     const patch = { status, updatedAt: now, ...extraPatch };
     if (status === STATUS.READY)           patch.readyAt = now;
     if (status === STATUS.OUT_OF_STOCK)    patch.outOfStockAt = now;
+    // Hub 2 dispatch hold: a Hub 2 order going READY holds its customer-facing
+    // reveal (TV + voice + WhatsApp) until notifyReadyAt = now + HUB2_DISPATCH_HOLD_MS.
+    // readyNotifyPending flags it for the server reveal sweep (which sends the
+    // WhatsApp when due). The flag is written on EVERY transition — true only for a
+    // Hub 2 Ready, false otherwise — so a revert / OOS / collected clears it and a
+    // held send can never fire late. Non-hub2 Ready keeps the instant path below.
+    const isHeldReady = status === STATUS.READY && HELD_DISPATCH_HUBS.has(order.placedAtHub || order.hub || "hub1");
+    patch.readyNotifyPending = isHeldReady;
+    // Write the reveal instant for a held Ready; clear any stale one otherwise so a
+    // later non-held transition can never be wrongly held by a leftover notifyReadyAt.
+    patch.notifyReadyAt = isHeldReady ? new Date(Date.now() + HUB2_DISPATCH_HOLD_MS).toISOString() : null;
     if (status === STATUS.COMING_TOMORROW) patch.comingTomorrowAt = now;
     if (status === STATUS.COLLECTED)       patch.collectedAt = now;
 
@@ -7777,7 +7940,9 @@ function WarehouseView({ products = [], orders, onExit }) {
     // No timer/minutes — the customer should not feel time pressure.
     // Template body suggested: "Hi {{1}}, your order #{{2}} is ready to collect
     // at Marathon Club. See you soon!"
-    if (status === STATUS.READY)
+    // A held-hub Ready is deferred — the server reveal sweep sends order_ready at
+    // notifyReadyAt. Every other Ready notifies immediately, as before.
+    if (status === STATUS.READY && !isHeldReady)
       sendWhatsAppTemplate(order.customerPhone, "order_ready", [order.customerName || "there", order.id]);
     if (status === STATUS.OUT_OF_STOCK)
       sendWhatsAppTemplate(order.customerPhone, "rder_out_of_stock", [order.id]);
@@ -8024,20 +8189,61 @@ function WarehouseView({ products = [], orders, onExit }) {
     let ok = 0, fail = 0; const errors = [];
     for (const it of batch.items) {
       if (it.status) continue;                                   // already resolved
-      const qty = Math.max(0, Math.floor(plan.qtys?.[it.orderId] || 0));
-      const reject = !!plan.rejects?.[it.orderId];
+      // A line whose split was LOCKED by a prior partial attempt (of this same gen) is
+      // driven by that locked plan, not the freshly-entered qty — see the split below.
+      const locked = it.planGen === it.gen && it.planCountedQty != null;
+      const qty = locked
+        ? (it.planCountedQty + it.planUncountedQty)
+        : Math.max(0, Math.floor(plan.qtys?.[it.orderId] || 0));
+      const reject = !locked && !!plan.rejects?.[it.orderId];
       if (qty > 0) {
         if (!store) { fail++; errors.push(`${formatSize(it.size)}: no destination shop on this request`); continue; }
-        let res;
-        try { res = await fireCRRefill({ store, productId: batch.productId, size: it.size, qty, from: it.placedAtHub || "hub2", actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }); }
-        catch { res = { ok: false, reason: "network error" }; }
-        if (res && res.ok) {
-          ok++;
-          updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: qty, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, updatedAt: now });
-          logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2" });
+        const from = it.placedAtHub || "hub2";
+        // SILENT SPLIT: whatever the hub has COUNTED for this size goes as a real
+        // hub→shop transfer (deducts the hub); any OVERAGE is booked as an uncounted
+        // add to the shop (received — +shop, no deduction, the units weren't in the
+        // system). The warehouse just typed a number and hit Send; it never sees this.
+        // The split is derived from the LIVE hub cell, so on a RETRY we must reuse the
+        // split LOCKED by the first attempt (below) — never re-derive it from a hub cell
+        // that a concurrent writer may have changed, which would misalign the per-leg
+        // idempotency keys and double-/under-count.
+        let countedQty, uncountedQty;
+        if (locked) {
+          countedQty = it.planCountedQty;
+          uncountedQty = it.planUncountedQty;
         } else {
+          const availHere = Number(crHubCells?.[batch.productId]?.[it.size]?.qty) || 0;
+          countedQty = Math.min(qty, Math.max(0, availHere));
+          uncountedQty = qty - countedQty;
+        }
+        // Fire both legs INDEPENDENTLY (a failed counted leg must not block the
+        // uncounted overage). Each movementId is idempotent per line+gen, so re-tapping
+        // Send after a transient failure completes the rest without double-moving stock.
+        let sentCounted = 0, sentUncounted = 0, legErr = null;
+        if (countedQty > 0) {
+          const r = await runCRLeg(() => fireCRRefill({ store, productId: batch.productId, size: it.size, qty: countedQty, from, actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }));
+          if (r.ok) sentCounted = countedQty; else legErr = r;
+        }
+        if (uncountedQty > 0) {
+          const r = await runCRLeg(() => fireCRUncounted({ store, productId: batch.productId, size: it.size, qty: uncountedQty, actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }));
+          if (r.ok) sentUncounted = uncountedQty; else legErr = r;
+        }
+        const sent = sentCounted + sentUncounted;
+        // Once the counted leg lands (hub mutated), lock in exactly what was sent — a
+        // re-split of the now-drained hub would double-count. Otherwise leave the line
+        // pending AND persist the split (below) so the retry reuses it verbatim.
+        const hubMutated = sentCounted > 0;
+        if (sent === qty || hubMutated) {
+          ok++;
+          updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
+          logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2" });
+          if (sent < qty) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — re-request the remaining ${qty - sent}`);
+        } else {
+          // Nothing moved at the hub → leave pending for an idempotent re-tap, and LOCK
+          // this split so the retry reuses it even if the hub cell changes in between.
           fail++;
-          errors.push(`${formatSize(it.size)}: ${res && res.reason === "insufficient_stock" ? `only ${res.available} at ${HUB_LABELS[it.placedAtHub] || "the hub"}` : (res && res.reason) || "transfer failed"}`);
+          if (!locked) updateOrder(it.orderId, { clothingPlanGen: it.gen, clothingPlanCountedQty: countedQty, clothingPlanUncountedQty: uncountedQty, updatedAt: now });
+          errors.push(`${formatSize(it.size)}: ${legErr && legErr.reason === "insufficient_stock" ? `only ${legErr.available} at ${HUB_LABELS[from] || "the hub"}` : (legErr && legErr.reason) || "transfer failed"}`);
         }
       } else if (reject) {
         // Reject is a flag-only write (no stock) — allowed without a stockRole.
@@ -8060,17 +8266,36 @@ function WarehouseView({ products = [], orders, onExit }) {
     let ok = 0, fail = 0; const errors = [];
     for (const it of batch.items) {
       if (it.status === "available" && (it.refilledQty || 0) > 0 && batch.destShop) {
-        let res;
-        try { res = await reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: it.refilledQty, hub: it.placedAtHub || "hub2", orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }); }
-        catch { res = { ok: false, reason: "network error" }; }
-        if (!res || !res.ok) {
+        // Reverse each leg by its own qty: the COUNTED portion goes store→hub (like a
+        // normal undo); the UNCOUNTED portion is DESTROYED via a negative adjustment
+        // (admin-only per rules), since it was created from nothing on the way out.
+        // Legacy lines (fulfilled before the split existed) carry no split fields — fall
+        // back to the whole qty being counted, or uncounted if the old flag was set.
+        const hasSplit  = it.refilledCountedQty != null || it.refilledUncountedQty != null;
+        const countedQ   = hasSplit ? (it.refilledCountedQty || 0)   : (it.uncounted ? 0 : it.refilledQty);
+        const uncountedQ = hasSplit ? (it.refilledUncountedQty || 0) : (it.uncounted ? it.refilledQty : 0);
+        if (uncountedQ > 0 && crActorRole !== "admin") {
           fail++;
-          errors.push(`${formatSize(it.size)}: ${res && res.reason === "insufficient_stock" ? `shop only has ${res.available} left` : (res && res.reason) || "reverse failed"}`);
+          errors.push(`${formatSize(it.size)}: undoing an uncounted send needs an admin`);
+          continue;                                              // keep resolved — don't leave phantom stock
+        }
+        let legFail = null;
+        if (countedQ > 0) {
+          const r = await runCRLeg(() => reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: countedQ, hub: it.placedAtHub || "hub2", orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }));
+          if (!r.ok) legFail = r;
+        }
+        if (uncountedQ > 0 && !legFail) {
+          const r = await runCRLeg(() => reverseCRUncounted({ store: batch.destShop, productId: batch.productId, size: it.size, qty: uncountedQ, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }));
+          if (!r.ok) legFail = r;
+        }
+        if (legFail) {
+          fail++;
+          errors.push(`${formatSize(it.size)}: ${legFail.reason === "insufficient_stock" ? `shop only has ${legFail.available} left` : (legFail.reason) || "reverse failed"}`);
           continue;                                              // keep the line resolved — stock stands
         }
       }
       ok++;
-      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingOutOfStockAt: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
+      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, clothingOutOfStockAt: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
     }
     return { ok, fail, errors };
   };
@@ -8359,12 +8584,6 @@ function WarehouseView({ products = [], orders, onExit }) {
             />
           </div>
         </>
-      )}
-
-      {mainTab === "restock" && (
-        <div style={{ padding:"0 13px" }}>
-          <WarehouseRestockTab rawCounts={rawCounts} responses={allResponses[todayDate] || {}} />
-        </div>
       )}
 
       {mainTab === "clothing" && (
@@ -8862,12 +9081,19 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
   const pending  = batch.items.filter(it => !it.status);
   const resolved = batch.items.filter(it => it.status);
 
-  // Untouched lines default to "as much as Hub 2 has, up to requested" and track
-  // live stock; once the user edits/rejects a line we honour their value (clamped).
-  // Without a stock role, fulfil qtys are forced to 0 — reject stays available
-  // (it's a flag-only write, no stock moves).
-  const capOf   = (it) => Math.min(it.qty, availAt(it.size));
-  const displayQ = (it) => (!canFulfil || rejects[it.orderId]) ? 0 : (touched[it.orderId] ? Math.min(qtys[it.orderId] || 0, capOf(it)) : capOf(it));
+  // The stepper defaults to what the hub has COUNTED for this size, but the + button /
+  // input can be raised all the way to the full requested qty — the counted stock is
+  // NOT a hard cap. If they send more than is counted, fulfillCRBatch silently books
+  // the overage as an uncounted add to the shop (received, no deduction). The warehouse
+  // UI shows nothing about this — it just looks like a normal send.
+  // Without a stock role, fulfil qtys are forced to 0 — reject stays available.
+  // A line whose split is LOCKED (a prior partial attempt is being finished) defaults to
+  // its locked total so Send stays enabled and re-tapping completes exactly that plan —
+  // fulfillCRBatch ignores the entered qty for a locked line anyway.
+  const lockedTotal = (it) => (it.planGen === it.gen && it.planCountedQty != null) ? (it.planCountedQty + it.planUncountedQty) : null;
+  const defaultQ = (it) => lockedTotal(it) ?? Math.min(it.qty, availAt(it.size));   // pre-fill = counted here (or locked total)
+  const capOf    = (it) => lockedTotal(it) ?? it.qty;                               // they can send up to the full request
+  const displayQ = (it) => (!canFulfil || rejects[it.orderId]) ? 0 : (touched[it.orderId] ? Math.min(qtys[it.orderId] || 0, capOf(it)) : defaultQ(it));
   const setQ = (orderId, v, max) => { setTouched(t => ({ ...t, [orderId]: true })); setQtys(q => ({ ...q, [orderId]: Math.max(0, Math.min(max, Math.floor(Number(v) || 0))) })); };
   const toggleReject = (orderId) => setRejects(r => { const n = { ...r }; if (n[orderId]) delete n[orderId]; else n[orderId] = true; return n; });
 
@@ -8878,10 +9104,6 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
   const totalSend   = pending.reduce((s, it) => s + displayQ(it), 0);
   const totalReject = pending.filter(it => rejects[it.orderId]).length;
   const canSend = !busy && (totalSend > 0 || totalReject > 0);
-
-  // Collapsed-row coverage summary: how much of this request Hub 2 can cover NOW.
-  const fullCover  = pending.filter(it => availAt(it.size) >= it.qty).length;
-  const shortCover = pending.length - fullCover;
 
   const send = async () => {
     if (!canSend) return;
@@ -8923,7 +9145,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
           </div>
         </div>
         <span style={{ flexShrink:0, fontSize:10.5, fontWeight:700, color:BLUE_L, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"3px 9px", whiteSpace:"nowrap" }}>
-          {pending.length} size{pending.length === 1 ? "" : "s"}{shortCover > 0 ? ` · ${fullCover} ready · ${shortCover} short` : ""}
+          {pending.length} size{pending.length === 1 ? "" : "s"}
           {resolved.length > 0 ? ` · ${resolved.length} done` : ""}
         </span>
         <span style={{ color:"#4A7FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s", fontSize:13, flexShrink:0 }}>▸</span>
@@ -8940,12 +9162,12 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
               ("0 here" in amber) instead of hiding the input. */}
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(118px, 1fr))", gap:8, marginTop:10 }}>
             {pending.map(it => {
-              const avail = availAt(it.size);
-              const cap = capOf(it);
+              const cap = capOf(it);                           // = requested qty; the + button goes this high
               const rejected = !!rejects[it.orderId];
               const q = displayQ(it);
               return (
-                <div key={it.orderId} style={{ position:"relative", background:CARD, border: rejected ? "1px solid rgba(248,113,113,.5)" : q ? "1px solid rgba(74,222,128,.4)" : "1px solid rgba(60,110,255,.12)", borderRadius:10, padding:"7px 8px" }}>
+                <div key={it.orderId} style={{ position:"relative", background:CARD, borderRadius:10, padding:"7px 8px",
+                       border: rejected ? "1px solid rgba(248,113,113,.5)" : q ? "1px solid rgba(74,222,128,.4)" : "1px solid rgba(60,110,255,.12)" }}>
                   {/* Corner ✕ — reject this size (tap again to undo). */}
                   <button onClick={() => toggleReject(it.orderId)} title={rejected ? "Undo reject" : "Reject this size"}
                           style={{ position:"absolute", top:-7, right:-7, width:20, height:20, borderRadius:10, fontSize:10, fontWeight:700, cursor:"pointer", lineHeight:1, display:"flex", alignItems:"center", justifyContent:"center", padding:0,
@@ -8955,7 +9177,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
                   </button>
                   <div style={{ display:"flex", alignItems:"baseline", justifyContent:"space-between", marginBottom:5 }}>
                     <span style={{ fontSize:12, color:BLUE_L, fontWeight:700 }}><SizeTag size={it.size} /></span>
-                    <span style={{ fontSize:9, color: avail > 0 ? "rgba(255,255,255,.4)" : "#F5A623" }}>×{it.qty} · {avail} here</span>
+                    <span style={{ fontSize:9, color:"rgba(255,255,255,.4)" }}>×{it.qty}</span>
                   </div>
                   {rejected ? (
                     <div style={{ height:30, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:"#F87171" }}>rejected</div>
@@ -9118,63 +9340,6 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
           }}
         />
       ))}
-    </div>
-  );
-}
-
-// ─── WAREHOUSE RESTOCK TAB (live OOS log for today) ──────────────────────────
-// Read-only view of today's OOS events and Source's responses to them.
-function WarehouseRestockTab({ rawCounts, responses }) {
-  const products = Object.entries(rawCounts);
-
-  if (!products.length) return (
-    <div style={{ textAlign:"center", color:"#444", padding:"4rem" }}>
-      <ProductIcon size={32} opacity={0.4}/>
-      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>No out-of-stock events today yet.</div>
-      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Items marked OOS appear here in real time.</div>
-    </div>
-  );
-
-  const totalUnits = products.reduce((n, [, p]) => n + Object.values(p.sizes).reduce((s,c)=>s+(typeof c==="number"?c:1),0), 0);
-
-  return (
-    <div>
-      <div style={{ color:"#555", fontSize:"0.85rem", marginBottom:"1.25rem" }}>
-        Live OOS log · {totalUnits} item{totalUnits !== 1 ? "s" : ""} logged today
-      </div>
-      <div style={{ display:"flex", flexDirection:"column", gap:"1rem" }}>
-        {products.map(([key, product]) => {
-          const sizes = Object.keys(product.sizes).sort((a,b)=>Number(a)-Number(b));
-          const productResponses = responses[key] || {};
-          return (
-            <div key={key} style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.25rem" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:"0.75rem", marginBottom:"0.75rem" }}>
-                <ProductPhoto url={product.photoUrl} photo={product.photo} size={40} radius={8}/>
-                <div style={{ fontWeight:"700", fontSize:"1rem" }}>{product.productName}</div>
-              </div>
-              <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
-                {sizes.map(size => {
-                  const count = typeof product.sizes[size] === "number" ? product.sizes[size] : 1;
-                  const resp = productResponses[size]?.response;
-                  return (
-                    <div key={size} style={{
-                      background: resp==="available"?"rgba(0,150,70,.15)":resp==="out_of_stock"?"rgba(150,20,20,.15)":CARD,
-                      border:`2px solid ${resp==="available"?"rgba(0,150,70,.5)":resp==="out_of_stock"?"rgba(150,20,20,.4)":"rgba(60,110,255,.15)"}`,
-                      borderRadius:"10px", padding:"0.5rem 0.75rem", textAlign:"center", minWidth:"64px",
-                    }}>
-                      <div style={{ fontWeight:"700", fontSize:"0.9rem", color:"#fff" }}>Sz <SizeTag size={size} /></div>
-                      {count > 1 && <div style={{ color:"#4A7FFF", fontSize:"0.68rem", fontWeight:"700" }}>×{count}</div>}
-                      {resp==="available"    && <div style={{ color:"#4ADE80", fontSize:"0.7rem", fontWeight:"600" }}>Avail</div>}
-                      {resp==="out_of_stock" && <div style={{ color:"#F87171", fontSize:"0.7rem", fontWeight:"600" }}>OOS</div>}
-                      {!resp                 && <div style={{ color:"#555", fontSize:"0.7rem" }}>Pending</div>}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -10239,7 +10404,7 @@ const HISTORY_RETENTION_DAYS = 5;
 // Reactions write to restock_requests/{day-N}/{key}/{size} = { response, respondedOn:NOW }
 // — see saveSourceResponse. The original-day path is what makes resolution
 // stick across page loads; respondedOn carries "today's stamp" for the audit.
-function SourceHistoryTab({ orders, returnsLog, allResponses, hub, onResponse }) {
+function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoForName, onResponse }) {
   // Default expand: yesterday open, older closed. Stored by daysAgo number.
   const [openDays, setOpenDays] = useState(() => new Set([1]));
   const toggle = (d) => setOpenDays(prev => {
@@ -10248,21 +10413,16 @@ function SourceHistoryTab({ orders, returnsLog, allResponses, hub, onResponse })
     return next;
   });
 
-  // Per past day: build the same rawCounts shape SourceTodayTab uses, then
-  // strip out (key, size) cells that already have a response on that date.
-  // Orders are filtered to the active hub upstream of computeCollectedCounts.
+  // Per past day: rebuild the rawCounts shape SourceTodayTab uses from the
+  // durable insights_log (action="ready") instead of live /orders — the live
+  // orders that carried these requests were overwritten by the daily orderNumber
+  // rollover. Then strip (key, size) cells that already have a response that day.
+  // Photos aren't in the log, so join them from the catalog by product name.
   const groups = useMemo(() => {
     return Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => i + 1).map(daysAgo => {
       const dateStr   = getSAPastDateString(daysAgo);
       const returned  = returnedOrderIdsOnSADate(returnsLog, dateStr);
-      const dayOrders = (orders || []).filter(o =>
-        o.status !== STATUS.OUT_OF_STOCK &&
-        (o.status === STATUS.READY || o.status === STATUS.COLLECTED) &&
-        orderSaleDate(o) === dateStr &&
-        !returned.has(o.id) &&
-        (o.hub || "hub1") === hub
-      );
-      const rawCounts = computeCollectedCounts(dayOrders);
+      const rawCounts = restockCountsFromLog({ log, dateStr, hub, returnedIds: returned });
       const dayResponses = allResponses[dateStr] || {};
       // Drop responded (key, size) cells; drop products that end up with no pending sizes.
       const pending = {};
@@ -10275,12 +10435,13 @@ function SourceHistoryTab({ orders, returnsLog, allResponses, hub, onResponse })
           pendingUnits += (typeof count === "number" ? count : 1);
         });
         if (Object.keys(sizes).length) {
-          pending[key] = { ...product, sizes };
+          const ph = photoForName(product.productName);
+          pending[key] = { ...product, sizes, photoUrl: ph.photoUrl, photo: ph.photo };
         }
       });
       return { daysAgo, dateStr, label: HISTORY_DAY_LABELS[daysAgo], pending, pendingUnits };
     }).filter(g => g.pendingUnits > 0);
-  }, [orders, returnsLog, allResponses, hub]);
+  }, [log, returnsLog, allResponses, hub, photoForName]);
 
   if (!groups.length) return (
     <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem 1.5rem", textAlign:"center", boxShadow:"0 0 16px rgba(60,110,255,.08)" }}>
@@ -10368,43 +10529,39 @@ function SourceHistoryTab({ orders, returnsLog, allResponses, hub, onResponse })
 // Tracks per-order responses at source_onhold_responses/{key}. Cards vanish
 // when responded; the Completed toggle reveals them with green/red indicators
 // and Undo removes the response so the order returns to the active list.
-function SourceOnHoldTab({ orders, onHoldResponses }) {
+function SourceOnHoldTab({ items }) {
   const [showCompleted, setShowCompleted] = useState(false);
-  const orderResponseKey = (orderId) => String(orderId).replace(/[.#$[\]/\s]/g, "_");
 
-  // ALL-HUB on-hold list — every "Coming Tomorrow" order regardless of hub, so
-  // Source sees the same on-hold set the warehouse does (hub1/hub2/hub3/hubC).
-  // Sorted newest-first, then split by whether they have a response in
-  // source_onhold_responses.
+  // `items` is the shared merged on-hold list (live today + durable log for past
+  // days), already newest-first, returned-excluded, with a `responded` flag and
+  // the raw `response` record attached. Split into active vs completed here.
   const { pending, completed } = useMemo(() => {
-    const candidates = (orders || [])
-      .filter(o => o.status === STATUS.COMING_TOMORROW && o.status !== STATUS.OUT_OF_STOCK)
-      .sort((a, b) => tsMs(b.comingTomorrowAt || b.updatedAt) - tsMs(a.comingTomorrowAt || a.updatedAt));
     const pending = [];
     const completed = [];
-    candidates.forEach(o => {
-      const r = onHoldResponses[orderResponseKey(o.id)];
-      if (r && r.response) completed.push({ order: o, response: r.response, timestamp: r.timestamp });
-      else pending.push({ order: o });
+    (items || []).forEach(item => {
+      if (item.responded && item.response?.response) completed.push(item);
+      else pending.push(item);
     });
     return { pending, completed };
-  }, [orders, onHoldResponses]);
+  }, [items]);
 
-  const handleRespond = (order, response) => {
-    const key = orderResponseKey(order.id);
-    set(ref(database, `source_onhold_responses/${key}`), {
-      orderNumber: order.id,
-      productName: order.productName,
-      size: order.size,
-      customerName: order.customerName,
+  // Responses are keyed by the composite date::orderNumber (item.composite) —
+  // orderNumber alone is daily-reused, so a bare key let a past day's handled
+  // order mask a fresh same-numbered one.
+  const handleRespond = (item, response) => {
+    set(ref(database, `source_onhold_responses/${item.composite}`), {
+      orderNumber: item.orderNumber,
+      saDate: item.saDate,
+      productName: item.productName,
+      size: item.size,
+      customerName: item.customerName || null,
       response,
       timestamp: new Date().toISOString(),
     }).catch(err => console.warn("saveOnHoldResponse failed:", err));
   };
 
-  const handleUndo = (order) => {
-    const key = orderResponseKey(order.id);
-    remove(ref(database, `source_onhold_responses/${key}`))
+  const handleUndo = (item) => {
+    remove(ref(database, `source_onhold_responses/${item.composite}`))
       .catch(err => console.warn("clearOnHoldResponse failed:", err));
   };
 
@@ -10450,29 +10607,29 @@ function SourceOnHoldTab({ orders, onHoldResponses }) {
       )}
 
       {/* Active list */}
-      {pending.map(({ order }) => (
-        <div key={`onhold-${order.id}`} style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"1.1rem 1.25rem", boxShadow:"0 0 16px rgba(60,110,255,.15)", borderLeft:`3px solid ${BLUE}` }}>
+      {pending.map(item => (
+        <div key={`onhold-${item.composite}`} style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"1.1rem 1.25rem", boxShadow:"0 0 16px rgba(60,110,255,.15)", borderLeft:`3px solid ${BLUE}` }}>
           <div style={{ display:"flex", alignItems:"center", gap:"1rem", marginBottom:"0.85rem" }}>
-            <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={8}/>
+            <ProductPhoto url={item.photoUrl} photo={item.photo} size={48} radius={8}/>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", marginBottom:"0.2rem" }}>
-                <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.4rem", color:BLUE_L, lineHeight:1, letterSpacing:"0.05em" }}>#{order.id}</span>
+                <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.4rem", color:BLUE_L, lineHeight:1, letterSpacing:"0.05em" }}>#{item.orderNumber}</span>
                 <span style={{ background:"rgba(60,110,255,.12)", color:BLUE_L, border:BORDER, borderRadius:"999px", padding:"1px 8px", fontSize:"0.7rem", fontWeight:"600" }}>On Hold</span>
               </div>
-              <div style={{ fontWeight:"600", fontSize:"0.92rem", color:"#fff" }}>{order.productName} — Size <SizeTag size={sourceDisplaySize(order)} /></div>
-              <div style={{ color:"#888", fontSize:"0.8rem" }}>{order.customerName}</div>
-              <div style={{ color:"#444", fontSize:"0.72rem", marginTop:"0.2rem" }}>Put on hold: {fmt(order.comingTomorrowAt || order.updatedAt)}</div>
+              <div style={{ fontWeight:"600", fontSize:"0.92rem", color:"#fff" }}>{item.productName} — Size <SizeTag size={item.size} /></div>
+              <div style={{ color:"#888", fontSize:"0.8rem" }}>{item.customerName}</div>
+              <div style={{ color:"#444", fontSize:"0.72rem", marginTop:"0.2rem" }}>Put on hold: {fmt(item.ts)}</div>
             </div>
           </div>
           <div style={{ display:"flex", gap:"0.6rem" }}>
             <button
-              onClick={() => handleRespond(order, "sent")}
+              onClick={() => handleRespond(item, "sent")}
               style={{ ...bGreen, flex:1, padding:"0.55rem", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
               Sent
             </button>
             <button
-              onClick={() => handleRespond(order, "out_of_stock")}
+              onClick={() => handleRespond(item, "out_of_stock")}
               style={{ ...bRed, flex:1, padding:"0.55rem", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               Out of Stock
@@ -10489,18 +10646,19 @@ function SourceOnHoldTab({ orders, onHoldResponses }) {
             <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>COMPLETED</div>
             <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
           </div>
-          {completed.map(({ order, response }) => {
+          {completed.map(item => {
+            const response = item.response?.response;
             const isSent = response === "sent";
             const accent = isSent ? "rgba(74,222,128,.5)"  : "rgba(248,113,113,.5)";
             const tint   = isSent ? "rgba(74,222,128,.08)" : "rgba(248,113,113,.08)";
             const text   = isSent ? "#4ADE80"              : "#F87171";
             return (
-              <div key={`onhold-done-${order.id}`} style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:"1.1rem 1.25rem", opacity:0.85 }}>
+              <div key={`onhold-done-${item.composite}`} style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:"1.1rem 1.25rem", opacity:0.85 }}>
                 <div style={{ display:"flex", alignItems:"center", gap:"1rem", marginBottom:"0.6rem" }}>
-                  <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={8}/>
+                  <ProductPhoto url={item.photoUrl} photo={item.photo} size={48} radius={8}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", marginBottom:"0.2rem" }}>
-                      <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.2rem", color:"rgba(255,255,255,.85)", lineHeight:1, letterSpacing:"0.05em" }}>#{order.id}</span>
+                      <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.2rem", color:"rgba(255,255,255,.85)", lineHeight:1, letterSpacing:"0.05em" }}>#{item.orderNumber}</span>
                       <span style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"2px 8px", borderRadius:999, background:tint, border:`1px solid ${accent}`, color:text, fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
                           {isSent ? <polyline points="20 6 9 17 4 12"/> : <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>}
@@ -10508,12 +10666,12 @@ function SourceOnHoldTab({ orders, onHoldResponses }) {
                         {isSent ? "Sent" : "Out of Stock"}
                       </span>
                     </div>
-                    <div style={{ fontWeight:"600", fontSize:"0.9rem", color:"rgba(255,255,255,.85)" }}>{order.productName} — Size <SizeTag size={sourceDisplaySize(order)} /></div>
-                    <div style={{ color:"#888", fontSize:"0.78rem" }}>{order.customerName}</div>
+                    <div style={{ fontWeight:"600", fontSize:"0.9rem", color:"rgba(255,255,255,.85)" }}>{item.productName} — Size <SizeTag size={item.size} /></div>
+                    <div style={{ color:"#888", fontSize:"0.78rem" }}>{item.customerName}</div>
                   </div>
                 </div>
                 <div style={{ display:"flex", justifyContent:"flex-end" }}>
-                  <button onClick={() => handleUndo(order)}
+                  <button onClick={() => handleUndo(item)}
                           style={{ padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                       <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
@@ -11228,6 +11386,32 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // Desktop workspace gate (>=1024px). Mobile keeps the single-column layout.
   const isWide = !useIsNarrow(1024);
 
+  // Immutable insights_log — the durable source for PAST-day History and On Hold.
+  // Live /orders is keyed by the daily orderNumber (resets each morning), so
+  // today's orders overwrite yesterday's slots; past-day + on-hold requests read
+  // straight from /orders vanished. The log keeps every ready/tomorrow transition
+  // forever, so past days survive. Today's tabs still use live /orders (no lag).
+  const insightsLog = useInsightsLog();
+
+  // name → { photoUrl, photo } lookup so log-reconstructed cards (the log carries
+  // no photo) still render a thumbnail. Mirrors the Insights productPhotoMap.
+  const sourcePhotoMap = useMemo(() => {
+    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
+    const map = {};
+    (products || []).forEach(p => {
+      if (!p.name) return;
+      const entry = { photoUrl: p.photoUrl || null, photo: p.photo || "" };
+      map[p.name] = entry;
+      map[normKey(p.name)] = entry;
+    });
+    return map;
+  }, [products]);
+  const photoForName = useCallback((name) => {
+    if (!name) return { photoUrl: null, photo: "" };
+    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
+    return sourcePhotoMap[name] || sourcePhotoMap[normKey(name)] || { photoUrl: null, photo: "" };
+  }, [sourcePhotoMap]);
+
   // On Hold response state — read once here so badges and the On Hold tab
   // share the same source of truth (no duplicate Firebase listeners).
   const [onHoldResponses, setOnHoldResponses] = useState({});
@@ -11280,6 +11464,65 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // History tab derives its straggler list from this + live orders (5-day window).
   const allResponses = useAllSourceResponses();
 
+  // SA-time (UTC+2) YYYY-MM-DD of any timestamp — same convention as orderSaleDate.
+  const saDateOfTs = (ts) => ts ? new Date(new Date(ts).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10) : null;
+
+  // ── On Hold list (shared by the tab, the hub badges AND the top-bar count) ──
+  // Today's on-holds come from live /orders (current status COMING_TOMORROW —
+  // no lag, and an UNDONE on-hold correctly disappears). Past-day on-holds come
+  // from the immutable log (action="tomorrow"), because the live order that held
+  // them was overwritten by the daily orderNumber rollover. Deduped by the
+  // composite date::orderNumber key — orderNumber alone is daily-reused, so a
+  // bare key made yesterday's on-hold collide with today's. Returned orders drop
+  // out (no restock work). `responded` is the source_onhold_responses flag.
+  const onHoldMerged = useMemo(() => {
+    const pastDates = Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => getSAPastDateString(i + 1));
+    const byComposite = new Map();
+
+    // Live: every current COMING_TOMORROW order (today + any not-yet-clobbered past).
+    (orders || []).forEach(o => {
+      if (o.status !== STATUS.COMING_TOMORROW) return;
+      const saDate = saDateOfTs(o.comingTomorrowAt || o.updatedAt) || todayDate;
+      const composite = onHoldKey(saDate, o.id);
+      byComposite.set(composite, {
+        composite, orderNumber: o.id, saDate,
+        productName: o.productName, size: sourceDisplaySize(o), hub: (o.hub || "hub1"),
+        customerName: o.customerName || null,
+        photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
+        ts: o.comingTomorrowAt || o.updatedAt,
+      });
+    });
+
+    // Log (past days only): fill in on-holds whose live order was overwritten.
+    onHoldEventsFromLog({ log: insightsLog, dates: pastDates }).forEach(e => {
+      const composite = onHoldKey(e.saDate, e.orderNumber);
+      if (byComposite.has(composite)) return;
+      const ph = photoForName(e.productName);
+      byComposite.set(composite, {
+        composite, orderNumber: e.orderNumber, saDate: e.saDate,
+        productName: e.productName, size: e.size, hub: e.hub,
+        customerName: e.customerName || null,
+        photoUrl: ph.photoUrl, photo: ph.photo, ts: e.timestamp,
+      });
+    });
+
+    // Returned-order composites across the window → excluded (no restock needed).
+    const returnedComposites = new Set();
+    [todayDate, ...pastDates].forEach(d =>
+      returnedOrderIdsOnSADate(returnsLog, d).forEach(num => returnedComposites.add(onHoldKey(d, num)))
+    );
+
+    const respondedKeys = new Set(Object.keys(onHoldResponses));
+    const list = [];
+    byComposite.forEach(item => {
+      if (returnedComposites.has(item.composite)) return;
+      item.responded = respondedKeys.has(item.composite);
+      item.response = onHoldResponses[item.composite] || null;
+      list.push(item);
+    });
+    return list.sort((a, b) => tsMs(b.ts) - tsMs(a.ts));
+  }, [insightsLog, orders, onHoldResponses, returnsLog, todayDate, sourcePhotoMap]);
+
   // Per-hub pending counts for the Hub 1 / Hub 2 sub-tab badges. Mirrors the
   // exact same pending logic each tab uses (Today excludes responded cells,
   // History sums per-day stragglers, On Hold subtracts source_onhold_responses).
@@ -11287,7 +11530,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     const counts = { hub1: 0, hub2: 0 };
     const todayResponses = allResponses[todayDate] || {};
 
-    // -- Today: pending = unresponded cells from today's collected orders.
+    // -- Today: pending = unresponded cells from today's collected orders (live).
     ["hub1", "hub2"].forEach(h => {
       const hubOrders = todayRestockOrdersAll.filter(o => (o.hub || "hub1") === h);
       const counts2 = computeCollectedCounts(hubOrders);
@@ -11299,20 +11542,14 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       });
     });
 
-    // -- History: pending = unresponded cells from each of past 1..N days.
+    // -- History: pending = unresponded cells per past 1..N days, rebuilt from
+    // the durable log (live /orders is clobbered by the daily orderNumber reset).
     for (let daysAgo = 1; daysAgo <= HISTORY_RETENTION_DAYS; daysAgo++) {
       const dateStr  = getSAPastDateString(daysAgo);
       const returned = returnedOrderIdsOnSADate(returnsLog, dateStr);
       const dayResponses = allResponses[dateStr] || {};
-      const dayOrdersBase = (orders || []).filter(o =>
-        o.status !== STATUS.OUT_OF_STOCK &&
-        (o.status === STATUS.READY || o.status === STATUS.COLLECTED) &&
-        orderSaleDate(o) === dateStr &&
-        !returned.has(o.id)
-      );
       ["hub1", "hub2"].forEach(h => {
-        const dayOrders = dayOrdersBase.filter(o => (o.hub || "hub1") === h);
-        const counts2 = computeCollectedCounts(dayOrders);
+        const counts2 = restockCountsFromLog({ log: insightsLog, dateStr, hub: h, returnedIds: returned });
         Object.entries(counts2).forEach(([key, product]) => {
           Object.entries(product.sizes || {}).forEach(([size, count]) => {
             if (dayResponses[key]?.[size]) return;
@@ -11322,27 +11559,20 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       });
     }
 
-    // -- On Hold: pending = COMING_TOMORROW orders without source_onhold_responses entry.
-    const respondedKeys = new Set(Object.keys(onHoldResponses));
-    (orders || []).forEach(o => {
-      if (o.status !== STATUS.COMING_TOMORROW) return;
-      const h = (o.hub || "hub1");
-      const key = String(o.id).replace(/[.#$[\]/\s]/g, "_");
-      if (respondedKeys.has(key)) return;
-      counts[h] += 1;
+    // -- On Hold: pending (unresponded) on-holds from the shared merged list.
+    onHoldMerged.forEach(item => {
+      if (item.responded) return;
+      if (item.hub === "hub1" || item.hub === "hub2") counts[item.hub] += 1;
     });
 
     return counts;
-  }, [todayRestockOrdersAll, allResponses, todayDate, orders, returnsLog, onHoldResponses]);
+  }, [todayRestockOrdersAll, allResponses, todayDate, insightsLog, returnsLog, onHoldMerged]);
 
-  // Top-tab On Hold badge — total pending across both hubs (matches old behavior).
-  const onHoldCount = useMemo(() => {
-    const respondedKeys = new Set(Object.keys(onHoldResponses));
-    return (orders || []).filter(o =>
-      o.status === STATUS.COMING_TOMORROW &&
-      !respondedKeys.has(String(o.id).replace(/[.#$[\]/\s]/g, "_"))
-    ).length;
-  }, [orders, onHoldResponses]);
+  // Top-tab On Hold badge — total pending across ALL hubs (matches old behavior).
+  const onHoldCount = useMemo(
+    () => onHoldMerged.filter(item => !item.responded).length,
+    [onHoldMerged]
+  );
 
   // DEBUG — paste in browser console to inspect counted vs leaked orders.
   // Removed once you've verified the math is right. Lives in useEffect so it
@@ -11436,12 +11666,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
                               onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
                               onUndo={(key, size) => handleUndo(todayDate, key, size)} />}
         {tab==="history" && <SourceHistoryTab
-                              orders={orders}
+                              log={insightsLog}
                               returnsLog={returnsLog}
                               allResponses={allResponses}
                               hub={hub}
+                              photoForName={photoForName}
                               onResponse={handleResponse} />}
-        {tab==="onhold"  && <SourceOnHoldTab orders={orders} onHoldResponses={onHoldResponses} />}
+        {tab==="onhold"  && <SourceOnHoldTab items={onHoldMerged} />}
         {tab==="clothing" && <ClothingSoldView products={products} />}
     </>
   );
@@ -13559,8 +13790,11 @@ function InsightsView({ onExit }) {
       byStatusToday[s] = (byStatusToday[s] || 0) + 1;
     });
 
-    // Order number gaps + duplicates
+    // Order number gaps + duplicates. Sneaker orders only — clothing "Shop
+    // Refill" ids are R{n}-{i} (their own counter), which would digit-strip to
+    // bogus numbers (R001-1 → 11) and fake duplicates/gaps in this sneaker audit.
     const todayNums = onTodayCreated
+      .filter(o => o.customerName !== "Shop Refill")
       .map(o => parseInt(String(o.id).replace(/[^0-9]/g, ""), 10))
       .filter(n => !isNaN(n));
     const minNum = todayNums.length ? Math.min(...todayNums) : null;
@@ -14822,8 +15056,10 @@ function AppInner() {
       console.log("Status distribution (all orders):", byStatusAll);
       console.log("Status distribution (today only):", byStatusToday);
 
-      // Order number gaps
+      // Order number gaps — sneaker orders only (clothing "Shop Refill" ids are
+      // R{n}-{i} on their own counter; digit-stripping them fakes gaps/dupes).
       const todayNums = onTodayCreated
+        .filter(o => o.customerName !== "Shop Refill")
         .map(o => parseInt(String(o.id).replace(/[^0-9]/g, ""), 10))
         .filter(n => !isNaN(n));
       const minNum = todayNums.length ? Math.min(...todayNums) : null;
@@ -15048,36 +15284,56 @@ function laybyTvNumber(invoiceNo) {
   return m ? `${m[1].toUpperCase()}-${m[2]}` : s;
 }
 
-const TV_VOICE_LS_KEY = "mc_tv_voice";
-const ANNOUNCE_REPEATS = 3;      // say each order announcement this many times
-const ANNOUNCE_GAP_MS  = 550;    // pause between clips (repeats + back-to-back orders)
-// Pick a clear English voice for the spoken pickup announcements; falls back to the
-// browser default when no preferred voice is installed.
-function pickAnnounceVoice(synth) {
-  const voices = (synth.getVoices && synth.getVoices()) || [];
-  return voices.find(v => /en[-_]?US/i.test(v.lang) && /google|natural|samantha|aria|zira|jenny/i.test(v.name))
-      || voices.find(v => /^en[-_]?(US|GB|ZA|AU)/i.test(v.lang))
-      || voices.find(v => /^en/i.test(v.lang))
-      || null;
-}
+// ─── PICKUP-BOARD VOICE (preloaded OpenAI clips, network-free playback) ────────
+// The board speaks "Order number <digits>, <phrase>" when an order NEWLY becomes
+// ready / out-of-stock / tomorrow. The store network is always slow, so we DO NOT
+// fetch audio at announcement time (a live callable + clip download stalls and the
+// order never gets read). Instead the TV preloads a tiny FIXED vocabulary of
+// OpenAI-generated clips ONCE at startup — "Order number", the ten digit words,
+// and the three phrase clips — decodes them into a single Web Audio context, and
+// then assembles every announcement LOCALLY (gapless, works even if the network
+// later drops). The old robotic browser speechSynthesis engine and the per-clip
+// callable playback are gone; the voice is a single hardcoded OpenAI voice.
+// One user tap unlocks audio (browser autoplay policy) and then vanishes.
+const TV_VOICE_VOICE        = "nova"; // hardcoded OpenAI TTS voice for the board
+const ANNOUNCE_REPEATS      = 2;      // say each announcement this many times
+const ANNOUNCE_WORD_GAP_S   = 0.05;   // silence between words inside one announcement
+const ANNOUNCE_REPEAT_GAP_S = 0.45;   // silence between repeats / back-to-back orders
+const ANNOUNCE_MAX_AGE_MS   = 5 * 60 * 1000; // only read out a transition this recent — a late vocab load must not recite long-since-ready orders (margin also tolerates modest warehouse↔TV clock skew)
+// Fixed vocabulary: token → the exact text each preloaded clip says. Digit-by-digit
+// number reading keeps the whole set to ~15 tiny clips (vs a clip per 1–999 number).
+// The pickupVoice callable's `vocab` mode generates + caches exactly these.
+const VOICE_VOCAB = {
+  order_number: "Order number",
+  d0: "zero", d1: "one", d2: "two",   d3: "three", d4: "four",
+  d5: "five", d6: "six", d7: "seven", d8: "eight", d9: "nine",
+  ready:    "ready for collection",
+  oos:      "out of stock",
+  tomorrow: "scheduled for tomorrow",
+  enabled:  "Pickup announcements on",
+};
 
-// Live pickup-board voice engine setting (admin-controlled, RTDB). The TV reads it
-// live so changing the engine switches the voice with NO redeploy.
-const PICKUP_VOICE_PATH = "settings/pickupVoice";
-const VOICE_ENGINES = ["browser", "openai", "elevenlabs"];
-function usePickupVoiceSetting() {
-  const [s, setS] = useState({ enabled: true, engine: "browser", voice: "" });
+function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
+  // The customer pickup board shows REAL customer orders only. "Shop Refill"
+  // rows are internal clothing-refill (CR) requests that live in the SAME
+  // /orders node — the warehouse Order Queue already excludes them (see the
+  // hubOrders filter), but the TV historically merged everything, so fulfilled
+  // refills leaked onto the customer board as stuck "Incoming" (their base
+  // status stays "incoming"; the CR flow resolves via clothingRefillStatus).
+  // Drop them here so they never reach the board, the announcer, or the timers.
+  // Steady clock so the Hub 2 dispatch hold reveals on time (a held order flips
+  // INCOMING → READY purely with the passage of time, not a data change).
+  const [revealClock, setRevealClock] = useState(() => Date.now());
   useEffect(() => {
-    const unsub = onValue(ref(database, PICKUP_VOICE_PATH), snap => {
-      const v = snap.val() || {};
-      setS({ enabled: v.enabled !== false, engine: VOICE_ENGINES.includes(v.engine) ? v.engine : "browser", voice: v.voice || "" });
-    });
-    return () => unsub();
+    const id = setInterval(() => setRevealClock(Date.now()), 10 * 1000);
+    return () => clearInterval(id);
   }, []);
-  return s;
-}
-
-function TvWithAutoCollect({ orders, onExit }) {
+  const orders = useMemo(
+    () => (ordersRaw || [])
+      .filter(o => o && o.customerName !== "Shop Refill")
+      .map(o => holdHub2Ready(o, revealClock)),      // hold Hub 2 "Ready" until its reveal instant
+    [ordersRaw, revealClock]
+  );
   // Dedupe markers are keyed by a composite of order.id + createdAt rather
   // than id alone. order.id is daily-scoped (it's the orderNumber, which
   // resets each day — see project memory project_order_number_daily_reset),
@@ -15090,126 +15346,123 @@ function TvWithAutoCollect({ orders, onExit }) {
   const hiddenTomorrowRef = useRef(new Set());
   const [tick, setTick]   = useState(0);
 
-  // ── VOICE PICKUP ANNOUNCEMENTS (switchable engine) ──────────────────────────
-  // Say "Order number X, ready for collection" through the TV speaker when an order
-  // NEWLY becomes ready. Engine is admin-selected + live from RTDB: Browser
-  // (speechSynthesis, free), OpenAI tts-1, or ElevenLabs (paid engines go through
-  // the pickupVoice callable, which caches each clip). A paid engine that fails or
-  // is inactive falls back to Browser — never silent. TV device ONLY (renders solely
-  // for the DISPLAY role / #tv). Orders already ready at load are SEEDED (never read
-  // out). A single reused <audio> element + a FIFO queue keep clips from overlapping.
-  const voiceSetting = usePickupVoiceSetting();      // { engine, voice } — live
-  const settingRef = useRef(voiceSetting);
-  settingRef.current = voiceSetting;                 // so the async queue uses the latest
-  const [voiceOn, setVoiceOn] = useState(() => { try { return localStorage.getItem(TV_VOICE_LS_KEY) === "on"; } catch { return false; } });
+  // ── VOICE PICKUP ANNOUNCEMENTS (preloaded OpenAI clips) ──────────────────────
+  // Speak "Order number <digits>, <phrase>" when an order NEWLY becomes ready /
+  // out-of-stock / tomorrow. The fixed vocabulary (VOICE_VOCAB) is fetched + decoded
+  // ONCE at mount into a single Web Audio context, then every announcement is
+  // assembled from those buffers and scheduled LOCALLY — no per-order network, so it
+  // survives the store's slow link. TV device ONLY. Orders already terminal at load
+  // are SEEDED (never read out). One tap unlocks audio, then the control disappears.
   const [voiceUnlocked, setVoiceUnlocked] = useState(false); // browsers block audio until one user gesture per page load
+  const [vocabReady, setVocabReady] = useState(false); // true once the clip vocabulary is decoded — STATE (not just the ref) so a late load re-fires the announce effect and catches orders that went ready during the load window
   const announcedRef = useRef(null); // Set of announced order keys; null until seeded with the load-time backlog
-  const audioElRef = useRef(null);
-  const queueRef = useRef([]);
-  const playingRef = useRef(false);
-  const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+  const audioCtxRef  = useRef(null); // shared AudioContext (created on mount for decode; resumed on the unlock tap)
+  const bufsRef      = useRef(null); // Map token → decoded AudioBuffer; null until the vocabulary finishes loading
+  const chainEndRef  = useRef(0);    // AudioContext time cursor so queued clips schedule back-to-back, never overlap
+  const MAX_QUEUE_AHEAD_S = 25;      // never schedule more than this far past now — a batch of ready orders must not become a minutes-long recital (there is no mute)
 
-  // Stop ALL current sound (speech + audio) so the two engines can never overlap.
-  const stopAll = () => {
-    try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
-    try { const el = audioElRef.current; if (el) el.pause(); } catch { /* ignore */ }
-  };
-  const speakBrowser = (text) => new Promise((resolve) => {
-    let done = false;
-    const finish = () => { if (done) return; done = true; clearTimeout(to); resolve(); };
-    // Chrome's onend is unreliable — cap with a duration-based timeout so the queue
-    // ALWAYS advances (never hangs) even if the event never fires.
-    const to = setTimeout(finish, Math.min(12000, 1600 + String(text).length * 90));
-    try {
-      const synth = window.speechSynthesis;
-      if (!synth) return finish();
-      synth.cancel();                         // clear any stuck utterance first
-      const u = new SpeechSynthesisUtterance(text);
-      u.rate = 0.95; u.pitch = 1; u.volume = 1; u.lang = "en-US";
-      const v = pickAnnounceVoice(synth); if (v) u.voice = v;
-      u.onend = finish; u.onerror = finish;
-      synth.speak(u);
-    } catch { finish(); }
-  });
-  const playUrl = (url) => new Promise((resolve, reject) => {
-    const el = audioElRef.current;
-    if (!el) return reject(new Error("no audio element"));
-    let done = false, started = false;
-    const finish = (fn, arg) => { if (done) return; done = true; el.onended = null; el.onerror = null; el.onplaying = null; clearTimeout(to); fn(arg); };
-    // If it started playing, resolve (it's playing — no fallback); only reject when
-    // it never started, so we never speak the robotic voice OVER a playing clip.
-    const to = setTimeout(() => finish(started ? resolve : reject, started ? undefined : new Error("audio timeout")), 20000);
-    el.onplaying = () => { started = true; };
-    el.onended = () => finish(resolve);
-    el.onerror = () => (started ? finish(resolve) : finish(reject, new Error("audio error")));
-    try { el.src = url; const p = el.play(); if (p && p.catch) p.catch((e) => { if (!started) finish(reject, e); }); }
-    catch (e) { finish(reject, e); }
-  });
-  const pump = async () => {
-    if (playingRef.current) return;
-    const text = queueRef.current.shift();
-    if (text == null) return;
-    playingRef.current = true;
-    const { engine, voice } = settingRef.current || {};
-    try {
-      if (engine === "openai" || engine === "elevenlabs") {
-        stopAll();                            // no speech under the clip
-        const res = await httpsCallable(functions, "pickupVoice")({ text, engine, voice });
-        const url = res?.data?.url;
-        if (!url) throw new Error("no tts url");
-        await playUrl(url);
-      } else {
-        stopAll();                            // no audio under the speech
-        await speakBrowser(text);
-      }
-    } catch {
-      stopAll();                              // stop any half-played clip BEFORE the fallback so they don't overlap
-      await speakBrowser(text);               // paid engine failed / inactive → Browser, never silent
-    } finally {
-      // Short gap between clips so repeats (and back-to-back orders) are clear, not
-      // rushed. The lock stays held through the gap so nothing starts early.
-      setTimeout(() => { playingRef.current = false; pump(); }, ANNOUNCE_GAP_MS);
-    }
-  };
-  const enqueueAnnounce = (text) => { queueRef.current.push(text); pump(); };
-
-  const enableVoice = () => {
-    // The tap unlocks BOTH HTML5 audio (OpenAI/ElevenLabs clips) AND speechSynthesis
-    // (Browser fallback) for the session, then plays a confirmation.
-    try { const el = audioElRef.current; if (el) { el.src = SILENT_WAV; const p = el.play(); if (p && p.catch) p.catch(() => {}); } } catch { /* ignore */ }
-    // Unlock speech with a SPACE (not an empty string — an empty utterance can wedge
-    // Chrome's speech queue so nothing speaks afterwards). resume() clears a paused state.
-    try { const s = window.speechSynthesis; if (s) { s.resume?.(); const u = new SpeechSynthesisUtterance(" "); u.volume = 0; s.speak(u); } } catch { /* ignore */ }
-    setVoiceUnlocked(true);
-    setVoiceOn(true);
-    try { localStorage.setItem(TV_VOICE_LS_KEY, "on"); } catch { /* ignore */ }
-    enqueueAnnounce("Pickup announcements on");
-  };
-  const toggleVoice = () => setVoiceOn(v => {
-    const n = !v;
-    try { localStorage.setItem(TV_VOICE_LS_KEY, n ? "on" : "off"); } catch { /* ignore */ }
-    if (!n) { // muting stops any in-progress speech/audio + drops the queue
-      try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
-      try { audioElRef.current?.pause(); } catch { /* ignore */ }
-      queueRef.current = [];
-    }
-    return n;
-  });
-
-  // Init the reused audio element + nudge the browser voice list (populated only
-  // after 'voiceschanged' on some browsers).
+  // Preload the vocabulary once: pull each clip's URL from the pickupVoice callable
+  // (`vocab` mode generates + caches them server-side), fetch the bytes, and decode
+  // into AudioBuffers. Retries a few times because startup may hit the slow network —
+  // unlike a live announcement, startup has time to wait. No user gesture needed to
+  // decode; only playback later requires the unlock tap.
   useEffect(() => {
-    try { if (!audioElRef.current && typeof Audio !== "undefined") audioElRef.current = new Audio(); } catch { /* ignore */ }
-    try { window.speechSynthesis?.getVoices(); } catch { /* ignore */ }
+    let cancelled = false;
+    let retryTimer = null;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;                                  // no Web Audio → board runs silent (no crash)
+    const ctx = audioCtxRef.current || (audioCtxRef.current = new Ctx());
+    const TOKENS = Object.keys(VOICE_VOCAB);
+    const decoded = new Map();                         // persists ACROSS retries — a flaky link only re-fetches the clips still missing, never the whole set again
+    const load = async (attempt = 0) => {
+      try {
+        const res = await httpsCallable(functions, "pickupVoice")({ vocab: true, voice: TV_VOICE_VOICE });
+        const urls = res?.data?.urls || {};
+        await Promise.all(TOKENS.map(async (tok) => {
+          if (decoded.has(tok)) return;                // already have this clip from a prior attempt
+          const url = urls[tok];
+          if (!url) return;
+          const r = await fetch(url);
+          if (!r.ok) throw new Error(`clip ${tok} http ${r.status}`); // don't hand an error body to decodeAudioData
+          const ab = await r.arrayBuffer();
+          const buf = await ctx.decodeAudioData(ab.slice(0));
+          if (buf) decoded.set(tok, buf);              // legacy callback-style decode returns undefined — skip, don't store a dud
+        }));
+        if (cancelled) return;
+        // Require the FULL vocabulary — a partial set would drop digits mid-number.
+        if (decoded.size === TOKENS.length) {
+          bufsRef.current = decoded;
+          setVocabReady(true);                         // re-fires the announce effect → orders that went ready mid-load still get read
+          return;
+        }
+        throw new Error(`vocab incomplete (${decoded.size}/${TOKENS.length})`);
+      } catch (e) {
+        if (cancelled) return;
+        // Never give up permanently (the point is surviving a flaky link), but widen
+        // the interval sharply once it's clearly a persistent failure (corrupt clip,
+        // unsupported decoder) so a doomed load can't hammer the callable forever.
+        const delay = attempt < 20 ? Math.min(120000, 4000 * (attempt + 1)) : 20 * 60000;
+        retryTimer = setTimeout(() => load(attempt + 1), delay);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      // Close the context on unmount so scheduled clips stop (no ghost audio over the
+      // admin UI after exit) and we don't leak toward Chrome's ~6-context ceiling.
+      // close() REJECTS if already closed — swallow it (an unhandled rejection trips
+      // the app's fatal error banner).
+      try { const p = audioCtxRef.current?.close?.(); if (p && p.catch) p.catch(() => {}); } catch { /* ignore */ }
+      audioCtxRef.current = null;
+    };
   }, []);
 
-  // Statuses we announce, and the phrase for each. Keyed by orderKey:status so each
-  // TRANSITION is announced once (e.g. an order that goes Out-of-stock → Ready later
-  // gets both). The board's other column (Incoming) is intentionally not announced.
+  // Schedule a list of vocabulary tokens to play gaplessly, one after another, after
+  // anything already queued (chainEndRef). Silently no-ops until the buffers are
+  // loaded and audio is unlocked, so a call before either is harmless.
+  const playTokens = (tokens) => {
+    const ctx = audioCtxRef.current, bufs = bufsRef.current;
+    if (!ctx || !bufs || !voiceUnlocked) return;
+    let t = Math.max(ctx.currentTime + 0.02, chainEndRef.current);
+    for (const tok of tokens) {
+      const buf = bufs.get(tok);
+      if (!buf) continue;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(t);
+      t += buf.duration + ANNOUNCE_WORD_GAP_S;
+    }
+    chainEndRef.current = t;
+  };
+
+  const enableVoice = () => {
+    // One user gesture unlocks Web Audio playback for the page load. Resume the
+    // context, mark unlocked (which hides the button), and play a short confirmation.
+    try { audioCtxRef.current?.resume?.(); } catch { /* ignore */ }
+    setVoiceUnlocked(true);
+    // voiceUnlocked flips async, so schedule the confirmation directly rather than
+    // via playTokens (which reads the not-yet-updated state).
+    const ctx = audioCtxRef.current, bufs = bufsRef.current;
+    if (ctx && bufs?.get("enabled")) {
+      try {
+        const src = ctx.createBufferSource();
+        src.buffer = bufs.get("enabled");
+        src.connect(ctx.destination);
+        src.start(ctx.currentTime + 0.05);
+        chainEndRef.current = ctx.currentTime + 0.05 + bufs.get("enabled").duration;
+      } catch { /* ignore */ }
+    }
+  };
+
+  // Status → phrase-clip token. Keyed by orderKey:status so each TRANSITION is
+  // announced once (e.g. Out-of-stock → Ready later gets both). The board's other
+  // column (Incoming) is intentionally not announced.
   const ANNOUNCE_PHRASE = {
-    [STATUS.READY]:          "ready for collection",
-    [STATUS.OUT_OF_STOCK]:   "out of stock",
-    [STATUS.COMING_TOMORROW]:"scheduled for tomorrow",
+    [STATUS.READY]:           "ready",
+    [STATUS.OUT_OF_STOCK]:    "oos",
+    [STATUS.COMING_TOMORROW]: "tomorrow",
   };
   const announceKey = (o) => `${orderKey(o)}:${o.status}`;
 
@@ -15224,19 +15477,48 @@ function TvWithAutoCollect({ orders, onExit }) {
     const liveKeys = new Set((orders || []).map(orderKey));
     for (const k of seen) if (!liveKeys.has(k.slice(0, k.lastIndexOf(":")))) seen.delete(k); // prune vanished orders
     for (const o of (orders || [])) {
-      const phrase = ANNOUNCE_PHRASE[o.status];
-      if (!phrase) continue;
+      const phraseTok = ANNOUNCE_PHRASE[o.status];
+      if (!phraseTok) continue;
       const k = announceKey(o);
       if (seen.has(k)) continue;
-      seen.add(k);                                                          // mark announced even when off/muted so re-enabling won't dump a backlog
-      if (settingRef.current?.enabled !== false && voiceOn && voiceUnlocked) { // admin master switch AND TV mute AND unlocked
-        const num = String(o.id ?? "").replace(/^0+(?=\d)/, "") || String(o.id ?? "");
-        const line = `Order number ${num}, ${phrase}`;
-        for (let i = 0; i < ANNOUNCE_REPEATS; i++) enqueueAnnounce(line); // repeat so it's not missed
+      // Unlocked but the vocabulary hasn't loaded yet → do NOT mark seen; leave the
+      // order so this effect re-fires when vocabReady flips and reads it then. Without
+      // this, an order that goes ready during the (slow-network) load window is marked
+      // done and silently lost forever — the exact failure this feature exists to fix.
+      if (voiceUnlocked && !vocabReady) continue;
+      seen.add(k);                                                          // mark announced even when locked so unlocking later won't dump a backlog
+      if (!voiceUnlocked) continue;
+      // Freshness guard: only announce a RECENT transition. After a long vocab-load
+      // outage (retry-forever) the catch-up would otherwise recite orders that went
+      // ready many minutes ago — already collected or hidden from the board. Marked
+      // seen above, so a stale one is skipped for good, not re-evaluated.
+      // Key the timestamp to the status being ANNOUNCED — updateStatus stamps only the
+      // new status and never clears the old ones, so a fixed readyAt||oosAt||… chain
+      // would read a stale earlier stamp on a corrective 2nd transition (Ready→OOS)
+      // and wrongly drop it. Only these 3 statuses reach here (ANNOUNCE_PHRASE gate).
+      const ts = (o.status === STATUS.READY ? o.readyAt
+                : o.status === STATUS.OUT_OF_STOCK ? o.outOfStockAt
+                : o.comingTomorrowAt) || o.updatedAt;
+      if (!ts || Date.now() - new Date(ts).getTime() > ANNOUNCE_MAX_AGE_MS) continue;
+      const ctx = audioCtxRef.current;
+      // Backlog cap: if clips are already queued far past now (a batch of orders just
+      // went ready), skip rather than pile on — there's no mute, so an unbounded queue
+      // would become a multi-minute recital. Skipped orders are already on-screen.
+      if (ctx && chainEndRef.current - ctx.currentTime > MAX_QUEUE_AHEAD_S) continue;
+      // Read the order number digit-by-digit from the preloaded clips (leading zeros
+      // dropped, but a bare "0" kept). Customer order ids are numeric; a non-numeric
+      // id (shouldn't reach here — laybys aren't announced) is skipped, not misread.
+      const num = String(o.id ?? "").replace(/^0+(?=\d)/, "");
+      const digits = num.split("").filter(c => /[0-9]/.test(c)).map(d => "d" + d);
+      if (!digits.length) continue;
+      const seq = ["order_number", ...digits, phraseTok];
+      for (let i = 0; i < ANNOUNCE_REPEATS; i++) {                          // repeat so it's not missed
+        if (ctx) chainEndRef.current = Math.max(chainEndRef.current, ctx.currentTime) + ANNOUNCE_REPEAT_GAP_S;
+        playTokens(seq);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orders, voiceOn, voiceUnlocked]);
+  }, [orders, voiceUnlocked, vocabReady]);
   // Layby collections tracked on the customer board exactly like orders: when the
   // cashier sends a pull request the invoice number appears in INCOMING; once the
   // warehouse marks it Sent it moves to READY and hides on the SAME 8-min timer as
@@ -15363,9 +15645,11 @@ function TvWithAutoCollect({ orders, onExit }) {
   return (
     <>
       <TvDisplayMockup orders={filteredOrders} onExit={onExit} />
-      {/* Voice controls (overlay — never touches the tuned board layout). One-tap
-          "enable" on load unlocks audio for the session; then a discreet mute toggle. */}
-      {!voiceUnlocked ? (
+      {/* Audio-unlock tap ONLY (browsers block audio until one user gesture per page
+          load). Shows until tapped once, then disappears entirely — there is no
+          persistent mute toggle. After the tap, announcements play from the preloaded
+          clips with no further UI. Reappears only when the kiosk page reloads. */}
+      {!voiceUnlocked && (
         <button
           type="button"
           onClick={enableVoice}
@@ -15379,22 +15663,6 @@ function TvWithAutoCollect({ orders, onExit }) {
           }}
         >
           🔊 Tap once to enable pickup voice
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={toggleVoice}
-          aria-label={voiceOn ? "Mute pickup announcements" : "Unmute pickup announcements"}
-          title={voiceOn ? "Mute pickup announcements" : "Unmute pickup announcements"}
-          style={{
-            position: "fixed", right: 14, bottom: 14, zIndex: 400,
-            width: 46, height: 46, borderRadius: "50%",
-            display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
-            background: "rgba(0,0,0,.5)", border: "1px solid rgba(255,255,255,.28)", fontSize: 21,
-            WebkitTapHighlightColor: "transparent",
-          }}
-        >
-          {voiceOn ? "🔊" : "🔇"}
         </button>
       )}
     </>

@@ -18,6 +18,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import { ref, update, push, child, get } from "firebase/database";
 import { database } from "../../firebase";
 import { applyMovement } from "./applyMovement";
+import { transferMovementId, loadDraft, saveDraft, clearDraft } from "./transferDraft";
 import { useRefillRequests, useStockCells } from "./useStock";
 import { transferTargets, labelFor } from "./locations";
 import { Toast, Empty } from "./widgets";
@@ -26,7 +27,6 @@ import { searchProducts } from "../../utils/productSearch";
 import { SizeTag } from "../SizeTag";
 import { resolveScan, realSizesOf, forgivingBarcodeCandidates } from "./scanResolve";
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
-import { useWide } from "./hooks";
 import FilterPicker from "./FilterPicker";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found", not a
@@ -76,7 +76,6 @@ function SizeChip({ size }) {
 }
 
 export default function Transfer({ products, registry, actorRole }) {
-  const wide = useWide(1024);   // desktop → two-column (browse | cart rail)
   // SOURCE — REQUIRED, no default. Every transfer must consciously pick where the
   // stock leaves from, so this starts empty and the cart tools stay hidden until a
   // source is chosen.
@@ -92,6 +91,16 @@ export default function Transfer({ products, registry, actorRole }) {
   const [sizePrompt, setSizePrompt] = useState(null);    // { product } awaiting a size after a scan
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+  // Stable transfer id for the CURRENT cart. Minted at the first Confirm and kept
+  // across retries so every line's movement id is deterministic (idempotent retry).
+  const [transferId, setTransferId] = useState(null);
+  // Per-line outcome of the last Confirm attempt: { key: { status:'sent'|'failed', reason, kind } }.
+  // Persisted with the draft so a reload mid-transfer restores which lines already moved.
+  const [lineResults, setLineResults] = useState({});
+  // Transient summary of the just-finished attempt, for the "N of M" banner phrasing.
+  const [lastAttempt, setLastAttempt] = useState(null); // { sent, failed, total }
+  // A draft found in storage on mount, awaiting the user's Restore / Discard choice.
+  const [draftToRestore, setDraftToRestore] = useState(null);
   const scanRef = useRef(null);
   const openRefills = useRefillRequests("open");
   // Guard: an empty `from` would make useStockCells subscribe to the WHOLE /stock
@@ -129,6 +138,14 @@ export default function Transfer({ products, registry, actorRole }) {
   const lines = useMemo(() => Object.values(basket).filter((l) => l.qty > 0), [basket]);
   const totalUnits = lines.reduce((s, l) => s + l.qty, 0);
   const overCount = lines.filter((l) => l.qty > avail(l.productId, l.size)).length;
+  // Lines still in the cart that failed the last attempt, split by cause so the
+  // banner can tell "network — just retry" apart from "not enough stock — fix qty".
+  const failedLines = useMemo(
+    () => lines.filter((l) => lineResults[keyOf(l.productId, l.size)]?.status === "failed"),
+    [lines, lineResults],
+  );
+  const stockFails = failedLines.filter((l) => lineResults[keyOf(l.productId, l.size)]?.kind === "stock").length;
+  const networkFails = failedLines.length - stockFails;
 
   // Cart grouped ONE card per product, sizes broken out underneath (M×2, L×1 …) —
   // mirrors the Clothing-Sold grouped card. The underlying per-size basket lines are
@@ -149,13 +166,18 @@ export default function Transfer({ products, registry, actorRole }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lines, srcCells]);
 
+  // Editing/scanning a line invalidates any prior failed/sent mark for it — it's a
+  // fresh attempt, so drop its result (this also updates the incomplete banner).
+  const clearLineResult = (k) => setLineResults((r) => { if (!r[k]) return r; const n = { ...r }; delete n[k]; return n; });
+
   // Manual grid: capped at source stock (you can't browse-add more than is here).
   const setQty = (product, size, qty) => {
     const max = avail(product.id, size);
     const n = Math.max(0, Math.min(max, parseInt(qty, 10) || 0));
+    const k = keyOf(product.id, size);
+    clearLineResult(k);
     setBasket((b) => {
       const next = { ...b };
-      const k = keyOf(product.id, size);
       if (n <= 0) delete next[k];
       else next[k] = { productId: product.id, productName: product.name, size, qty: n };
       return next;
@@ -165,13 +187,16 @@ export default function Transfer({ products, registry, actorRole }) {
 
   // Cart line qty (scan/edit path): UNCAPPED so over-scan is allowed (and flagged);
   // 0 removes the line.
-  const setLineQty = (k, qty) => setBasket((b) => {
-    const line = b[k]; if (!line) return b;
-    const n = Math.max(0, parseInt(qty, 10) || 0);
-    if (n <= 0) { const nb = { ...b }; delete nb[k]; return nb; }
-    return { ...b, [k]: { ...line, qty: n } };
-  });
-  const removeLine = (k) => setBasket((b) => { const nb = { ...b }; delete nb[k]; return nb; });
+  const setLineQty = (k, qty) => {
+    clearLineResult(k);
+    setBasket((b) => {
+      const line = b[k]; if (!line) return b;
+      const n = Math.max(0, parseInt(qty, 10) || 0);
+      if (n <= 0) { const nb = { ...b }; delete nb[k]; return nb; }
+      return { ...b, [k]: { ...line, qty: n } };
+    });
+  };
+  const removeLine = (k) => { clearLineResult(k); setBasket((b) => { const nb = { ...b }; delete nb[k]; return nb; }); };
   const removeProduct = (pid) => setBasket((b) => {
     const nb = {}; for (const [k, v] of Object.entries(b)) if (v.productId !== pid) nb[k] = v; return nb;
   });
@@ -179,6 +204,7 @@ export default function Transfer({ products, registry, actorRole }) {
   // Add ONE unit for a (product, size) via a scan — uncapped (over-scan allowed).
   const scanAdd = (product, size) => {
     const sz = size == null || size === "" ? ONE_SIZE : String(size);
+    clearLineResult(keyOf(product.id, sz));
     setBasket((b) => {
       const k = keyOf(product.id, sz);
       const cur = b[k]?.qty || 0;
@@ -187,11 +213,23 @@ export default function Transfer({ products, registry, actorRole }) {
     flash("ok", `+1 ${product.name}${sizeLabel(sz) ? "" : " · " + sz}`);
   };
 
-  const clearBasket = () => { setBasket({}); setRefillId(null); };
+  // Full reset of the transfer session (cart + idempotency context + persisted draft).
+  const clearBasket = () => {
+    setBasket({}); setRefillId(null);
+    setTransferId(null); setLineResults({}); setLastAttempt(null);
+    clearDraft();
+  };
 
   // Changing the source invalidates the basket (its lines were counted at the old
   // source). Reset so quantities always reflect what's actually available here.
-  const pickSource = (id) => { if (id === from) return; setFrom(id); setBasket({}); setOpenId(null); setRefillId(null); if (to === id) setTo(""); };
+  // Picking a source also dismisses any restore banner — the user is starting fresh.
+  const pickSource = (id) => {
+    setDraftToRestore(null);
+    if (id === from) return;
+    setFrom(id); setBasket({}); setOpenId(null); setRefillId(null);
+    setTransferId(null); setLineResults({}); setLastAttempt(null);
+    if (to === id) setTo("");
+  };
 
   // Resolve a scanned/typed barcode → INSTANT cart add (POS sell-scan feel). A
   // hardware SCAN is matched EXACTLY; a slowly-TYPED code also tries leading-zero
@@ -234,117 +272,285 @@ export default function Transfer({ products, registry, actorRole }) {
     setRefillId(r.id);
     setTo(r.requestingLocation || "");
     setOpenId(r.productId);
+    setTransferId(null); setLineResults({}); setLastAttempt(null);
     flash("ok", "Prefilled from refill — check the source has stock, then confirm.");
   };
 
   // Clear a stale destination if it ends up equal to the source.
   useEffect(() => { if (to && to === from) setTo(""); }, [from, to]);
 
+  // ── DRAFT PERSISTENCE ───────────────────────────────────────────────────────
+  // Covers ALL ways the cart can leave the screen: a crash, a reload, a network
+  // drop, AND simply navigating to another stock tab (unmount). Persistence is
+  // CONTINUOUS — every scan writes the draft below — so an unmount keeps whatever
+  // was last scanned; the mount handler here re-offers it. `hydrated` gates the
+  // first paint so the empty initial cart can't wipe the draft before we've read it.
+  const [hydrated, setHydrated] = useState(false);
+
+  // On mount, surface any unsent cart left behind — the user chooses Restore or
+  // Discard (see the banner below). We never auto-apply, so a stale draft can't
+  // silently overwrite a fresh session.
+  useEffect(() => {
+    const d = loadDraft();
+    if (d) setDraftToRestore(d);
+    setHydrated(true);
+  }, []);
+
+  // Persist the cart on every change. saveDraft removes the key when the cart is
+  // empty (full success / manual Clear leave nothing to restore). Gated until
+  // hydration AND paused while a restore decision is pending, so the empty cart on
+  // the first render (or while the restore banner is up) can never clobber the draft.
+  useEffect(() => {
+    if (!hydrated || draftToRestore) return;
+    saveDraft({ from, to, refillId, transferId, basket, lineResults });
+  }, [hydrated, draftToRestore, from, to, refillId, transferId, basket, lineResults]);
+
+  const restoreDraft = () => {
+    const d = draftToRestore;
+    if (!d) return;
+    setFrom(d.from || "");                 // direct set (not pickSource) so the cart survives
+    setBasket(d.basket || {});
+    setTo(d.to || "");
+    setRefillId(d.refillId || null);
+    setTransferId(d.transferId || null);
+    setLineResults(d.lineResults || {});
+    setLastAttempt(null);
+    setDraftToRestore(null);
+  };
+  const discardDraft = () => { clearDraft(); setDraftToRestore(null); };
+
+  // Fire the transfer line-by-line. Each line is one atomic `transfer_out`
+  // (applyMovement moves −from/+to in a single update — unchanged). This wrapper
+  // adds the failure protection AROUND that atomic write:
+  //   • a STABLE transferId (reused across retries) → deterministic movement ids
+  //     → a resend of a line that already landed is a no-op (never double-moves);
+  //   • per-line result tracking, persisted after every line, so a crash mid-loop
+  //     leaves a resumable draft;
+  //   • on partial failure the succeeded lines are dropped and the FAILED/unsent
+  //     lines stay in the cart (+ draft) for a targeted Retry — never a blanket wipe.
   const doTransfer = async () => {
     if (!from) return flash("err", "Pick a source location.");
     if (!to) return flash("err", "Pick a destination.");
     if (from === to) return flash("err", "Source and destination must differ.");
     if (!lines.length) return flash("err", "Add at least one quantity.");
     setBusy(true);
-    const transferId = push(child(ref(database), "transfers")).key;
-    let ok = 0, fail = 0;
+
+    // Reuse the cart's transferId across retries so movement ids stay deterministic.
+    let tId = transferId;
+    if (!tId) { tId = push(child(ref(database), "transfers")).key; setTransferId(tId); }
+
+    // Snapshot the lines up front (the loop persists against this fixed basket).
+    const snapshot = { ...basket };
+    const results = { ...lineResults };
+    // Persist BEFORE the first write: a crash mid-loop still leaves the transferId
+    // and which lines were already sent, so a restored retry resumes idempotently.
+    saveDraft({ from, to, refillId, transferId: tId, basket: snapshot, lineResults: results });
+
+    let sent = 0;
+    const failed = [];
     for (const ln of lines) {
-      // Pass ln.size straight through — ONE_SIZE is "_" (truthy, so applyMovement's
-      // required-size check passes) and stockSizeKey("_") === "_" hits the no-size
-      // cell. Mapping it to null would trip missing_product_or_size before encoding.
-      const res = await applyMovement({
-        type: "transfer_out", productId: ln.productId, size: ln.size, qty: ln.qty,
-        from, to, actorRole, link: { transferId, refillId: refillId || null },
-      });
-      res.ok ? ok++ : fail++;
+      const k = keyOf(ln.productId, ln.size);
+      if (results[k]?.status === "sent") { sent++; continue; } // already moved — skip
+      let res;
+      try {
+        // Pass ln.size straight through — ONE_SIZE is "_" (truthy, so applyMovement's
+        // required-size check passes) and stockSizeKey("_") === "_" hits the no-size
+        // cell. Mapping it to null would trip missing_product_or_size before encoding.
+        res = await applyMovement({
+          type: "transfer_out", productId: ln.productId, size: ln.size, qty: ln.qty,
+          from, to, actorRole,
+          movementId: transferMovementId(tId, ln.productId, ln.size), // idempotency key
+          link: { transferId: tId, refillId: refillId || null },
+        });
+      } catch (e) {
+        res = { ok: false, reason: "write_failed", error: String(e?.message || e) };
+      }
+      if (res.ok) {
+        results[k] = { status: "sent" };
+        sent++;
+      } else {
+        const kind = res.reason === "insufficient_stock" ? "stock"
+          : res.reason === "write_failed" ? "network" : "other";
+        results[k] = { status: "failed", reason: res.reason, kind };
+        failed.push({ key: k });
+      }
+      setLineResults({ ...results });
+      saveDraft({ from, to, refillId, transferId: tId, basket: snapshot, lineResults: results });
     }
-    if (refillId && ok > 0) {
+
+    // Only mark the refill fulfilled when EVERY line moved — a partial transfer
+    // must not close the request.
+    if (refillId && failed.length === 0 && sent > 0) {
       await update(ref(database), {
         [`refill_requests/${refillId}/status`]: "fulfilled",
-        [`refill_requests/${refillId}/fulfilledBy`]: { transferId },
+        [`refill_requests/${refillId}/fulfilledBy`]: { transferId: tId },
         [`refill_requests/${refillId}/resolvedAt`]: new Date().toISOString(),
       }).catch(() => {});
     }
+
     setBusy(false);
     setPicking(false);
-    if (ok > 0) { clearBasket(); setTo(""); }
-    flash(fail ? "err" : "ok",
-      fail ? `${ok} moved, ${fail} failed (insufficient stock at ${labelFor(from, registry)} or no permission)`
-           : `Transferred ${ok} line(s) → ${labelFor(to, registry)}`);
+    setLastAttempt({ sent, failed: failed.length, total: lines.length });
+
+    if (failed.length === 0) {
+      // Full success — clear the cart, idempotency context and draft.
+      clearBasket();
+      setTo("");
+      flash("ok", `Transferred ${sent} line(s) → ${labelFor(to, registry)}`);
+    } else {
+      // Partial / total failure — keep ONLY the unsent lines so they can be retried.
+      const remaining = {};
+      for (const [key, ln] of Object.entries(snapshot)) if (results[key]?.status !== "sent") remaining[key] = ln;
+      setBasket(remaining);
+      saveDraft({ from, to, refillId, transferId: tId, basket: remaining, lineResults: results });
+      flash("err", `Transfer incomplete — ${sent}/${lines.length} moved, ${failed.length} saved to retry`);
+    }
   };
 
-  // ── Reusable pieces (shared by mobile stack + desktop two-column) ──
-  const scanPanel = (
-    <div style={{ ...GLASS, padding: 12, marginBottom: 12, borderColor: "rgba(74,222,128,.28)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9 }}>
-        <span style={{ width: 26, height: 26, borderRadius: 8, display: "grid", placeItems: "center", background: "rgba(74,222,128,.12)", border: "1px solid rgba(74,222,128,.35)", color: GREEN, flexShrink: 0 }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M3 12h18" /></svg>
-        </span>
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>Scan into cart</div>
-        <span style={{ marginLeft: "auto", fontSize: 10, color: GREEN, fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: GREEN, boxShadow: `0 0 7px ${GREEN}` }} />ARMED</span>
-      </div>
-      <div style={{ display: "flex", gap: 8 }}>
+  return (
+    <div>
+      {/* Restore banner — an unsent cart survived a crash / reload / network drop. */}
+      {draftToRestore && (() => {
+        const dl = Object.values(draftToRestore.basket || {}).filter((l) => l.qty > 0);
+        const units = dl.reduce((s, l) => s + l.qty, 0);
+        return (
+          <div style={{ ...GLASS, padding: 12, marginBottom: 12, border: "1px solid rgba(74,222,128,.5)", background: "rgba(74,222,128,.06)" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 3 }}>Unsent transfer found</div>
+            <div style={{ fontSize: 12, color: GRAY, marginBottom: 10 }}>
+              {dl.length} line{dl.length === 1 ? "" : "s"} · {units} unit{units === 1 ? "" : "s"}
+              {draftToRestore.from ? <> from <span style={{ color: "#fff" }}>{labelFor(draftToRestore.from, registry)}</span></> : null}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={restoreDraft} style={{ ...bGreen, flex: 2, padding: "8px 12px" }}>Restore cart</button>
+              <button onClick={discardDraft} style={{ ...bGhost, flex: 1, padding: "8px 12px" }}>Discard</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Open refill requests (Source chain) — prefill a transfer */}
+      {openRefills.length > 0 && (
+        <div style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>Open refill requests</div>
+          {openRefills.map((r) => {
+            const nm = productsById[r.productId]?.name || r.productId;
+            return (
+              <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderTop: BORDER, fontSize: 13 }}>
+                <span style={{ color: "#fff" }}>{nm} · <SizeTag size={r.size} /> ×{r.qty || 1}<span style={{ color: GRAY }}> → {labelFor(r.requestingLocation, registry)}</span></span>
+                <button onClick={() => prefillRefill(r)} style={{ ...bGhost, padding: "5px 10px", fontSize: 12 }}>Prefill</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Source (pick first — the grid + scan act on this location). */}
+      <FilterPicker label="Transfer from" value={from} onChange={pickSource} placeholder="Choose source…" defaultOpen={!from}
+        options={locations.map((l) => ({ id: l.id, label: labelFor(l.id, registry) }))} />
+
+      {!from ? (
+        <Empty>Pick a source location above to start a transfer.</Empty>
+      ) : (
+      <>
+      {/* SCAN — the gun works ANYWHERE on this screen (global omni-listener, POS
+          sell-scan feel): each scan drops straight into the cart, no focus needed,
+          so you can scan-scan-scan. The box is a manual-entry fallback (leading
+          zeros optional) and stays armed. */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
         <input ref={scanRef} value={scan} onChange={(e) => setScan(e.target.value)} autoFocus
                onKeyDown={(e) => { if (e.key === "Enter") { onScanCode(e.currentTarget.value, { forgiving: true }); setScan(""); requestAnimationFrame(() => scanRef.current?.focus()); } }}
                placeholder="Scan or type a barcode… ↵"
                style={{ ...input, flex: 1, boxSizing: "border-box", borderColor: "rgba(74,222,128,.4)" }} />
-        <button onClick={() => { onScanCode(scan, { forgiving: true }); setScan(""); scanRef.current?.focus(); }} style={{ ...bGreen, padding: "0 18px", whiteSpace: "nowrap" }}>Add</button>
+        <button onClick={() => { onScanCode(scan, { forgiving: true }); setScan(""); scanRef.current?.focus(); }} style={{ ...bGreen, padding: "0 16px", whiteSpace: "nowrap" }}>Add</button>
       </div>
-      <div style={{ fontSize: 10.5, color: GRAY, marginTop: 8 }}>Scanner works anywhere on this screen — scan and it drops into the cart. Same product + size stacks.</div>
-    </div>
-  );
+      <div style={{ fontSize: 10.5, color: GRAY, marginBottom: 10 }}>Scanner armed — scan any item and it drops into the cart. Same product + size stacks.</div>
 
-  // CART — ONE card per product, sizes broken out (M×2, L×1 …) + product total.
-  const cartInner = (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      {cartGroups.map((g) => (
-        <div key={g.productId} style={{ ...GLASS, padding: 11 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 8 }}>
-            <Thumb product={productsById[g.productId]} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.productName}</div>
-              <div style={{ fontSize: 11, color: g.over ? AMBER : GRAY }}>{g.total} unit{g.total !== 1 ? "s" : ""} · {g.sizes.length} size{g.sizes.length !== 1 ? "s" : ""}{g.over ? " · over source" : ""}</div>
-            </div>
-            <button onClick={() => removeProduct(g.productId)} title="Remove product" style={{ ...bGhost, padding: "6px 10px", fontSize: 13, lineHeight: 1 }}>Remove</button>
+      {/* Transfer-incomplete banner — moved lines are gone from the cart; the
+          failed/unsent lines remain here for a targeted, idempotent retry. */}
+      {failedLines.length > 0 && !busy && (
+        <div style={{ ...GLASS, padding: 12, marginBottom: 12, border: "1px solid rgba(255,139,139,.5)", background: "rgba(255,139,139,.07)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 3 }}>
+            Transfer incomplete{lastAttempt ? ` — ${lastAttempt.sent}/${lastAttempt.total} moved` : ""}
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {g.sizes.map((s) => {
-              const k = keyOf(g.productId, s.size);
-              return (
-                <div key={s.size} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderTop: BORDER }}>
-                  <div style={{ minWidth: 62 }}><SizeChip size={s.size} /></div>
-                  <div style={{ flex: 1, fontSize: 10.5, color: s.over ? AMBER : GRAY }}>{s.here} at source{s.over ? " · over!" : ""}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <button onClick={() => setLineQty(k, s.qty - 1)} style={stepBtn}>−</button>
-                    <input type="number" inputMode="numeric" min="0" value={s.qty}
-                           onChange={(e) => setLineQty(k, e.target.value)}
-                           style={{ ...input, width: 44, minWidth: 0, boxSizing: "border-box", textAlign: "center", padding: "6px 2px", borderColor: s.over ? "rgba(245,158,11,.5)" : undefined }} />
-                    <button onClick={() => setLineQty(k, s.qty + 1)} style={stepBtn}>+</button>
+          <div style={{ fontSize: 12, color: GRAY, marginBottom: 8 }}>
+            {failedLines.length} line{failedLines.length === 1 ? "" : "s"} saved — already-moved lines are done and won’t re-send.
+          </div>
+          {networkFails > 0 && <div style={{ fontSize: 12, color: "#FFB4B4", marginBottom: 4 }}>{networkFails} didn’t send (network) — tap Retry.</div>}
+          {stockFails > 0 && <div style={{ fontSize: 12, color: AMBER, marginBottom: 4 }}>{stockFails} exceed stock at {labelFor(from, registry)} — lower the qty, then retry.</div>}
+          <button onClick={doTransfer} disabled={busy || !to} style={{ ...bGreen, marginTop: 6, padding: "8px 14px", opacity: to ? 1 : 0.5 }}>
+            Retry {failedLines.length} line{failedLines.length === 1 ? "" : "s"}
+          </button>
+        </div>
+      )}
+
+      {/* CART — ONE card per product, sizes broken out (M×2, L×1 …) + product total.
+          Per-size ± / remove and remove-whole-product. Confirm still moves each size
+          cell exactly. Over-source sizes are flagged (floor blocks them at commit). */}
+      {cartGroups.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>
+            Cart · {cartGroups.length} product{cartGroups.length !== 1 ? "s" : ""} · {totalUnits} unit(s){overCount > 0 ? ` · ${overCount} over source` : ""}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {cartGroups.map((g) => (
+              <div key={g.productId} style={{ ...GLASS, padding: 11 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 8 }}>
+                  <Thumb product={productsById[g.productId]} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.productName}</div>
+                    <div style={{ fontSize: 11, color: g.over ? AMBER : GRAY }}>{g.total} unit{g.total !== 1 ? "s" : ""} · {g.sizes.length} size{g.sizes.length !== 1 ? "s" : ""}{g.over ? " · over source" : ""}</div>
                   </div>
-                  <button onClick={() => removeLine(k)} title="Remove size" style={{ ...bGhost, padding: "5px 8px", fontSize: 13, lineHeight: 1 }}>×</button>
+                  <button onClick={() => removeProduct(g.productId)} title="Remove product" style={{ ...bGhost, padding: "6px 10px", fontSize: 13, lineHeight: 1 }}>Remove</button>
                 </div>
-              );
-            })}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {g.sizes.map((s) => {
+                    const k = keyOf(g.productId, s.size);
+                    const lr = lineResults[k];
+                    const failedLine = lr?.status === "failed";
+                    return (
+                      <div key={s.size} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderTop: BORDER }}>
+                        <div style={{ minWidth: 62 }}><SizeChip size={s.size} /></div>
+                        <div style={{ flex: 1, fontSize: 10.5, color: failedLine ? (lr.kind === "stock" ? AMBER : "#FF8B8B") : (s.over ? AMBER : GRAY) }}>
+                          {failedLine
+                            ? (lr.kind === "stock" ? "not enough stock — lower qty" : lr.kind === "network" ? "didn’t send — retry" : "failed — retry")
+                            : <>{s.here} at source{s.over ? " · over!" : ""}</>}
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <button onClick={() => setLineQty(k, s.qty - 1)} style={stepBtn}>−</button>
+                          <input type="number" inputMode="numeric" min="0" value={s.qty}
+                                 onChange={(e) => setLineQty(k, e.target.value)}
+                                 style={{ ...input, width: 44, minWidth: 0, boxSizing: "border-box", textAlign: "center", padding: "6px 2px", borderColor: s.over ? "rgba(245,158,11,.5)" : undefined }} />
+                          <button onClick={() => setLineQty(k, s.qty + 1)} style={stepBtn}>+</button>
+                        </div>
+                        <button onClick={() => removeLine(k)} title="Remove size" style={{ ...bGhost, padding: "5px 8px", fontSize: 13, lineHeight: 1 }}>×</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
-      ))}
-    </div>
-  );
+      )}
 
-  const browse = (
-    <>
       {categories.length > 1 && (
         <FilterPicker label="Category" value={cat} onChange={setCat}
           options={[{ id: "all", label: "All" }, ...categories.map((c) => ({ id: c, label: c }))]} />
       )}
+
+      {/* Search */}
       <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search in ${labelFor(from, registry)}…`}
              style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 12 }} />
+
+      {/* Product list — only products with stock at the source. */}
       {shown.length === 0 ? (
         <Empty>{search.trim() ? "No products match." : `Nothing in stock at ${labelFor(from, registry)}.`}</Empty>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: wide ? "repeat(auto-fill, minmax(240px, 1fr))" : "1fr", gap: 8, alignItems: "start", paddingBottom: (!wide && lines.length) ? 84 : 8 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: lines.length ? 84 : 8 }}>
           {shown.map((p) => {
             const expanded = openId === p.id;
+            // Real sizes with stock here, PLUS a synthetic "One size" cell when this
+            // product holds no-size ("_") stock — so one-size items are transferable.
             const realSizes = realSizesOf(p).filter((sz) => avail(p.id, sz) > 0);
             const sizes = avail(p.id, ONE_SIZE) > 0 ? [...realSizes, ONE_SIZE] : realSizes;
             const inBasket = sizes.reduce((s, sz) => s + (basket[keyOf(p.id, sz)]?.qty || 0), 0);
@@ -360,7 +566,7 @@ export default function Transfer({ products, registry, actorRole }) {
                   <span style={{ color: BLUE_L, transform: expanded ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▸</span>
                 </div>
                 {expanded && (
-                  <div style={{ padding: "0 11px 12px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(104px, 1fr))", gap: 8 }}>
+                  <div style={{ padding: "0 11px 12px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))", gap: 8 }}>
                     {sizes.map((sz) => {
                       const max = avail(p.id, sz);
                       const qty = basket[keyOf(p.id, sz)]?.qty || 0;
@@ -387,82 +593,18 @@ export default function Transfer({ products, registry, actorRole }) {
           })}
         </div>
       )}
-    </>
-  );
-
-  // Cart summary + destination trigger (shared by rail footer + sticky bar).
-  const cartActions = (
-    <>
-      <button onClick={clearBasket} style={{ ...bGhost, padding: "8px 12px", fontSize: 12 }}>Clear</button>
-      <button onClick={() => setPicking(true)} style={{ ...bGreen, padding: "10px 18px", flex: wide ? 1 : "none" }}>Destination →</button>
-    </>
-  );
-
-  return (
-    <div>
-      {/* Open refill requests (Source chain) — prefill a transfer */}
-      {openRefills.length > 0 && (
-        <div style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
-          <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>Open refill requests</div>
-          {openRefills.map((r) => {
-            const nm = productsById[r.productId]?.name || r.productId;
-            return (
-              <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderTop: BORDER, fontSize: 13 }}>
-                <span style={{ color: "#fff" }}>{nm} · <SizeTag size={r.size} /> ×{r.qty || 1}<span style={{ color: GRAY }}> → {labelFor(r.requestingLocation, registry)}</span></span>
-                <button onClick={() => prefillRefill(r)} style={{ ...bGhost, padding: "5px 10px", fontSize: 12 }}>Prefill</button>
-              </div>
-            );
-          })}
-        </div>
+      </>
       )}
 
-      {/* Source (pick first — the grid + scan act on this location). */}
-      <FilterPicker label="Transfer from" value={from} onChange={pickSource} placeholder="Choose source…" defaultOpen={!from}
-        options={locations.map((l) => ({ id: l.id, label: labelFor(l.id, registry) }))} />
-
-      {!from ? (
-        <Empty>Pick a source location above to start a transfer.</Empty>
-      ) : wide ? (
-        /* DESKTOP — browse left, live cart rail right. */
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 336px", gap: 16, alignItems: "start" }}>
-          <div style={{ minWidth: 0 }}>{scanPanel}{browse}</div>
-          <aside style={{ position: "sticky", top: 0, ...GLASS, padding: 12, display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 150px)" }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
-              <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>Cart</div>
-              <div style={{ fontSize: 11, color: overCount ? AMBER : GRAY }}>{totalUnits} unit{totalUnits !== 1 ? "s" : ""}{overCount ? ` · ${overCount} over` : ""}</div>
-            </div>
-            <div style={{ flex: 1, overflowY: "auto", margin: "0 -4px", padding: "0 4px" }}>
-              {cartGroups.length === 0
-                ? <div style={{ color: GRAY, fontSize: 12, textAlign: "center", padding: "36px 8px" }}>Scan or search to add items.</div>
-                : cartInner}
-            </div>
-            {cartGroups.length > 0 && <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 12, borderTop: BORDER }}>{cartActions}</div>}
-          </aside>
-        </div>
-      ) : (
-        /* MOBILE — stacked, with the sticky action bar below. */
-        <>
-          {scanPanel}
-          {cartGroups.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>
-                Cart · {cartGroups.length} product{cartGroups.length !== 1 ? "s" : ""} · {totalUnits} unit(s){overCount > 0 ? ` · ${overCount} over source` : ""}
-              </div>
-              {cartInner}
-            </div>
-          )}
-          {browse}
-        </>
-      )}
-
-      {/* Sticky action bar — mobile only (desktop uses the rail footer). */}
-      {!wide && lines.length > 0 && (
+      {/* Sticky action bar */}
+      {lines.length > 0 && (
         <div style={{ position: "fixed", left: 12, right: 12, bottom: 14, zIndex: 40, ...GLASS, padding: 10, display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{lines.length} line(s) · {totalUnits} unit(s)</div>
             <div style={{ fontSize: 11, color: overCount ? AMBER : GRAY }}>from {labelFor(from, registry)}{overCount ? ` · ${overCount} over source` : ""}</div>
           </div>
-          {cartActions}
+          <button onClick={clearBasket} style={{ ...bGhost, padding: "8px 12px", fontSize: 12 }}>Clear</button>
+          <button onClick={() => setPicking(true)} style={{ ...bGreen, padding: "10px 18px" }}>Destination →</button>
         </div>
       )}
 
