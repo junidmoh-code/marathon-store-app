@@ -8330,8 +8330,8 @@ function WarehouseView({ products = [], orders, onExit }) {
     : selectedHub === "hub2"
     ? [["queue","Order Queue",null],["clothing","CR Orders",clothingBadge],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]
     : selectedHub === "hub3"
-    ? [["queue","Order Queue",null],["clothing","CR Orders",clothingBadge],["restock","Restock Status",null],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]
-    : [["queue","Order Queue",null],["restock","Restock Status",null],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]);
+    ? [["queue","Order Queue",null],["clothing","CR Orders",clothingBadge],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]
+    : [["queue","Order Queue",null],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]);
 
   // ON-HOLD card — actionable next-day follow-up list, shared by both layouts.
   const onHoldCard = (
@@ -9368,16 +9368,6 @@ function absTime(iso) {
   return new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-// Hold a Hub-2 order that's READY but before its reveal instant (notifyReadyAt)
-// so a customer-facing view reads "being prepared", not "ready", until the reveal
-// — same as the TV board. Restored: the desktop redesign had dropped this.
-function holdHub2Ready(o, nowMs) {
-  if (!o || o.status !== STATUS.READY || !o.notifyReadyAt) return o;
-  const revealMs = Date.parse(o.notifyReadyAt);
-  if (isNaN(revealMs)) return o;                 // malformed → don't hold (fail open)
-  if (nowMs < revealMs) return { ...o, status: STATUS.INCOMING };
-  return { ...o, readyAt: o.notifyReadyAt };
-}
 
 function CustomerView({ orders, onExit }) {
   const [orderId, setOrderId] = useState("");
