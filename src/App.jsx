@@ -1075,6 +1075,13 @@ async function reverseCRUncounted({ store, productId, size, qty, orderId, create
   });
 }
 
+// Run ONE CR movement leg, normalising a thrown error or a void return into a
+// { ok:false, reason } result so callers can branch uniformly.
+async function runCRLeg(fn) {
+  try { return (await fn()) || { ok: false, reason: "transfer failed" }; }
+  catch { return { ok: false, reason: "network error" }; }
+}
+
 // Bounded read of /stock_movements: a ts-windowed query over the last
 // CLOTHING_SOLD_BACKLOG_DAYS days — NEVER an unbounded whole-ledger subscription.
 // Requires the stock_movements `.indexOn:["ts"]` rule (server-side sort); without
@@ -6800,27 +6807,31 @@ function WarehouseView({ products = [], orders, onExit }) {
         // system). The warehouse just typed a number and hit Send; it never sees this.
         const availHere    = Number(crHubCells?.[batch.productId]?.[it.size]?.qty) || 0;
         const countedQty   = Math.min(qty, Math.max(0, availHere));
-        const uncountedQty  = qty - countedQty;
+        const uncountedQty = qty - countedQty;
+        // Fire both legs INDEPENDENTLY (a failed counted leg must not block the
+        // uncounted overage). Each movementId is idempotent per line+gen, so re-tapping
+        // Send after a transient failure completes the rest without double-moving stock.
         let sentCounted = 0, sentUncounted = 0, legErr = null;
         if (countedQty > 0) {
-          let r; try { r = await fireCRRefill({ store, productId: batch.productId, size: it.size, qty: countedQty, from, actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }); }
-          catch { r = { ok: false, reason: "network error" }; }
-          if (r && r.ok) sentCounted = countedQty; else legErr = r;
+          const r = await runCRLeg(() => fireCRRefill({ store, productId: batch.productId, size: it.size, qty: countedQty, from, actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }));
+          if (r.ok) sentCounted = countedQty; else legErr = r;
         }
-        if (uncountedQty > 0 && !legErr) {                          // don't add uncounted if the counted leg errored
-          let r; try { r = await fireCRUncounted({ store, productId: batch.productId, size: it.size, qty: uncountedQty, actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }); }
-          catch { r = { ok: false, reason: "network error" }; }
-          if (r && r.ok) sentUncounted = uncountedQty; else legErr = r;
+        if (uncountedQty > 0) {
+          const r = await runCRLeg(() => fireCRUncounted({ store, productId: batch.productId, size: it.size, qty: uncountedQty, actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }));
+          if (r.ok) sentUncounted = uncountedQty; else legErr = r;
         }
         const sent = sentCounted + sentUncounted;
-        if (sent > 0) {
+        if (sent === qty) {                                          // fully sent → resolve the line
           ok++;
           updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, updatedAt: now });
           logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2" });
-          if (legErr) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — ${legErr.reason || "transfer failed"}`);
         } else {
+          // Partial or nothing: leave the line PENDING so an idempotent re-tap finishes
+          // it (any leg that already landed is a no-op on retry — no double-move).
           fail++;
-          errors.push(`${formatSize(it.size)}: ${legErr && legErr.reason === "insufficient_stock" ? `only ${legErr.available} at ${HUB_LABELS[from] || "the hub"}` : (legErr && legErr.reason) || "transfer failed"}`);
+          errors.push(sent > 0
+            ? `${formatSize(it.size)}: only ${sent}/${qty} sent — tap Send again to finish`
+            : `${formatSize(it.size)}: ${legErr && legErr.reason === "insufficient_stock" ? `only ${legErr.available} at ${HUB_LABELS[from] || "the hub"}` : (legErr && legErr.reason) || "transfer failed"}`);
         }
       } else if (reject) {
         // Reject is a flag-only write (no stock) — allowed without a stockRole.
@@ -6858,14 +6869,12 @@ function WarehouseView({ products = [], orders, onExit }) {
         }
         let legFail = null;
         if (countedQ > 0) {
-          let r; try { r = await reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: countedQ, hub: it.placedAtHub || "hub2", orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }); }
-          catch { r = { ok: false, reason: "network error" }; }
-          if (!r || !r.ok) legFail = r;
+          const r = await runCRLeg(() => reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: countedQ, hub: it.placedAtHub || "hub2", orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }));
+          if (!r.ok) legFail = r;
         }
         if (uncountedQ > 0 && !legFail) {
-          let r; try { r = await reverseCRUncounted({ store: batch.destShop, productId: batch.productId, size: it.size, qty: uncountedQ, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }); }
-          catch { r = { ok: false, reason: "network error" }; }
-          if (!r || !r.ok) legFail = r;
+          const r = await runCRLeg(() => reverseCRUncounted({ store: batch.destShop, productId: batch.productId, size: it.size, qty: uncountedQ, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }));
+          if (!r.ok) legFail = r;
         }
         if (legFail) {
           fail++;
@@ -7574,10 +7583,6 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
   const totalReject = pending.filter(it => rejects[it.orderId]).length;
   const canSend = !busy && (totalSend > 0 || totalReject > 0);
 
-  // Collapsed-row coverage summary: how much of this request Hub 2 can cover NOW.
-  const fullCover  = pending.filter(it => availAt(it.size) >= it.qty).length;
-  const shortCover = pending.length - fullCover;
-
   const send = async () => {
     if (!canSend) return;
     setBusy(true); setMsg(null);
@@ -7618,7 +7623,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
           </div>
         </div>
         <span style={{ flexShrink:0, fontSize:10.5, fontWeight:700, color:BLUE_L, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"3px 9px", whiteSpace:"nowrap" }}>
-          {pending.length} size{pending.length === 1 ? "" : "s"}{shortCover > 0 ? ` · ${fullCover} ready · ${shortCover} short` : ""}
+          {pending.length} size{pending.length === 1 ? "" : "s"}
           {resolved.length > 0 ? ` · ${resolved.length} done` : ""}
         </span>
         <span style={{ color:"#4A7FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s", fontSize:13, flexShrink:0 }}>▸</span>
@@ -7635,7 +7640,6 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
               ("0 here" in amber) instead of hiding the input. */}
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(118px, 1fr))", gap:8, marginTop:10 }}>
             {pending.map(it => {
-              const avail = availAt(it.size);
               const cap = capOf(it);                           // = requested qty; the + button goes this high
               const rejected = !!rejects[it.orderId];
               const q = displayQ(it);
