@@ -13080,7 +13080,7 @@ const TV_VOICE_VOICE        = "nova"; // hardcoded OpenAI TTS voice for the boar
 const ANNOUNCE_REPEATS      = 2;      // say each announcement this many times
 const ANNOUNCE_WORD_GAP_S   = 0.05;   // silence between words inside one announcement
 const ANNOUNCE_REPEAT_GAP_S = 0.45;   // silence between repeats / back-to-back orders
-const ANNOUNCE_MAX_AGE_MS   = 3 * 60 * 1000; // only read out a transition this recent — a late vocab load must not recite long-since-ready orders
+const ANNOUNCE_MAX_AGE_MS   = 5 * 60 * 1000; // only read out a transition this recent — a late vocab load must not recite long-since-ready orders (margin also tolerates modest warehouse↔TV clock skew)
 // Fixed vocabulary: token → the exact text each preloaded clip says. Digit-by-digit
 // number reading keeps the whole set to ~15 tiny clips (vs a clip per 1–999 number).
 // The pickupVoice callable's `vocab` mode generates + caches exactly these.
@@ -13264,7 +13264,13 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       // outage (retry-forever) the catch-up would otherwise recite orders that went
       // ready many minutes ago — already collected or hidden from the board. Marked
       // seen above, so a stale one is skipped for good, not re-evaluated.
-      const ts = o.readyAt || o.outOfStockAt || o.comingTomorrowAt || o.updatedAt;
+      // Key the timestamp to the status being ANNOUNCED — updateStatus stamps only the
+      // new status and never clears the old ones, so a fixed readyAt||oosAt||… chain
+      // would read a stale earlier stamp on a corrective 2nd transition (Ready→OOS)
+      // and wrongly drop it. Only these 3 statuses reach here (ANNOUNCE_PHRASE gate).
+      const ts = (o.status === STATUS.READY ? o.readyAt
+                : o.status === STATUS.OUT_OF_STOCK ? o.outOfStockAt
+                : o.comingTomorrowAt) || o.updatedAt;
       if (!ts || Date.now() - new Date(ts).getTime() > ANNOUNCE_MAX_AGE_MS) continue;
       const ctx = audioCtxRef.current;
       // Backlog cap: if clips are already queued far past now (a batch of orders just
