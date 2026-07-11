@@ -103,6 +103,68 @@ export function readyEventsForPeriod(args) {
 //     field, so qty falls back to 1 (a slight historical under-count of units
 //     that ages out). Past MUST use the log because /orders rolls over daily and
 //     would otherwise undercount closed windows.
+// ─── SOURCE DURABLE-LOG RECONSTRUCTION (past-day restock + on-hold) ──────────
+// The Source screen used to read live /orders for its History and On Hold tabs.
+// But /orders/{id} is keyed by the DAILY orderNumber (001–999, resets each
+// morning), so today's orders overwrite the same slots yesterday/Thursday used
+// — past-day and on-hold requests silently vanished. These helpers rebuild
+// those views from the immutable insights_log instead (same "today=live,
+// past=log" pattern the Insights OOS Tracker / Stock Depleted tabs already use).
+
+// RTDB-illegal chars → "_". Identical to App.jsx's toKey so the (productKey,size)
+// cells line up with restock_requests responses written by the live path.
+const sanitizeKey = (s) => (s || "").replace(/[.#$[\]/\s]/g, "_");
+
+// Restock requests that hit READY on a given SA date, for one hub, grouped into
+// the { key: { productName, sizes:{size:count} } } shape SourceTodayTab renders.
+// "ready" is the durable, Net-Sales-consistent signal (see readyEventsForPeriod):
+// every warehouse READY transition logs one, deduped by (date, orderNumber) so a
+// flipped order counts once. Photos aren't in the log — the component joins them
+// from the products catalog by name. returnedIds = orderNumbers returned on that
+// SA date (mirrors the live path's returned-order exclusion).
+export function restockCountsFromLog({ log, dateStr, hub, returnedIds }) {
+  const raw = (log || []).filter(
+    (e) => e && e.action === "ready" && saDateOf(e.timestamp) === dateStr && (e.placedAtHub || "hub1") === hub
+  );
+  const result = {};
+  for (const e of dedupeByOrderNumber(raw)) {
+    if (returnedIds && returnedIds.has(e.orderNumber)) continue;
+    const size = e.size;
+    if (!size) continue;
+    const name = e.productName || "Unknown";
+    const key = sanitizeKey(name);
+    if (!result[key]) result[key] = { productName: name, sizes: {} };
+    result[key].sizes[size] = (result[key].sizes[size] || 0) + 1;
+  }
+  return result;
+}
+
+// On-hold ("coming tomorrow") requests logged on any of the given SA dates,
+// deduped by (date, orderNumber). Returns a flat list the On Hold tab renders.
+// `dates` is the retention window (array or Set of "YYYY-MM-DD").
+export function onHoldEventsFromLog({ log, dates }) {
+  const dateSet = dates instanceof Set ? dates : new Set(dates || []);
+  const raw = (log || []).filter(
+    (e) => e && e.action === "tomorrow" && dateSet.has(saDateOf(e.timestamp))
+  );
+  return dedupeByOrderNumber(raw).map((e) => ({
+    orderNumber: e.orderNumber,
+    productName: e.productName || "Unknown",
+    productId: e.productId ?? null,
+    size: e.size ?? null,
+    hub: e.placedAtHub || "hub1",
+    customerName: e.customerName ?? null,
+    timestamp: e.timestamp,
+    saDate: saDateOf(e.timestamp),
+  }));
+}
+
+// Composite on-hold "handled" key — date::orderNumber. orderNumber alone is
+// daily-reused, so a bare key let yesterday's handled #001 mask today's #001.
+export function onHoldKey(saDate, orderNumber) {
+  return sanitizeKey(`${saDate}::${String(orderNumber)}`);
+}
+
 export function clothingRefillEventsForPeriod({ isToday, orders, log, filterStart, filterEnd }) {
   if (isToday) {
     return (orders || [])

@@ -7,6 +7,9 @@ import {
   oosEventsForPeriod,
   readyEventsForPeriod,
   clothingRefillEventsForPeriod,
+  restockCountsFromLog,
+  onHoldEventsFromLog,
+  onHoldKey,
 } from "./insights";
 
 // A one-day window. Timestamps use mid-day UTC so the +2h SA shift never crosses
@@ -180,5 +183,84 @@ describe("clothingRefillEventsForPeriod", () => {
       const orders = [{ id: "001", productType: "clothing", placedAtHub: "hub2", createdAt: "2026-06-16T08:00:00.000Z", size: "M" }];
       expect(sumQty(clothingRefillEventsForPeriod({ ...base, orders }))).toBe(1);
     });
+  });
+});
+
+// ─── Source durable-log reconstruction (History + On Hold) ───────────────────
+// Fixtures use mid-day UTC so the +2h SA shift keeps everything on 2026-06-16.
+const DATE = "2026-06-16";
+const rdy = (orderNumber, t, extra = {}) => ({ action: "ready", orderNumber, timestamp: `2026-06-16T${t}:00:00.000Z`, size: "8", productName: "Nike Air", placedAtHub: "hub1", ...extra });
+const tmw = (orderNumber, t, extra = {}) => ({ action: "tomorrow", orderNumber, timestamp: `2026-06-16T${t}:00:00.000Z`, size: "8", productName: "Nike Air", placedAtHub: "hub1", ...extra });
+
+describe("restockCountsFromLog (Source History rebuilt from the durable log)", () => {
+  it("groups ready events by product key and size, counting units", () => {
+    const log = [rdy("001", "08"), rdy("002", "09"), rdy("003", "10", { size: "9" })];
+    const out = restockCountsFromLog({ log, dateStr: DATE, hub: "hub1" });
+    expect(out.Nike_Air.sizes).toEqual({ "8": 2, "9": 1 });
+    expect(out.Nike_Air.productName).toBe("Nike Air");
+  });
+
+  it("only counts the requested hub and SA date", () => {
+    const log = [
+      rdy("001", "08"),                                  // hub1, today → in
+      rdy("002", "09", { placedAtHub: "hub2" }),         // wrong hub → out
+      rdy("003", "10", { timestamp: "2026-06-15T10:00:00.000Z" }), // wrong day → out
+    ];
+    const out = restockCountsFromLog({ log, dateStr: DATE, hub: "hub1" });
+    expect(out.Nike_Air.sizes).toEqual({ "8": 1 });
+  });
+
+  it("counts ONLY ready events, never tomorrow / out_of_stock", () => {
+    const log = [rdy("001", "08"), tmw("002", "09"), { action: "out_of_stock", orderNumber: "003", timestamp: "2026-06-16T10:00:00.000Z", size: "8", productName: "Nike Air", placedAtHub: "hub1" }];
+    const out = restockCountsFromLog({ log, dateStr: DATE, hub: "hub1" });
+    expect(out.Nike_Air.sizes).toEqual({ "8": 1 });
+  });
+
+  it("dedupes a flapped order (same date+orderNumber counts once)", () => {
+    const out = restockCountsFromLog({ log: [rdy("001", "08"), rdy("001", "09")], dateStr: DATE, hub: "hub1" });
+    expect(out.Nike_Air.sizes).toEqual({ "8": 1 });
+  });
+
+  it("excludes returned orderNumbers for that day", () => {
+    const out = restockCountsFromLog({ log: [rdy("001", "08"), rdy("002", "09")], dateStr: DATE, hub: "hub1", returnedIds: new Set(["002"]) });
+    expect(out.Nike_Air.sizes).toEqual({ "8": 1 });
+  });
+
+  it("defaults a missing hub to hub1 and skips sizeless events", () => {
+    const log = [rdy("001", "08", { placedAtHub: undefined }), rdy("002", "09", { size: null })];
+    const out = restockCountsFromLog({ log, dateStr: DATE, hub: "hub1" });
+    expect(out.Nike_Air.sizes).toEqual({ "8": 1 });
+  });
+
+  it("tolerates an empty/absent log", () => {
+    expect(restockCountsFromLog({ log: null, dateStr: DATE, hub: "hub1" })).toEqual({});
+  });
+});
+
+describe("onHoldEventsFromLog (Source On Hold rebuilt from the durable log)", () => {
+  it("returns tomorrow events within the given dates, deduped, newest fields intact", () => {
+    const log = [tmw("001", "08", { customerName: "Ada" }), tmw("002", "09")];
+    const out = onHoldEventsFromLog({ log, dates: [DATE] });
+    expect(out).toHaveLength(2);
+    const a = out.find(e => e.orderNumber === "001");
+    expect(a).toMatchObject({ productName: "Nike Air", size: "8", hub: "hub1", customerName: "Ada", saDate: DATE });
+  });
+
+  it("ignores dates outside the window and non-tomorrow actions", () => {
+    const log = [tmw("001", "08"), tmw("002", "09", { timestamp: "2026-06-14T09:00:00.000Z" }), rdy("003", "10")];
+    expect(onHoldEventsFromLog({ log, dates: [DATE] }).map(e => e.orderNumber)).toEqual(["001"]);
+  });
+
+  it("dedupes a flapped on-hold to a single entry", () => {
+    expect(onHoldEventsFromLog({ log: [tmw("001", "08"), tmw("001", "09")], dates: new Set([DATE]) })).toHaveLength(1);
+  });
+});
+
+describe("onHoldKey (composite date::orderNumber)", () => {
+  it("distinguishes the same orderNumber on different days", () => {
+    expect(onHoldKey("2026-06-16", "001")).not.toBe(onHoldKey("2026-06-15", "001"));
+  });
+  it("is stable and sanitizes illegal RTDB chars", () => {
+    expect(onHoldKey("2026-06-16", "001")).toBe("2026-06-16::001");
   });
 });
