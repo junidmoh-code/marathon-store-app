@@ -587,11 +587,21 @@ function UserDetailView({ user, onBack }) {
   async function applyRolePreset(roleKey) {
     const perms = ROLE_DEFAULT_PERMS[roleKey] || [];
     const stockRole = ROLE_STOCK_ROLE[roleKey] || "";
+    setPendingRole(null);
+    // No-op guard: if the account ALREADY exactly matches this preset, the
+    // update() would write identical data, which fires NO RTDB snapshot — the
+    // optimistic guards would then stay pending forever and swallow later
+    // cross-device edits. The other controls short-circuit on equality; this one
+    // must too. Just confirm visually and skip the write.
+    if (roleKey === localRole && stockRole === localStockRole && sameStringSet(perms, localPerms)) {
+      haptic(8);
+      flashSaved("permissions"); flashSaved("stockRole");
+      return;
+    }
     const prev = { role: localRole, perms: localPerms, stock: localStockRole };
     roleF.setOptimistic(roleKey);
     permsF.setOptimistic(perms);   // toggles cascade to the preset (animated)
     stockF.setOptimistic(stockRole);
-    setPendingRole(null);
     haptic(12);
     const ok = await writePatch(
       { role: roleKey, permissions: perms, stockRole: stockRole || null },
@@ -624,7 +634,14 @@ function UserDetailView({ user, onBack }) {
 
     const ok = await writePatch(patch, permKey);
     if (ok) { if (autoStock) flashSaved("stockRole"); }   // also confirm the auto-linked Stock level
-    else    { permsF.revert(prevPerms); if (autoStock) stockF.revert(prevStock); }
+    else {
+      permsF.revert(prevPerms);
+      if (autoStock) {              // undo the optimistic auto-link + its now-wrong hint
+        stockF.revert(prevStock);
+        clearTimeout(hintTimer.current);
+        setStockHint(null);
+      }
+    }
   }
 
   async function setStockRole(stockRole) {
