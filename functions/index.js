@@ -355,6 +355,71 @@ exports.metaFallbackSweep = onSchedule(
   }
 );
 
+// Hub 2 dispatch-hold reveal sweep. A Hub 2 order marked READY holds its customer
+// "order_ready" WhatsApp until notifyReadyAt (= Sent + HUB2_DISPATCH_HOLD_MS, set
+// by the app) so the parcel has time to reach the shop. The warehouse tablet must
+// NOT be trusted to send it later — it sleeps / closes — so the SERVER owns the
+// delayed send. Every minute: send any pending order that is now due, and clear
+// the flag without sending if the order left READY (reverted / OOS / collected)
+// so a stale hold can never fire. enqueueWhatsApp writes to the same outbox as the
+// instant path (with its own 90s dedupe), so a re-run can't double-send.
+exports.dispatchHoldRevealSweep = onSchedule(
+  { schedule: "every 1 minutes", region: "europe-west1", timeoutSeconds: 120, memory: "256MiB" },
+  async () => {
+    const db = admin.database();
+    const orders = (await db.ref("orders").once("value")).val() || {};
+    const now = Date.now();
+    let sent = 0, cleared = 0;
+    for (const [id, o] of Object.entries(orders)) {
+      if (!o || id === "items" || o.readyNotifyPending !== true) continue;
+      // Left READY (reverted / OOS / collected) → clear, never send.
+      if (o.status !== "ready") {
+        await db.ref(`orders/${id}`).update({ readyNotifyPending: false }).catch(() => {});
+        cleared++;
+        continue;
+      }
+      // Not due yet — leave it for a later run.
+      if (o.notifyReadyAt && Date.parse(o.notifyReadyAt) > now) continue;
+      // CLAIM before sending: atomically flip readyNotifyPending true→false in a
+      // transaction. Only the run that wins the flip sends, so (a) two overlapping
+      // sweeps can't both send, and (b) a send whose later flag-clear write failed
+      // can't re-send — the flag is already cleared as part of the claim, BEFORE the
+      // enqueue. On enqueue failure we re-hold (set it back to true) so a later run
+      // retries — at-least-once, never the double-send of a send-then-clear-then-fail.
+      let claimed = false;
+      try {
+        // Update fn MUST be null-tolerant: in a Cloud Function the transaction first
+        // runs against a COLD local cache (cur === null, since the earlier once() tears
+        // its listener down), and returning undefined there aborts BEFORE the server is
+        // ever consulted — the claim would never commit and no held WhatsApp would send.
+        // So only abort on a confirmed false (already claimed); null/true both proceed,
+        // and the server CAS re-runs the fn with the real value to resolve the race.
+        const res = await db.ref(`orders/${id}/readyNotifyPending`).transaction(cur => (cur === false ? undefined : false));
+        claimed = res.committed && res.snapshot.val() === false;
+      } catch { claimed = false; }
+      if (!claimed) continue;                          // another run got it, or it changed under us
+      try {
+        if (o.customerPhone) {
+          await enqueueWhatsApp({
+            templateName:   "order_ready",
+            recipientPhone: o.customerPhone,
+            templateParams: [o.customerName || "there", id],
+          });
+        }
+        await db.ref(`orders/${id}/readyNotifiedAt`).set(new Date().toISOString()).catch(() => {});
+        sent++;
+      } catch (e) {
+        // Enqueue failed AFTER we claimed — re-hold so a later sweep retries. If the
+        // re-hold ALSO fails the message is lost (rare double-failure) — log loudly.
+        await db.ref(`orders/${id}/readyNotifyPending`).set(true)
+          .catch(err => console.error("dispatchHoldRevealSweep: re-hold FAILED, order_ready may be lost:", id, err.message));
+        console.warn("dispatchHoldRevealSweep: enqueue failed, re-holding:", id, e.message);
+      }
+    }
+    if (sent || cleared) console.log("dispatchHoldRevealSweep:", JSON.stringify({ sent, cleared, scanned: Object.keys(orders).length }));
+  }
+);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WhatsApp broadcast proxy (Phase 1)
 // ─────────────────────────────────────────────────────────────────────────────
