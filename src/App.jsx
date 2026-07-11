@@ -8490,7 +8490,10 @@ function WarehouseView({ products = [], orders, onExit }) {
                 <LaybyExceptionsBanner laybys={laybys} selectedHub={selectedHub} nowMs={nowTick}
                   onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
               )}
-              {activeTab === "queue" && onHoldCard}
+              {/* On-Hold card on EVERY desktop tab (matches mobile) — it holds
+                  live "Available"/"Still OOS" actions, so gating it to the Queue
+                  tab stranded those actions on desktop. Self-hides when empty. */}
+              {onHoldCard}
               {content}
             </div>
           </div>
@@ -9539,11 +9542,11 @@ function CustomerView({ orders, onExit }) {
       )}
 
       {/* Recent orders (before searching) */}
-      {!found && !searched && orders.length > 0 && (
+      {!found && !searched && heldOrders.length > 0 && (
         <div style={{ marginTop: 26 }}>
           <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 10 }}>Recent orders</div>
           <div style={{ display: "grid", gridTemplateColumns: isWide ? "repeat(auto-fill, minmax(320px, 1fr))" : "1fr", gap: 10 }}>
-            {orders.slice(0, isWide ? 12 : 5).map(o => {
+            {heldOrders.slice(0, isWide ? 12 : 5).map(o => {
               const c = STATUS_CONFIG[o.status];
               return (
                 <button key={o.id} onClick={() => doSearch(o.id)} className="ot-press"
