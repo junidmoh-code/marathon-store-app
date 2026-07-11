@@ -162,6 +162,10 @@
       "photoProposals": {
         ".read":  "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (root.child('users').child(auth.uid).child('stockRole').exists() || auth.token.email === 'gunidmoh@gmail.com')"
+      },
+      "styleKit": {
+        ".read":  "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+        ".write": "auth != null && auth.token.email === 'gunidmoh@gmail.com'"
       }
     },
 
@@ -179,7 +183,7 @@
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "$loc": { "$pid": { "$size": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()",
-        ".validate": "newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && newData.child('mv').val() !== data.child('mv').val() && newData.child('lastType').val().matches(/^(received|opening|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val().matches(/^(sold|return)$/))",
+        ".validate": "newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && newData.child('mv').val() !== data.child('mv').val() && newData.child('lastType').val().matches(/^(received|opening|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val().matches(/^(sold|return|transfer_out)$/))",
         "qty":      { ".validate": "newData.isNumber()" },
         "v":        { ".validate": "newData.isNumber()" },
         "mv":       { ".validate": "newData.isString()" },
