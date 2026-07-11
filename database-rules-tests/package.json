@@ -1,0 +1,12 @@
+{
+  "name": "marathon-database-rules-tests",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "firebase emulators:exec --only database --project demo-forgery \"node forgery-lock.test.mjs\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.0",
+    "firebase": "^10.0.0"
+  }
+}

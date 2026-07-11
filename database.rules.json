@@ -76,19 +76,22 @@
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "sales": {
         "$saleId": {
-          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-          ".validate": "newData.hasChildren(['total','type'])",
-          "status":               { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".validate": "newData.isString()" },
-          "updatedAt":            { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
-          "returnedTransactions": { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
-          "refund":               { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
-          "layby":                { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+          ".write": "!data.exists() && auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')",
+          ".validate": "newData.hasChildren(['total','type']) && newData.child('total').isNumber() && newData.child('type').val().matches(/^(sale|layby|refund|exchange)$/)",
+          "status":               { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')", ".validate": "newData.isString() && newData.val().matches(/^(completed|sold|open|collected|cancelled|voided|refunded)$/)" },
+          "updatedAt":            { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')" },
+          "returnedTransactions": { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')" },
+          "refund":               { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')" },
+          "layby":                { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')" },
           "payments": {
-            "$paymentId": { ".write": "!data.exists() && root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" }
+            "$paymentId": {
+              ".write": "!data.exists() && root.child('pos').child('sales').child($saleId).exists() && auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')",
+              ".validate": "newData.hasChildren(['method','amount']) && newData.child('amount').isNumber() && newData.child('amount').val() >= 0 && newData.child('method').val().matches(/^(cash|card|eft|storeCredit|onAccount)$/)"
+            }
           },
           "lineItems": {
             "$lineId": {
-              "refundedQty": { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".validate": "newData.isNumber()" }
+              "refundedQty": { ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')", ".validate": "newData.isNumber()" }
             }
           }
         }
@@ -130,7 +133,10 @@
       },
       "paymentEvents": {
         ".indexOn": ["at"],
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+        "$eventId": {
+          ".write": "auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')",
+          ".validate": "newData.hasChildren(['at','amount','method']) && newData.child('at').isNumber() && newData.child('amount').isNumber() && newData.child('method').val().matches(/^(cash|card|eft|storeCredit|onAccount)$/) && (!newData.child('kind').exists() || newData.child('kind').val().matches(/^(sale|layby_deposit|layby_instalment|refund|exchange|on_account_payment)$/)) && (!newData.child('storeId').exists() || newData.child('storeId').isString()) && (!newData.child('tillId').exists() || newData.child('tillId').isString())"
+        }
       },
       "$other": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
@@ -162,6 +168,10 @@
       "photoProposals": {
         ".read":  "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (root.child('users').child(auth.uid).child('stockRole').exists() || auth.token.email === 'gunidmoh@gmail.com')"
+      },
+      "styleKit": {
+        ".read":  "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+        ".write": "auth != null && auth.token.email === 'gunidmoh@gmail.com'"
       }
     },
 
@@ -179,7 +189,7 @@
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "$loc": { "$pid": { "$size": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()",
-        ".validate": "newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && newData.child('mv').val() !== data.child('mv').val() && newData.child('lastType').val().matches(/^(received|opening|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val().matches(/^(sold|return)$/))",
+        ".validate": "newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && newData.child('mv').val() !== data.child('mv').val() && newData.child('lastType').val().matches(/^(received|opening|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val().matches(/^(sold|return|transfer_out)$/))",
         "qty":      { ".validate": "newData.isNumber()" },
         "v":        { ".validate": "newData.isNumber()" },
         "mv":       { ".validate": "newData.isString()" },
