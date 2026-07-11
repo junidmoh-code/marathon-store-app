@@ -553,6 +553,13 @@ const STOCK_HUBS = ["hub1", "hub2", "hub3"];
 //                           reconciliation pass's job. originHub (when resolvable) is
 //                           returned so staff know where the shoe belongs.
 function resolveReturnDestination(order) {
+  // Trust the order's real productType first — the size-based classifier mislabels
+  // kids sneaker sizes (26–35) as clothing, which would wrongly keep a returned
+  // kids shoe at the shop instead of routing it back to its hub.
+  if (order.productType === "sneaker") {
+    const to = order.placedAtHub || order.hub;
+    return { mode: "footwear_no_ledger", originHub: STOCK_HUBS.includes(to) ? to : null };
+  }
   const cat = categorize(order.productName, [order.size]).category;
   const staysAtShop =
     order.productType === "clothing" ||
@@ -4279,6 +4286,13 @@ function AdminView({ products, orders, onExit }) {
       // — same logic as the backfill + bulk scripts). A manually-typed category is
       // respected as the top level; subcategory + brand are always auto-derived.
       const auto = categorize(form.name, form.sizes);
+      // Kids sneaker sizes (26–35) read as pants-waists to the shared size-based
+      // classifier, mislabelling a kids shoe as Clothing. Force Footwear for the
+      // kids size style; drop the wrong Clothing subcategory to the review queue.
+      if (form.sizeStyle === "kids" && (form.productType || "sneaker") !== "clothing") {
+        auto.category = "Footwear";
+        auto.subcategory = null;
+      }
       const manualCat = (form.category || "").trim();
       // Respect a manual category when it's a known/saved category (picked from the
       // dropdown); otherwise the auto value wins so free-text junk can't land in
@@ -6827,6 +6841,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           orderNumber: orderNum,
           action: "placed",
           placedAtHub: placedHub,
+          // Stamp the destination store so Insights' PE/Trophy/Pine filter works
+          // (placedAtHub can't distinguish PE vs Trophy — both are central hubs).
+          destShop: effectiveShop,
         });
         sendWhatsAppTemplate(normalizedPhone, "order_placed", [customerName, orderNum, item.product.name, item.size]);
         placed.push(order);
@@ -6942,6 +6959,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           orderNumber: orderNum,
           action: "placed",
           placedAtHub: placedHub,
+          // Stamp the destination store so Insights' PE/Trophy/Pine filter works
+          // (placedAtHub can't distinguish PE vs Trophy — both are central hubs).
+          destShop: effectiveShop,
         });
         placed.push(order);
       }
@@ -7934,6 +7954,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       orderNumber: order.id,
       action: insightAction,
       placedAtHub: order.placedAtHub || order.hub || "hub1",
+      destShop: order.destShop ?? null,
     });
     // ── WhatsApp notifications ───────────────────────────────────────────────
     // order_ready template: pass customer_name and order_number ONLY.
@@ -8820,13 +8841,11 @@ function WarehouseView({ products = [], orders, onExit }) {
               // alongside the hub1/hub3 Restock Status tab.
               ["queue",    "Order Queue",     null],
               ["clothing", "CR Orders",       clothingBadge],
-              ["restock",  "Restock Status",  null],
               ["refills",  "Display Refills", refillsBadge],
               ["layby",    "Layby",           laybyBadge],
             ]
           : [
               ["queue",   "Order Queue",     null],
-              ["restock", "Restock Status",  null],
               ["refills", "Display Refills", refillsBadge],
               ["layby",   "Layby",           laybyBadge],
             ]
@@ -9381,6 +9400,13 @@ function CustomerView({ orders, onExit }) {
   const [revealClock, setRevealClock] = useState(() => Date.now());
   useEffect(() => { const id = setInterval(() => setRevealClock(Date.now()), 10000); return () => clearInterval(id); }, []);
   const heldOrders = useMemo(() => (orders || []).map(o => holdHub2Ready(o, revealClock)), [orders, revealClock]);
+  // Keep an open detail pane live: re-sync `found` from heldOrders as the reveal
+  // clock ticks and as orders update — else a held order never flips to Ready at
+  // its reveal, and later live status changes (Ready→Collected/OOS) stay hidden
+  // until the customer re-searches. No-op when nothing is open.
+  useEffect(() => {
+    setFound(prev => (prev ? (heldOrders.find(o => o.id === prev.id) || prev) : prev));
+  }, [heldOrders]);
 
   const doSearch = (idOverride) => {
     const raw = (idOverride ?? orderId).toString();
@@ -9409,7 +9435,7 @@ function CustomerView({ orders, onExit }) {
     } else {
       const readyDone = s === STATUS.READY || s === STATUS.COLLECTED;
       out.push({ label: "Preparing", sub: "Being picked & checked", time: null, state: readyDone ? "done" : "current" });
-      out.push({ label: "Ready to collect", sub: "Waiting for you at the store", time: found.readyAt, state: readyDone ? (s === STATUS.COLLECTED ? "done" : "current") : "pending" });
+      out.push({ label: "Ready to collect", sub: "Waiting for you at the store", time: readyDone ? found.readyAt : null, state: readyDone ? (s === STATUS.COLLECTED ? "done" : "current") : "pending" });
       out.push({ label: "Collected", sub: "Enjoy!", time: found.collectedAt, state: s === STATUS.COLLECTED ? "done" : "pending" });
     }
     return out;
@@ -11881,6 +11907,7 @@ function ReturnsView({ orders, onExit }) {
       customerName:order.customerName,
       reason:      null,
       placedAtHub: order.placedAtHub || order.hub || "hub1",
+      destShop: order.destShop ?? null,
       ledgered,
       ledgerNote,
     });
@@ -12331,7 +12358,7 @@ function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, fil
     let keys = [...set];
     if (!keys.length) return { labels: [], sales: [], oos: [] };
     if (isToday) { const nums = keys.map(Number); const lo = Math.min(8, ...nums), hi = Math.max(18, ...nums); keys = []; for (let h = lo; h <= hi; h++) keys.push(h); }
-    else { keys.sort(); const out = []; let d = new Date(keys[0] + "T00:00:00Z"); const end = new Date(keys[keys.length - 1] + "T00:00:00Z"); while (d <= end && out.length < 92) { out.push(d.toISOString().slice(0, 10)); d.setUTCDate(d.getUTCDate() + 1); } keys = out; }
+    else { keys.sort(); const end = new Date(keys[keys.length - 1] + "T00:00:00Z"); const minStart = new Date(end); minStart.setUTCDate(minStart.getUTCDate() - 91); let d = new Date(keys[0] + "T00:00:00Z"); if (d < minStart) d = minStart; /* cap daily bars at the most RECENT ~92 days (anchored to end) — a long Year/All-Time window shows current activity instead of silently truncating to the oldest 92 days */ const out = []; while (d <= end) { out.push(d.toISOString().slice(0, 10)); d.setUTCDate(d.getUTCDate() + 1); } keys = out; }
     return { labels: keys.map(labelOf), sales: keys.map(k => cs[k] || 0), oos: keys.map(k => co[k] || 0) };
   }, [netSales, oosLog, isToday]);
   // Period-over-period deltas vs the previous equal-length window.
