@@ -7108,7 +7108,6 @@ function WarehouseView({ products = [], orders, onExit }) {
                         border: mainTab===key ? "1px solid rgba(60,110,255,.4)" : "1px solid rgba(255,255,255,.07)",
                         color: mainTab===key ? "#4A7FFF" : "rgba(255,255,255,.3)" }}>
             {key === "queue"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>}
-            {key === "restock"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>}
             {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
             {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
             {key === "layby"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/></svg>}
@@ -11717,8 +11716,11 @@ function InsightsView({ onExit }) {
       byStatusToday[s] = (byStatusToday[s] || 0) + 1;
     });
 
-    // Order number gaps + duplicates
+    // Order number gaps + duplicates. Sneaker orders only — clothing "Shop
+    // Refill" ids are R{n}-{i} (their own counter), which would digit-strip to
+    // bogus numbers (R001-1 → 11) and fake duplicates/gaps in this sneaker audit.
     const todayNums = onTodayCreated
+      .filter(o => o.customerName !== "Shop Refill")
       .map(o => parseInt(String(o.id).replace(/[^0-9]/g, ""), 10))
       .filter(n => !isNaN(n));
     const minNum = todayNums.length ? Math.min(...todayNums) : null;
@@ -12935,8 +12937,10 @@ function AppInner() {
       console.log("Status distribution (all orders):", byStatusAll);
       console.log("Status distribution (today only):", byStatusToday);
 
-      // Order number gaps
+      // Order number gaps — sneaker orders only (clothing "Shop Refill" ids are
+      // R{n}-{i} on their own counter; digit-stripping them fakes gaps/dupes).
       const todayNums = onTodayCreated
+        .filter(o => o.customerName !== "Shop Refill")
         .map(o => parseInt(String(o.id).replace(/[^0-9]/g, ""), 10))
         .filter(n => !isNaN(n));
       const minNum = todayNums.length ? Math.min(...todayNums) : null;

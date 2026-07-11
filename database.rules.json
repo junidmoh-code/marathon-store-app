@@ -72,6 +72,7 @@
     "inventory_meta":          { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "marketing":               { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "orderCounter":            { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
+    "refillCounter":           { ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'", ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" },
     "pos": {
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "sales": {
