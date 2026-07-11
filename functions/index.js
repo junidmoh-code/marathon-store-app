@@ -388,7 +388,13 @@ exports.dispatchHoldRevealSweep = onSchedule(
       // retries — at-least-once, never the double-send of a send-then-clear-then-fail.
       let claimed = false;
       try {
-        const res = await db.ref(`orders/${id}/readyNotifyPending`).transaction(cur => (cur === true ? false : undefined));
+        // Update fn MUST be null-tolerant: in a Cloud Function the transaction first
+        // runs against a COLD local cache (cur === null, since the earlier once() tears
+        // its listener down), and returning undefined there aborts BEFORE the server is
+        // ever consulted — the claim would never commit and no held WhatsApp would send.
+        // So only abort on a confirmed false (already claimed); null/true both proceed,
+        // and the server CAS re-runs the fn with the real value to resolve the race.
+        const res = await db.ref(`orders/${id}/readyNotifyPending`).transaction(cur => (cur === false ? undefined : false));
         claimed = res.committed && res.snapshot.val() === false;
       } catch { claimed = false; }
       if (!claimed) continue;                          // another run got it, or it changed under us
@@ -403,8 +409,10 @@ exports.dispatchHoldRevealSweep = onSchedule(
         await db.ref(`orders/${id}/readyNotifiedAt`).set(new Date().toISOString()).catch(() => {});
         sent++;
       } catch (e) {
-        // Enqueue failed AFTER we claimed — re-hold so a later sweep retries.
-        await db.ref(`orders/${id}/readyNotifyPending`).set(true).catch(() => {});
+        // Enqueue failed AFTER we claimed — re-hold so a later sweep retries. If the
+        // re-hold ALSO fails the message is lost (rare double-failure) — log loudly.
+        await db.ref(`orders/${id}/readyNotifyPending`).set(true)
+          .catch(err => console.error("dispatchHoldRevealSweep: re-hold FAILED, order_ready may be lost:", id, err.message));
         console.warn("dispatchHoldRevealSweep: enqueue failed, re-holding:", id, e.message);
       }
     }

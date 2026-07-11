@@ -6536,7 +6536,9 @@ function WarehouseView({ products = [], orders, onExit }) {
     // held send can never fire late. Non-hub2 Ready keeps the instant path below.
     const isHeldReady = status === STATUS.READY && HELD_DISPATCH_HUBS.has(order.placedAtHub || order.hub || "hub1");
     patch.readyNotifyPending = isHeldReady;
-    if (isHeldReady) patch.notifyReadyAt = new Date(Date.now() + HUB2_DISPATCH_HOLD_MS).toISOString();
+    // Write the reveal instant for a held Ready; clear any stale one otherwise so a
+    // later non-held transition can never be wrongly held by a leftover notifyReadyAt.
+    patch.notifyReadyAt = isHeldReady ? new Date(Date.now() + HUB2_DISPATCH_HOLD_MS).toISOString() : null;
     if (status === STATUS.COMING_TOMORROW) patch.comingTomorrowAt = now;
     if (status === STATUS.COLLECTED)       patch.collectedAt = now;
 
