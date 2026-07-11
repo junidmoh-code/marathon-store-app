@@ -5305,8 +5305,28 @@ function AssistantView({ products, onExit, orders = [] }) {
     setPendingShopSwitch(next);
   };
   const confirmShopSwitch = () => {
-    if (pendingShopSwitch) selectShop(pendingShopSwitch);
+    // An explicit, confirmed switch IS an affirmation of the destination, so the
+    // placement guard below won't prompt again for the shop they just chose.
+    if (pendingShopSwitch) { selectShop(pendingShopSwitch); setAffirmedShop(pendingShopSwitch); }
     setPendingShopSwitch(null);
+  };
+  // ── PLACEMENT DESTINATION GUARD ────────────────────────────────────────────
+  // The shop-switch modal above only fires when the toggle is TAPPED. It does
+  // nothing for a device left on the wrong shop from an earlier session that is
+  // never switched — the exact hole behind the cross-shop mis-routes (a device
+  // serving Marathon PE but stuck on "Trophy" silently shipped PE orders into
+  // Trophy's stock cell; PE then sold from a cell that never received the +1 and
+  // went negative). So for multi-shop users, the FIRST placement after load or a
+  // shop change must AFFIRM the destination shop before any order is written.
+  // Single-shop-locked users can't mis-route, so they are never prompted.
+  const [affirmedShop, setAffirmedShop] = useState(null);
+  const [destConfirm,  setDestConfirm]  = useState(null);   // { run } — a placement awaiting affirmation
+  const needsDestConfirm = !singleShop && !noStoreAccess && affirmedShop !== effectiveShop;
+  const runDestConfirm = () => {
+    setAffirmedShop(effectiveShop);
+    const pending = destConfirm;
+    setDestConfirm(null);
+    pending?.run?.();
   };
   const [selected, setSelected]                         = useState(null);   // product in size picker
   // Tapping a product photo opens a full-screen lightbox so staff can see the
@@ -5498,12 +5518,15 @@ function AssistantView({ products, onExit, orders = [] }) {
   const openCheckout = () => { resetSheet(); setCheckoutOpen(true); };
   const closeCheckout = () => { setCheckoutOpen(false); setCustomerName(""); setCustomerPhone(""); setMarketingOptIn(false); };
 
-  const placeOrders = async () => {
+  const placeOrders = async (bypassDestConfirm = false) => {
     if (!cart.length || !customerName || submitting) return;
     // Phone is required for customer orders and must be a valid 10-digit SA
     // number starting with 0 (the Place button enforces this too).
     if (!isValidLocalSAPhone(customerPhone)) return;
     if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
+    // Affirm the destination shop once per shop-session (see PLACEMENT
+    // DESTINATION GUARD). The modal's confirm re-invokes with bypass=true.
+    if (!bypassDestConfirm && needsDestConfirm) { setDestConfirm({ run: () => placeOrders(true) }); return; }
     setSubmitting(true);
     try {
       const normalizedPhone = normalizeSAPhone(customerPhone);
@@ -5609,7 +5632,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // info, no WhatsApp send, hub forced to hub2, qty stored on the order.
   // Clothing items are removed from the cart on success; any sneaker items
   // remain (rare — usually clothing-only cart triggers this path).
-  const placeRefillRequests = async () => {
+  const placeRefillRequests = async (bypassDestConfirm = false) => {
     // Refills are clothing lines NOT tagged "customer" (those go through
     // Checkout → Hub C). Call sites already gate on hasCustomerInCart, but
     // keep the filter intent-aware so it stays correct if that ever changes.
@@ -5617,6 +5640,9 @@ function AssistantView({ products, onExit, orders = [] }) {
     const clothingCart = cart.filter(isRefillLine);
     if (!clothingCart.length || submitting) return;
     if (noStoreAccess) { alert("No store assigned — contact admin."); return; }
+    // CR refill orders also carry destShop:effectiveShop and ship on fulfil, so
+    // they mis-route the same way — affirm the destination shop here too.
+    if (!bypassDestConfirm && needsDestConfirm) { setDestConfirm({ run: () => placeRefillRequests(true) }); return; }
     setSubmitting(true);
     try {
       const now = new Date().toISOString();
@@ -5858,6 +5884,48 @@ function AssistantView({ products, onExit, orders = [] }) {
                         style={{ flex:1.4, padding:"13px 8px", borderRadius:11, border:"none",
                                  background:"#E03131", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
                   Switch to {toLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Placement destination confirm ── fires on the FIRST order of a shop-
+          session for multi-shop users (see PLACEMENT DESTINATION GUARD). Calmer
+          than the red switch modal — it's a routine "confirm where this ships",
+          the backstop for a device left on the wrong shop that never switched. */}
+      {destConfirm && (() => {
+        const toLabel = labelFor(effectiveShop, shopRegistry);
+        return (
+          <div onClick={() => { setDestConfirm(null); setCheckoutOpen(false); }}
+               style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,.8)", backdropFilter:"blur(3px)",
+                        display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+            <div onClick={e => e.stopPropagation()}
+                 style={{ width:"100%", maxWidth:380, background:"#0c1730", border:"2px solid rgba(74,127,255,.6)",
+                          borderRadius:18, padding:"26px 22px", textAlign:"center", fontFamily:FONT,
+                          boxShadow:"0 0 44px rgba(60,110,255,.35)" }}>
+              <div style={{ fontSize:42, lineHeight:1, marginBottom:12 }}>🏬</div>
+              <div style={{ color:"#6A9FFF", fontWeight:800, fontSize:18, letterSpacing:".4px", marginBottom:12 }}>
+                CONFIRM STORE
+              </div>
+              <div style={{ color:"#fff", fontSize:14.5, lineHeight:1.55, marginBottom:9 }}>
+                This order ships to <strong style={{ color:"#FFD166" }}>{toLabel}</strong>.
+              </div>
+              <div style={{ color:"rgba(255,255,255,.72)", fontSize:13, lineHeight:1.55, marginBottom:22 }}>
+                If the customer is at a different branch, tap <strong style={{ color:"#fff" }}>Wrong store</strong> and switch
+                stores first — otherwise the stock ships to the wrong shop.
+              </div>
+              <div style={{ display:"flex", gap:10 }}>
+                <button onClick={() => { setDestConfirm(null); setCheckoutOpen(false); }}
+                        style={{ flex:1, padding:"13px 0", borderRadius:11, border:"1px solid rgba(255,255,255,.28)",
+                                 background:"transparent", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
+                  Wrong store
+                </button>
+                <button onClick={runDestConfirm}
+                        style={{ flex:1.4, padding:"13px 8px", borderRadius:11, border:"none",
+                                 background:"#2F6FE0", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:FONT }}>
+                  Send to {toLabel}
                 </button>
               </div>
             </div>
@@ -6191,15 +6259,18 @@ function AssistantView({ products, onExit, orders = [] }) {
               const n = customerLines.length;
               const phoneOk = isValidLocalSAPhone(customerPhone);
               const canPlace = customerName && phoneOk && customerLines.length && !submitting;
+              // Multi-shop users see the destination shop on the button itself —
+              // a persistent, un-missable reminder of where this order ships.
+              const shopTag = singleShop ? "" : ` · ${labelFor(effectiveShop, shopRegistry)}`;
               const placeLabel = !customerName
                 ? "Enter customer name"
                 : !phoneOk
                   ? "Enter a valid phone number"
                   : singleSku && sample.size
-                    ? (n > 1 ? `Place order — size ${formatSize(sample.size)} × ${n}` : `Place order — size ${formatSize(sample.size)}`)
-                    : `Place ${n} Order${n > 1 ? "s" : ""} →`;
+                    ? (n > 1 ? `Place order${shopTag} — size ${formatSize(sample.size)} × ${n}` : `Place order${shopTag} — size ${formatSize(sample.size)}`)
+                    : `Place ${n} Order${n > 1 ? "s" : ""}${shopTag} →`;
               return (
-                <button onClick={placeOrders} disabled={!canPlace}
+                <button onClick={() => placeOrders()} disabled={!canPlace}
                   style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:canPlace?1:0.4, cursor:canPlace?"pointer":"not-allowed" }}>
                   {submitting ? "Placing orders…" : placeLabel}
                 </button>
@@ -6225,7 +6296,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"12px 14px 14px", background:"linear-gradient(transparent, rgba(0,0,0,.92) 30%)", zIndex:50, pointerEvents:"none" }}>
           <div style={{ maxWidth:880, margin:"0 auto", pointerEvents:"auto" }}>
             <button
-              onClick={hasCustomerInCart ? openCheckout : placeRefillRequests}
+              onClick={hasCustomerInCart ? openCheckout : () => placeRefillRequests()}
               disabled={submitting}
               style={{ width:"100%", padding:"13px 16px", borderRadius:12, border:"1px solid rgba(60,110,255,.55)",
                        background:"#4A7FFF", color:"#fff",
@@ -6236,7 +6307,9 @@ function AssistantView({ products, onExit, orders = [] }) {
               <span>
                 {submitting
                   ? (hasCustomerInCart ? "Placing orders…" : "Placing refill…")
-                  : (hasCustomerInCart ? `Checkout (${customerCount})` : `Place Refill Request (${refillCount})`)
+                  : (hasCustomerInCart
+                      ? `Checkout (${customerCount})`
+                      : `Place Refill Request (${refillCount})${singleShop ? "" : ` · ${labelFor(effectiveShop, shopRegistry)}`}`)
                 }
               </span>
               <span style={{ fontSize:16 }}>→</span>
