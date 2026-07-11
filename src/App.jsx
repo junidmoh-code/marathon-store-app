@@ -13125,10 +13125,12 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // survives the store's slow link. TV device ONLY. Orders already terminal at load
   // are SEEDED (never read out). One tap unlocks audio, then the control disappears.
   const [voiceUnlocked, setVoiceUnlocked] = useState(false); // browsers block audio until one user gesture per page load
+  const [vocabReady, setVocabReady] = useState(false); // true once the clip vocabulary is decoded — STATE (not just the ref) so a late load re-fires the announce effect and catches orders that went ready during the load window
   const announcedRef = useRef(null); // Set of announced order keys; null until seeded with the load-time backlog
   const audioCtxRef  = useRef(null); // shared AudioContext (created on mount for decode; resumed on the unlock tap)
   const bufsRef      = useRef(null); // Map token → decoded AudioBuffer; null until the vocabulary finishes loading
   const chainEndRef  = useRef(0);    // AudioContext time cursor so queued clips schedule back-to-back, never overlap
+  const MAX_QUEUE_AHEAD_S = 25;      // never schedule more than this far past now — a batch of ready orders must not become a minutes-long recital (there is no mute)
 
   // Preload the vocabulary once: pull each clip's URL from the pickupVoice callable
   // (`vocab` mode generates + caches them server-side), fetch the bytes, and decode
@@ -13137,6 +13139,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // decode; only playback later requires the unlock tap.
   useEffect(() => {
     let cancelled = false;
+    let retryTimer = null;
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return;                                  // no Web Audio → board runs silent (no crash)
     const ctx = audioCtxRef.current || (audioCtxRef.current = new Ctx());
@@ -13148,19 +13151,37 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
         await Promise.all(Object.keys(VOICE_VOCAB).map(async (tok) => {
           const url = urls[tok];
           if (!url) return;
-          const ab = await fetch(url).then(r => r.arrayBuffer());
+          const r = await fetch(url);
+          if (!r.ok) throw new Error(`clip ${tok} http ${r.status}`); // don't hand an error body to decodeAudioData
+          const ab = await r.arrayBuffer();
           const buf = await ctx.decodeAudioData(ab.slice(0));
-          bufs.set(tok, buf);
+          if (buf) bufs.set(tok, buf);                 // legacy callback-style decode returns undefined — skip, don't store a dud
         }));
         if (cancelled) return;
-        if (bufs.size) bufsRef.current = bufs;         // ready — announcements can now play
+        // Require the FULL vocabulary — a partial set would drop digits mid-number.
+        if (bufs.size === Object.keys(VOICE_VOCAB).length) {
+          bufsRef.current = bufs;
+          setVocabReady(true);                         // re-fires the announce effect → orders that went ready mid-load still get read
+          return;
+        }
+        throw new Error(`vocab incomplete (${bufs.size}/${Object.keys(VOICE_VOCAB).length})`);
       } catch (e) {
-        if (cancelled || attempt >= 5) return;         // give up quietly after a handful of tries
-        setTimeout(() => load(attempt + 1), 4000 * (attempt + 1));
+        if (cancelled) return;
+        // Never give up permanently — the whole point is surviving a slow/flaky link.
+        // Back off up to ~2 min, then keep retrying at that interval forever.
+        const delay = Math.min(120000, 4000 * (attempt + 1));
+        retryTimer = setTimeout(() => load(attempt + 1), delay);
       }
     };
     load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      // Close the context on unmount so scheduled clips stop (no ghost audio over the
+      // admin UI after exit) and we don't leak toward Chrome's ~6-context ceiling.
+      try { audioCtxRef.current?.close(); } catch { /* ignore */ }
+      audioCtxRef.current = null;
+    };
   }, []);
 
   // Schedule a list of vocabulary tokens to play gaplessly, one after another, after
@@ -13226,8 +13247,18 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       if (!phraseTok) continue;
       const k = announceKey(o);
       if (seen.has(k)) continue;
+      // Unlocked but the vocabulary hasn't loaded yet → do NOT mark seen; leave the
+      // order so this effect re-fires when vocabReady flips and reads it then. Without
+      // this, an order that goes ready during the (slow-network) load window is marked
+      // done and silently lost forever — the exact failure this feature exists to fix.
+      if (voiceUnlocked && !vocabReady) continue;
       seen.add(k);                                                          // mark announced even when locked so unlocking later won't dump a backlog
       if (!voiceUnlocked) continue;
+      const ctx = audioCtxRef.current;
+      // Backlog cap: if clips are already queued far past now (a batch of orders just
+      // went ready), skip rather than pile on — there's no mute, so an unbounded queue
+      // would become a multi-minute recital. Skipped orders are already on-screen.
+      if (ctx && chainEndRef.current - ctx.currentTime > MAX_QUEUE_AHEAD_S) continue;
       // Read the order number digit-by-digit from the preloaded clips (leading zeros
       // dropped, but a bare "0" kept). Customer order ids are numeric; a non-numeric
       // id (shouldn't reach here — laybys aren't announced) is skipped, not misread.
@@ -13236,13 +13267,12 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       if (!digits.length) continue;
       const seq = ["order_number", ...digits, phraseTok];
       for (let i = 0; i < ANNOUNCE_REPEATS; i++) {                          // repeat so it's not missed
-        const ctx = audioCtxRef.current;
         if (ctx) chainEndRef.current = Math.max(chainEndRef.current, ctx.currentTime) + ANNOUNCE_REPEAT_GAP_S;
         playTokens(seq);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orders, voiceUnlocked]);
+  }, [orders, voiceUnlocked, vocabReady]);
   // Layby collections tracked on the customer board exactly like orders: when the
   // cashier sends a pull request the invoice number appears in INCOMING; once the
   // warehouse marks it Sent it moves to READY and hides on the SAME 8-min timer as
