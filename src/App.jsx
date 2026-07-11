@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, equalTo, startAt } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
@@ -39,7 +39,7 @@ import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
-import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod } from "./utils/insights";
+import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -8517,7 +8517,7 @@ const HISTORY_RETENTION_DAYS = 5;
 // Reactions write to restock_requests/{day-N}/{key}/{size} = { response, respondedOn:NOW }
 // — see saveSourceResponse. The original-day path is what makes resolution
 // stick across page loads; respondedOn carries "today's stamp" for the audit.
-function SourceHistoryTab({ orders, returnsLog, allResponses, hub, onResponse }) {
+function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoForName, onResponse }) {
   // Default expand: yesterday open, older closed. Stored by daysAgo number.
   const [openDays, setOpenDays] = useState(() => new Set([1]));
   const toggle = (d) => setOpenDays(prev => {
@@ -8526,21 +8526,16 @@ function SourceHistoryTab({ orders, returnsLog, allResponses, hub, onResponse })
     return next;
   });
 
-  // Per past day: build the same rawCounts shape SourceTodayTab uses, then
-  // strip out (key, size) cells that already have a response on that date.
-  // Orders are filtered to the active hub upstream of computeCollectedCounts.
+  // Per past day: rebuild the rawCounts shape SourceTodayTab uses from the
+  // durable insights_log (action="ready") instead of live /orders — the live
+  // orders that carried these requests were overwritten by the daily orderNumber
+  // rollover. Then strip (key, size) cells that already have a response that day.
+  // Photos aren't in the log, so join them from the catalog by product name.
   const groups = useMemo(() => {
     return Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => i + 1).map(daysAgo => {
       const dateStr   = getSAPastDateString(daysAgo);
       const returned  = returnedOrderIdsOnSADate(returnsLog, dateStr);
-      const dayOrders = (orders || []).filter(o =>
-        o.status !== STATUS.OUT_OF_STOCK &&
-        (o.status === STATUS.READY || o.status === STATUS.COLLECTED) &&
-        orderSaleDate(o) === dateStr &&
-        !returned.has(o.id) &&
-        (o.hub || "hub1") === hub
-      );
-      const rawCounts = computeCollectedCounts(dayOrders);
+      const rawCounts = restockCountsFromLog({ log, dateStr, hub, returnedIds: returned });
       const dayResponses = allResponses[dateStr] || {};
       // Drop responded (key, size) cells; drop products that end up with no pending sizes.
       const pending = {};
@@ -8553,12 +8548,13 @@ function SourceHistoryTab({ orders, returnsLog, allResponses, hub, onResponse })
           pendingUnits += (typeof count === "number" ? count : 1);
         });
         if (Object.keys(sizes).length) {
-          pending[key] = { ...product, sizes };
+          const ph = photoForName(product.productName);
+          pending[key] = { ...product, sizes, photoUrl: ph.photoUrl, photo: ph.photo };
         }
       });
       return { daysAgo, dateStr, label: HISTORY_DAY_LABELS[daysAgo], pending, pendingUnits };
     }).filter(g => g.pendingUnits > 0);
-  }, [orders, returnsLog, allResponses, hub]);
+  }, [log, returnsLog, allResponses, hub, photoForName]);
 
   if (!groups.length) return (
     <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem 1.5rem", textAlign:"center", boxShadow:"0 0 16px rgba(60,110,255,.08)" }}>
@@ -8646,43 +8642,39 @@ function SourceHistoryTab({ orders, returnsLog, allResponses, hub, onResponse })
 // Tracks per-order responses at source_onhold_responses/{key}. Cards vanish
 // when responded; the Completed toggle reveals them with green/red indicators
 // and Undo removes the response so the order returns to the active list.
-function SourceOnHoldTab({ orders, onHoldResponses }) {
+function SourceOnHoldTab({ items }) {
   const [showCompleted, setShowCompleted] = useState(false);
-  const orderResponseKey = (orderId) => String(orderId).replace(/[.#$[\]/\s]/g, "_");
 
-  // ALL-HUB on-hold list — every "Coming Tomorrow" order regardless of hub, so
-  // Source sees the same on-hold set the warehouse does (hub1/hub2/hub3/hubC).
-  // Sorted newest-first, then split by whether they have a response in
-  // source_onhold_responses.
+  // `items` is the shared merged on-hold list (live today + durable log for past
+  // days), already newest-first, returned-excluded, with a `responded` flag and
+  // the raw `response` record attached. Split into active vs completed here.
   const { pending, completed } = useMemo(() => {
-    const candidates = (orders || [])
-      .filter(o => o.status === STATUS.COMING_TOMORROW && o.status !== STATUS.OUT_OF_STOCK)
-      .sort((a, b) => tsMs(b.comingTomorrowAt || b.updatedAt) - tsMs(a.comingTomorrowAt || a.updatedAt));
     const pending = [];
     const completed = [];
-    candidates.forEach(o => {
-      const r = onHoldResponses[orderResponseKey(o.id)];
-      if (r && r.response) completed.push({ order: o, response: r.response, timestamp: r.timestamp });
-      else pending.push({ order: o });
+    (items || []).forEach(item => {
+      if (item.responded && item.response?.response) completed.push(item);
+      else pending.push(item);
     });
     return { pending, completed };
-  }, [orders, onHoldResponses]);
+  }, [items]);
 
-  const handleRespond = (order, response) => {
-    const key = orderResponseKey(order.id);
-    set(ref(database, `source_onhold_responses/${key}`), {
-      orderNumber: order.id,
-      productName: order.productName,
-      size: order.size,
-      customerName: order.customerName,
+  // Responses are keyed by the composite date::orderNumber (item.composite) —
+  // orderNumber alone is daily-reused, so a bare key let a past day's handled
+  // order mask a fresh same-numbered one.
+  const handleRespond = (item, response) => {
+    set(ref(database, `source_onhold_responses/${item.composite}`), {
+      orderNumber: item.orderNumber,
+      saDate: item.saDate,
+      productName: item.productName,
+      size: item.size,
+      customerName: item.customerName || null,
       response,
       timestamp: new Date().toISOString(),
     }).catch(err => console.warn("saveOnHoldResponse failed:", err));
   };
 
-  const handleUndo = (order) => {
-    const key = orderResponseKey(order.id);
-    remove(ref(database, `source_onhold_responses/${key}`))
+  const handleUndo = (item) => {
+    remove(ref(database, `source_onhold_responses/${item.composite}`))
       .catch(err => console.warn("clearOnHoldResponse failed:", err));
   };
 
@@ -8728,29 +8720,29 @@ function SourceOnHoldTab({ orders, onHoldResponses }) {
       )}
 
       {/* Active list */}
-      {pending.map(({ order }) => (
-        <div key={`onhold-${order.id}`} style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"1.1rem 1.25rem", boxShadow:"0 0 16px rgba(60,110,255,.15)", borderLeft:`3px solid ${BLUE}` }}>
+      {pending.map(item => (
+        <div key={`onhold-${item.composite}`} style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"1.1rem 1.25rem", boxShadow:"0 0 16px rgba(60,110,255,.15)", borderLeft:`3px solid ${BLUE}` }}>
           <div style={{ display:"flex", alignItems:"center", gap:"1rem", marginBottom:"0.85rem" }}>
-            <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={8}/>
+            <ProductPhoto url={item.photoUrl} photo={item.photo} size={48} radius={8}/>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", marginBottom:"0.2rem" }}>
-                <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.4rem", color:BLUE_L, lineHeight:1, letterSpacing:"0.05em" }}>#{order.id}</span>
+                <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.4rem", color:BLUE_L, lineHeight:1, letterSpacing:"0.05em" }}>#{item.orderNumber}</span>
                 <span style={{ background:"rgba(60,110,255,.12)", color:BLUE_L, border:BORDER, borderRadius:"999px", padding:"1px 8px", fontSize:"0.7rem", fontWeight:"600" }}>On Hold</span>
               </div>
-              <div style={{ fontWeight:"600", fontSize:"0.92rem", color:"#fff" }}>{order.productName} — Size <SizeTag size={sourceDisplaySize(order)} /></div>
-              <div style={{ color:"#888", fontSize:"0.8rem" }}>{order.customerName}</div>
-              <div style={{ color:"#444", fontSize:"0.72rem", marginTop:"0.2rem" }}>Put on hold: {fmt(order.comingTomorrowAt || order.updatedAt)}</div>
+              <div style={{ fontWeight:"600", fontSize:"0.92rem", color:"#fff" }}>{item.productName} — Size <SizeTag size={item.size} /></div>
+              <div style={{ color:"#888", fontSize:"0.8rem" }}>{item.customerName}</div>
+              <div style={{ color:"#444", fontSize:"0.72rem", marginTop:"0.2rem" }}>Put on hold: {fmt(item.ts)}</div>
             </div>
           </div>
           <div style={{ display:"flex", gap:"0.6rem" }}>
             <button
-              onClick={() => handleRespond(order, "sent")}
+              onClick={() => handleRespond(item, "sent")}
               style={{ ...bGreen, flex:1, padding:"0.55rem", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
               Sent
             </button>
             <button
-              onClick={() => handleRespond(order, "out_of_stock")}
+              onClick={() => handleRespond(item, "out_of_stock")}
               style={{ ...bRed, flex:1, padding:"0.55rem", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               Out of Stock
@@ -8767,18 +8759,19 @@ function SourceOnHoldTab({ orders, onHoldResponses }) {
             <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>COMPLETED</div>
             <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
           </div>
-          {completed.map(({ order, response }) => {
+          {completed.map(item => {
+            const response = item.response?.response;
             const isSent = response === "sent";
             const accent = isSent ? "rgba(74,222,128,.5)"  : "rgba(248,113,113,.5)";
             const tint   = isSent ? "rgba(74,222,128,.08)" : "rgba(248,113,113,.08)";
             const text   = isSent ? "#4ADE80"              : "#F87171";
             return (
-              <div key={`onhold-done-${order.id}`} style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:"1.1rem 1.25rem", opacity:0.85 }}>
+              <div key={`onhold-done-${item.composite}`} style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:"1.1rem 1.25rem", opacity:0.85 }}>
                 <div style={{ display:"flex", alignItems:"center", gap:"1rem", marginBottom:"0.6rem" }}>
-                  <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={8}/>
+                  <ProductPhoto url={item.photoUrl} photo={item.photo} size={48} radius={8}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", marginBottom:"0.2rem" }}>
-                      <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.2rem", color:"rgba(255,255,255,.85)", lineHeight:1, letterSpacing:"0.05em" }}>#{order.id}</span>
+                      <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.2rem", color:"rgba(255,255,255,.85)", lineHeight:1, letterSpacing:"0.05em" }}>#{item.orderNumber}</span>
                       <span style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"2px 8px", borderRadius:999, background:tint, border:`1px solid ${accent}`, color:text, fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
                           {isSent ? <polyline points="20 6 9 17 4 12"/> : <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>}
@@ -8786,12 +8779,12 @@ function SourceOnHoldTab({ orders, onHoldResponses }) {
                         {isSent ? "Sent" : "Out of Stock"}
                       </span>
                     </div>
-                    <div style={{ fontWeight:"600", fontSize:"0.9rem", color:"rgba(255,255,255,.85)" }}>{order.productName} — Size <SizeTag size={sourceDisplaySize(order)} /></div>
-                    <div style={{ color:"#888", fontSize:"0.78rem" }}>{order.customerName}</div>
+                    <div style={{ fontWeight:"600", fontSize:"0.9rem", color:"rgba(255,255,255,.85)" }}>{item.productName} — Size <SizeTag size={item.size} /></div>
+                    <div style={{ color:"#888", fontSize:"0.78rem" }}>{item.customerName}</div>
                   </div>
                 </div>
                 <div style={{ display:"flex", justifyContent:"flex-end" }}>
-                  <button onClick={() => handleUndo(order)}
+                  <button onClick={() => handleUndo(item)}
                           style={{ padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                       <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
@@ -9495,6 +9488,32 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const [hub, setHub] = useState("hub1");
   const todayDate   = getSADateString();
 
+  // Immutable insights_log — the durable source for PAST-day History and On Hold.
+  // Live /orders is keyed by the daily orderNumber (resets each morning), so
+  // today's orders overwrite yesterday's slots; past-day + on-hold requests read
+  // straight from /orders vanished. The log keeps every ready/tomorrow transition
+  // forever, so past days survive. Today's tabs still use live /orders (no lag).
+  const insightsLog = useInsightsLog();
+
+  // name → { photoUrl, photo } lookup so log-reconstructed cards (the log carries
+  // no photo) still render a thumbnail. Mirrors the Insights productPhotoMap.
+  const sourcePhotoMap = useMemo(() => {
+    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
+    const map = {};
+    (products || []).forEach(p => {
+      if (!p.name) return;
+      const entry = { photoUrl: p.photoUrl || null, photo: p.photo || "" };
+      map[p.name] = entry;
+      map[normKey(p.name)] = entry;
+    });
+    return map;
+  }, [products]);
+  const photoForName = useCallback((name) => {
+    if (!name) return { photoUrl: null, photo: "" };
+    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
+    return sourcePhotoMap[name] || sourcePhotoMap[normKey(name)] || { photoUrl: null, photo: "" };
+  }, [sourcePhotoMap]);
+
   // On Hold response state — read once here so badges and the On Hold tab
   // share the same source of truth (no duplicate Firebase listeners).
   const [onHoldResponses, setOnHoldResponses] = useState({});
@@ -9547,6 +9566,65 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // History tab derives its straggler list from this + live orders (5-day window).
   const allResponses = useAllSourceResponses();
 
+  // SA-time (UTC+2) YYYY-MM-DD of any timestamp — same convention as orderSaleDate.
+  const saDateOfTs = (ts) => ts ? new Date(new Date(ts).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10) : null;
+
+  // ── On Hold list (shared by the tab, the hub badges AND the top-bar count) ──
+  // Today's on-holds come from live /orders (current status COMING_TOMORROW —
+  // no lag, and an UNDONE on-hold correctly disappears). Past-day on-holds come
+  // from the immutable log (action="tomorrow"), because the live order that held
+  // them was overwritten by the daily orderNumber rollover. Deduped by the
+  // composite date::orderNumber key — orderNumber alone is daily-reused, so a
+  // bare key made yesterday's on-hold collide with today's. Returned orders drop
+  // out (no restock work). `responded` is the source_onhold_responses flag.
+  const onHoldMerged = useMemo(() => {
+    const pastDates = Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => getSAPastDateString(i + 1));
+    const byComposite = new Map();
+
+    // Live: every current COMING_TOMORROW order (today + any not-yet-clobbered past).
+    (orders || []).forEach(o => {
+      if (o.status !== STATUS.COMING_TOMORROW) return;
+      const saDate = saDateOfTs(o.comingTomorrowAt || o.updatedAt) || todayDate;
+      const composite = onHoldKey(saDate, o.id);
+      byComposite.set(composite, {
+        composite, orderNumber: o.id, saDate,
+        productName: o.productName, size: sourceDisplaySize(o), hub: (o.hub || "hub1"),
+        customerName: o.customerName || null,
+        photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
+        ts: o.comingTomorrowAt || o.updatedAt,
+      });
+    });
+
+    // Log (past days only): fill in on-holds whose live order was overwritten.
+    onHoldEventsFromLog({ log: insightsLog, dates: pastDates }).forEach(e => {
+      const composite = onHoldKey(e.saDate, e.orderNumber);
+      if (byComposite.has(composite)) return;
+      const ph = photoForName(e.productName);
+      byComposite.set(composite, {
+        composite, orderNumber: e.orderNumber, saDate: e.saDate,
+        productName: e.productName, size: e.size, hub: e.hub,
+        customerName: e.customerName || null,
+        photoUrl: ph.photoUrl, photo: ph.photo, ts: e.timestamp,
+      });
+    });
+
+    // Returned-order composites across the window → excluded (no restock needed).
+    const returnedComposites = new Set();
+    [todayDate, ...pastDates].forEach(d =>
+      returnedOrderIdsOnSADate(returnsLog, d).forEach(num => returnedComposites.add(onHoldKey(d, num)))
+    );
+
+    const respondedKeys = new Set(Object.keys(onHoldResponses));
+    const list = [];
+    byComposite.forEach(item => {
+      if (returnedComposites.has(item.composite)) return;
+      item.responded = respondedKeys.has(item.composite);
+      item.response = onHoldResponses[item.composite] || null;
+      list.push(item);
+    });
+    return list.sort((a, b) => tsMs(b.ts) - tsMs(a.ts));
+  }, [insightsLog, orders, onHoldResponses, returnsLog, todayDate, sourcePhotoMap]);
+
   // Per-hub pending counts for the Hub 1 / Hub 2 sub-tab badges. Mirrors the
   // exact same pending logic each tab uses (Today excludes responded cells,
   // History sums per-day stragglers, On Hold subtracts source_onhold_responses).
@@ -9554,7 +9632,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     const counts = { hub1: 0, hub2: 0 };
     const todayResponses = allResponses[todayDate] || {};
 
-    // -- Today: pending = unresponded cells from today's collected orders.
+    // -- Today: pending = unresponded cells from today's collected orders (live).
     ["hub1", "hub2"].forEach(h => {
       const hubOrders = todayRestockOrdersAll.filter(o => (o.hub || "hub1") === h);
       const counts2 = computeCollectedCounts(hubOrders);
@@ -9566,20 +9644,14 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       });
     });
 
-    // -- History: pending = unresponded cells from each of past 1..N days.
+    // -- History: pending = unresponded cells per past 1..N days, rebuilt from
+    // the durable log (live /orders is clobbered by the daily orderNumber reset).
     for (let daysAgo = 1; daysAgo <= HISTORY_RETENTION_DAYS; daysAgo++) {
       const dateStr  = getSAPastDateString(daysAgo);
       const returned = returnedOrderIdsOnSADate(returnsLog, dateStr);
       const dayResponses = allResponses[dateStr] || {};
-      const dayOrdersBase = (orders || []).filter(o =>
-        o.status !== STATUS.OUT_OF_STOCK &&
-        (o.status === STATUS.READY || o.status === STATUS.COLLECTED) &&
-        orderSaleDate(o) === dateStr &&
-        !returned.has(o.id)
-      );
       ["hub1", "hub2"].forEach(h => {
-        const dayOrders = dayOrdersBase.filter(o => (o.hub || "hub1") === h);
-        const counts2 = computeCollectedCounts(dayOrders);
+        const counts2 = restockCountsFromLog({ log: insightsLog, dateStr, hub: h, returnedIds: returned });
         Object.entries(counts2).forEach(([key, product]) => {
           Object.entries(product.sizes || {}).forEach(([size, count]) => {
             if (dayResponses[key]?.[size]) return;
@@ -9589,27 +9661,20 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       });
     }
 
-    // -- On Hold: pending = COMING_TOMORROW orders without source_onhold_responses entry.
-    const respondedKeys = new Set(Object.keys(onHoldResponses));
-    (orders || []).forEach(o => {
-      if (o.status !== STATUS.COMING_TOMORROW) return;
-      const h = (o.hub || "hub1");
-      const key = String(o.id).replace(/[.#$[\]/\s]/g, "_");
-      if (respondedKeys.has(key)) return;
-      counts[h] += 1;
+    // -- On Hold: pending (unresponded) on-holds from the shared merged list.
+    onHoldMerged.forEach(item => {
+      if (item.responded) return;
+      if (item.hub === "hub1" || item.hub === "hub2") counts[item.hub] += 1;
     });
 
     return counts;
-  }, [todayRestockOrdersAll, allResponses, todayDate, orders, returnsLog, onHoldResponses]);
+  }, [todayRestockOrdersAll, allResponses, todayDate, insightsLog, returnsLog, onHoldMerged]);
 
-  // Top-tab On Hold badge — total pending across both hubs (matches old behavior).
-  const onHoldCount = useMemo(() => {
-    const respondedKeys = new Set(Object.keys(onHoldResponses));
-    return (orders || []).filter(o =>
-      o.status === STATUS.COMING_TOMORROW &&
-      !respondedKeys.has(String(o.id).replace(/[.#$[\]/\s]/g, "_"))
-    ).length;
-  }, [orders, onHoldResponses]);
+  // Top-tab On Hold badge — total pending across ALL hubs (matches old behavior).
+  const onHoldCount = useMemo(
+    () => onHoldMerged.filter(item => !item.responded).length,
+    [onHoldMerged]
+  );
 
   // DEBUG — paste in browser console to inspect counted vs leaked orders.
   // Removed once you've verified the math is right. Lives in useEffect so it
@@ -9722,12 +9787,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
                               onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
                               onUndo={(key, size) => handleUndo(todayDate, key, size)} />}
         {tab==="history" && <SourceHistoryTab
-                              orders={orders}
+                              log={insightsLog}
                               returnsLog={returnsLog}
                               allResponses={allResponses}
                               hub={hub}
+                              photoForName={photoForName}
                               onResponse={handleResponse} />}
-        {tab==="onhold"  && <SourceOnHoldTab orders={orders} onHoldResponses={onHoldResponses} />}
+        {tab==="onhold"  && <SourceOnHoldTab items={onHoldMerged} />}
         {tab==="clothing" && <ClothingSoldView products={products} />}
       </div>
     </div>
