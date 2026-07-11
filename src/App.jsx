@@ -7086,7 +7086,18 @@ function AssistantView({ products, onExit, orders = [] }) {
                 </div>
               ))}
             </div>
-            <button onClick={() => setLastOrders([])} style={{ background:"transparent", border:"none", color:"#555", cursor:"pointer", fontSize:"1rem" }}>✕</button>
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:8 }}>
+              <button onClick={() => setLastOrders([])} style={{ background:"transparent", border:"none", color:"#555", cursor:"pointer", fontSize:"1rem" }}>✕</button>
+              {/* Reprint the slip if the auto-print was dismissed or failed — the
+                  only recovery path for a physical hand-to-customer receipt. */}
+              {!isRefill && (
+                <button onClick={() => printOrderSlips(lastOrders).catch(err => console.warn("reprint slip failed:", err))}
+                        title="Reprint the order slip"
+                        style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"#cfd6e4", cursor:"pointer", fontSize:"0.72rem", fontFamily:FONT, padding:"5px 10px", whiteSpace:"nowrap" }}>
+                  🖨 Reprint slip
+                </button>
+              )}
+            </div>
           </div>
         );
       })()}

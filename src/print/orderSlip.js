@@ -86,7 +86,7 @@ function slipMarkup(order, { etaMinutes = DEFAULT_ETA_MIN } = {}) {
         ${order?.customerName ? `<div class="cust">For <b>${escapeHtml(order.customerName)}</b></div>` : ""}
       </div>
       <hr class="rule" />
-      <div class="thanks">Thanks for your patience — we're picking &amp; packing your order right now. Grab a seat, we'll have you sorted in about ${etaMinutes} minutes.</div>
+      <div class="thanks">Thanks for your patience — we're picking &amp; packing your order right now. Grab a seat, we'll have you sorted in about ${escapeHtml(etaMinutes)} minutes.</div>
       <hr class="rule" />
       <div class="foot">
         <div class="store">${escapeHtml(storeLabel(order))}</div>
@@ -105,9 +105,11 @@ export function buildOrderSlipsHtml(orders, opts = {}) {
     + `<style>${SLIP_CSS}</style></head><body>${body}</body></html>`;
 }
 
-// Print the slip(s). Returns the print promise; callers fire-and-forget.
+// Print the slip(s). Returns the print promise; callers fire-and-forget. The
+// build runs inside the promise chain so even a synchronous error while building
+// the HTML surfaces as a rejection (never an exception into the caller's flow).
 export function printOrderSlips(orders, opts = {}) {
   const list = (Array.isArray(orders) ? orders : [orders]).filter(Boolean);
   if (!list.length) return Promise.resolve();
-  return printHtmlInIframe(buildOrderSlipsHtml(list, opts));
+  return Promise.resolve().then(() => printHtmlInIframe(buildOrderSlipsHtml(list, opts)));
 }
