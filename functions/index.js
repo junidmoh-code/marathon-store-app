@@ -2761,6 +2761,18 @@ const ELEVEN_DEFAULT_VOICE = "EXAVITQu4vr4xnSDxMaL";  // "Sarah" — clear, frie
 const ELEVEN_COST_PER_KCHAR = 0.10;                   // ≈ turbo pricing (approx, for logging)
 const VOICE_TEXT_RE = /^(Order number .{1,24}, (ready for collection|out of stock|scheduled for tomorrow)\.?|Pickup announcements on\.?)$/;
 
+// Fixed vocabulary the TV pickup board preloads and plays LOCALLY (digit-by-digit
+// number reading). token → exact words. MUST match VOICE_VOCAB in src/App.jsx.
+const VOICE_VOCAB = {
+  order_number: "Order number",
+  d0: "zero", d1: "one", d2: "two",   d3: "three", d4: "four",
+  d5: "five", d6: "six", d7: "seven", d8: "eight", d9: "nine",
+  ready:    "ready for collection",
+  oos:      "out of stock",
+  tomorrow: "scheduled for tomorrow",
+  enabled:  "Pickup announcements on",
+};
+
 function ttsCacheKey(engine, voice, text) {
   const t = String(text).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   const v = String(voice || "default").replace(/[^a-z0-9]+/gi, "").toLowerCase();
@@ -2791,8 +2803,30 @@ async function ttsTokenUrl(file, path) {
   return `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
 }
 
+// Get (cache-hit) or generate+cache one OpenAI TTS clip. Deterministic Storage path
+// keyed by voice+text, so re-requesting the same word is free and idempotent. Used
+// by the vocab preload (and the legacy single-clip path). chars = billable chars
+// generated this call (0 on a cache hit).
+async function openaiTtsUrl(bucket, voice, text) {
+  const path = `tts/${ttsCacheKey("openai", voice, text)}.mp3`;
+  const file = bucket.file(path);
+  const [exists] = await file.exists();
+  if (exists) return { url: await ttsTokenUrl(file, path), cached: true, chars: 0 };
+  const res = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${openaiApiKey.value()}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: OPENAI_TTS_MODEL, voice: voice || "nova", input: text, response_format: "mp3" }),
+  });
+  if (!res.ok) throw new HttpsError("internal", `openai tts ${res.status}: ${(await res.text().catch(() => "")).slice(0, 120)}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  const token = require("crypto").randomUUID();
+  await file.save(buf, { resumable: false, contentType: "audio/mpeg", metadata: { metadata: { firebaseStorageDownloadTokens: token } } });
+  const url = `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+  return { url, cached: false, chars: text.length };
+}
+
 exports.pickupVoice = onCall(
-  { region: "europe-west1", secrets: [openaiApiKey], memory: "256MiB", timeoutSeconds: 30 },
+  { region: "europe-west1", secrets: [openaiApiKey], memory: "256MiB", timeoutSeconds: 120 },
   async (request) => {
     if (!request.auth) throw new HttpsError("unauthenticated", "Sign-in required.");
     const data = request.data || {};
@@ -2800,6 +2834,28 @@ exports.pickupVoice = onCall(
     // Status probe for the admin selector: which engines are usable right now.
     if (data.status) {
       return { engines: { browser: true, openai: true, elevenlabs: !!(await getElevenKey()) } };
+    }
+
+    // Vocab preload for the TV: generate (or cache-hit) the whole fixed vocabulary in
+    // one OpenAI voice and return { token → url }. The board fetches + decodes these
+    // once at startup and plays announcements locally. Idempotent: after the first
+    // generation every call is cache hits. Fixed internal wordlist, so it bypasses
+    // VOICE_TEXT_RE (it can't be abused for arbitrary paid TTS).
+    if (data.vocab) {
+      const vvoice = String(data.voice || "nova").trim().slice(0, 40) || "nova";
+      const bucket = admin.storage().bucket(STORAGE_BUCKET);
+      const entries = Object.entries(VOICE_VOCAB);
+      const results = await Promise.all(entries.map(async ([tok, words]) => {
+        const { url, chars } = await openaiTtsUrl(bucket, vvoice, words);
+        return [tok, url, chars];
+      }));
+      const urls = {};
+      let genChars = 0;
+      for (const [tok, url, chars] of results) { urls[tok] = url; genChars += chars; }
+      if (genChars) {
+        try { await logReorderUsage(admin.database(), new Date().toISOString().slice(0, 10), { at: Date.now(), kind: "pickupVoiceVocab", by: request.auth.uid, engine: "openai", chars: genChars, costUSD: +((genChars / 1e6) * OPENAI_TTS_COST_PER_MCHAR).toFixed(6) }); } catch { /* best-effort */ }
+      }
+      return { urls, voice: vvoice };
     }
 
     const text = String(data.text || "").trim();
