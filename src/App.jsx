@@ -1570,6 +1570,31 @@ async function getNextRefillNumber() {
   return "R" + String(counter).padStart(3, "0");
 }
 
+// ─── HUB 2 DISPATCH HOLD ──────────────────────────────────────────────────────
+// Hub 2 fulfils shop orders that physically TRAVEL to the shop, so telling the
+// customer the instant the warehouse taps Sent pulls them in before the parcel
+// lands. For Hub 2 "Ready" only, the customer-facing reveal (TV board + voice +
+// WhatsApp) is held this long after Sent; the warehouse side is unaffected (the
+// order is READY immediately, still POS-collectable). OOS / Tomorrow are never
+// held. The reveal instant is written once as notifyReadyAt (single source of
+// truth the TV gates on and the server sweep sends the WhatsApp at), so this
+// constant lives in exactly one place. Change here to retune (no other edits).
+const HUB2_DISPATCH_HOLD_MS = 6 * 60 * 1000;
+
+// Customer-facing view of an order under the Hub 2 dispatch hold. Only Hub 2
+// "Ready" orders carry notifyReadyAt (written by updateStatus), so this no-ops for
+// everything else. While held it reads as INCOMING ("being prepared") — not
+// announced, not on the ready timer; at reveal it becomes READY with readyAt moved
+// to the reveal instant, so the 8-min board window and the voice freshness check
+// both count from reveal, not from the earlier warehouse Sent.
+function holdHub2Ready(o, nowMs) {
+  if (!o || o.status !== STATUS.READY || !o.notifyReadyAt) return o;
+  const revealMs = Date.parse(o.notifyReadyAt);
+  if (isNaN(revealMs)) return o;                       // malformed → don't hold (fail open, customer still told)
+  if (nowMs < revealMs) return { ...o, status: STATUS.INCOMING };
+  return { ...o, readyAt: o.notifyReadyAt };
+}
+
 // ─── CUSTOMERS VIEW ───────────────────────────────────────────────────────────
 const CUSTOMERS_SESSION_KEY = "customersAuth";
 
@@ -6498,6 +6523,15 @@ function WarehouseView({ products = [], orders, onExit }) {
     const patch = { status, updatedAt: now, ...extraPatch };
     if (status === STATUS.READY)           patch.readyAt = now;
     if (status === STATUS.OUT_OF_STOCK)    patch.outOfStockAt = now;
+    // Hub 2 dispatch hold: a Hub 2 order going READY holds its customer-facing
+    // reveal (TV + voice + WhatsApp) until notifyReadyAt = now + HUB2_DISPATCH_HOLD_MS.
+    // readyNotifyPending flags it for the server reveal sweep (which sends the
+    // WhatsApp when due). The flag is written on EVERY transition — true only for a
+    // Hub 2 Ready, false otherwise — so a revert / OOS / collected clears it and a
+    // held send can never fire late. Non-hub2 Ready keeps the instant path below.
+    const isHub2Ready = status === STATUS.READY && (order.placedAtHub || order.hub || "hub1") === "hub2";
+    patch.readyNotifyPending = isHub2Ready;
+    if (isHub2Ready) patch.notifyReadyAt = new Date(Date.now() + HUB2_DISPATCH_HOLD_MS).toISOString();
     if (status === STATUS.COMING_TOMORROW) patch.comingTomorrowAt = now;
     if (status === STATUS.COLLECTED)       patch.collectedAt = now;
 
@@ -6550,7 +6584,9 @@ function WarehouseView({ products = [], orders, onExit }) {
     // No timer/minutes — the customer should not feel time pressure.
     // Template body suggested: "Hi {{1}}, your order #{{2}} is ready to collect
     // at Marathon Club. See you soon!"
-    if (status === STATUS.READY)
+    // Hub 2 Ready is deferred — the server reveal sweep sends order_ready at
+    // notifyReadyAt. Every other Ready notifies immediately, as before.
+    if (status === STATUS.READY && !isHub2Ready)
       sendWhatsAppTemplate(order.customerPhone, "order_ready", [order.customerName || "there", order.id]);
     if (status === STATUS.OUT_OF_STOCK)
       sendWhatsAppTemplate(order.customerPhone, "rder_out_of_stock", [order.id]);
@@ -13175,9 +13211,18 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // refills leaked onto the customer board as stuck "Incoming" (their base
   // status stays "incoming"; the CR flow resolves via clothingRefillStatus).
   // Drop them here so they never reach the board, the announcer, or the timers.
+  // Steady clock so the Hub 2 dispatch hold reveals on time (a held order flips
+  // INCOMING → READY purely with the passage of time, not a data change).
+  const [revealClock, setRevealClock] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setRevealClock(Date.now()), 10 * 1000);
+    return () => clearInterval(id);
+  }, []);
   const orders = useMemo(
-    () => (ordersRaw || []).filter(o => o && o.customerName !== "Shop Refill"),
-    [ordersRaw]
+    () => (ordersRaw || [])
+      .filter(o => o && o.customerName !== "Shop Refill")
+      .map(o => holdHub2Ready(o, revealClock)),      // hold Hub 2 "Ready" until its reveal instant
+    [ordersRaw, revealClock]
   );
   // Dedupe markers are keyed by a composite of order.id + createdAt rather
   // than id alone. order.id is daily-scoped (it's the orderNumber, which

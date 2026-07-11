@@ -355,6 +355,51 @@ exports.metaFallbackSweep = onSchedule(
   }
 );
 
+// Hub 2 dispatch-hold reveal sweep. A Hub 2 order marked READY holds its customer
+// "order_ready" WhatsApp until notifyReadyAt (= Sent + HUB2_DISPATCH_HOLD_MS, set
+// by the app) so the parcel has time to reach the shop. The warehouse tablet must
+// NOT be trusted to send it later — it sleeps / closes — so the SERVER owns the
+// delayed send. Every minute: send any pending order that is now due, and clear
+// the flag without sending if the order left READY (reverted / OOS / collected)
+// so a stale hold can never fire. enqueueWhatsApp writes to the same outbox as the
+// instant path (with its own 90s dedupe), so a re-run can't double-send.
+exports.dispatchHoldRevealSweep = onSchedule(
+  { schedule: "every 1 minutes", region: "europe-west1", timeoutSeconds: 120, memory: "256MiB" },
+  async () => {
+    const db = admin.database();
+    const orders = (await db.ref("orders").once("value")).val() || {};
+    const now = Date.now();
+    let sent = 0, cleared = 0;
+    for (const [id, o] of Object.entries(orders)) {
+      if (!o || id === "items" || o.readyNotifyPending !== true) continue;
+      // Left READY (reverted / OOS / collected) → clear, never send.
+      if (o.status !== "ready") {
+        await db.ref(`orders/${id}`).update({ readyNotifyPending: false }).catch(() => {});
+        cleared++;
+        continue;
+      }
+      // Not due yet — leave it for a later run.
+      if (o.notifyReadyAt && Date.parse(o.notifyReadyAt) > now) continue;
+      // Due → send (outbox dedupes), then clear the flag. On enqueue failure, leave
+      // the flag set so the next sweep retries (at-least-once delivery).
+      try {
+        if (o.customerPhone) {
+          await enqueueWhatsApp({
+            templateName:   "order_ready",
+            recipientPhone: o.customerPhone,
+            templateParams: [o.customerName || "there", id],
+          });
+        }
+        await db.ref(`orders/${id}`).update({ readyNotifyPending: false, readyNotifiedAt: new Date().toISOString() });
+        sent++;
+      } catch (e) {
+        console.warn("dispatchHoldRevealSweep: enqueue failed, will retry:", id, e.message);
+      }
+    }
+    if (sent || cleared) console.log("dispatchHoldRevealSweep:", JSON.stringify({ sent, cleared, scanned: Object.keys(orders).length }));
+  }
+);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WhatsApp broadcast proxy (Phase 1)
 // ─────────────────────────────────────────────────────────────────────────────
