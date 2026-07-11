@@ -5,8 +5,8 @@
 // uses on Windows (Chrome → thermal driver, which auto-cuts at end of job) — no
 // ESC/POS, no kiosk/silent print, no native bridge.
 
-// Wait until every <img>/SVG image has loaded so the barcode is on the page
-// before the dialog snapshots it.
+// Wait until every <img> has loaded so any inline artwork is laid out before the
+// dialog snapshots the page (no-op for a text-only slip).
 function waitForImages(doc) {
   const imgs = Array.from(doc.images || []);
   return Promise.all(

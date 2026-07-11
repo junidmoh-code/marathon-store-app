@@ -4,8 +4,10 @@
 // order number). A multi-item placement prints all slips in ONE job, separated
 // by a tear line — the thermal driver auto-cuts only at the end, so staff tear
 // the intermediate ones.
+//
+// Compact layout: order number leads; the wait time is folded quietly into the
+// thank-you line (not shown as a prominent badge up top).
 
-import { code128Svg } from "./code128";
 import { printHtmlInIframe } from "./printSlipService";
 
 const DEFAULT_ETA_MIN = 15;
@@ -45,52 +47,36 @@ const SLIP_CSS = `
     font-family: "SF Pro Text", -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
     -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
-  .slip { width: 72mm; margin: 0 auto; padding: 4mm 0 3mm; }
-  .brand { display: flex; align-items: center; justify-content: center; gap: 2mm; margin-bottom: 0.6mm; }
-  .brand .name { font-weight: 800; letter-spacing: 0.2em; font-size: 13pt; }
-  .tag { text-align: center; font-size: 6.5pt; letter-spacing: 0.16em; text-transform: uppercase; color: #333; }
-  .rule { border: 0; border-top: 0.4mm dashed #000; margin: 2.4mm 0; }
-  .rule.solid { border-top: 0.5mm solid #000; }
-  .ordhead { display: flex; align-items: flex-start; justify-content: space-between; }
-  .ordhead .lbl { font-size: 8.5pt; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; padding-top: 1mm; line-height: 1.15; }
-  .eta { text-align: right; }
-  .eta .pill { display: inline-block; border: 0.35mm solid #000; border-radius: 3mm; padding: 0.5mm 2.4mm; font-size: 9.5pt; font-weight: 700; }
-  .eta .cap { font-size: 6pt; letter-spacing: 0.1em; text-transform: uppercase; color: #444; margin-top: 0.8mm; }
-  .number { text-align: center; font-weight: 800; font-size: 42pt; line-height: 0.95; margin: 1mm 0 0.4mm; font-variant-numeric: tabular-nums; }
-  .numcap { text-align: center; font-size: 6.5pt; letter-spacing: 0.24em; text-transform: uppercase; color: #555; }
+  .slip { width: 72mm; margin: 0 auto; padding: 3mm 0 2.5mm; }
+  .brand { display: flex; align-items: center; justify-content: center; gap: 1.6mm; margin-bottom: 0.4mm; }
+  .brand .name { font-weight: 800; letter-spacing: 0.18em; font-size: 11pt; }
+  .tag { text-align: center; font-size: 5.5pt; letter-spacing: 0.16em; text-transform: uppercase; color: #444; }
+  .rule { border: 0; border-top: 0.35mm dashed #000; margin: 2mm 0; }
+  .rule.solid { border-top: 0.45mm solid #000; }
+  .number { text-align: center; font-weight: 800; font-size: 34pt; line-height: 0.95; margin: 0.6mm 0 0.3mm; font-variant-numeric: tabular-nums; }
+  .numcap { text-align: center; font-size: 6pt; letter-spacing: 0.22em; text-transform: uppercase; color: #666; }
   .item { text-align: center; }
-  .item .pname { font-size: 11pt; font-weight: 700; line-height: 1.25; }
-  .item .meta { font-size: 8.5pt; color: #222; margin-top: 1mm; }
-  .item .meta b { font-weight: 700; }
-  .item .cust { font-size: 8pt; color: #333; margin-top: 1.4mm; }
+  .item .pname { font-size: 10pt; font-weight: 700; line-height: 1.25; }
+  .item .meta { font-size: 8pt; color: #222; margin-top: 0.8mm; }
+  .item .cust { font-size: 7.5pt; color: #333; margin-top: 1.2mm; }
   .item .cust b { color: #000; font-weight: 700; }
-  .thanks { text-align: center; }
-  .thanks .big { font-weight: 700; font-size: 8.5pt; line-height: 1.35; }
-  .thanks .sub { color: #444; font-size: 7.5pt; margin-top: 0.8mm; line-height: 1.35; }
+  .thanks { text-align: center; font-size: 7.5pt; line-height: 1.4; color: #444; }
   .foot { text-align: center; }
-  .barcode-wrap { display: flex; justify-content: center; margin: 1mm 0 0.5mm; }
-  .foot .bnum { font-size: 7pt; letter-spacing: 0.3em; }
-  .foot .store { font-size: 7.5pt; font-weight: 700; margin-top: 2mm; }
-  .foot .when { font-size: 6.5pt; color: #666; margin-top: 0.4mm; }
-  .tear { text-align: center; color: #000; font-size: 7pt; letter-spacing: 0.3em; border-top: 0.4mm dashed #000; margin: 4mm 0 3mm; padding-top: 1mm; }
+  .foot .store { font-size: 7pt; font-weight: 700; color: #111; }
+  .foot .when { font-size: 6pt; color: #777; margin-top: 0.3mm; }
+  .tear { text-align: center; color: #000; font-size: 6.5pt; letter-spacing: 0.3em; border-top: 0.35mm dashed #000; margin: 3mm 0 2.5mm; padding-top: 0.8mm; }
 `;
 
-const MOUNTAIN = `<svg width="5mm" height="5mm" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18 L9 8 L13 14 L17 6 L21 18 Z"/></svg>`;
+const MOUNTAIN = `<svg width="4.4mm" height="4.4mm" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18 L9 8 L13 14 L17 6 L21 18 Z"/></svg>`;
 
 // One slip's inner markup.
 function slipMarkup(order, { etaMinutes = DEFAULT_ETA_MIN } = {}) {
   const num = escapeHtml(order?.id ?? "—");
-  const barcode = order?.id ? code128Svg(String(order.id), { widthMm: 48, heightMm: 11 }) : "";
-  const bnum = String(order?.id ?? "").split("").join(" ");
   return `
     <div class="slip">
       <div class="brand">${MOUNTAIN}<span class="name">MARATHON</span></div>
       <div class="tag">Order Slip</div>
       <hr class="rule solid" />
-      <div class="ordhead">
-        <div class="lbl">Your<br/>Order</div>
-        <div class="eta"><span class="pill">~${etaMinutes} min</span><div class="cap">Ready in</div></div>
-      </div>
       <div class="number">${num}</div>
       <div class="numcap">Order Number</div>
       <hr class="rule" />
@@ -100,13 +86,9 @@ function slipMarkup(order, { etaMinutes = DEFAULT_ETA_MIN } = {}) {
         ${order?.customerName ? `<div class="cust">For <b>${escapeHtml(order.customerName)}</b></div>` : ""}
       </div>
       <hr class="rule" />
-      <div class="thanks">
-        <div class="big">Hang tight — we're picking &amp; packing<br/>your order right now.</div>
-        <div class="sub">Thanks for your patience 🙏 Grab a seat,<br/>we'll have you sorted in a flash.</div>
-      </div>
+      <div class="thanks">Thanks for your patience — we're picking &amp; packing your order right now. Grab a seat, we'll have you sorted in about ${escapeHtml(etaMinutes)} minutes.</div>
       <hr class="rule" />
       <div class="foot">
-        ${barcode ? `<div class="barcode-wrap">${barcode}</div><div class="bnum">${escapeHtml(bnum)}</div>` : ""}
         <div class="store">${escapeHtml(storeLabel(order))}</div>
         <div class="when">${escapeHtml(formatWhen(order?.createdAt))}</div>
       </div>
@@ -123,9 +105,11 @@ export function buildOrderSlipsHtml(orders, opts = {}) {
     + `<style>${SLIP_CSS}</style></head><body>${body}</body></html>`;
 }
 
-// Print the slip(s). Returns the print promise; callers fire-and-forget.
+// Print the slip(s). Returns the print promise; callers fire-and-forget. The
+// build runs inside the promise chain so even a synchronous error while building
+// the HTML surfaces as a rejection (never an exception into the caller's flow).
 export function printOrderSlips(orders, opts = {}) {
   const list = (Array.isArray(orders) ? orders : [orders]).filter(Boolean);
   if (!list.length) return Promise.resolve();
-  return printHtmlInIframe(buildOrderSlipsHtml(list, opts));
+  return Promise.resolve().then(() => printHtmlInIframe(buildOrderSlipsHtml(list, opts)));
 }
