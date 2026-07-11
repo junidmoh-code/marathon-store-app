@@ -6821,17 +6821,23 @@ function WarehouseView({ products = [], orders, onExit }) {
           if (r.ok) sentUncounted = uncountedQty; else legErr = r;
         }
         const sent = sentCounted + sentUncounted;
-        if (sent === qty) {                                          // fully sent → resolve the line
+        // RETRY SAFETY: the split is derived from the LIVE hub cell, so it must never be
+        // recomputed after that cell has moved. Once the counted leg lands (hub mutated),
+        // lock in exactly what was sent — a re-tap would re-split against the now-drained
+        // hub and re-add the overage under a fresh key (double-count). Only when the hub
+        // was NOT touched (sentCounted === 0) is it safe to leave the line pending: a
+        // re-tap then recomputes the IDENTICAL split and any landed leg idempotently
+        // no-ops while the failed leg completes.
+        const hubMutated = sentCounted > 0;
+        if (sent === qty || hubMutated) {
           ok++;
           updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, updatedAt: now });
           logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2" });
+          if (sent < qty) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — re-request the remaining ${qty - sent}`);
         } else {
-          // Partial or nothing: leave the line PENDING so an idempotent re-tap finishes
-          // it (any leg that already landed is a no-op on retry — no double-move).
+          // Nothing moved at the hub → safe to leave pending for an idempotent re-tap.
           fail++;
-          errors.push(sent > 0
-            ? `${formatSize(it.size)}: only ${sent}/${qty} sent — tap Send again to finish`
-            : `${formatSize(it.size)}: ${legErr && legErr.reason === "insufficient_stock" ? `only ${legErr.available} at ${HUB_LABELS[from] || "the hub"}` : (legErr && legErr.reason) || "transfer failed"}`);
+          errors.push(`${formatSize(it.size)}: ${legErr && legErr.reason === "insufficient_stock" ? `only ${legErr.available} at ${HUB_LABELS[from] || "the hub"}` : (legErr && legErr.reason) || "transfer failed"}`);
         }
       } else if (reject) {
         // Reject is a flag-only write (no stock) — allowed without a stockRole.
