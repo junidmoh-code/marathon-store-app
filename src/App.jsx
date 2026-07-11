@@ -1580,6 +1580,11 @@ async function getNextRefillNumber() {
 // truth the TV gates on and the server sweep sends the WhatsApp at), so this
 // constant lives in exactly one place. Change here to retune (no other edits).
 const HUB2_DISPATCH_HOLD_MS = 6 * 60 * 1000;
+// Hubs whose parcels physically travel to the shop → hold the customer reveal.
+// Add "hub3"/"hubC" here (one line) if Pine / clothing-customer parcels also ride
+// the van. The server sweep is hub-agnostic (it keys off notifyReadyAt), so this
+// set is the ONLY place that decides which hubs are held.
+const HELD_DISPATCH_HUBS = new Set(["hub2"]);
 
 // Customer-facing view of an order under the Hub 2 dispatch hold. Only Hub 2
 // "Ready" orders carry notifyReadyAt (written by updateStatus), so this no-ops for
@@ -6529,9 +6534,9 @@ function WarehouseView({ products = [], orders, onExit }) {
     // WhatsApp when due). The flag is written on EVERY transition — true only for a
     // Hub 2 Ready, false otherwise — so a revert / OOS / collected clears it and a
     // held send can never fire late. Non-hub2 Ready keeps the instant path below.
-    const isHub2Ready = status === STATUS.READY && (order.placedAtHub || order.hub || "hub1") === "hub2";
-    patch.readyNotifyPending = isHub2Ready;
-    if (isHub2Ready) patch.notifyReadyAt = new Date(Date.now() + HUB2_DISPATCH_HOLD_MS).toISOString();
+    const isHeldReady = status === STATUS.READY && HELD_DISPATCH_HUBS.has(order.placedAtHub || order.hub || "hub1");
+    patch.readyNotifyPending = isHeldReady;
+    if (isHeldReady) patch.notifyReadyAt = new Date(Date.now() + HUB2_DISPATCH_HOLD_MS).toISOString();
     if (status === STATUS.COMING_TOMORROW) patch.comingTomorrowAt = now;
     if (status === STATUS.COLLECTED)       patch.collectedAt = now;
 
@@ -6584,9 +6589,9 @@ function WarehouseView({ products = [], orders, onExit }) {
     // No timer/minutes — the customer should not feel time pressure.
     // Template body suggested: "Hi {{1}}, your order #{{2}} is ready to collect
     // at Marathon Club. See you soon!"
-    // Hub 2 Ready is deferred — the server reveal sweep sends order_ready at
+    // A held-hub Ready is deferred — the server reveal sweep sends order_ready at
     // notifyReadyAt. Every other Ready notifies immediately, as before.
-    if (status === STATUS.READY && !isHub2Ready)
+    if (status === STATUS.READY && !isHeldReady)
       sendWhatsAppTemplate(order.customerPhone, "order_ready", [order.customerName || "there", order.id]);
     if (status === STATUS.OUT_OF_STOCK)
       sendWhatsAppTemplate(order.customerPhone, "rder_out_of_stock", [order.id]);
@@ -7881,7 +7886,10 @@ function CustomerView({ orders, onExit }) {
   const doSearch = () => {
     const clean = orderId.trim().replace(/^#/, "");
     const o = orders.find(o => o.id === clean.padStart(3,"0") || o.id === clean);
-    setFound(o || null);
+    // Respect the Hub 2 dispatch hold here too — this customer status page is a
+    // customer-facing channel, so a held order must read "being prepared", not
+    // "ready", until its reveal (same as the TV board).
+    setFound(o ? holdHub2Ready(o, Date.now()) : null);
     setSearched(true);
   };
 

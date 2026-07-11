@@ -380,8 +380,18 @@ exports.dispatchHoldRevealSweep = onSchedule(
       }
       // Not due yet — leave it for a later run.
       if (o.notifyReadyAt && Date.parse(o.notifyReadyAt) > now) continue;
-      // Due → send (outbox dedupes), then clear the flag. On enqueue failure, leave
-      // the flag set so the next sweep retries (at-least-once delivery).
+      // CLAIM before sending: atomically flip readyNotifyPending true→false in a
+      // transaction. Only the run that wins the flip sends, so (a) two overlapping
+      // sweeps can't both send, and (b) a send whose later flag-clear write failed
+      // can't re-send — the flag is already cleared as part of the claim, BEFORE the
+      // enqueue. On enqueue failure we re-hold (set it back to true) so a later run
+      // retries — at-least-once, never the double-send of a send-then-clear-then-fail.
+      let claimed = false;
+      try {
+        const res = await db.ref(`orders/${id}/readyNotifyPending`).transaction(cur => (cur === true ? false : undefined));
+        claimed = res.committed && res.snapshot.val() === false;
+      } catch { claimed = false; }
+      if (!claimed) continue;                          // another run got it, or it changed under us
       try {
         if (o.customerPhone) {
           await enqueueWhatsApp({
@@ -390,10 +400,12 @@ exports.dispatchHoldRevealSweep = onSchedule(
             templateParams: [o.customerName || "there", id],
           });
         }
-        await db.ref(`orders/${id}`).update({ readyNotifyPending: false, readyNotifiedAt: new Date().toISOString() });
+        await db.ref(`orders/${id}/readyNotifiedAt`).set(new Date().toISOString()).catch(() => {});
         sent++;
       } catch (e) {
-        console.warn("dispatchHoldRevealSweep: enqueue failed, will retry:", id, e.message);
+        // Enqueue failed AFTER we claimed — re-hold so a later sweep retries.
+        await db.ref(`orders/${id}/readyNotifyPending`).set(true).catch(() => {});
+        console.warn("dispatchHoldRevealSweep: enqueue failed, re-holding:", id, e.message);
       }
     }
     if (sent || cleared) console.log("dispatchHoldRevealSweep:", JSON.stringify({ sent, cleared, scanned: Object.keys(orders).length }));
