@@ -13080,6 +13080,7 @@ const TV_VOICE_VOICE        = "nova"; // hardcoded OpenAI TTS voice for the boar
 const ANNOUNCE_REPEATS      = 2;      // say each announcement this many times
 const ANNOUNCE_WORD_GAP_S   = 0.05;   // silence between words inside one announcement
 const ANNOUNCE_REPEAT_GAP_S = 0.45;   // silence between repeats / back-to-back orders
+const ANNOUNCE_MAX_AGE_MS   = 3 * 60 * 1000; // only read out a transition this recent — a late vocab load must not recite long-since-ready orders
 // Fixed vocabulary: token → the exact text each preloaded clip says. Digit-by-digit
 // number reading keeps the whole set to ~15 tiny clips (vs a clip per 1–999 number).
 // The pickupVoice callable's `vocab` mode generates + caches exactly these.
@@ -13143,33 +13144,36 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return;                                  // no Web Audio → board runs silent (no crash)
     const ctx = audioCtxRef.current || (audioCtxRef.current = new Ctx());
+    const TOKENS = Object.keys(VOICE_VOCAB);
+    const decoded = new Map();                         // persists ACROSS retries — a flaky link only re-fetches the clips still missing, never the whole set again
     const load = async (attempt = 0) => {
       try {
         const res = await httpsCallable(functions, "pickupVoice")({ vocab: true, voice: TV_VOICE_VOICE });
         const urls = res?.data?.urls || {};
-        const bufs = new Map();
-        await Promise.all(Object.keys(VOICE_VOCAB).map(async (tok) => {
+        await Promise.all(TOKENS.map(async (tok) => {
+          if (decoded.has(tok)) return;                // already have this clip from a prior attempt
           const url = urls[tok];
           if (!url) return;
           const r = await fetch(url);
           if (!r.ok) throw new Error(`clip ${tok} http ${r.status}`); // don't hand an error body to decodeAudioData
           const ab = await r.arrayBuffer();
           const buf = await ctx.decodeAudioData(ab.slice(0));
-          if (buf) bufs.set(tok, buf);                 // legacy callback-style decode returns undefined — skip, don't store a dud
+          if (buf) decoded.set(tok, buf);              // legacy callback-style decode returns undefined — skip, don't store a dud
         }));
         if (cancelled) return;
         // Require the FULL vocabulary — a partial set would drop digits mid-number.
-        if (bufs.size === Object.keys(VOICE_VOCAB).length) {
-          bufsRef.current = bufs;
+        if (decoded.size === TOKENS.length) {
+          bufsRef.current = decoded;
           setVocabReady(true);                         // re-fires the announce effect → orders that went ready mid-load still get read
           return;
         }
-        throw new Error(`vocab incomplete (${bufs.size}/${Object.keys(VOICE_VOCAB).length})`);
+        throw new Error(`vocab incomplete (${decoded.size}/${TOKENS.length})`);
       } catch (e) {
         if (cancelled) return;
-        // Never give up permanently — the whole point is surviving a slow/flaky link.
-        // Back off up to ~2 min, then keep retrying at that interval forever.
-        const delay = Math.min(120000, 4000 * (attempt + 1));
+        // Never give up permanently (the point is surviving a flaky link), but widen
+        // the interval sharply once it's clearly a persistent failure (corrupt clip,
+        // unsupported decoder) so a doomed load can't hammer the callable forever.
+        const delay = attempt < 20 ? Math.min(120000, 4000 * (attempt + 1)) : 20 * 60000;
         retryTimer = setTimeout(() => load(attempt + 1), delay);
       }
     };
@@ -13179,7 +13183,9 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       if (retryTimer) clearTimeout(retryTimer);
       // Close the context on unmount so scheduled clips stop (no ghost audio over the
       // admin UI after exit) and we don't leak toward Chrome's ~6-context ceiling.
-      try { audioCtxRef.current?.close(); } catch { /* ignore */ }
+      // close() REJECTS if already closed — swallow it (an unhandled rejection trips
+      // the app's fatal error banner).
+      try { const p = audioCtxRef.current?.close?.(); if (p && p.catch) p.catch(() => {}); } catch { /* ignore */ }
       audioCtxRef.current = null;
     };
   }, []);
@@ -13254,6 +13260,12 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       if (voiceUnlocked && !vocabReady) continue;
       seen.add(k);                                                          // mark announced even when locked so unlocking later won't dump a backlog
       if (!voiceUnlocked) continue;
+      // Freshness guard: only announce a RECENT transition. After a long vocab-load
+      // outage (retry-forever) the catch-up would otherwise recite orders that went
+      // ready many minutes ago — already collected or hidden from the board. Marked
+      // seen above, so a stale one is skipped for good, not re-evaluated.
+      const ts = o.readyAt || o.outOfStockAt || o.comingTomorrowAt || o.updatedAt;
+      if (!ts || Date.now() - new Date(ts).getTime() > ANNOUNCE_MAX_AGE_MS) continue;
       const ctx = audioCtxRef.current;
       // Backlog cap: if clips are already queued far past now (a batch of orders just
       // went ready), skip rather than pile on — there's no mute, so an unbounded queue
