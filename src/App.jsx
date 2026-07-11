@@ -40,6 +40,7 @@ import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/La
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
+import { printOrderSlips } from "./print/orderSlip";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -5520,6 +5521,10 @@ function AssistantView({ products, onExit, orders = [] }) {
       }
       if (normalizedPhone) upsertCustomer(normalizedPhone, customerName, now, marketingOptIn);
       setLastOrders(placed);
+      // Print the customer order slip(s) — one per order, in a single 80mm print
+      // job (thermal via the browser dialog, same as the POS). Fire-and-forget so
+      // a print hiccup never blocks the placement; WhatsApp still goes out above.
+      if (placed.length) printOrderSlips(placed).catch(err => console.warn("order slip print failed:", err));
       // Keep clothing REFILL items in the cart so the user can place them next
       // via the floating Place Refill Request bar. Just-placed customer lines
       // (sneakers + clothing-customer) drop out.
