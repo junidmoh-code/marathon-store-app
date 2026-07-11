@@ -5162,14 +5162,14 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 
 function AssistantView({ products, onExit, orders = [] }) {
   const [search, setSearch]                             = useState("");
-  // Single 3-way mode selector (replaces the old Sneakers/Clothing toggle +
-  // separate Refill/Customer toggle):
+  // Mode selector — now a 2-way toggle (Sneakers / CR):
   //   "sneaker"  → sneakers, customer order (photo grid + size sheet)
-  //   "clothing" → clothing FOR A CUSTOMER → Hub C (same photo grid + size
-  //                 sheet UX as sneakers; full customer checkout + Order Queue)
   //   "cr"       → Clothing Refill (bulk multi-size qty list → hub2/hub3)
-  // Helpers below derive product-type filtering, the card layout, and the
-  // per-line intent from this one value.
+  // The customer-clothing mode ("clothing" → Hub C) was REMOVED from the
+  // assistant view; its code paths remain (harmless, keyed off mode which can
+  // no longer be "clothing") but the toggle no longer offers it. Helpers below
+  // derive product-type filtering, the card layout, and the per-line intent
+  // from this one value.
   const [mode, setMode]                                 = useState("sneaker");
   const wantsClothing = mode === "clothing" || mode === "cr"; // product-type filter
   const isRefillMode  = mode === "cr";                        // bulk refill card UX
@@ -5681,7 +5681,7 @@ function AssistantView({ products, onExit, orders = [] }) {
             CR        → Clothing Refill (bulk multi-size, → hub2/hub3) */}
       <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
         <div style={{ display:"flex", width:"100%", maxWidth:360, background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
-          {[["sneaker","Sneakers"],["clothing","Clothing"],["cr","CR"]].map(([val, label]) => {
+          {[["sneaker","Sneakers"],["cr","CR"]].map(([val, label]) => {
             const on = mode === val;
             return (
               <button key={val} onClick={() => { setMode(val); resetSheet(); }}
@@ -5721,12 +5721,8 @@ function AssistantView({ products, onExit, orders = [] }) {
       </div>
       )}
 
-      {/* Mode hint line — clarifies where each clothing mode's orders go. */}
-      {mode === "clothing" && (
-        <div style={{ textAlign:"center", fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.3px", padding:"0 14px 8px" }}>
-          Customer clothing orders are sent to {HUB_LABELS.hubC}
-        </div>
-      )}
+      {/* Mode hint line — clarifies where CR refill orders go. (The customer
+          "Clothing → Hub C" mode was removed; only Sneakers + CR remain.) */}
       {mode === "cr" && (
         <div style={{ textAlign:"center", fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.3px", padding:"0 14px 8px" }}>
           Store refill — set quantities per size
