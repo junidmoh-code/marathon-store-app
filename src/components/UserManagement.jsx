@@ -93,16 +93,28 @@ const ROLES = [
   { key: "warehouse",       label: "Warehouse" },
 ];
 
-// Stock role (/users/{uid}/stockRole) — gates inventory writes in the RTDB rules,
-// SEPARATE from the app `role` above. Receiving needs warehouse|admin; transfers
-// need store|warehouse|admin; POS sales need pos|store|admin; adjustments admin.
+// Quick-setup shortcuts. These grant NOTHING on their own — tapping one just
+// fills the toggles + stock work below with a typical set for that job. Ordered
+// simplest → broadest.
+const PRESETS = [
+  { key: "store_assistant", label: "Store Asst" },
+  { key: "warehouse",       label: "Warehouse" },
+  { key: "admin",           label: "Admin" },
+];
+
+// Stock work (/users/{uid}/stockRole) — gates inventory WRITES in the RTDB rules.
+// This is a SINGLE choice (pick one), because the database stores one value and
+// the capabilities overlap in a way that doesn't split into independent flags
+// (e.g. there's no "receive + sell but not transfer" level). So it's shown as a
+// radio list — the honest visual grammar: toggles for independent on/off grants,
+// radios for pick-one. "Admin" writes as stockRole:"admin" but reads as "Full".
 // "None" clears the field (no stock-write access).
-const STOCK_ROLES = [
-  { key: "",          label: "None" },
-  { key: "store",     label: "Store" },
-  { key: "warehouse", label: "Warehouse" },
-  { key: "pos",       label: "POS" },
-  { key: "admin",     label: "Admin" },
+const STOCK_WORK = [
+  { key: "",          label: "None",      desc: "Can’t change stock" },
+  { key: "store",     label: "Store",     desc: "Transfers & till sales" },
+  { key: "warehouse", label: "Warehouse", desc: "Receiving & transfers" },
+  { key: "pos",       label: "POS",       desc: "Till sales only" },
+  { key: "admin",     label: "Full",      desc: "Everything, incl. count fixes" },
 ];
 
 // ─── Role presets ─────────────────────────────────────────────────────────────
@@ -520,7 +532,8 @@ function UserDetailView({ user, onBack }) {
   // preset (permissions + stockRole). Confirm first because it overwrites any
   // custom toggles the account already has.
   function onTapRole(roleKey) {
-    if (roleKey === localRole) return;
+    // Always prompt — Quick setup can be re-applied to reset the toggles even
+    // when the account already carries that role.
     setPendingRole(roleKey);
   }
   async function applyRolePreset(roleKey) {
@@ -554,8 +567,8 @@ function UserDetailView({ user, onBack }) {
       autoStock = stockRoleForRole(localRole);
       patch.stockRole = autoStock;
       setLocalStockRole(autoStock);
-      const label = STOCK_ROLES.find((r) => r.key === autoStock)?.label || autoStock;
-      setStockHint(`Stock Role set to ${label} so this works`);
+      const label = STOCK_WORK.find((r) => r.key === autoStock)?.label || autoStock;
+      setStockHint(`Stock set to ${label} so this works`);
       clearTimeout(hintTimer.current);
       hintTimer.current = setTimeout(() => setStockHint(null), 3200);
     }
@@ -639,23 +652,29 @@ function UserDetailView({ user, onBack }) {
           </div>
         </div>
 
-        <SectionRow label="Role" hint="Sets a starter preset — tap to apply" saved={savedKey === "role"} saving={savingKey === "role"} />
-        <div style={{ background: CARD, borderRadius: 12, padding: 4, marginBottom: 22,
-                      display: "flex", gap: 2 }}>
-          {ROLES.map((r) => (
+        {/* Quick setup — a helper, not a control. It only fills the toggles +
+            stock work below; it grants nothing by itself. Kept visually light
+            (ghost pills, "Quick setup" label) so it doesn't read as a second
+            role selector competing with the toggles. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 4px 8px", marginTop: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, color: TEXT_2, letterSpacing: "0.04em", textTransform: "uppercase" }}>Quick setup</span>
+          <span style={{ fontSize: 11, color: TEXT_3 }}>fills the toggles below</span>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 22, flexWrap: "wrap" }}>
+          {PRESETS.map((r) => (
             <button key={r.key}
                     onClick={() => onTapRole(r.key)}
-                    style={{ flex: 1, padding: "9px 6px", border: "none",
-                             background: localRole === r.key ? BLUE : "transparent",
-                             color: localRole === r.key ? "#fff" : TEXT_2,
-                             borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: "pointer",
-                             transition: "all 160ms cubic-bezier(.2,.9,.3,1)" }}>
+                    style={{ flex: 1, minWidth: 92, padding: "9px 10px",
+                             background: "transparent", border: `1px solid ${localRole === r.key ? BLUE : TEXT_3}`,
+                             color: localRole === r.key ? BLUE_L : "#fff",
+                             borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                             fontFamily: FONT, transition: "all 160ms cubic-bezier(.2,.9,.3,1)" }}>
               {r.label}
             </button>
           ))}
         </div>
 
-        <SectionRow label="Permissions" saved={savedKey != null && ALL_PERMISSIONS.some((p) => p.key === savedKey)} />
+        <SectionRow label="Permissions" saved={savedKey != null && (savedKey === "role" || ALL_PERMISSIONS.some((p) => p.key === savedKey))} />
         {PERMISSION_GROUPS.map((group) => (
           <div key={group.title} style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11, color: TEXT_2, padding: "0 4px 6px", fontWeight: 600 }}>{group.title}</div>
@@ -679,26 +698,15 @@ function UserDetailView({ user, onBack }) {
           <LockIcon /> Staff management is Super-Admin only and can't be granted here.
         </div>
 
-        <SectionRow label="Stock Role" saved={savedKey === "stockRole"} saving={savingKey === "stockRole"} />
-        <div style={{ background: CARD, borderRadius: 12, padding: 4, marginBottom: 6,
-                      display: "flex", gap: 2 }}>
-          {STOCK_ROLES.map((r) => (
-            <button key={r.key || "none"}
-                    onClick={() => setStockRole(r.key)}
-                    style={{ flex: 1, padding: "9px 4px", border: "none",
-                             background: localStockRole === r.key ? BLUE : "transparent",
-                             color: localStockRole === r.key ? "#fff" : TEXT_2,
-                             borderRadius: 9, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
-                             transition: "all 160ms cubic-bezier(.2,.9,.3,1)" }}>
-              {r.label}
-            </button>
-          ))}
-        </div>
-        <div style={{ fontSize: 11, padding: "0 4px", marginBottom: 22, lineHeight: 1.5,
+        <SectionRow label="Stock — what they can change" hint="pick one" saved={savedKey === "stockRole"} saving={savingKey === "stockRole"} />
+        <RadioList
+          options={STOCK_WORK}
+          value={localStockRole}
+          onChange={setStockRole}
+        />
+        <div style={{ fontSize: 11, padding: "6px 4px 0", marginBottom: 22, lineHeight: 1.5,
                       color: stockHint ? GREEN : TEXT_2, transition: "color 200ms" }}>
-          {stockHint || (
-            <>Gates inventory writes. <span style={{ color: "#fff" }}>Receiving</span> (incl. opening stock on product-add) needs <b>Warehouse</b> or <b>Admin</b>; <span style={{ color: "#fff" }}>transfers</span> need Store, Warehouse, or Admin. Auto-set when you switch on a Stock permission.</>
-          )}
+          {stockHint || "The one thing that isn’t a toggle — you pick a single level, because the till & database enforce it as one. Auto-set when you switch on a Stock permission above."}
         </div>
 
         <SectionRow label="Store Access" saved={savedKey === "destShop"} saving={savingKey === "destShop"} />
@@ -817,6 +825,34 @@ function SavedChip({ saved, saving }) {
            strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
       Saved
     </span>
+  );
+}
+
+// Single-choice list (radio). The visual counterpart to a group of Toggles:
+// toggles = independent on/off, radios = pick exactly one. Used for the two
+// pick-one settings (Stock work, Store access).
+function RadioList({ options, value, onChange, bg = CARD }) {
+  return (
+    <div style={{ background: bg, borderRadius: 12, overflow: "hidden" }}>
+      {options.map((opt, i) => {
+        const on = (value || "") === (opt.key || "");
+        return (
+          <div key={opt.key || "none"} onClick={() => onChange(opt.key)}
+               style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", cursor: "pointer",
+                        borderBottom: i < options.length - 1 ? `1px solid ${DIVIDER}` : "none" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 15, color: "#fff" }}>{opt.label}</div>
+              {opt.desc && <div style={{ fontSize: 12, color: TEXT_2, marginTop: 1 }}>{opt.desc}</div>}
+            </div>
+            <div style={{ width: 20, height: 20, borderRadius: "50%", flexShrink: 0,
+                          border: `2px solid ${on ? BLUE : DIVIDER}`,
+                          display: "flex", alignItems: "center", justifyContent: "center", transition: "border-color 160ms" }}>
+              {on && <div style={{ width: 10, height: 10, borderRadius: "50%", background: BLUE }} />}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1059,36 +1095,29 @@ function AddStaffModal({ onClose, onCreated }) {
           />
         </FormField>
 
-        <FormField label="Role" hint="Picks a starter set of permissions & stock role.">
-          <div style={{ background: "#2c2c2e", borderRadius: 9, padding: 3, display: "flex", gap: 2 }}>
-            {ROLES.map((r) => (
+        <FormField label="Quick setup" hint="Fills the permissions & stock below with a typical set — adjust anything after.">
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {PRESETS.map((r) => (
               <button key={r.key} type="button"
                       onClick={() => changeRole(r.key)}
-                      style={{ flex: 1, padding: "7px 4px", border: "none",
-                               background: role === r.key ? BLUE : "transparent",
-                               color: role === r.key ? "#fff" : TEXT_2,
-                               borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer",
-                               transition: "all 150ms" }}>
+                      style={{ flex: 1, minWidth: 88, padding: "8px 10px",
+                               background: "transparent", border: `1px solid ${role === r.key ? BLUE : TEXT_3}`,
+                               color: role === r.key ? BLUE_L : "#fff",
+                               borderRadius: 999, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                               fontFamily: FONT, transition: "all 150ms" }}>
                 {r.label}
               </button>
             ))}
           </div>
         </FormField>
 
-        <FormField label="Stock role" hint="Lets them actually change inventory (auto-set from role & stock permissions).">
-          <div style={{ background: "#2c2c2e", borderRadius: 9, padding: 3, display: "flex", gap: 2 }}>
-            {STOCK_ROLES.map((r) => (
-              <button key={r.key || "none"} type="button"
-                      onClick={() => { setStockRole(r.key); setStockTouched(true); }}
-                      style={{ flex: 1, padding: "7px 3px", border: "none",
-                               background: stockRole === r.key ? BLUE : "transparent",
-                               color: stockRole === r.key ? "#fff" : TEXT_2,
-                               borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: "pointer",
-                               transition: "all 150ms" }}>
-                {r.label}
-              </button>
-            ))}
-          </div>
+        <FormField label="Stock — what they can change" hint="Pick one — lets them actually change inventory (auto-set from Quick setup & Stock permissions).">
+          <RadioList
+            options={STOCK_WORK}
+            value={stockRole}
+            onChange={(k) => { setStockRole(k); setStockTouched(true); }}
+            bg="#2c2c2e"
+          />
         </FormField>
 
         <FormField label="Permissions" hint="Defaults are based on role. Adjust as needed.">
