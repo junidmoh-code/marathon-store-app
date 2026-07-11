@@ -2722,12 +2722,27 @@ exports.chatStream = onRequest(
 // Token transforms: toAuthPassword + usernameToEmail from ./lib/auth-utils.cjs
 // (the same module Login.jsx imports its ES-module mirror from).
 
+// Every permission the staff editor can grant. MUST stay a superset of the
+// client catalog in src/components/UserManagement.jsx — createStaffUser rejects
+// any permission not listed here, so a missing key silently blocks account
+// creation (that is exactly how Warehouse users became un-creatable: their
+// default set includes stock_management/stock_add/barcode, which used to be
+// absent from this list). `display_refills` is retained as a legacy no-op so
+// old records that still carry it don't fail validation on edit.
 const VALID_PERMISSIONS = [
-  "store_assistant", "warehouse",   "source",       "display_refills",
-  "place_orders",    "product_admin","insights",    "broadcast",
-  "customer_data",   "user_management",
+  "store_assistant", "warehouse",     "source",        "place_orders",
+  "product_admin",   "insights",      "broadcast",     "customer_data",
+  "stock_management","stock_add",     "barcode",       "user_management",
+  "display_refills", // legacy no-op — kept for back-compat only
 ];
 const VALID_ROLES = ["admin", "store_assistant", "warehouse"];
+// Stock role gates inventory WRITES in the RTDB rules, separate from the app
+// role. createStaffUser accepts an optional stockRole so a Warehouse account is
+// write-capable the moment it's created (no separate second step). "" / absent
+// clears it (no stock-write access).
+const VALID_STOCK_ROLES = ["", "store", "warehouse", "pos", "admin"];
+// Sensible stockRole per app role when the client doesn't send one explicitly.
+const DEFAULT_STOCK_ROLE = { admin: "admin", warehouse: "warehouse", store_assistant: "" };
 
 // ─── PICKUP-BOARD VOICE (natural TTS) ─────────────────────────────────────────
 // One callable, pluggable engines for the TV pickup board's spoken announcements:
@@ -2836,7 +2851,7 @@ exports.createStaffUser = onCall(
   async (request) => {
     assertAdmin(request);
 
-    const { username, displayName, pin, role, permissions } = request.data || {};
+    const { username, displayName, pin, role, permissions, stockRole } = request.data || {};
 
     // ── Validate ──────────────────────────────────────────────────────────
     if (typeof username !== "string" || !/^[a-z0-9_]{1,30}$/.test(username)) {
@@ -2853,6 +2868,14 @@ exports.createStaffUser = onCall(
     }
     if (!Array.isArray(permissions) || permissions.some((p) => typeof p !== "string" || !VALID_PERMISSIONS.includes(p))) {
       throw new HttpsError("invalid-argument", `Permissions must be an array of: ${VALID_PERMISSIONS.join(", ")}.`);
+    }
+    // stockRole is optional. If omitted, fall back to a sensible default for the
+    // role so a Warehouse/Admin account can write stock immediately.
+    const resolvedStockRole = (stockRole === undefined || stockRole === null)
+      ? (DEFAULT_STOCK_ROLE[role] || "")
+      : stockRole;
+    if (typeof resolvedStockRole !== "string" || !VALID_STOCK_ROLES.includes(resolvedStockRole)) {
+      throw new HttpsError("invalid-argument", `Stock role must be one of: ${VALID_STOCK_ROLES.filter(Boolean).join(", ")} (or empty).`);
     }
     const cleanDisplayName = displayName.trim();
 
@@ -2901,6 +2924,9 @@ exports.createStaffUser = onCall(
         displayName: cleanDisplayName,
         role,
         permissions,
+        // Only write stockRole when non-empty; an empty string means "no stock
+        // access" and we keep the key absent (matches how the editor clears it).
+        ...(resolvedStockRole ? { stockRole: resolvedStockRole } : {}),
         createdAt: admin.database.ServerValue.TIMESTAMP,
       });
     } catch (err) {
