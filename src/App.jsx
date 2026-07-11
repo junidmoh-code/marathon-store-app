@@ -992,8 +992,13 @@ async function reverseClothingRefill({ store, productId, size, qty, hub, batchId
 // A shop's CR request is fulfilled per-size by the warehouse. Each fulfilled size
 // moves stock hub→store through the single writer, on its OWN reason so it stays
 // separable from the Clothing-SOLD replenishment ledger (which tallyRefills nets
-// under CLOTHING_REFILL_REASON). Negative-guarded — applyMovement refuses to drive
-// the hub cell below zero (returns insufficient_stock instead).
+// under CLOTHING_REFILL_REASON). Like dispatch (A1), the fulfil is allowed to
+// drive the hub cell NEGATIVE: central sometimes ships goods to the hub without
+// recording the transfer, so the hub physically holds units its cell doesn't
+// show — the fulfil is a physical fact (the units leave for the shop either
+// way), and the negative is the honest "hub needs a recount / central owes a
+// transfer" signal, not an error. The UI still defaults each line to what the
+// cell shows; going past it is a deliberate operator override.
 const CLOTHING_CR_REASON      = "clothing_cr";
 const CLOTHING_CR_UNDO_REASON = "clothing_cr_undo";
 
@@ -1017,6 +1022,7 @@ async function fireCRRefill({ store, productId, size, qty, from, actorRole, orde
     from, to: store,
     reason: CLOTHING_CR_REASON,
     actorRole: actorRole || null,
+    allowNegative: true,               // see block comment above — physical fact beats the uncounted cell
     link: { orderId, refillId: `cr_${store}_${productId}` },
     movementId: crMovementId("cr", orderId, createdAt, gen),
   });
@@ -7407,11 +7413,15 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
   const resolved = batch.items.filter(it => it.status);
 
   // Untouched lines default to "as much as Hub 2 has, up to requested" and track
-  // live stock; once the user edits/rejects a line we honour their value (clamped).
-  // Without a stock role, fulfil qtys are forced to 0 — reject stays available
-  // (it's a flag-only write, no stock moves).
-  const capOf   = (it) => Math.min(it.qty, availAt(it.size));
-  const displayQ = (it) => (!canFulfil || rejects[it.orderId]) ? 0 : (touched[it.orderId] ? Math.min(qtys[it.orderId] || 0, capOf(it)) : capOf(it));
+  // live stock; once the user edits/rejects a line we honour their value. The
+  // EDIT ceiling is the REQUESTED qty, not the hub cell: central sometimes ships
+  // goods without recording the transfer, so the cell under-reads what the hub
+  // physically holds — the operator may type what's actually in hand and the
+  // transfer drives the cell negative (allowNegative in fireCRRefill), flagging
+  // the miscount instead of blocking the shop's refill. Without a stock role,
+  // fulfil qtys are forced to 0 — reject stays available (flag-only, no stock).
+  const capOf   = (it) => Math.max(0, Math.min(it.qty, availAt(it.size)));   // floor 0: a negative cell must not seed a negative default
+  const displayQ = (it) => (!canFulfil || rejects[it.orderId]) ? 0 : (touched[it.orderId] ? Math.min(qtys[it.orderId] || 0, it.qty) : capOf(it));
   const setQ = (orderId, v, max) => { setTouched(t => ({ ...t, [orderId]: true })); setQtys(q => ({ ...q, [orderId]: Math.max(0, Math.min(max, Math.floor(Number(v) || 0))) })); };
   const toggleReject = (orderId) => setRejects(r => { const n = { ...r }; if (n[orderId]) delete n[orderId]; else n[orderId] = true; return n; });
 
@@ -7421,6 +7431,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
 
   const totalSend   = pending.reduce((s, it) => s + displayQ(it), 0);
   const totalReject = pending.filter(it => rejects[it.orderId]).length;
+  const overLines   = pending.filter(it => displayQ(it) > availAt(it.size)).length;
   const canSend = !busy && (totalSend > 0 || totalReject > 0);
 
   // Collapsed-row coverage summary: how much of this request Hub 2 can cover NOW.
@@ -7479,15 +7490,16 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
 
           {/* Per-size stepper GRID — verbatim the Transfer screen's size boxes
               (Transfer.jsx expanded product: compact box per size, several per
-              row, −/[number]/+ capped at hub stock) plus a corner ✕ to reject
-              the size. Stepper is ALWAYS visible — 0-stock sizes just cap at 0
-              ("0 here" in amber) instead of hiding the input. */}
+              row, −/[number]/+) plus a corner ✕ to reject the size. The stepper
+              runs to the REQUESTED qty even when the hub cell shows less/zero
+              (uncounted deliveries from central) — typing past "here" turns the
+              count amber as a heads-up that the cell will go negative. */}
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(118px, 1fr))", gap:8, marginTop:10 }}>
             {pending.map(it => {
               const avail = availAt(it.size);
-              const cap = capOf(it);
               const rejected = !!rejects[it.orderId];
               const q = displayQ(it);
+              const over = q > avail;                 // sending more than the cell shows
               return (
                 <div key={it.orderId} style={{ position:"relative", background:CARD, border: rejected ? "1px solid rgba(248,113,113,.5)" : q ? "1px solid rgba(74,222,128,.4)" : "1px solid rgba(60,110,255,.12)", borderRadius:10, padding:"7px 8px" }}>
                   {/* Corner ✕ — reject this size (tap again to undo). */}
@@ -7499,18 +7511,19 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
                   </button>
                   <div style={{ display:"flex", alignItems:"baseline", justifyContent:"space-between", marginBottom:5 }}>
                     <span style={{ fontSize:12, color:BLUE_L, fontWeight:700 }}><SizeTag size={it.size} /></span>
-                    <span style={{ fontSize:9, color: avail > 0 ? "rgba(255,255,255,.4)" : "#F5A623" }}>×{it.qty} · {avail} here</span>
+                    <span style={{ fontSize:9, color: over ? "#F5A623" : avail > 0 ? "rgba(255,255,255,.4)" : "#F5A623" }}>×{it.qty} · {avail} here</span>
                   </div>
                   {rejected ? (
                     <div style={{ height:30, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:"#F87171" }}>rejected</div>
                   ) : (
                     <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                      <button onClick={() => setQ(it.orderId, q - 1, cap)} style={{ ...crStepBtn, opacity: q <= 0 ? 0.4 : 1 }}>−</button>
-                      <input type="number" inputMode="numeric" min="0" max={cap} value={q || ""} placeholder="0"
-                             disabled={!canFulfil || cap <= 0}
-                             onChange={(e) => setQ(it.orderId, e.target.value, cap)}
-                             style={{ ...stockInput, width:"100%", minWidth:0, boxSizing:"border-box", textAlign:"center", padding:"6px 2px", opacity: (!canFulfil || cap <= 0) ? 0.5 : 1 }} />
-                      <button onClick={() => setQ(it.orderId, q + 1, cap)} style={{ ...crStepBtn, opacity: q >= cap ? 0.4 : 1 }}>+</button>
+                      <button onClick={() => setQ(it.orderId, q - 1, it.qty)} style={{ ...crStepBtn, opacity: q <= 0 ? 0.4 : 1 }}>−</button>
+                      <input type="number" inputMode="numeric" min="0" max={it.qty} value={q || ""} placeholder="0"
+                             disabled={!canFulfil}
+                             onChange={(e) => setQ(it.orderId, e.target.value, it.qty)}
+                             style={{ ...stockInput, width:"100%", minWidth:0, boxSizing:"border-box", textAlign:"center", padding:"6px 2px", opacity: !canFulfil ? 0.5 : 1,
+                                      ...(over ? { color:"#F5A623", border:"1px solid rgba(245,166,35,.55)" } : null) }} />
+                      <button onClick={() => setQ(it.orderId, q + 1, it.qty)} style={{ ...crStepBtn, opacity: q >= it.qty ? 0.4 : 1 }}>+</button>
                     </div>
                   )}
                 </div>
@@ -7519,6 +7532,14 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
           </div>
 
           {msg && <div style={{ marginTop:10, fontSize:11.5, color:"#F5A623" }}>{msg}</div>}
+
+          {/* Over-send heads-up — the send still goes through; the negative cell
+              is the recount signal, so this is informative, not blocking. */}
+          {overLines > 0 && (
+            <div style={{ marginTop:10, fontSize:11, color:"#F5A623" }}>
+              {overLines} size{overLines === 1 ? "" : "s"} over what the system shows at {hubLabel} — it will still send, and {hubLabel}'s count goes below zero (flag for recount / missing transfer from Central).
+            </div>
+          )}
 
           <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:12 }}>
             <div style={{ flex:1, fontSize:11, color:"rgba(255,255,255,.45)" }}>
