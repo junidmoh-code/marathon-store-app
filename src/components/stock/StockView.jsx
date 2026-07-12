@@ -18,6 +18,7 @@ import CountSession from "./CountSession";
 import SetQuantity from "./SetQuantity";
 import CountedStockReview from "./CountedStockReview";
 import StockErrorBoundary from "./StockErrorBoundary";
+import MoveExcess from "./MoveExcess";
 
 // Stock rework: Transfer (assistant-style, one-step) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
@@ -25,18 +26,22 @@ import StockErrorBoundary from "./StockErrorBoundary";
 // admin-only for now (gated below).
 const BASE_TABS = [
   ["transfer",  "Transfer"],
+  // "Health" moved to its own home-screen module (HealthView) — owner decision.
   ["locate",    "Where is it"],
   ["setqty",    "Set Qty"],
   ["history",   "History"],
   ["adjust",    "Adjust"],
   ["count",     "Count"],
   ["recount",   "Counted ⚠"],   // TEMPORARY recount tool (admin-only)
+  ["excess",    "Move Excess"],  // TEMPORARY bulk hub2→central rebalance (admin-only)
 ];
 
 // Tabs only an ADMIN sees — they write `adjustment` movements, which the rule layer
 // permits for stockRole==admin only. Everything else (transfer/locate/setqty[received,
 // opening]/history) is available to warehouse|admin. (Barcodes moved to the home page.)
-const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount"]);
+// Move Excess writes transfer_out (warehouse-permitted at the rule layer) but is a
+// bulk tool — deliberately admin-gated in the UI.
+const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount", "excess"]);
 
 // Desktop shell — icons per tool, grouped in the sidebar, plus a one-line
 // header per tool. Tool CONTENTS are unchanged (they render in the main pane).
@@ -91,6 +96,7 @@ export default function StockView({ products = [], onExit }) {
   const content = (
     <>
       {tab === "transfer" && <Transfer {...shared} />}
+      {tab === "excess"   && isAdmin && <MoveExcess {...shared} />}
       {tab === "locate"   && <Locator {...shared} />}
       {tab === "setqty"   && canStock && <SetQuantity {...shared} canStock={canStock} isAdmin={isAdmin} />}
       {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}

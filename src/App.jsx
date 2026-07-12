@@ -21,6 +21,8 @@ import TvDisplayMockup from "./components/TvDisplayMockup";
 import LabelPrintView from "./components/LabelPrintView";
 import AppErrorBoundary from "./AppErrorBoundary";
 import StockView from "./components/stock/StockView";
+import Hub2RefillQueue from "./components/stock/Hub2RefillQueue";
+import HealthView from "./components/stock/HealthView";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { input as stockInput } from "./components/stock/ui";
@@ -219,7 +221,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2425,6 +2427,9 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && { key:"customers", icon:RoleIcons.customers_db, name:"Customers", desc:"Customer database", onClick:()=>onSelect(ROLES.CUSTOMERS_DB) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && { key:"admin", icon:RoleIcons.admin, name:"Admin", desc:"Manage products", onClick:()=>onSelect(ROLES.ADMIN) },
       canAccessStock                                           && { key:"stock", icon:RoleIcons.stock, name:"Stock", desc:"Inventory & transfers", onClick:()=>onSelect(ROLES.STOCK) },
+      // Inventory Health — the AI refill engine's control centre, promoted to its
+      // own primary card (owner decision 2026-07-12). Same access as Stock.
+      canAccessStock                                           && { key:"health", icon:RoleIcons.insights, name:"Inventory Health", desc:"Refill engine & exceptions", onClick:()=>onSelect(ROLES.HEALTH) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
       isSuperAdmin && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc:"Photos · Names · Reorder · Voice", onClick:()=>onSelect(ROLES.AI_STUDIO) },
@@ -2578,7 +2583,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
 
       {/* ROLE GROUPS — each tile gated by hasPermission (shared `groups` data).
           Empty groups are hidden so staff with limited permissions don't see
-          empty headings. */}
+          empty headings. Inventory Health lives in the Administration group above. */}
       <div style={{ padding:"10px 14px 36px", background:"#000" }}>
         {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
           <GroupSection key={g.label} label={g.label}>
@@ -7748,7 +7753,11 @@ function WarehouseView({ products = [], orders, onExit }) {
       // Pine CRs on hub3 (placedAtHub, written by placeRefillRequests via
       // CR_HUB_BY_UNIVERSE; o.hub fallback covers legacy hub2-era orders).
       if ((o.placedAtHub || o.hub || "hub2") !== selectedHub) return;
-      const key = `${o.productId}__${o.createdAt}`;
+      // destShop in the key: PE and Trophy requests must NEVER share a card —
+      // warehouse staff always know exactly which store a batch is for (and the
+      // engine stamps one createdAt per store per scan, so its lines group into
+      // one card per product per store).
+      const key = `${o.productId}__${o.destShop || ""}__${o.createdAt}`;
       if (!byKey.has(key)) {
         byKey.set(key, {
           batchKey: key,
@@ -7764,6 +7773,11 @@ function WarehouseView({ products = [], orders, onExit }) {
       // destShop drives the hub→shop transfer on fulfil; all lines of one request
       // share it, so stamp the batch from the first line that carries it.
       if (!b.destShop && o.destShop) b.destShop = o.destShop;
+      // Engine-created requests get an AUTO chip so staff know no human placed it.
+      if (o.autoRefill) b.autoRefill = true;
+      // Shadow-mode previews are READ-ONLY: they show exactly how Live Mode will
+      // look but can't be fulfilled (fulfillCRBatch also refuses them).
+      if (o.autoShadow) b.shadow = true;
       b.items.push({
         orderId: o.id,
         size: o.size,
@@ -8213,6 +8227,9 @@ function WarehouseView({ products = [], orders, onExit }) {
   // so historical Insights + the OOS Tracker see it, exactly as before.
   // Returns { ok, fail, errors[] } so the sheet can surface partial failures.
   const fulfillCRBatch = async (batch, plan) => {
+    // Shadow previews are never fulfillable — hard guard in case any UI path
+    // slips one through (the card itself renders read-only).
+    if (batch?.shadow) return { ok: 0, fail: 0, errors: ["Shadow preview — enable Live Mode to fulfil"] };
     const now = new Date().toISOString();
     const store = batch.destShop;
     let ok = 0, fail = 0; const errors = [];
@@ -9142,6 +9159,11 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
           <div style={{ fontWeight:700, color:"#fff", fontSize:13, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{batch.productName}</div>
           <div style={{ color:"rgba(255,255,255,.45)", fontSize:10, marginTop:1 }}>
             {batch.destShop ? `${labelFor(batch.destShop)} · ` : ""}{fmtTime(batch.createdAt)}
+            {batch.autoRefill && (
+              <span style={{ marginLeft:6, fontSize:9, fontWeight:700, color:"#FBBF24", border:"1px solid rgba(251,191,36,.4)", borderRadius:5, padding:"1px 5px", verticalAlign:"middle" }}>
+                {batch.shadow ? "AUTO (SHADOW)" : "AUTO"}
+              </span>
+            )}
           </div>
         </div>
         <span style={{ flexShrink:0, fontSize:10.5, fontWeight:700, color:BLUE_L, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"3px 9px", whiteSpace:"nowrap" }}>
@@ -9151,7 +9173,24 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
         <span style={{ color:"#4A7FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s", fontSize:13, flexShrink:0 }}>▸</span>
       </div>
 
-      {open && (
+      {open && batch.shadow && (
+        // Shadow preview: exactly what Live Mode will create, but read-only.
+        <div style={{ padding:"2px 11px 11px", borderTop:"1px solid rgba(251,191,36,.2)" }}>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:10 }}>
+            {pending.map(it => (
+              <span key={it.orderId} style={{ border:"1px solid rgba(251,191,36,.35)", background:"rgba(251,191,36,.07)", borderRadius:10, padding:"6px 11px", fontSize:12.5 }}>
+                <b style={{ color:"#fff" }}>{it.size}</b>
+                <span style={{ color:"#FBBF24", fontWeight:700 }}> ×{it.qty}</span>
+              </span>
+            ))}
+          </div>
+          <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:10 }}>
+            Shadow preview — the engine would create this request for real in Live Mode. Nothing to action yet.
+          </div>
+        </div>
+      )}
+
+      {open && !batch.shadow && (
         <div style={{ padding:"2px 11px 11px", borderTop:"1px solid rgba(60,110,255,.12)" }}>
           {resolved.length > 0 && <SizeStatusChips items={resolved} />}
 
@@ -9252,6 +9291,14 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
   // Open = the working queue (only unresolved requests); History = resolved ones
   // (24h window upstream). Resolved requests LEAVE the main page entirely.
   const [view, setView] = useState("open");
+  // Store filter — PE and Trophy requests are separate cards (grouping key
+  // includes destShop) and this filter lets staff work ONE store's pile at a
+  // time, so pickers always know exactly which store they're fulfilling.
+  const [storeFilter, setStoreFilter] = useState("all");
+  const forStore = (arr) => storeFilter === "all" ? arr : arr.filter(b => (b.destShop || "") === storeFilter);
+  const storeCount = (arr, s) => arr.filter(b => (b.destShop || "") === s).length;
+  const shownActive = forStore(activeBatches);
+  const shownCompleted = forStore(completedBatches);
   const fmtTime = (iso) => {
     if (!iso) return "—";
     return new Date(iso).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
@@ -9268,8 +9315,16 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
       {/* Open / History pills */}
       <div style={{ display:"flex", gap:6 }}>
-        <button onClick={() => setView("open")} style={pill(view === "open")}>Open{activeBatches.length ? ` (${activeBatches.length})` : ""}</button>
-        <button onClick={() => setView("history")} style={pill(view === "history")}>History{completedBatches.length ? ` (${completedBatches.length})` : ""}</button>
+        <button onClick={() => setView("open")} style={pill(view === "open")}>Open{shownActive.length ? ` (${shownActive.length})` : ""}</button>
+        <button onClick={() => setView("history")} style={pill(view === "history")}>History{shownCompleted.length ? ` (${shownCompleted.length})` : ""}</button>
+      </div>
+      {/* Store pills — Marathon PE / Trophy refills never mix */}
+      <div style={{ display:"flex", gap:6 }}>
+        {[["all", "All stores"], ["marathon-pe", "Marathon PE"], ["trophy", "Trophy"]].map(([val, label]) => (
+          <button key={val} onClick={() => setStoreFilter(val)} style={pill(storeFilter === val)}>
+            {label}{val !== "all" && storeCount(activeBatches, val) ? ` (${storeCount(activeBatches, val)})` : ""}
+          </button>
+        ))}
       </div>
 
       {/* OPEN — the working queue. includeOlder keeps half-resolved requests
@@ -9279,7 +9334,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
       {view === "open" && (activeBatches.length > 0 ? (
         <DayCollapsible
           sectionKey="clothing-due"
-          items={activeBatches}
+          items={shownActive}
           dateOf={(b) => b.createdAt}
           keyOf={(b) => b.batchKey}
           includeOlder
@@ -9305,7 +9360,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
       ) : (
         <DayCollapsible
           sectionKey="clothing-done"
-          items={completedBatches}
+          items={shownCompleted}
           dateOf={(b) => b.resolvedAt || b.createdAt}
           keyOf={(b) => b.batchKey}
           emptyMessage="No completed clothing refills."
@@ -11373,7 +11428,7 @@ const SOURCE_TAB_ICON = {
   onhold:   <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
   clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
 };
-const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Clothing Sold"]];
+const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"]];
 
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [tab, setTab] = usePersistedTab("source", "today");
@@ -11670,7 +11725,10 @@ function SourceView({ onExit, orders, returnsLog, products }) {
                               photoForName={photoForName}
                               onResponse={handleResponse} />}
         {tab==="onhold"  && <SourceOnHoldTab items={onHoldMerged} />}
-        {tab==="clothing" && <ClothingSoldView products={products} />}
+        {/* "Clothing Sold" (per-store manual worklist) replaced by the Hub 2
+            auto-refill queue — the engine detects sold→below-target itself and
+            Central fulfils from this single tab (owner decision 2026-07-12). */}
+        {tab==="clothing" && <Hub2RefillQueue products={products} />}
     </>
   );
 
@@ -11752,7 +11810,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
       {/* TOP TABS — Today / History / On Hold */}
       <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8 }}>
-        {[["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Clothing Sold"]].map(([key, label]) => (
+        {[["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"]].map(([key, label]) => (
           <div key={key} onClick={() => setTab(key)}
                style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
             {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
@@ -15001,7 +15059,7 @@ function AppInner() {
   useEffect(() => {
     if (!role) return;
     // Stock is stockRole-gated (not permission-mapped) — drop non-stock users back home.
-    if (role === ROLES.STOCK && !canAccessStock) { setRole(null); return; }
+    if ((role === ROLES.STOCK || role === ROLES.HEALTH) && !canAccessStock) { setRole(null); return; }
     // AI Studio is isSuperAdmin-gated (not permission-mapped) — drop anyone
     // else (e.g. a stale persisted role) back to the selector instead of
     // leaving them on the null view.
@@ -15230,6 +15288,7 @@ function AppInner() {
   // persisted role or manual state gets null and drops back to the selector.
   else if (role === ROLES.AI_STUDIO) view = isSuperAdmin ? <AiStudioView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);

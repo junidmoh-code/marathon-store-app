@@ -94,3 +94,60 @@ export function useStockAlerts() {
   const val = usePath("stock_alerts");
   return val ? Object.entries(val).map(([id, a]) => ({ id, ...a })) : [];
 }
+
+// ── Refill-engine reads (Health tab) ─────────────────────────────────────────
+// All four nodes are written by the refillHealthScan Cloud Function only; the
+// app reads them for the exception dashboard. Shapes: see functions/refill-scan.cjs.
+
+// /stock_exceptions/latest → { computedAt, runId, belowTarget:{count,items}, ... }
+export function useStockExceptions() {
+  return usePath("stock_exceptions/latest");
+}
+
+// /stock_confidence → { computedAt, byLocation: { loc: { pid: {score,factors} } } }
+export function useStockConfidence() {
+  return usePath("stock_confidence");
+}
+
+// /refill_engine/shadow → { dest: { pid: { sizeKey: {qty,source,priority,...} } } }
+export function useEngineShadow() {
+  return usePath("refill_engine/shadow");
+}
+
+// /refill_engine/open → { dest: { pid: { sizeKey: {refillId,orderId,qty,...} } } }
+// The engine's LIVE open-intent locks — what it has already created and is
+// waiting on (R### orders in the warehouse queue / Source requests).
+export function useEngineOpen() {
+  return usePath("refill_engine/open");
+}
+
+// /refill_engine/runs → last runs, newest first (keys are time-sortable).
+export function useEngineRuns(limit = 8) {
+  const val = usePath("refill_engine/runs");
+  const arr = val ? Object.entries(val).map(([id, r]) => ({ id, ...r })) : [];
+  return arr.sort((a, b) => b.id.localeCompare(a.id)).slice(0, limit);
+}
+
+// /config/refillEngine → { enabled, mode, routes, ... }
+export function useEngineConfig() {
+  return usePath("config/refillEngine");
+}
+
+// /stock_targets/{loc} → { pid: { sizeKey: {target,minQty,...} } } (encoded keys).
+export function useStockTargets(locationId) {
+  return usePath(locationId ? `stock_targets/${locationId}` : "stock_targets");
+}
+
+// /stock_targets_decisions → { loc: { pid: {decision,decidedAt} } } — postpone
+// decisions from the Decision Queue (keep / snooze / until_change); the engine
+// skips products while a decision is active.
+export function useTargetDecisions() {
+  return usePath("stock_targets_decisions");
+}
+
+// /receiving_session → { active, openedAt, closedAt } — while active the
+// engine is fully paused (no requests, no balancing, no exception recompute)
+// so supplier receiving at Central is never interrupted by automation.
+export function useReceivingSession() {
+  return usePath("receiving_session");
+}
