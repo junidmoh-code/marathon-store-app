@@ -7632,7 +7632,6 @@ function AssistantView({ products, onExit, orders = [] }) {
 // strip icons). Keyed by the same tab keys used in tabDefs.
 const WH_TAB_ICON = {
   queue:    <><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></>,
-  restock:  <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,
   clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
   refills:  <><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></>,
   layby:    <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/>,
@@ -8824,44 +8823,17 @@ function WarehouseView({ products = [], orders, onExit }) {
           onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
       )}
 
-      {/* TABS — CR Orders exists on the CR hubs (hub2 for PE/Trophy, hub3 for
-          Pine — see CR_HUB_BY_UNIVERSE); Restock Status on hub1/hub3. */}
+      {/* TABS — same hub→tabs wiring as the desktop rail; tabDefs is the single
+          source of truth (CR Orders on the CR hubs: hub2 for PE/Trophy, hub3 for
+          Pine — see CR_HUB_BY_UNIVERSE). Only the mobile chrome differs below. */}
       <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
-        {(selectedHub === "hubC"
-          ? [
-              // Trial: Hub C only fulfils customer clothing orders, so it gets
-              // the Order Queue and nothing else.
-              ["queue",    "Order Queue",     null],
-            ]
-          : selectedHub === "hub2"
-          ? [
-              ["queue",    "Order Queue",     null],
-              ["clothing", "CR Orders",       clothingBadge],
-              ["refills",  "Display Refills", refillsBadge],
-              ["layby",    "Layby",           laybyBadge],
-            ]
-          : selectedHub === "hub3"
-          ? [
-              // Pine's hub: mirrors hub2's CR Orders (fulfils from hub3 stock)
-              // alongside the hub1/hub3 Restock Status tab.
-              ["queue",    "Order Queue",     null],
-              ["clothing", "CR Orders",       clothingBadge],
-              ["refills",  "Display Refills", refillsBadge],
-              ["layby",    "Layby",           laybyBadge],
-            ]
-          : [
-              ["queue",   "Order Queue",     null],
-              ["refills", "Display Refills", refillsBadge],
-              ["layby",   "Layby",           laybyBadge],
-            ]
-        ).map(([key, label, badge]) => (
+        {tabDefs.map(([key, label, badge]) => (
           <div key={key} onClick={() => setMainTab(key)}
                style={{ flex:1, padding:"10px 6px", borderRadius:10, fontSize:11.5, fontWeight:600, textAlign:"center", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5,
                         background: mainTab===key ? "rgba(60,110,255,.12)" : "rgba(6,9,20,1)",
                         border: mainTab===key ? "1px solid rgba(60,110,255,.4)" : "1px solid rgba(255,255,255,.07)",
                         color: mainTab===key ? "#4A7FFF" : "rgba(255,255,255,.3)" }}>
             {key === "queue"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>}
-            {key === "restock"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>}
             {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
             {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
             {key === "layby"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/></svg>}
