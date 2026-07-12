@@ -367,7 +367,15 @@ exports.dispatchHoldRevealSweep = onSchedule(
   { schedule: "every 1 minutes", region: "europe-west1", timeoutSeconds: 120, memory: "256MiB" },
   async () => {
     const db = admin.database();
-    const orders = (await db.ref("orders").once("value")).val() || {};
+    // COST FIX (2026-07-13 audit): query ONLY pending-reveal orders instead of
+    // downloading the whole /orders node every minute (~0.94 GB/day). The loop
+    // below already acted solely on readyNotifyPending === true, and that flag
+    // is written atomically with every status transition by updateStatus (the
+    // single writer), so this filter returns exactly the same set — behaviour
+    // is identical, only the read shrinks. Requires /orders .indexOn
+    // "readyNotifyPending" (applied in the console; admin SDK would fall back
+    // to an unindexed scan rather than fail if it were missing).
+    const orders = (await db.ref("orders").orderByChild("readyNotifyPending").equalTo(true).once("value")).val() || {};
     const now = Date.now();
     let sent = 0, cleared = 0;
     for (const [id, o] of Object.entries(orders)) {
