@@ -39,6 +39,23 @@ function saTodayKey(nowMs) {
 }
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+// Deterministic fingerprint of a product's stock across the whole network —
+// the "ignore until inventory changes" decision stores this; ANY movement
+// (receive, sale, transfer, adjustment) changes it and resurfaces the card.
+// MUST stay in lockstep with the copy in src/components/stock/NoTargetQueue.jsx.
+function stockFingerprint(stock, pid) {
+  const parts = [];
+  for (const loc of Object.keys(stock || {}).sort()) {
+    const bySize = stock[loc]?.[pid];
+    if (!bySize) continue;
+    for (const sizeKey of Object.keys(bySize).sort()) {
+      const q = num(bySize[sizeKey]?.qty);
+      if (q !== 0) parts.push(`${loc}:${sizeKey}:${q}`);
+    }
+  }
+  return parts.join("|") || "empty";
+}
 const cellQty = (stock, loc, pid, size) =>
   num(stock?.[loc]?.[pid]?.[encodeSizeKey(size)]?.qty);
 const avail = (q) => Math.max(q, 0);
@@ -294,20 +311,44 @@ function computeRefillPlan(snapshot) {
     }
   }
 
-  // ── No Target Configured (v5): stock the engine is NOT managing ─────────────
-  // Clothing physically present at a managed location with no target node for
-  // that product there. Not excess, not a warning — an ACTIONABLE QUEUE: the
-  // humans configure targets, transfer, exclude (target 0), or record a
-  // "keep as is" decision (/stock_targets_decisions) — any of which clears it.
+  // ── Decision Queue (v6): inventory SETUP, separated from operations ─────────
+  // Two kinds of entries, all clothing, all actionable from Health:
+  //   • NEW PRODUCT (loc "central") — stock at Central for a product with no
+  //     targets at ANY destination: not yet introduced into the network. The
+  //     primary Central workflow: set targets → initial distribution → engine
+  //     takes over.
+  //   • loc pe/trophy/hub2 — stock sitting at a managed location with no
+  //     target node for that product there (leftover/unconfigured).
+  // Decision records (/stock_targets_decisions/{loc}/{pid}) suppress entries:
+  //   keep         — permanent (legacy)
+  //   snooze       — until the `until` timestamp passes (remind me later)
+  //   until_change — until the product's network-wide stock FINGERPRINT changes
+  //                  (any receive/sale/transfer resurfaces the card)
   const noTarget = [];
+  const decisionActive = (loc, pid) => {
+    const d = targetDecisions?.[loc]?.[pid];
+    if (!d) return false;
+    if (d.decision === "keep") return true;
+    if (d.decision === "snooze") return Date.parse(d.until || 0) > nowMs;
+    if (d.decision === "until_change") return d.fingerprint === stockFingerprint(stock, pid);
+    return false;
+  };
   for (const loc of dests) {
     for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
       if (!isClothing(products?.[pid])) continue;
       if (targets?.[loc]?.[pid]) continue;             // some target exists → managed
-      if (targetDecisions?.[loc]?.[pid]) continue;     // human already decided: keep as is
+      if (decisionActive(loc, pid)) continue;
       const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
       if (units > 0) noTarget.push({ loc, pid, units });
     }
+  }
+  // New products at Central (no targets anywhere in the network yet).
+  for (const [pid, bySize] of Object.entries(stock?.central || {})) {
+    if (!isClothing(products?.[pid])) continue;
+    if (dests.some((d) => targets?.[d]?.[pid])) continue;   // introduced somewhere
+    if (decisionActive("central", pid)) continue;
+    const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
+    if (units > 0) noTarget.push({ loc: "central", pid, units, isNew: true });
   }
   // (v5: the Policy Warnings layer was REMOVED at the owner's direction — the
   // engine no longer second-guesses targets. Unconfigured stock is surfaced as
@@ -394,4 +435,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, encodeSizeKey, saTodayKey, isClothing };
+module.exports = { computeRefillPlan, computeConfidence, resolveTarget, encodeSizeKey, saTodayKey, isClothing, stockFingerprint };

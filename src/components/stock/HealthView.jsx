@@ -17,9 +17,11 @@
 // + healthWidgets.jsx — the existing design language, no new system.
 
 import React, { useMemo, useState } from "react";
+import { ref, update } from "firebase/database";
+import { database } from "../../firebase";
 import {
   useStockExceptions, useEngineShadow, useEngineOpen, useEngineRuns,
-  useEngineConfig, useRefillRequests,
+  useEngineConfig, useRefillRequests, useReceivingSession,
 } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
@@ -192,8 +194,20 @@ export default function HealthView({ products = [], onExit }) {
   const runs = useEngineRuns(8);
   const config = useEngineConfig();
   const openRequests = useRefillRequests("open");
+  const session = useReceivingSession();
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
+  const canRunSession = ["store", "warehouse", "admin"].includes(actorRole);
+
+  const toggleSession = async () => {
+    if (!canRunSession) return;
+    const now = new Date().toISOString();
+    await update(ref(database), {
+      receiving_session: session?.active
+        ? { active: false, openedAt: session.openedAt || null, closedAt: now }
+        : { active: true, openedAt: now, closedAt: null },
+    }).catch(() => {});
+  };
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const nameOf = (pid) => byId.get(pid)?.name || pid || "—";
@@ -290,7 +304,7 @@ export default function HealthView({ products = [], onExit }) {
         );
       case "noTarget":
         return (
-          <DetailShell title="No Target Configured" sub="Decide per product: set targets · transfer · exclude · keep — the card clears instantly" count={count("noTarget")} onBack={back}>
+          <DetailShell title="Decision Queue" sub="Introduce new products · set targets · distribute · exclude · postpone — cards clear instantly" count={count("noTarget")} onBack={back}>
             <NoTargetQueue products={products} />
           </DetailShell>
         );
@@ -342,6 +356,29 @@ export default function HealthView({ products = [], onExit }) {
       <div style={{ padding: "4px 12px 40px" }}>
         {detail || (
           <>
+            {/* Receiving session — inventory SETUP mode: engine fully paused */}
+            <div style={{ ...GLASS, padding: "11px 14px", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, border: session?.active ? "1px solid rgba(251,191,36,.45)" : undefined }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: session?.active ? AMBER : "#fff" }}>
+                  Receiving session {session?.active ? "OPEN — engine paused" : "closed"}
+                </div>
+                <div style={{ color: GRAY, fontSize: 11, marginTop: 2 }}>
+                  {session?.active
+                    ? `Since ${fmtTs(session.openedAt)} — receive · count · QC · distribute, then close to resume automation`
+                    : "Open when a supplier shipment arrives at Central — pauses all automatic requests and balancing"}
+                </div>
+              </div>
+              {canRunSession && (
+                <button onClick={toggleSession}
+                        style={{ flexShrink: 0, padding: "9px 14px", borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: FONT,
+                                 border: session?.active ? "1px solid rgba(0,150,70,.5)" : "1px solid rgba(251,191,36,.45)",
+                                 background: session?.active ? "rgba(0,150,70,.15)" : "rgba(251,191,36,.1)",
+                                 color: session?.active ? GREEN : AMBER }}>
+                  {session?.active ? "Close session — resume engine" : "Open session"}
+                </button>
+              )}
+            </div>
+
             {/* Hero: score + engine state */}
             <div style={{ ...GLASS, padding: "16px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 16 }}>
               <div style={{ textAlign: "center" }}>
@@ -380,8 +417,8 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Stranded upstream — transfer from here" onClick={() => setScreen("missingProducts")} />
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
-              <StatCard label="No Target Configured" value={count("noTarget")} tone={count("noTarget") ? BLUE_L : GREEN}
-                        sub="Stock awaiting a target decision" onClick={() => setScreen("noTarget")} />
+              <StatCard label="Decision Queue" value={count("noTarget")} tone={count("noTarget") ? BLUE_L : GREEN}
+                        sub="New products & unconfigured stock" onClick={() => setScreen("noTarget")} />
               <StatCard label="Negative Inventory" value={count("negativeCells")} tone={count("negativeCells") ? RED : GREEN}
                         sub="Oversell / count holes — one-tap fix" onClick={() => setScreen("negative")} />
               <StatCard label="Stuck Refills" value={count("stuckRefills")} tone={count("stuckRefills") ? RED : GREEN}

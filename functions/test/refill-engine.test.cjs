@@ -197,19 +197,47 @@ test("three states: no target = noTarget surface (NOT excess); explicit 0 = all 
   assert.ok(!plan.intents.some((i) => i.productId === "pUnset"));
 });
 
-test("keep-as-is decision clears a product from the No Target queue", () => {
+test("decision types: keep (permanent), snooze (expires), until_change (fingerprint)", () => {
   const over = {
     products: { p1: PRODUCTS.p1, pUnset: { productType: "clothing", sizes: ["M"] } },
     targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
     stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: { pUnset: { M: cell(6) } }, central: {}, trophy: {} },
   };
-  const before = computeRefillPlan(base(over));
-  assert.equal(before.exceptions.noTarget.count, 1);
-  const after = computeRefillPlan(base({
-    ...over,
-    targetDecisions: { hub2: { pUnset: { decision: "keep", decidedAt: iso(1) } } },
+  assert.equal(computeRefillPlan(base(over)).exceptions.noTarget.count, 1);
+  // keep: permanent
+  assert.equal(computeRefillPlan(base({ ...over,
+    targetDecisions: { hub2: { pUnset: { decision: "keep" } } } })).exceptions.noTarget.count, 0);
+  // snooze: suppressed until `until`, resurfaces after
+  assert.equal(computeRefillPlan(base({ ...over,
+    targetDecisions: { hub2: { pUnset: { decision: "snooze", until: new Date(NOW + 30 * 864e5).toISOString() } } } })).exceptions.noTarget.count, 0);
+  assert.equal(computeRefillPlan(base({ ...over,
+    targetDecisions: { hub2: { pUnset: { decision: "snooze", until: new Date(NOW - 1).toISOString() } } } })).exceptions.noTarget.count, 1, "expired snooze resurfaces");
+  // until_change: suppressed while the network fingerprint matches, resurfaces on ANY qty change
+  const { stockFingerprint } = require("../lib/refill-engine.cjs");
+  const fp = stockFingerprint(base(over).stock, "pUnset");
+  assert.equal(computeRefillPlan(base({ ...over,
+    targetDecisions: { hub2: { pUnset: { decision: "until_change", fingerprint: fp } } } })).exceptions.noTarget.count, 0);
+  const changed = JSON.parse(JSON.stringify(base(over).stock));
+  changed.hub2.pUnset.M = cell(5); // one unit sold
+  assert.equal(computeRefillPlan(base({ ...over, stock: changed,
+    targetDecisions: { hub2: { pUnset: { decision: "until_change", fingerprint: fp } } } })).exceptions.noTarget.count, 1, "inventory change resurfaces the card");
+});
+
+test("NEW PRODUCT at Central (no targets anywhere) enters the Decision Queue", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: PRODUCTS.p1, pNew: { productType: "clothing", sizes: ["M", "L"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: {}, trophy: {}, central: { pNew: { M: cell(20), L: cell(15) } } },
   }));
-  assert.equal(after.exceptions.noTarget.count, 0, "decided products never reappear");
+  const entry = plan.exceptions.noTarget.items.find((n) => n.pid === "pNew");
+  assert.deepEqual(entry, { loc: "central", pid: "pNew", units: 35, isNew: true });
+  // ...but a product introduced ANYWHERE no longer counts as new at Central.
+  const introduced = computeRefillPlan(base({
+    products: { pNew: { productType: "clothing", sizes: ["M"] } },
+    targets: { trophy: { pNew: { M: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": {}, hub2: {}, trophy: { pNew: { M: cell(2) } }, central: { pNew: { M: cell(20) } } },
+  }));
+  assert.ok(!introduced.exceptions.noTarget.items.some((n) => n.pid === "pNew" && n.loc === "central"));
 });
 
 test("engine is driven by explicit targets only — no default-run auto-activation", () => {

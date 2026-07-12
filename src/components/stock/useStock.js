@@ -138,8 +138,16 @@ export function useStockTargets(locationId) {
   return usePath(locationId ? `stock_targets/${locationId}` : "stock_targets");
 }
 
-// /stock_targets_decisions → { loc: { pid: {decision,decidedAt} } } — "keep as
-// is" acks from the Health No Target queue; the engine skips decided products.
+// /stock_targets_decisions → { loc: { pid: {decision,decidedAt} } } — postpone
+// decisions from the Decision Queue (keep / snooze / until_change); the engine
+// skips products while a decision is active.
 export function useTargetDecisions() {
   return usePath("stock_targets_decisions");
+}
+
+// /receiving_session → { active, openedAt, closedAt } — while active the
+// engine is fully paused (no requests, no balancing, no exception recompute)
+// so supplier receiving at Central is never interrupted by automation.
+export function useReceivingSession() {
+  return usePath("receiving_session");
 }

@@ -63,6 +63,18 @@ async function runScan() {
       await db.ref(`refill_engine/runs/${runId}`).set({ startedAt, skipped: "engine disabled" });
       return;
     }
+    // RECEIVING SESSION (owner decision 2026-07-12 v6): while Central is
+    // receiving/counting/distributing a supplier shipment, the engine stands
+    // completely down — no requests, no shadow sync, no excess/exception
+    // recalculation — so automation never interrupts the receiving process.
+    // The first scan after the session closes recomputes everything fresh.
+    const session = (await db.ref("receiving_session").once("value")).val();
+    if (session?.active) {
+      await db.ref(`refill_engine/runs/${runId}`).set({
+        startedAt, skipped: `paused — receiving session open since ${session.openedAt || "?"}`,
+      });
+      return;
+    }
     const locs = [...new Set([...Object.keys(config.routes || {}), ...Object.values(config.routes || {})])];
     const windowStart = new Date(nowMs - MOVEMENTS_WINDOW_DAYS * 864e5).toISOString();
     const [targetDecisions, targets, products, openIndex, refillRequests, orders, movementsSnap, ...stockSnaps] = await Promise.all([
