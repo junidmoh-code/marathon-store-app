@@ -98,20 +98,17 @@ function computeRefillPlan(snapshot) {
   const ctx = { config, targets, products, recentSaleSet };
 
   // ── inbound & reservations from EXISTING open intents ──────────────────────
-  // inbound[dest|pid|size] = qty already on its way; reserved[src|pid|size] =
-  // qty already promised FROM a source. Manual (human-placed) Shop Refill order
-  // lines count as inbound too, so the engine never duplicates a request a shop
-  // just placed — engine-created orders carry autoRefill:true and are already
-  // represented by their open lock, so they're excluded here.
+  // inbound[dest|pid|size] = qty already on its way. Manual (human-placed) Shop
+  // Refill order lines count as inbound too, so the engine never duplicates a
+  // request a shop just placed — engine-created orders carry autoRefill:true and
+  // are already represented by their open lock, so they're excluded here.
   const inbound = new Map();
-  const reserved = new Map();
   const bump = (map, key, q) => map.set(key, (map.get(key) || 0) + q);
   for (const [dest, byPid] of Object.entries(openIndex)) {
     for (const [pid, bySize] of Object.entries(byPid || {})) {
       for (const [sizeKey, entry] of Object.entries(bySize || {})) {
         if (!entry) continue;
         bump(inbound, `${dest}|${pid}|${sizeKey}`, num(entry.qty) || 1);
-        if (entry.source) bump(reserved, `${entry.source}|${pid}|${sizeKey}`, num(entry.qty) || 1);
       }
     }
   }
@@ -120,7 +117,6 @@ function computeRefillPlan(snapshot) {
     if (o.clothingRefillStatus != null || o.status !== "incoming") continue;
     if (!o.destShop || !o.productId || o.size == null) continue;
     bump(inbound, `${o.destShop}|${o.productId}|${encodeSizeKey(o.size)}`, num(o.qty) || 1);
-    if (o.placedAtHub) bump(reserved, `${o.placedAtHub}|${o.productId}|${encodeSizeKey(o.size)}`, num(o.qty) || 1);
   }
 
   // ── reconcile: close locks whose intent finished; flag stale ones (L6) ─────
@@ -186,16 +182,39 @@ function computeRefillPlan(snapshot) {
     return sizeKey === "_" ? "" : sizeKey;
   };
 
-  // ── deficits + cascade (L1/L2/L4/L5) ────────────────────────────────────────
+  // ── deficits (L1/L2/L4) — propose, don't suppress ───────────────────────────
+  // Owner philosophy (2026-07-12 v3): the warehouse is the validation layer.
+  // A deficit ALWAYS becomes a request (system availability is advisory — real
+  // shelves beat database cells); staff fulfil or reject per size. The only
+  // suppressors are: an intent already open for the cell, and a recent
+  // warehouse REJECTION of the same cell (cooldown, so a "no" isn't re-asked
+  // every 15 minutes). Zero-stock-anywhere still surfaces as a missing-size
+  // reorder candidate IN ADDITION to the request.
   const intents = [];
   const belowTarget = [];
   const missingSizes = [];
   let managedCells = 0;   // cells with a resolvable target > 0 (Health-score denominator)
-  const passThrough = new Map(); // `${hub}|${pid}|${sizeKey}` → qty stores couldn't get
   const maxUnits = num(config?.maxUnitsPerIntent) || 20;
 
-  const availableAt = (src, pid, sizeKey, size) =>
-    avail(cellQty(stock, src, pid, size)) - (reserved.get(`${src}|${pid}|${sizeKey}`) || 0);
+  // Rejection cooldown: (dest|pid|sizeKey) → most recent rejection timestamp.
+  const cooldownMs = (num(config?.rejectCooldownHours) || 24) * 3600e3;
+  const rejectedAt = new Map();
+  for (const o of Object.values(orders)) {
+    if (!o || o.customerName !== "Shop Refill" || o.clothingRefillStatus !== "rejected") continue;
+    if (!o.destShop || !o.productId || o.size == null) continue;
+    const ts = Date.parse(o.clothingOutOfStockAt || o.updatedAt || 0) || 0;
+    const k = `${o.destShop}|${o.productId}|${encodeSizeKey(o.size)}`;
+    if (ts > (rejectedAt.get(k) || 0)) rejectedAt.set(k, ts);
+  }
+  for (const [id, rr] of Object.entries(refillRequests)) {
+    if (!rr || rr.status !== "cancelled" || !rr.requestingLocation || !rr.productId) continue;
+    const ts = Date.parse(rr.resolvedAt || 0) || 0;
+    const k = `${rr.requestingLocation}|${rr.productId}|${encodeSizeKey(rr.size)}`;
+    if (ts > (rejectedAt.get(k) || 0)) rejectedAt.set(k, ts);
+  }
+
+  const networkQty = (pid, size) =>
+    Object.keys(stock).reduce((t, loc) => t + avail(cellQty(stock, loc, pid, size)), 0);
 
   for (const dest of dests) {
     const mode = config?.mode?.[dest] || "off";
@@ -209,36 +228,27 @@ function computeRefillPlan(snapshot) {
         managedCells++;
         const q = cellQty(stock, dest, pid, size);
         const have = avail(q);
-        const inb = (inbound.get(`${dest}|${pid}|${sizeKey}`) || 0) +
-          (closedSet.has(`${dest}|${pid}|${sizeKey}`) ? 0 : 0);
-        const extra = passThrough.get(`${dest}|${pid}|${sizeKey}`) || 0;
-        const deficit = t.target - have - inb + extra;
+        const inb = inbound.get(`${dest}|${pid}|${sizeKey}`) || 0;
+        const deficit = t.target - have - inb;
         if (deficit <= 0) continue;
 
         belowTarget.push({ loc: dest, pid, size, have: q, target: t.target, inbound: inb, deficit });
 
-        // Never create a second intent for a cell that already has one open.
-        if (inbound.get(`${dest}|${pid}|${sizeKey}`) > 0 && extra === 0) continue;
+        // Genuinely nothing anywhere in the network → reorder candidate (the
+        // request below still goes out — the shelf may disagree with the DB).
+        if (networkQty(pid, size) - have <= 0) {
+          missingSizes.push({ loc: dest, pid, size, wanted: deficit, note: "zero stock upstream — reorder candidate" });
+        }
 
-        const canGive = availableAt(src, pid, sizeKey, size);
-        const qty = Math.min(deficit, Math.max(canGive, 0), maxUnits);
-        const remainder = deficit - qty;
-        if (qty > 0) {
-          intents.push({
-            dest, source: src, productId: pid, size, sizeKey, qty,
-            priority: have < t.minQty ? "high" : "normal", mode,
-          });
-          bump(reserved, `${src}|${pid}|${sizeKey}`, qty);
-        }
-        if (remainder > 0) {
-          if (dests.includes(src)) {
-            // Source is itself engine-managed (hub2) — roll the shortfall into
-            // its demand so the central→hub2 leg covers both shops + buffer.
-            bump(passThrough, `${src}|${pid}|${sizeKey}`, remainder);
-          } else {
-            missingSizes.push({ loc: dest, pid, size, wanted: remainder, note: "unavailable upstream — reorder candidate" });
-          }
-        }
+        // Suppress ONLY for: an intent already on its way, or a fresh rejection.
+        if (inb > 0) continue;
+        if (nowMs - (rejectedAt.get(`${dest}|${pid}|${sizeKey}`) || 0) < cooldownMs) continue;
+
+        intents.push({
+          dest, source: src, productId: pid, size, sizeKey,
+          qty: Math.min(deficit, maxUnits),
+          priority: have < t.minQty ? "high" : "normal", mode,
+        });
       }
     }
   }
@@ -251,12 +261,15 @@ function computeRefillPlan(snapshot) {
     plannedIntents = [...intents].sort((a, b) => (a.priority === b.priority ? 0 : a.priority === "high" ? -1 : 1)).slice(0, maxIntents);
   }
 
-  // ── inventory intelligence (plan §Inventory Intelligence) ───────────────────
+  // ── inventory intelligence (plan §Inventory Intelligence — CLOTHING ONLY) ───
   const onlyInCentral = [];
   const onlyInHub2 = [];
-  const excessAtHub2 = [];
+  const excess = [];        // network-wide: hub2 (any surplus) + stores (significant surplus)
   const negativeCells = [];
   const sumLoc = (loc, pid) => Object.values(stock?.[loc]?.[pid] || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
+  // Stores legitimately sell down their overage, so only SIGNIFICANT store
+  // excess is flagged; hub2 is a strict buffer — any unit above target counts.
+  const storeExcessMin = num(config?.storeExcessMinUnits) || 2;
   const allPids = new Set([
     ...Object.keys(stock?.central || {}), ...Object.keys(stock?.hub2 || {}),
     ...Object.keys(stock?.["marathon-pe"] || {}), ...Object.keys(stock?.trophy || {}),
@@ -267,16 +280,19 @@ function computeRefillPlan(snapshot) {
     const pe = sumLoc("marathon-pe", pid), tr = sumLoc("trophy", pid);
     if (ce > 0 && h2 === 0 && pe === 0 && tr === 0) onlyInCentral.push({ pid, units: ce });
     if (h2 > 0 && pe === 0 && tr === 0) onlyInHub2.push({ pid, units: h2 });
-    for (const [sizeKey, cell] of Object.entries(stock?.hub2?.[pid] || {})) {
-      const t = targets?.hub2?.[pid]?.[sizeKey];
-      if (t && typeof t.target === "number") {
+    for (const loc of dests) {
+      for (const [sizeKey, cell] of Object.entries(stock?.[loc]?.[pid] || {})) {
+        const t = targets?.[loc]?.[pid]?.[sizeKey];
+        if (!t || typeof t.target !== "number") continue;
         const ex = num(cell?.qty) - t.target;
-        if (ex > 0) excessAtHub2.push({ pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex });
+        const minEx = loc === "hub2" ? 1 : storeExcessMin;
+        if (ex >= minEx) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex });
       }
     }
   }
   for (const loc of new Set([...dests, ...Object.values(routes)])) {
     for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
+      if (!isClothing(products?.[pid])) continue;   // sneakers never appear in Health
       for (const [sizeKey, cell] of Object.entries(bySize || {})) {
         if (num(cell?.qty) < 0) negativeCells.push({ loc, pid, sizeKey, qty: num(cell.qty) });
       }
@@ -286,11 +302,6 @@ function computeRefillPlan(snapshot) {
   // (owner request after the first shadow scan — surface bad targets instead of
   // silently generating requests from them)
   const policyWarnings = [];
-  const saleCutoff30 = nowMs - 30 * 864e5;
-  const soldPidsRecently = new Set();
-  for (const m of movements) {
-    if (m?.type === "sold" && m.productId && Date.parse(m.ts || "") >= saleCutoff30) soldPidsRecently.add(m.productId);
-  }
   const anyStockOfSize = (pid, sizeKey) =>
     Object.keys(stock).some((loc) => num(stock?.[loc]?.[pid]?.[sizeKey]?.qty) > 0);
   for (const [loc, byPid] of Object.entries(targets)) {
@@ -306,10 +317,9 @@ function computeRefillPlan(snapshot) {
           policyWarnings.push({ kind: "size_not_carried", loc, pid, sizeKey, note: "target on a size this product doesn't carry and no stock exists anywhere" });
         }
       }
-      if (loc !== "hub2" && !soldPidsRecently.has(pid) && !recentSaleSet.has(`${loc}|${pid}`)) {
-        // Only warn once per (loc,pid): targeted at a shop but nothing sold in 30d.
-        policyWarnings.push({ kind: "inactive_product", loc, pid, note: "has targets but no sale anywhere in 30 days" });
-      }
+      // (v3: the "inactive product" warning was dropped — it flagged work the
+      // warehouse is perfectly able to judge itself; warnings are reserved for
+      // genuine data problems a human must fix.)
     }
   }
 
@@ -336,7 +346,7 @@ function computeRefillPlan(snapshot) {
       failedRefills: cap(failedRefills),
       onlyInCentral: cap(onlyInCentral),
       onlyInHub2: cap(onlyInHub2),
-      excessAtHub2: cap(excessAtHub2),
+      excess: cap(excess),
       negativeCells: cap(negativeCells),
     },
   };
@@ -345,15 +355,18 @@ function computeRefillPlan(snapshot) {
 // ── confidence scoring (plan §Inventory Confidence Score) ─────────────────────
 // Per (location, product): start at 100, subtract for accuracy risk signals.
 // Only entries below the threshold are returned (the "Needs Review" list).
-function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, threshold = 85 }) {
+function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, products = {}, threshold = 85 }) {
   const byLocPid = new Map();
   const ensure = (loc, pid) => {
     const k = `${loc}|${pid}`;
     if (!byLocPid.has(k)) byLocPid.set(k, { negative: 0, adjustments: 0, uncounted: 0, lastMoveMs: 0, stuck: 0 });
     return byLocPid.get(k);
   };
+  const clothingOnly = Object.keys(products).length > 0;
+  const skip = (pid) => clothingOnly && !isClothing(products[pid]);
   for (const [loc, byPid] of Object.entries(stock)) {
     for (const [pid, bySize] of Object.entries(byPid || {})) {
+      if (skip(pid)) continue;
       for (const cell of Object.values(bySize || {})) {
         if (num(cell?.qty) < 0) ensure(loc, pid).negative++;
         const upd = Date.parse(cell?.updatedAt || 0) || 0;
@@ -364,15 +377,16 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   }
   const d30 = nowMs - 30 * 864e5;
   for (const m of movements) {
-    const ts = Date.parse(m?.ts || 0) || 0;
-    if (m?.type === "adjustment" && ts >= d30) {
+    if (!m || skip(m.productId)) continue;
+    const ts = Date.parse(m.ts || 0) || 0;
+    if (m.type === "adjustment" && ts >= d30) {
       if (m.from) ensure(m.from, m.productId).adjustments++;
       if (m.to) ensure(m.to, m.productId).adjustments++;
     }
-    if (m?.reason === "clothing_cr_uncounted" && ts >= d30 && m.to) ensure(m.to, m.productId).uncounted++;
+    if (m.reason === "clothing_cr_uncounted" && ts >= d30 && m.to) ensure(m.to, m.productId).uncounted++;
   }
   for (const [dest, byPid] of Object.entries(openIndex)) {
-    for (const pid of Object.keys(byPid || {})) ensure(dest, pid); // presence only
+    for (const pid of Object.keys(byPid || {})) if (!skip(pid)) ensure(dest, pid); // presence only
   }
   const out = {};
   for (const [k, f] of byLocPid) {

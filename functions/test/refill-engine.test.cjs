@@ -67,7 +67,7 @@ test("manual Shop Refill order counts as inbound; engine autoRefill order does n
   assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "manual refill already covers the deficit");
 });
 
-test("cascade: store shortfall at hub2 rolls into central→hub2 intent", () => {
+test("propose-don't-suppress: full deficit requested even when the source shows less", () => {
   const plan = computeRefillPlan(base({
     targets: {
       "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } },
@@ -75,27 +75,61 @@ test("cascade: store shortfall at hub2 rolls into central→hub2 intent", () => 
     },
     stock: {
       "marathon-pe": { p1: { M: cell(0) } },
-      hub2: { p1: { M: cell(1) } },       // can only give 1 of the 3 needed
+      hub2: { p1: { M: cell(1) } },       // system says 1 — the shelf decides
       central: { p1: { M: cell(50) } },
       trophy: {},
     },
   }));
   const storeLeg = plan.intents.find((x) => x.dest === "marathon-pe");
-  assert.equal(storeLeg.qty, 1, "capped by hub2 availability");
+  assert.equal(storeLeg.qty, 3, "full deficit — warehouse validates availability");
   const hubLeg = plan.intents.find((x) => x.dest === "hub2");
-  // hub2 target 4 − have 1 + passThrough 2 = 5... but hub2's own have=1 was
-  // fully reserved by the store leg. Engine math: deficit = 4 − 1 + 2 = 5.
-  assert.equal(hubLeg.qty, 5);
+  assert.equal(hubLeg.qty, 3); // hub2 target 4 − have 1
   assert.equal(hubLeg.source, "central");
 });
 
-test("unavailable everywhere → missingSizes exception, no impossible intent", () => {
+test("zero stock anywhere → request STILL created + missingSizes reorder candidate", () => {
   const plan = computeRefillPlan(base({
     stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: {}, central: {}, trophy: {} },
     targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } }, hub2: { p1: { M: { target: 2, minQty: 1 } } } },
   }));
-  assert.equal(plan.intents.length, 0);
-  assert.ok(plan.exceptions.missingSizes.count >= 1);
+  assert.equal(plan.intents.length, 2, "both legs still ask — shelves beat database cells");
+  assert.ok(plan.exceptions.missingSizes.count >= 1, "and the reorder candidate is surfaced");
+});
+
+test("rejection cooldown: a size the warehouse rejected today is not re-asked", () => {
+  const plan = computeRefillPlan(base({
+    orders: {
+      "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(2), status: "incoming", createdAt: iso(2) },
+    },
+  }));
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0);
+  const old = computeRefillPlan(base({
+    orders: {
+      "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(30), status: "incoming", createdAt: iso(30) },
+    },
+  }));
+  assert.equal(old.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "cooldown expired → ask again");
+});
+
+test("excess: hub2 strict, stores only when significant; sneakers never counted", () => {
+  const plan = computeRefillPlan(base({
+    products: {
+      p1: { name: "Tee", productType: "clothing", sizes: ["M"] },
+      pSnk: { name: "Shoe", productType: "sneaker", sizes: ["8"] },
+    },
+    targets: {
+      "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 } } },
+    },
+    stock: {
+      "marathon-pe": { p1: { M: cell(4) }, pSnk: { "8": cell(-3) } },  // +1 only → not significant
+      hub2: { p1: { M: cell(4) } },                                     // +1 → flagged (strict)
+      central: {}, trophy: {},
+    },
+  }));
+  const locs = plan.exceptions.excess.items.map((e) => e.loc);
+  assert.deepEqual(locs, ["hub2"]);
+  assert.ok(plan.exceptions.negativeCells.items.every((n) => n.pid !== "pSnk"), "sneaker negatives filtered out");
 });
 
 test("default run applies only after a recent sale at that shop", () => {
@@ -148,7 +182,7 @@ test("circuit breaker caps intents and reports an error", () => {
   assert.ok(plan.errors.length >= 1);
 });
 
-test("intelligence: onlyInCentral / onlyInHub2 / excessAtHub2", () => {
+test("intelligence: onlyInCentral / onlyInHub2 / hub2 excess", () => {
   const plan = computeRefillPlan(base({
     products: { p1: PRODUCTS.p1, p2: { productType: "clothing", sizes: ["M"] }, p3: { productType: "clothing", sizes: ["M"] } },
     targets: { hub2: { p3: { M: { target: 2, minQty: 1 } } } },
@@ -160,7 +194,7 @@ test("intelligence: onlyInCentral / onlyInHub2 / excessAtHub2", () => {
   }));
   assert.deepEqual(plan.exceptions.onlyInCentral.items[0], { pid: "p2", units: 7 });
   assert.equal(plan.exceptions.onlyInHub2.items[0].pid, "p3");
-  assert.deepEqual(plan.exceptions.excessAtHub2.items[0], { pid: "p3", sizeKey: "M", have: 11, target: 2, excess: 9 });
+  assert.deepEqual(plan.exceptions.excess.items[0], { loc: "hub2", pid: "p3", sizeKey: "M", have: 11, target: 2, excess: 9 });
 });
 
 test("confidence: negative cells + adjustments + uncounted sends lower the score", () => {
@@ -177,7 +211,7 @@ test("confidence: negative cells + adjustments + uncounted sends lower the score
   assert.equal(e.factors.negativeCells, 1);
 });
 
-test("policy warnings: uncarried size, inactive product, unknown product", () => {
+test("policy warnings: uncarried size + unknown product only (data problems, not judgment)", () => {
   const plan = computeRefillPlan(base({
     products: { p1: { name: "Tee", productType: "clothing", sizes: ["M"] } },
     targets: {
@@ -187,10 +221,10 @@ test("policy warnings: uncarried size, inactive product, unknown product", () =>
       },
     },
     stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: {}, central: {}, trophy: {} },
-    movements: [], // no sales in 30d → p1 inactive warning too
+    movements: [],
   }));
   const kinds = plan.exceptions.policyWarnings.items.map((w) => w.kind).sort();
-  assert.deepEqual(kinds, ["inactive_product", "size_not_carried", "unknown_product"]);
+  assert.deepEqual(kinds, ["size_not_carried", "unknown_product"]);
 });
 
 test("policy warnings: recent sale suppresses inactive_product; stock legitimises a size", () => {

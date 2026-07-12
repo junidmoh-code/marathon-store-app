@@ -178,7 +178,7 @@ async function runScan() {
     counts.exceptions = Object.values(plan.exceptions).reduce((t, e) => t + e.count, 0);
     await db.ref("stock_exceptions/latest").set({ computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions });
     if (new Date(nowMs).getUTCMinutes() < 15) {
-      const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex });
+      const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex, products });
       await db.ref("stock_confidence").set({ computedAt: startedAt, byLocation: confidence });
     }
 

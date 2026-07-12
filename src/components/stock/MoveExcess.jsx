@@ -1,25 +1,28 @@
-// ─── MOVE EXCESS → CENTRAL (card-by-card rebalance) ───────────────────────────
-// Hub 2 is a refill buffer, not long-term storage: anything above its approved
-// target goes back to Central. Owner UX spec (2026-07-12): the operator REVIEWS
-// PRODUCTS, not rows — one professional card at a time with photo, full name,
-// and per-size stepper chips (Transfer-screen idiom) showing have → target →
-// move. Transfer to Central advances to the next card until the cleanup is
-// finished; Skip defers a product to the back of the queue.
+// ─── MOVE EXCESS — network-wide rebalance (card-by-card) ──────────────────────
+// Owner spec v3 (2026-07-12): excess detection covers the WHOLE network, not
+// just Hub 2. Any location holding more than its approved target surfaces here:
+//   • Hub 2 — strict: every unit above target (it's a refill buffer, not storage)
+//   • Marathon PE / Trophy — significant surplus only (≥2 above target; stores
+//     legitimately sell down small overage on their own)
+// The operator reviews ONE product card at a time — photo, name, per-size
+// stepper chips (have → target → move) — picks a destination (stores may send
+// back to Hub 2 or straight to Central; Hub 2 sends to Central) and transfers.
+// Confirming advances to the next card until the cleanup is complete.
 //
-// Every write is a normal applyMovement transfer_out (atomic, version-guarded,
-// idempotent per movementId); each product confirm shares one ledger batch id.
-// Re-opening recomputes remaining excess from live stock, so double-moves are
-// structurally impossible. Later categories (sneakers) = drop the clothing filter.
+// Every write is applyMovement transfer_out (atomic, idempotent per movementId,
+// one ledger batch id per confirm). Live stock retires cards instantly;
+// re-opening recomputes, so double-moves are structurally impossible.
 
 import React, { useMemo, useState } from "react";
 import { useStockCells, useStockTargets } from "./useStock";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
-import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGhost } from "./ui";
+import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGhost, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 
-const FROM = "hub2";
-const TO = "central";
+const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
+const SOURCES = ["hub2", "marathon-pe", "trophy"];
+const STORE_EXCESS_MIN = 2;   // keep in sync with config.storeExcessMinUnits
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
 const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
 
@@ -27,49 +30,63 @@ const isClothing = (p) =>
   p?.productType === "clothing" ||
   (!p?.productType && (p?.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s))));
 
+const destChip = (on) => ({
+  padding: "8px 13px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+  border: on ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(255,255,255,.1)",
+  background: on ? "rgba(60,110,255,.15)" : "rgba(255,255,255,.03)",
+  color: on ? BLUE_L : "rgba(255,255,255,.5)",
+});
+
 export default function MoveExcess({ products = [], actorRole }) {
-  const hubStock = useStockCells(FROM);
-  const targets = useStockTargets(FROM) || {};
-  const [edits, setEdits] = useState({});          // `${pid}|${size}` → qty
-  const [skipped, setSkipped] = useState({});      // pid → true
+  const allStock = useStockCells();          // { loc: { pid: { rawSize: cell } } }
+  const allTargets = useStockTargets();      // { loc: { pid: { encodedSize: {target} } } }
+  const [edits, setEdits] = useState({});    // `${loc}|${pid}|${size}` → qty
+  const [dests, setDests] = useState({});    // `${loc}|${pid}` → destination
+  const [skipped, setSkipped] = useState({});
   const [busy, setBusy] = useState(false);
   const [lastResult, setLastResult] = useState(null);
   const [movedTotal, setMovedTotal] = useState(0);
-  const [doneCount, setDoneCount] = useState(0);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
 
   const cards = useMemo(() => {
     const out = [];
-    for (const [pid, bySize] of Object.entries(hubStock || {})) {
-      const p = byId.get(pid);
-      if (!isClothing(p)) continue;
-      const sizes = [];
-      for (const [size, cell] of Object.entries(bySize || {})) {
-        const qty = typeof cell?.qty === "number" ? cell.qty : 0;
-        const t = targets?.[pid]?.[encodeSizeKey(size)];
-        if (!t || typeof t.target !== "number") continue;
-        const excess = qty - t.target;
-        if (excess > 0) sizes.push({ size, have: qty, target: t.target, excess });
+    for (const loc of SOURCES) {
+      const minEx = loc === "hub2" ? 1 : STORE_EXCESS_MIN;
+      for (const [pid, bySize] of Object.entries(allStock?.[loc] || {})) {
+        const p = byId.get(pid);
+        if (!isClothing(p)) continue;
+        const sizes = [];
+        for (const [size, cell] of Object.entries(bySize || {})) {
+          const qty = typeof cell?.qty === "number" ? cell.qty : 0;
+          const t = allTargets?.[loc]?.[pid]?.[encodeSizeKey(size)];
+          if (!t || typeof t.target !== "number") continue;
+          const excessQty = qty - t.target;
+          if (excessQty >= minEx) sizes.push({ size, have: qty, target: t.target, excess: excessQty });
+        }
+        if (!sizes.length) continue;
+        sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+        out.push({
+          key: `${loc}|${pid}`, loc, pid, name: p?.name || pid, photo: p?.photoUrl,
+          sizes, totalExcess: sizes.reduce((t, s) => t + s.excess, 0),
+        });
       }
-      if (!sizes.length) continue;
-      sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
-      out.push({ pid, name: p?.name || pid, photo: p?.photoUrl, sizes, totalExcess: sizes.reduce((t, s) => t + s.excess, 0) });
     }
     return out.sort((a, b) => b.totalExcess - a.totalExcess);
-  }, [hubStock, targets, byId]);
+  }, [allStock, allTargets, byId]);
 
-  const active = cards.filter((c) => !skipped[c.pid]);
+  const active = cards.filter((c) => !skipped[c.key]);
   const card = active[0] || cards[0] || null;
-  const totalCards = cards.length + doneCount;
 
+  const destOptions = (c) => (c.loc === "hub2" ? ["central"] : ["hub2", "central"]);
   const qtyOf = (c, s) => {
-    const v = edits[`${c.pid}|${s.size}`];
+    const v = edits[`${c.key}|${s.size}`];
     return Math.max(0, Math.min(v == null ? s.excess : v, s.have));
   };
 
   const transfer = async (c) => {
     if (busy) return;
+    const dest = dests[c.key] || destOptions(c)[0];
     const lines = c.sizes.map((s) => ({ s, qty: qtyOf(c, s) })).filter((l) => l.qty > 0);
     if (!lines.length) return;
     setBusy(true);
@@ -80,7 +97,7 @@ export default function MoveExcess({ products = [], actorRole }) {
       try {
         res = await applyMovement({
           type: "transfer_out", productId: c.pid, size: s.size, qty,
-          from: FROM, to: TO, actorRole,
+          from: c.loc, to: dest, actorRole,
           reason: "excess_rebalance",
           movementId: `${batchId}_${c.pid}_${encodeSizeKey(s.size)}`,
           link: { transferId: batchId },
@@ -89,20 +106,17 @@ export default function MoveExcess({ products = [], actorRole }) {
       if (res.ok) moved += qty; else failed.push(`${s.size}: ${res.reason}`);
     }
     setMovedTotal((t) => t + moved);
-    if (!failed.length) setDoneCount((n) => n + 1);
-    setLastResult({ name: c.name, moved, failed });
+    setLastResult({ name: c.name, dest, moved, failed });
     setBusy(false);
-    // Live stock subscription retires this card; the next appears automatically.
   };
 
   return (
     <div>
-      {/* Progress strip */}
       <div style={{ ...GLASS, padding: "11px 14px", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
         <div>
-          <div style={{ fontSize: 13.5, fontWeight: 800 }}>Hub 2 cleanup</div>
+          <div style={{ fontSize: 13.5, fontWeight: 800 }}>Excess rebalance</div>
           <div style={{ color: GRAY, fontSize: 11, marginTop: 2 }}>
-            {movedTotal > 0 ? `${movedTotal} units returned to Central · ` : ""}review one product at a time
+            Hub 2 + shops above approved targets{movedTotal > 0 ? ` · ${movedTotal} units moved` : ""}
           </div>
         </div>
         <span style={{ fontSize: 12, fontWeight: 800, color: BLUE_L, background: "rgba(60,110,255,.1)", border: "1px solid rgba(60,110,255,.3)", borderRadius: 999, padding: "5px 12px", whiteSpace: "nowrap" }}>
@@ -112,47 +126,59 @@ export default function MoveExcess({ products = [], actorRole }) {
 
       {lastResult && (
         <div style={{ ...GLASS, padding: "10px 13px", marginBottom: 12, fontSize: 12.5 }}>
-          <span style={{ color: GREEN, fontWeight: 700 }}>{lastResult.name}: {lastResult.moved} units → Central ✓</span>
+          <span style={{ color: GREEN, fontWeight: 700 }}>{lastResult.name}: {lastResult.moved} units → {LOC_LABEL[lastResult.dest]} ✓</span>
           {lastResult.failed.length > 0 && <div style={{ color: RED, marginTop: 4 }}>Failed: {lastResult.failed.join(" · ")}</div>}
         </div>
       )}
 
       {!card && (
         <div style={{ ...GLASS, padding: 24, textAlign: "center" }}>
-          <div style={{ fontSize: 16, fontWeight: 800, color: GREEN }}>Cleanup finished 🎉</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: GREEN }}>Network balanced 🎉</div>
           <div style={{ color: GRAY, fontSize: 12.5, marginTop: 6 }}>
-            Hub 2 holds nothing above its approved targets{movedTotal > 0 ? ` — ${movedTotal} units returned to Central this session` : ""}.
+            No location holds meaningfully more than its approved targets{movedTotal > 0 ? ` — ${movedTotal} units rebalanced this session` : ""}.
           </div>
         </div>
       )}
 
-      {card && (
-        <ProductCard
-          photo={card.photo} name={card.name}
-          badges={<Badge tone={AMBER}>{card.totalExcess} ABOVE TARGET</Badge>}
-        >
-          <div style={CHIP_GRID}>
-            {card.sizes.map((s) => (
-              <SizeStepperChip key={s.size}
-                size={s.size}
-                qty={qtyOf(card, s)}
-                max={s.have}
-                onChange={(v) => setEdits((prev) => ({ ...prev, [`${card.pid}|${s.size}`]: v }))}
-                hint={`have ${s.have} · target ${s.target}`}
-                disabled={busy}
-              />
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button onClick={() => setSkipped((p) => ({ ...p, [card.pid]: true }))} disabled={busy}
-                    style={{ ...bGhost, flex: 1, padding: "12px" }}>Skip</button>
-            <button onClick={() => transfer(card)} disabled={busy || card.sizes.every((s) => qtyOf(card, s) === 0)}
-                    style={{ ...bGreen, flex: 2.2, padding: "12px", opacity: busy ? 0.6 : 1 }}>
-              {busy ? "Transferring…" : `Transfer ${card.sizes.reduce((t, s) => t + qtyOf(card, s), 0)} units to Central`}
-            </button>
-          </div>
-        </ProductCard>
-      )}
+      {card && (() => {
+        const dest = dests[card.key] || destOptions(card)[0];
+        const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
+        return (
+          <ProductCard
+            photo={card.photo} name={card.name}
+            badges={<>
+              <Badge tone={BLUE_L}>{LOC_LABEL[card.loc]}</Badge>
+              <Badge tone={AMBER}>{card.totalExcess} ABOVE TARGET</Badge>
+            </>}
+          >
+            <div style={CHIP_GRID}>
+              {card.sizes.map((s) => (
+                <SizeStepperChip key={s.size}
+                  size={s.size} qty={qtyOf(card, s)} max={s.have}
+                  onChange={(v) => setEdits((prev) => ({ ...prev, [`${card.key}|${s.size}`]: v }))}
+                  hint={`have ${s.have} · target ${s.target}`}
+                  disabled={busy}
+                />
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
+              {destOptions(card).map((d) => (
+                <button key={d} onClick={() => setDests((prev) => ({ ...prev, [card.key]: d }))} style={destChip(dest === d)}>
+                  → {LOC_LABEL[d]}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button onClick={() => setSkipped((p) => ({ ...p, [card.key]: true }))} disabled={busy}
+                      style={{ ...bGhost, flex: 1, padding: "12px" }}>Skip</button>
+              <button onClick={() => transfer(card)} disabled={busy || total === 0}
+                      style={{ ...bGreen, flex: 2.2, padding: "12px", opacity: busy ? 0.6 : 1 }}>
+                {busy ? "Transferring…" : `Transfer ${total} units to ${LOC_LABEL[dest]}`}
+              </button>
+            </div>
+          </ProductCard>
+        );
+      })()}
     </div>
   );
 }

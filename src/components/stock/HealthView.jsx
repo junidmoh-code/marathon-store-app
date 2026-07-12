@@ -18,7 +18,7 @@
 
 import React, { useMemo, useState } from "react";
 import {
-  useStockExceptions, useStockConfidence, useEngineShadow, useEngineRuns,
+  useStockExceptions, useEngineShadow, useEngineRuns,
   useEngineConfig, useRefillRequests, useStockCells,
 } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
@@ -28,6 +28,7 @@ import { FONT, BG, GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen } from "./ui";
 import { StatCard, DetailShell, ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import Hub2RefillQueue from "./Hub2RefillQueue";
 import MoveExcess from "./MoveExcess";
+import NetworkTransfer from "./NetworkTransfer";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 const locLabel = (l) => LOC_LABEL[l] || l || "—";
@@ -157,6 +158,40 @@ function AutoRefillCards({ shadow, byId, actorRole, hubCells }) {
   );
 }
 
+// Negative-count chip with an admin-only one-tap fix: books a positive
+// `adjustment` (admin-gated by the rules) bringing the cell back to exactly 0 —
+// the same correction the recon scripts perform, but from the dashboard.
+function NegativeFixChip({ row, pid, actorRole }) {
+  const [state, setState] = useState(null); // null | "busy" | "done" | "failed"
+  const size = decodeSizeKey(row.sizeKey);
+  const fix = async () => {
+    if (state || actorRole !== "admin") return;
+    setState("busy");
+    let res;
+    try {
+      res = await applyMovement({
+        type: "adjustment", productId: pid, size, qty: Math.abs(row.qty),
+        to: row.loc, actorRole,
+        reason: "health_negative_zero_fix",
+        movementId: `negfix_${row.loc}_${pid}_${row.sizeKey}_${row.qty}`,
+      });
+    } catch (e) { res = { ok: false }; }
+    setState(res.ok ? "done" : "failed");
+  };
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1px solid ${state === "done" ? GREEN : RED}55`, background: state === "done" ? "rgba(0,150,70,.1)" : "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
+      <span style={{ fontWeight: 800, color: "#fff" }}>{size}</span>
+      <span style={{ fontWeight: 700, color: state === "done" ? GREEN : RED }}>{state === "done" ? "0 ✓" : `${row.qty} · ${LOC_LABEL[row.loc] || row.loc}`}</span>
+      {actorRole === "admin" && state !== "done" && (
+        <button onClick={fix} disabled={state === "busy"}
+          style={{ border: "1px solid rgba(60,110,255,.35)", background: "rgba(60,110,255,.1)", color: BLUE_L, borderRadius: 7, padding: "2px 8px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
+          {state === "busy" ? "…" : state === "failed" ? "Retry" : "Fix → 0"}
+        </button>
+      )}
+    </span>
+  );
+}
+
 // Group flat exception items into per-product cards.
 function groupByProduct(items, keyFields) {
   const byPid = new Map();
@@ -171,7 +206,6 @@ function groupByProduct(items, keyFields) {
 export default function HealthView({ products = [], onExit }) {
   const [screen, setScreen] = useState(null);
   const exceptions = useStockExceptions();
-  const confidence = useStockConfidence();
   const shadow = useEngineShadow();
   const runs = useEngineRuns(8);
   const config = useEngineConfig();
@@ -199,11 +233,9 @@ export default function HealthView({ products = [], onExit }) {
   }, [shadow]);
   const centralQueue = openRequests.filter((r) => r.requestingLocation === "hub2").length;
   const missingProducts = count("onlyInCentral") + count("onlyInHub2");
-  const reviewCount = useMemo(() => {
-    let n = 0;
-    for (const byPid of Object.values(confidence?.byLocation || {})) n += Object.keys(byPid || {}).length;
-    return n;
-  }, [confidence]);
+  // ("Needs Review" was removed 2026-07-12 v3 — the confidence signal still
+  // feeds /stock_confidence for future use, but every dashboard card must lead
+  // to an action, and a score without a workflow didn't.)
 
   const modeSummary = (() => {
     const modes = Object.values(config?.mode || {});
@@ -242,19 +274,14 @@ export default function HealthView({ products = [], onExit }) {
         );
       case "excess":
         return (
-          <DetailShell title="Hub 2 Excess → Central" count={count("excessAtHub2")} onBack={back}>
+          <DetailShell title="Excess Rebalance" sub="Hub 2 + shops above target — send back to Hub 2 or Central" count={count("excess")} onBack={back}>
             <MoveExcess products={products} actorRole={actorRole} />
           </DetailShell>
         );
       case "missingProducts":
         return (
-          <DetailShell title="Missing Products" sub="Stock stranded upstream — in neither shop" count={missingProducts} onBack={back}>
-            {[["onlyInCentral", "Only in Central"], ["onlyInHub2", "Only in Hub 2"]].map(([k, label]) =>
-              items(k).map((r, i) => (
-                <ProductCard key={`${k}${i}`} photo={byId.get(r.pid)?.photoUrl} name={nameOf(r.pid)}
-                  badges={<Badge tone={AMBER}>{label}</Badge>}
-                  right={<span style={{ fontSize: 13, fontWeight: 800, color: AMBER }}>{r.units} units</span>} />
-              )))}
+          <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts} onBack={back}>
+            <NetworkTransfer products={products} />
           </DetailShell>
         );
       case "missingSizes":
@@ -287,40 +314,19 @@ export default function HealthView({ products = [], onExit }) {
         );
       case "negative":
         return (
-          <DetailShell title="Negative Inventory" sub="Oversell signals / count holes — fix with Adjust or a recount" count={count("negativeCells")} onBack={back}>
+          <DetailShell title="Negative Inventory" sub={actorRole === "admin" ? "Oversell / count holes — Fix books a correcting adjustment to 0" : "Oversell / count holes — an admin can zero these"} count={count("negativeCells")} onBack={back}>
             {groupByProduct(items("negativeCells")).map(([pid, rows]) => (
               <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
                 badges={<Badge tone={RED}>NEGATIVE</Badge>}>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {rows.map((r, i) => <SizeFactChip key={i} size={decodeSizeKey(r.sizeKey)} value={`${r.qty} · ${locLabel(r.loc)}`} tone={RED} />)}
+                  {rows.map((r, i) => (
+                    <NegativeFixChip key={i} row={r} pid={pid} actorRole={actorRole} />
+                  ))}
                 </div>
               </ProductCard>
             ))}
           </DetailShell>
         );
-      case "review": {
-        const rows = [];
-        for (const [loc, byPid] of Object.entries(confidence?.byLocation || {})) {
-          for (const [pid, e] of Object.entries(byPid || {})) rows.push({ loc, pid, ...e });
-        }
-        rows.sort((a, b) => a.score - b.score);
-        return (
-          <DetailShell title="Needs Review" sub="Low inventory-accuracy confidence" count={rows.length} onBack={back}>
-            {rows.map((r, i) => (
-              <ProductCard key={i} photo={byId.get(r.pid)?.photoUrl} name={nameOf(r.pid)}
-                badges={<Badge tone={r.score < 60 ? RED : AMBER}>{locLabel(r.loc)}</Badge>}
-                right={<span style={{ fontSize: 17, fontWeight: 800, color: r.score < 60 ? RED : AMBER }}>{r.score}</span>}>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {r.factors?.negativeCells ? <SizeFactChip size="−" value={`${r.factors.negativeCells} negative`} tone={RED} /> : null}
-                  {r.factors?.adjustments30d ? <SizeFactChip size="±" value={`${r.factors.adjustments30d} adjustments`} tone={AMBER} /> : null}
-                  {r.factors?.uncountedSends30d ? <SizeFactChip size="?" value={`${r.factors.uncountedSends30d} uncounted`} tone={AMBER} /> : null}
-                  {r.factors?.staleDays ? <SizeFactChip size="⏱" value={`${r.factors.staleDays}d stale`} tone={AMBER} /> : null}
-                </div>
-              </ProductCard>
-            ))}
-          </DetailShell>
-        );
-      }
       case "activity":
         return (
           <DetailShell title="Engine Activity" sub="Recent scans" count={runs.length} onBack={back}>
@@ -384,18 +390,16 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Engine plan — review & transfer" onClick={() => setScreen("autorefills")} />
               <StatCard label="Central Refill Requests" value={centralQueue} tone={centralQueue ? BLUE_L : GREEN}
                         sub="Hub 2 restock queue" onClick={() => setScreen("central")} />
-              <StatCard label="Hub 2 Excess" value={count("excessAtHub2")} tone={count("excessAtHub2") ? AMBER : GREEN}
-                        sub="Lines above target → Central" onClick={() => setScreen("excess")} />
+              <StatCard label="Excess Inventory" value={count("excess")} tone={count("excess") ? AMBER : GREEN}
+                        sub="Hub 2 + shops above target → rebalance" onClick={() => setScreen("excess")} />
               <StatCard label="Missing Products" value={missingProducts} tone={missingProducts ? AMBER : GREEN}
-                        sub="Only in Central / only in Hub 2" onClick={() => setScreen("missingProducts")} />
+                        sub="Stranded upstream — transfer from here" onClick={() => setScreen("missingProducts")} />
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
-                        sub="Demand with zero stock anywhere" onClick={() => setScreen("missingSizes")} />
+                        sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
               <StatCard label="Policy Warnings" value={count("policyWarnings")} tone={count("policyWarnings") ? AMBER : GREEN}
-                        sub="Targets needing a human look" onClick={() => setScreen("policy")} />
+                        sub="Data problems in the targets" onClick={() => setScreen("policy")} />
               <StatCard label="Negative Inventory" value={count("negativeCells")} tone={count("negativeCells") ? RED : GREEN}
-                        sub="Oversell / count holes" onClick={() => setScreen("negative")} />
-              <StatCard label="Needs Review" value={reviewCount} tone={reviewCount ? AMBER : GREEN}
-                        sub="Low confidence products" onClick={() => setScreen("review")} />
+                        sub="Oversell / count holes — one-tap fix" onClick={() => setScreen("negative")} />
               <StatCard label="Stuck Refills" value={count("stuckRefills")} tone={count("stuckRefills") ? RED : GREEN}
                         sub={`Waiting > ${config?.staleIntentHours || 48}h`} onClick={() => setScreen("activity")} />
             </div>
