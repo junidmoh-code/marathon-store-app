@@ -25,6 +25,8 @@ const PROJECT = "marathon-club";
 const COMMIT = process.argv.includes("--commit");
 const argInput = process.argv.indexOf("--input");
 const csvPath = argInput > -1 ? process.argv[argInput + 1] : path.join(OUT_DIR, "approved-targets.csv");
+const argSource = process.argv.indexOf("--source");
+const SOURCE = argSource > -1 ? process.argv[argSource + 1] : "ai_seed";
 const LOCATIONS = ["marathon-pe", "trophy", "hub2"];
 const batchId = `targets-${new Date().toISOString().slice(0, 10)}`;
 
@@ -74,7 +76,7 @@ for (const r of rows) {
   }
   if (target === 0 && minQty === 0) { skippedZero++; }
   updates[`${location}/${productId}/${encodeSizeKey(size)}`] = {
-    target, minQty: Math.min(minQty, target), source: "ai_seed", batchId,
+    target, minQty: Math.min(minQty, target), source: SOURCE, batchId,
     approvedBy: "seed-script", approvedAt: new Date().toISOString(),
   };
   perLoc[location] = (perLoc[location] || 0) + 1;
@@ -112,12 +114,12 @@ for (let i = 0; i < keys.length; i += CHUNK) {
   for (const k of keys.slice(i, i + CHUNK)) chunk[k] = updates[k];
   const f = path.join(OUT_DIR, ".seed-chunk.json");
   writeFileSync(f, JSON.stringify(chunk));
-  execFileSync("firebase", ["database:update", "/stock_targets", f, "--project", PROJECT, "-y"], { stdio: ["ignore", "ignore", "inherit"] });
+  execFileSync("firebase", ["database:update", "/stock_targets", f, "--project", PROJECT, "-f"], { stdio: ["ignore", "ignore", "inherit"] });
   rmSync(f, { force: true });
   console.error(`  wrote cells ${i + 1}–${Math.min(i + CHUNK, keys.length)} of ${keys.length}`);
 }
 const cf = path.join(OUT_DIR, ".seed-config.json");
 writeFileSync(cf, JSON.stringify(ENGINE_CONFIG));
-execFileSync("firebase", ["database:update", "/config/refillEngine", cf, "--project", PROJECT, "-y"], { stdio: ["ignore", "ignore", "inherit"] });
+execFileSync("firebase", ["database:update", "/config/refillEngine", cf, "--project", PROJECT, "-f"], { stdio: ["ignore", "ignore", "inherit"] });
 rmSync(cf, { force: true });
 console.error(`Wrote /config/refillEngine (all modes SHADOW). Done.`);
