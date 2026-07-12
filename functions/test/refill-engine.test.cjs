@@ -132,19 +132,6 @@ test("excess: hub2 strict, stores only when significant; sneakers never counted"
   assert.ok(plan.exceptions.negativeCells.items.every((n) => n.pid !== "pSnk"), "sneaker negatives filtered out");
 });
 
-test("default run applies only after a recent sale at that shop", () => {
-  const noSale = computeRefillPlan(base({ targets: {}, stock: { "marathon-pe": { p1: { L: cell(0) } }, hub2: { p1: { L: cell(9) } }, central: {}, trophy: {} } }));
-  assert.equal(noSale.intents.length, 0, "no recent sale → unmanaged");
-  const withSale = computeRefillPlan(base({
-    targets: {},
-    stock: { "marathon-pe": { p1: { L: cell(0) } }, hub2: { p1: { L: cell(9) } }, central: {}, trophy: {} },
-    movements: [{ type: "sold", from: "marathon-pe", productId: "p1", size: "L", qty: 1, ts: iso(5) }],
-  }));
-  const i = withSale.intents.find((x) => x.dest === "marathon-pe" && x.sizeKey === "L");
-  assert.ok(i, "recent sale activates the default run");
-  assert.equal(i.qty, 3); // default L=3
-});
-
 test("resolved order closes its lock (fulfilled on available, cancelled on rejected)", () => {
   const plan = computeRefillPlan(base({
     openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R004-1", orderCreatedAt: iso(3), qty: 2, source: "hub2", createdAt: iso(3) } } } },
@@ -184,18 +171,39 @@ test("circuit breaker is FAIR across destinations (no store starves another)", (
   assert.equal(trophyGot, 5, "trophy gets its full share despite PE's bigger, higher-priority backlog");
 });
 
-test("hub2 excess includes UNTARGETED products (strict buffer: target 0)", () => {
+test("three states: no target = noTarget surface (NOT excess); explicit 0 = all excess", () => {
   const plan = computeRefillPlan(base({
-    products: { p1: PRODUCTS.p1, pDormant: { productType: "clothing", sizes: ["M"] } },
-    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    products: {
+      p1: PRODUCTS.p1,
+      pUnset: { productType: "clothing", sizes: ["M"] },   // stock, NO target anywhere
+      pBanned: { productType: "clothing", sizes: ["M"] },  // explicit target 0
+    },
+    targets: {
+      "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } },
+      hub2: { pBanned: { M: { target: 0, minQty: 0 } } },
+    },
     stock: {
-      "marathon-pe": { p1: { M: cell(3) }, pDormant: { M: cell(4) } },  // store untargeted → NOT excess
-      hub2: { pDormant: { M: cell(6) } },                                // hub2 untargeted → ALL excess
+      "marathon-pe": { p1: { M: cell(3) } },
+      hub2: { pUnset: { M: cell(6) }, pBanned: { M: cell(1) } },
       central: {}, trophy: {},
     },
   }));
-  const items = plan.exceptions.excess.items;
-  assert.deepEqual(items, [{ loc: "hub2", pid: "pDormant", sizeKey: "M", have: 6, target: 0, excess: 6 }]);
+  // Unconfigured stock: surfaced for humans, never auto-classified as excess.
+  assert.deepEqual(plan.exceptions.noTarget.items, [{ loc: "hub2", pid: "pUnset", units: 6 }]);
+  assert.ok(!plan.exceptions.excess.items.some((e) => e.pid === "pUnset"), "no-target is NOT excess");
+  // Deliberate exclusion (target 0): every unit is excess, even a single one.
+  assert.deepEqual(plan.exceptions.excess.items, [{ loc: "hub2", pid: "pBanned", sizeKey: "M", have: 1, target: 0, excess: 1 }]);
+  // And unmanaged cells never generate refill intents.
+  assert.ok(!plan.intents.some((i) => i.productId === "pUnset"));
+});
+
+test("engine is driven by explicit targets only — no default-run auto-activation", () => {
+  const plan = computeRefillPlan(base({
+    targets: {},
+    stock: { "marathon-pe": { p1: { L: cell(0) } }, hub2: { p1: { L: cell(9) } }, central: {}, trophy: {} },
+    movements: [{ type: "sold", from: "marathon-pe", productId: "p1", size: "L", qty: 1, ts: iso(5) }],
+  }));
+  assert.equal(plan.intents.length, 0, "no targets → no requests, regardless of sales");
 });
 
 test("circuit breaker caps intents and reports an error", () => {
@@ -244,33 +252,6 @@ test("confidence: negative cells + adjustments + uncounted sends lower the score
   const e = out["marathon-pe"].p1;
   assert.equal(e.score, 100 - 30 - 5 - 10);
   assert.equal(e.factors.negativeCells, 1);
-});
-
-test("policy warnings: uncarried size + unknown product only (data problems, not judgment)", () => {
-  const plan = computeRefillPlan(base({
-    products: { p1: { name: "Tee", productType: "clothing", sizes: ["M"] } },
-    targets: {
-      "marathon-pe": {
-        p1: { M: { target: 3, minQty: 2 }, XXXL: { target: 1, minQty: 1 } }, // XXXL not carried, no stock
-        pGone: { M: { target: 3, minQty: 2 } },                              // product deleted
-      },
-    },
-    stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: {}, central: {}, trophy: {} },
-    movements: [],
-  }));
-  const kinds = plan.exceptions.policyWarnings.items.map((w) => w.kind).sort();
-  assert.deepEqual(kinds, ["size_not_carried", "unknown_product"]);
-});
-
-test("policy warnings: recent sale suppresses inactive_product; stock legitimises a size", () => {
-  const plan = computeRefillPlan(base({
-    products: { p1: { name: "Tee", productType: "clothing", sizes: ["M"] } },
-    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 }, L: { target: 3, minQty: 2 } } } },
-    // L isn't in the catalog but hub2 physically holds it → not a warning.
-    stock: { "marathon-pe": { p1: { M: cell(3), L: cell(3) } }, hub2: { p1: { L: cell(2) } }, central: {}, trophy: {} },
-    movements: [{ type: "sold", from: "marathon-pe", productId: "p1", size: "M", qty: 1, ts: iso(24) }],
-  }));
-  assert.equal(plan.exceptions.policyWarnings.count, 0);
 });
 
 test("saTodayKey matches device-local SA format (0-based month)", () => {

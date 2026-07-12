@@ -50,22 +50,20 @@ function isClothing(product) {
   return (product.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s)));
 }
 
-// ── target resolution ─────────────────────────────────────────────────────────
-// explicit /stock_targets cell → default run (only for shops, only for sizes in
-// the product's catalog, only if the product sold at that shop recently) → null
-// (unmanaged — the engine leaves the cell alone).
-function resolveTarget({ config, targets, products, recentSaleSet }, dest, pid, size) {
+// ── target resolution — EXPLICIT TARGETS ONLY (owner decision 2026-07-12 v5) ──
+// The engine makes NO policy assumptions: a cell is managed if and only if a
+// human-approved target exists for it. Three states, never conflated:
+//   target > 0  → maintain it (refills below, excess above)
+//   target = 0  → deliberately excluded from this location (all stock = excess)
+//   no target   → NOT managed; surfaced as "No Target Configured" for humans
+// (The old default-run + recent-sale auto-activation was removed — it was the
+// engine deciding policy. New products get targets when a human approves them.)
+function resolveTarget({ targets }, dest, pid, size) {
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
     return { target: num(explicit.target), minQty: num(explicit.minQty), source: "explicit" };
   }
-  const run = config?.defaultRunByStore?.[dest];
-  if (!run || run[size] == null) return null;
-  const p = products?.[pid];
-  if (!isClothing(p)) return null;
-  if (!(p.sizes || []).map(String).includes(String(size))) return null;
-  if (!recentSaleSet.has(`${dest}|${pid}`)) return null;
-  return { target: num(run[size]), minQty: Math.ceil(num(run[size]) / 2), source: "default_run" };
+  return null;
 }
 
 // ── the plan ──────────────────────────────────────────────────────────────────
@@ -85,17 +83,7 @@ function computeRefillPlan(snapshot) {
     return a.localeCompare(b);
   });
 
-  // Recent-sale gate for the default run: `${loc}|${pid}` that sold within
-  // defaultRunRecentSaleDays. Uses the windowed movements the caller fetched.
-  const recentDays = num(config?.defaultRunRecentSaleDays) || 14;
-  const recentCutoff = nowMs - recentDays * 864e5;
-  const recentSaleSet = new Set();
-  for (const m of movements) {
-    if (m?.type === "sold" && m.from && m.productId && Date.parse(m.ts || "") >= recentCutoff) {
-      recentSaleSet.add(`${m.from}|${m.productId}`);
-    }
-  }
-  const ctx = { config, targets, products, recentSaleSet };
+  const ctx = { targets };
 
   // ── inbound & reservations from EXISTING open intents ──────────────────────
   // inbound[dest|pid|size] = qty already on its way. Manual (human-placed) Shop
@@ -157,25 +145,9 @@ function computeRefillPlan(snapshot) {
   }
   const closedSet = new Set(closes.map((c) => `${c.dest}|${c.pid}|${c.sizeKey}`));
 
-  // ── managed universe per dest: explicit-target pids ∪ recently-sold pids ────
-  const managedPids = (dest) => {
-    const set = new Set(Object.keys(targets?.[dest] || {}));
-    if (config?.defaultRunByStore?.[dest]) {
-      for (const key of recentSaleSet) {
-        const [loc, pid] = key.split("|");
-        if (loc === dest) set.add(pid);
-      }
-    }
-    return set;
-  };
-  const sizesFor = (dest, pid) => {
-    const set = new Set(Object.keys(targets?.[dest]?.[pid] || {}).map((k) => k)); // encoded keys
-    const run = config?.defaultRunByStore?.[dest] || {};
-    for (const s of products?.[pid]?.sizes || []) {
-      if (run[String(s)] != null) set.add(encodeSizeKey(s));
-    }
-    return set;
-  };
+  // ── managed universe per dest: EXPLICIT targets only (v5, no policy layer) ──
+  const managedPids = (dest) => new Set(Object.keys(targets?.[dest] || {}));
+  const sizesFor = (dest, pid) => new Set(Object.keys(targets?.[dest]?.[pid] || {}));
   // Encoded key → raw size (clothing letters are identity; keep a map anyway).
   const rawSize = (pid, sizeKey) => {
     for (const s of products?.[pid]?.sizes || []) if (encodeSizeKey(s) === sizeKey) return String(s);
@@ -301,16 +273,14 @@ function computeRefillPlan(snapshot) {
     for (const loc of dests) {
       for (const [sizeKey, cell] of Object.entries(stock?.[loc]?.[pid] || {})) {
         const t = targets?.[loc]?.[pid]?.[sizeKey];
-        // Hub 2 is STRICTLY a refill buffer: a product/size with NO approved
-        // target has no business sitting there — its whole quantity is excess
-        // (target 0). Stores keep the target requirement (they hold what they
-        // hold; only targeted cells are judged).
-        const target = (t && typeof t.target === "number") ? t.target
-          : (loc === "hub2" ? 0 : null);
-        if (target == null) continue;
-        const ex = num(cell?.qty) - target;
-        const minEx = loc === "hub2" ? 1 : storeExcessMin;
-        if (ex >= minEx) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target, excess: ex });
+        // THREE distinct states (owner decision 2026-07-12 v5) — never conflated:
+        //   configured target  → excess = qty − target (hub2 strict ≥1, stores ≥2)
+        //   explicit target 0  → deliberately excluded here: EVERY unit is excess
+        //   no target          → NOT excess; surfaced as noTarget below instead
+        if (!t || typeof t.target !== "number") continue;
+        const ex = num(cell?.qty) - t.target;
+        const minEx = t.target === 0 ? 1 : (loc === "hub2" ? 1 : storeExcessMin);
+        if (ex >= minEx) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex });
       }
     }
   }
@@ -322,30 +292,23 @@ function computeRefillPlan(snapshot) {
       }
     }
   }
-  // ── policy warnings: inconsistencies to review BEFORE trusting refills ─────
-  // (owner request after the first shadow scan — surface bad targets instead of
-  // silently generating requests from them)
-  const policyWarnings = [];
-  const anyStockOfSize = (pid, sizeKey) =>
-    Object.keys(stock).some((loc) => num(stock?.[loc]?.[pid]?.[sizeKey]?.qty) > 0);
-  for (const [loc, byPid] of Object.entries(targets)) {
-    for (const [pid, bySize] of Object.entries(byPid || {})) {
-      const p = products?.[pid];
-      if (!p) { policyWarnings.push({ kind: "unknown_product", loc, pid, note: "target on a product that no longer exists" }); continue; }
-      if (!isClothing(p)) { policyWarnings.push({ kind: "not_clothing", loc, pid, note: "target on a non-clothing product" }); continue; }
-      const catalog = new Set((p.sizes || []).map((s) => encodeSizeKey(s)));
-      for (const sizeKey of Object.keys(bySize || {})) {
-        const t = bySize[sizeKey];
-        if (!t || num(t.target) <= 0) continue;
-        if (!catalog.has(sizeKey) && !anyStockOfSize(pid, sizeKey)) {
-          policyWarnings.push({ kind: "size_not_carried", loc, pid, sizeKey, note: "target on a size this product doesn't carry and no stock exists anywhere" });
-        }
-      }
-      // (v3: the "inactive product" warning was dropped — it flagged work the
-      // warehouse is perfectly able to judge itself; warnings are reserved for
-      // genuine data problems a human must fix.)
+
+  // ── No Target Configured (v5): stock the engine is NOT managing ─────────────
+  // Clothing physically present at a managed location with no target node for
+  // that product there. Not excess, not a warning — just surfaced work: the
+  // humans decide to keep it, transfer it, or configure a target for it.
+  const noTarget = [];
+  for (const loc of dests) {
+    for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
+      if (!isClothing(products?.[pid])) continue;
+      if (targets?.[loc]?.[pid]) continue;          // some target exists → managed
+      const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
+      if (units > 0) noTarget.push({ loc, pid, units });
     }
   }
+  // (v5: the Policy Warnings layer was REMOVED at the owner's direction — the
+  // engine no longer second-guesses targets. Unconfigured stock is surfaced as
+  // "No Target Configured" below; everything else is the warehouse's call.)
 
   // Failed refills (visible 48h): any Shop Refill line rejected recently.
   const failedRefills = [];
@@ -363,7 +326,7 @@ function computeRefillPlan(snapshot) {
     errors,
     stats: { managedCells },
     exceptions: {
-      policyWarnings: cap(policyWarnings),
+      noTarget: cap(noTarget),
       belowTarget: cap(belowTarget),
       missingSizes: cap(missingSizes),
       stuckRefills: cap(stuckRefills),

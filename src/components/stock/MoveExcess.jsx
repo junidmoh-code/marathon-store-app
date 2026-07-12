@@ -52,13 +52,14 @@ export default function MoveExcess({ products = [], actorRole }) {
         for (const [size, cell] of Object.entries(bySize || {})) {
           const qty = typeof cell?.qty === "number" ? cell.qty : 0;
           const t = allTargets?.[loc]?.[pid]?.[encodeSizeKey(size)];
-          // Hub 2 is a strict buffer: untargeted products don't belong there at
-          // all, so a missing target counts as 0. Stores are only judged on
-          // cells with approved targets. (Mirrors the engine's excess rule.)
-          const target = (t && typeof t.target === "number") ? t.target : (loc === "hub2" ? 0 : null);
-          if (target == null) continue;
-          const excessQty = qty - target;
-          if (excessQty >= minEx) sizes.push({ size, have: qty, target, excess: excessQty });
+          // Three states (v5): configured target → judged; explicit target 0 →
+          // deliberately excluded, every unit is excess; NO target → not judged
+          // here at all (it shows under "No Target Configured" in Health — the
+          // engine never assumes unconfigured stock is misplaced).
+          if (!t || typeof t.target !== "number") continue;
+          const excessQty = qty - t.target;
+          const lineMin = t.target === 0 ? 1 : minEx;
+          if (excessQty >= lineMin) sizes.push({ size, have: qty, target: t.target, excess: excessQty });
         }
         if (!sizes.length) continue;
         sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));

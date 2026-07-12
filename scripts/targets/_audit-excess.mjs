@@ -5,9 +5,10 @@
 // per-location totals and per-product samples with the raw numbers, and
 // cross-checks the engine's exception counts. Read-only.
 //
-// Rules audited (engine + UI use the identical logic):
-//   hub2:   excess = qty − (target ?? 0), flagged when ≥ 1  (strict buffer)
-//   stores: excess = qty − target (targeted cells only), flagged when ≥ 2
+// Rules audited (engine + UI use the identical THREE-STATE logic, v5):
+//   configured target  → excess = qty − target (hub2 ≥ 1, stores ≥ 2)
+//   explicit target 0  → deliberately excluded: every unit is excess
+//   NO target          → NOT excess; counted separately as "No Target Configured"
 //
 // RUN:  node scripts/targets/_audit-excess.mjs
 
@@ -39,26 +40,31 @@ const isClothing = (p) => p?.productType === "clothing" ||
   (!p?.productType && (p?.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s))));
 
 console.log("EXCESS AUDIT — recomputed from live /stock + /stock_targets\n");
-const grand = { lines: 0, units: 0 };
+const grand = { lines: 0, units: 0, noTargetProducts: 0, noTargetUnits: 0 };
 for (const loc of LOCS) {
   const minEx = loc === "hub2" ? 1 : 2;
   const rows = [];
+  const noTarget = new Map(); // pid → units (stock with no target node — surfaced, never excess)
   for (const [pid, bySize] of Object.entries(stock[loc] || {})) {
     if (!isClothing(products[pid])) continue;
+    const hasAnyTarget = !!targets?.[loc]?.[pid];
     for (const [sizeKey, cell] of Object.entries(bySize || {})) {
       const qty = typeof cell?.qty === "number" ? cell.qty : 0;
+      if (!hasAnyTarget) { if (qty > 0) noTarget.set(pid, (noTarget.get(pid) || 0) + qty); continue; }
       const t = targets?.[loc]?.[pid]?.[sizeKey];
-      const target = (t && typeof t.target === "number") ? t.target : (loc === "hub2" ? 0 : null);
-      if (target == null) continue;
-      const excess = qty - target;
-      if (excess >= minEx) rows.push({ pid, name: products[pid]?.name || pid, sizeKey, qty, target, excess, untargeted: !t });
+      if (!t || typeof t.target !== "number") continue;   // untargeted size on a managed product: unjudged
+      const excess = qty - t.target;
+      const lineMin = t.target === 0 ? 1 : minEx;
+      if (excess >= lineMin) rows.push({ pid, name: products[pid]?.name || pid, sizeKey, qty, target: t.target, excess, untargeted: false });
     }
   }
+  grand.noTargetProducts += noTarget.size;
+  grand.noTargetUnits += [...noTarget.values()].reduce((a, b) => a + b, 0);
   rows.sort((a, b) => b.excess - a.excess);
   const units = rows.reduce((t, r) => t + r.excess, 0);
   grand.lines += rows.length; grand.units += units;
-  console.log(`── ${loc.toUpperCase()} — rule: surplus ≥ ${minEx}${loc === "hub2" ? " (untargeted = target 0)" : " (targeted cells only)"}`);
-  console.log(`   ${rows.length} size-lines, ${units} surplus units`);
+  console.log(`── ${loc.toUpperCase()} — rule: surplus ≥ ${minEx} on configured targets (target 0 = all excess)`);
+  console.log(`   ${rows.length} excess size-lines, ${units} surplus units · ${noTarget.size} products / ${[...noTarget.values()].reduce((a, b) => a + b, 0)} units AWAITING TARGET (not excess)`);
   const byProduct = new Map();
   for (const r of rows) { if (!byProduct.has(r.pid)) byProduct.set(r.pid, []); byProduct.get(r.pid).push(r); }
   let shown = 0;
@@ -71,6 +77,6 @@ for (const loc of LOCS) {
   }
   console.log("");
 }
-console.log(`NETWORK TOTAL: ${grand.lines} size-lines, ${grand.units} surplus units`);
+console.log(`NETWORK TOTAL: ${grand.lines} excess size-lines / ${grand.units} surplus units · ${grand.noTargetProducts} product-locations / ${grand.noTargetUnits} units awaiting target configuration`);
 console.log(`\nEngine's last scan reported excess count: ${exceptions?.excess?.count ?? "(pre-deploy shape)"} at ${exceptions?.computedAt || "?"}`);
 console.log("(the scan recomputes every 15 min — after the re-seed its next run should match this audit)");

@@ -245,13 +245,6 @@ export default function HealthView({ products = [], onExit }) {
   })();
   const modeTone = modeSummary === "LIVE" ? GREEN : modeSummary === "OFF" ? RED : AMBER;
 
-  const WARNING_LABEL = {
-    size_not_carried: "size not carried",
-    inactive_product: "inactive product",
-    unknown_product: "product missing",
-    not_clothing: "not clothing",
-  };
-
   // ── drill-in screens ─────────────────────────────────────────────────────────
   const detail = (() => {
     if (!screen) return null;
@@ -294,18 +287,18 @@ export default function HealthView({ products = [], onExit }) {
             ))}
           </DetailShell>
         );
-      case "policy":
+      case "noTarget":
         return (
-          <DetailShell title="Policy Warnings" sub="Review these before trusting live refills" count={count("policyWarnings")} onBack={back}>
-            {groupByProduct(items("policyWarnings")).map(([pid, rows]) => (
-              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
-                badges={<Badge tone={AMBER}>POLICY</Badge>}>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {rows.map((w, i) => (
-                    <SizeFactChip key={i} size={w.sizeKey ? decodeSizeKey(w.sizeKey) : locLabel(w.loc)} value={WARNING_LABEL[w.kind] || w.kind} tone={AMBER} />
-                  ))}
-                </div>
-              </ProductCard>
+          <DetailShell title="No Target Configured" sub="Stock the engine is NOT managing — keep it, transfer it, or configure a target" count={count("noTarget")} onBack={back}>
+            {items("noTarget").map((r, i) => (
+              <ProductCard key={i} photo={byId.get(r.pid)?.photoUrl} name={nameOf(r.pid)}
+                badges={<>
+                  <Badge tone={BLUE_L}>{locLabel(r.loc)}</Badge>
+                  <Badge tone={GRAY}>AWAITING TARGET</Badge>
+                </>}
+                right={<span style={{ fontSize: 13, fontWeight: 800, color: BLUE_L }}>{r.units} units</span>}
+                sub="Not excess, not a problem — just unconfigured. Use Transfer/Move Excess if it should live elsewhere."
+              />
             ))}
           </DetailShell>
         );
@@ -395,8 +388,8 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Stranded upstream — transfer from here" onClick={() => setScreen("missingProducts")} />
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
-              <StatCard label="Policy Warnings" value={count("policyWarnings")} tone={count("policyWarnings") ? AMBER : GREEN}
-                        sub="Data problems in the targets" onClick={() => setScreen("policy")} />
+              <StatCard label="No Target Configured" value={count("noTarget")} tone={count("noTarget") ? BLUE_L : GREEN}
+                        sub="Stock awaiting a target decision" onClick={() => setScreen("noTarget")} />
               <StatCard label="Negative Inventory" value={count("negativeCells")} tone={count("negativeCells") ? RED : GREEN}
                         sub="Oversell / count holes — one-tap fix" onClick={() => setScreen("negative")} />
               <StatCard label="Stuck Refills" value={count("stuckRefills")} tone={count("stuckRefills") ? RED : GREEN}
