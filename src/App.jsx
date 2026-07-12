@@ -552,13 +552,16 @@ const STOCK_HUBS = ["hub1", "hub2", "hub3"];
 //                           it for manual routing instead; historical restock is the
 //                           reconciliation pass's job. originHub (when resolvable) is
 //                           returned so staff know where the shoe belongs.
-function resolveReturnDestination(order) {
-  // Prefer the order's stored category — set at product-save, where kids sneaker
-  // sizes (26–35) are pinned to Footwear rather than mislabeled Clothing by the
-  // size-based classifier. Fall back to the classifier only for orders that predate
-  // a stored category. (Trusting productType alone is wrong: accessories/perfume
-  // default to productType "sneaker" too, so they'd be mis-routed as footwear.)
-  const cat = order.productCategory || categorize(order.productName, [order.size]).category;
+function resolveReturnDestination(order, productCategory) {
+  // Prefer the PRODUCT's stored category (resolved by the caller via order.productId).
+  // The admin save pins kids sneaker sizes (26–35) to Footwear, and the review-
+  // categories tool corrects any drift — whereas the size-based classifier mislabels
+  // those kids sizes as Clothing, which would wrongly keep a returned kids shoe at the
+  // shop. Note /orders nodes do NOT carry productCategory themselves, so we must read
+  // it off the product. Fall back to the classifier only when the product is unknown.
+  // (Trusting productType alone is wrong: accessories/perfume default to productType
+  // "sneaker" too, so they'd be mis-routed as footwear.)
+  const cat = productCategory || categorize(order.productName, [order.size]).category;
   const staysAtShop =
     order.productType === "clothing" ||
     cat === "Clothing" || cat === "Accessories" || cat === "Perfume";
@@ -11790,7 +11793,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
 // ─── RETURNS VIEW ────────────────────────────────────────────────────────────
 const RETURN_REASONS = ["Too Small", "Too Big", "Wrong Item", "Other"];
 
-function ReturnsView({ orders, onExit }) {
+function ReturnsView({ orders, products = [], onExit }) {
   const [search,      setSearch]      = useState("");
   const [expandedId,  setExpandedId]  = useState(null);
   const [failure,     setFailure]     = useState(null);  // { orderId, kind, message } — a return that did NOT ledger
@@ -11875,7 +11878,10 @@ function ReturnsView({ orders, onExit }) {
         }
       } else {
         // FALLBACK — no recorded dispatch transfer to reverse. Resolve intent.
-        const dest = resolveReturnDestination(order);
+        // Read the product's stored category (orders don't carry it) so kids sneaker
+        // sizes 26–35 aren't misread as clothing by the size-based classifier.
+        const prod = products.find(p => p.id === order.productId);
+        const dest = resolveReturnDestination(order, prod?.category);
         if (dest.mode === "stay") {
           // Clothing / accessory / perfume: never a tracked hub→shop transfer, so
           // there is nothing to reverse in the hub ledger. Processed successfully.
@@ -15232,7 +15238,7 @@ function AppInner() {
     view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
-  else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMERS_DB)   view = guard(ROLES.CUSTOMERS_DB, <CustomersView  onExit={() => setRole(null)} />);
   else if (role === ROLES.DISPLAY) {
     // TV mode is chrome-free, but a hidden top-right DOUBLE-tap exits back to
