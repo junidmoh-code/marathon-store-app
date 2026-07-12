@@ -6101,9 +6101,11 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
           <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>
           Customer order
         </button>
-        <button className="ad-nav" aria-current={flow === "refill"} onClick={() => setMode("cr")}>
-          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4"/></svg>
-          Clothing refill
+        {/* "Clothing refill" workspace retired (engine go-live 2026-07-12) —
+            refills are automatic now; the rail slot became the tracking view. */}
+        <button className="ad-nav" onClick={onOpenTracking}>
+          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+          Refill tracking{trackingPending > 0 ? ` (${trackingPending})` : ""}
         </button>
         <div style={{ flex: 1 }} />
         <button className="ad-nav" onClick={onSwitchView}>
@@ -7076,27 +7078,14 @@ function AssistantView({ products, onExit, orders = [] }) {
         <div style={{ width:92 }} />
       </div>
 
-      {/* Product mode — one segmented control replaces the old Sneakers/Clothing
-          toggle PLUS the separate Refill/Customer toggle:
-            Sneakers  → sneakers, customer order
-            Clothing  → clothing for a customer → Hub C (same UX as sneakers)
-            CR        → Clothing Refill (bulk multi-size, → hub2/hub3) */}
-      <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
-        <div style={{ display:"flex", width:"100%", maxWidth:360, background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
-          {[["sneaker","Sneakers"],["cr","CR"]].map(([val, label]) => {
-            const on = mode === val;
-            return (
-              <button key={val} onClick={() => { setMode(val); resetSheet(); }}
-                style={{ flex:1, padding:"7px 6px", borderRadius:9, border:"none", cursor:"pointer", fontSize:12, fontWeight:700,
-                         background: on ? "rgba(60,110,255,.25)" : "transparent",
-                         color: on ? "#fff" : "rgba(255,255,255,.5)",
-                         boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
-                {label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      {/* Product mode toggle RETIRED (owner decision 2026-07-12, engine go-live):
+          the CR (manual Clothing Refill) workspace is no longer reachable —
+          shops don't place clothing refills by hand; the auto-refill engine
+          detects sales and creates the requests itself. The "Track requests"
+          button below stays, now tracking the AUTOMATIC refills. The CR
+          plumbing (ClothingCard / addClothingLines / placeRefillRequests) is
+          kept intact behind mode==="cr" as the manual fallback if automation
+          ever needs bypassing — restore the toggle to re-enable it. */}
 
       {/* SHOP toggle — the assistant picks which physical shop (Marathon PE /
           Trophy / Pine) the order is for; this is recorded as order.destShop and
@@ -7278,9 +7267,10 @@ function AssistantView({ products, onExit, orders = [] }) {
         );
       })()}
 
-      {/* Refill tracking — a BUTTON in the CR tab opens the dedicated tracking
-          page (status + availability per request); nothing is inlined here. */}
-      {mode === "cr" && (
+      {/* Refill tracking — opens the dedicated tracking page. ALWAYS visible
+          now (was CR-tab-only): with the engine live, this is where shop staff
+          watch the AUTOMATIC refill requests headed their way. */}
+      {(
         <button onClick={() => setTrackingOpen(true)}
                 style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"11px 14px", marginBottom:"1rem", borderRadius:12, cursor:"pointer",
                          background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.35)", color:"#fff", fontFamily:FONT }}>
