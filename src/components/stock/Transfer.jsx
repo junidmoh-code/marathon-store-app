@@ -436,7 +436,15 @@ export default function Transfer({ products, registry, actorRole }) {
             const nm = productsById[r.productId]?.name || r.productId;
             return (
               <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderTop: BORDER, fontSize: 13 }}>
-                <span style={{ color: "#fff" }}>{nm} · <SizeTag size={r.size} /> ×{r.qty || 1}<span style={{ color: GRAY }}> → {labelFor(r.requestingLocation, registry)}</span></span>
+                <span style={{ color: "#fff" }}>
+                  {nm} · <SizeTag size={r.size} /> ×{r.qty || 1}
+                  <span style={{ color: GRAY }}> → {labelFor(r.requestingLocation, registry)}</span>
+                  {/* Engine-created requests (refillHealthScan) get a badge so staff
+                      know no human is waiting on the other end. */}
+                  {r.createdFrom?.engine && (
+                    <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#FBBF24", border: "1px solid rgba(251,191,36,.4)", borderRadius: 6, padding: "1px 5px" }}>AUTO</span>
+                  )}
+                </span>
                 <button onClick={() => prefillRefill(r)} style={{ ...bGhost, padding: "5px 10px", fontSize: 12 }}>Prefill</button>
               </div>
             );
