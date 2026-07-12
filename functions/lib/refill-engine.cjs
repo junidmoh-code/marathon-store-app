@@ -230,9 +230,18 @@ function computeRefillPlan(snapshot) {
           missingSizes.push({ loc: dest, pid, size, wanted: deficit, note: "zero stock upstream — reorder candidate" });
         }
 
-        // Suppress ONLY for: an intent already on its way, or a fresh rejection.
+        // Suppress for: an intent already on its way, or a rejection.
         if (inb > 0) continue;
-        if (nowMs - (rejectedAt.get(`${dest}|${pid}|${sizeKey}`) || 0) < cooldownMs) continue;
+        const rejTs = rejectedAt.get(`${dest}|${pid}|${sizeKey}`) || 0;
+        if (rejTs) {
+          // A human said "not available". Rest 24h — and if the system can't
+          // see this size ANYWHERE upstream, stay silent indefinitely: the ask
+          // only returns when inventory for it actually appears (owner rule
+          // 2026-07-12: one shelf-check ask is fine; re-asking daily for stock
+          // that provably doesn't exist is spam, not diligence).
+          if (nowMs - rejTs < cooldownMs) continue;
+          if (networkQty(pid, size) - have <= 0) continue;
+        }
 
         intents.push({
           dest, source: src, productId: pid, size, sizeKey,
