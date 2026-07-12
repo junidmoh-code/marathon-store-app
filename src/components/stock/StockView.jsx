@@ -47,6 +47,7 @@ const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount", "excess"]);
 // header per tool. Tool CONTENTS are unchanged (they render in the main pane).
 const TAB_ICON = {
   transfer: <path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4" />,
+  excess:   <><path d="M12 3v11" /><path d="m8 10 4 4 4-4" /><path d="M4 21h16" /></>,
   locate:   <><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></>,
   setqty:   <path d="M12 5v14M5 12h14" />,
   history:  <><path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l4 2" /></>,
@@ -56,6 +57,7 @@ const TAB_ICON = {
 };
 const TAB_META = {
   transfer: ["Transfer", "Move stock between locations."],
+  excess:   ["Move Excess", "Bulk hub 2 → central rebalance (admin)."],
   locate:   ["Where is it", "Find any product across every location."],
   setqty:   ["Set Qty", "Set received / opening on-hand."],
   history:  ["History", "The full movement ledger."],
@@ -65,7 +67,7 @@ const TAB_META = {
 };
 const TAB_GROUPS = [
   ["Move & find", ["transfer", "locate", "setqty"]],
-  ["Audit", ["history", "adjust", "count", "recount"]],
+  ["Audit", ["history", "adjust", "count", "recount", "excess"]],
 ];
 
 export default function StockView({ products = [], onExit }) {
