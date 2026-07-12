@@ -132,6 +132,29 @@ test("excess: hub2 strict, stores only when significant; sneakers never counted"
   assert.ok(plan.exceptions.negativeCells.items.every((n) => n.pid !== "pSnk"), "sneaker negatives filtered out");
 });
 
+test("Cortez fix: surplus is HELD for downstream deficits, never excess past a starving store", () => {
+  const over = {
+    products: { p1: { name: "Cortez tracksuit", productType: "clothing", sizes: ["XL"] } },
+    targets: {
+      "marathon-pe": { p1: { XL: { target: 2, minQty: 1 } } },
+      hub2: { p1: { XL: { target: 2, minQty: 1 } } },
+    },
+    stock: {
+      "marathon-pe": { p1: { XL: cell(0) } },   // store starving: deficit 2
+      hub2: { p1: { XL: cell(3) } },            // hub +1 over its own target
+      central: { p1: { XL: cell(20) } }, trophy: {},
+    },
+  };
+  const plan = computeRefillPlan(base(over));
+  assert.equal(plan.exceptions.excess.items.filter((e) => e.pid === "p1").length, 0,
+    "hub2's +1 is held for the store's deficit — NOT excess to return to Central");
+  // Once the store is satisfied, the same surplus IS excess again.
+  const fed = computeRefillPlan(base({ ...over,
+    stock: { "marathon-pe": { p1: { XL: cell(2) } }, hub2: { p1: { XL: cell(3) } }, central: { p1: { XL: cell(20) } }, trophy: {} },
+  }));
+  assert.deepEqual(fed.exceptions.excess.items.map((e) => `${e.loc}:${e.excess}`), ["hub2:1"]);
+});
+
 test("resolved order closes its lock (fulfilled on available, cancelled on rejected)", () => {
   const plan = computeRefillPlan(base({
     openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R004-1", orderCreatedAt: iso(3), qty: 2, source: "hub2", createdAt: iso(3) } } } },

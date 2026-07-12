@@ -21,7 +21,7 @@ import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
 import {
   useStockExceptions, useEngineShadow, useEngineOpen, useEngineRuns,
-  useEngineConfig, useRefillRequests, useReceivingSession,
+  useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
 } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
@@ -142,30 +142,35 @@ function AutoRefillSummary({ shadow, openIndex, failedRefills, byId }) {
 }
 
 // Negative-count chip with an admin-only one-tap fix: books a positive
-// `adjustment` (admin-gated by the rules) bringing the cell back to exactly 0 —
-// the same correction the recon scripts perform, but from the dashboard.
-function NegativeFixChip({ row, pid, actorRole }) {
-  const [state, setState] = useState(null); // null | "busy" | "done" | "failed"
-  const size = decodeSizeKey(row.sizeKey);
+// `adjustment` (admin-gated by the rules) bringing the cell back to exactly 0.
+// LIVE-DRIVEN (bugfix 2026-07-12): the row comes from the live /stock
+// subscription, NOT the scan snapshot — the earlier snapshot-driven version
+// kept showing cells the user had already fixed (the writes always worked;
+// the screen was up to 15 minutes stale, which read as "Fix does nothing").
+// A fixed cell now vanishes the moment the adjustment lands, and both the
+// amount and the idempotency key use the CURRENT quantity.
+function NegativeFixChip({ row, actorRole }) {
+  const [state, setState] = useState(null); // null | "busy" | "failed"
   const fix = async () => {
     if (state || actorRole !== "admin") return;
     setState("busy");
     let res;
     try {
       res = await applyMovement({
-        type: "adjustment", productId: pid, size, qty: Math.abs(row.qty),
+        type: "adjustment", productId: row.pid, size: row.size, qty: Math.abs(row.qty),
         to: row.loc, actorRole,
         reason: "health_negative_zero_fix",
-        movementId: `negfix_${row.loc}_${pid}_${row.sizeKey}_${row.qty}`,
+        movementId: `negfix_${row.loc}_${row.pid}_${encodeSizeKey(row.size)}_${row.qty}`,
       });
     } catch (e) { res = { ok: false }; }
-    setState(res.ok ? "done" : "failed");
+    // On success the live stock subscription removes this chip on its own.
+    setState(res.ok ? null : "failed");
   };
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1px solid ${state === "done" ? GREEN : RED}55`, background: state === "done" ? "rgba(0,150,70,.1)" : "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
-      <span style={{ fontWeight: 800, color: "#fff" }}>{size}</span>
-      <span style={{ fontWeight: 700, color: state === "done" ? GREEN : RED }}>{state === "done" ? "0 ✓" : `${row.qty} · ${LOC_LABEL[row.loc] || row.loc}`}</span>
-      {actorRole === "admin" && state !== "done" && (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1px solid ${RED}55`, background: "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
+      <span style={{ fontWeight: 800, color: "#fff" }}>{row.size}</span>
+      <span style={{ fontWeight: 700, color: RED }}>{row.qty} · {LOC_LABEL[row.loc] || row.loc}</span>
+      {actorRole === "admin" && (
         <button onClick={fix} disabled={state === "busy"}
           style={{ border: "1px solid rgba(60,110,255,.35)", background: "rgba(60,110,255,.1)", color: BLUE_L, borderRadius: 7, padding: "2px 8px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
           {state === "busy" ? "…" : state === "failed" ? "Retry" : "Fix → 0"}
@@ -195,6 +200,27 @@ export default function HealthView({ products = [], onExit }) {
   const config = useEngineConfig();
   const openRequests = useRefillRequests("open");
   const session = useReceivingSession();
+  const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+  const allStock = useStockCells();   // live — drives Negative Inventory truthfully
+
+  // Live negative clothing cells across the whole network (never the snapshot:
+  // the scan exceptions lag up to 15 min, which made fixed cells look unfixed).
+  const liveNegatives = useMemo(() => {
+    if (!allStock || !Object.keys(allStock).length) return null; // still loading
+    const isClothingP = (p) => p?.productType === "clothing" ||
+      (!p?.productType && (p?.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s))));
+    const out = [];
+    for (const [loc, byPid] of Object.entries(allStock)) {
+      for (const [pid, bySize] of Object.entries(byPid || {})) {
+        if (!isClothingP(byId.get(pid))) continue;
+        for (const [size, cell] of Object.entries(bySize || {})) {
+          const qty = Number(cell?.qty) || 0;
+          if (qty < 0) out.push({ loc, pid, size, qty });
+        }
+      }
+    }
+    return out;
+  }, [allStock, byId]);
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canRunSession = ["store", "warehouse", "admin"].includes(actorRole);
@@ -209,7 +235,6 @@ export default function HealthView({ products = [], onExit }) {
     }).catch(() => {});
   };
 
-  const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const nameOf = (pid) => byId.get(pid)?.name || pid || "—";
 
   const ex = exceptions || {};
@@ -308,21 +333,33 @@ export default function HealthView({ products = [], onExit }) {
             <NoTargetQueue products={products} />
           </DetailShell>
         );
-      case "negative":
+      case "negative": {
+        // LIVE data (bugfix): fixed cells disappear instantly instead of
+        // lingering in the up-to-15-min-old scan snapshot.
+        const rows = liveNegatives || [];
+        const grouped = groupByProduct(rows);
         return (
-          <DetailShell title="Negative Inventory" sub={actorRole === "admin" ? "Oversell / count holes — Fix books a correcting adjustment to 0" : "Oversell / count holes — an admin can zero these"} count={count("negativeCells")} onBack={back}>
-            {groupByProduct(items("negativeCells")).map(([pid, rows]) => (
+          <DetailShell title="Negative Inventory"
+            sub={liveNegatives == null ? "Loading live stock…" : actorRole === "admin" ? "Live — Fix books a correcting adjustment to 0; the chip disappears when it lands" : "Live — an admin can zero these"}
+            count={liveNegatives == null ? count("negativeCells") : rows.length} onBack={back}>
+            {liveNegatives != null && rows.length === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>
+                No negative counts anywhere 🎉
+              </div>
+            )}
+            {grouped.map(([pid, prows]) => (
               <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
                 badges={<Badge tone={RED}>NEGATIVE</Badge>}>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {rows.map((r, i) => (
-                    <NegativeFixChip key={i} row={r} pid={pid} actorRole={actorRole} />
+                  {prows.map((r) => (
+                    <NegativeFixChip key={`${r.loc}|${r.size}`} row={r} actorRole={actorRole} />
                   ))}
                 </div>
               </ProductCard>
             ))}
           </DetailShell>
         );
+      }
       case "activity":
         return (
           <DetailShell title="Engine Activity" sub="Recent scans" count={runs.length} onBack={back}>
@@ -419,8 +456,10 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
               <StatCard label="Decision Queue" value={count("noTarget")} tone={count("noTarget") ? BLUE_L : GREEN}
                         sub="New products & unconfigured stock" onClick={() => setScreen("noTarget")} />
-              <StatCard label="Negative Inventory" value={count("negativeCells")} tone={count("negativeCells") ? RED : GREEN}
-                        sub="Oversell / count holes — one-tap fix" onClick={() => setScreen("negative")} />
+              <StatCard label="Negative Inventory"
+                        value={liveNegatives == null ? count("negativeCells") : liveNegatives.length}
+                        tone={(liveNegatives == null ? count("negativeCells") : liveNegatives.length) ? RED : GREEN}
+                        sub="Live count — one-tap fix" onClick={() => setScreen("negative")} />
               <StatCard label="Stuck Refills" value={count("stuckRefills")} tone={count("stuckRefills") ? RED : GREEN}
                         sub={`Waiting > ${config?.staleIntentHours || 48}h`} onClick={() => setScreen("activity")} />
             </div>

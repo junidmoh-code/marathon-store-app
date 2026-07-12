@@ -16,7 +16,7 @@
 import React, { useMemo, useState } from "react";
 import { useStockCells, useStockTargets } from "./useStock";
 import { applyMovement } from "./applyMovement";
-import { encodeSizeKey } from "../../utils/sizeKey";
+import { encodeSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 
@@ -43,6 +43,24 @@ export default function MoveExcess({ products = [], actorRole }) {
 
   const cards = useMemo(() => {
     const out = [];
+    // Network deficit per (pid,size): surplus that another location still NEEDS
+    // is held for refills, never offered to Central (mirrors the engine's
+    // "Cortez fix" netting; client-side we approximate without inbound data,
+    // which only errs toward holding MORE back — the safe direction).
+    const deficitBySize = new Map();
+    for (const loc of SOURCES) {
+      for (const [pid, bySize] of Object.entries(allTargets?.[loc] || {})) {
+        for (const [sizeKey, t] of Object.entries(bySize || {})) {
+          if (!t || typeof t.target !== "number") continue;
+          const have = Math.max(Number(allStock?.[loc]?.[pid]?.[decodeSizeKey ? decodeSizeKey(sizeKey) : sizeKey]?.qty) || 0, 0);
+          const deficit = t.target - have;
+          if (deficit > 0) {
+            const k = `${pid}|${sizeKey}`;
+            deficitBySize.set(k, (deficitBySize.get(k) || 0) + deficit);
+          }
+        }
+      }
+    }
     for (const loc of SOURCES) {
       const minEx = loc === "hub2" ? 1 : STORE_EXCESS_MIN;
       for (const [pid, bySize] of Object.entries(allStock?.[loc] || {})) {
@@ -57,9 +75,11 @@ export default function MoveExcess({ products = [], actorRole }) {
           // here at all (it shows under "No Target Configured" in Health — the
           // engine never assumes unconfigured stock is misplaced).
           if (!t || typeof t.target !== "number") continue;
-          const excessQty = qty - t.target;
+          const raw = qty - t.target;
+          const held = Math.min(Math.max(raw, 0), deficitBySize.get(`${pid}|${encodeSizeKey(size)}`) || 0);
+          const excessQty = raw - held;
           const lineMin = t.target === 0 ? 1 : minEx;
-          if (excessQty >= lineMin) sizes.push({ size, have: qty, target: t.target, excess: excessQty });
+          if (excessQty >= lineMin) sizes.push({ size, have: qty, target: t.target, excess: excessQty, held });
         }
         if (!sizes.length) continue;
         sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
@@ -172,7 +192,7 @@ export default function MoveExcess({ products = [], actorRole }) {
                 <SizeStepperChip key={s.size}
                   size={s.size} qty={qtyOf(c, s)} max={s.have}
                   onChange={(v) => setEdits((prev) => ({ ...prev, [`${c.key}|${s.size}`]: v }))}
-                  hint={`have ${s.have} · target ${s.target} · +${s.excess}`}
+                  hint={`have ${s.have} · target ${s.target}${s.held ? ` · ${s.held} held for refills` : ''}`}
                   disabled={busy === c.key}
                 />
               ))}

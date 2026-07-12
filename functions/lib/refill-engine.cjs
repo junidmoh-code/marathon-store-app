@@ -274,6 +274,16 @@ function computeRefillPlan(snapshot) {
   const onlyInHub2 = [];
   const excess = [];        // network-wide: hub2 (any surplus) + stores (significant surplus)
   const negativeCells = [];
+  // Outstanding deficit per (pid,size) across ALL destinations — surplus at one
+  // location is NOT excess while another location starves for the same size
+  // (bugfix 2026-07-12, the "Cortez contradiction": hub2 XL flagged for return
+  // to Central while Marathon PE sat at 0/2 XL). Stock flows TOWARD deficits;
+  // only what remains after every deficit is covered may leave the network arm.
+  const deficitBySize = new Map();
+  for (const b of belowTarget) {
+    const k = `${b.pid}|${encodeSizeKey(b.size)}`;
+    deficitBySize.set(k, (deficitBySize.get(k) || 0) + b.deficit);
+  }
   const sumLoc = (loc, pid) => Object.values(stock?.[loc]?.[pid] || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
   // Stores legitimately sell down their overage, so only SIGNIFICANT store
   // excess is flagged; hub2 is a strict buffer — any unit above target counts.
@@ -296,9 +306,13 @@ function computeRefillPlan(snapshot) {
         //   explicit target 0  → deliberately excluded here: EVERY unit is excess
         //   no target          → NOT excess; surfaced as noTarget below instead
         if (!t || typeof t.target !== "number") continue;
-        const ex = num(cell?.qty) - t.target;
+        const raw = num(cell?.qty) - t.target;
+        // Net the surplus against what the rest of the network still NEEDS of
+        // this exact size — that portion is held for refills, not for Central.
+        const heldForRefills = Math.min(Math.max(raw, 0), deficitBySize.get(`${pid}|${sizeKey}`) || 0);
+        const ex = raw - heldForRefills;
         const minEx = t.target === 0 ? 1 : (loc === "hub2" ? 1 : storeExcessMin);
-        if (ex >= minEx) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex });
+        if (ex >= minEx) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex, ...(heldForRefills > 0 ? { heldForRefills } : {}) });
       }
     }
   }
@@ -373,7 +387,7 @@ function computeRefillPlan(snapshot) {
     stats: { managedCells },
     exceptions: {
       noTarget: cap(noTarget),
-      belowTarget: cap(belowTarget),
+      belowTarget: cap(belowTarget, 1500),
       missingSizes: cap(missingSizes),
       stuckRefills: cap(stuckRefills),
       failedRefills: cap(failedRefills),
