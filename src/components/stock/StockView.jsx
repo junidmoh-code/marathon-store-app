@@ -4,7 +4,7 @@
 // screens; every write flows through applyMovement(). See design docs.
 
 import React from "react";
-import { usePersistedTab } from "./hooks";
+import { usePersistedTab, useWide } from "./hooks";
 import { usePermissions } from "../PermissionsContext";
 import { useLocations } from "./useStock";
 import { useSyncStatus } from "./offlineQueue";
@@ -38,7 +38,33 @@ const BASE_TABS = [
 // opening]/history) is available to warehouse|admin. (Barcodes moved to the home page.)
 const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount"]);
 
+// Desktop shell — icons per tool, grouped in the sidebar, plus a one-line
+// header per tool. Tool CONTENTS are unchanged (they render in the main pane).
+const TAB_ICON = {
+  transfer: <path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4" />,
+  locate:   <><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></>,
+  setqty:   <path d="M12 5v14M5 12h14" />,
+  history:  <><path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l4 2" /></>,
+  adjust:   <><path d="M20 7h-9M4 7h3M14 17h6M4 17h6" /><circle cx="9" cy="7" r="2.5" /><circle cx="14" cy="17" r="2.5" /></>,
+  count:    <><path d="M9 11l3 3 8-8" /><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9" /></>,
+  recount:  <><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>,
+};
+const TAB_META = {
+  transfer: ["Transfer", "Move stock between locations."],
+  locate:   ["Where is it", "Find any product across every location."],
+  setqty:   ["Set Qty", "Set received / opening on-hand."],
+  history:  ["History", "The full movement ledger."],
+  adjust:   ["Adjust", "Admin stock corrections."],
+  count:    ["Count", "Run a stock-take."],
+  recount:  ["Counted", "Review & post counted differences."],
+};
+const TAB_GROUPS = [
+  ["Move & find", ["transfer", "locate", "setqty"]],
+  ["Audit", ["history", "adjust", "count", "recount"]],
+];
+
 export default function StockView({ products = [], onExit }) {
+  const isWide = useWide(1024);
   const { permRecord, isSuperAdmin, hasPermission } = usePermissions();
   const registry = useLocations();
   const { pending, syncing } = useSyncStatus();
@@ -61,6 +87,77 @@ export default function StockView({ products = [], onExit }) {
 
   const shared = { products, registry, actorRole };
 
+  // Active tool content — shared by both layouts.
+  const content = (
+    <>
+      {tab === "transfer" && <Transfer {...shared} />}
+      {tab === "locate"   && <Locator {...shared} />}
+      {tab === "setqty"   && canStock && <SetQuantity {...shared} canStock={canStock} isAdmin={isAdmin} />}
+      {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}
+      {tab === "history"  && <MovementHistory {...shared} />}
+      {tab === "count"    && isAdmin && <CountSession {...shared} />}
+      {tab === "recount"  && isAdmin && <StockErrorBoundary><CountedStockReview {...shared} /></StockErrorBoundary>}
+    </>
+  );
+
+  // ── DESKTOP WORKSPACE (≥1024px) — a left rail of tools + a titled main pane.
+  //    No aggregate dashboard: staff only see the tool they open. Mobile keeps
+  //    the horizontal tab strip below. ──
+  if (isWide) {
+    const [title, sub] = TAB_META[tab] || ["Stock", ""];
+    const navBtn = (k, label) => {
+      const on = tab === k;
+      return (
+        <button key={k} onClick={() => setTab(k)}
+          style={{ display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left", cursor: "pointer", fontFamily: FONT, fontSize: 13, fontWeight: 600, borderRadius: 10, padding: "9px 11px",
+                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition: "background .14s, color .14s" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: .9 }}>{TAB_ICON[k]}</svg>
+          <span style={{ flex: 1 }}>{label}</span>
+          {k === "recount" && <span style={{ fontSize: 12, color: AMBER }}>⚠</span>}
+        </button>
+      );
+    };
+    return (
+      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "230px minmax(0,1fr)", overflow: "hidden" }}>
+        {/* RAIL */}
+        <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", padding: "22px 13px 16px", display: "flex", flexDirection: "column", gap: 3, overflow: "auto" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 6px" }}>
+            <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: -.6 }}>marathon</span>
+            <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onExit} style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", color: "rgba(233,238,255,.6)", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, marginBottom: 8 }}>← Exit</button>
+          {TAB_GROUPS.map(([label, keys]) => {
+            const items = keys.filter(k => TABS.some(([tk]) => tk === k));
+            if (!items.length) return null;
+            return (
+              <div key={label}>
+                <div style={{ fontSize: 9, letterSpacing: ".2em", textTransform: "uppercase", color: "rgba(233,238,255,.3)", padding: "12px 9px 6px", fontWeight: 700 }}>{label}</div>
+                {items.map(k => navBtn(k, TABS.find(([tk]) => tk === k)[1]))}
+              </div>
+            );
+          })}
+          <div style={{ flex: 1 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 11px", borderRadius: 11, background: "rgba(255,255,255,.022)", border: "1px solid rgba(255,255,255,.08)", fontSize: 11.5, color: syncing ? AMBER : "rgba(233,238,255,.55)" }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: syncing ? AMBER : GREEN, boxShadow: `0 0 8px ${syncing ? AMBER : GREEN}` }} />
+            {syncing ? `Syncing ${pending}…` : "All synced · live"}
+          </div>
+        </aside>
+
+        {/* MAIN */}
+        <div style={{ minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ padding: "20px 28px 16px", borderBottom: "1px solid rgba(255,255,255,.08)", background: "radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize: 23, fontWeight: 800, letterSpacing: -.4 }}>{title}</div>
+            <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.55)", marginTop: 3 }}>{sub}</div>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "18px 28px 48px" }}>
+            <div style={{ maxWidth: 1120, margin: "0 auto" }}>{content}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
       <div style={{ padding: "14px 16px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -77,15 +174,7 @@ export default function StockView({ products = [], onExit }) {
         ))}
       </div>
 
-      <div style={{ padding: "4px 12px 40px" }}>
-        {tab === "transfer" && <Transfer {...shared} />}
-        {tab === "locate"   && <Locator {...shared} />}
-        {tab === "setqty"   && canStock && <SetQuantity {...shared} canStock={canStock} isAdmin={isAdmin} />}
-        {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}
-        {tab === "history"  && <MovementHistory {...shared} />}
-        {tab === "count"    && isAdmin && <CountSession {...shared} />}
-        {tab === "recount"  && isAdmin && <StockErrorBoundary><CountedStockReview {...shared} /></StockErrorBoundary>}
-      </div>
+      <div style={{ padding: "4px 12px 40px" }}>{content}</div>
     </div>
   );
 }

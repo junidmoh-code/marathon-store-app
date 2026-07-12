@@ -40,6 +40,7 @@ import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/La
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
+import { printOrderSlips } from "./print/orderSlip";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -505,6 +506,12 @@ const isWaistSizeSet = (sizes) =>
   Array.isArray(sizes) && sizes.length > 0 && sizes.every(s => BOTTOMS_SIZES.includes(String(s)));
 // The size choices for a CLOTHING product: waist set for bottoms, letters otherwise.
 const clothingChoicesFor = (sizes) => (isWaistSizeSet(sizes) ? BOTTOMS_SIZES : CLOTHING_SIZES);
+// Kids sneaker breakdown — EU kids sizes. A sneaker-type product (same routing/
+// hubs/shoebox as adult sneakers) that uses this set instead of 3–11. Adult
+// sneakers top out at 11, so a sneaker whose sizes are ≥20 is a kids product.
+const KIDS_SIZES = ["26", "27", "28", "29", "30", "31", "32", "33", "34", "35"];
+const isKidsSizeSet = (sizes) =>
+  Array.isArray(sizes) && sizes.length > 0 && sizes.some(s => Number(s) >= 20);
 
 // Phase 14A: products can belong to multiple hubs. New shape is `hubs: [...]`,
 // values from { "hub1", "hub2", "hub3" }. Legacy products only have a single
@@ -545,12 +552,23 @@ const STOCK_HUBS = ["hub1", "hub2", "hub3"];
 //                           it for manual routing instead; historical restock is the
 //                           reconciliation pass's job. originHub (when resolvable) is
 //                           returned so staff know where the shoe belongs.
-function resolveReturnDestination(order) {
-  const cat = categorize(order.productName, [order.size]).category;
+function resolveReturnDestination(order, productCategory) {
+  // The size-based classifier is authoritative for everything EXCEPT kids sneaker
+  // sizes 28–35, which it misreads as waist/Clothing (WAIST_MIN=28) and would wrongly
+  // keep a returned kids shoe at the shop. The product's own stored category — pinned
+  // to "Footwear" for kids at admin-save, and corrected by the review-categories tool —
+  // is trusted ONLY to fix that one misfire: flipping a Clothing classification to
+  // Footwear. We deliberately do NOT trust the stored category wholesale, because
+  // admins can mint custom top-level categories that must not be blanket-routed as
+  // footwear. (Orders don't carry productCategory, so the caller resolves it via
+  // order.productId; trusting productType alone is also wrong — accessories/perfume
+  // default to productType "sneaker" and would be mis-routed as footwear.)
+  let cat = categorize(order.productName, [order.size]).category;
+  if (cat === "Clothing" && productCategory === "Footwear") cat = "Footwear";
   const staysAtShop =
     order.productType === "clothing" ||
     cat === "Clothing" || cat === "Accessories" || cat === "Perfume";
-  if (staysAtShop) return { mode: "stay", reason: `${cat.toLowerCase()}_stays_at_shop` };
+  if (staysAtShop) return { mode: "stay", reason: `${String(cat).toLowerCase()}_stays_at_shop` };
   const to = order.placedAtHub || order.hub;
   return { mode: "footwear_no_ledger", originHub: STOCK_HUBS.includes(to) ? to : null };
 }
@@ -745,7 +763,7 @@ function toKey(str) {
 //   emptyMessage — string shown when all buckets are empty
 //   includeOlder — when true, items older than 2-days-ago land in an "Older"
 //                  bucket (default collapsed). When false, they're dropped.
-function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, includeOlder = false, keyOf = null }) {
+function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, includeOlder = false, keyOf = null, columns = 1 }) {
   // Read initial open state from sessionStorage. Default: today open, rest closed.
   const STORAGE_KEY = `dayCollapsible:${sectionKey}`;
   const [openMap, setOpenMap] = useState(() => {
@@ -816,7 +834,9 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
               </svg>
             </div>
             <div style={{ maxHeight: open ? 5000 : 0, overflow:"hidden", transition:"max-height 150ms ease" }}>
-              <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 8px 12px", display:"flex", flexDirection:"column", gap:10 }}>
+              <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 8px 12px", ...(columns > 1
+                     ? { display:"grid", gridTemplateColumns:`repeat(${columns}, minmax(0,1fr))`, gap:12, alignItems:"start" }
+                     : { display:"flex", flexDirection:"column", gap:10 }) }}>
                 {/* keyOf gives STATEFUL cards a stable identity — the date-index
                     fallback reuses component state across neighbours when items
                     sharing a timestamp shift position (fine for stateless rows). */}
@@ -1604,15 +1624,14 @@ function holdHub2Ready(o, nowMs) {
 const CUSTOMERS_SESSION_KEY = "customersAuth";
 
 function CustomersView({ onExit }) {
-  // ── Auth gate (sessionStorage so refresh doesn't re-ask) ──
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem(CUSTOMERS_SESSION_KEY) === "true");
-  const [cpw, setCpw]       = useState("");
-  const [cpwError, setCpwError] = useState(false);
-
-  const [tab, setTab] = usePersistedTab("customers", "list");
+  const [tab, setTab] = usePersistedTab("customers", "insights");
   const insightsLog  = useInsightsLog();
   const customersDb  = useCustomersDb();
   const broadcasts   = useBroadcastHistory();
+  const returnsLog   = useReturnsLog();
+  const isWide       = !useIsNarrow(1024);
+  const [period, setPeriod] = useState("all");    // insights window: all | month
+  const [drill,  setDrill]  = useState(null);     // customer being dug into (or null)
 
   // ── Customer list: deduplicate by phone from insights_log ──
   const customerList = useMemo(() => {
@@ -1685,50 +1704,107 @@ function CustomersView({ onExit }) {
   }, [customerList, search]);
 
   const fmt = iso => iso ? new Date(iso).toLocaleDateString([], { day:"numeric", month:"short", year:"numeric" }) : "—";
+  const handleExit = () => onExit();
 
-  const checkCpw = () => {
-    if (cpw === "1551") { sessionStorage.setItem(CUSTOMERS_SESSION_KEY, "true"); setAuthed(true); }
-    else { setCpwError(true); setTimeout(() => setCpwError(false), 1500); }
-  };
-  const handleExit = () => { sessionStorage.removeItem(CUSTOMERS_SESSION_KEY); onExit(); };
+  // ── Customer insights ─────────────────────────────────────────────────────
+  // All derived from insights_log "placed" events (the durable per-order feed).
+  const stats = useMemo(() => {
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    const startMs = period === "month" ? monthStart.getTime() : 0;
+    const custKeyOf = (phone, name) => phoneToKey(phone) !== "unknown" ? phoneToKey(phone) : `name:${(name || "").trim().toLowerCase()}`;
 
-  if (!authed) return (
-    <div style={{ minHeight:"100vh", background:BG, color:"#fff", fontFamily:FONT, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"2rem" }}>
-      <div style={{ marginBottom:"0.5rem" }}>
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-      </div>
-      <h1 style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"3rem", letterSpacing:"0.05em", margin:"0 0 0.5rem" }}>CUSTOMERS</h1>
-      <p style={{ color:"#666", marginBottom:"2rem" }}>Enter password to continue</p>
-      <div style={{ display:"flex", gap:"0.75rem", width:"100%", maxWidth:"360px" }}>
-        <input type="password" placeholder="Password" value={cpw}
-          onChange={e => setCpw(e.target.value)} onKeyDown={e => e.key === "Enter" && checkCpw()}
-          style={{ ...inputStyle, flex:1, borderColor:cpwError ? "#F87171" : "rgba(60,110,255,.2)" }} />
-        <button onClick={checkCpw} style={{ ...bBlue, padding:"0 1.25rem", fontSize:"1rem" }}>Enter</button>
-      </div>
-      {cpwError && <div style={{ color:"#F87171", marginTop:"0.75rem", fontSize:"0.9rem" }}>Incorrect password</div>}
-      <button onClick={onExit} style={{ ...bGhost, marginTop:"2rem", padding:"0.4rem 1rem" }}>← Back</button>
-    </div>
-  );
+    // Aggregate orders per customer, DEDUPED by order identity (date::orderNumber)
+    // so a double-fire checkout can't inflate a customer's count. Build an order
+    // map at the same time so returns attribute back to the exact customer.
+    const seen = new Set();
+    const orderByKey = {};  // `${date}::${orderNumber}` -> customer key
+    const byKey = {};
+    insightsLog.filter(e => e.action === "placed" && (e.customerPhone || e.customerName)).forEach(e => {
+      const d = (e.timestamp || "").slice(0, 10);
+      const ck = custKeyOf(e.customerPhone, e.customerName);
+      if (e.orderNumber != null) {
+        const ordKey = `${d}::${e.orderNumber}`;
+        if (seen.has(ordKey)) return;          // duplicate placed for the same order/day
+        seen.add(ordKey);
+        orderByKey[ordKey] = ck;
+      }
+      if (!byKey[ck]) byKey[ck] = { key: ck, phone: e.customerPhone || "", name: e.customerName || "Unknown", first: e.timestamp, last: e.timestamp, all: 0, inPeriod: 0, returns: 0 };
+      const c = byKey[ck];
+      if (e.timestamp < c.first) c.first = e.timestamp;
+      if (e.timestamp > c.last)  c.last  = e.timestamp;
+      if (e.customerName && (!c.name || c.name === "Unknown")) c.name = e.customerName;
+      if (e.customerPhone && !c.phone) c.phone = e.customerPhone;
+      c.all++;
+      if (tsMs(e.timestamp) >= startMs) c.inPeriod++;
+    });
 
-  return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
-        <div onClick={handleExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
-        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>CUSTOMERS</div>
-        </div>
-        <div style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>{customerList.length} · {optedInList.length} opt-in</div>
-      </div>
-      <div style={{ borderBottom:"1px solid rgba(60,110,255,.08)", padding:"0 1.5rem", display:"flex" }}>
-        {[["list","Customer List"],["broadcast","Broadcast"]].map(([k,l]) => (
-          <button key={k} onClick={() => setTab(k)} style={{ ...(tab===k ? ulTabOn : ulTabOff) }}>
-            {l}
-          </button>
-        ))}
-      </div>
+    // Returns → attributed to the customer who owned the order (date::orderNumber),
+    // falling back to name. Deduped by order identity so a re-fire counts once.
+    const retSeen = new Set();
+    returnsLog.forEach(r => {
+      if (period === "month" && !(tsMs(r.timestamp) >= startMs)) return;
+      const d = r.date || (r.timestamp || "").slice(0, 10);
+      if (r.orderNumber != null) { const rk = `${d}::${r.orderNumber}`; if (retSeen.has(rk)) return; retSeen.add(rk); }
+      const mappedCk = (r.orderNumber != null && orderByKey[`${d}::${r.orderNumber}`]) || `name:${(r.customerName || "").trim().toLowerCase()}`;
+      if (!byKey[mappedCk]) byKey[mappedCk] = { key: mappedCk, phone: "", name: r.customerName || "Unknown", first: r.timestamp, last: r.timestamp, all: 0, inPeriod: 0, returns: 0 };
+      byKey[mappedCk].returns++;
+    });
 
-      <div style={{ padding:"1.5rem" }}>
+    const arr = Object.values(byKey).filter(c => c.all > 0);
+    const newInPeriod = arr.filter(c => tsMs(c.first) >= startMs);
+    const repeat = arr.filter(c => c.all > 1);
+    const dow = [0, 0, 0, 0, 0, 0, 0];
+    newInPeriod.forEach(c => { dow[new Date(c.first).getDay()]++; });
+    const dowMax = Math.max(...dow, 1);
+    const peakDow = newInPeriod.length ? dow.indexOf(Math.max(...dow)) : -1;
+    const firstEver = arr.length ? Math.min(...arr.map(c => tsMs(c.first))) : Date.now();
+    const spanDays = period === "month" ? Math.max(1, new Date().getDate()) : Math.max(1, Math.ceil((Date.now() - firstEver) / 86400000));
+    const avgNewPerDay = newInPeriod.length / spanDays;
+    const orderKey = period === "month" ? "inPeriod" : "all";
+    const mostOrders  = [...arr].filter(c => c[orderKey] > 0).sort((a, b) => b[orderKey] - a[orderKey]).slice(0, 12);
+    const mostReturns = [...arr].filter(c => c.returns > 0).sort((a, b) => b.returns - a.returns).slice(0, 12);
+    const newest      = [...newInPeriod].sort((a, b) => tsMs(b.first) - tsMs(a.first)).slice(0, 12);
+    const recentActive = [...arr].sort((a, b) => tsMs(b.last) - tsMs(a.last)).slice(0, 12);
+    const totalReturns = arr.reduce((n, c) => n + c.returns, 0);
+
+    // New-customer trend — day buckets (this month) or the last 12 months (all time).
+    const trend = [];
+    if (period === "month") {
+      const days = new Date().getDate();
+      const counts = {};
+      newInPeriod.forEach(c => { const dd = new Date(c.first).getDate(); counts[dd] = (counts[dd] || 0) + 1; });
+      for (let dd = 1; dd <= days; dd++) trend.push({ label: String(dd), value: counts[dd] || 0 });
+    } else {
+      const counts = {};
+      arr.forEach(c => { const m = (c.first || "").slice(0, 7); counts[m] = (counts[m] || 0) + 1; });
+      const now = new Date();
+      for (let i = 11; i >= 0; i--) {
+        const dt = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+        trend.push({ label: dt.toLocaleDateString([], { month: "short" }), value: counts[key] || 0 });
+      }
+    }
+    return { arr, total: arr.length, newInPeriod, repeat, dow, dowMax, peakDow, avgNewPerDay, mostOrders, mostReturns, newest, recentActive, totalReturns, orderKey, trend };
+  }, [insightsLog, returnsLog, period]);
+
+  const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  // Orders + returns for the drilled-in customer.
+  const drillDetail = useMemo(() => {
+    if (!drill) return null;
+    const key = drill.key;
+    const orders = insightsLog.filter(e => e.action === "placed" &&
+      (phoneToKey(e.customerPhone) === key || `name:${(e.customerName || "").toLowerCase()}` === key))
+      .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp));
+    const rets = returnsLog.filter(r => (r.customerName || "").trim().toLowerCase() === (drill.name || "").trim().toLowerCase());
+    return { orders, rets };
+  }, [drill, insightsLog, returnsLog]);
+
+  const content = (
+    <>
+        {/* ── TAB 0: INSIGHTS ── */}
+        {tab === "insights" && (
+          <CustomerInsights stats={stats} period={period} setPeriod={setPeriod} isWide={isWide} DOW={DOW} onDrill={setDrill} fmt={fmt} />
+        )}
 
         {/* ── TAB 1: CUSTOMER LIST ── */}
         {tab === "list" && (
@@ -1838,6 +1914,274 @@ function CustomersView({ onExit }) {
             )}
           </div>
         )}
+    </>
+  );
+
+  // ── FULL-SCREEN DESKTOP WORKSPACE (>=1024px) — nav rail + wide main pane ──
+  if (isWide) {
+    const NAV = [["insights", "Insights"], ["list", "Customer List"], ["broadcast", "Broadcast"]];
+    const NAV_ICON = {
+      insights: <><rect x="3" y="12" width="4" height="9" rx="1" /><rect x="10" y="6" width="4" height="15" rx="1" /><rect x="17" y="9" width="4" height="12" rx="1" /></>,
+      list:     <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /></>,
+      broadcast:<><path d="M3 11l18-5v12L3 14v-3z" /><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6" /></>,
+    };
+    const navItem = ([key, label]) => {
+      const on = tab === key;
+      return (
+        <button key={key} onClick={() => setTab(key)}
+          style={{ display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left", cursor: "pointer", fontFamily: FONT, fontSize: 13, fontWeight: 600, borderRadius: 10, padding: "9px 11px",
+                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition: "background .14s, color .14s" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: .9 }}>{NAV_ICON[key]}</svg>
+          <span style={{ flex: 1 }}>{label}</span>
+        </button>
+      );
+    };
+    return (
+      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "240px minmax(0,1fr)", overflow: "hidden" }}>
+        <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", padding: "22px 13px 16px", display: "flex", flexDirection: "column", gap: 3, overflow: "auto" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 10px" }}>
+            <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
+            <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={handleExit} style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", color: "rgba(233,238,255,.6)", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, marginBottom: 8 }}>&larr; Exit</button>
+          <div style={{ fontSize: 9, letterSpacing: ".2em", textTransform: "uppercase", color: "rgba(233,238,255,.3)", padding: "6px 9px", fontWeight: 700 }}>Customers</div>
+          {NAV.map(navItem)}
+          <div style={{ flex: 1 }} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ flex: 1, background: "rgba(255,255,255,.022)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 11, padding: "9px 10px" }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#9DBCFF", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{customerList.length}</div>
+              <div style={{ fontSize: 9.5, color: "rgba(233,238,255,.45)", marginTop: 3, letterSpacing: ".04em", textTransform: "uppercase", fontWeight: 600 }}>Total</div>
+            </div>
+            <div style={{ flex: 1, background: "rgba(255,255,255,.022)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 11, padding: "9px 10px" }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#4ADE80", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{optedInList.length}</div>
+              <div style={{ fontSize: 9.5, color: "rgba(233,238,255,.45)", marginTop: 3, letterSpacing: ".04em", textTransform: "uppercase", fontWeight: 600 }}>Opt-in</div>
+            </div>
+          </div>
+        </aside>
+        <div style={{ minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ padding: "20px 32px 16px", borderBottom: "1px solid rgba(255,255,255,.08)", background: "radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize: 23, fontWeight: 800, letterSpacing: "-0.4px" }}>{tab === "insights" ? "Customer Insights" : tab === "list" ? "Customer List" : "Broadcast"}</div>
+            <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.55)", marginTop: 3 }}>{tab === "insights" ? "Who your customers are, how they behave, and who to keep." : tab === "list" ? "Every customer, searchable, with marketing opt-in." : "Message your opted-in customers on WhatsApp."}</div>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "22px 32px 56px" }}>
+            <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+              {content}
+            </div>
+          </div>
+        </div>
+        {drill && <CustomerDrillModal drill={drill} detail={drillDetail} onClose={() => setDrill(null)} fmt={fmt} />}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth: isWide ? 1120 : 430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding: isWide ? "34px 24px 10px" : "50px 14px 10px" }}>
+        <div onClick={handleExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>CUSTOMERS</div>
+        </div>
+        <div style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>{customerList.length} · {optedInList.length} opt-in</div>
+      </div>
+      <div style={{ borderBottom:"1px solid rgba(60,110,255,.08)", padding: isWide ? "0 24px" : "0 1.5rem", display:"flex" }}>
+        {[["insights","Insights"],["list","Customer List"],["broadcast","Broadcast"]].map(([k,l]) => (
+          <button key={k} onClick={() => setTab(k)} style={{ ...(tab===k ? ulTabOn : ulTabOff) }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ padding: isWide ? "1.5rem 24px" : "1.5rem" }}>
+
+        {content}
+      </div>
+      {drill && <CustomerDrillModal drill={drill} detail={drillDetail} onClose={() => setDrill(null)} fmt={fmt} />}
+    </div>
+  );
+}
+
+// ─── CUSTOMER INSIGHTS ────────────────────────────────────────────────────────
+function CustomerInsights({ stats, period, setPeriod, isWide, DOW, onDrill, fmt }) {
+  const card = { background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16, boxShadow: "0 16px 40px -30px rgba(0,0,0,.85)" };
+  const kpi = (value, label, sub, color) => (
+    <div style={{ ...card, padding: "16px 18px" }}>
+      <div style={{ fontSize: 30, fontWeight: 800, color: color || "#9DBCFF", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff", marginTop: 8 }}>{label}</div>
+      {sub && <div style={{ fontSize: 11, color: "rgba(233,238,255,.45)", marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+  const rankRow = (i, name, sub, value, onClick) => (
+    <button key={i + name} onClick={onClick} disabled={!onClick}
+      style={{ display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left", padding: "10px 14px", background: "transparent", border: "none", borderTop: i > 0 ? "1px solid rgba(255,255,255,.05)" : "none", cursor: onClick ? "pointer" : "default", fontFamily: FONT }}>
+      <span style={{ width: 18, fontSize: 12, fontWeight: 800, color: i < 3 ? "#9DBCFF" : "rgba(233,238,255,.3)", textAlign: "right", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{i + 1}</span>
+      <div style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(74,127,255,.12)", border: "1px solid rgba(74,127,255,.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, color: "#9DBCFF", flexShrink: 0 }}>{(name || "?")[0].toUpperCase()}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+        {sub && <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{value}</div>
+      {onClick && <span style={{ color: "rgba(233,238,255,.3)", flexShrink: 0, fontSize: 15 }}>›</span>}
+    </button>
+  );
+  const board = (title, subtitle, items, render) => (
+    <div style={{ ...card, overflow: "hidden" }}>
+      <div style={{ padding: "14px 16px 11px", borderBottom: "1px solid rgba(255,255,255,.06)" }}>
+        <div style={{ fontSize: 13.5, fontWeight: 800, color: "#fff" }}>{title}</div>
+        {subtitle && <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", marginTop: 2 }}>{subtitle}</div>}
+      </div>
+      <div>
+        {items.length === 0 ? <div style={{ padding: 22, textAlign: "center", color: "rgba(233,238,255,.35)", fontSize: 12.5 }}>Nothing yet in this window.</div> : items.map((it, i) => render(it, i))}
+      </div>
+    </div>
+  );
+
+  const repeatPct = stats.total ? Math.round(stats.repeat.length / stats.total * 100) : 0;
+  const recentActive = stats.recentActive;
+
+  // Area chart for the new-customer trend.
+  const TrendChart = ({ data }) => {
+    const max = Math.max(...data.map(d => d.value), 1);
+    const W = 720, H = 150, pad = 8;
+    const x = i => data.length > 1 ? (i / (data.length - 1)) * (W - pad * 2) + pad : W / 2;
+    const y = v => H - 10 - (v / max) * (H - 26);
+    const pts = data.map((d, i) => [x(i), y(d.value)]);
+    const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+    const area = `${line} L${x(data.length - 1).toFixed(1)},${H} L${x(0).toFixed(1)},${H} Z`;
+    return (
+      <div>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" width="100%" height={150} style={{ display: "block" }}>
+          <defs><linearGradient id="ctGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#4A7FFF" stopOpacity=".38" /><stop offset="1" stopColor="#4A7FFF" stopOpacity="0" /></linearGradient></defs>
+          <path d={area} fill="url(#ctGrad)" />
+          <path d={line} fill="none" stroke="#6A9FFF" strokeWidth="2.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+          {pts.map((p, i) => <circle key={i} cx={p[0]} cy={p[1]} r={2.6} fill="#9DBCFF" />)}
+        </svg>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+          {data.map((d, i) => <div key={i} style={{ flex: 1, textAlign: "center", fontSize: 9.5, color: "rgba(233,238,255,.4)", overflow: "hidden" }}>{data.length <= 12 || i % 3 === 0 ? d.label : ""}</div>)}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Period toggle */}
+      <div style={{ display: "inline-flex", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 12, padding: 3, alignSelf: "flex-start" }}>
+        {[["all", "All time"], ["month", "This month"]].map(([k, l]) => {
+          const on = period === k;
+          return <button key={k} onClick={() => setPeriod(k)} style={{ padding: "7px 16px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 12.5, fontWeight: 700, fontFamily: FONT, background: on ? "rgba(74,127,255,.22)" : "transparent", color: on ? "#cfe0ff" : "rgba(233,238,255,.5)" }}>{l}</button>;
+        })}
+      </div>
+
+      {/* KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: isWide ? "repeat(4,1fr)" : "repeat(2,1fr)", gap: 12 }}>
+        {kpi(stats.total, "Total customers", "all time")}
+        {kpi(stats.newInPeriod.length, period === "month" ? "New this month" : "New (all-time)", period === "month" ? "joined this month" : "distinct customers")}
+        {kpi(stats.avgNewPerDay.toFixed(1), "New / day", period === "month" ? "avg this month" : "avg all-time", "#4ADE80")}
+        {kpi(`${repeatPct}%`, "Repeat rate", `${stats.repeat.length} with 2+ orders`, "#FBBF24")}
+      </div>
+
+      {/* New-customer trend + weekday, side by side on desktop */}
+      <div style={{ display: "grid", gridTemplateColumns: isWide ? "1.55fr 1fr" : "1fr", gap: 16 }}>
+      <div style={{ ...card, padding: "16px 18px 14px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 800, color: "#fff" }}>New customers over time</div>
+          <div style={{ fontSize: 12, color: "rgba(233,238,255,.5)" }}>{period === "month" ? "this month, by day" : "last 12 months"}</div>
+        </div>
+        <TrendChart data={stats.trend} />
+      </div>
+
+      {/* Busiest weekday */}
+      <div style={{ ...card, padding: "16px 18px 14px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 800, color: "#fff" }}>By weekday</div>
+          <div style={{ fontSize: 12, color: "rgba(233,238,255,.5)" }}>Busiest: <b style={{ color: "#9DBCFF" }}>{stats.newInPeriod.length ? DOW[stats.peakDow] : "—"}</b></div>
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 128 }}>
+          {stats.dow.map((v, d) => {
+            const peak = d === stats.peakDow && v > 0;
+            const h = v === 0 ? 0 : Math.max(6, v / stats.dowMax * 100);
+            return (
+              <div key={d} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: peak ? "#9DBCFF" : "rgba(233,238,255,.5)", marginBottom: 4 }}>{v || ""}</div>
+                <div style={{ width: "100%", height: `${h}%`, borderRadius: "6px 6px 0 0", background: peak ? "linear-gradient(180deg,#6A9FFF,#4A7FFF)" : "linear-gradient(180deg,rgba(74,127,255,.5),rgba(74,127,255,.14))", boxShadow: peak ? "0 0 14px rgba(74,127,255,.5)" : "none" }} />
+                <div style={{ fontSize: 10.5, color: peak ? "#9DBCFF" : "rgba(233,238,255,.4)", marginTop: 6, fontWeight: peak ? 700 : 500 }}>{DOW[d]}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      </div>
+
+      {/* Leaderboards */}
+      <div style={{ display: "grid", gridTemplateColumns: isWide ? "1fr 1fr" : "1fr", gap: 16 }}>
+        {board("Most orders", "Top customers — tap to dig in", stats.mostOrders, (c, i) => rankRow(i, c.name, c.phone || "no phone", c[stats.orderKey], () => onDrill(c)))}
+        {board("Most returns", "Returns per customer — tap to dig in", stats.mostReturns, (c, i) => rankRow(i, c.name, `${c.all} order${c.all !== 1 ? "s" : ""} · ${Math.round(c.returns / Math.max(1, c.all) * 100)}% returned`, c.returns, () => onDrill(c)))}
+        {board("Newest customers", period === "month" ? "Joined this month" : "Most recent first order", stats.newest, (c, i) => rankRow(i, c.name, fmt(c.first), `${c.all}×`, () => onDrill(c)))}
+        {board("Recently active", "Last order first", recentActive, (c, i) => rankRow(i, c.name, fmt(c.last), `${c.all}×`, () => onDrill(c)))}
+      </div>
+    </div>
+  );
+}
+
+// Drill-in sheet for a single customer — their orders + returns.
+function CustomerDrillModal({ drill, detail, onClose, fmt }) {
+  const orders = detail?.orders || [];
+  const rets = detail?.rets || [];
+  const chip = (label, value) => (
+    <div style={{ flex: 1, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, padding: "10px 12px", minWidth: 0 }}>
+      <div style={{ fontSize: 18, fontWeight: 800, color: "#fff", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{ fontSize: 10.5, color: "rgba(233,238,255,.45)", marginTop: 4, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 600 }}>{label}</div>
+    </div>
+  );
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,.62)", backdropFilter: "blur(5px)", WebkitBackdropFilter: "blur(5px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: 560, maxHeight: "84vh", overflow: "auto", background: "#0b0f18", border: "1px solid rgba(255,255,255,.12)", borderRadius: 20, boxShadow: "0 40px 100px -30px rgba(0,0,0,.9)", fontFamily: FONT }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 13, padding: "18px 18px 14px", borderBottom: "1px solid rgba(255,255,255,.07)", position: "sticky", top: 0, background: "#0b0f18", zIndex: 1 }}>
+          <div style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(74,127,255,.14)", border: "1px solid rgba(74,127,255,.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, color: "#9DBCFF", flexShrink: 0 }}>{(drill.name || "?")[0].toUpperCase()}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{drill.name || "Unknown"}</div>
+            <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.5)" }}>{drill.phone || "No phone on file"}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(233,238,255,.7)", borderRadius: 9, width: 30, height: 30, cursor: "pointer", fontSize: 16, lineHeight: 1, fontFamily: FONT }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+            {chip("Orders", orders.length)}
+            {chip("Returns", rets.length)}
+            {chip("First", orders.length ? fmt(orders[orders.length - 1].timestamp) : "—")}
+            {chip("Last", orders.length ? fmt(orders[0].timestamp) : "—")}
+          </div>
+          <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", margin: "4px 0 8px" }}>Orders</div>
+          {orders.length === 0 ? <div style={{ color: "rgba(233,238,255,.35)", fontSize: 12.5, padding: "8px 0" }}>No orders on record.</div> : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {orders.slice(0, 40).map((o, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.07)", borderRadius: 11, padding: "9px 12px" }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: "#9DBCFF", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>#{o.orderNumber || "—"}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.productName}{o.size ? ` · Sz ${o.size}` : ""}</div>
+                  </div>
+                  <span style={{ fontSize: 11, color: "rgba(233,238,255,.4)", flexShrink: 0 }}>{new Date(o.timestamp).toLocaleDateString([], { day: "numeric", month: "short" })}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {rets.length > 0 && (
+            <>
+              <div style={{ fontSize: 11, color: "rgba(248,113,113,.7)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", margin: "16px 0 8px" }}>Returns</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                {rets.slice(0, 20).map((r, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(248,113,113,.07)", border: "1px solid rgba(248,113,113,.2)", borderRadius: 11, padding: "9px 12px" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 800, color: "#F87171", flexShrink: 0 }}>#{r.orderNumber || "—"}</span>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.productName}{r.size ? ` · Sz ${r.size}` : ""}</div>
+                    <span style={{ fontSize: 11, color: "rgba(233,238,255,.4)", flexShrink: 0 }}>{r.timestamp ? new Date(r.timestamp).toLocaleDateString([], { day: "numeric", month: "short" }) : ""}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1997,7 +2341,48 @@ function GroupSection({ label, children }) {
   );
 }
 
+// Desktop home tiles (bento) — the featured HeroTile spends the one moment of
+// colour; HomeTile is the standard workspace tile; MiniTile the dense secondary
+// row. Mobile keeps the hero image + RoleCard list.
+function HeroTile({ icon, name, desc, badge, onClick }) {
+  return (
+    <button className="hm-tile hm-hero" onClick={onClick}>
+      <span className="hm-ic">{icon}</span>
+      {badge > 0 && <span className="hm-bd">{badge} today</span>}
+      <span>
+        <span className="hm-nm">{name}</span>
+        <span className="hm-ds">{desc}</span>
+        <span className="hm-cta">Open workspace →</span>
+      </span>
+    </button>
+  );
+}
+function HomeTile({ icon, name, desc, badge, onClick }) {
+  return (
+    <button className="hm-tile" onClick={onClick}>
+      <span className="hm-ic">{icon}</span>
+      {badge > 0 && <span className="hm-bd">{badge}</span>}
+      <span className="hm-nm">{name}</span>
+      <span className="hm-ds">{desc}</span>
+      <span className="hm-ar">→</span>
+    </button>
+  );
+}
+function MiniTile({ icon, name, desc, onClick }) {
+  return (
+    <button className="hm-mini" onClick={onClick}>
+      <span className="hm-mic">{icon}</span>
+      <span style={{ minWidth: 0 }}>
+        <span className="hm-mnm">{name}</span>
+        <span className="hm-mds">{desc}</span>
+      </span>
+    </button>
+  );
+}
+
 function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessStock, isSuperAdmin }) {
+  const isDesktop = !useIsNarrow(1024);
+  const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
   // Source badge = today's restock requests + on-hold (Tomorrow), excluding OOS.
@@ -2020,6 +2405,156 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
     o.createdAt && o.createdAt.slice(0,10) === today
   ).length : 0;
 
+  // Shared, permission-gated role data — rendered as a desktop tile grid or the
+  // mobile RoleCard list.
+  const groups = [
+    { label: "Operations", cards: [
+      hasPermission(ROLE_TO_PERMISSION[ROLES.ASSISTANT]) && { key:"assistant", icon:RoleIcons.assistant, name:"Store Assistant", desc:"Place customer orders", badge:assistantBadge, onClick:()=>onSelect(ROLES.ASSISTANT) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) && { key:"warehouse", icon:RoleIcons.warehouse, name:"Warehouse", desc:"Manage order queue", badge:incoming, onClick:()=>onSelect(ROLES.WAREHOUSE) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])    && { key:"source", icon:RoleIcons.source, name:"Source", desc:"Restock requests", badge:sourceBadge, onClick:()=>onSelect(ROLES.SOURCE) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && { key:"returns", icon:RoleIcons.returns, name:"Returns", desc:"Log returned items", onClick:()=>onSelect(ROLES.RETURNS) },
+      { key:"barcodes", icon:RoleIcons.stock, name:"Barcodes", desc:"Print product barcodes", onClick:()=>onSelect(ROLES.BARCODES) },
+      { key:"label_print", icon:RoleIcons.stock, name:"Print Labels", desc:"Product labels · name, price, barcode", onClick:()=>onSelect(ROLES.LABEL_PRINT) },
+    ].filter(Boolean) },
+    { label: "Insights & Display", cards: [
+      hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && { key:"insights", icon:RoleIcons.insights, name:"Internal Insights", desc:"Business analytics", onClick:()=>onSelect(ROLES.INSIGHTS) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.DISPLAY])  && { key:"display", icon:RoleIcons.display, name:"TV Display", desc:"Customer queue screen", onClick:()=>onSelect(ROLES.DISPLAY) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && { key:"customer", icon:RoleIcons.customer, name:"Track Order", desc:"Live order status & timeline", onClick:()=>onSelect(ROLES.CUSTOMER) },
+    ].filter(Boolean) },
+    { label: "Administration", cards: [
+      hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && { key:"customers", icon:RoleIcons.customers_db, name:"Customers", desc:"Customer database", onClick:()=>onSelect(ROLES.CUSTOMERS_DB) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && { key:"admin", icon:RoleIcons.admin, name:"Admin", desc:"Manage products", onClick:()=>onSelect(ROLES.ADMIN) },
+      canAccessStock                                           && { key:"stock", icon:RoleIcons.stock, name:"Stock", desc:"Inventory & transfers", onClick:()=>onSelect(ROLES.STOCK) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
+      isSuperAdmin && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc:"Photos · Names · Reorder · Voice", onClick:()=>onSelect(ROLES.AI_STUDIO) },
+    ].filter(Boolean) },
+  ];
+  const anyCards = groups.some(g => g.cards.length > 0);
+
+  // ── DESKTOP HOME (≥1024px) — a live retail-ops dashboard: greeting, today's
+  //    numbers, and a BENTO of workspaces (featured primary + weighted rest).
+  //    Mobile keeps the hero image + RoleCard list. ──
+  if (isDesktop) {
+    const hr = new Date().getHours();
+    const greet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
+    const name = homePerm?.displayName || homePerm?.username || homeUser?.email?.split("@")[0] || "there";
+    const dateStr = new Date().toLocaleDateString("en-ZA", { weekday: "long", day: "numeric", month: "long" });
+    const ops = groups[0].cards;                                   // Operations
+    const featured = ops.find(c => c.key === "assistant") || ops[0] || null;
+    const opsRest = ops.filter(c => c !== featured);
+    const others = groups.slice(1).filter(g => g.cards.length > 0); // Insights, Admin
+    const stats = [
+      { k: "Orders today", v: assistantBadge, role: ROLES.WAREHOUSE },
+      { k: "In queue", v: incoming, role: ROLES.WAREHOUSE },
+      { k: "To restock", v: sourceBadge, warn: sourceBadge > 0, role: ROLES.SOURCE },
+      { k: "Returns", v: returnedToday.size, role: ROLES.RETURNS },
+    ];
+    return (
+      <div style={{ minHeight:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, position:"relative" }}>
+        <div style={{ position:"absolute", inset:0, pointerEvents:"none", background:"radial-gradient(1200px 560px at 84% -12%, rgba(60,110,255,.12), transparent 58%), radial-gradient(900px 520px at 4% 0%, rgba(127,90,240,.09), transparent 52%)" }} />
+        <style>{`
+          @keyframes hmRise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+          .hm-r{opacity:0;animation:hmRise .55s cubic-bezier(.2,.7,.2,1) forwards}
+          .hm-stat{position:relative;width:100%;text-align:left;font-family:inherit;color:#f3f6ff;background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:14px 15px}
+          .hm-stat.clk{cursor:pointer;transition:transform .18s cubic-bezier(.2,.7,.2,1),border-color .18s,box-shadow .18s}
+          .hm-stat.clk:hover,.hm-stat.clk:focus-visible{transform:translateY(-3px);border-color:rgba(74,127,255,.5);box-shadow:0 14px 30px -20px rgba(60,110,255,.55);outline:none}
+          .hm-sgo{position:absolute;top:13px;right:14px;color:#4A7FFF;font-size:13px;opacity:0;transform:translateX(-3px);transition:.18s}
+          .hm-stat.clk:hover .hm-sgo,.hm-stat.clk:focus-visible .hm-sgo{opacity:1;transform:none}
+          .hm-tile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:5px;width:100%;text-align:left;cursor:pointer;font-family:inherit;color:#f3f6ff;
+            background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 60%),rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:16px;overflow:hidden;
+            transition:transform .22s cubic-bezier(.2,.7,.2,1),border-color .22s,box-shadow .22s}
+          .hm-tile:hover,.hm-tile:focus-visible{transform:translateY(-5px);border-color:rgba(74,127,255,.5);box-shadow:0 20px 46px -22px rgba(60,110,255,.6);outline:none}
+          .hm-ic{position:absolute;top:15px;left:15px;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;color:#9DBCFF;background:rgba(74,127,255,.12);border:1px solid rgba(74,127,255,.28)}
+          .hm-ic svg{width:20px;height:20px}
+          .hm-nm{font-size:15px;font-weight:750;letter-spacing:-.01em;color:#fff}
+          .hm-ds{display:block;font-size:11.5px;color:rgba(233,238,255,.5)}
+          .hm-bd{position:absolute;top:16px;right:15px;font-size:12px;font-weight:800;color:#9DBCFF;background:rgba(74,127,255,.2);border-radius:999px;padding:2px 10px;font-variant-numeric:tabular-nums}
+          .hm-ar{position:absolute;bottom:15px;right:16px;color:#4A7FFF;font-size:15px;opacity:0;transform:translateX(-4px);transition:.2s}
+          .hm-tile:hover .hm-ar,.hm-tile:focus-visible .hm-ar{opacity:1;transform:none}
+          .hm-hero{grid-column:span 2;grid-row:span 2;justify-content:space-between;padding:22px;
+            background:radial-gradient(120% 120% at 100% 0,rgba(127,90,240,.22),transparent 55%),linear-gradient(160deg,rgba(74,127,255,.14),rgba(10,12,22,.4));border-color:rgba(122,110,255,.4)}
+          .hm-hero .hm-ic{position:static;width:52px;height:52px;border-radius:15px;background:linear-gradient(135deg,#6e7bff,#7f5af0);color:#fff;border:0;box-shadow:0 10px 26px -8px rgba(127,90,240,.7)}
+          .hm-hero .hm-ic svg{width:26px;height:26px}
+          .hm-hero .hm-nm{font-size:23px;font-weight:800;letter-spacing:-.02em}
+          .hm-hero .hm-ds{font-size:13px;margin-top:2px}
+          .hm-hero .hm-bd{top:22px;right:20px;background:rgba(255,255,255,.14);color:#fff}
+          .hm-cta{display:inline-flex;align-items:center;margin-top:13px;font-size:12.5px;font-weight:800;color:#fff;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);border-radius:10px;padding:8px 13px}
+          .hm-mini{position:relative;display:flex;align-items:center;gap:12px;width:100%;text-align:left;cursor:pointer;font-family:inherit;color:#f3f6ff;
+            background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.08);border-radius:15px;padding:13px 14px;transition:transform .2s,border-color .2s,box-shadow .2s}
+          .hm-mini:hover,.hm-mini:focus-visible{transform:translateY(-3px);border-color:rgba(74,127,255,.45);box-shadow:0 14px 32px -20px rgba(60,110,255,.55);outline:none}
+          .hm-mic{width:38px;height:38px;flex:0 0 auto;border-radius:11px;display:grid;place-items:center;color:#9DBCFF;background:rgba(74,127,255,.1);border:1px solid rgba(74,127,255,.24)}
+          .hm-mic svg{width:18px;height:18px}
+          .hm-mnm{display:block;font-size:13.5px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          .hm-mds{display:block;font-size:11px;color:rgba(233,238,255,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          @media(prefers-reduced-motion:reduce){.hm-r{animation:none;opacity:1}.hm-tile,.hm-mini,.hm-ar,.hm-stat{transition:none}}
+        `}</style>
+        <div style={{ position:"relative", maxWidth:1100, margin:"0 auto", padding:"28px 30px 72px" }}>
+          {/* Top bar */}
+          <div className="hm-r" style={{ display:"flex", alignItems:"center", gap:14, marginBottom:38, animationDelay:".02s" }}>
+            <span style={{ fontSize:20, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:10, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+            <div style={{ flex:1 }} />
+            <span style={{ fontSize:12.5, color:"rgba(233,238,255,.5)" }}>{dateStr}</span>
+            <div style={{ display:"flex", alignItems:"center", gap:9, padding:"6px 8px 6px 6px", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, background:"rgba(255,255,255,.022)" }}>
+              <span style={{ width:26, height:26, borderRadius:"50%", background:"rgba(74,127,255,.2)", border:"1px solid rgba(74,127,255,.5)", color:"#9DBCFF", fontSize:11, fontWeight:800, display:"grid", placeItems:"center" }}>{(name[0] || "?").toUpperCase()}</span>
+              <span style={{ fontSize:12, fontWeight:700 }}>{name}</span>
+              <button onClick={homeSignOut} title="Sign out" aria-label="Sign out" style={{ border:0, background:"transparent", color:"rgba(233,238,255,.4)", cursor:"pointer", display:"grid", placeItems:"center", padding:2 }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Greeting */}
+          <div className="hm-r" style={{ animationDelay:".08s" }}>
+            <div style={{ fontSize:"clamp(26px,3.4vw,38px)", fontWeight:800, letterSpacing:"-.02em", lineHeight:1.05, textWrap:"balance" }}>
+              {greet}, <span style={{ background:"linear-gradient(90deg,#6e7bff,#8a6dff,#7f5af0)", WebkitBackgroundClip:"text", backgroundClip:"text", WebkitTextFillColor:"transparent" }}>{name}</span>.
+            </div>
+            <div style={{ fontSize:13.5, color:"rgba(233,238,255,.5)", marginTop:9 }}>Here's what's moving at Marathon today.</div>
+          </div>
+
+          {/* Today's numbers — each jumps to its queue when you have access. */}
+          <div className="hm-r" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, margin:"22px 0 34px", animationDelay:".14s" }}>
+            {stats.map(s => {
+              const can = hasPermission(ROLE_TO_PERMISSION[s.role]);
+              const El = can ? "button" : "div";
+              return (
+                <El key={s.k} className={"hm-stat" + (can ? " clk" : "")} onClick={can ? () => onSelect(s.role) : undefined}>
+                  {can && <span className="hm-sgo">→</span>}
+                  <div style={{ fontSize:10.5, letterSpacing:".14em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700 }}>{s.k}</div>
+                  <div style={{ fontSize:28, fontWeight:800, letterSpacing:"-.02em", fontVariantNumeric:"tabular-nums", marginTop:6, color: s.warn ? "#F5A623" : "#fff" }}>{s.v}</div>
+                </El>
+              );
+            })}
+          </div>
+
+          {!anyCards ? (
+            <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
+              No tools assigned to your account yet. Ask an admin to update your permissions.
+            </div>
+          ) : (
+            <>
+              <div className="hm-r" style={{ fontSize:11, letterSpacing:".22em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700, margin:"0 2px 14px", animationDelay:".2s" }}>Workspaces</div>
+              <div className="hm-r" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gridAutoRows:118, gridAutoFlow:"dense", gap:13, marginBottom:34, animationDelay:".24s" }}>
+                {featured && <HeroTile icon={featured.icon} name={featured.name} desc={featured.desc} badge={featured.badge} onClick={featured.onClick} />}
+                {opsRest.map(c => <HomeTile key={c.key} icon={c.icon} name={c.name} desc={c.desc} badge={c.badge} onClick={c.onClick} />)}
+              </div>
+
+              {others.map((g, gi) => (
+                <div key={g.label} className="hm-r" style={{ animationDelay: `${.3 + gi * .06}s` }}>
+                  <div style={{ fontSize:11, letterSpacing:".22em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700, margin:"0 2px 14px" }}>{g.label}</div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(224px, 1fr))", gap:12, marginBottom:30 }}>
+                    {g.cards.map(c => <MiniTile key={c.key} icon={c.icon} name={c.name} desc={c.desc} onClick={c.onClick} />)}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight:"100vh", background:"#000", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden" }}>
       {/* MARATHON HERO */}
@@ -2041,58 +2576,22 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
         </div>
       </div>
 
-      {/* ROLE GROUPS — each tile gated by hasPermission. Empty groups are
-          hidden so staff with limited permissions don't see empty headings. */}
-      {(() => {
-        const ops = [
-          hasPermission(ROLE_TO_PERMISSION[ROLES.ASSISTANT]) && <RoleCard key="assistant" icon={RoleIcons.assistant} name="Store Assistant" desc="Place customer orders" badge={assistantBadge}  onClick={() => onSelect(ROLES.ASSISTANT)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) && <RoleCard key="warehouse" icon={RoleIcons.warehouse} name="Warehouse"        desc="Manage order queue"   badge={incoming}        onClick={() => onSelect(ROLES.WAREHOUSE)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])    && <RoleCard key="source"    icon={RoleIcons.source}    name="Source"           desc="Restock requests"     badge={sourceBadge}     onClick={() => onSelect(ROLES.SOURCE)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && <RoleCard key="returns"   icon={RoleIcons.returns}   name="Returns"          desc="Log returned items"   onClick={() => onSelect(ROLES.RETURNS)} />,
-          // Open to everyone — reprinting an existing barcode is read-only. Minting
-          // a NEW code is gated by stockRole inside the screen.
-          <RoleCard key="barcodes" icon={RoleIcons.stock} name="Barcodes" desc="Print product barcodes" onClick={() => onSelect(ROLES.BARCODES)} />,
-          // Open to everyone — browse the catalogue and print a single name · price ·
-          // barcode label. Minting a new code is stockRole-gated inside the view.
-          <RoleCard key="label_print" icon={RoleIcons.stock} name="Print Labels" desc="Product labels · name, price, barcode" onClick={() => onSelect(ROLES.LABEL_PRINT)} />,
-        ].filter(Boolean);
-        const insightsDisplay = [
-          hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && <RoleCard key="insights" icon={RoleIcons.insights} name="Internal Insights" desc="Business analytics"    onClick={() => onSelect(ROLES.INSIGHTS)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.DISPLAY])  && <RoleCard key="display"  icon={RoleIcons.display}  name="TV Display"        desc="Customer queue screen" onClick={() => onSelect(ROLES.DISPLAY)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMER]) && <RoleCard key="customer" icon={RoleIcons.customer} name="Customer"          desc="Check order status"    onClick={() => onSelect(ROLES.CUSTOMER)} />,
-        ].filter(Boolean);
-        const admin = [
-          hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && <RoleCard key="customers" icon={RoleIcons.customers_db}     name="Customers"       desc="Customer database"       onClick={() => onSelect(ROLES.CUSTOMERS_DB)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && <RoleCard key="admin"     icon={RoleIcons.admin}            name="Admin"           desc="Manage products"         onClick={() => onSelect(ROLES.ADMIN)} />,
-          canAccessStock                                           && <RoleCard key="stock"     icon={RoleIcons.stock}            name="Stock"           desc="Inventory & transfers"   onClick={() => onSelect(ROLES.STOCK)} />,
-          hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && <RoleCard key="broadcast" icon={RoleIcons.broadcast_groups} name="Group Broadcast" desc="Send to WhatsApp groups" onClick={() => onSelect(ROLES.BROADCAST_GROUPS)} />,
-          // User Management is hash-routed (not role-routed) — the screen mounts
-          // on wantUserMgmt in the App view cascade. Tap → set hash → mount.
-          hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && <RoleCard key="user_mgmt" icon={RoleIcons.user_management} name="User Management" desc="Manage staff accounts" onClick={() => (window.location.hash = "#admin/users")} />,
-          // AI Studio: every AI tool (Photo Studio, Names, Reorder, Voice) in
-          // one super-admin-only view. Gated on the REAL isSuperAdmin flag —
-          // not a permission string a /users record could ever grant — and the
-          // view mount re-checks it, so this is render + route enforcement.
-          // (The AI Cloud Functions are assertAdmin server-side anyway.)
-          isSuperAdmin && <RoleCard key="ai_studio" icon={RoleIcons.ai_studio} name="AI Studio" desc="Photos · Names · Reorder · Voice" onClick={() => onSelect(ROLES.AI_STUDIO)} />,
-        ].filter(Boolean);
-        // `last` on the final card in each group removes the trailing divider.
-        const withLast = (cards) => cards.map((card, i) =>
-          i === cards.length - 1 ? <card.type {...card.props} last /> : card
-        );
-        return (
-          <div style={{ padding:"10px 14px 36px", background:"#000" }}>
-            {ops.length > 0              && <GroupSection label="Operations">{withLast(ops)}</GroupSection>}
-            {insightsDisplay.length > 0  && <GroupSection label="Insights & Display">{withLast(insightsDisplay)}</GroupSection>}
-            {admin.length > 0            && <GroupSection label="Administration">{withLast(admin)}</GroupSection>}
-            {ops.length + insightsDisplay.length + admin.length === 0 && (
-              <div style={{ textAlign:"center", color:"#555", padding:"3rem 1rem", fontSize:14 }}>
-                No tools assigned to your account yet. Ask an admin to update your permissions.
-              </div>
-            )}
+      {/* ROLE GROUPS — each tile gated by hasPermission (shared `groups` data).
+          Empty groups are hidden so staff with limited permissions don't see
+          empty headings. */}
+      <div style={{ padding:"10px 14px 36px", background:"#000" }}>
+        {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
+          <GroupSection key={g.label} label={g.label}>
+            {g.cards.map((c, i) => (
+              <RoleCard key={c.key} icon={c.icon} name={c.name} desc={c.desc} badge={c.badge} onClick={c.onClick} last={i === g.cards.length - 1} />
+            ))}
+          </GroupSection>
+        )) : (
+          <div style={{ textAlign:"center", color:"#555", padding:"3rem 1rem", fontSize:14 }}>
+            No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
-        );
-      })()}
+        )}
+      </div>
     </div>
   );
 }
@@ -3737,6 +4236,32 @@ function AdminView({ products, orders, onExit }) {
   // context line. orders[] alone isn't enough — it's daily-counter-ephemeral
   // (see project-insights-past-days-pattern memory).
   const insightsLog = useInsightsLog();
+  // Desktop workspace gate (≥1024px). Mobile keeps the single column.
+  const isWide = !useIsNarrow(1024);
+
+  // Saved product categories — a shared, growable list backed by RTDB so the
+  // category field is a dropdown (no free-text typos) that persists across
+  // devices. Seeded from the canonical TOP_CATEGORIES + whatever the catalogue
+  // already uses, then merged with any admin-added customs.
+  const [savedCategories, setSavedCategories] = useState([]);
+  useEffect(() => {
+    const u = onValue(ref(database, "product_categories"),
+      snap => { const v = snap.val(); setSavedCategories(v ? Object.values(v).map(String) : []); },
+      () => setSavedCategories([]));
+    return () => u();
+  }, []);
+  const categoryOptions = useMemo(() => {
+    const set = new Set(TOP_CATEGORIES);
+    (products || []).forEach(p => { if (p?.category) set.add(String(p.category)); });
+    savedCategories.forEach(c => c && set.add(String(c)));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [products, savedCategories]);
+  const addCategory = async () => {
+    const name = (window.prompt("New category name") || "").trim();
+    if (!name) return;
+    try { await push(ref(database, "product_categories"), name); } catch { /* falls back to local selection */ }
+    setCategory(name);
+  };
 
   const addProduct = async () => {
     if (!form.name || form.sizes.length === 0) return;
@@ -3765,10 +4290,18 @@ function AdminView({ products, orders, onExit }) {
       // — same logic as the backfill + bulk scripts). A manually-typed category is
       // respected as the top level; subcategory + brand are always auto-derived.
       const auto = categorize(form.name, form.sizes);
+      // Kids sneaker sizes (26–35) read as pants-waists to the shared size-based
+      // classifier, mislabelling a kids shoe as Clothing. Force Footwear for the
+      // kids size style; drop the wrong Clothing subcategory to the review queue.
+      if (form.sizeStyle === "kids" && (form.productType || "sneaker") !== "clothing") {
+        auto.category = "Footwear";
+        auto.subcategory = null;
+      }
       const manualCat = (form.category || "").trim();
-      // Respect a manual category ONLY when it's a real top-level; otherwise the
-      // auto value wins (so free-text junk can't land in the browse-able field).
-      const useManual = TOP_CATEGORIES.includes(manualCat);
+      // Respect a manual category when it's a known/saved category (picked from the
+      // dropdown); otherwise the auto value wins so free-text junk can't land in
+      // the browse-able field. Saved customs are honoured alongside the top-levels.
+      const useManual = TOP_CATEGORIES.includes(manualCat) || savedCategories.includes(manualCat) || categoryOptions.includes(manualCat);
       const newProduct = {
         name: form.name,
         category: useManual ? manualCat : auto.category,
@@ -3889,6 +4422,7 @@ function AdminView({ products, orders, onExit }) {
   // maps to productType "clothing" with sizeStyle "waist".
   const SIZE_TYPE_OPTIONS = [
     { key: "shoe",    label: "Sneaker",  productType: "sneaker"  },
+    { key: "kids",    label: "Kids",     productType: "sneaker"  },
     { key: "letters", label: "Clothing", productType: "clothing" },
     { key: "waist",   label: "Bottoms",  productType: "clothing" },
   ];
@@ -3899,8 +4433,10 @@ function AdminView({ products, orders, onExit }) {
     setForm(f => ({ ...f, sizeStyle: opt.key, sizes: [] }));
     setRecvQtys({});
   };
-  // Size buttons for the form, driven by the chosen breakdown.
+  // Size buttons for the form, driven by the chosen breakdown. The Kids (26–35)
+  // breakdown only appears once "Kids" is the selected size type.
   const formSizeChoices = form.sizeStyle === "shoe" ? SNEAKER_SIZES
+    : form.sizeStyle === "kids" ? KIDS_SIZES
     : form.sizeStyle === "waist" ? BOTTOMS_SIZES : CLOTHING_SIZES;
   // POS Phase 2: category onChange handler. Auto-sets the shoebox flag based
   // on category text (footwear / shoe / sneaker → true; everything else →
@@ -3979,14 +4515,20 @@ function AdminView({ products, orders, onExit }) {
   }, [detailId, products.length, detailProduct]);
 
   // When the detail page is mounted, render JUST the detail (no list chrome).
+  // Desktop: the detail carries its own full-width workspace shell, so skip the
+  // 640px mobile column wrapper.
   if (detailProduct) {
+    const detail = (
+      <AdminProductDetail
+        product={detailProduct}
+        insightsLog={insightsLog}
+        onBack={() => window.history.back()}
+      />
+    );
+    if (isWide) return detail;
     return (
       <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:640, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-        <AdminProductDetail
-          product={detailProduct}
-          insightsLog={insightsLog}
-          onBack={() => window.history.back()}
-        />
+        {detail}
       </div>
     );
   }
@@ -4032,22 +4574,10 @@ function AdminView({ products, orders, onExit }) {
     </div>
   );
 
-  if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
-
-  return (
-    <div style={ADMIN_WRAP}>
-      {/* TOP BAR with Switch View */}
-      {adminTopBar}
-
-      {/* ADMIN HERO IMAGE */}
-      <div style={{ position:"relative", height:200, overflow:"hidden" }}>
-        <img src="/hero/admin.jpg" alt="Admin Panel" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"left center" }}/>
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:70, background:"linear-gradient(transparent,#000)" }}/>
-      </div>
-
-      <div style={{ height:12 }}/>
-      {sectionToggle}
-
+  // Products body — header + add form + type filter + search + list + print sheet.
+  // Shared by the mobile column and the desktop main pane.
+  const productsBody = (
+    <>
       <div>
         {/* PRODUCTS HEADER ROW */}
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 14px 12px" }}>
@@ -4071,7 +4601,13 @@ function AdminView({ products, orders, onExit }) {
           <div style={{ fontWeight:"700", fontSize:"0.95rem", marginBottom:"1rem", color:"#ccc" }}>New Product</div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))", gap:"1rem", marginBottom:"1rem" }}>
             <input placeholder="Product name" value={form.name} onChange={e => setForm(f=>({...f,name:e.target.value}))} style={inputStyle} />
-            <input placeholder="Category (e.g. Sneakers)" value={form.category} onChange={e => setCategory(e.target.value)} style={inputStyle} />
+            <select value={categoryOptions.includes(form.category) ? form.category : ""}
+              onChange={e => { if (e.target.value === "__add__") addCategory(); else setCategory(e.target.value); }}
+              style={{ ...inputStyle, appearance:"auto", WebkitAppearance:"menulist", cursor:"pointer", color: form.category ? "#fff" : "rgba(255,255,255,.45)" }}>
+              <option value="" style={{ color:"#000" }}>Category…</option>
+              {categoryOptions.map(c => <option key={c} value={c} style={{ color:"#000" }}>{c}</option>)}
+              <option value="__add__" style={{ color:"#000" }}>＋ Add new category…</option>
+            </select>
             <div style={{ gridColumn:"1 / -1" }}>
               <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Product Photo</div>
               <div>
@@ -4223,7 +4759,9 @@ function AdminView({ products, orders, onExit }) {
             {productSearch.trim() ? "No products match your search." : `No ${typeFilter === "clothing" ? "clothing" : "sneaker"} products yet. Add one above.`}
           </div>
         )}
-        {filteredProducts.map(p => <AdminProductRow key={p.id} product={p} />)}
+        <div style={isWide ? { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10, alignItems:"start" } : undefined}>
+          {filteredProducts.map(p => <AdminProductRow key={p.id} product={p} />)}
+        </div>
       </div>
       <div style={{ height:20 }}/>
         </div>
@@ -4238,6 +4776,97 @@ function AdminView({ products, orders, onExit }) {
           onClose={() => setPrintOpen(false)}
         />
       )}
+    </>
+  );
+
+  // ── DESKTOP WORKSPACE (>=1024px) — rail of sections + titled main pane.
+  //    Handles both admin sections; mobile keeps the single column below. ──
+  if (isWide) {
+    const NAV = [["products", "Products", products.length], ["review-categories", "Categories", pendingCategoryCount]];
+    const navItem = ([key, label, count]) => {
+      const on = adminSection === key;
+      return (
+        <button key={key} onClick={() => setAdminSection(key)}
+          style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
+                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition:"background .14s, color .14s" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:.9 }}>
+            {key === "products"
+              ? <><path d="M20 7h-9M20 12h-9M20 17h-9" /><circle cx="4" cy="7" r="1.6" /><circle cx="4" cy="12" r="1.6" /><circle cx="4" cy="17" r="1.6" /></>
+              : <><path d="M3 7h4l2 3h9a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></>}
+          </svg>
+          <span style={{ flex:1 }}>{label}</span>
+          {count > 0 && (
+            <span style={{ background: on ? "rgba(74,127,255,.3)" : "rgba(255,255,255,.06)", color: on ? "#fff" : "rgba(233,238,255,.5)", fontSize:11, fontWeight:800, minWidth:20, textAlign:"center", borderRadius:999, padding:"1px 6px", fontVariantNumeric:"tabular-nums" }}>{count}</span>
+          )}
+        </button>
+      );
+    };
+    const title = adminSection === "review-categories" ? "Categories" : "Products";
+    const subtitle = adminSection === "review-categories"
+      ? "Sort uncategorised products into the browse tree."
+      : "Add products, set sizes & pricing, and manage the catalogue.";
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+        {/* RAIL */}
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:6 }}>&larr; Exit</button>
+          <button onClick={() => { setAdminSection("products"); setShowAdd(true); }}
+            style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:7, background:"rgba(74,127,255,.14)", border:"1px solid rgba(74,127,255,.4)", color:"#9DBCFF", borderRadius:10, padding:"10px 12px", fontSize:12.5, fontWeight:700, cursor:"pointer", fontFamily:FONT, marginBottom:8 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New product
+          </button>
+          <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"6px 9px", fontWeight:700 }}>Manage</div>
+          {NAV.map(navItem)}
+          <div style={{ flex:1 }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color:"#9DBCFF", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{products.length}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Products</div>
+            </div>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: pendingCategoryCount ? "#FBBF24" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{pendingCategoryCount}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>To sort</div>
+            </div>
+          </div>
+        </aside>
+        {/* MAIN */}
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 30px 16px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{title}</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>{subtitle}</div>
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
+            <div style={{ maxWidth:1160, margin:"0 auto" }}>
+              {adminSection === "review-categories" ? <AdminReviewCategoriesTab products={products} /> : productsBody}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
+
+  return (
+    <div style={ADMIN_WRAP}>
+      {/* TOP BAR with Switch View */}
+      {adminTopBar}
+
+      {/* ADMIN HERO IMAGE */}
+      <div style={{ position:"relative", height:200, overflow:"hidden" }}>
+        <img src="/hero/admin.jpg" alt="Admin Panel" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"left center" }}/>
+        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:70, background:"linear-gradient(transparent,#000)" }}/>
+      </div>
+
+      <div style={{ height:12 }}/>
+      {sectionToggle}
+
+      {productsBody}
     </div>
   );
 }
@@ -4286,9 +4915,13 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     ? product.sizes
     : (isClothing && product.stock ? Object.keys(product.stock) : []);
   const productHubs = getProductHubs(product);
-  // Clothing products may use letters (tops) or the waist set (bottoms) — infer which
-  // from the product's own sizes so editing shows the right breakdown.
-  const sizeChoices = isClothing ? clothingChoicesFor(productSizes) : SNEAKER_SIZES;
+  // Desktop workspace gate (≥1024px). Mobile keeps the single column.
+  const isWide = !useIsNarrow(1024);
+  // Clothing products may use letters (tops) or the waist set (bottoms); a
+  // sneaker whose sizes are ≥20 is a Kids product (26–35). Infer the breakdown
+  // from the product's own sizes so editing shows the right buttons.
+  const sizeChoices = isClothing ? clothingChoicesFor(productSizes)
+    : isKidsSizeSet(productSizes) ? KIDS_SIZES : SNEAKER_SIZES;
 
   const [galleryView, setGalleryView] = useState(null); // open the photo gallery viewer
   const photos = productPhotos(product);
@@ -4518,29 +5151,14 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     if (savedItems.length) { setLastReceived({ productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems }); setPrintOpen(true); }
   };
 
-  const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding:"24px 18px 8px" };
-  const card         = { background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, margin:"0 14px", overflow:"hidden" };
+  const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding: isWide ? "14px 2px 8px" : "24px 18px 8px" };
+  const card         = { background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, margin: isWide ? 0 : "0 14px", overflow:"hidden" };
   const cardInner    = { padding:"14px 16px" };
 
-  return (
-    <div>
-      {/* TOP BAR with back chevron */}
-      <div style={{ padding:"44px 8px 8px", display:"flex", alignItems:"center" }}>
-        <button onClick={onBack}
-                style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, fontWeight:500, cursor:"pointer", padding:"6px 10px" }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6"/>
-          </svg>
-          Products
-        </button>
-      </div>
-
-      {/* HEADER */}
-      <div style={{ padding:"4px 18px 8px" }}>
-        <div style={{ fontSize:22, fontWeight:700, color:"#fff", lineHeight:1.2 }}>{product.name}</div>
-        <div style={{ fontSize:13, color:"rgba(255,255,255,.45)", marginTop:6 }}>{activity}</div>
-      </div>
-
+  // Section cards — shared by the mobile column and the desktop two-column flow.
+  const detailSections = (
+    <>
+      <div style={{ breakInside:"avoid" }}>
       {/* PHOTO */}
       <div style={sectionTitle}>Photo{photos.length > 1 ? ` · ${photos.length}` : ""}</div>
       <div style={card}>
@@ -4602,6 +5220,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       {galleryView && <GalleryLightbox photos={galleryView} onClose={() => setGalleryView(null)} />}
 
       {/* NAME */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Name</div>
       <div style={card}>
         <div style={cardInner}>
@@ -4614,6 +5235,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       </div>
 
       {/* TYPE */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Type</div>
       <div style={card}>
         <div style={{ display:"flex", padding:"6px" }}>
@@ -4632,6 +5256,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       </div>
 
       {/* SIZES */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Available sizes</div>
       <div style={card}>
         <div style={{ ...cardInner, display:"flex", gap:6, flexWrap:"wrap" }}>
@@ -4648,6 +5275,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       {/* RECEIVE STOCK (restock existing) — Stock rework. Optional per-size
           receive into a chosen location for a re-order; independent of the edits
           above, never required. Mirrors the product-add opening-stock section. */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Receive stock</div>
       <div style={card}>
         <div style={cardInner}>
@@ -4683,6 +5313,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
 
       {/* PRICING — POS Phase 2. Two optional ZAR price inputs (saved on blur)
           plus a shoebox checkbox. Blank input is allowed and writes null. */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Pricing (ZAR)</div>
       <div style={card}>
         <div style={{ display:"flex", padding:"0", borderBottom:"1px solid rgba(255,255,255,.06)" }}>
@@ -4731,6 +5364,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           intentionally not exposed: a manual change would break the
           sequential invariant the POS scanner workflow depends on. Legacy
           products that pre-date the backfill render "—" until PR B runs. */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Identifiers</div>
       <div style={card}>
         <div style={{ display:"flex", padding:"0" }}>
@@ -4750,6 +5386,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       </div>
 
       {/* HUBS — iOS-style grouped list */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Hubs</div>
       <div style={card}>
         {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3 — Pine"]].map(([val, label], i) => {
@@ -4807,6 +5446,84 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           onClose={() => setPrintOpen(false)}
         />
       )}
+      </div>
+    </>
+  );
+  // Two-column CSS multi-column on desktop (each section kept intact via
+  // break-inside), single column on mobile.
+  const detailColumns = (
+    <div style={{ columnCount: isWide ? 2 : 1, columnGap: 28 }}>
+      {detailSections}
+    </div>
+  );
+
+  // ── DESKTOP WORKSPACE (>=1024px) — rail with product summary + main pane. ──
+  if (isWide) {
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"250px minmax(0,1fr)", overflow:"hidden" }}>
+        {/* RAIL */}
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 15px 18px", display:"flex", flexDirection:"column", gap:12, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 3px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onBack} style={{ display:"flex", alignItems:"center", gap:7, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.65)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            All products
+          </button>
+          <div style={{ display:"flex", justifyContent:"center", padding:"4px 0" }}>
+            <div onClick={photos.length ? () => setGalleryView(photos) : undefined} style={{ cursor: photos.length ? "zoom-in" : "default" }}>
+              <ProductPhoto url={product.photoUrl} photo={product.photo} size={168} radius={16}/>
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize:15, fontWeight:800, color:"#fff", lineHeight:1.25 }}>{product.name}</div>
+            <div style={{ fontSize:11.5, color:"rgba(233,238,255,.45)", marginTop:5, lineHeight:1.4 }}>{activity}</div>
+          </div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+            <span style={{ fontSize:10.5, fontWeight:700, color:"#9DBCFF", background:"rgba(74,127,255,.12)", border:"1px solid rgba(74,127,255,.25)", borderRadius:7, padding:"3px 9px", textTransform:"capitalize" }}>{product.productType || "sneaker"}</span>
+            <span style={{ fontSize:10.5, fontWeight:700, color:"rgba(233,238,255,.6)", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:7, padding:"3px 9px" }}>{productSizes.length} size{productSizes.length !== 1 ? "s" : ""}</span>
+            <span style={{ fontSize:10.5, fontWeight:700, color:"rgba(233,238,255,.6)", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:7, padding:"3px 9px" }}>{productHubs.length} hub{productHubs.length !== 1 ? "s" : ""}</span>
+          </div>
+          <div style={{ flex:1 }} />
+          <button onClick={handleDelete} style={{ background:"rgba(220,38,38,.1)", border:"1px solid rgba(220,38,38,.35)", color:"#F87171", fontSize:12.5, fontWeight:700, padding:"10px", borderRadius:11, cursor:"pointer", fontFamily:FONT }}>Delete product</button>
+        </aside>
+        {/* MAIN */}
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 32px 16px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4, lineHeight:1.2 }}>{product.name}</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>{activity}</div>
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"14px 32px 48px" }}>
+            <div style={{ maxWidth:980, margin:"0 auto" }}>
+              {detailColumns}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* TOP BAR with back chevron */}
+      <div style={{ padding:"44px 8px 8px", display:"flex", alignItems:"center" }}>
+        <button onClick={onBack}
+                style={{ display:"flex", alignItems:"center", gap:4, background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, fontWeight:500, cursor:"pointer", padding:"6px 10px" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+          Products
+        </button>
+      </div>
+
+      {/* HEADER */}
+      <div style={{ padding:"4px 18px 8px" }}>
+        <div style={{ fontSize:22, fontWeight:700, color:"#fff", lineHeight:1.2 }}>{product.name}</div>
+        <div style={{ fontSize:13, color:"rgba(255,255,255,.45)", marginTop:6 }}>{activity}</div>
+      </div>
+
+      {detailColumns}
     </div>
   );
 }
@@ -5162,6 +5879,566 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
   );
 }
 
+// ─── ASSISTANT · DESKTOP WORKSPACE ────────────────────────────────────────────
+// Full-screen laptop layout (AI Studio shell): sidebar (shop + flow) · sneaker
+// catalog (search · brand-from-data · sort · hover quick-add) · live order drawer
+// · quick-view stage. Rendered by AssistantView only when NOT narrow; phone/iPad
+// keep the existing tap→sheet flow. Reuses AssistantView's cart + checkout via
+// props (onQuickAdd/onRemoveOne/onCheckout); clothing is CR-only, so the catalog
+// is sneakers only. Committed dark — the POS's world.
+function AssistantDesktop({ products, effectiveShop, availableShops, onSelectShop, shopRegistry,
+                            search, setSearch, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
+                            onViewPhoto, onSwitchView, onSignOut, userEmail, mode, setMode,
+                            customerName, setCustomerName, customerPhone, setCustomerPhone,
+                            marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
+                            customerIndex, onPickCustomer,
+                            onAddClothing, onPlaceRefill, onOpenTracking, trackingPending }) {
+  const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
+  const [brand, setBrand] = useState("All");
+  const [sort, setSort]   = useState("feat");
+  const [qv, setQv]       = useState(null);   // quick-view product
+  const [qvSize, setQvSize] = useState(null);
+  const [qvQty, setQvQty] = useState(1);
+  const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
+  const [coOpen, setCoOpen] = useState(false); // desktop checkout modal
+  const [nameDD, setNameDD] = useState(false);
+  const [phoneDD, setPhoneDD] = useState(false);
+  const [pendingShop, setPendingShop] = useState(null); // shop-switch confirm
+  const searchRef = useRef(null);
+
+  // order flow = sneakers (clothing is refill-only); refill flow = clothing.
+  const catalog = useMemo(() => {
+    const isClothing = p => (p.productType || "sneaker") === "clothing";
+    return (products || []).filter(p => p && p.id && p.name && (flow === "refill" ? isClothing(p) : !isClothing(p)));
+  }, [products, flow]);
+
+  // Brand dropdown options FROM the data (product.brand), counted, most-stocked
+  // first; unbranded/code-only (brand == null) collapse into "Other".
+  const brandOpts = useMemo(() => {
+    const m = new Map();
+    catalog.forEach(p => { const k = p.brand || "Other"; m.set(k, (m.get(k) || 0) + 1); });
+    const other = m.get("Other") || 0; m.delete("Other");
+    const ranked = [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const out = [["All", catalog.length], ...ranked];
+    if (other) out.push(["Other", other]);
+    return out;
+  }, [catalog]);
+
+  const shown = useMemo(() => {
+    let list = catalog.filter(p =>
+      (brand === "All" || (brand === "Other" ? !p.brand : p.brand === brand)) &&
+      (!search.trim() || p.name.toLowerCase().includes(search.toLowerCase())));
+    if (sort === "ph") list = [...list].sort((a, b) => (b.retailPrice || 0) - (a.retailPrice || 0));
+    else if (sort === "pl") list = [...list].sort((a, b) => (a.retailPrice || 0) - (b.retailPrice || 0));
+    else if (sort === "az") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    return list;
+  }, [catalog, brand, search, sort]);
+
+  // Reset the brand filter when switching flows (brands differ per catalog).
+  useEffect(() => { setBrand("All"); }, [flow]);
+
+  // Cart → grouped by product+size for the drawer (the cart is one line per unit).
+  const grouped = useMemo(() => {
+    const m = new Map();
+    (cart || []).forEach(l => {
+      if (l.intent === "refill") return;                 // desktop = customer orders
+      const dp = !!l.requestDisplayPartner;
+      const key = `${l.product?.id}__${l.size}__${dp ? "dp" : ""}`;
+      if (!m.has(key)) m.set(key, { key, product: l.product, size: l.size, dp, qty: 0 });
+      m.get(key).qty++;
+    });
+    return [...m.values()];
+  }, [cart]);
+  const units = grouped.reduce((s, g) => s + g.qty, 0);
+  // Refill cart (intent:"refill") — each line carries its own qty; sum per size.
+  const groupedRefill = useMemo(() => {
+    const m = new Map();
+    (cart || []).forEach(l => {
+      if (l.intent !== "refill") return;
+      const key = `${l.product?.id}__${l.size}`;
+      if (!m.has(key)) m.set(key, { key, product: l.product, size: l.size, qty: 0 });
+      m.get(key).qty += (l.qty || 1);
+    });
+    return [...m.values()];
+  }, [cart]);
+  const refillUnits = groupedRefill.reduce((s, g) => s + g.qty, 0);
+  const fmtR = n => "R" + Number(n).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
+  const sizesOf = p => { const s = (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"); return s.length ? s : ["Free Size"]; };
+
+  useEffect(() => {
+    const h = e => {
+      if (e.key === "/" && document.activeElement !== searchRef.current) { e.preventDefault(); searchRef.current?.focus(); }
+      if (e.key === "Escape") setQv(null);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
+
+  const [qvRefill, setQvRefill] = useState({});   // { size: qty } for refill quick-view
+  const openQv = (p) => {
+    setQv(p); setQvSize(null); setQvQty(1); setQvDP(false);
+    setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
+  };
+  const Photo = ({ p, big }) => p.photoUrl
+    ? <img src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} />
+    : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
+
+  return (
+    <div className="ad-root">
+      <style>{`
+        .ad-root{position:fixed;inset:0;z-index:50;background:#000;color:#f4f6ff;font-family:${FONT.replace(/`/g,"")};display:grid;grid-template-columns:184px minmax(0,1fr) 288px;overflow:hidden}
+        .ad-root *{box-sizing:border-box}
+        @media(max-width:1180px){.ad-root{grid-template-columns:184px minmax(0,1fr)} .ad-drawer{position:fixed;right:0;top:0;bottom:0;width:288px}}
+        .ad-side{background:rgba(255,255,255,.015);border-right:1px solid rgba(255,255,255,.08);padding:22px 12px 16px;display:flex;flex-direction:column;gap:4px;overflow:auto}
+        .ad-wm .m{font-size:21px;font-weight:800;font-style:italic;letter-spacing:-.6px;color:#fff}
+        .ad-wm .c{font-size:10px;font-weight:700;letter-spacing:5px;color:#4A7FFF;margin-top:1px}
+        .ad-lab{font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:rgba(233,238,255,.3);padding:14px 10px 6px}
+        .ad-nav{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:transparent;border:1px solid transparent;color:rgba(233,238,255,.55);border-radius:10px;padding:9px 11px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s;font-family:inherit}
+        .ad-nav:hover{background:rgba(255,255,255,.04);color:#fff}
+        .ad-nav[aria-current="true"]{background:rgba(74,127,255,.14);border-color:rgba(74,127,255,.45);color:#9DBCFF}
+        .ad-nav .ic{width:16px;height:16px;flex:0 0 auto;opacity:.9}
+        .ad-who{display:flex;align-items:center;gap:9px;margin-top:8px;padding:9px 11px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:11px}
+        .ad-av{width:28px;height:28px;border-radius:50%;flex:0 0 auto;background:rgba(74,127,255,.2);border:1px solid rgba(74,127,255,.5);color:#9DBCFF;font-size:12px;font-weight:800;display:grid;place-items:center}
+        .ad-main{min-width:0;display:flex;flex-direction:column;overflow:hidden}
+        .ad-top{padding:16px 22px 13px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;gap:10px;align-items:center;background:radial-gradient(900px 260px at 18% -60%,rgba(74,127,255,.08),transparent)}
+        .ad-search{flex:1;position:relative;min-width:0}
+        .ad-search svg{position:absolute;left:13px;top:50%;transform:translateY(-50%);opacity:.4}
+        .ad-search input{width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:12px;color:#fff;font-size:13.5px;padding:11px 14px 11px 38px;outline:none;font-family:inherit}
+        .ad-search input:focus{border-color:rgba(74,127,255,.6);box-shadow:0 0 0 3px rgba(74,127,255,.12)}
+        .ad-sel{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:12px;color:rgba(233,238,255,.75);font-size:12.5px;font-weight:600;padding:10px 12px;cursor:pointer;font-family:inherit}
+        .ad-scroll{flex:1;overflow:auto;padding:16px 22px 40px}
+        .ad-count{font-size:11px;color:rgba(233,238,255,.3);margin:0 2px 12px}
+        .ad-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px}
+        .ad-card{position:relative;background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 45%),rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:16px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column;transition:transform .2s cubic-bezier(.2,.7,.2,1),border-color .2s,box-shadow .2s}
+        .ad-card:hover,.ad-card:focus-visible{transform:translateY(-5px);border-color:rgba(74,127,255,.55);box-shadow:0 18px 42px -20px rgba(60,110,255,.6);outline:none}
+        .ad-thumb{aspect-ratio:16/11;position:relative;overflow:hidden;background:#0a1020;display:grid;place-items:center}
+        .ad-cat{position:absolute;top:9px;left:9px;font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#9DBCFF;background:rgba(4,6,14,.72);border:1px solid rgba(255,255,255,.08);padding:3px 8px;border-radius:999px}
+        .ad-zoom{position:absolute;top:8px;right:8px;width:29px;height:29px;border:0;border-radius:9px;background:rgba(0,0,0,.5);color:#fff;display:grid;place-items:center;cursor:pointer;opacity:0;transform:translateY(-4px);transition:.18s}
+        .ad-card:hover .ad-zoom,.ad-card:focus-within .ad-zoom{opacity:1;transform:none}
+        .ad-body{padding:11px 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1}
+        .ad-name{font-size:13.5px;font-weight:650;line-height:1.25;min-height:2.5em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+        .ad-crow{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:auto}
+        .ad-price{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;background:linear-gradient(90deg,#6e7bff,#5d8bff,#8a6dff,#7f5af0,#8a6dff,#5d8bff,#6e7bff);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:adSiri 4s linear infinite}
+        @keyframes adSiri{from{background-position:0 0}to{background-position:300% 0}}
+        .ad-price.no{-webkit-text-fill-color:initial;color:rgba(233,238,255,.3);font-size:12px}
+        .ad-szn{font-size:10px;color:rgba(233,238,255,.3);font-weight:700}
+        .ad-hint{font-size:12px;font-weight:600;color:#4A7FFF}
+        .ad-quick{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .22s ease,opacity .18s}
+        .ad-card:hover .ad-quick,.ad-card:focus-within .ad-quick{grid-template-rows:1fr;opacity:1}
+        .ad-card:hover .ad-hint,.ad-card:focus-within .ad-hint{display:none}
+        .ad-quick>div{overflow:hidden;min-height:0}
+        .ad-qlab{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:rgba(233,238,255,.3);margin:2px 0 6px}
+        .ad-szrow{display:flex;flex-wrap:wrap;gap:5px}
+        .ad-sz{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;padding:6px 9px;min-width:34px;text-align:center;border-radius:8px;cursor:pointer;color:#dfe7ff;background:rgba(74,127,255,.08);border:1px solid rgba(255,255,255,.12);transition:.13s;font-family:inherit}
+        .ad-sz:hover{background:rgba(74,127,255,.24);border-color:rgba(74,127,255,.6);color:#fff;transform:translateY(-1px)}
+        .ad-sz.flash{background:#4ADE80;border-color:#4ADE80;color:#04120a}
+        .ad-drawer{background:rgba(255,255,255,.015);border-left:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;overflow:hidden;z-index:40}
+        .ad-dhead{padding:18px 16px 13px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:9px}
+        .ad-dhead h2{margin:0;font-size:15px;font-weight:800}
+        .ad-dn{font-size:11px;font-weight:800;background:rgba(74,127,255,.2);color:#9DBCFF;border-radius:999px;padding:2px 9px;font-variant-numeric:tabular-nums}
+        .ad-dlist{flex:1;overflow:auto;padding:12px 13px;display:flex;flex-direction:column;gap:9px}
+        .ad-empty{margin:auto;text-align:center;color:rgba(233,238,255,.3);padding:36px 16px;font-size:12.5px}
+        .ad-line{display:flex;gap:10px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:8px}
+        .ad-li{width:44px;height:44px;border-radius:9px;background:#0a1020;display:grid;place-items:center;font-size:20px;flex:0 0 auto;overflow:hidden}
+        .ad-ln{font-size:12px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .ad-lm{font-size:10px;color:rgba(233,238,255,.5);margin-top:1px}
+        .ad-step{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden;margin-top:5px}
+        .ad-step button{width:22px;height:22px;border:0;background:rgba(255,255,255,.04);color:#fff;cursor:pointer;font-size:13px}
+        .ad-step span{min-width:24px;text-align:center;font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums}
+        .ad-lp{font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;color:#9DBCFF;text-align:right}
+        .ad-dfoot{border-top:1px solid rgba(255,255,255,.08);padding:15px 16px 16px;display:flex;flex-direction:column;gap:11px}
+        .ad-trow{display:flex;justify-content:space-between;font-size:12.5px;color:rgba(233,238,255,.55)}
+        .ad-trow.tot{color:#fff;font-size:15px;font-weight:800}
+        .ad-place{width:100%;padding:13px;border:0;border-radius:12px;font-size:13.5px;font-weight:800;color:#04120a;background:linear-gradient(90deg,#6e7bff,#7f5af0);cursor:pointer;box-shadow:0 8px 22px -8px rgba(127,90,240,.7)}
+        .ad-place:disabled{opacity:.4;box-shadow:none;cursor:not-allowed;filter:grayscale(.5)}
+        .ad-stage{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.72);display:grid;place-items:center;padding:26px}
+        .ad-sv{width:min(820px,100%);max-height:86vh;overflow:auto;background:#06080f;border:1px solid rgba(255,255,255,.12);border-radius:22px;display:grid;grid-template-columns:1.1fr 1fr;box-shadow:0 40px 120px rgba(0,0,0,.7);position:relative}
+        @media(max-width:680px){.ad-sv{grid-template-columns:1fr}}
+        .ad-svimg{position:relative;background:#0a1020;min-height:320px;display:grid;place-items:center;overflow:hidden}
+        .ad-svbody{padding:24px 24px 22px;display:flex;flex-direction:column;gap:15px}
+        .ad-svname{font-size:21px;font-weight:800;letter-spacing:-.4px;line-height:1.15}
+        .ad-svprice{font-size:25px;font-weight:800;font-variant-numeric:tabular-nums;background:linear-gradient(90deg,#6e7bff,#5d8bff,#8a6dff,#7f5af0,#8a6dff,#5d8bff,#6e7bff);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:adSiri 5s linear infinite}
+        .ad-svsz button{min-width:46px;padding:11px 12px;border-radius:10px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;color:#dfe7ff;background:rgba(74,127,255,.06);border:1px solid rgba(255,255,255,.12);transition:.13s;font-family:inherit}
+        .ad-svsz button[aria-pressed="true"]{background:rgba(74,127,255,.22);border-color:#4A7FFF;color:#fff}
+        .ad-svadd{flex:1;padding:14px;border:0;border-radius:12px;font-size:14px;font-weight:800;color:#04120a;background:linear-gradient(90deg,#6e7bff,#7f5af0);cursor:pointer;box-shadow:0 8px 22px -8px rgba(127,90,240,.7)}
+        .ad-svadd:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.5);box-shadow:none}
+        .ad-svclose{position:absolute;top:12px;right:12px;width:34px;height:34px;border:0;border-radius:10px;background:rgba(0,0,0,.5);color:#fff;font-size:16px;cursor:pointer;z-index:2}
+        .ad-danger{border:1px solid rgba(255,70,70,.55)!important;box-shadow:0 40px 120px rgba(0,0,0,.7),0 0 60px rgba(255,40,40,.28)!important;animation:adShake .5s cubic-bezier(.36,.07,.19,.97)}
+        @keyframes adShake{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(2px)}30%,50%,70%{transform:translateX(-5px)}40%,60%{transform:translateX(5px)}}
+        .ad-warnpulse{animation:adPulse 1.3s ease-in-out infinite}
+        @keyframes adPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,60,60,.45)}50%{box-shadow:0 0 0 12px rgba(255,60,60,0)}}
+        @keyframes adFade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+        .ad-scroll{animation:adFade .26s ease}
+        .ad-dbody{display:flex;flex-direction:column;flex:1;overflow:hidden;animation:adFade .26s ease}
+        .ad-trackbar{width:100%;display:flex;align-items:center;gap:10px;padding:11px 13px;margin-bottom:14px;border-radius:12px;cursor:pointer;background:rgba(60,110,255,.08);border:1px solid rgba(60,110,255,.35);color:#fff;font-family:inherit;font-size:13px;font-weight:700}
+        .ad-trackbar:hover{background:rgba(60,110,255,.14)}
+        .ad-trackn{background:rgba(245,196,81,.15);color:#F5C451;border:1px solid rgba(245,196,81,.4);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:700}
+        .ad-hint2{font-size:12px;font-weight:600;color:#4A7FFF}
+        .ad-rqty{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden}
+        .ad-rqty button{width:28px;height:32px;border:0;background:rgba(255,255,255,.04);color:#fff;cursor:pointer;font-size:15px}
+        .ad-rqty input{width:40px;height:32px;text-align:center;border:0;background:rgba(0,0,0,.3);color:#fff;font-size:13px;font-weight:700;outline:none;font-family:inherit}
+        @media(prefers-reduced-motion:reduce){.ad-price,.ad-svprice{animation:none} .ad-card,.ad-quick,.ad-scroll,.ad-dbody,.ad-danger,.ad-warnpulse{animation:none;transition:none}}
+      `}</style>
+
+      {/* SIDEBAR */}
+      <aside className="ad-side">
+        <div className="ad-wm" style={{ padding: "0 8px 14px" }}><div className="m">marathon</div><div className="c">CLUB</div></div>
+        <div className="ad-lab">Order for</div>
+        {(availableShops || []).map(s => (
+          <button key={s.id} className="ad-nav" aria-current={effectiveShop === s.id}
+                  onClick={() => { if (s.id !== effectiveShop) setPendingShop(s.id); }}>
+            <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            {labelFor(s.id, shopRegistry)}
+          </button>
+        ))}
+        <div className="ad-lab">Flow</div>
+        <button className="ad-nav" aria-current={flow === "order"} onClick={() => setMode("sneaker")}>
+          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>
+          Customer order
+        </button>
+        <button className="ad-nav" aria-current={flow === "refill"} onClick={() => setMode("cr")}>
+          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4"/></svg>
+          Clothing refill
+        </button>
+        <div style={{ flex: 1 }} />
+        <button className="ad-nav" onClick={onSwitchView}>
+          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M18 2l4 4-9 9H9v-4z"/></svg>
+          Switch view
+        </button>
+        <div className="ad-who">
+          <span className="ad-av">{(userEmail || "?")[0].toUpperCase()}</span>
+          <span style={{ minWidth: 0, flex: 1 }}>
+            <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{(userEmail || "").split("@")[0] || "assistant"}</span>
+            <span style={{ display: "block", fontSize: 10, color: "rgba(233,238,255,.4)" }}>Store assistant</span>
+          </span>
+          <button onClick={onSignOut} title="Sign out" aria-label="Sign out"
+                  style={{ width: 28, height: 28, flexShrink: 0, borderRadius: 8, border: "1px solid rgba(255,255,255,.12)", background: "transparent", color: "rgba(233,238,255,.5)", cursor: "pointer", display: "grid", placeItems: "center" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+          </button>
+        </div>
+      </aside>
+
+      {/* MAIN */}
+      <div className="ad-main">
+        <div className="ad-top">
+          <div className="ad-search">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…  ( / )" autoComplete="off" />
+          </div>
+          <select className="ad-sel" value={brand} onChange={e => setBrand(e.target.value)} aria-label="Brand">
+            {brandOpts.map(([b, n]) => <option key={b} value={b}>{b === "All" ? "All brands" : b} ({n})</option>)}
+          </select>
+          <select className="ad-sel" value={sort} onChange={e => setSort(e.target.value)} aria-label="Sort">
+            <option value="feat">Featured</option>
+            <option value="ph">Price · high</option>
+            <option value="pl">Price · low</option>
+            <option value="az">Name · A–Z</option>
+          </select>
+        </div>
+        <div className="ad-scroll" key={flow}>
+          {flow === "refill" && (
+            <button className="ad-trackbar" onClick={onOpenTracking}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+              <span style={{ flex: 1, textAlign: "left" }}>Track requests</span>
+              {trackingPending > 0 && <span className="ad-trackn">{trackingPending} pending</span>}
+              <span style={{ color: "#4A7FFF" }}>→</span>
+            </button>
+          )}
+          <div className="ad-count">{shown.length} {flow === "refill" ? "clothing item" : "product"}{shown.length !== 1 ? "s" : ""}</div>
+          {shown.length === 0 ? (
+            <div style={{ textAlign: "center", color: "#444", padding: "3rem", fontSize: 14 }}>{flow === "refill" ? "No clothing products yet." : "No products match."}</div>
+          ) : (
+            <div className="ad-grid">
+              {shown.map(p => {
+                const priced = typeof p.retailPrice === "number" && p.retailPrice > 0;
+                const szs = sizesOf(p);
+                return (
+                  <article key={p.id} className="ad-card" tabIndex={0}
+                           onClick={() => openQv(p)} onKeyDown={e => { if (e.key === "Enter") openQv(p); }}>
+                    <div className="ad-thumb">
+                      <span className="ad-cat">{p.brand || p.subcategory || (flow === "refill" ? "Clothing" : "Sneakers")}</span>
+                      {p.photoUrl && (
+                        <button className="ad-zoom" aria-label="Quick view" onClick={e => { e.stopPropagation(); onViewPhoto(productPhotos(p)); }}>
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+                        </button>
+                      )}
+                      <Photo p={p} />
+                    </div>
+                    <div className="ad-body">
+                      <div className="ad-name">{p.name}</div>
+                      <div className="ad-crow">
+                        {priced ? <span className="ad-price">{fmtR(p.retailPrice)}</span> : <span className="ad-price no">No price set</span>}
+                        <span className="ad-szn">{szs.length} size{szs.length !== 1 ? "s" : ""}</span>
+                      </div>
+                      {/* Order flow: hover reveals per-size quick-add. Refill flow:
+                          multi-size qty is set in the quick-view (tap the card). */}
+                      {flow === "order" ? (
+                        <div className="ad-quick"><div>
+                          <div className="ad-qlab">Add a size</div>
+                          <div className="ad-szrow">
+                            {szs.map(sz => (
+                              <button key={sz} className="ad-sz" onClick={e => {
+                                e.stopPropagation(); onQuickAdd(p, sz, 1);
+                                const b = e.currentTarget, t = b.textContent; b.classList.add("flash"); b.textContent = "✓";
+                                setTimeout(() => { b.classList.remove("flash"); b.textContent = t; }, 430);
+                              }}>{sz === "Free Size" ? "OS" : sz}</button>
+                            ))}
+                          </div>
+                        </div></div>
+                      ) : (
+                        <div className="ad-hint2">Set quantities →</div>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* DRAWER — order cart (→ checkout) or refill cart (→ place refill request),
+          cross-fading with the flow. */}
+      <aside className="ad-drawer">
+        <div className="ad-dhead"><h2>{flow === "refill" ? "Refill request" : "Order"}</h2><span className="ad-dn">{flow === "refill" ? refillUnits : units}</span></div>
+        <div className="ad-dbody" key={flow}>
+          {flow === "order" ? (
+            <>
+              <div className="ad-dlist">
+                {grouped.length === 0 ? (
+                  <div className="ad-empty">
+                    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: .5, marginBottom: 10 }}><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>
+                    <div style={{ fontWeight: 600 }}>Order is empty</div>
+                    <div style={{ marginTop: 4, fontSize: 11 }}>Hover a product and tap a size.</div>
+                  </div>
+                ) : grouped.map(g => (
+                  <div key={g.key} className="ad-line">
+                    <div className="ad-li">{g.product?.photoUrl ? <img src={g.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👟")}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="ad-ln">{g.product?.name}</div>
+                      <div className="ad-lm">
+                        {g.dp
+                          ? <span style={{ color: "#9DBCFF" }}>Display Partner{g.size ? ` · Sz ${formatSize(g.size)}` : ""}</span>
+                          : `Size ${g.size === "Free Size" ? "OS" : formatSize(g.size)} · ${typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice) : "—"}`}
+                      </div>
+                      <div className="ad-step">
+                        <button onClick={() => onRemoveOne(g.product.id, g.size, g.dp)}>−</button>
+                        <span>{g.qty}</span>
+                        <button onClick={() => g.dp ? onAddDisplayPartner(g.product, g.size) : onQuickAdd(g.product, g.size, 1)}>+</button>
+                      </div>
+                    </div>
+                    <div className="ad-lp">{g.dp ? "—" : (typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice * g.qty) : "—")}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="ad-dfoot">
+                {/* Ordering system, not POS — no money total. */}
+                <div className="ad-trow"><span>{units} item{units !== 1 ? "s" : ""}</span><span>{grouped.length} line{grouped.length !== 1 ? "s" : ""}</span></div>
+                <button className="ad-place" disabled={!units} onClick={() => setCoOpen(true)}>Place order</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="ad-dlist">
+                {groupedRefill.length === 0 ? (
+                  <div className="ad-empty">
+                    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: .5, marginBottom: 10 }}><path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4"/></svg>
+                    <div style={{ fontWeight: 600 }}>No refills yet</div>
+                    <div style={{ marginTop: 4, fontSize: 11 }}>Open a product and set per-size quantities.</div>
+                  </div>
+                ) : groupedRefill.map(g => (
+                  <div key={g.key} className="ad-line">
+                    <div className="ad-li">{g.product?.photoUrl ? <img src={g.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (g.product?.photo || "👕")}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="ad-ln">{g.product?.name}</div>
+                      <div className="ad-lm">Size {formatSize(g.size)}</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 800, color: "#9DBCFF", fontVariantNumeric: "tabular-nums" }}>×{g.qty}</span>
+                      <button onClick={() => onRemoveOne(g.product.id, g.size)} aria-label="Remove" style={{ background: "transparent", border: 0, color: "rgba(233,238,255,.4)", cursor: "pointer", fontSize: 14 }}>✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="ad-dfoot">
+                <div className="ad-trow"><span>{refillUnits} unit{refillUnits !== 1 ? "s" : ""}</span><span>{groupedRefill.length} line{groupedRefill.length !== 1 ? "s" : ""}</span></div>
+                <button className="ad-place" disabled={!refillUnits || submitting} onClick={() => onPlaceRefill()}>{submitting ? "Placing…" : "Place refill request"}</button>
+              </div>
+            </>
+          )}
+        </div>
+      </aside>
+
+      {/* QUICK-VIEW STAGE */}
+      {qv && (
+        <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setQv(null); }}>
+          <div className="ad-sv">
+            <button className="ad-svclose" onClick={() => setQv(null)} aria-label="Close">✕</button>
+            <div className="ad-svimg" onClick={() => qv.photoUrl && onViewPhoto(productPhotos(qv))} style={{ cursor: qv.photoUrl ? "zoom-in" : "default" }}>
+              <span className="ad-cat" style={{ top: 14, left: 14 }}>{qv.brand || (flow === "refill" ? "Clothing" : "Sneakers")}</span>
+              <Photo p={qv} big />
+            </div>
+            <div className="ad-svbody">
+              <div>
+                <div className="ad-svname">{qv.name}</div>
+                {typeof qv.retailPrice === "number" && qv.retailPrice > 0
+                  ? <div className="ad-svprice" style={{ marginTop: 6 }}>{fmtR(qv.retailPrice)}</div>
+                  : <div style={{ marginTop: 6, color: "rgba(233,238,255,.35)", fontWeight: 700 }}>No price set</div>}
+              </div>
+              {flow === "order" ? (
+                <>
+                  <div>
+                    <div className="ad-qlab">Select a size</div>
+                    <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {sizesOf(qv).map(sz => (
+                        <button key={sz} aria-pressed={qvSize === sz} onClick={() => setQvSize(sz)}>{sz === "Free Size" ? "One size" : formatSize(sz)}</button>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Display Partner request — sneakers only; one line, size optional. */}
+                  <div>
+                    <div className="ad-qlab">Display Partner (optional)</div>
+                    <button onClick={() => setQvDP(v => !v)}
+                            style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                     border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
+                                     background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
+                                     color: qvDP ? "#9DBCFF" : "rgba(233,238,255,.55)", display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ width: 15, height: 15, borderRadius: 4, border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.25)"}`, background: qvDP ? "#4A7FFF" : "transparent", color: "#04120a", fontSize: 11, fontWeight: 900, display: "grid", placeItems: "center" }}>{qvDP ? "✓" : ""}</span>
+                      Request Display Partner
+                    </button>
+                  </div>
+                  {(() => {
+                    const canAdd = !!qvSize || qvDP;
+                    const doAdd = () => { if (!canAdd) return; if (qvDP) onAddDisplayPartner(qv, qvSize || null); else onQuickAdd(qv, qvSize, qvQty); setQv(null); };
+                    const label = qvDP
+                      ? (qvSize ? `Add size ${formatSize(qvSize)} + Display Partner` : "Add Display Partner request")
+                      : (qvSize ? `Add ${qvQty} × ${qvSize === "Free Size" ? "OS" : formatSize(qvSize)} to order` : "Select a size or Display Partner");
+                    return (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: "auto" }}>
+                        <div className="ad-step" style={{ height: 48, opacity: qvDP ? .4 : 1 }}>
+                          <button style={{ width: 34, height: 46, fontSize: 18 }} disabled={qvDP} onClick={() => setQvQty(q => Math.max(1, q - 1))}>−</button>
+                          <span style={{ minWidth: 34, fontSize: 14 }}>{qvQty}</span>
+                          <button style={{ width: 34, height: 46, fontSize: 18 }} disabled={qvDP} onClick={() => setQvQty(q => Math.min(10, q + 1))}>+</button>
+                        </div>
+                        <button className="ad-svadd" disabled={!canAdd} onClick={doAdd}>{label}</button>
+                      </div>
+                    );
+                  })()}
+                </>
+              ) : (
+                <>
+                  {/* Refill: multi-size quantity grid (mirrors ClothingCard). */}
+                  <div>
+                    <div className="ad-qlab">Quantities per size</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(118px,1fr))", gap: 8 }}>
+                      {sizesOf(qv).map(sz => {
+                        const n = qvRefill[sz] || 0;
+                        const setN = v => setQvRefill(q => ({ ...q, [sz]: Math.max(0, Math.min(99, Math.floor(Number(v) || 0))) }));
+                        return (
+                          <div key={sz} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, background: "rgba(255,255,255,.03)", border: `1px solid ${n ? "rgba(74,222,128,.4)" : "rgba(255,255,255,.1)"}`, borderRadius: 10, padding: "6px 8px" }}>
+                            <span style={{ fontSize: 12.5, fontWeight: 700, color: "#dfe7ff" }}>{sz === "Free Size" ? "OS" : formatSize(sz)}</span>
+                            <div className="ad-rqty">
+                              <button onClick={() => setN(n - 1)}>−</button>
+                              <input value={n || ""} placeholder="0" inputMode="numeric" onChange={e => setN(e.target.value)} />
+                              <button onClick={() => setN(n + 1)}>+</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {(() => {
+                    const totalR = Object.values(qvRefill).reduce((s, v) => s + (v || 0), 0);
+                    const doAddR = () => {
+                      const lines = Object.entries(qvRefill).filter(([, n]) => n > 0).map(([size, n]) => ({ product: qv, size, qty: n, productType: "clothing" }));
+                      if (!lines.length) return;
+                      onAddClothing(lines); setQv(null);
+                    };
+                    return (
+                      <button className="ad-svadd" style={{ marginTop: "auto" }} disabled={!totalR} onClick={doAddR}>
+                        {totalR ? `Add ${totalR} unit${totalR !== 1 ? "s" : ""} to refill` : "Set a quantity"}
+                      </button>
+                    );
+                  })()}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CHECKOUT — ordering system (NO money total). Summary + customer + place. */}
+      {coOpen && (
+        <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target && !submitting) setCoOpen(false); }}>
+          <div className="ad-sv" style={{ gridTemplateColumns: "1fr", width: "min(460px,100%)" }}>
+            <button className="ad-svclose" onClick={() => !submitting && setCoOpen(false)} aria-label="Close">✕</button>
+            <div className="ad-svbody" style={{ gap: 13 }}>
+              <div className="ad-svname" style={{ fontSize: 19 }}>Confirm order</div>
+              <div style={{ background: "rgba(74,127,255,.05)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, padding: "9px 12px", maxHeight: 172, overflow: "auto" }}>
+                <div className="ad-qlab" style={{ margin: "0 0 6px" }}>Order · {units} item{units !== 1 ? "s" : ""}</div>
+                {grouped.map(g => (
+                  <div key={g.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, color: "#dfe7ff", padding: "4px 0" }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.product?.name}</span>
+                    <span style={{ color: "#9DBCFF", fontWeight: 700, flexShrink: 0 }}>{g.dp ? "Display" : `Sz ${formatSize(g.size)}`}{g.qty > 1 ? ` ×${g.qty}` : ""}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ position: "relative" }}>
+                <div className="ad-qlab">Customer name *</div>
+                <input value={customerName} placeholder="e.g. Ahmed" style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                       onChange={e => { setCustomerName(e.target.value); setNameDD(true); }}
+                       onFocus={() => setNameDD(true)} onBlur={() => setTimeout(() => setNameDD(false), 150)} />
+                {nameDD && <CustomerSuggestionDropdown query={customerName} mode="name" customers={customerIndex} onPick={p => { onPickCustomer(p); setNameDD(false); }} onAddNew={() => setNameDD(false)} />}
+              </div>
+              <div style={{ position: "relative" }}>
+                <div className="ad-qlab">Phone *</div>
+                <input value={customerPhone} placeholder="0712345678" inputMode="numeric" maxLength={10} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                       onChange={e => { setCustomerPhone(e.target.value.replace(/\D/g, "").slice(0, 10)); setPhoneDD(true); }}
+                       onFocus={() => setPhoneDD(true)} onBlur={() => setTimeout(() => setPhoneDD(false), 150)} />
+                {phoneDD && <CustomerSuggestionDropdown query={customerPhone} mode="phone" customers={customerIndex} onPick={p => { onPickCustomer(p); setPhoneDD(false); }} onAddNew={() => setPhoneDD(false)} />}
+                {customerPhone && !isValidLocalSAPhone(customerPhone) && <div style={{ color: "#FF6B6B", fontSize: 11, marginTop: 5 }}>Enter a 10-digit number starting with 0.</div>}
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 12.5, color: "#dfe7ff" }}>
+                <input type="checkbox" checked={marketingOptIn} onChange={e => setMarketingOptIn(e.target.checked)} style={{ width: 17, height: 17, accentColor: "#4A7FFF" }} />
+                Customer wants Marathon Club deals
+              </label>
+              {(() => {
+                const phoneOk = isValidLocalSAPhone(customerPhone);
+                const canPlace = customerName && phoneOk && units && !submitting;
+                const label = !customerName ? "Enter customer name" : !phoneOk ? "Enter a valid phone" : `Place ${grouped.length} order${grouped.length > 1 ? "s" : ""}`;
+                return <button className="ad-svadd" disabled={!canPlace} onClick={async () => { await onPlaceOrder(); setCoOpen(false); }}>{submitting ? "Placing…" : label}</button>;
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SHOP SWITCH — a deliberately ALARMING confirm: changing shop re-routes
+          every order to a different physical store. */}
+      {pendingShop && (
+        <div className="ad-stage" onClick={e => { if (e.currentTarget === e.target) setPendingShop(null); }}>
+          <div className="ad-sv ad-danger" style={{ gridTemplateColumns: "1fr", width: "min(430px,100%)" }}>
+            <div className="ad-svbody" style={{ gap: 15, alignItems: "center", textAlign: "center", padding: "30px 26px 26px" }}>
+              <span className="ad-warnpulse" style={{ width: 64, height: 64, borderRadius: "50%", flexShrink: 0, background: "rgba(255,60,60,.14)", border: "2px solid rgba(255,70,70,.6)", display: "grid", placeItems: "center" }}>
+                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FF5A5A" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+              </span>
+              <div style={{ fontSize: 11, letterSpacing: ".18em", textTransform: "uppercase", color: "#FF6B6B", fontWeight: 800 }}>Warning · this re-routes orders</div>
+              <div className="ad-svname" style={{ fontSize: 21, color: "#fff" }}>Change shop to {labelFor(pendingShop, shopRegistry)}?</div>
+              <div style={{ fontSize: 13.5, color: "rgba(233,238,255,.72)", lineHeight: 1.55 }}>
+                You're ordering for <b style={{ color: "#fff" }}>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ color: "#FF8B8B" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b style={{ color: "#fff" }}>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart.` : ""}
+              </div>
+              <div style={{ display: "flex", gap: 10, width: "100%", marginTop: 4 }}>
+                <button onClick={() => setPendingShop(null)} style={{ flex: 1, padding: 13, borderRadius: 11, border: "1px solid rgba(255,255,255,.2)", background: "rgba(255,255,255,.05)", color: "#fff", fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+                <button onClick={() => { onSelectShop(pendingShop); setPendingShop(null); }} style={{ flex: "0 0 auto", padding: "13px 20px", borderRadius: 11, border: "1px solid rgba(255,80,80,.7)", background: "rgba(230,40,40,.92)", color: "#fff", fontWeight: 800, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 8px 26px -8px rgba(255,50,50,.75)" }}>Yes, switch</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AssistantView({ products, onExit, orders = [] }) {
   const [search, setSearch]                             = useState("");
   // Mode selector — now a 2-way toggle (Sneakers / CR):
@@ -5199,7 +6476,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // `availableShops` expands that assignment into the physical shops the user may
   // pick: a "central" user → Marathon PE + Trophy; "pine" → Pine. Drives the
   // toggle below: 0 → block screen, 1 → auto-select + hide toggle, ≥2 → show.
-  const { storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin, hasPermission: stockHasPermission } = usePermissions();
+  const { user: assistantUser, signOut: assistantSignOut, storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin, hasPermission: stockHasPermission } = usePermissions();
+  // Desktop workspace kicks in at ≥1024px (laptop); phone + iPad keep tap→sheet.
+  const isDesktop = !useIsNarrow(1024);
   // Shop-stock visibility: stock permission OR a stock-capable stockRole (mirrors the
   // Stock section gate).
   const canAccessStock = stockIsSuperAdmin || ["warehouse", "admin"].includes(stockPermRecord?.stockRole) || stockHasPermission("stock_management");
@@ -5448,6 +6727,28 @@ function AssistantView({ products, onExit, orders = [] }) {
   const addClothingLines = (lines) =>
     setCart(c => [...c, ...lines.map(l => ({ ...l, intent: "refill" }))]);
 
+  // Desktop quick-add: add a size straight to the cart (qty lines) — the pointer
+  // shortcut past the bottom sheet. Same line shapes as addToCart (clothing→
+  // customer order, else sneaker); the sheet stays available on mobile.
+  const quickAdd = (p, size, qty = 1) => {
+    const reps = Math.max(1, Math.min(10, qty | 0 || 1));
+    const isClothingCustomer = (p.productType || "sneaker") === "clothing";
+    const line = isClothingCustomer
+      ? { product: p, size, productType: "clothing", intent: "customer" }
+      : { product: p, size, requestDisplay: false, requestDisplayPartner: false };
+    setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
+  };
+  // Remove one cart line matching a product+size (+ display-partner flag) — the
+  // desktop drawer − / remove.
+  const removeOneLine = (productId, size, dp = false) => setCart(c => {
+    const i = c.findIndex(l => l.product?.id === productId && l.size === size && !!l.requestDisplayPartner === !!dp);
+    return i < 0 ? c : [...c.slice(0, i), ...c.slice(i + 1)];
+  });
+  // Desktop Display-Partner request — ONE line, size optional (sneakers only),
+  // mirroring addToCart's requestDisplayPartner branch.
+  const addDisplayPartner = (p, size) =>
+    setCart(c => [...c, { product: p, size: size || null, requestDisplay: false, requestDisplayPartner: true }]);
+
   const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
 
   const openCheckout = () => { resetSheet(); setCheckoutOpen(true); };
@@ -5544,12 +6845,19 @@ function AssistantView({ products, onExit, orders = [] }) {
           orderNumber: orderNum,
           action: "placed",
           placedAtHub: placedHub,
+          // Stamp the destination store so Insights' PE/Trophy/Pine filter works
+          // (placedAtHub can't distinguish PE vs Trophy — both are central hubs).
+          destShop: effectiveShop,
         });
         sendWhatsAppTemplate(normalizedPhone, "order_placed", [customerName, orderNum, item.product.name, item.size]);
         placed.push(order);
       }
       if (normalizedPhone) upsertCustomer(normalizedPhone, customerName, now, marketingOptIn);
       setLastOrders(placed);
+      // Print the customer order slip(s) — one per order, in a single 80mm print
+      // job (thermal via the browser dialog, same as the POS). Fire-and-forget so
+      // a print hiccup never blocks the placement; WhatsApp still goes out above.
+      if (placed.length) printOrderSlips(placed).catch(err => console.warn("order slip print failed:", err));
       // Keep clothing REFILL items in the cart so the user can place them next
       // via the floating Place Refill Request bar. Just-placed customer lines
       // (sneakers + clothing-customer) drop out.
@@ -5655,6 +6963,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           orderNumber: orderNum,
           action: "placed",
           placedAtHub: placedHub,
+          // Stamp the destination store so Insights' PE/Trophy/Pine filter works
+          // (placedAtHub can't distinguish PE vs Trophy — both are central hubs).
+          destShop: effectiveShop,
         });
         placed.push(order);
       }
@@ -5700,6 +7011,26 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:880, margin:"0 auto", overflowX:"hidden", paddingBottom: cart.length > 0 ? 90 : 40 }}>
+      {/* Desktop workspace (≥1024px, sneaker customer orders) — full-screen
+          overlay reusing this view's cart + checkout. Phone/iPad + CR fall
+          through to the existing layout below. The shared Checkout sheet and
+          photo lightbox (rendered later) surface over it. */}
+      {isDesktop && !noStoreAccess && (
+        <AssistantDesktop
+          products={products} effectiveShop={effectiveShop} availableShops={availableShops}
+          onSelectShop={selectShop} shopRegistry={shopRegistry}
+          search={search} setSearch={setSearch}
+          cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
+          onViewPhoto={setFullPhoto} onSwitchView={onExit} onSignOut={assistantSignOut}
+          userEmail={assistantUser?.email || ""} mode={mode} setMode={setMode}
+          customerName={customerName} setCustomerName={setCustomerName}
+          customerPhone={customerPhone} setCustomerPhone={setCustomerPhone}
+          marketingOptIn={marketingOptIn} setMarketingOptIn={setMarketingOptIn}
+          submitting={submitting} onPlaceOrder={placeOrders}
+          customerIndex={customerIndex} onPickCustomer={pickCustomer}
+          onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
+          onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending} />
+      )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
           so it's exactly 5 across on tablet regardless of orientation. */}
@@ -5710,6 +7041,17 @@ function AssistantView({ products, onExit, orders = [] }) {
           .mc-grid-photo  { grid-template-columns: repeat(5, 1fr); }
           .mc-grid-refill { grid-template-columns: repeat(2, 1fr); }
         }
+        /* Siri-style price: all 4 candidate hues mixed into one animated,
+           iridescent gradient that drifts across the text. */
+        .mc-price-siri {
+          background: linear-gradient(90deg, #6E7BFF, #5D8BFF, #8A6DFF, #7F5AF0, #8A6DFF, #5D8BFF, #6E7BFF);
+          background-size: 300% 100%;
+          -webkit-background-clip: text; background-clip: text;
+          -webkit-text-fill-color: transparent; color: transparent;
+          animation: mcPriceSiri 4s linear infinite;
+        }
+        @keyframes mcPriceSiri { from { background-position: 0% 0; } to { background-position: 300% 0; } }
+        @media (prefers-reduced-motion: reduce) { .mc-price-siri { animation: none; } }
       `}</style>
       {/* TOP BAR */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 12px" }}>
@@ -5911,7 +7253,18 @@ function AssistantView({ products, onExit, orders = [] }) {
                 </div>
               ))}
             </div>
-            <button onClick={() => setLastOrders([])} style={{ background:"transparent", border:"none", color:"#555", cursor:"pointer", fontSize:"1rem" }}>✕</button>
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:8 }}>
+              <button onClick={() => setLastOrders([])} style={{ background:"transparent", border:"none", color:"#555", cursor:"pointer", fontSize:"1rem" }}>✕</button>
+              {/* Reprint the slip if the auto-print was dismissed or failed — the
+                  only recovery path for a physical hand-to-customer receipt. */}
+              {!isRefill && (
+                <button onClick={() => printOrderSlips(lastOrders).catch(err => console.warn("reprint slip failed:", err))}
+                        title="Reprint the order slip"
+                        style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"#cfd6e4", cursor:"pointer", fontSize:"0.72rem", fontFamily:FONT, padding:"5px 10px", whiteSpace:"nowrap" }}>
+                  🖨 Reprint slip
+                </button>
+              )}
+            </div>
           </div>
         );
       })()}
@@ -5993,7 +7346,14 @@ function AssistantView({ products, onExit, orders = [] }) {
                   )}
                 </div>
                 <div style={{ padding:"12px 13px 14px" }}>
-                  <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:5 }}>{p.name}</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>{p.name}</div>
+                  {typeof p.retailPrice === "number" && p.retailPrice > 0 ? (
+                    <div className="mc-price-siri" style={{ fontSize:16, fontWeight:800, marginBottom:4, width:"fit-content" }}>
+                      R{p.retailPrice.toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>
+                  )}
                   <div style={{ fontSize:13, fontWeight:500, color:"#4A7FFF" }}>Tap to add →</div>
                 </div>
                 <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
@@ -6226,8 +7586,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           uncropped image; tap anywhere (or ✕) to dismiss. */}
       {fullPhoto && <GalleryLightbox photos={fullPhoto} onClose={() => setFullPhoto(null)} />}
 
-      {/* ── Phase 12B: Floating cart trigger ── */}
-      {cart.length > 0 && !checkoutOpen && !selected && (
+      {/* ── Phase 12B: Floating cart trigger ── (desktop has its own drawer) */}
+      {cart.length > 0 && !checkoutOpen && !selected && !isDesktop && (
         <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"12px 14px 14px", background:"linear-gradient(transparent, rgba(0,0,0,.92) 30%)", zIndex:50, pointerEvents:"none" }}>
           <div style={{ maxWidth:880, margin:"0 auto", pointerEvents:"auto" }}>
             <button
@@ -6255,7 +7615,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Scroll-to-top FAB ── appears after scrolling down; one tap returns
           to the search box. Sits above the floating cart bar when it's shown. */}
-      {showScrollTop && (
+      {showScrollTop && !isDesktop && (
         <button onClick={scrollToTop} aria-label="Scroll to top"
           style={{ position:"fixed", right:16, bottom: cart.length > 0 && !checkoutOpen && !selected ? 92 : 24, zIndex:60,
                    width:46, height:46, borderRadius:"50%", cursor:"pointer",
@@ -6267,6 +7627,15 @@ function AssistantView({ products, onExit, orders = [] }) {
     </div>
   );
 }
+
+// Per-queue nav glyphs for the desktop workspace rail (mirrors the mobile tab
+// strip icons). Keyed by the same tab keys used in tabDefs.
+const WH_TAB_ICON = {
+  queue:    <><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></>,
+  clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
+  refills:  <><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></>,
+  layby:    <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/>,
+};
 
 // ─── WAREHOUSE VIEW ───────────────────────────────────────────────────────────
 function WarehouseView({ products = [], orders, onExit }) {
@@ -6452,6 +7821,9 @@ function WarehouseView({ products = [], orders, onExit }) {
   // empty node elsewhere, so hub1/hubC devices don't stream a stock subtree.
   const crHubCells = useStockCells(CR_HUBS.includes(selectedHub) ? selectedHub : "__off__"); // { pid: { size: cell } }
   const [crPhoto, setCrPhoto] = useState(null);
+  // Desktop workspace gate (≥1024px). Mobile keeps the existing single-column
+  // layout below; wide screens get a left rail of queues + a titled main pane.
+  const isWide = !useIsNarrow(1024);
 
   // Hub selector screen — shown until staff pick a hub
   if (!selectedHub) {
@@ -6585,6 +7957,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       orderNumber: order.id,
       action: insightAction,
       placedAtHub: order.placedAtHub || order.hub || "hub1",
+      destShop: order.destShop ?? null,
     });
     // ── WhatsApp notifications ───────────────────────────────────────────────
     // order_ready template: pass customer_name and order_number ONLY.
@@ -6791,6 +8164,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         orderNumber:      order.id,
         action:           "stock_depleted",
         placedAtHub:      order.placedAtHub || order.hub || "hub1",
+        destShop:         order.destShop ?? null,
         displayRefilledBy: selectedHub,
       });
     }
@@ -6887,7 +8261,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         if (sent === qty || hubMutated) {
           ok++;
           updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
-          logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2" });
+          logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
           if (sent < qty) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — re-request the remaining ${qty - sent}`);
         } else {
           // Nothing moved at the hub → leave pending for an idempotent re-tap, and LOCK
@@ -6900,7 +8274,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         // Reject is a flag-only write (no stock) — allowed without a stockRole.
         ok++;
         updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
-        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2" });
+        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
       }
       // qty 0 & not rejected → left pending for a later pass.
     }
@@ -6975,72 +8349,18 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Tally for the incoming pill at top right
   const incomingCount = hubOrders.filter(o => o.status === STATUS.INCOMING).length;
 
-  return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-      {/* Dispatch-label print toast — auto-print result on "Mark as Sent" (non-blocking). */}
-      {printToast && (
-        <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
-                      padding:"11px 14px", borderRadius:10, fontSize:12, fontWeight:600, textAlign:"center",
-                      background: printToast.kind === "ok" ? "rgba(0,150,70,.92)" : "rgba(150,30,30,.94)",
-                      color:"#fff", border:"1px solid rgba(255,255,255,.18)", boxShadow:"0 6px 24px rgba(0,0,0,.4)" }}>
-          {printToast.text}
-        </div>
-      )}
-      {/* TOP BAR */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
-        <div onClick={onExit}
-             style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>
-          ← Switch View
-        </div>
-        <div style={{ textAlign:"center" }}>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
-          <div style={{ fontSize:15, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>WAREHOUSE</div>
-        </div>
-        <div style={{ background:"rgba(20,40,100,.6)", border:"1px solid rgba(60,110,255,.35)", borderRadius:12, padding:"7px 12px", display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
-          <div style={{ width:7, height:7, background:"#4A7FFF", borderRadius:"50%", boxShadow:"0 0 6px rgba(60,110,255,.8)" }}/>
-          <div>
-            <div style={{ fontSize:14, fontWeight:700, color:"#fff", lineHeight:1 }}>{incomingCount}</div>
-            <div style={{ fontSize:9, color:"rgba(255,255,255,.5)" }}>incoming</div>
-          </div>
-          <span style={{ color:"#4A7FFF", fontSize:13 }}>›</span>
-        </div>
-      </div>
+  // Tab set for the active hub — shared by the mobile strip and the desktop rail.
+  const tabDefs = (selectedHub === "hubC"
+    ? [["queue", "Order Queue", null]]
+    : selectedHub === "hub2"
+    ? [["queue","Order Queue",null],["clothing","CR Orders",clothingBadge],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]
+    : selectedHub === "hub3"
+    ? [["queue","Order Queue",null],["clothing","CR Orders",clothingBadge],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]
+    : [["queue","Order Queue",null],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]);
 
-      {/* CIRCUIT LINE */}
-      <div style={{ height:20, padding:"0 14px", margin:"4px 0 2px", overflow:"hidden" }}>
-        <svg width="100%" height="100%" viewBox="0 0 400 20" preserveAspectRatio="none">
-          <path d="M0,10 L60,10 L80,3 L140,3 L160,10 L220,10 L240,17 L300,17 L320,10 L400,10" stroke="rgba(60,110,255,.4)" strokeWidth="1" fill="none" strokeLinecap="round"/>
-          <circle cx="80" cy="3" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="160" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="240" cy="17" r="2.5" fill="rgba(74,127,255,.7)"/>
-          <circle cx="320" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
-        </svg>
-      </div>
-
-      {/* WAREHOUSE QUEUE HERO IMAGE */}
-      <div style={{ position:"relative", width:"100%", height:130, overflow:"hidden", margin:"4px 0 0" }}>
-        <img src="/hero/warehouse.jpg" alt="Warehouse Queue" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"center" }}/>
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:50, background:"linear-gradient(transparent,#000)" }}/>
-        <div style={{ position:"absolute", top:0, left:0, right:0, height:20, background:"linear-gradient(#000,transparent)" }}/>
-      </div>
-
-      {/* HUB ROW */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px 10px" }}>
-        <div style={{ background:"rgba(20,40,120,.5)", border:"1px solid rgba(60,110,255,.5)", borderRadius:10, padding:"7px 16px", color:"#4A7FFF", fontSize:13, fontWeight:700 }}>
-          {HUB_LABELS[selectedHub] || selectedHub}
-        </div>
-        <div onClick={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }}
-             style={{ background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"7px 16px", color:"rgba(255,255,255,.7)", fontSize:12, fontWeight:500, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2">
-            <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/>
-          </svg>
-          Switch Hub
-        </div>
-      </div>
-
-      <div style={{ fontSize:12, color:"rgba(255,255,255,.3)", padding:"2px 14px 10px" }}>Update order status in real time.</div>
-
-      {/* ON HOLD CARD */}
+  // ON-HOLD card — actionable next-day follow-up list, shared by both layouts.
+  const onHoldCard = (
+    <>
       {onHoldOrders.length > 0 && (
         <div style={{ margin:"0 13px 10px", background:"rgba(20,40,100,.3)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"13px 14px" }}>
           <div onClick={() => setOnHoldExpanded(e => !e)} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"pointer" }}>
@@ -7084,62 +8404,12 @@ function WarehouseView({ products = [], orders, onExit }) {
           )}
         </div>
       )}
+    </>
+  );
 
-      {/* LAYBY EXCEPTIONS — loud banner above the tabs on every tab. Self-hides
-          when there are no missing-in-transit parcels. Tap → Layby tab,
-          Exceptions sub-queue. (hubC never stores laybys, so skip it there.) */}
-      {selectedHub !== "hubC" && (
-        <LaybyExceptionsBanner laybys={laybys} selectedHub={selectedHub} nowMs={nowTick}
-          onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
-      )}
-
-      {/* TABS — CR Orders exists on the CR hubs (hub2 for PE/Trophy, hub3 for
-          Pine — see CR_HUB_BY_UNIVERSE); Restock Status on hub1/hub3. */}
-      <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
-        {(selectedHub === "hubC"
-          ? [
-              // Trial: Hub C only fulfils customer clothing orders, so it gets
-              // the Order Queue and nothing else.
-              ["queue",    "Order Queue",     null],
-            ]
-          : selectedHub === "hub2"
-          ? [
-              ["queue",    "Order Queue",     null],
-              ["clothing", "CR Orders",       clothingBadge],
-              ["refills",  "Display Refills", refillsBadge],
-              ["layby",    "Layby",           laybyBadge],
-            ]
-          : selectedHub === "hub3"
-          ? [
-              // Pine's hub: mirrors hub2's CR Orders (fulfils from hub3 stock).
-              ["queue",    "Order Queue",     null],
-              ["clothing", "CR Orders",       clothingBadge],
-              ["refills",  "Display Refills", refillsBadge],
-              ["layby",    "Layby",           laybyBadge],
-            ]
-          : [
-              ["queue",   "Order Queue",     null],
-              ["refills", "Display Refills", refillsBadge],
-              ["layby",   "Layby",           laybyBadge],
-            ]
-        ).map(([key, label, badge]) => (
-          <div key={key} onClick={() => setMainTab(key)}
-               style={{ flex:1, padding:"10px 6px", borderRadius:10, fontSize:11.5, fontWeight:600, textAlign:"center", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5,
-                        background: mainTab===key ? "rgba(60,110,255,.12)" : "rgba(6,9,20,1)",
-                        border: mainTab===key ? "1px solid rgba(60,110,255,.4)" : "1px solid rgba(255,255,255,.07)",
-                        color: mainTab===key ? "#4A7FFF" : "rgba(255,255,255,.3)" }}>
-            {key === "queue"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>}
-            {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
-            {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
-            {key === "layby"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/></svg>}
-            <span>{label}</span>
-            {badge != null && badge > 0 && (
-              <span style={{ background: mainTab===key ? "#F59E0B" : "rgba(245,158,11,.85)", color:"#000", fontSize:10, fontWeight:800, minWidth:18, height:18, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
-            )}
-          </div>
-        ))}
-      </div>
-
+  // Active-tab content — shared by the mobile column and the desktop main pane.
+  const content = (
+    <>
       {mainTab === "queue" && (
         <>
           {/* PILLS */}
@@ -7167,6 +8437,7 @@ function WarehouseView({ products = [], orders, onExit }) {
               sectionKey={`wh-${filter}`}
               items={filtered}
               dateOf={queueDateOf}
+              columns={isWide ? 2 : 1}
               emptyMessage="No orders in the last 3 days."
               renderItem={(order) => {
             // Layby pull request — render the real PullCard inline (same L-xxxxx
@@ -7385,6 +8656,196 @@ function WarehouseView({ products = [], orders, onExit }) {
           initialSub={laybySub}
         />
       )}
+    </>
+  );
+
+  // ── DESKTOP WORKSPACE (>=1024px) — left rail of queues + titled main pane.
+  //    Mobile keeps the single-column layout below. ──
+  if (isWide) {
+    const activeTab = tabDefs.some(([k]) => k === mainTab) ? mainTab : "queue";
+    const activeLabel = (tabDefs.find(([k]) => k === activeTab) || [null, "Order Queue"])[1];
+    const navItem = ([key, label, badge]) => {
+      const on = activeTab === key;
+      return (
+        <button key={key} onClick={() => setMainTab(key)}
+          style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
+                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition:"background .14s, color .14s" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:.9 }}>{WH_TAB_ICON[key]}</svg>
+          <span style={{ flex:1 }}>{label}</span>
+          {badge != null && badge > 0 && (
+            <span style={{ background:"#F59E0B", color:"#000", fontSize:10.5, fontWeight:800, minWidth:19, height:19, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
+          )}
+        </button>
+      );
+    };
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+        {printToast && (
+          <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
+                        background: printToast.kind === "ok" ? "rgba(6,20,12,.97)" : "rgba(24,8,8,.97)",
+                        border:"1px solid " + (printToast.kind === "ok" ? "rgba(74,222,128,.4)" : "rgba(248,113,113,.4)"),
+                        color:"#fff", borderRadius:12, padding:"12px 16px", fontSize:13, fontWeight:600, boxShadow:"0 20px 50px -20px rgba(0,0,0,.8)" }}>
+            {printToast.text}
+          </div>
+        )}
+        {/* RAIL */}
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:6 }}>&larr; Exit</button>
+          {/* Hub chip + switch */}
+          <div style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(74,127,255,.1)", border:"1px solid rgba(74,127,255,.32)", borderRadius:11, padding:"9px 12px", marginBottom:8 }}>
+            <span style={{ width:7, height:7, borderRadius:"50%", background:"#4A7FFF", boxShadow:"0 0 8px #4A7FFF", flexShrink:0 }}/>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:9, letterSpacing:".14em", textTransform:"uppercase", color:"rgba(233,238,255,.4)", fontWeight:700 }}>Hub</div>
+              <div style={{ fontSize:13.5, fontWeight:800, color:"#cfe0ff", lineHeight:1.1 }}>{HUB_LABELS[selectedHub] || selectedHub}</div>
+            </div>
+            <button onClick={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }} title="Switch hub"
+              style={{ background:"transparent", border:"none", color:"#9DBCFF", cursor:"pointer", padding:4, display:"flex" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+            </button>
+          </div>
+          <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"6px 9px", fontWeight:700 }}>Queues</div>
+          {tabDefs.map(navItem)}
+          <div style={{ flex:1 }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color:"#9DBCFF", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{incomingCount}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Incoming</div>
+            </div>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: onHoldOrders.length ? "#F59E0B" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{onHoldOrders.length}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>On hold</div>
+            </div>
+          </div>
+        </aside>
+        {/* MAIN */}
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 30px 16px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{activeLabel}</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>{HUB_LABELS[selectedHub] || selectedHub} &middot; real-time order status</div>
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
+            <div style={{ maxWidth:1200, margin:"0 auto" }}>
+              {selectedHub !== "hubC" && (
+                <LaybyExceptionsBanner laybys={laybys} selectedHub={selectedHub} nowMs={nowTick}
+                  onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
+              )}
+              {/* On-Hold card on EVERY desktop tab (matches mobile) — it holds
+                  live "Available"/"Still OOS" actions, so gating it to the Queue
+                  tab stranded those actions on desktop. Self-hides when empty. */}
+              {onHoldCard}
+              {content}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      {/* Dispatch-label print toast — auto-print result on "Mark as Sent" (non-blocking). */}
+      {printToast && (
+        <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
+                      padding:"11px 14px", borderRadius:10, fontSize:12, fontWeight:600, textAlign:"center",
+                      background: printToast.kind === "ok" ? "rgba(0,150,70,.92)" : "rgba(150,30,30,.94)",
+                      color:"#fff", border:"1px solid rgba(255,255,255,.18)", boxShadow:"0 6px 24px rgba(0,0,0,.4)" }}>
+          {printToast.text}
+        </div>
+      )}
+      {/* TOP BAR */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px" }}>
+        <div onClick={onExit}
+             style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"8px 14px", fontSize:12, color:"rgba(255,255,255,.7)", cursor:"pointer" }}>
+          ← Switch View
+        </div>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", letterSpacing:"0.5px" }}>Viewing as:</div>
+          <div style={{ fontSize:15, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>WAREHOUSE</div>
+        </div>
+        <div style={{ background:"rgba(20,40,100,.6)", border:"1px solid rgba(60,110,255,.35)", borderRadius:12, padding:"7px 12px", display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
+          <div style={{ width:7, height:7, background:"#4A7FFF", borderRadius:"50%", boxShadow:"0 0 6px rgba(60,110,255,.8)" }}/>
+          <div>
+            <div style={{ fontSize:14, fontWeight:700, color:"#fff", lineHeight:1 }}>{incomingCount}</div>
+            <div style={{ fontSize:9, color:"rgba(255,255,255,.5)" }}>incoming</div>
+          </div>
+          <span style={{ color:"#4A7FFF", fontSize:13 }}>›</span>
+        </div>
+      </div>
+
+      {/* CIRCUIT LINE */}
+      <div style={{ height:20, padding:"0 14px", margin:"4px 0 2px", overflow:"hidden" }}>
+        <svg width="100%" height="100%" viewBox="0 0 400 20" preserveAspectRatio="none">
+          <path d="M0,10 L60,10 L80,3 L140,3 L160,10 L220,10 L240,17 L300,17 L320,10 L400,10" stroke="rgba(60,110,255,.4)" strokeWidth="1" fill="none" strokeLinecap="round"/>
+          <circle cx="80" cy="3" r="2.5" fill="rgba(74,127,255,.7)"/>
+          <circle cx="160" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
+          <circle cx="240" cy="17" r="2.5" fill="rgba(74,127,255,.7)"/>
+          <circle cx="320" cy="10" r="2.5" fill="rgba(74,127,255,.7)"/>
+        </svg>
+      </div>
+
+      {/* WAREHOUSE QUEUE HERO IMAGE */}
+      <div style={{ position:"relative", width:"100%", height:130, overflow:"hidden", margin:"4px 0 0" }}>
+        <img src="/hero/warehouse.jpg" alt="Warehouse Queue" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover", objectPosition:"center" }}/>
+        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:50, background:"linear-gradient(transparent,#000)" }}/>
+        <div style={{ position:"absolute", top:0, left:0, right:0, height:20, background:"linear-gradient(#000,transparent)" }}/>
+      </div>
+
+      {/* HUB ROW */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px 10px" }}>
+        <div style={{ background:"rgba(20,40,120,.5)", border:"1px solid rgba(60,110,255,.5)", borderRadius:10, padding:"7px 16px", color:"#4A7FFF", fontSize:13, fontWeight:700 }}>
+          {HUB_LABELS[selectedHub] || selectedHub}
+        </div>
+        <div onClick={() => { localStorage.removeItem("warehouseHub"); setSelectedHub(null); }}
+             style={{ background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.1)", borderRadius:10, padding:"7px 16px", color:"rgba(255,255,255,.7)", fontSize:12, fontWeight:500, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2">
+            <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/>
+          </svg>
+          Switch Hub
+        </div>
+      </div>
+
+      <div style={{ fontSize:12, color:"rgba(255,255,255,.3)", padding:"2px 14px 10px" }}>Update order status in real time.</div>
+
+      {/* ON HOLD CARD */}
+      {onHoldCard}
+
+      {/* LAYBY EXCEPTIONS — loud banner above the tabs on every tab. Self-hides
+          when there are no missing-in-transit parcels. Tap → Layby tab,
+          Exceptions sub-queue. (hubC never stores laybys, so skip it there.) */}
+      {selectedHub !== "hubC" && (
+        <LaybyExceptionsBanner laybys={laybys} selectedHub={selectedHub} nowMs={nowTick}
+          onOpen={() => { setLaybySub("exceptions"); setMainTab("layby"); }} />
+      )}
+
+      {/* TABS — same hub→tabs wiring as the desktop rail; tabDefs is the single
+          source of truth (CR Orders on the CR hubs: hub2 for PE/Trophy, hub3 for
+          Pine — see CR_HUB_BY_UNIVERSE). Only the mobile chrome differs below. */}
+      <div style={{ display:"flex", gap:6, padding:"0 13px 10px" }}>
+        {tabDefs.map(([key, label, badge]) => (
+          <div key={key} onClick={() => setMainTab(key)}
+               style={{ flex:1, padding:"10px 6px", borderRadius:10, fontSize:11.5, fontWeight:600, textAlign:"center", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5,
+                        background: mainTab===key ? "rgba(60,110,255,.12)" : "rgba(6,9,20,1)",
+                        border: mainTab===key ? "1px solid rgba(60,110,255,.4)" : "1px solid rgba(255,255,255,.07)",
+                        color: mainTab===key ? "#4A7FFF" : "rgba(255,255,255,.3)" }}>
+            {key === "queue"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>}
+            {key === "clothing" && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/></svg>}
+            {key === "refills"  && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
+            {key === "layby"    && <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10m0-10L4 7v10l8 4"/></svg>}
+            <span>{label}</span>
+            {badge != null && badge > 0 && (
+              <span style={{ background: mainTab===key ? "#F59E0B" : "rgba(245,158,11,.85)", color:"#000", fontSize:10, fontWeight:800, minWidth:18, height:18, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {content}
     </div>
   );
 }
@@ -7880,63 +9341,384 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
 }
 
 // ─── CUSTOMER VIEW ────────────────────────────────────────────────────────────
+// Shop the order was placed for. destShop is the source of truth; fall back to
+// the Pine universe for legacy orders that only carry placedAtHub.
+function orderShopLabel(o) {
+  if (o?.destShop && SHOP_LABELS[o.destShop]) return SHOP_LABELS[o.destShop];
+  if (o?.placedAtHub === "hub3") return "Pine";
+  return null;
+}
+// "2h ago" / "just now" relative time (recomputed on render).
+function relTime(iso) {
+  if (!iso) return null;
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+function absTime(iso) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+
 function CustomerView({ orders, onExit }) {
   const [orderId, setOrderId] = useState("");
   const [found, setFound] = useState(null);
   const [searched, setSearched] = useState(false);
+  // Use the whole screen on desktop (≥1024px); phones keep the single column.
+  const isWide = !useIsNarrow(1024);
+  // Respect the Hub-2 dispatch hold on this customer-facing page: a READY order
+  // whose reveal instant hasn't passed must read as "being prepared". Ticks every
+  // 10s so the hold releases at the reveal time (mirrors the TV board).
+  const [revealClock, setRevealClock] = useState(() => Date.now());
+  useEffect(() => { const id = setInterval(() => setRevealClock(Date.now()), 10000); return () => clearInterval(id); }, []);
+  const heldOrders = useMemo(() => (orders || []).map(o => holdHub2Ready(o, revealClock)), [orders, revealClock]);
+  // Keep an open detail pane live: re-sync `found` from heldOrders as the reveal
+  // clock ticks and as orders update — else a held order never flips to Ready at
+  // its reveal, and later live status changes (Ready→Collected/OOS) stay hidden
+  // until the customer re-searches. No-op when nothing is open.
+  useEffect(() => {
+    setFound(prev => (prev ? (heldOrders.find(o => o.id === prev.id) || prev) : prev));
+  }, [heldOrders]);
 
-  const doSearch = () => {
-    const clean = orderId.trim().replace(/^#/, "");
-    const o = orders.find(o => o.id === clean.padStart(3,"0") || o.id === clean);
-    // Respect the Hub 2 dispatch hold here too — this customer status page is a
-    // customer-facing channel, so a held order must read "being prepared", not
-    // "ready", until its reveal (same as the TV board).
-    setFound(o ? holdHub2Ready(o, Date.now()) : null);
+  const doSearch = (idOverride) => {
+    const raw = (idOverride ?? orderId).toString();
+    const clean = raw.trim().replace(/^#/, "");
+    if (!clean) return;
+    const o = heldOrders.find(o => o.id === clean.padStart(3, "0") || o.id === clean);
+    setOrderId(clean);
+    setFound(o || null);
     setSearched(true);
   };
+  const reset = () => { setFound(null); setSearched(false); setOrderId(""); };
 
   const cfg = found ? STATUS_CONFIG[found.status] : null;
 
-  return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 20px" }}>
-      <div style={{ marginBottom:14, filter:"drop-shadow(0 0 14px rgba(60,110,255,.4))" }}>
-        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+  // Lifecycle timeline — adapts to the order's status/branch. Each step:
+  // { label, time, state: done | current | pending | error }.
+  const steps = useMemo(() => {
+    if (!found) return [];
+    const s = found.status;
+    const out = [{ label: "Order placed", sub: "Sent to the warehouse", time: found.createdAt, state: "done" }];
+    if (s === STATUS.OUT_OF_STOCK) {
+      out.push({ label: "Out of stock", sub: "Speak to an assistant", time: found.outOfStockAt, state: "error" });
+    } else if (s === STATUS.COMING_TOMORROW) {
+      out.push({ label: "Preparing", sub: "Being picked", time: null, state: "done" });
+      out.push({ label: "Available tomorrow", sub: "Come back tomorrow to collect", time: found.comingTomorrowAt, state: "current" });
+    } else {
+      const readyDone = s === STATUS.READY || s === STATUS.COLLECTED;
+      out.push({ label: "Preparing", sub: "Being picked & checked", time: null, state: readyDone ? "done" : "current" });
+      out.push({ label: "Ready to collect", sub: "Waiting for you at the store", time: readyDone ? found.readyAt : null, state: readyDone ? (s === STATUS.COLLECTED ? "done" : "current") : "pending" });
+      out.push({ label: "Collected", sub: "Enjoy!", time: found.collectedAt, state: s === STATUS.COLLECTED ? "done" : "pending" });
+    }
+    return out;
+  }, [found]);
+
+  const STEP_C = {
+    done:    { dot: "#4ADE80", ring: "rgba(74,222,128,.25)", text: "#fff" },
+    current: { dot: "#4A7FFF", ring: "rgba(74,127,255,.3)",  text: "#fff" },
+    error:   { dot: "#F87171", ring: "rgba(248,113,113,.25)", text: "#FCA5A5" },
+    pending: { dot: "rgba(255,255,255,.18)", ring: "transparent", text: "rgba(255,255,255,.4)" },
+  };
+
+  const shopLabel = found ? orderShopLabel(found) : null;
+
+  const STATUS_MSG = {
+    [STATUS.INCOMING]:        "Your order is being prepared. We'll have it ready soon.",
+    [STATUS.READY]:           "Your order is ready. Please collect it at the store.",
+    [STATUS.OUT_OF_STOCK]:    "Sorry, this item is out of stock. Please speak to an assistant.",
+    [STATUS.COLLECTED]:       "This order has been collected. Thank you.",
+    [STATUS.COMING_TOMORROW]: "Your item will be available tomorrow. Please come back then.",
+  };
+
+  // ── FULL-SCREEN DESKTOP WORKSPACE (≥1024px) — search/recent rail + rich pane ──
+  if (isWide) {
+    const q = orderId.trim().toLowerCase();
+    const railList = (q ? heldOrders.filter(o => o.id.includes(q) || (o.customerName || "").toLowerCase().includes(q)) : heldOrders).slice(0, 60);
+    const statusAt = found ? ({ [STATUS.INCOMING]: found.createdAt, [STATUS.READY]: found.readyAt, [STATUS.OUT_OF_STOCK]: found.outOfStockAt, [STATUS.COMING_TOMORROW]: found.comingTomorrowAt, [STATUS.COLLECTED]: found.collectedAt }[found.status] || found.updatedAt) : null;
+    const subbed = found && found.sentSize && found.sentSize !== found.size ? found.sentSize : null;
+    const tags = [];
+    if (found?.isLayby) tags.push("Layby");
+    if (found?.requestDisplayPartner) tags.push("Display Partner");
+    else if (found?.requestDisplay) tags.push("Display");
+    const detailRow = (label, value) => value == null || value === "" ? null : (
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 14, padding: "11px 0", borderBottom: "1px solid rgba(255,255,255,.06)" }}>
+        <span style={{ fontSize: 12.5, color: "rgba(233,238,255,.5)", flexShrink: 0 }}>{label}</span>
+        <span style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", textAlign: "right", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</span>
       </div>
-      <h1 style={{ fontSize:22, fontWeight:600, marginBottom:6, color:"#fff" }}>Track Your Order</h1>
-      <div style={{ fontSize:12, color:"rgba(255,255,255,.3)", marginBottom:36, textAlign:"center" }}>Enter your 3-digit order number</div>
+    );
+    return (
+      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "340px minmax(0,1fr)", overflow: "hidden" }}>
+        <style>{`@keyframes otPulse{0%,100%{box-shadow:0 0 0 0 rgba(74,127,255,.5)}50%{box-shadow:0 0 0 6px rgba(74,127,255,0)}}
+          .ot-press{transition:transform .1s ease, filter .12s ease}.ot-press:active{transform:scale(.98)}.ot-press:hover{filter:brightness(1.08)}
+          .ot-row{transition:background .12s ease, border-color .12s ease}.ot-row:hover{background:rgba(255,255,255,.05)}`}</style>
+        {/* RAIL — search + orders */}
+        <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ padding: "22px 16px 12px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
+                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
+              </div>
+              {onExit && <button onClick={onExit} className="ot-press" style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(233,238,255,.6)", borderRadius: 9, padding: "6px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: FONT }}>← Exit</button>}
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.3px", marginBottom: 12 }}>Order Tracking</div>
+            <div style={{ position: "relative" }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", opacity: .4 }}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
+              <input value={orderId} onChange={e => setOrderId(e.target.value)} onKeyDown={e => e.key === "Enter" && doSearch()} placeholder="Order # or customer…"
+                style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px 10px 34px", borderRadius: 11, fontSize: 13.5, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.12)", color: "#fff", outline: "none", fontFamily: FONT }} />
+            </div>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "4px 10px 16px", display: "flex", flexDirection: "column", gap: 7 }}>
+            {railList.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "rgba(233,238,255,.4)", fontSize: 13 }}>No matching orders.</div>}
+            {railList.map(o => {
+              const c = STATUS_CONFIG[o.status];
+              const on = found && found.id === o.id;
+              return (
+                <button key={o.id} className="ot-row" onClick={() => { setOrderId(o.id); setFound(o); setSearched(true); }}
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, cursor: "pointer", textAlign: "left", fontFamily: FONT,
+                           background: on ? "rgba(74,127,255,.14)" : "transparent", border: on ? "1px solid rgba(74,127,255,.45)" : "1px solid transparent" }}>
+                  <ProductPhoto url={o.productPhotoUrl} photo={o.productPhoto} size={40} radius={9} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>#{o.id} · {o.productName}</div>
+                    <div style={{ fontSize: 11, color: "rgba(233,238,255,.45)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.customerName || "—"}</div>
+                  </div>
+                  {c && <span style={{ flexShrink: 0, width: 8, height: 8, borderRadius: "50%", background: c.color, boxShadow: `0 0 6px ${c.color}` }} title={c.label} />}
+                </button>
+              );
+            })}
+          </div>
+        </aside>
 
-      <input placeholder="000" value={orderId} onChange={e => setOrderId(e.target.value)}
-             onKeyDown={e => e.key==="Enter" && doSearch()} maxLength={3}
-             style={{ width:"100%", maxWidth:360, background:"rgba(6,9,20,1)", border:"1px solid rgba(60,110,255,.2)", borderRadius:12, padding:18, color:"#fff", fontSize:32, fontWeight:700, textAlign:"center", letterSpacing:"10px", outline:"none", marginBottom:10 }}/>
-      <button onClick={doSearch} style={{ width:"100%", maxWidth:360, background:"rgba(60,110,255,.85)", color:"#fff", border:"none", borderRadius:9, padding:14, fontSize:14, fontWeight:600, cursor:"pointer" }}>Check Status →</button>
-      {onExit && <div onClick={onExit} style={{ marginTop:18, color:"rgba(255,255,255,.25)", fontSize:12, cursor:"pointer" }}>← Back</div>}
-      <div style={{ height:20 }}/>
+        {/* MAIN — detail or empty state */}
+        <div style={{ minWidth: 0, overflow: "auto" }}>
+          {found && cfg ? (
+            <div style={{ padding: "36px 40px 60px", maxWidth: 880, margin: "0 auto" }}>
+              {/* HERO — compact, cohesive */}
+              <div style={{ display: "flex", gap: 20, alignItems: "center", background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 22, padding: 20, boxShadow: "0 26px 60px -36px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.08)", marginBottom: 16 }}>
+                <div style={{ width: 116, height: 116, borderRadius: 18, overflow: "hidden", border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 50, flexShrink: 0 }}>
+                  {found.productPhotoUrl ? <img src={found.productPhotoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} /> : (found.productPhoto || "👟")}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: "#9DBCFF", letterSpacing: ".02em", fontVariantNumeric: "tabular-nums" }}>#{found.id}</span>
+                    <span style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, borderRadius: 999, padding: "5px 13px", fontWeight: 800, fontSize: 12.5, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: cfg.color, boxShadow: `0 0 7px ${cfg.color}` }} />
+                      {cfg.label}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: "#fff", marginTop: 7, lineHeight: 1.2 }}>{found.productName}</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 12 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 700, color: "#cfe0ff", background: "rgba(74,127,255,.14)", border: "1px solid rgba(74,127,255,.28)", borderRadius: 8, padding: "3px 10px" }}>Size <SizeTag size={found.size} /></span>
+                    {found.qty > 1 && <span style={{ fontSize: 11.5, fontWeight: 700, color: "rgba(233,238,255,.7)", background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 8, padding: "3px 10px" }}>×{found.qty}</span>}
+                    {shopLabel && <span style={{ fontSize: 11.5, fontWeight: 700, color: "rgba(233,238,255,.7)", background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 8, padding: "3px 10px" }}>{shopLabel}</span>}
+                    {tags.map(t => <span key={t} style={{ fontSize: 11.5, fontWeight: 700, color: "#FBBF24", background: "rgba(251,191,36,.12)", border: "1px solid rgba(251,191,36,.3)", borderRadius: 8, padding: "3px 10px" }}>{t}</span>)}
+                  </div>
+                </div>
+              </div>
 
-      {searched && !found && <div style={{ color:"#F87171", background:"rgba(150,20,20,.15)", border:"1px solid rgba(150,20,20,.4)", borderRadius:RADIUS, padding:"1rem 2rem" }}>Order not found. Check your number.</div>}
+              {/* Status message strip */}
+              <div style={{ background: `linear-gradient(90deg, ${cfg.color}22, transparent)`, borderLeft: `3px solid ${cfg.color}`, borderRadius: 12, padding: "13px 16px", marginBottom: 16, fontSize: 13.5, color: "rgba(233,238,255,.85)", lineHeight: 1.5 }}>
+                <b style={{ color: cfg.color }}>{cfg.label}{statusAt ? ` · ${relTime(statusAt)}` : ""}</b> — {STATUS_MSG[found.status] || ""}
+              </div>
 
-      {found && cfg && (
-        <div style={{ background:CARD, border:`2px solid ${cfg.color}33`, borderRadius:RADIUS, padding:"2rem", maxWidth:"420px", width:"100%", textAlign:"center", boxShadow:GLOW }}>
-          <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"5rem", color:BLUE, lineHeight:1, marginBottom:"0.25rem", letterSpacing:"0.05em" }}>#{found.id}</div>
-          <div style={{ background:cfg.bg, color:cfg.color, border:`1px solid ${cfg.border}`, borderRadius:"999px", padding:"0.5rem 1.5rem", display:"inline-block", fontWeight:"700", fontSize:"1.1rem", marginBottom:"1rem" }}>{cfg.icon} {cfg.label}</div>
-          <div style={{ fontWeight:"600", fontSize:"1.1rem", marginBottom:"0.25rem" }}>{found.productName} · Size <SizeTag size={found.size} /></div>
-          <div style={{ color:"#666", fontSize:"0.85rem" }}>For {found.customerName}</div>
-          {found.status===STATUS.INCOMING        && <div style={{ marginTop:"1.5rem", color:"#4A7FFF", fontSize:"0.9rem", background:"rgba(60,110,255,.1)", borderRadius:"10px", padding:"0.75rem" }}>Your order is being prepared. We'll have it ready soon.</div>}
-          {found.status===STATUS.READY           && <div style={{ marginTop:"1.5rem", color:"#4ADE80", fontSize:"0.9rem", background:"rgba(74,222,128,.1)", borderRadius:"10px", padding:"0.75rem" }}>Your order is ready. Please collect it at the store.</div>}
-          {found.status===STATUS.OUT_OF_STOCK    && <div style={{ marginTop:"1.5rem", color:"#F87171", fontSize:"0.9rem", background:"rgba(248,113,113,.1)", borderRadius:"10px", padding:"0.75rem" }}>Sorry, this item is out of stock. Please speak to an assistant.</div>}
-          {found.status===STATUS.COLLECTED       && <div style={{ marginTop:"1.5rem", color:"#9CA3AF", fontSize:"0.9rem", background:"rgba(156,163,175,.1)", borderRadius:"10px", padding:"0.75rem" }}>This order has been collected. Thank you.</div>}
-          {found.status===STATUS.COMING_TOMORROW && <div style={{ marginTop:"1.5rem", color:BLUE_L, fontSize:"0.9rem", background:"rgba(74,130,255,.1)", borderRadius:"10px", padding:"0.75rem" }}>Your item will be available tomorrow. Please come back then.</div>}
+              {/* Two columns: timeline + details */}
+              <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, alignItems: "start" }}>
+                <div style={{ background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.09)", borderRadius: 18, padding: "20px 22px 8px", boxShadow: "0 18px 44px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.05)" }}>
+                  <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 18 }}>Progress</div>
+                  {steps.map((st, i) => {
+                    const c = STEP_C[st.state];
+                    const last = i === steps.length - 1;
+                    return (
+                      <div key={st.label} style={{ display: "flex", gap: 15 }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+                          <div style={{ width: 20, height: 20, borderRadius: "50%", background: c.dot, border: `2px solid ${c.ring === "transparent" ? "rgba(255,255,255,.14)" : c.ring}`, display: "flex", alignItems: "center", justifyContent: "center", animation: st.state === "current" ? "otPulse 1.8s infinite" : "none" }}>
+                            {st.state === "done" && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#04120a" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>}
+                            {st.state === "error" && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#1a0606" strokeWidth="4" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>}
+                          </div>
+                          {!last && <div style={{ width: 2, flex: 1, minHeight: 30, background: st.state === "done" ? "rgba(74,222,128,.35)" : "rgba(255,255,255,.08)", margin: "4px 0" }} />}
+                        </div>
+                        <div style={{ flex: 1, paddingBottom: last ? 12 : 18, marginTop: -1 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+                            <div style={{ fontSize: 15, fontWeight: 700, color: c.text }}>{st.label}</div>
+                            {st.time && <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.45)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{absTime(st.time)}</div>}
+                          </div>
+                          <div style={{ fontSize: 12.5, color: st.state === "pending" ? "rgba(233,238,255,.3)" : "rgba(233,238,255,.55)", marginTop: 3 }}>{st.sub}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div style={{ background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.09)", borderRadius: 18, padding: "20px 20px 8px", boxShadow: "0 18px 44px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.05)" }}>
+                  <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 6 }}>Details</div>
+                  {detailRow("Customer", found.customerName)}
+                  {detailRow("Phone", found.customerPhone)}
+                  {detailRow("Ordered from", shopLabel)}
+                  {subbed && detailRow("Sent instead", <span style={{ color: "#FBBF24" }}><SizeTag size={subbed} /></span>)}
+                  {detailRow("Placed", absTime(found.createdAt))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, textAlign: "center", padding: 40, color: "rgba(233,238,255,.4)" }}>
+              <svg width="54" height="54" viewBox="0 0 24 24" fill="none" stroke="rgba(74,127,255,.55)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
+              <div style={{ fontSize: 17, fontWeight: 700, color: "rgba(233,238,255,.7)" }}>{searched ? `No order #${orderId} found` : "Select an order to track"}</div>
+              <div style={{ fontSize: 13, maxWidth: 340, lineHeight: 1.5 }}>{searched ? "Double-check the number on the slip, or pick one from the list." : "Search by order number or customer, or pick one from the list on the left."}</div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: isWide ? 1120 : 480, margin: "0 auto", padding: isWide ? "40px 40px 64px" : "34px 18px 48px", boxSizing: "border-box" }}>
+      <style>{`@keyframes otPulse{0%,100%{box-shadow:0 0 0 0 rgba(74,127,255,.5)}50%{box-shadow:0 0 0 6px rgba(74,127,255,0)}}
+        .ot-press{transition:transform .1s ease, filter .12s ease}.ot-press:active{transform:scale(.98)}.ot-press:hover{filter:brightness(1.08)}`}</style>
+
+      {/* Brand header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span style={{ fontSize: 20, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 5, color: "#4A7FFF" }}>CLUB</span>
+        </div>
+        {onExit && <button onClick={onExit} className="ot-press" style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(233,238,255,.6)", borderRadius: 9, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: FONT }}>← Back</button>}
+      </div>
+
+      <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.5px", marginBottom: 4 }}>Order Tracking</h1>
+      <div style={{ fontSize: 13, color: "rgba(233,238,255,.5)", marginBottom: 22 }}>Enter your order number to see live status.</div>
+
+      {/* Search */}
+      {!found && (
+        <div style={{ maxWidth: isWide ? 460 : "100%" }}>
+          <input placeholder="000" value={orderId} onChange={e => setOrderId(e.target.value.replace(/[^0-9]/g, ""))}
+                 onKeyDown={e => e.key === "Enter" && doSearch()} maxLength={4} inputMode="numeric"
+                 style={{ width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 16, padding: "18px", color: "#fff", fontSize: 34, fontWeight: 800, textAlign: "center", letterSpacing: "12px", outline: "none", marginBottom: 10, fontVariantNumeric: "tabular-nums" }} />
+          <button onClick={() => doSearch()} className="ot-press"
+                  style={{ width: "100%", background: "linear-gradient(180deg, #5A8BFF, #4A7FFF)", color: "#fff", border: "none", borderRadius: 13, padding: 15, fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, boxShadow: "0 10px 24px -10px rgba(74,127,255,.8)" }}>
+            Track order →
+          </button>
         </div>
       )}
 
-      {!searched && orders.length > 0 && (
-        <div style={{ maxWidth:"420px", width:"100%", marginTop:"1.5rem" }}>
-          <div style={{ color:"#444", fontSize:"0.8rem", textAlign:"center", marginBottom:"0.75rem" }}>Recent orders</div>
-          {orders.slice(0,4).map(o => (
-            <button key={o.id} onClick={() => setOrderId(o.id)} style={{ width:"100%", background:CARD, border:BORDER, borderRadius:"10px", padding:"0.75rem 1rem", marginBottom:"0.5rem", color:"#888", fontSize:"0.85rem", cursor:"pointer", textAlign:"left", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.3rem", color:BLUE, letterSpacing:"0.05em" }}>#{o.id}</span>
-              <span>{o.customerName} · {o.productName}</span>
-            </button>
-          ))}
+      {searched && !found && (
+        <div style={{ maxWidth: isWide ? 460 : "100%", marginTop: 16, color: "#F87171", background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.35)", borderRadius: 14, padding: "14px 16px", fontSize: 13.5, textAlign: "center" }}>
+          No order <b>#{orderId}</b> found. Double-check the number on your slip.
+        </div>
+      )}
+
+      {/* Result */}
+      {found && cfg && (
+        <div style={{ display: isWide ? "grid" : "block", gridTemplateColumns: isWide ? "minmax(0, 460px) minmax(0, 1fr)" : undefined, gap: isWide ? 18 : 0, alignItems: "start" }}>
+          {/* Hero card — photo, product, shop, status */}
+          <div style={{ background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 20, padding: isWide ? 22 : 18, boxShadow: "0 20px 50px -24px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08)", marginBottom: isWide ? 0 : 14 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase" }}>Order</div>
+                <div style={{ fontSize: 30, fontWeight: 800, color: "#fff", lineHeight: 1, letterSpacing: ".02em", fontVariantNumeric: "tabular-nums" }}>#{found.id}</div>
+              </div>
+              <div style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, borderRadius: 999, padding: "7px 15px", fontWeight: 700, fontSize: 13.5, display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: cfg.color, boxShadow: `0 0 8px ${cfg.color}` }} />
+                {cfg.label}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+              <ProductPhoto url={found.productPhotoUrl} photo={found.productPhoto} size={78} radius={14} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", lineHeight: 1.25 }}>{found.productName}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 7, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#cfe0ff", background: "rgba(74,127,255,.12)", border: "1px solid rgba(74,127,255,.25)", borderRadius: 7, padding: "2px 9px" }}>Size <SizeTag size={found.size} /></span>
+                  {found.qty > 1 && <span style={{ fontSize: 12, fontWeight: 700, color: "rgba(233,238,255,.6)", background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 7, padding: "2px 9px" }}>×{found.qty}</span>}
+                </div>
+              </div>
+            </div>
+            {/* Meta row: shop + placed time + customer */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 18px", marginTop: 16, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,.07)" }}>
+              {shopLabel && (
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, color: "rgba(233,238,255,.4)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", marginBottom: 3, display: "flex", alignItems: "center", gap: 5 }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l1-5h16l1 5M4 9v11a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9M3 9h18" /></svg>
+                    Ordered from
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>{shopLabel}</div>
+                </div>
+              )}
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 10, color: "rgba(233,238,255,.4)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", marginBottom: 3 }}>Placed</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>{relTime(found.createdAt) || "—"}</div>
+              </div>
+              {found.customerName && (
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, color: "rgba(233,238,255,.4)", fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", marginBottom: 3 }}>Customer</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{found.customerName}</div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Timeline */}
+          <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: "18px 18px 8px" }}>
+            <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 14 }}>Progress</div>
+            {steps.map((st, i) => {
+              const c = STEP_C[st.state];
+              const last = i === steps.length - 1;
+              return (
+                <div key={st.label} style={{ display: "flex", gap: 14, position: "relative" }}>
+                  {/* dot + connector */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+                    <div style={{ width: 18, height: 18, borderRadius: "50%", background: c.dot, border: `2px solid ${c.ring === "transparent" ? "rgba(255,255,255,.14)" : c.ring}`, display: "flex", alignItems: "center", justifyContent: "center",
+                                  animation: st.state === "current" ? "otPulse 1.8s infinite" : "none" }}>
+                      {st.state === "done" && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#04120a" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>}
+                      {st.state === "error" && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#1a0606" strokeWidth="4" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>}
+                    </div>
+                    {!last && <div style={{ width: 2, flex: 1, minHeight: 26, background: st.state === "done" ? "rgba(74,222,128,.35)" : "rgba(255,255,255,.08)", margin: "3px 0" }} />}
+                  </div>
+                  {/* label + time */}
+                  <div style={{ flex: 1, paddingBottom: last ? 10 : 16, marginTop: -2 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                      <div style={{ fontSize: 14.5, fontWeight: 700, color: c.text }}>{st.label}</div>
+                      {st.time && <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{absTime(st.time)}</div>}
+                    </div>
+                    <div style={{ fontSize: 12, color: st.state === "pending" ? "rgba(233,238,255,.3)" : "rgba(233,238,255,.55)", marginTop: 2 }}>{st.sub}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Search another */}
+          <button onClick={reset} className="ot-press"
+                  style={{ gridColumn: isWide ? "1 / -1" : undefined, width: isWide ? "auto" : "100%", justifySelf: isWide ? "start" : undefined, marginTop: 16, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(233,238,255,.75)", borderRadius: 13, padding: isWide ? "12px 22px" : 14, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
+            ← Track another order
+          </button>
+        </div>
+      )}
+
+      {/* Recent orders (before searching) */}
+      {!found && !searched && heldOrders.length > 0 && (
+        <div style={{ marginTop: 26 }}>
+          <div style={{ fontSize: 11, color: "rgba(233,238,255,.4)", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", marginBottom: 10 }}>Recent orders</div>
+          <div style={{ display: "grid", gridTemplateColumns: isWide ? "repeat(auto-fill, minmax(320px, 1fr))" : "1fr", gap: 10 }}>
+            {heldOrders.slice(0, isWide ? 12 : 5).map(o => {
+              const c = STATUS_CONFIG[o.status];
+              return (
+                <button key={o.id} onClick={() => doSearch(o.id)} className="ot-press"
+                        style={{ width: "100%", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 14, padding: 10, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 11, fontFamily: FONT }}>
+                  <ProductPhoto url={o.productPhotoUrl} photo={o.productPhoto} size={44} radius={10} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>#{o.id} · {o.productName}</div>
+                    <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.45)", marginTop: 2 }}>{o.customerName || "—"}{orderShopLabel(o) ? ` · ${orderShopLabel(o)}` : ""}</div>
+                  </div>
+                  {c && <span style={{ flexShrink: 0, background: c.bg, color: c.color, border: `1px solid ${c.border}`, borderRadius: 999, padding: "3px 10px", fontSize: 11, fontWeight: 700 }}>{c.label}</span>}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
@@ -8384,7 +10166,12 @@ function CompletedTogglePill({ on, count, onClick }) {
 // rawCounts  = { productKey: { productName, photo, photoUrl, sizes: { size: count } } }
 // responses  = { productKey: { size: { response, respondedOn } } }  — live from Firebase
 // hub        = "hub1" | "hub2"  — used only for keying/labels; data is already filtered upstream.
-function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo }) {
+function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, wide = false }) {
+  // Desktop lays the pending / completed cells in a responsive grid so the wide
+  // pane isn't a single stretched column; mobile stays a vertical stack.
+  const listStyle = wide
+    ? { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(300px, 1fr))", gap:12, alignItems:"start" }
+    : { display:"flex", flexDirection:"column", gap:10 };
   // Per-hub toggle — each hub remembers whether its completed list is open.
   const [showCompletedByHub, setShowCompletedByHub] = useState({ hub1: false, hub2: false });
   const showCompleted = !!showCompletedByHub[hub];
@@ -8431,7 +10218,7 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
   return (
     <div>
       {/* Summary headline — pending units, falls to "all done" tone when zero */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"14px 16px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.2)" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:16, padding:"14px 16px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
         <div style={{ fontWeight:800, fontSize:36, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1px" }}>{pendingUnits}</div>
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Refill Pending</div>
@@ -8448,7 +10235,7 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
 
       {/* Empty-active-but-completed state */}
       {pending.length === 0 && completed.length > 0 && !showCompleted && (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(74,222,128,.4)", borderRadius:14, padding:"22px 18px", textAlign:"center", boxShadow:"0 0 12px rgba(74,222,128,.12)" }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,222,128,.4)", borderRadius:16, padding:"22px 18px", textAlign:"center", boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
             <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
           </svg>
@@ -8462,7 +10249,7 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
       )}
 
       {/* Active list — pending cells only. Cards vanish on response. */}
-      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+      <div style={listStyle}>
         {pending.map(cell => (
           <PendingCard
             key={`${hub}-${cell.key}-${cell.size}`}
@@ -8483,7 +10270,7 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo })
             <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>COMPLETED</div>
             <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
           </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          <div style={listStyle}>
             {completed.map(cell => (
               <CompletedCard
                 key={`${hub}-done-${cell.key}-${cell.size}`}
@@ -8799,7 +10586,7 @@ function SourceOnHoldTab({ items }) {
 
       {/* Empty-active-but-completed state */}
       {pending.length === 0 && completed.length > 0 && !showCompleted && (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(74,222,128,.4)", borderRadius:14, padding:"22px 18px", textAlign:"center", boxShadow:"0 0 12px rgba(74,222,128,.12)" }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,222,128,.4)", borderRadius:16, padding:"22px 18px", textAlign:"center", boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
             <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
           </svg>
@@ -9255,7 +11042,7 @@ function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, regi
       )}
 
       {pending.length === 0 && completed.length > 0 && !showCompleted && (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(74,222,128,.4)", borderRadius:14, padding:"22px 18px", textAlign:"center", boxShadow:"0 0 12px rgba(74,222,128,.12)" }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,222,128,.4)", borderRadius:16, padding:"22px 18px", textAlign:"center", boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
             <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
           </svg>
@@ -9575,11 +11362,22 @@ function ClothingSoldView({ products }) {
   );
 }
 
+// Per-tab nav glyphs for the Source desktop workspace rail.
+const SOURCE_TAB_ICON = {
+  today:    <><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></>,
+  history:  <><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></>,
+  onhold:   <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
+  clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
+};
+const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Clothing Sold"]];
+
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [tab, setTab] = usePersistedTab("source", "today");
   // Active hub — shared across all three top tabs. Defaults to Hub 1.
   const [hub, setHub] = useState("hub1");
   const todayDate   = getSADateString();
+  // Desktop workspace gate (>=1024px). Mobile keeps the single-column layout.
+  const isWide = !useIsNarrow(1024);
 
   // Immutable insights_log — the durable source for PAST-day History and On Hold.
   // Live /orders is keyed by the daily orderNumber (resets each morning), so
@@ -9810,32 +11608,9 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     clearSourceResponse(date, productKey, size);
   };
 
-  return (
-    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
-      {/* TOP BAR */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px", position:"relative" }}>
-        <div onClick={onExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
-        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>SOURCE</div>
-        </div>
-        <div style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.08)", borderRadius:14, padding:"4px 8px" }}>
-          <span style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>On Hold</span>
-          <span style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", fontSize:10, fontWeight:600, width:20, height:20, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 6px rgba(60,110,255,.25)" }}>{onHoldCount}</span>
-        </div>
-      </div>
-      <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
-      {/* TOP TABS — Today / History / On Hold */}
-      <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8 }}>
-        {[["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Clothing Sold"]].map(([key, label]) => (
-          <div key={key} onClick={() => setTab(key)}
-               style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
-            {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
-          </div>
-        ))}
-      </div>
-      {/* HUB SUB-TABS — segmented pill, shared by Today + History. Hidden for
-          Clothing Sold (own store pills) and On Hold (shows all hubs together). */}
+  // Shared between the mobile column and the desktop rail/pane.
+  const hubSelector = (
+    <>
       {tab !== "clothing" && tab !== "onhold" && (
       <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
         {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
@@ -9871,12 +11646,16 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         })}
       </div>
       )}
-      <div style={{ padding:"1.5rem" }}>
+    </>
+  );
+  const content = (
+    <>
         {tab==="today"   && <SourceTodayTab
                               rawCounts={rawCounts}
                               responses={allResponses[todayDate] || {}}
                               date={todayDate}
                               hub={hub}
+                              wide={isWide}
                               onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
                               onUndo={(key, size) => handleUndo(todayDate, key, size)} />}
         {tab==="history" && <SourceHistoryTab
@@ -9888,6 +11667,99 @@ function SourceView({ onExit, orders, returnsLog, products }) {
                               onResponse={handleResponse} />}
         {tab==="onhold"  && <SourceOnHoldTab items={onHoldMerged} />}
         {tab==="clothing" && <ClothingSoldView products={products} />}
+    </>
+  );
+
+  // ── DESKTOP WORKSPACE (>=1024px) — left rail of restock queues + main pane. ──
+  if (isWide) {
+    const activeTab = SOURCE_TABS.some(([k]) => k === tab) ? tab : "today";
+    const activeLabel = (SOURCE_TABS.find(([k]) => k === activeTab) || [null, "Today's Request"])[1];
+    const totalPending = (hubBadges.hub1 || 0) + (hubBadges.hub2 || 0);
+    const navItem = ([key, label]) => {
+      const on = activeTab === key;
+      const badge = key === "onhold" ? onHoldCount : 0;
+      return (
+        <button key={key} onClick={() => setTab(key)}
+          style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
+                   background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                   color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition:"background .14s, color .14s" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:.9 }}>{SOURCE_TAB_ICON[key]}</svg>
+          <span style={{ flex:1 }}>{label}</span>
+          {badge > 0 && (
+            <span style={{ background:"#F59E0B", color:"#000", fontSize:10.5, fontWeight:800, minWidth:19, height:19, borderRadius:"50%", padding:"0 5px", display:"inline-flex", alignItems:"center", justifyContent:"center" }}>{badge}</span>
+          )}
+        </button>
+      );
+    };
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+        {/* RAIL */}
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:8 }}>&larr; Exit</button>
+          <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"6px 9px", fontWeight:700 }}>Restock</div>
+          {SOURCE_TABS.map(navItem)}
+          <div style={{ flex:1 }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: totalPending ? "#9DBCFF" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{totalPending}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>To restock</div>
+            </div>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: onHoldCount ? "#F59E0B" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{onHoldCount}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>On hold</div>
+            </div>
+          </div>
+        </aside>
+        {/* MAIN */}
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 30px 14px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{activeLabel}</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>What sold &mdash; and what to restock.</div>
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"14px 30px 48px" }}>
+            <div style={{ maxWidth:1160, margin:"0 auto", display:"flex", flexDirection:"column", gap:16 }}>
+              <div style={{ maxWidth:380, width:"100%" }}>{hubSelector}</div>
+              {content}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      {/* TOP BAR */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 14px 10px", position:"relative" }}>
+        <div onClick={onExit} style={{ color:"#4A7FFF", fontSize:13, fontWeight:500, cursor:"pointer" }}>← Exit</div>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>SOURCE</div>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.08)", borderRadius:14, padding:"4px 8px" }}>
+          <span style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>On Hold</span>
+          <span style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", fontSize:10, fontWeight:600, width:20, height:20, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 6px rgba(60,110,255,.25)" }}>{onHoldCount}</span>
+        </div>
+      </div>
+      <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
+      {/* TOP TABS — Today / History / On Hold */}
+      <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8 }}>
+        {[["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Clothing Sold"]].map(([key, label]) => (
+          <div key={key} onClick={() => setTab(key)}
+               style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
+            {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
+          </div>
+        ))}
+      </div>
+      {/* HUB SUB-TABS — segmented pill, shared by Today + History. Hidden for
+          Clothing Sold (own store pills) and On Hold (shows all hubs together). */}
+      {hubSelector}
+      <div style={{ padding:"1.5rem" }}>
+        {content}
       </div>
     </div>
   );
@@ -9896,12 +11768,15 @@ function SourceView({ onExit, orders, returnsLog, products }) {
 // ─── RETURNS VIEW ────────────────────────────────────────────────────────────
 const RETURN_REASONS = ["Too Small", "Too Big", "Wrong Item", "Other"];
 
-function ReturnsView({ orders, onExit }) {
+function ReturnsView({ orders, products = [], onExit }) {
   const [search,      setSearch]      = useState("");
   const [expandedId,  setExpandedId]  = useState(null);
   const [failure,     setFailure]     = useState(null);  // { orderId, kind, message } — a return that did NOT ledger
+  const [retFilter,   setRetFilter]   = useState("all"); // all | toreturn | returned
   const returnsLog = useReturnsLog();
   const todayDate  = getSADateString();
+  // Desktop workspace gate (>=1024px). Mobile keeps the single column.
+  const isWide = !useIsNarrow(1024);
 
   // Ready/Collected orders from the last 3 days (Phase 10). DayCollapsible
   // buckets these into Today / Yesterday / 2 days ago. SA-time slices match
@@ -9978,7 +11853,10 @@ function ReturnsView({ orders, onExit }) {
         }
       } else {
         // FALLBACK — no recorded dispatch transfer to reverse. Resolve intent.
-        const dest = resolveReturnDestination(order);
+        // Read the product's stored category (orders don't carry it) so kids sneaker
+        // sizes 26–35 aren't misread as clothing by the size-based classifier.
+        const prod = products.find(p => p.id === order.productId);
+        const dest = resolveReturnDestination(order, prod?.category);
         if (dest.mode === "stay") {
           // Clothing / accessory / perfume: never a tracked hub→shop transfer, so
           // there is nothing to reverse in the hub ledger. Processed successfully.
@@ -10009,6 +11887,7 @@ function ReturnsView({ orders, onExit }) {
       customerName:order.customerName,
       reason:      null,
       placedAtHub: order.placedAtHub || order.hub || "hub1",
+      destShop: order.destShop ?? null,
       ledgered,
       ledgerNote,
     });
@@ -10020,6 +11899,177 @@ function ReturnsView({ orders, onExit }) {
       setExpandedId(null);
     }
   };
+
+  // Returned-state test + derived lists for the filter chips.
+  const isRet = (o) => returnedKeys.has(`${orderSaleDate(o)}::${o.id}`);
+  const returnedCount = filtered.filter(isRet).length;
+  const toReturnCount = filtered.length - returnedCount;
+  const viewList = retFilter === "returned" ? filtered.filter(isRet)
+                 : retFilter === "toreturn" ? filtered.filter(o => !isRet(o))
+                 : filtered;
+
+  // Search box (icon + input) — sits in the header on desktop, in the body on mobile.
+  const searchEl = (
+    <div style={{ position:"relative", width:"100%", maxWidth: isWide ? 300 : 560 }}>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", opacity:.4 }}><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search order # or customer…"
+        style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.14)", borderRadius:11, color:"#fff", fontSize:13.5, padding:"10px 12px 10px 36px", outline:"none" }}/>
+    </div>
+  );
+
+  // Filter chips with live counts.
+  const filterEl = (
+    <div style={{ display:"flex", gap:7, marginBottom:16, flexWrap:"wrap" }}>
+      {[["all","All",filtered.length],["toreturn","To return",toReturnCount],["returned","Returned",returnedCount]].map(([key,label,n]) => {
+        const on = retFilter === key;
+        return (
+          <button key={key} onClick={() => setRetFilter(key)}
+            style={{ display:"inline-flex", alignItems:"center", gap:7, padding:"7px 13px", borderRadius:999, fontSize:12.5, fontWeight:700, cursor:"pointer",
+                     background: on ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.03)",
+                     border: "1px solid " + (on ? "rgba(74,127,255,.45)" : "rgba(255,255,255,.1)"),
+                     color: on ? "#9DBCFF" : "rgba(233,238,255,.55)" }}>
+            {label}
+            <span style={{ fontSize:11, fontWeight:800, minWidth:18, textAlign:"center", borderRadius:999, padding:"1px 6px", fontVariantNumeric:"tabular-nums",
+                           background: on ? "rgba(74,127,255,.3)" : "rgba(255,255,255,.06)", color: on ? "#fff" : "rgba(233,238,255,.5)" }}>{n}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const failureEl = failure ? (
+    <div role="alert" style={{ marginBottom:16, padding:"11px 14px", borderRadius:12, fontSize:12.5, lineHeight:1.5, display:"flex", gap:10, alignItems:"flex-start",
+        background: failure.kind === "notice" ? "rgba(245,158,11,.1)" : "rgba(239,68,68,.1)",
+        border: "1px solid " + (failure.kind === "notice" ? "rgba(245,158,11,.35)" : "rgba(239,68,68,.35)"),
+        color: failure.kind === "notice" ? "#FBBF24" : "#F87171" }}>
+      <span style={{ flex:1 }}><strong>#{failure.orderId}</strong> — {failure.message}</span>
+      <span onClick={() => setFailure(null)} style={{ cursor:"pointer", opacity:.7, fontWeight:700 }}>×</span>
+    </div>
+  ) : null;
+
+  // Purpose-built return card — product photo, order/size/customer, status, and a
+  // confirm panel that spells out exactly what the reversal does.
+  const returnCard = (order) => {
+    const isReturned = isRet(order);
+    const isExpanded = expandedId === order.id;
+    return (
+      <div style={{ background:"rgba(255,255,255,.024)", border: isReturned ? "1px solid rgba(74,222,128,.28)" : isExpanded ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.08)", borderRadius:16, overflow:"hidden", transition:"border-color .18s, box-shadow .18s", boxShadow: isExpanded ? "0 18px 44px -26px rgba(74,127,255,.55)" : "none", opacity: isReturned ? .78 : 1 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:13, padding:14 }}>
+          <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={52} radius={11}/>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span className="ret-siri" style={{ fontSize:14, fontWeight:800, letterSpacing:".04em", fontVariantNumeric:"tabular-nums" }}>#{order.id}</span>
+              <span style={{ fontSize:9.5, fontWeight:700, color:"rgba(233,238,255,.4)", textTransform:"uppercase", letterSpacing:".07em" }}>{order.status === STATUS.COLLECTED ? "Collected" : "Ready"}</span>
+            </div>
+            <div style={{ fontSize:14, fontWeight:600, color:"#fff", marginTop:3, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{order.productName}</div>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:6, minWidth:0 }}>
+              <span style={{ flexShrink:0, fontSize:11, fontWeight:700, color:"#cfe0ff", background:"rgba(74,127,255,.12)", border:"1px solid rgba(74,127,255,.25)", borderRadius:7, padding:"2px 8px" }}>Size <SizeTag size={order.size}/></span>
+              <span style={{ fontSize:11.5, color:"rgba(233,238,255,.5)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0 }}>{order.customerName || "—"}</span>
+            </div>
+          </div>
+          <div style={{ flexShrink:0 }}>
+            {isReturned ? (
+              <span style={{ display:"inline-flex", alignItems:"center", gap:5, color:"#4ADE80", fontSize:12, fontWeight:700, background:"rgba(74,222,128,.12)", border:"1px solid rgba(74,222,128,.3)", borderRadius:999, padding:"5px 13px" }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                Returned
+              </span>
+            ) : (
+              <button onClick={() => { setExpandedId(isExpanded ? null : order.id); setFailure(null); }}
+                style={{ background: isExpanded ? "rgba(255,255,255,.05)" : "rgba(74,127,255,.14)", border: isExpanded ? "1px solid rgba(255,255,255,.15)" : "1px solid rgba(74,127,255,.4)", color: isExpanded ? "rgba(233,238,255,.75)" : "#9DBCFF", borderRadius:10, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>
+                {isExpanded ? "Cancel" : "Log Return"}
+              </button>
+            )}
+          </div>
+        </div>
+        {isExpanded && !isReturned && (
+          <div style={{ borderTop:"1px solid rgba(255,255,255,.07)", padding:14, background:"rgba(74,127,255,.04)" }}>
+            <div style={{ display:"flex", gap:9, alignItems:"flex-start", marginBottom:12 }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, marginTop:1 }}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <div style={{ fontSize:12, color:"rgba(233,238,255,.7)", lineHeight:1.5 }}>Confirming reverses the dispatch and restocks <strong style={{ color:"#fff" }}>Size {order.size}</strong> to its origin hub.</div>
+            </div>
+            <button onClick={() => submitReturn(order)}
+              style={{ width:"100%", background:"rgba(74,127,255,.92)", border:"none", color:"#fff", borderRadius:10, padding:"11px", fontSize:13, fontWeight:800, cursor:"pointer", letterSpacing:".01em" }}>
+              Confirm return · #{order.id}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const listEl = (
+    <DayCollapsible
+      sectionKey="returns"
+      items={viewList}
+      columns={isWide ? 2 : 1}
+      dateOf={(o) => o.readyAt || o.updatedAt}
+      emptyMessage={
+        last3DaysOrders.length === 0
+          ? "No orders marked Ready or Collected in the last 3 days."
+          : retFilter === "returned" ? "Nothing returned in this window yet."
+          : retFilter === "toreturn" ? "Everything in view has been returned."
+          : "No orders match your search."
+      }
+      renderItem={returnCard}
+    />
+  );
+
+  const body = (
+    <>
+      <style>{`
+        .ret-siri{background:linear-gradient(90deg,#6e7bff,#5d8bff,#8a6dff,#7f5af0,#8a6dff,#5d8bff,#6e7bff);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:retSiri 4s linear infinite}
+        @keyframes retSiri{from{background-position:0 0}to{background-position:300% 0}}
+        @media (prefers-reduced-motion: reduce){.ret-siri{animation:none}}
+      `}</style>
+      {failureEl}{filterEl}{listEl}
+    </>
+  );
+
+  // ── DESKTOP WORKSPACE (>=1024px). Mobile keeps the single column below. ──
+  if (isWide) {
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+        {/* RAIL */}
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:10 }}>&larr; Exit</button>
+          <div style={{ display:"flex", alignItems:"center", gap:10, background:"rgba(74,127,255,.1)", border:"1px solid rgba(74,127,255,.32)", borderRadius:11, padding:"10px 12px" }}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#9DBCFF" strokeWidth="2" strokeLinecap="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+            <div style={{ fontSize:13.5, fontWeight:800, color:"#cfe0ff" }}>Returns</div>
+          </div>
+          <div style={{ flex:1 }} />
+          <div style={{ display:"flex", gap:8 }}>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: toReturnCount ? "#9DBCFF" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{toReturnCount}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>To return</div>
+            </div>
+            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
+              <div style={{ fontSize:18, fontWeight:800, color: returnedCount ? "#4ADE80" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{returnedCount}</div>
+              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Returned</div>
+            </div>
+          </div>
+        </aside>
+        {/* MAIN */}
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 30px 18px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)", display:"flex", alignItems:"center", gap:24 }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>Returns</div>
+              <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", marginTop:3 }}>Find a recent sale, then confirm — it reverses the dispatch and restocks the item.</div>
+            </div>
+            {searchEl}
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"20px 30px 48px" }}>
+            <div style={{ maxWidth:1160, margin:"0 auto" }}>
+              {body}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
@@ -10033,79 +12083,9 @@ function ReturnsView({ orders, onExit }) {
         <div style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>{last3DaysOrders.length} done</div>
       </div>
 
-      <div style={{ padding:"1.5rem" }}>
-        <input
-          placeholder="Search by order number or customer name…"
-          value={search} onChange={e => setSearch(e.target.value)}
-          style={{ ...inputStyle, marginBottom:"1.25rem" }}
-        />
-
-        {failure && (
-          <div
-            role="alert"
-            style={{
-              marginBottom:"1.25rem", padding:"0.75rem 1rem", borderRadius:RADIUS,
-              fontSize:"0.82rem", lineHeight:1.45, display:"flex", gap:"0.6rem", alignItems:"flex-start",
-              background: failure.kind === "notice" ? "rgba(245,158,11,.10)" : "rgba(239,68,68,.10)",
-              border:     failure.kind === "notice" ? "1px solid rgba(245,158,11,.35)" : "1px solid rgba(239,68,68,.35)",
-              color:      failure.kind === "notice" ? "#FBBF24" : "#F87171",
-            }}
-          >
-            <span style={{ flex:1 }}><strong>#{failure.orderId}</strong> — {failure.message}</span>
-            <span onClick={() => setFailure(null)} style={{ cursor:"pointer", opacity:.7, fontWeight:700 }}>×</span>
-          </div>
-        )}
-
-        <DayCollapsible
-          sectionKey="returns"
-          items={filtered}
-          dateOf={(o) => o.readyAt || o.updatedAt}
-          emptyMessage={
-            last3DaysOrders.length === 0
-              ? "No orders marked Ready or Collected in the last 3 days."
-              : "No orders match your search."
-          }
-          renderItem={(order) => {
-            // Match by the order's OWN sale day + number, so a past day's return
-            // of the same number can't mark today's sale as returned.
-            const isReturned = returnedKeys.has(`${orderSaleDate(order)}::${order.id}`);
-            const isExpanded = expandedId === order.id;
-            return (
-              <div style={{ background:CARD, border: isReturned ? "1px solid rgba(74,222,128,.25)" : isExpanded ? BORDER_BRIGHT : BORDER, borderRadius:RADIUS, padding:"1.25rem", transition:"border-color 0.2s", boxShadow: isExpanded ? "0 0 12px rgba(60,110,255,.12)" : "none" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:"1rem", flexWrap:"wrap" }}>
-                  <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.9rem", color:BLUE_L, lineHeight:1, minWidth:"60px", letterSpacing:"0.05em" }}>#{order.id}</div>
-                  <div style={{ flex:1, minWidth:"140px" }}>
-                    <div style={{ fontWeight:"600", fontSize:"0.95rem" }}>{order.productName} · Size <SizeTag size={order.size} /></div>
-                    <div style={{ color:"#666", fontSize:"0.82rem", marginTop:"2px" }}>{order.customerName}</div>
-                  </div>
-                  {isReturned ? (
-                    <span style={{ color:"#4ADE80", fontSize:"0.82rem", fontWeight:"600", background:"rgba(74,222,128,.12)", border:"1px solid rgba(74,222,128,.3)", borderRadius:"999px", padding:"4px 14px" }}>
-                      Returned
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => { setExpandedId(isExpanded ? null : order.id); setFailure(null); }}
-                      style={ isExpanded ? { ...bGray, padding:"0.5rem 1.1rem" } : { ...bBlue, padding:"0.5rem 1.1rem" } }>
-                      {isExpanded ? "Cancel" : "Log Return"}
-                    </button>
-                  )}
-                </div>
-
-                {isExpanded && !isReturned && (
-                  <div style={{ marginTop:"1rem", paddingTop:"1rem", borderTop:"1px solid rgba(60,110,255,.08)" }}>
-                    <div style={{ color:"rgba(255,255,255,.6)", fontSize:"0.82rem", marginBottom:"0.75rem" }}>Confirm this order is being returned:</div>
-                    <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
-                      <button onClick={() => submitReturn(order)}
-                              style={{ ...bBlue, padding:"0.6rem 1.5rem", flex:1 }}>
-                        Confirm Return
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          }}
-        />
+      <div style={{ padding:"1.25rem" }}>
+        <div style={{ marginBottom:14 }}>{searchEl}</div>
+        {body}
       </div>
     </div>
   );
@@ -10146,24 +12126,24 @@ function InsightStatCard({ icon, label, value, color=BLUE, sub, photoEl }) {
 }
 
 function InsightBarChart({ items, color=BLUE, emptyMsg="No data yet", photoMap }) {
-  if (!items.length) return <div style={{ color:"#444", textAlign:"center", padding:"2rem", fontSize:"0.9rem" }}>{emptyMsg}</div>;
+  if (!items.length) return <div style={{ color:"rgba(233,238,255,.3)", textAlign:"center", padding:"2rem", fontSize:"0.9rem" }}>{emptyMsg}</div>;
   const max = Math.max(...items.map(i=>i.value), 1);
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"0.7rem" }}>
-      {items.map(({ label, value }) => {
-        // Support both exact product-name labels and "Product — Size X" labels
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      {items.map(({ label, value }, idx) => {
         const lookupName = label.includes(" — Size ") ? label.split(" — Size ")[0] : label;
         return (
           <div key={label}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.25rem", gap:"0.5rem" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:"0.45rem", flex:1, minWidth:0 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6, gap:8 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:9, flex:1, minWidth:0 }}>
+                {idx < 3 && <span style={{ fontSize:10, fontWeight:800, color:"rgba(233,238,255,.3)", fontVariantNumeric:"tabular-nums", width:12 }}>{idx+1}</span>}
                 {photoMap && <ProductThumb name={lookupName} photoMap={photoMap} size={28} />}
-                <span style={{ color:"#ccc", fontSize:"0.82rem", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}</span>
+                <span style={{ color:"#e7ecff", fontSize:12.5, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}</span>
               </div>
-              <span style={{ fontWeight:"700", color, fontSize:"0.82rem", flexShrink:0 }}>{value}</span>
+              <span style={{ fontWeight:800, color:"#fff", fontSize:12.5, flexShrink:0, fontVariantNumeric:"tabular-nums" }}>{value}</span>
             </div>
-            <div style={{ background:"rgba(60,110,255,.08)", borderRadius:"4px", height:"9px" }}>
-              <div style={{ background:color, borderRadius:"4px", height:"9px", width:`${Math.max(2,(value/max)*100)}%`, transition:"width 0.4s" }} />
+            <div style={{ background:"rgba(255,255,255,.05)", borderRadius:5, height:8 }}>
+              <div style={{ background:`linear-gradient(90deg, ${color}, ${color}cc)`, borderRadius:5, height:8, width:`${Math.max(3,(value/max)*100)}%`, transition:"width .5s cubic-bezier(.2,.7,.2,1)" }} />
             </div>
           </div>
         );
@@ -10258,6 +12238,56 @@ function InsightsDatePicker({ mode, setMode, dateStr, setDateStr }) {
 }
 
 // ─── INSIGHTS: OVERVIEW TAB ───────────────────────────────────────────────────
+// Trend chart — 1–2 aligned series (area for the first, line for the rest),
+// recessive grid, a legend, and a hover crosshair whose tooltip lists every
+// series. One y-axis (both series are the same unit: order counts).
+function InsightTrendChart({ labels, series, height = 180 }) {
+  const [hi, setHi] = useState(null);
+  if (!labels || labels.length === 0) return <div style={{ color: "rgba(233,238,255,.3)", textAlign: "center", padding: "2.5rem 1rem", fontSize: 13 }}>No sales in this period.</div>;
+  const W = 620, H = 150, PL = 6, PR = 6, PT = 10, PB = 8;
+  const iw = W - PL - PR, ih = H - PT - PB;
+  const n = labels.length;
+  const max = Math.max(1, ...series.flatMap(s => s.data));
+  const X = i => (n === 1 ? PL + iw / 2 : PL + (i / (n - 1)) * iw);
+  const Y = v => PT + ih - (v / max) * ih;
+  const built = series.map(s => {
+    const pts = s.data.map((v, i) => [X(i), Y(v)]);
+    const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+    const area = s.fill ? `M ${pts[0][0].toFixed(1)} ${(PT + ih).toFixed(1)} ` + pts.map(p => `L ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ") + ` L ${pts[n - 1][0].toFixed(1)} ${(PT + ih).toFixed(1)} Z` : null;
+    return { ...s, pts, line, area };
+  });
+  const labelIdx = n <= 7 ? labels.map((_, i) => i) : [0, Math.floor((n - 1) / 2), n - 1];
+  return (
+    <div>
+      {series.length > 1 && (
+        <div style={{ display: "flex", gap: 14, marginBottom: 10 }}>
+          {series.map(s => <span key={s.name} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "rgba(233,238,255,.6)" }}><span style={{ width: 9, height: 9, borderRadius: 3, background: s.color }} />{s.name}</span>)}
+        </div>
+      )}
+      <div style={{ position: "relative" }}>
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={height} preserveAspectRatio="none" style={{ display: "block", overflow: "visible" }}>
+          <defs>{built.map((s, si) => s.area && <linearGradient key={si} id={`itg${si}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={s.color} stopOpacity="0.3" /><stop offset="100%" stopColor={s.color} stopOpacity="0" /></linearGradient>)}</defs>
+          {[0.5, 1].map((f, i) => <line key={i} x1={PL} x2={W - PR} y1={PT + ih - f * ih} y2={PT + ih - f * ih} stroke="rgba(255,255,255,.06)" strokeWidth="1" />)}
+          {built.map((s, si) => s.area && <path key={si} d={s.area} fill={`url(#itg${si})`} />)}
+          {built.map((s, si) => <path key={si} d={s.line} fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" opacity={s.fill ? 1 : 0.85} />)}
+          {hi !== null && <line x1={X(hi)} x2={X(hi)} y1={PT} y2={PT + ih} stroke="rgba(255,255,255,.2)" strokeWidth="1" />}
+          {hi !== null && built.map((s, si) => <circle key={si} cx={s.pts[hi][0]} cy={s.pts[hi][1]} r="4" fill="#fff" stroke={s.color} strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
+          {labels.map((d, i) => { const bw = iw / Math.max(1, n); return <rect key={i} x={X(i) - bw / 2} y={PT} width={bw} height={ih} fill="transparent" onMouseEnter={() => setHi(i)} onMouseLeave={() => setHi(null)} style={{ cursor: "crosshair" }} />; })}
+        </svg>
+        <div style={{ position: "relative", height: 14, marginTop: 4 }}>
+          {labelIdx.map(i => <span key={i} style={{ position: "absolute", left: `${(X(i) / W) * 100}%`, transform: "translateX(-50%)", fontSize: 9.5, color: "rgba(233,238,255,.35)", whiteSpace: "nowrap" }}>{labels[i]}</span>)}
+        </div>
+        {hi !== null && (
+          <div style={{ position: "absolute", top: -6, left: `${(X(hi) / W) * 100}%`, transform: "translate(-50%,-100%)", pointerEvents: "none", background: "rgba(10,14,24,.96)", border: "1px solid rgba(255,255,255,.14)", borderRadius: 8, padding: "6px 10px", whiteSpace: "nowrap", fontSize: 11, boxShadow: "0 8px 20px rgba(0,0,0,.5)", minWidth: 120 }}>
+            <div style={{ color: "rgba(233,238,255,.5)", marginBottom: 4 }}>{labels[hi]}</div>
+            {series.map(s => <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 2 }}><span style={{ width: 7, height: 7, borderRadius: 2, background: s.color }} /><span style={{ color: "rgba(233,238,255,.6)" }}>{s.name}</span><b style={{ color: "#fff", marginLeft: "auto", paddingLeft: 14, fontVariantNumeric: "tabular-nums" }}>{s.data[hi]}</b></div>)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, filterEnd, filterLabel, orders, filterMode, filterDate, category = "both" }) {
   // Phase 12D: every reads-from-log path also filters by category. Live-order
   // paths (today's day-mode branch) filter by category at point-of-use below.
@@ -10295,143 +12325,143 @@ function InsightOverviewTab({ log, returnsLog, productPhotoMap, filterStart, fil
     return Array.from({length:24},(_,h)=>({ label:`${h%12||12}${h<12?"am":"pm"}`, value:counts[h]||0 })).filter(c=>c.value>0);
   }, [netSales]);
   const topHour = hourData.reduce((b,c)=>c.value>(b?.value||0)?c:b, null);
+  const topProducts = useMemo(() => groupCount(netSales, e => e.productName).slice(0, 7), [netSales]);
+  // Aligned net-sales vs out-of-stock over time (hourly today, daily otherwise) —
+  // one x-axis, one unit (order counts), so it's a legit two-series overlay.
+  const series = useMemo(() => {
+    const saDay = ts => new Date(new Date(ts).getTime() + 7200000).toISOString().slice(0, 10);
+    const keyOf = ts => isToday ? new Date(ts).getHours() : saDay(ts);
+    const labelOf = k => isToday ? `${k % 12 || 12}${k < 12 ? "a" : "p"}` : String(k).slice(5).replace("-", "/");
+    const cs = {}, co = {}, set = new Set();
+    netSales.forEach(e => { const k = keyOf(e.timestamp); set.add(k); cs[k] = (cs[k] || 0) + 1; });
+    oosLog.forEach(e => { const k = keyOf(e.timestamp); set.add(k); co[k] = (co[k] || 0) + 1; });
+    let keys = [...set];
+    if (!keys.length) return { labels: [], sales: [], oos: [] };
+    if (isToday) { const nums = keys.map(Number); const lo = Math.min(8, ...nums), hi = Math.max(18, ...nums); keys = []; for (let h = lo; h <= hi; h++) keys.push(h); }
+    else { keys.sort(); const end = new Date(keys[keys.length - 1] + "T00:00:00Z"); const minStart = new Date(end); minStart.setUTCDate(minStart.getUTCDate() - 91); let d = new Date(keys[0] + "T00:00:00Z"); if (d < minStart) d = minStart; /* cap daily bars at the most RECENT ~92 days (anchored to end) — a long Year/All-Time window shows current activity instead of silently truncating to the oldest 92 days */ const out = []; while (d <= end) { out.push(d.toISOString().slice(0, 10)); d.setUTCDate(d.getUTCDate() + 1); } keys = out; }
+    return { labels: keys.map(labelOf), sales: keys.map(k => cs[k] || 0), oos: keys.map(k => co[k] || 0) };
+  }, [netSales, oosLog, isToday]);
+  // Period-over-period deltas vs the previous equal-length window.
+  const deltas = useMemo(() => {
+    const a = new Date(filterStart).getTime(), b = new Date(filterEnd).getTime();
+    if (!(b > a)) return null;
+    const pStart = new Date(a - (b - a)).toISOString(), pEnd = filterStart;
+    const cm = e => category === "both" || inferProductType(e) === category;
+    return {
+      net: readyEventsForPeriod({ log, returnsLog, filterStart: pStart, filterEnd: pEnd, category }).length,
+      oos: oosEventsForPeriod({ log, returnsLog, filterStart: pStart, filterEnd: pEnd, category }).length,
+      ret: returnsLog.filter(r => (r.timestamp || "") >= pStart && (r.timestamp || "") < pEnd && cm(r)).length,
+    };
+  }, [log, returnsLog, filterStart, filterEnd, category]);
+  const pct = (cur, prev) => prev > 0 ? Math.round((cur - prev) / prev * 100) : null;
+  const lostPct = (netSales.length + oosLog.length) > 0 ? Math.round(oosLog.length / (netSales.length + oosLog.length) * 100) : 0;
+  const maxHour = Math.max(1, ...hourData.map(h => h.value));
+  const GLASS_STOCK = { background: "rgba(255,255,255,.022)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 16 };
+
+  const kpi = (color, glyph, value, label, sub, dv, goodUp) => {
+    const show = deltas && dv !== null && dv !== 0;
+    const good = (dv > 0) === goodUp;
+    return (
+      <div style={{ ...GLASS_STOCK, padding: "15px 16px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 9 }}>
+          <span style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 11, display: "grid", placeItems: "center", background: `${color}22`, border: `1px solid ${color}55`, color, overflow: "hidden" }}>{glyph}</span>
+          <div style={{ fontSize: 30, fontWeight: 800, color: "#fff", letterSpacing: "-.02em", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+          {show && <span style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 800, color: good ? "#4ADE80" : "#F87171", fontVariantNumeric: "tabular-nums" }}>{dv > 0 ? "▲" : "▼"} {Math.abs(dv)}%</span>}
+        </div>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>{label}</div>
+        <div style={{ fontSize: 10.5, color: "rgba(233,238,255,.4)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}{deltas ? " · vs prev" : ""}</div>
+      </div>
+    );
+  };
 
   return (
-    <div>
-      {/* OVERVIEW LEGEND CARD with circuit decoration */}
-      <div style={{ margin:"0 0 10px", background:"rgba(15,25,60,.6)", border:"1px solid rgba(60,110,255,.25)", borderRadius:14, padding:16, position:"relative", overflow:"hidden" }}>
-        <svg style={{ position:"absolute", top:0, right:0, opacity:0.3 }} width="80" height="60" viewBox="0 0 80 60">
-          <path d="M80,10 L60,10 L50,20 L40,20 L30,30" stroke="rgba(60,110,255,.8)" strokeWidth="1" fill="none"/>
-          <circle cx="60" cy="10" r="2" fill="rgba(60,110,255,.8)"/>
-          <circle cx="40" cy="20" r="2" fill="rgba(60,110,255,.8)"/>
-          <path d="M80,35 L65,35 L55,25" stroke="rgba(60,110,255,.5)" strokeWidth="1" fill="none"/>
-        </svg>
-        <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.3)", textTransform:"uppercase", letterSpacing:"1.5px", textAlign:"center", marginBottom:14 }}>OVERVIEW LEGEND</div>
-        <div style={{ display:"flex", gap:6 }}>
-          <div style={{ flex:1, textAlign:"center" }}>
-            <div style={{ marginBottom:8, display:"flex", justifyContent:"center" }}>
-              <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#4ACA7A" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 7px rgba(0,200,80,.6))" }}>
-                <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/>
-              </svg>
-            </div>
-            <div style={{ fontSize:12, fontWeight:600, color:"#fff", marginBottom:4 }}>Net Sales</div>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,.35)", lineHeight:1.4 }}>Orders marked <span style={{ color:"#4ACA7A", fontWeight:600 }}>Ready</span> minus returns</div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* KPI tiles */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(158px, 1fr))", gap: 12 }}>
+        {kpi("#4ADE80", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" /><line x1="3" y1="6" x2="21" y2="6" /><path d="M16 10a4 4 0 01-8 0" /></svg>, netSales.length, "Net Sales", "Ready − Returns", pct(netSales.length, deltas?.net), true)}
+        {kpi("#F87171", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" /><polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" y1="22.08" x2="12" y2="12" /></svg>, oosLog.length, "Out of Stock", filterLabel, pct(oosLog.length, deltas?.oos), false)}
+        {kpi("#4A7FFF", <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 102.13-9.36L1 10" /></svg>, filteredReturns.length, "Returns", filterLabel, pct(filteredReturns.length, deltas?.ret), false)}
+        <div style={{ ...GLASS_STOCK, padding: "15px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 9 }}>
+            <span style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 11, display: "grid", placeItems: "center", background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.12)", overflow: "hidden" }}>
+              {topProd ? <ProductThumb name={topProd.label} photoMap={productPhotoMap} size={40} /> : <ProductIcon size={20} />}
+            </span>
+            <div style={{ fontSize: 30, fontWeight: 800, color: "#fff", letterSpacing: "-.02em", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{topProd?.value || "—"}</div>
           </div>
-          <div style={{ flex:1, textAlign:"center" }}>
-            <div style={{ marginBottom:8, display:"flex", justifyContent:"center" }}>
-              <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 9px rgba(248,113,113,.5))" }}>
-                <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>
-              </svg>
-            </div>
-            <div style={{ fontSize:12, fontWeight:600, color:"#fff", marginBottom:4 }}>Out of Stock</div>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,.35)", lineHeight:1.4 }}>Orders marked <span style={{ color:"#FF6B6B", fontWeight:600 }}>Out of Stock</span> by Floor</div>
-          </div>
-          <div style={{ flex:1, textAlign:"center" }}>
-            <div style={{ marginBottom:8, display:"flex", justifyContent:"center" }}>
-              <div style={{ width:40, height:40, background:"rgba(60,110,255,.15)", border:"1.5px solid rgba(60,110,255,.5)", borderRadius:11, display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 12px rgba(60,110,255,.3)" }}>
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 5px rgba(60,110,255,.7))" }}>
-                  <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>
-                </svg>
-              </div>
-            </div>
-            <div style={{ fontSize:12, fontWeight:600, color:"#fff", marginBottom:4 }}>Returns</div>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,.35)", lineHeight:1.4 }}>Logged via <span style={{ color:"#4A7FFF", fontWeight:600 }}>Returns</span> view</div>
-          </div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>Top Product</div>
+          <div style={{ fontSize: 10.5, color: "rgba(233,238,255,.4)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{topProd?.label || "No orders yet"}</div>
         </div>
       </div>
 
-      {/* STAT CARDS 2x2 — clean SVG icons, no emojis */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:10 }}>
-        <div style={{ background:"rgba(10,20,50,.7)", border:"1px solid rgba(60,110,255,.15)", borderRadius:14, padding:"16px 14px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-            <div style={{ width:44, height:44, background:"rgba(74,222,128,.15)", border:"1.5px solid rgba(74,222,128,.4)", borderRadius:11, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
-            </div>
-            <div style={{ fontSize:38, fontWeight:800, color:"#fff", letterSpacing:"-1.5px", lineHeight:1 }}>{netSales.length}</div>
+      {/* Insight strip — demand lost to out-of-stock. */}
+      {oosLog.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 13, padding: "13px 16px", borderRadius: 14, background: "linear-gradient(90deg, rgba(248,113,113,.12), rgba(255,255,255,.02))", border: "1px solid rgba(248,113,113,.3)" }}>
+          <span style={{ width: 34, height: 34, flexShrink: 0, borderRadius: 10, display: "grid", placeItems: "center", background: "rgba(248,113,113,.16)", border: "1px solid rgba(248,113,113,.4)", color: "#F87171" }}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>Lost to out-of-stock</div>
+            <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.55)" }}><b style={{ color: "#F87171" }}>{oosLog.length}</b> orders couldn't be filled — that's <b style={{ color: "#fff" }}>{lostPct}%</b> of demand this period.</div>
           </div>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>Net Sales</div>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.5)", marginTop:3, lineHeight:1.4 }}>Ready orders − Returns ({filterLabel}). Matches Sales Summary total.</div>
         </div>
+      )}
 
-        <div style={{ background:"rgba(10,20,50,.7)", border:"1px solid rgba(60,110,255,.15)", borderRadius:14, padding:"16px 14px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-            <div style={{ width:44, height:44, background:"rgba(248,113,113,.15)", border:"1.5px solid rgba(248,113,113,.4)", borderRadius:11, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-            </div>
-            <div style={{ fontSize:38, fontWeight:800, color:"#fff", letterSpacing:"-1.5px", lineHeight:1 }}>{oosLog.length}</div>
-          </div>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>Out of Stock</div>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.5)", marginTop:3, lineHeight:1.4 }}>Orders marked OOS by Warehouse ({filterLabel})</div>
+      {/* Sales vs OOS trend (hero) */}
+      <div style={{ ...GLASS_STOCK, padding: "16px 17px 12px" }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 750, color: "#fff" }}>Sales vs out-of-stock <span style={{ color: "rgba(233,238,255,.4)", fontWeight: 600 }}>· {filterLabel}</span></div>
+          <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.5)" }}>{netSales.length} sold{topHour ? ` · peak ${topHour.label.toUpperCase()}` : ""}</div>
         </div>
+        <InsightTrendChart labels={series.labels} series={[
+          { name: "Net sales", color: "#4A7FFF", data: series.sales, fill: true },
+          { name: "Out of stock", color: "#F87171", data: series.oos },
+        ]} />
+      </div>
 
-        <div style={{ background:"rgba(10,20,50,.7)", border:"1px solid rgba(60,110,255,.15)", borderRadius:14, padding:"16px 14px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-            <div style={{ width:44, height:44, background:"rgba(60,110,255,.18)", border:"1.5px solid rgba(60,110,255,.5)", borderRadius:11, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
-            </div>
-            <div style={{ fontSize:38, fontWeight:800, color:"#fff", letterSpacing:"-1.5px", lineHeight:1 }}>{filteredReturns.length}</div>
-          </div>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>Returns</div>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.5)", marginTop:3, lineHeight:1.4 }}>Items logged in Returns view ({filterLabel})</div>
+      {/* Top products + busiest hours */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+        <div style={{ ...GLASS_STOCK, padding: "16px 17px" }}>
+          <div style={{ fontSize: 13.5, fontWeight: 750, color: "#fff", marginBottom: 12 }}>Top products</div>
+          <InsightBarChart items={topProducts} color={BLUE} emptyMsg="No sales yet" photoMap={productPhotoMap} />
         </div>
-
-        <div style={{ background:"rgba(10,20,50,.7)", border:"1px solid rgba(60,110,255,.15)", borderRadius:14, padding:"16px 14px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-            <div style={{ width:44, height:44, borderRadius:10, background:"rgba(255,255,255,.08)", border:"1.5px solid rgba(60,110,255,.3)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
-              {topProd ? <ProductThumb name={topProd.label} photoMap={productPhotoMap} size={44}/> : <ProductIcon size={22}/>}
+        <div style={{ ...GLASS_STOCK, padding: "16px 17px" }}>
+          <div style={{ fontSize: 13.5, fontWeight: 750, color: "#fff", marginBottom: 14 }}>Busiest hours</div>
+          {hourData.length === 0 ? <div style={{ color: "rgba(233,238,255,.3)", textAlign: "center", padding: "1.5rem", fontSize: 13 }}>No sales yet.</div> : (
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 5, height: 120 }}>
+              {hourData.map((h, i) => {
+                const peak = topHour && h.label === topHour.label;
+                return (
+                  <div key={i} title={`${h.label} · ${h.value}`} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 5, minWidth: 0 }}>
+                    <div style={{ fontSize: 9, color: peak ? "#9DBCFF" : "rgba(233,238,255,.35)", fontWeight: 700 }}>{h.value}</div>
+                    <div style={{ width: "100%", height: `${Math.max(4, (h.value / maxHour) * 92)}px`, borderRadius: "4px 4px 2px 2px", background: peak ? "linear-gradient(180deg,#6A9FFF,#4A7FFF)" : "rgba(74,127,255,.35)" }} />
+                    <div style={{ fontSize: 8.5, color: "rgba(233,238,255,.3)", whiteSpace: "nowrap" }}>{h.label}</div>
+                  </div>
+                );
+              })}
             </div>
-            <div style={{ fontSize:38, fontWeight:800, color:"#fff", letterSpacing:"-1.5px", lineHeight:1 }}>{topProd?.value || "—"}</div>
-          </div>
-          <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>Top Product</div>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.5)", marginTop:3, lineHeight:1.4, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{topProd?.label || "No orders yet"}</div>
+          )}
         </div>
       </div>
 
-      {/* BUSIEST HOUR CARD */}
-      <div style={{ margin:"0 0 16px", background:"rgba(10,20,55,.7)", border:"1px solid rgba(60,110,255,.2)", borderRadius:14, padding:16, position:"relative", overflow:"hidden" }}>
-        <svg style={{ position:"absolute", bottom:0, right:0, opacity:0.2 }} width="100" height="60" viewBox="0 0 100 60">
-          <path d="M100,20 L80,20 L70,30 L50,30 L40,40 L20,40" stroke="rgba(60,110,255,1)" strokeWidth="1" fill="none"/>
-          <circle cx="80" cy="20" r="2" fill="rgba(60,110,255,1)"/>
-          <circle cx="50" cy="30" r="2" fill="rgba(60,110,255,1)"/>
-          <circle cx="20" cy="40" r="2" fill="rgba(60,110,255,1)"/>
-        </svg>
-        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 4px rgba(60,110,255,.5))" }}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-          <span style={{ fontSize:14, fontWeight:700, color:"#fff" }}>Busiest Hour</span>
-        </div>
-        <div style={{ fontSize:48, fontWeight:800, color:"#4A7FFF", letterSpacing:"-2px", lineHeight:1 }}>{topHour?.label?.toUpperCase() || "—"}</div>
-        <div style={{ fontSize:12, color:"rgba(255,255,255,.4)", marginTop:4, marginBottom:12 }}>{topHour ? `${topHour.value} orders` : ""}</div>
-        <svg width="100%" height="70" viewBox="0 0 300 70" preserveAspectRatio="none">
-          <defs>
-            <linearGradient id="wg2" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(60,110,255,.3)"/>
-              <stop offset="100%" stopColor="rgba(60,110,255,0)"/>
-            </linearGradient>
-          </defs>
-          <path d="M0,65 L20,62 L40,55 L60,45 L80,30 L100,18 L120,10 L140,15 L160,28 L180,42 L200,52 L220,48 L240,55 L260,60 L280,63 L300,65 L300,70 L0,70 Z" fill="url(#wg2)"/>
-          <path d="M0,65 L20,62 L40,55 L60,45 L80,30 L100,18 L120,10 L140,15 L160,28 L180,42 L200,52 L220,48 L240,55 L260,60 L280,63 L300,65" fill="none" stroke="rgba(74,127,255,.7)" strokeWidth="1.5"/>
-          <circle cx="120" cy="10" r="5" fill="#4A7FFF"/>
-          <circle cx="120" cy="10" r="9" fill="rgba(60,110,255,.25)"/>
-        </svg>
-      </div>
-      <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.5rem" }}>
-        <div style={{ fontWeight:"700", marginBottom:"1rem", color:"#fff" }}>Recent Activity · {filterLabel}</div>
+      {/* Recent activity */}
+      <div style={{ ...GLASS_STOCK, padding: "16px 17px" }}>
+        <div style={{ fontSize: 13.5, fontWeight: 750, color: "#fff", marginBottom: 10 }}>Recent activity <span style={{ color: "rgba(233,238,255,.35)", fontWeight: 600 }}>· {filterLabel}</span></div>
         {periodLog.length === 0
-          ? <div style={{ color:"#444", textAlign:"center", padding:"1.5rem", fontSize:"0.9rem" }}>No activity in this period</div>
-          : periodLog.slice(0,30).map((e,i) => {
-              const ac = INSIGHT_ACTION[e.action]||{color:"#666",bg:"#333",label:e.action};
+          ? <div style={{ color: "rgba(233,238,255,.3)", textAlign: "center", padding: "1.5rem", fontSize: 13 }}>No activity in this period.</div>
+          : periodLog.slice(0, 30).map((e, i) => {
+              const ac = INSIGHT_ACTION[e.action] || { color: "#888", bg: "rgba(255,255,255,.06)", label: e.action };
               return (
-                <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.5rem 0", borderBottom:"1px solid rgba(60,110,255,.08)" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:"0.5rem" }}>
-                    <ProductThumb name={e.productName} photoMap={productPhotoMap} size={36} />
-                    <div>
-                      <span style={{ fontWeight:"600", color:"#fff", fontSize:"0.88rem" }}>{e.productName}</span>
-                      <span style={{ color:"#555", marginLeft:"0.4rem", fontSize:"0.78rem" }}>Sz {e.size}</span>
-                      <span style={{ marginLeft:"0.4rem", background:ac.bg, color:ac.color, borderRadius:"999px", padding:"1px 8px", fontSize:"0.7rem", fontWeight:"600" }}>{ac.label}</span>
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderTop: i ? "1px solid rgba(255,255,255,.06)" : "none" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                    <ProductThumb name={e.productName} photoMap={productPhotoMap} size={34} />
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ fontWeight: 600, color: "#fff", fontSize: "0.88rem" }}>{e.productName}</span>
+                      <span style={{ color: "rgba(233,238,255,.35)", marginLeft: "0.4rem", fontSize: "0.78rem" }}>Sz {e.size}</span>
+                      <span style={{ marginLeft: "0.4rem", background: ac.bg, color: ac.color, borderRadius: "999px", padding: "1px 8px", fontSize: "0.7rem", fontWeight: 700 }}>{ac.label}</span>
                     </div>
                   </div>
-                  <div style={{ color:"#555", fontSize:"0.72rem", whiteSpace:"nowrap" }}>
-                    #{e.orderNumber} · {new Date(e.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+                  <div style={{ color: "rgba(233,238,255,.35)", fontSize: "0.72rem", whiteSpace: "nowrap", flexShrink: 0 }}>
+                    #{e.orderNumber} · {new Date(e.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                   </div>
                 </div>
               );
@@ -10467,17 +12497,17 @@ function InsightProductSearchTab({ log, productPhotoMap, filterStart, filterEnd,
       </div>
       {query.trim() && (
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"1rem", marginBottom:"1rem" }}>
-          <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.25rem" }}>
+          <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:RADIUS, padding:"1.25rem" }}>
             <div style={{ fontWeight:"700", marginBottom:"0.75rem", color:"#fff", fontSize:"0.9rem" }}>Orders by Product</div>
             <InsightBarChart items={productCounts} color={BLUE} emptyMsg="No orders found" photoMap={productPhotoMap} />
           </div>
-          <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.25rem" }}>
+          <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:RADIUS, padding:"1.25rem" }}>
             <div style={{ fontWeight:"700", marginBottom:"0.75rem", color:"#fff", fontSize:"0.9rem" }}>Size Breakdown</div>
             <InsightBarChart items={sizeCounts} color="#4A7FFF" emptyMsg="No orders found" />
           </div>
         </div>
       )}
-      <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.25rem" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:RADIUS, padding:"1.25rem" }}>
         <div style={{ fontWeight:"700", marginBottom:"0.75rem", color:"#fff", fontSize:"0.9rem" }}>
           Order History {query?`· "${query}"`:""}
           <span style={{ color:"#555", marginLeft:"0.5rem", fontWeight:"400", fontSize:"0.8rem" }}>{filtered.length} entries</span>
@@ -10549,7 +12579,7 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
 
   if (oosLog.length === 0) {
     return (
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
         <ProductIcon size={32} opacity={0.4}/>
         <div style={{ marginTop:12 }}>No out-of-stock events in this period</div>
       </div>
@@ -10559,7 +12589,7 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
   return (
     <div>
       {/* SUMMARY BOX */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.18)" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
         <div style={{ fontWeight:800, fontSize:42, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1.5px" }}>{totalOOS}</div>
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Total Out of Stock</div>
@@ -10573,7 +12603,7 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
           const isOpen = openProduct === p.name;
           const sizes = Object.entries(p.sizes).sort((a, b) => b[1] - a[1]);
           return (
-            <div key={p.name} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, overflow:"hidden", transition:"all 0.2s" }}>
+            <div key={p.name} style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12, overflow:"hidden", transition:"all 0.2s" }}>
               <div onClick={() => setOpenProduct(isOpen ? null : p.name)}
                    style={{ display:"flex", alignItems:"center", padding:"12px 14px", cursor:"pointer", gap:12 }}>
                 <ProductThumb name={p.name} photoMap={productPhotoMap} size={36}/>
@@ -10581,13 +12611,13 @@ function InsightOOSTrackerTab({ log, returnsLog, productPhotoMap, filterStart, f
                   <div style={{ fontWeight:700, fontSize:14, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
                   <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:2 }}>{Object.keys(p.sizes).length} size{Object.keys(p.sizes).length !== 1 ? "s" : ""} affected</div>
                 </div>
-                <div style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"4px 12px", fontSize:13, fontWeight:700 }}>{p.total}</div>
+                <div style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, padding:"4px 12px", fontSize:13, fontWeight:700 }}>{p.total}</div>
                 <span style={{ color:"#4A7FFF", fontSize:14, transition:"transform 0.2s", display:"inline-block", transform: isOpen ? "rotate(90deg)" : "rotate(0deg)" }}>›</span>
               </div>
               {isOpen && (
                 <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 14px 14px", display:"flex", flexWrap:"wrap", gap:6 }}>
                   {sizes.map(([size, count]) => (
-                    <div key={size} style={{ background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px", display:"flex", alignItems:"center", gap:6 }}>
+                    <div key={size} style={{ background:"rgba(60,110,255,.08)", border:"1px solid rgba(255,255,255,.08)", borderRadius:8, padding:"6px 10px", display:"flex", alignItems:"center", gap:6 }}>
                       <span style={{ fontSize:12, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
                       <span style={{ background:"rgba(60,110,255,.2)", color:"#4A7FFF", borderRadius:999, padding:"2px 7px", fontSize:10, fontWeight:700 }}>×{count}</span>
                     </div>
@@ -10648,7 +12678,7 @@ function InsightSizePopularityTab({ log, filterStart, filterEnd, filterLabel, ca
   const Panel = ({ heading, sizes }) => {
     const max = sizes.length ? Math.max(...sizes.map(s => s.value)) : 1;
     return (
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:18 }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:18 }}>
         <div style={{ marginBottom:14 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{heading}</div>
           <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:2 }}>{catFilter === "all" ? "All categories" : catFilter} · {sizes.reduce((n, s) => n + s.value, 0)} order{sizes.reduce((n, s) => n + s.value, 0) !== 1 ? "s" : ""} placed</div>
@@ -10701,7 +12731,7 @@ function InsightSizePopularityTab({ log, filterStart, filterEnd, filterLabel, ca
 
       {/* No data in either group → single empty state. */}
       {!showSneaker && !showClothing && (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
           No orders in this period
         </div>
       )}
@@ -10762,7 +12792,7 @@ function InsightBusiestTimesTab({ log, filterStart, filterEnd, filterLabel, cate
   return (
     <div>
       {/* BUSIEST HOURS — vertical bar chart */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:18, marginBottom:12 }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:18, marginBottom:12 }}>
         <div style={{ marginBottom:14 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Busiest Hours</div>
           <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:2 }}>
@@ -10804,7 +12834,7 @@ function InsightBusiestTimesTab({ log, filterStart, filterEnd, filterLabel, cate
       </div>
 
       {/* BUSIEST DAYS */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:18 }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:18 }}>
         <div style={{ marginBottom:14 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Busiest Days</div>
           <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:2 }}>
@@ -10849,14 +12879,14 @@ function InsightReturnsTab({ returnsLog, productPhotoMap, filterStart, filterEnd
   return (
     <div>
       {filtered.length === 0 ? (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
           <ProductIcon size={32} opacity={0.4}/>
           <div style={{ marginTop:12 }}>No returns in this period</div>
         </div>
       ) : (
         <>
           {/* Summary card */}
-          <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.18)" }}>
+          <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
             <div style={{ fontWeight:800, fontSize:42, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1.5px" }}>{filtered.length}</div>
             <div style={{ flex:1 }}>
               <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Total Returns</div>
@@ -10865,13 +12895,13 @@ function InsightReturnsTab({ returnsLog, productPhotoMap, filterStart, filterEnd
           </div>
 
           {/* Most returned products bar chart */}
-          <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:16, marginBottom:12 }}>
+          <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:16, marginBottom:12 }}>
             <div style={{ fontWeight:700, marginBottom:12, color:"#fff", fontSize:13 }}>Most Returned Products</div>
             <InsightBarChart items={byProduct} color={BLUE} photoMap={productPhotoMap} />
           </div>
 
           {/* Return Log */}
-          <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.2)", borderRadius:14, padding:16 }}>
+          <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:16 }}>
             <div style={{ fontWeight:700, marginBottom:10, color:"#fff", fontSize:13 }}>Return Log <span style={{ color:"rgba(255,255,255,.4)", fontWeight:400, fontSize:11 }}>· {filtered.length} entries</span></div>
             <div style={{ maxHeight:"380px", overflowY:"auto" }}>
               {filtered.slice(0, 50).map((r, i) => (
@@ -10951,7 +12981,7 @@ function InsightClothingRefillsTab({ orders, log, productPhotoMap, filterStart, 
   return (
     <div>
       {/* SUMMARY CARD — mirrors OOS Tracker visual */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.18)" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
         <div style={{ fontWeight:800, fontSize:42, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1.5px" }}>{totalUnits}</div>
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Clothing Units Requested</div>
@@ -10960,7 +12990,7 @@ function InsightClothingRefillsTab({ orders, log, productPhotoMap, filterStart, 
       </div>
 
       {rows.length === 0 ? (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
           <ProductIcon size={32} opacity={0.4}/>
           <div style={{ marginTop:12 }}>No clothing refill requests in this period</div>
         </div>
@@ -10969,7 +12999,7 @@ function InsightClothingRefillsTab({ orders, log, productPhotoMap, filterStart, 
           {rows.map(r => {
             const sizeEntries = Object.entries(r.sizes).sort((a, b) => b[1] - a[1]);
             return (
-              <div key={r.productName} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.25)", borderLeft:"3px solid rgba(60,110,255,.55)", borderRadius:12, padding:"12px 14px" }}>
+              <div key={r.productName} style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderLeft:"3px solid rgba(60,110,255,.55)", borderRadius:12, padding:"12px 14px" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:12 }}>
                   <ProductThumb name={r.productName} photoMap={productPhotoMap} size={40}/>
                   <div style={{ flex:1, minWidth:0 }}>
@@ -11083,7 +13113,7 @@ function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, fi
   return (
     <div>
       {/* SUMMARY BOX — mirrors InsightOOSTrackerTab layout */}
-      <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(248,113,113,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(248,113,113,.15)" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(248,113,113,.6)", borderRadius:14, padding:"16px 18px", marginBottom:12, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
         <div style={{ fontWeight:800, fontSize:42, color:"#F87171", lineHeight:1, letterSpacing:"-1.5px" }}>{totalEvents}</div>
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Stock Depleted Events</div>
@@ -11116,19 +13146,19 @@ function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, fi
 
       {/* EMPTY STATE / LIST */}
       {rows.length === 0 ? (
-        <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"3rem", textAlign:"center", color:"rgba(255,255,255,.4)", fontSize:14 }}>
           <ProductIcon size={32} opacity={0.4}/>
           <div style={{ marginTop:12 }}>No display stock depletions in this period{searchTerm || hubFilter !== "all" ? " for the current filters" : ""}.</div>
         </div>
       ) : (
         <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
           {rows.map((r, i) => (
-            <div key={`${r.productName}__${r.size}`} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(248,113,113,.3)", borderLeft:"3px solid rgba(248,113,113,.6)", borderRadius:12, padding:"12px 14px", display:"flex", alignItems:"center", gap:12 }}>
+            <div key={`${r.productName}__${r.size}`} style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(248,113,113,.3)", borderLeft:"3px solid rgba(248,113,113,.6)", borderRadius:12, padding:"12px 14px", display:"flex", alignItems:"center", gap:12 }}>
               <ProductThumb name={r.productName} photoMap={productPhotoMap} size={36}/>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontWeight:700, fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.productName}</div>
                 <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:4, flexWrap:"wrap" }}>
-                  <span style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", color:"#fff", borderRadius:8, padding:"2px 8px", fontSize:11, fontWeight:600 }}>Size <SizeTag size={r.size} /></span>
+                  <span style={{ background:"rgba(60,110,255,.1)", border:"1px solid rgba(255,255,255,.08)", color:"#fff", borderRadius:8, padding:"2px 8px", fontSize:11, fontWeight:600 }}>Size <SizeTag size={r.size} /></span>
                   {r.hubs.map(h => (
                     <span key={h} style={{ background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", color:"rgba(255,255,255,.6)", borderRadius:8, padding:"2px 8px", fontSize:10, fontWeight:600 }}>{hubLabel(h)}</span>
                   ))}
@@ -11208,7 +13238,7 @@ function InsightSalesSummaryTab({ log, returnsLog, productPhotoMap, filterStart,
   return (
     <div>
       {/* ── Headline ── */}
-      <div style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:14, padding:"16px 18px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 0 16px rgba(60,110,255,.18)" }}>
+      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:14, padding:"16px 18px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
         <div style={{ fontWeight:800, fontSize:42, color:BLUE, lineHeight:1, flexShrink:0, letterSpacing:"-1.5px" }}>{totalNet}</div>
         <div style={{ flex:1 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Net Sales · {filterLabel}</div>
@@ -11218,11 +13248,11 @@ function InsightSalesSummaryTab({ log, returnsLog, productPhotoMap, filterStart,
 
       {/* ── Ranked product list ── */}
       {ranked.length === 0 ? (
-        <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"3rem", textAlign:"center", color:"#444", fontSize:"0.9rem" }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:RADIUS, padding:"3rem", textAlign:"center", color:"#444", fontSize:"0.9rem" }}>
           No sales recorded in this period
         </div>
       ) : (
-        <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.5rem", display:"flex", flexDirection:"column", gap:"0" }}>
+        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:RADIUS, padding:"1.5rem", display:"flex", flexDirection:"column", gap:"0" }}>
           {ranked.map(({ name, net }, idx) => {
             const isOpen  = expanded.has(name);
             const sizes   = sizesByProduct[name] || {};
@@ -11405,7 +13435,7 @@ function InsightReorderTab({ productPhotoMap }) {
   }, [latest && latest.generatedAt]);
 
   // ── Style fragments reused inside the render below.
-  const cardBase = { background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:14, padding:"14px 16px", marginBottom:10 };
+  const cardBase = { background:"rgba(255,255,255,.024)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:"14px 16px", marginBottom:10 };
   const sectionLabel = { fontSize:10, fontWeight:700, color:"rgba(255,255,255,.35)", textTransform:"uppercase", letterSpacing:"1.5px", marginBottom:8 };
   const runBtnStyle = (disabled) => ({
     background: disabled ? "rgba(60,110,255,.15)" : "rgba(60,110,255,.22)",
@@ -11579,7 +13609,7 @@ function InsightReorderTab({ productPhotoMap }) {
                       ? Object.entries(rec.suggestedQuantity).filter(([, q]) => q > 0)
                       : [];
                     return (
-                      <div key={rec.productId || rec.productName} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.22)", borderLeft:`3px solid ${style.border}`, borderRadius:12, padding:"12px 14px" }}>
+                      <div key={rec.productId || rec.productName} style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(60,110,255,.22)", borderLeft:`3px solid ${style.border}`, borderRadius:12, padding:"12px 14px" }}>
                         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
                           <ProductThumb name={rec.productName} photoMap={productPhotoMap} size={40}/>
                           <div style={{ flex:1, minWidth:0 }}>
@@ -11681,17 +13711,29 @@ function MetaRow({ label, value }) {
 const INSIGHTS_SESSION_KEY = "insightsAuth";
 
 // ─── INSIGHTS VIEW ────────────────────────────────────────────────────────────
+// Sidebar icons for the desktop Insights workspace (one per report).
+const INSIGHT_TAB_ICON = {
+  overview:         <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />,
+  sales:            <><path d="M3 17l6-6 4 4 8-8" /><path d="M17 7h4v4" /></>,
+  search:           <><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></>,
+  oos:              <><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>,
+  sizes:            <><path d="M2 12h20M6 12V8M10 12V6M14 12V6M18 12V8" /></>,
+  times:            <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
+  returns:          <><polyline points="9 14 4 9 9 4" /><path d="M20 20v-7a4 4 0 0 0-4-4H4" /></>,
+  "clothing-refills": <path d="M16 4l-4 4-4-4M4 8v12a1 1 0 001 1h14a1 1 0 001-1V8" />,
+  depleted:         <><path d="M21 8v13H3V8M1 3h22v5H1z" /><path d="M9 12h6" /></>,
+  reorder:          <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4L12 3z" />,
+};
+
 function InsightsView({ onExit }) {
-  const [authed,     setAuthed]     = useState(() => sessionStorage.getItem(INSIGHTS_SESSION_KEY) === "true");
-  const [pw,         setPw]         = useState("");
-  const [pwError,    setPwError]    = useState(false);
+  const isDesktop = !useIsNarrow(1024);
   const [tab,        setTab]        = usePersistedTab("insights", "overview");
   const [filterMode, setFilterMode] = useState("day");
   const [filterDate, setFilterDate] = useState(() => getSADateString());
   // Phase 12D: product-type filter ("sneaker" | "clothing" | "both"). Applied
   // in 6 of 9 tabs; hidden on tabs where it doesn't make sense (sizes,
   // depleted, clothing-refills).
-  const [category,   setCategory]   = useState("both");
+  const category = "both";   // category toggle removed — reports show all types
   // Phase 14C: top-level store filter — slices every Insights tab to a
   // subset of events tagged with placedAtHub. "all" is current behavior,
   // "central" keeps hub1/hub2 events, "pine" keeps hub3 events. Events
@@ -11711,10 +13753,15 @@ function InsightsView({ onExit }) {
   // Central treats missing placedAtHub as Central — historical events
   // pre-date Phase 14B and were all placed in the central universe, so the
   // filter is self-healing without a backfill. Pine stays strict.
+  // Stores are now three: Marathon PE, Trophy, Pine. Events tag placedAtHub
+  // (hub1/hub2 = the central pair, hub3 = Pine) and newer ones a destShop. Pine =
+  // hub3. Trophy = events explicitly tagged trophy. Marathon PE = the main store:
+  // its own destShop OR the untagged central history (so nothing goes missing).
   const matchesStore = useMemo(() => {
     if (storeFilter === "all") return () => true;
-    if (storeFilter === "pine") return (e) => e && e.placedAtHub === "hub3";
-    return (e) => e && (!e.placedAtHub || e.placedAtHub === "hub1" || e.placedAtHub === "hub2");
+    if (storeFilter === "pine")   return (e) => e && (e.destShop === "marathon-pine" || e.placedAtHub === "hub3");
+    if (storeFilter === "trophy") return (e) => e && e.destShop === "trophy";
+    return (e) => e && (e.destShop === "marathon-pe" || (e.destShop == null && e.placedAtHub !== "hub3")); // marathon-pe
   }, [storeFilter]);
   const filteredLog        = useMemo(() => log.filter(matchesStore),         [log, matchesStore]);
   const filteredReturnsLog = useMemo(() => returnsLog.filter(matchesStore),  [returnsLog, matchesStore]);
@@ -11846,15 +13893,8 @@ function InsightsView({ onExit }) {
     return map;
   }, [products]);
 
-  const checkPw = () => {
-    if (pw === "1551") { sessionStorage.setItem(INSIGHTS_SESSION_KEY, "true"); setAuthed(true); }
-    else { setPwError(true); setTimeout(()=>setPwError(false), 1500); }
-  };
-
-  const handleExit = () => {
-    sessionStorage.removeItem(INSIGHTS_SESSION_KEY);
-    onExit();
-  };
+  // Password gate removed — access is governed by the Insights role permission.
+  const handleExit = () => { onExit(); };
 
   const TABS = [
     { key:"overview",         label:"Overview" },
@@ -11868,9 +13908,6 @@ function InsightsView({ onExit }) {
     { key:"depleted",         label:"Stock Depleted" },
     { key:"reorder",          label:"AI Reorder" },
   ];
-  // Tabs where the Sneaker/Clothing/Both toggle is NOT applicable.
-  // "reorder" is AI-driven across the whole catalog — the toggle doesn't bind.
-  const CATEGORY_HIDDEN_TABS = new Set(["depleted", "clothing-refills", "reorder"]);
   const tabKeys = TABS.map(t => t.key);
 
   const handleSwipe = (e) => {
@@ -11883,23 +13920,103 @@ function InsightsView({ onExit }) {
     if (dx > 0 && idx > 0)                  setTab(tabKeys[idx - 1]); // right → prev
   };
 
-  if (!authed) return (
-    <div style={{ minHeight:"100vh", background:BG, color:"#fff", fontFamily:FONT, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"2rem" }}>
-      <div style={{ marginBottom:"0.5rem" }}>
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-      </div>
-      <h1 style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"3rem", letterSpacing:"0.05em", margin:"0 0 0.5rem" }}>INTERNAL INSIGHTS</h1>
-      <p style={{ color:"#666", marginBottom:"2rem" }}>Enter password to continue</p>
-      <div style={{ display:"flex", gap:"0.75rem", width:"100%", maxWidth:"360px" }}>
-        <input type="password" placeholder="Password" value={pw}
-          onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&checkPw()}
-          style={{ ...inputStyle, flex:1, borderColor:pwError?"#F87171":"rgba(60,110,255,.2)" }} />
-        <button onClick={checkPw} style={{ ...bBlue, padding:"0 1.25rem", fontSize:"1rem" }}>Enter</button>
-      </div>
-      {pwError && <div style={{ color:"#F87171", marginTop:"0.75rem", fontSize:"0.9rem" }}>Incorrect password</div>}
-      <button onClick={handleExit} style={{ ...bGhost, marginTop:"2rem", padding:"0.4rem 1rem" }}>← Back</button>
+  // Shared tab content — rendered by both the desktop workspace and mobile.
+  const content = (
+    <>
+      {tab==="overview"         && <InsightOverviewTab        log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+      {tab==="sales"            && <InsightSalesSummaryTab    log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
+      {tab==="search"           && <InsightProductSearchTab   log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} category={category} />}
+      {tab==="oos"              && <InsightOOSTrackerTab      log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+      {tab==="sizes"            && <InsightSizePopularityTab  log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+      {tab==="times"            && <InsightBusiestTimesTab    log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+      {tab==="returns"          && <InsightReturnsTab         returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
+      {tab==="clothing-refills" && <InsightClothingRefillsTab orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
+      {tab==="depleted"         && <InsightStockDepletedTab   orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
+      {tab==="reorder"          && <InsightReorderTab          productPhotoMap={productPhotoMap} />}
+    </>
+  );
+
+  // Segmented control — one grouped track, active segment lit. Cleaner than a
+  // row of separate pills, and reused for store + category.
+  const STORE_OPTS = [["all", "All"], ["marathon-pe", "Marathon PE"], ["trophy", "Trophy"], ["pine", "Pine"]];
+  const seg = (options, val, setVal) => (
+    <div style={{ display: "inline-flex", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 12, padding: 3, gap: 2 }}>
+      {options.map(([v, l]) => {
+        const on = val === v;
+        return (
+          <button key={v} onClick={() => setVal(v)}
+            style={{ border: 0, background: on ? "rgba(74,127,255,.22)" : "transparent", color: on ? "#fff" : "rgba(233,238,255,.5)",
+                     fontSize: 12, fontWeight: 700, padding: "7px 14px", borderRadius: 9, cursor: "pointer", fontFamily: FONT,
+                     boxShadow: on ? "0 0 8px rgba(60,110,255,.3)" : "none", whiteSpace: "nowrap" }}>{l}</button>
+        );
+      })}
     </div>
   );
+  const storePills = () => (tab === "reorder" ? null : seg(STORE_OPTS, storeFilter, setStoreFilter));
+  const auditBtn = (
+    <button onClick={() => setAuditOpen(true)}
+      style={{ background: audit.diff !== 0 ? "rgba(248,113,113,.12)" : "rgba(74,127,255,.08)",
+               border: audit.diff !== 0 ? "1px solid rgba(248,113,113,.4)" : "1px solid rgba(74,127,255,.3)",
+               color: audit.diff !== 0 ? "#F87171" : "#9DBCFF", borderRadius:11, padding:"9px 14px", fontSize:12.5, fontWeight:700, cursor:"pointer",
+               display:"flex", alignItems:"center", justifyContent:"center", gap:8, whiteSpace:"nowrap", fontFamily:FONT }}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 9v2m0 4h.01M5 19h14a2 2 0 002-2v-1a8 8 0 10-16 0v1a2 2 0 002 2z"/></svg>
+      Run Order Audit{audit.diff !== 0 && <span style={{ fontWeight:800 }}>· {audit.diff}</span>}
+    </button>
+  );
+
+  // ── DESKTOP INSIGHTS WORKSPACE (≥1024px) — sidebar of views + a filter toolbar
+  //    over the active report. Mobile keeps the tab strip below. ──
+  if (isDesktop) {
+    return (
+      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+        <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
+          <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 6px" }}>
+            <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
+            <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
+          </div>
+          <button onClick={handleExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:8 }}>← Exit</button>
+          <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"10px 9px 6px", fontWeight:700 }}>Reports</div>
+          {TABS.map(t => {
+            const on = tab === t.key;
+            return (
+              <button key={t.key} onClick={() => setTab(t.key)}
+                style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
+                         background: on ? "rgba(74,127,255,.13)" : "transparent", border: on ? "1px solid rgba(74,127,255,.42)" : "1px solid transparent",
+                         color: on ? "#9DBCFF" : "rgba(233,238,255,.55)" }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ flexShrink:0, opacity:.9 }}>{INSIGHT_TAB_ICON[t.key] || <path d="M4 20V10M10 20V4M16 20v-7" />}</svg>
+                <span style={{ flex:1 }}>{t.label}</span>
+              </button>
+            );
+          })}
+          <div style={{ flex:1 }} />
+          <div style={{ padding:"9px 11px", borderRadius:11, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", fontSize:11, color:"rgba(233,238,255,.5)" }}>
+            <span style={{ color:"#9DBCFF", fontWeight:800, fontVariantNumeric:"tabular-nums" }}>{filteredLog.length.toLocaleString()}</span> events in view
+          </div>
+        </aside>
+
+        <div style={{ minWidth:0, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"20px 28px 14px", borderBottom:"1px solid rgba(255,255,255,.08)", background:"radial-gradient(800px 280px at 15% -60%, rgba(74,127,255,.08), transparent)" }}>
+            <div style={{ fontSize:23, fontWeight:800, letterSpacing:-.4 }}>{(TABS.find(t=>t.key===tab)||{}).label || "Insights"}</div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.5)", marginTop:3 }}>Internal insights · {filterLabel}</div>
+            <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", marginTop:14 }}>
+              {storePills()}
+              <div style={{ flex:1 }} />
+              {auditBtn}
+            </div>
+            {tab !== "reorder" && (
+              <div style={{ marginTop:12 }}>
+                <InsightsDatePicker mode={filterMode} setMode={setFilterMode} dateStr={filterDate} setDateStr={setFilterDate} />
+              </div>
+            )}
+          </div>
+          <div style={{ flex:1, overflow:"auto", padding:"18px 28px 48px" }}>
+            <div style={{ maxWidth:1080, margin:"0 auto" }}>{content}</div>
+          </div>
+        </div>
+        {auditOpen && <AuditModal audit={audit} onClose={() => setAuditOpen(false)} />}
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
@@ -11914,15 +14031,14 @@ function InsightsView({ onExit }) {
         </div>
         <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{filteredLog.length} entries</div>
       </div>
-      {/* Phase 14C: Store filter — All / Central / Pine. Hidden on the AI
-          Reorder tab: that data is a global analysis, not store-sliced, so
-          showing the pill there would be misleading. CR finding #2. */}
-      <div style={{ padding:"10px 14px 0", display:"flex", gap:6, visibility: tab === "reorder" ? "hidden" : "visible" }}>
-        {[["all","All"],["central","Central"],["pine","Pine"]].map(([val, label]) => {
+      {/* Store filter — All / Marathon PE / Trophy / Pine. Hidden on the AI
+          Reorder tab (global analysis, not store-sliced). */}
+      <div style={{ padding:"10px 14px 0", display:"flex", gap:6, overflowX:"auto", visibility: tab === "reorder" ? "hidden" : "visible" }}>
+        {[["all","All"],["marathon-pe","Marathon PE"],["trophy","Trophy"],["pine","Pine"]].map(([val, label]) => {
           const on = storeFilter === val;
           return (
             <button key={val} onClick={() => setStoreFilter(val)}
-              style={{ flex:1, padding:"7px 10px", borderRadius:10, fontSize:11.5, fontWeight:700, cursor:"pointer",
+              style={{ flexShrink:0, padding:"7px 12px", borderRadius:999, fontSize:11.5, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap",
                        background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)",
                        border: "1px solid " + (on ? "rgba(60,110,255,.55)" : "rgba(255,255,255,.08)"),
                        color: on ? "#fff" : "rgba(255,255,255,.5)",
@@ -11944,24 +14060,6 @@ function InsightsView({ onExit }) {
           );
         })}
       </div>
-      {/* Phase 12D: category toggle. Hidden on tabs where it doesn't apply
-          (size popularity, stock depleted, clothing refills). */}
-      {!CATEGORY_HIDDEN_TABS.has(tab) && (
-        <div style={{ padding:"0 14px 10px", display:"flex", gap:6 }}>
-          {[["both","Both"],["sneaker","Sneakers"],["clothing","Clothing"]].map(([val, label]) => {
-            const on = category === val;
-            return (
-              <button key={val} onClick={() => setCategory(val)}
-                style={{ flex:1, padding:"7px 10px", borderRadius:10, fontSize:11.5, fontWeight:700, cursor:"pointer",
-                         background: on ? "rgba(60,110,255,.18)" : "rgba(255,255,255,.03)",
-                         border: "1px solid " + (on ? "rgba(60,110,255,.5)" : "rgba(255,255,255,.08)"),
-                         color: on ? "#fff" : "rgba(255,255,255,.5)" }}>
-                {label}
-              </button>
-            );
-          })}
-        </div>
-      )}
       {/* Date picker is hidden on the reorder tab — InsightReorderTab does not
           consume filterMode/filterDate, so showing it would imply a filter that
           is actually a no-op. CR finding (outside-diff). */}
@@ -11989,16 +14087,7 @@ function InsightsView({ onExit }) {
       <div style={{ padding:"0 14px 16px" }}
         onTouchStart={e => { touchStartX.current = e.touches[0].clientX; }}
         onTouchEnd={handleSwipe}>
-        {tab==="overview"         && <InsightOverviewTab        log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
-        {tab==="sales"            && <InsightSalesSummaryTab    log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} orders={filteredOrders} filterMode={filterMode} filterDate={filterDate} category={category} />}
-        {tab==="search"           && <InsightProductSearchTab   log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} category={category} />}
-        {tab==="oos"              && <InsightOOSTrackerTab      log={filteredLog} returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="sizes"            && <InsightSizePopularityTab  log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="times"            && <InsightBusiestTimesTab    log={filteredLog} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="returns"          && <InsightReturnsTab         returnsLog={filteredReturnsLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} category={category} />}
-        {tab==="clothing-refills" && <InsightClothingRefillsTab orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
-        {tab==="depleted"         && <InsightStockDepletedTab   orders={filteredOrders} log={filteredLog} productPhotoMap={productPhotoMap} filterStart={filterStart} filterEnd={filterEnd} filterLabel={filterLabel} filterMode={filterMode} filterDate={filterDate} />}
-        {tab==="reorder"          && <InsightReorderTab          productPhotoMap={productPhotoMap} />}
+        {content}
       </div>
 
       {/* AUDIT MODAL */}
@@ -12877,6 +14966,9 @@ function AppInner() {
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
+  // The desktop Assistant workspace carries its own sign-out in the sidebar, so
+  // the global top-right pill is suppressed there (≥1024px) to avoid two.
+  const isNarrowApp = useIsNarrow(1024);
   const wantAdmin = hash === "#admin";
   // /#admin/users (list) and /#admin/users/<uid> (detail) both mount the
   // UserManagement view. The component itself gates non-super-admin viewers
@@ -13121,7 +15213,7 @@ function AppInner() {
     view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
-  else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMERS_DB)   view = guard(ROLES.CUSTOMERS_DB, <CustomersView  onExit={() => setRole(null)} />);
   else if (role === ROLES.DISPLAY) {
     // TV mode is chrome-free, but a hidden top-right DOUBLE-tap exits back to
@@ -13146,7 +15238,12 @@ function AppInner() {
   const indicatorLabel = isSuperAdmin
     ? (authUser?.email?.split("@")[0] || "Admin")
     : (permRecord?.displayName || permRecord?.username || authUser?.email?.split("@")[0] || "Staff");
-  const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY;
+  // On desktop, the redesigned workspaces (home dashboard, Assistant, Barcode
+  // Studio) carry their own top-bar / Home nav, so the global pill is suppressed
+  // there to avoid a stray floating sign-out.
+  const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
+    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === ROLES.WAREHOUSE || role === ROLES.LABEL_PRINT || role === ROLES.CUSTOMER || role === ROLES.CUSTOMERS_DB || role === null))
+    && !(!isNarrowApp && wantUserMgmt);   // desktop User Management carries its own rail Exit
 
   return (
     <>
