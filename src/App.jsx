@@ -6857,7 +6857,10 @@ function AssistantView({ products, onExit, orders = [] }) {
       // Print the customer order slip(s) — one per order, in a single 80mm print
       // job (thermal via the browser dialog, same as the POS). Fire-and-forget so
       // a print hiccup never blocks the placement; WhatsApp still goes out above.
-      if (placed.length) printOrderSlips(placed).catch(err => console.warn("order slip print failed:", err));
+      // DESKTOP ONLY: the thermal printer lives at the assistant desk. On phones/
+      // tablets (narrow) this would just pop the mobile browser's print dialog with
+      // no printer attached, so suppress it there.
+      if (isDesktop && placed.length) printOrderSlips(placed).catch(err => console.warn("order slip print failed:", err));
       // Keep clothing REFILL items in the cart so the user can place them next
       // via the floating Place Refill Request bar. Just-placed customer lines
       // (sneakers + clothing-customer) drop out.
@@ -7256,8 +7259,9 @@ function AssistantView({ products, onExit, orders = [] }) {
             <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:8 }}>
               <button onClick={() => setLastOrders([])} style={{ background:"transparent", border:"none", color:"#555", cursor:"pointer", fontSize:"1rem" }}>✕</button>
               {/* Reprint the slip if the auto-print was dismissed or failed — the
-                  only recovery path for a physical hand-to-customer receipt. */}
-              {!isRefill && (
+                  only recovery path for a physical hand-to-customer receipt.
+                  Desktop-only, matching the auto-print: no thermal printer on phones. */}
+              {isDesktop && !isRefill && (
                 <button onClick={() => printOrderSlips(lastOrders).catch(err => console.warn("reprint slip failed:", err))}
                         title="Reprint the order slip"
                         style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"#cfd6e4", cursor:"pointer", fontSize:"0.72rem", fontFamily:FONT, padding:"5px 10px", whiteSpace:"nowrap" }}>
