@@ -3045,9 +3045,6 @@ exports.createStaffUser = onCall(
         displayName: cleanDisplayName,
         role,
         permissions,
-        // Only write stockRole when non-empty; an empty string means "no stock
-        // access" and we keep the key absent (matches how the editor clears it).
-        ...(resolvedStockRole ? { stockRole: resolvedStockRole } : {}),
         createdAt: admin.database.ServerValue.TIMESTAMP,
       });
     } catch (err) {
@@ -3134,3 +3131,10 @@ exports.updateStaffPassword = onCall(
     return { success: true };
   }
 );
+
+// ─── AUTOMATED REFILL ENGINE ──────────────────────────────────────────────────
+// 15-min health scan: targets vs stock vs open intents → refill requests /
+// R### orders / exception dashboard. Logic in lib/refill-engine.cjs (pure,
+// node-tested); I/O wrapper in refill-scan.cjs. Deploy scoped:
+//   firebase deploy --only functions:refillHealthScan
+exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
