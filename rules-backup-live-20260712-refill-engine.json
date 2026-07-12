@@ -396,37 +396,11 @@
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "posCutover": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
-      },
-      "refillEngine": {
-        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
       }
     },
     "clothing_sold_refills": {
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
-    },
-    "stock_targets": {
-      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-      "$loc": {
-        "$pid": {
-          "$size": {
-            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'",
-            ".validate": "newData.hasChildren(['target','minQty']) && newData.child('target').isNumber() && newData.child('minQty').isNumber()"
-          }
-        }
-      }
-    },
-    "refill_engine": {
-      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-      ".write": "false"
-    },
-    "stock_exceptions": {
-      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-      ".write": "false"
-    },
-    "stock_confidence": {
-      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-      ".write": "false"
     }
   }
 }
