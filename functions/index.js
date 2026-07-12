@@ -424,7 +424,7 @@ exports.dispatchHoldRevealSweep = onSchedule(
         console.warn("dispatchHoldRevealSweep: enqueue failed, re-holding:", id, e.message);
       }
     }
-    if (sent || cleared) console.log("dispatchHoldRevealSweep:", JSON.stringify({ sent, cleared, scanned: Object.keys(orders).length }));
+    if (sent || cleared) console.log("dispatchHoldRevealSweep:", JSON.stringify({ sent, cleared, matched: Object.keys(orders).length }));
   }
 );
 
