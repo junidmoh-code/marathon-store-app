@@ -553,15 +553,18 @@ const STOCK_HUBS = ["hub1", "hub2", "hub3"];
 //                           reconciliation pass's job. originHub (when resolvable) is
 //                           returned so staff know where the shoe belongs.
 function resolveReturnDestination(order, productCategory) {
-  // Prefer the PRODUCT's stored category (resolved by the caller via order.productId).
-  // The admin save pins kids sneaker sizes (26–35) to Footwear, and the review-
-  // categories tool corrects any drift — whereas the size-based classifier mislabels
-  // those kids sizes as Clothing, which would wrongly keep a returned kids shoe at the
-  // shop. Note /orders nodes do NOT carry productCategory themselves, so we must read
-  // it off the product. Fall back to the classifier only when the product is unknown.
-  // (Trusting productType alone is wrong: accessories/perfume default to productType
-  // "sneaker" too, so they'd be mis-routed as footwear.)
-  const cat = productCategory || categorize(order.productName, [order.size]).category;
+  // The size-based classifier is authoritative for everything EXCEPT kids sneaker
+  // sizes 28–35, which it misreads as waist/Clothing (WAIST_MIN=28) and would wrongly
+  // keep a returned kids shoe at the shop. The product's own stored category — pinned
+  // to "Footwear" for kids at admin-save, and corrected by the review-categories tool —
+  // is trusted ONLY to fix that one misfire: flipping a Clothing classification to
+  // Footwear. We deliberately do NOT trust the stored category wholesale, because
+  // admins can mint custom top-level categories that must not be blanket-routed as
+  // footwear. (Orders don't carry productCategory, so the caller resolves it via
+  // order.productId; trusting productType alone is also wrong — accessories/perfume
+  // default to productType "sneaker" and would be mis-routed as footwear.)
+  let cat = categorize(order.productName, [order.size]).category;
+  if (cat === "Clothing" && productCategory === "Footwear") cat = "Footwear";
   const staysAtShop =
     order.productType === "clothing" ||
     cat === "Clothing" || cat === "Accessories" || cat === "Perfume";
