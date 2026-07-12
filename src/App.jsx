@@ -553,18 +553,16 @@ const STOCK_HUBS = ["hub1", "hub2", "hub3"];
 //                           reconciliation pass's job. originHub (when resolvable) is
 //                           returned so staff know where the shoe belongs.
 function resolveReturnDestination(order) {
-  // Trust the order's real productType first — the size-based classifier mislabels
-  // kids sneaker sizes (26–35) as clothing, which would wrongly keep a returned
-  // kids shoe at the shop instead of routing it back to its hub.
-  if (order.productType === "sneaker") {
-    const to = order.placedAtHub || order.hub;
-    return { mode: "footwear_no_ledger", originHub: STOCK_HUBS.includes(to) ? to : null };
-  }
-  const cat = categorize(order.productName, [order.size]).category;
+  // Prefer the order's stored category — set at product-save, where kids sneaker
+  // sizes (26–35) are pinned to Footwear rather than mislabeled Clothing by the
+  // size-based classifier. Fall back to the classifier only for orders that predate
+  // a stored category. (Trusting productType alone is wrong: accessories/perfume
+  // default to productType "sneaker" too, so they'd be mis-routed as footwear.)
+  const cat = order.productCategory || categorize(order.productName, [order.size]).category;
   const staysAtShop =
     order.productType === "clothing" ||
     cat === "Clothing" || cat === "Accessories" || cat === "Perfume";
-  if (staysAtShop) return { mode: "stay", reason: `${cat.toLowerCase()}_stays_at_shop` };
+  if (staysAtShop) return { mode: "stay", reason: `${String(cat).toLowerCase()}_stays_at_shop` };
   const to = order.placedAtHub || order.hub;
   return { mode: "footwear_no_ledger", originHub: STOCK_HUBS.includes(to) ? to : null };
 }
@@ -8161,6 +8159,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         orderNumber:      order.id,
         action:           "stock_depleted",
         placedAtHub:      order.placedAtHub || order.hub || "hub1",
+        destShop:         order.destShop ?? null,
         displayRefilledBy: selectedHub,
       });
     }
@@ -8257,7 +8256,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         if (sent === qty || hubMutated) {
           ok++;
           updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
-          logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2" });
+          logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
           if (sent < qty) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — re-request the remaining ${qty - sent}`);
         } else {
           // Nothing moved at the hub → leave pending for an idempotent re-tap, and LOCK
@@ -8270,7 +8269,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         // Reject is a flag-only write (no stock) — allowed without a stockRole.
         ok++;
         updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
-        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2" });
+        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
       }
       // qty 0 & not rejected → left pending for a later pass.
     }
