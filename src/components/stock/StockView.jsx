@@ -18,7 +18,6 @@ import CountSession from "./CountSession";
 import SetQuantity from "./SetQuantity";
 import CountedStockReview from "./CountedStockReview";
 import StockErrorBoundary from "./StockErrorBoundary";
-import Health from "./Health";
 import MoveExcess from "./MoveExcess";
 
 // Stock rework: Transfer (assistant-style, one-step) + Locator are primary;
@@ -27,7 +26,7 @@ import MoveExcess from "./MoveExcess";
 // admin-only for now (gated below).
 const BASE_TABS = [
   ["transfer",  "Transfer"],
-  ["health",    "Health"],       // refill-engine exception dashboard (read-only)
+  // "Health" moved to its own home-screen module (HealthView) — owner decision.
   ["locate",    "Where is it"],
   ["setqty",    "Set Qty"],
   ["history",   "History"],
@@ -85,7 +84,6 @@ export default function StockView({ products = [], onExit }) {
 
       <div style={{ padding: "4px 12px 40px" }}>
         {tab === "transfer" && <Transfer {...shared} />}
-        {tab === "health"   && <Health {...shared} />}
         {tab === "excess"   && isAdmin && <MoveExcess {...shared} />}
         {tab === "locate"   && <Locator {...shared} />}
         {tab === "setqty"   && canStock && <SetQuantity {...shared} canStock={canStock} isAdmin={isAdmin} />}

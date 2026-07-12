@@ -1,20 +1,17 @@
-// ─── MOVE EXCESS → CENTRAL (bulk rebalance tool) ──────────────────────────────
-// Temporary admin tool for the initial inventory cleanup: Hub 2 should be a
-// refill buffer, not long-term storage. This screen lists every clothing
-// (product, size) at Hub 2 holding MORE than its approved target
-// (/stock_targets/hub2) and prepares transfer_out movements hub2 → central for
-// the surplus. Preview first; quantities are editable per line; nothing moves
-// until Confirm.
+// ─── MOVE EXCESS → CENTRAL (card-by-card rebalance) ───────────────────────────
+// Temporary admin tool for the Hub 2 cleanup: Hub 2 is a refill buffer, not
+// long-term storage, so anything above its approved target goes back to Central.
 //
-// Safety properties:
-//   • Every write is a normal applyMovement transfer_out (atomic, version-
-//     guarded, idempotent per movementId) — the ledger records the batch under
-//     one shared transferId with reason "excess_rebalance".
-//   • Re-running after a partial batch recomputes remaining excess from live
-//     stock, so double-moves are structurally impossible.
-//   • ≤ 200 lines per confirmation (keep batches reviewable); failures are
-//     listed per line (e.g. a concurrent sale consumed the excess).
-// Later categories (sneakers) = drop the clothing filter.
+// Owner-specified flow (2026-07-12): ONE professional product card at a time —
+// photo, full name, current vs target vs excess per size — with editable
+// transfer quantities. Press "Transfer to Central" and the next card appears,
+// until the cleanup is finished. Skip leaves a product for later.
+//
+// Every write is a normal applyMovement transfer_out (atomic, version-guarded,
+// idempotent per movementId, same proven logic as every other transfer); the
+// whole cleanup shares one ledger batch id per product confirm. Re-opening the
+// screen recomputes remaining excess from live stock, so double-moves are
+// structurally impossible. Later categories (sneakers) = drop the clothing filter.
 
 import React, { useMemo, useState } from "react";
 import { useStockCells, useStockTargets } from "./useStock";
@@ -24,129 +21,157 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGhost, input } from ".
 
 const FROM = "hub2";
 const TO = "central";
-const MAX_LINES = 200;
+const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
+const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
 
 const isClothing = (p) =>
   p?.productType === "clothing" ||
   (!p?.productType && (p?.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s))));
 
+function photoOf(p) {
+  return p?.photoUrl || null;
+}
+
 export default function MoveExcess({ products = [], actorRole }) {
   const hubStock = useStockCells(FROM);            // { pid: { rawSize: cell } }
   const targets = useStockTargets(FROM) || {};     // { pid: { encodedSize: {target} } }
-  const [edits, setEdits] = useState({});          // key → qty override
-  const [skips, setSkips] = useState({});          // key → true (excluded)
+  const [edits, setEdits] = useState({});          // `${pid}|${size}` → qty override
+  const [skipped, setSkipped] = useState({});      // pid → true (pushed to the back for later)
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState(null);      // { moved, failed: [{key, reason}] }
+  const [lastResult, setLastResult] = useState(null);
+  const [movedTotal, setMovedTotal] = useState(0);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
 
-  const lines = useMemo(() => {
+  // One entry per product with any size above target, biggest surplus first.
+  const cards = useMemo(() => {
     const out = [];
     for (const [pid, bySize] of Object.entries(hubStock || {})) {
       const p = byId.get(pid);
       if (!isClothing(p)) continue;
+      const sizes = [];
       for (const [size, cell] of Object.entries(bySize || {})) {
         const qty = typeof cell?.qty === "number" ? cell.qty : 0;
         const t = targets?.[pid]?.[encodeSizeKey(size)];
-        if (!t || typeof t.target !== "number") continue; // no approved target → not judged
+        if (!t || typeof t.target !== "number") continue;
         const excess = qty - t.target;
-        if (excess > 0) out.push({ key: `${pid}|${size}`, pid, size, name: p?.name || pid, have: qty, target: t.target, excess });
+        if (excess > 0) sizes.push({ size, have: qty, target: t.target, excess });
       }
+      if (!sizes.length) continue;
+      sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+      out.push({ pid, name: p?.name || pid, photo: photoOf(p), sizes, totalExcess: sizes.reduce((t, s) => t + s.excess, 0) });
     }
-    return out.sort((a, b) => b.excess - a.excess);
+    return out.sort((a, b) => b.totalExcess - a.totalExcess);
   }, [hubStock, targets, byId]);
 
-  const moveQty = (l) => Math.max(0, Math.min(Number(edits[l.key] ?? l.excess) || 0, l.have));
-  const activeLines = lines.filter((l) => !skips[l.key] && moveQty(l) > 0).slice(0, MAX_LINES);
-  const totalUnits = activeLines.reduce((t, l) => t + moveQty(l), 0);
+  const queue = [...cards.filter((c) => !skipped[c.pid]), ...cards.filter((c) => skipped[c.pid])];
+  const card = queue.find((c) => !skipped[c.pid]) || queue[0] || null;
+  const remaining = cards.length;
 
-  const confirm = async () => {
-    if (!activeLines.length || busy) return;
+  const qtyOf = (c, s) => {
+    const v = edits[`${c.pid}|${s.size}`];
+    return Math.max(0, Math.min(v == null ? s.excess : Number(v) || 0, s.have));
+  };
+
+  const transfer = async (c) => {
+    if (busy) return;
+    const lines = c.sizes.map((s) => ({ s, qty: qtyOf(c, s) })).filter((l) => l.qty > 0);
+    if (!lines.length) return;
     setBusy(true);
-    setResult(null);
-    // One batch id groups the whole rebalance in MovementHistory; the per-line
-    // movementId makes retries idempotent within this batch.
     const batchId = `exc_${Date.now().toString(36)}`;
-    let moved = 0;
-    const failed = [];
-    for (const l of activeLines) {
+    let moved = 0; const failed = [];
+    for (const { s, qty } of lines) {
       let res;
       try {
         res = await applyMovement({
-          type: "transfer_out", productId: l.pid, size: l.size, qty: moveQty(l),
+          type: "transfer_out", productId: c.pid, size: s.size, qty,
           from: FROM, to: TO, actorRole,
           reason: "excess_rebalance",
-          movementId: `${batchId}_${l.pid}_${encodeSizeKey(l.size)}`,
+          movementId: `${batchId}_${c.pid}_${encodeSizeKey(s.size)}`,
           link: { transferId: batchId },
         });
-      } catch (e) {
-        res = { ok: false, reason: String(e?.message || e) };
-      }
-      if (res.ok) moved += moveQty(l);
-      else failed.push({ key: l.key, name: l.name, size: l.size, reason: res.reason });
+      } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
+      if (res.ok) moved += qty; else failed.push(`${s.size}: ${res.reason}`);
     }
+    setMovedTotal((t) => t + moved);
+    setLastResult({ name: c.name, moved, failed });
     setBusy(false);
-    setEdits({});
-    setResult({ moved, failed });
+    // The live stock subscription removes/updates this card automatically; the
+    // next one is then first in the queue.
   };
 
   return (
     <div>
       <div style={{ ...GLASS, padding: "12px 14px", marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 700 }}>Move excess Hub 2 → Central</div>
-        <div style={{ color: GRAY, fontSize: 12, marginTop: 4 }}>
-          Clothing above its approved Hub 2 target. {lines.length} lines, {lines.reduce((t, l) => t + l.excess, 0)} surplus units.
-          {lines.length > MAX_LINES ? ` Showing the biggest ${MAX_LINES} per batch — re-run for the rest.` : ""}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>Move excess Hub 2 → Central</div>
+          <div style={{ fontSize: 12, color: BLUE_L, fontWeight: 700 }}>{remaining} product{remaining === 1 ? "" : "s"} left</div>
+        </div>
+        <div style={{ color: GRAY, fontSize: 11.5, marginTop: 3 }}>
+          One product at a time — adjust quantities if needed, then Transfer. {movedTotal > 0 ? `${movedTotal} units moved this session.` : ""}
         </div>
       </div>
 
-      {result && (
-        <div style={{ ...GLASS, padding: "12px 14px", marginBottom: 12 }}>
-          <div style={{ color: GREEN, fontSize: 13, fontWeight: 600 }}>Moved {result.moved} units → Central.</div>
-          {result.failed.length > 0 && (
-            <div style={{ marginTop: 6 }}>
-              <div style={{ color: RED, fontSize: 12, fontWeight: 600 }}>{result.failed.length} line(s) failed:</div>
-              {result.failed.slice(0, 12).map((f) => (
-                <div key={f.key} style={{ color: GRAY, fontSize: 12 }}>{f.name} · {f.size} — {f.reason}</div>
-              ))}
-            </div>
+      {lastResult && (
+        <div style={{ ...GLASS, padding: "10px 13px", marginBottom: 12 }}>
+          <span style={{ color: GREEN, fontSize: 12.5, fontWeight: 600 }}>{lastResult.name}: {lastResult.moved} units → Central ✓</span>
+          {lastResult.failed.length > 0 && (
+            <div style={{ color: RED, fontSize: 12, marginTop: 4 }}>Failed: {lastResult.failed.join(" · ")}</div>
           )}
         </div>
       )}
 
-      {lines.length === 0 && (
-        <div style={{ color: GRAY, fontSize: 13, padding: 12 }}>
-          No excess found. Either Hub 2 is within targets, or targets haven't been seeded yet.
+      {!card && (
+        <div style={{ ...GLASS, padding: 20, textAlign: "center" }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: GREEN }}>Cleanup finished 🎉</div>
+          <div style={{ color: GRAY, fontSize: 12.5, marginTop: 6 }}>
+            Hub 2 holds nothing above its approved targets{movedTotal > 0 ? ` — ${movedTotal} units returned to Central this session` : ""}.
+          </div>
         </div>
       )}
 
-      {lines.slice(0, MAX_LINES).map((l) => (
-        <div key={l.key} style={{ ...GLASS, padding: "10px 12px", marginBottom: 8, display: "flex", alignItems: "center", gap: 10, opacity: skips[l.key] ? 0.45 : 1 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.name}</div>
-            <div style={{ color: GRAY, fontSize: 11.5 }}>Size {l.size} — have {l.have}, target {l.target}, excess <span style={{ color: AMBER }}>{l.excess}</span></div>
+      {card && (
+        <div style={{ ...GLASS, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 13, padding: "14px 15px 10px" }}>
+            {card.photo
+              ? <img src={card.photo} alt="" style={{ width: 64, height: 64, borderRadius: 12, objectFit: "cover", flexShrink: 0 }} />
+              : <div style={{ width: 64, height: 64, borderRadius: 12, background: "rgba(60,110,255,.1)", flexShrink: 0 }} />}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.25 }}>{card.name}</div>
+              <div style={{ color: AMBER, fontSize: 12, marginTop: 3 }}>{card.totalExcess} units above target</div>
+            </div>
           </div>
-          <input
-            type="number" min={0} max={l.have}
-            value={edits[l.key] ?? l.excess}
-            onChange={(e) => setEdits((prev) => ({ ...prev, [l.key]: e.target.value }))}
-            style={{ ...input, width: 58, textAlign: "center" }}
-            disabled={busy || skips[l.key]}
-          />
-          <button
-            onClick={() => setSkips((prev) => ({ ...prev, [l.key]: !prev[l.key] }))}
-            style={{ ...bGhost, padding: "6px 10px", fontSize: 12, color: skips[l.key] ? GRAY : BLUE_L }}
-            disabled={busy}
-          >
-            {skips[l.key] ? "Include" : "Skip"}
-          </button>
-        </div>
-      ))}
 
-      {activeLines.length > 0 && (
-        <button onClick={confirm} disabled={busy} style={{ ...bGreen, width: "100%", padding: "13px", marginTop: 6, opacity: busy ? 0.6 : 1 }}>
-          {busy ? "Moving…" : `Move ${totalUnits} units (${activeLines.length} lines) → Central`}
-        </button>
+          {/* Size table: Current | Target | Transfer */}
+          <div style={{ padding: "4px 15px 8px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "44px 1fr 1fr 76px", gap: 6, fontSize: 10.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", padding: "4px 0" }}>
+              <span>Size</span><span style={{ textAlign: "center" }}>Current</span><span style={{ textAlign: "center" }}>Target</span><span style={{ textAlign: "center" }}>Transfer</span>
+            </div>
+            {card.sizes.map((s) => (
+              <div key={s.size} style={{ display: "grid", gridTemplateColumns: "44px 1fr 1fr 76px", gap: 6, alignItems: "center", padding: "7px 0", borderTop: "1px solid rgba(120,150,255,.08)" }}>
+                <span style={{ fontWeight: 700, fontSize: 13.5 }}>{s.size}</span>
+                <span style={{ textAlign: "center", fontSize: 13.5 }}>{s.have}</span>
+                <span style={{ textAlign: "center", fontSize: 13.5, color: GRAY }}>{s.target}</span>
+                <input
+                  type="number" min={0} max={s.have}
+                  value={qtyOf(card, s)}
+                  disabled={busy}
+                  onChange={(e) => setEdits((prev) => ({ ...prev, [`${card.pid}|${s.size}`]: e.target.value }))}
+                  style={{ ...input, width: "100%", textAlign: "center", padding: "7px 4px" }}
+                />
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, padding: "6px 15px 15px" }}>
+            <button onClick={() => setSkipped((p) => ({ ...p, [card.pid]: true }))} disabled={busy}
+                    style={{ ...bGhost, flex: 1, padding: "12px" }}>Skip for now</button>
+            <button onClick={() => transfer(card)} disabled={busy || card.sizes.every((s) => qtyOf(card, s) === 0)}
+                    style={{ ...bGreen, flex: 2.2, padding: "12px", opacity: busy ? 0.6 : 1 }}>
+              {busy ? "Transferring…" : `Transfer ${card.sizes.reduce((t, s) => t + qtyOf(card, s), 0)} units to Central`}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

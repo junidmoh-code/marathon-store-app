@@ -86,6 +86,20 @@ export default function Health({ products = [] }) {
   const items = (key) => ex[key]?.items || [];
   const count = (key) => ex[key]?.count || 0;
 
+  // Inventory Health score: share of managed (location, product, size) cells
+  // that are AT or ABOVE their approved target. Blunt on purpose — it moves
+  // toward 100 as refills land and toward 0 as gaps accumulate.
+  const managed = ex.stats?.managedCells || 0;
+  const score = managed ? Math.max(0, Math.round(100 * (1 - count("belowTarget") / managed))) : null;
+  const scoreTone = score == null ? GRAY : score >= 80 ? GREEN : score >= 50 ? AMBER : RED;
+
+  const WARNING_LABEL = {
+    size_not_carried: "Size not carried",
+    inactive_product: "Inactive product with targets",
+    unknown_product: "Product no longer exists",
+    not_clothing: "Not a clothing product",
+  };
+
   // Flatten the shadow plan into displayable rows, grouped by destination.
   const shadowRows = useMemo(() => {
     const out = [];
@@ -110,29 +124,63 @@ export default function Health({ products = [] }) {
 
   return (
     <div>
-      {/* Engine status strip */}
+      {/* Engine status strip + Inventory Health score */}
       <div style={{ ...GLASS, padding: "12px 14px", marginBottom: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-          <div style={{ fontSize: 14, fontWeight: 700 }}>
-            Refill engine{" "}
-            <span style={{ color: config?.enabled ? GREEN : RED, fontSize: 12 }}>
-              {config == null ? "…" : config.enabled ? "ON" : "OFF"}
-            </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ textAlign: "center", minWidth: 74 }}>
+            <div style={{ fontSize: 30, fontWeight: 800, color: scoreTone, lineHeight: 1 }}>{score == null ? "—" : `${score}%`}</div>
+            <div style={{ fontSize: 9.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".06em", marginTop: 3 }}>Inventory Health</div>
           </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {Object.entries(config?.mode || {}).map(([loc, mode]) => (
-              <span key={loc} style={{ fontSize: 11, padding: "3px 8px", borderRadius: 8, border: `1px solid ${MODE_COLOR[mode] || GRAY}`, color: MODE_COLOR[mode] || GRAY }}>
-                {locLabel(loc)}: {mode}
-              </span>
-            ))}
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>
+                Refill engine{" "}
+                <span style={{ color: config?.enabled ? GREEN : RED, fontSize: 12 }}>
+                  {config == null ? "…" : config.enabled ? "ON" : "OFF"}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {Object.entries(config?.mode || {}).map(([loc, mode]) => (
+                  <span key={loc} style={{ fontSize: 11, padding: "3px 8px", borderRadius: 8, border: `1px solid ${MODE_COLOR[mode] || GRAY}`, color: MODE_COLOR[mode] || GRAY }}>
+                    {locLabel(loc)}: {mode}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div style={{ color: GRAY, fontSize: 11.5, marginTop: 6 }}>
+              {lastRun
+                ? `Last scan ${fmtTs(lastRun.finishedAt || lastRun.startedAt)} — ${lastRun.counts ? `${lastRun.counts.intents || 0} created, ${lastRun.counts.shadow || 0} shadow, ${lastRun.counts.closes || 0} closed` : lastRun.skipped || lastRun.error || ""}`
+                : "No scans recorded yet — the engine function may not be deployed."}
+              {managed ? ` · ${managed.toLocaleString()} managed cells` : ""}
+            </div>
           </div>
-        </div>
-        <div style={{ color: GRAY, fontSize: 11.5, marginTop: 6 }}>
-          {lastRun
-            ? `Last scan ${fmtTs(lastRun.finishedAt || lastRun.startedAt)} — ${lastRun.counts ? `${lastRun.counts.intents || 0} created, ${lastRun.counts.shadow || 0} shadow, ${lastRun.counts.closes || 0} closed` : lastRun.skipped || lastRun.error || ""}`
-            : "No scans recorded yet — the engine function may not be deployed."}
         </div>
       </div>
+
+      {/* Engine activity — recent scans */}
+      <Section title="Engine activity (recent scans)" count={runs.length} tone={BLUE_L}>
+        {runs.map((r) => (
+          <Row key={r.id}
+            left={fmtTs(r.finishedAt || r.startedAt)}
+            mid={r.error ? `error: ${String(r.error).slice(0, 60)}` : r.skipped ? r.skipped : null}
+            right={r.counts ? `${r.counts.intents || 0} created · ${r.counts.shadow || 0} shadow · ${r.counts.closes || 0} closed` : "—"}
+            tone={r.error ? RED : BLUE_L}
+          />
+        ))}
+      </Section>
+
+      {/* Policy warnings — review these before trusting live refills */}
+      <Section title="Policy warnings" count={count("policyWarnings")} tone={AMBER}>
+        {items("policyWarnings").slice(0, MAX_ROWS).map((w, i) => (
+          <Row key={i}
+            left={`${nameOf(w.pid)}${w.sizeKey ? ` · ${decodeSizeKey(w.sizeKey)}` : ""}`}
+            mid={locLabel(w.loc)}
+            right={WARNING_LABEL[w.kind] || w.kind}
+            tone={AMBER}
+          />
+        ))}
+        {more(count("policyWarnings"))}
+      </Section>
 
       {/* Shadow plan — the flip-to-live evidence */}
       <Section title="Engine would order now (shadow)" count={shadowRows.length} tone={AMBER} defaultOpen>

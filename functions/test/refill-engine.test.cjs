@@ -177,6 +177,33 @@ test("confidence: negative cells + adjustments + uncounted sends lower the score
   assert.equal(e.factors.negativeCells, 1);
 });
 
+test("policy warnings: uncarried size, inactive product, unknown product", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: { name: "Tee", productType: "clothing", sizes: ["M"] } },
+    targets: {
+      "marathon-pe": {
+        p1: { M: { target: 3, minQty: 2 }, XXXL: { target: 1, minQty: 1 } }, // XXXL not carried, no stock
+        pGone: { M: { target: 3, minQty: 2 } },                              // product deleted
+      },
+    },
+    stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: {}, central: {}, trophy: {} },
+    movements: [], // no sales in 30d → p1 inactive warning too
+  }));
+  const kinds = plan.exceptions.policyWarnings.items.map((w) => w.kind).sort();
+  assert.deepEqual(kinds, ["inactive_product", "size_not_carried", "unknown_product"]);
+});
+
+test("policy warnings: recent sale suppresses inactive_product; stock legitimises a size", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: { name: "Tee", productType: "clothing", sizes: ["M"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 }, L: { target: 3, minQty: 2 } } } },
+    // L isn't in the catalog but hub2 physically holds it → not a warning.
+    stock: { "marathon-pe": { p1: { M: cell(3), L: cell(3) } }, hub2: { p1: { L: cell(2) } }, central: {}, trophy: {} },
+    movements: [{ type: "sold", from: "marathon-pe", productId: "p1", size: "M", qty: 1, ts: iso(24) }],
+  }));
+  assert.equal(plan.exceptions.policyWarnings.count, 0);
+});
+
 test("saTodayKey matches device-local SA format (0-based month)", () => {
   // 2026-07-11 23:30 UTC = 2026-07-12 01:30 SA → key uses SA date, month 0-based
   assert.equal(saTodayKey(Date.parse("2026-07-11T23:30:00Z")), "2026-6-12");

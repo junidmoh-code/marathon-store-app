@@ -106,17 +106,33 @@ for (const [k, v] of sample) console.error(`  /stock_targets/${k} = {target:${v.
 
 if (!COMMIT) { console.error("\nDRY RUN — re-run with --commit to write /stock_targets and /config/refillEngine."); process.exit(0); }
 
-// ── commit: chunked deep PATCHes ──────────────────────────────────────────────
-const keys = Object.keys(updates);
-const CHUNK = 400;
-for (let i = 0; i < keys.length; i += CHUNK) {
-  const chunk = {};
-  for (const k of keys.slice(i, i + CHUNK)) chunk[k] = updates[k];
-  const f = path.join(OUT_DIR, ".seed-chunk.json");
-  writeFileSync(f, JSON.stringify(chunk));
-  execFileSync("firebase", ["database:update", "/stock_targets", f, "--project", PROJECT, "-f"], { stdio: ["ignore", "ignore", "inherit"] });
+if (process.argv.includes("--replace")) {
+  // Full replace: one atomic set of the whole node. Use when the approved set
+  // SHRINKS (e.g. policy refinement) so stale cells actually disappear —
+  // PATCH-mode re-seeds can only add/overwrite, never remove.
+  const tree = {};
+  for (const [k, v] of Object.entries(updates)) {
+    const [loc, pid, sizeKey] = k.split("/");
+    ((tree[loc] ||= {})[pid] ||= {})[sizeKey] = v;
+  }
+  const f = path.join(OUT_DIR, ".seed-full.json");
+  writeFileSync(f, JSON.stringify(tree));
+  execFileSync("firebase", ["database:set", "/stock_targets", f, "--project", PROJECT, "-f"], { stdio: ["ignore", "ignore", "inherit"] });
   rmSync(f, { force: true });
-  console.error(`  wrote cells ${i + 1}–${Math.min(i + CHUNK, keys.length)} of ${keys.length}`);
+  console.error(`  REPLACED /stock_targets with ${Object.keys(updates).length} cells`);
+} else {
+  // ── commit: chunked deep PATCHes (additive) ─────────────────────────────────
+  const keys = Object.keys(updates);
+  const CHUNK = 400;
+  for (let i = 0; i < keys.length; i += CHUNK) {
+    const chunk = {};
+    for (const k of keys.slice(i, i + CHUNK)) chunk[k] = updates[k];
+    const f = path.join(OUT_DIR, ".seed-chunk.json");
+    writeFileSync(f, JSON.stringify(chunk));
+    execFileSync("firebase", ["database:update", "/stock_targets", f, "--project", PROJECT, "-f"], { stdio: ["ignore", "ignore", "inherit"] });
+    rmSync(f, { force: true });
+    console.error(`  wrote cells ${i + 1}–${Math.min(i + CHUNK, keys.length)} of ${keys.length}`);
+  }
 }
 const cf = path.join(OUT_DIR, ".seed-config.json");
 writeFileSync(cf, JSON.stringify(ENGINE_CONFIG));

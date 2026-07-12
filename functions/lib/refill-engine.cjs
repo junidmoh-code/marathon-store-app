@@ -190,6 +190,7 @@ function computeRefillPlan(snapshot) {
   const intents = [];
   const belowTarget = [];
   const missingSizes = [];
+  let managedCells = 0;   // cells with a resolvable target > 0 (Health-score denominator)
   const passThrough = new Map(); // `${hub}|${pid}|${sizeKey}` → qty stores couldn't get
   const maxUnits = num(config?.maxUnitsPerIntent) || 20;
 
@@ -205,6 +206,7 @@ function computeRefillPlan(snapshot) {
         const size = rawSize(pid, sizeKey);
         const t = resolveTarget(ctx, dest, pid, size);
         if (!t || t.target <= 0) continue;
+        managedCells++;
         const q = cellQty(stock, dest, pid, size);
         const have = avail(q);
         const inb = (inbound.get(`${dest}|${pid}|${sizeKey}`) || 0) +
@@ -280,6 +282,37 @@ function computeRefillPlan(snapshot) {
       }
     }
   }
+  // ── policy warnings: inconsistencies to review BEFORE trusting refills ─────
+  // (owner request after the first shadow scan — surface bad targets instead of
+  // silently generating requests from them)
+  const policyWarnings = [];
+  const saleCutoff30 = nowMs - 30 * 864e5;
+  const soldPidsRecently = new Set();
+  for (const m of movements) {
+    if (m?.type === "sold" && m.productId && Date.parse(m.ts || "") >= saleCutoff30) soldPidsRecently.add(m.productId);
+  }
+  const anyStockOfSize = (pid, sizeKey) =>
+    Object.keys(stock).some((loc) => num(stock?.[loc]?.[pid]?.[sizeKey]?.qty) > 0);
+  for (const [loc, byPid] of Object.entries(targets)) {
+    for (const [pid, bySize] of Object.entries(byPid || {})) {
+      const p = products?.[pid];
+      if (!p) { policyWarnings.push({ kind: "unknown_product", loc, pid, note: "target on a product that no longer exists" }); continue; }
+      if (!isClothing(p)) { policyWarnings.push({ kind: "not_clothing", loc, pid, note: "target on a non-clothing product" }); continue; }
+      const catalog = new Set((p.sizes || []).map((s) => encodeSizeKey(s)));
+      for (const sizeKey of Object.keys(bySize || {})) {
+        const t = bySize[sizeKey];
+        if (!t || num(t.target) <= 0) continue;
+        if (!catalog.has(sizeKey) && !anyStockOfSize(pid, sizeKey)) {
+          policyWarnings.push({ kind: "size_not_carried", loc, pid, sizeKey, note: "target on a size this product doesn't carry and no stock exists anywhere" });
+        }
+      }
+      if (loc !== "hub2" && !soldPidsRecently.has(pid) && !recentSaleSet.has(`${loc}|${pid}`)) {
+        // Only warn once per (loc,pid): targeted at a shop but nothing sold in 30d.
+        policyWarnings.push({ kind: "inactive_product", loc, pid, note: "has targets but no sale anywhere in 30 days" });
+      }
+    }
+  }
+
   // Failed refills (visible 48h): any Shop Refill line rejected recently.
   const failedRefills = [];
   for (const [id, o] of Object.entries(orders)) {
@@ -294,7 +327,9 @@ function computeRefillPlan(snapshot) {
     intents: plannedIntents,
     closes,
     errors,
+    stats: { managedCells },
     exceptions: {
+      policyWarnings: cap(policyWarnings),
       belowTarget: cap(belowTarget),
       missingSizes: cap(missingSizes),
       stuckRefills: cap(stuckRefills),

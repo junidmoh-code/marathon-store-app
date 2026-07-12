@@ -35,10 +35,19 @@ const esc = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')
 const rows = [["productId", "name", "location", "size", "final", "finalMinQty"].join(",")];
 let cells = 0;
 for (const p of active) {
-  // Policy sizes this product actually carries: catalog sizes first, falling
-  // back to sizes seen in the demand data for catalog-less legacy products.
-  const carried = (p.catalogSizes?.length ? p.catalogSizes : Object.keys(p.sizes))
-    .map(String).filter((s) => STANDARD_RUN[s] != null);
+  // Owner refinement (2026-07-12, after first shadow scan): a size is "carried"
+  // only with EVIDENCE it actually exists for this product — sold, demanded
+  // (OOS event), or physically held anywhere in the network. Catalog sizes[]
+  // alone is NOT enough: catalogs list the full S–XXXL run for products that
+  // never stocked half of it, which flooded the scan with 3,363 phantom
+  // missing-size warnings.
+  const carried = Object.entries(p.sizes)
+    .filter(([size, s]) => STANDARD_RUN[size] != null && (
+      (s["marathon-pe"]?.sold90 || 0) + (s.trophy?.sold90 || 0) + (s.oos90 || 0) > 0 ||
+      (s["marathon-pe"]?.qty || 0) > 0 || (s.trophy?.qty || 0) > 0 ||
+      (s.hub2Qty || 0) > 0 || (s.centralQty || 0) > 0
+    ))
+    .map(([size]) => size);
   for (const loc of LOCATIONS) {
     for (const size of carried) {
       const target = STANDARD_RUN[size];

@@ -116,8 +116,12 @@ async function runScan() {
 
     for (const [dest, intents] of liveByDest) {
       const isStoreLeg = UNIVERSE_BY_SHOP[dest] != null;
-      // ONE R-number per destination per run (mirrors "one R### per cart").
+      // ONE R-number per destination per run (mirrors "one R### per cart"), and
+      // ONE shared createdAt per destination — the warehouse Clothing tab groups
+      // cards by (product, destShop, createdAt), so a shared stamp makes all of
+      // one product's sizes land on a single per-store card.
       const refillNum = isStoreLeg && intents.length ? await drawRefillNumber(db, nowMs) : null;
+      const destCreatedAt = new Date().toISOString();
       let lineIdx = 0;
       for (const intent of intents) {
         const { productId: pid, sizeKey, size, qty, source } = intent;
@@ -137,7 +141,7 @@ async function runScan() {
         if (isStoreLeg) {
           lineIdx += 1;
           orderId = `${refillNum}-${lineIdx}`;
-          orderCreatedAt = new Date().toISOString();
+          orderCreatedAt = destCreatedAt;
           const p = products[pid] || {};
           // EXACT shape of placeRefillRequests' order node (App.jsx) + autoRefill
           // marker so the engine's inbound math can tell its own orders apart.
@@ -172,7 +176,7 @@ async function runScan() {
 
     // ── exceptions snapshot + hourly confidence ──────────────────────────────
     counts.exceptions = Object.values(plan.exceptions).reduce((t, e) => t + e.count, 0);
-    await db.ref("stock_exceptions/latest").set({ computedAt: startedAt, runId, ...plan.exceptions });
+    await db.ref("stock_exceptions/latest").set({ computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions });
     if (new Date(nowMs).getUTCMinutes() < 15) {
       const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex });
       await db.ref("stock_confidence").set({ computedAt: startedAt, byLocation: confidence });
