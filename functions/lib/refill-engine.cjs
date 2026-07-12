@@ -253,12 +253,30 @@ function computeRefillPlan(snapshot) {
     }
   }
 
-  // ── circuit breaker ─────────────────────────────────────────────────────────
+  // ── circuit breaker — FAIR across destinations ──────────────────────────────
+  // A global top-N starves the smaller locations (Marathon PE's backlog alone
+  // can fill the cap, so Trophy and hub2 never surface). Round-robin across
+  // destinations instead: each dest's list is priority-sorted, then slots are
+  // dealt one per dest until the cap is reached.
   const maxIntents = num(config?.maxIntentsPerRun) || 200;
   let plannedIntents = intents;
   if (intents.length > maxIntents) {
-    errors.push(`circuit breaker: ${intents.length} intents computed, capped to ${maxIntents} (high-priority first)`);
-    plannedIntents = [...intents].sort((a, b) => (a.priority === b.priority ? 0 : a.priority === "high" ? -1 : 1)).slice(0, maxIntents);
+    errors.push(`circuit breaker: ${intents.length} intents computed, capped to ${maxIntents} (fair per destination, high-priority first)`);
+    const byDest = new Map();
+    for (const i of intents) {
+      if (!byDest.has(i.dest)) byDest.set(i.dest, []);
+      byDest.get(i.dest).push(i);
+    }
+    for (const list of byDest.values()) list.sort((a, b) => (a.priority === b.priority ? 0 : a.priority === "high" ? -1 : 1));
+    plannedIntents = [];
+    const queues = [...byDest.values()];
+    for (let round = 0; plannedIntents.length < maxIntents; round++) {
+      let dealt = false;
+      for (const q of queues) {
+        if (round < q.length && plannedIntents.length < maxIntents) { plannedIntents.push(q[round]); dealt = true; }
+      }
+      if (!dealt) break;
+    }
   }
 
   // ── inventory intelligence (plan §Inventory Intelligence — CLOTHING ONLY) ───
@@ -283,10 +301,16 @@ function computeRefillPlan(snapshot) {
     for (const loc of dests) {
       for (const [sizeKey, cell] of Object.entries(stock?.[loc]?.[pid] || {})) {
         const t = targets?.[loc]?.[pid]?.[sizeKey];
-        if (!t || typeof t.target !== "number") continue;
-        const ex = num(cell?.qty) - t.target;
+        // Hub 2 is STRICTLY a refill buffer: a product/size with NO approved
+        // target has no business sitting there — its whole quantity is excess
+        // (target 0). Stores keep the target requirement (they hold what they
+        // hold; only targeted cells are judged).
+        const target = (t && typeof t.target === "number") ? t.target
+          : (loc === "hub2" ? 0 : null);
+        if (target == null) continue;
+        const ex = num(cell?.qty) - target;
         const minEx = loc === "hub2" ? 1 : storeExcessMin;
-        if (ex >= minEx) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex });
+        if (ex >= minEx) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target, excess: ex });
       }
     }
   }

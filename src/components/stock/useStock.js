@@ -114,6 +114,13 @@ export function useEngineShadow() {
   return usePath("refill_engine/shadow");
 }
 
+// /refill_engine/open → { dest: { pid: { sizeKey: {refillId,orderId,qty,...} } } }
+// The engine's LIVE open-intent locks — what it has already created and is
+// waiting on (R### orders in the warehouse queue / Source requests).
+export function useEngineOpen() {
+  return usePath("refill_engine/open");
+}
+
 // /refill_engine/runs → last runs, newest first (keys are time-sortable).
 export function useEngineRuns(limit = 8) {
   const val = usePath("refill_engine/runs");

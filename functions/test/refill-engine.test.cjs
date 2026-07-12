@@ -163,6 +163,41 @@ test("recycled R-number (createdAt mismatch) does NOT close the lock; it goes st
   assert.ok(plan.exceptions.stuckRefills.count >= 1, "80h old lock is stale");
 });
 
+test("circuit breaker is FAIR across destinations (no store starves another)", () => {
+  const products = { p1: { productType: "clothing", sizes: [] } };
+  const targets = { "marathon-pe": { p1: {} }, trophy: { p1: {} } };
+  const stockPe = { p1: {} }, stockTr = { p1: {} }, stockHub = { p1: {} };
+  for (let i = 0; i < 20; i++) {
+    const s = `Z${i}`;
+    products.p1.sizes.push(s);
+    targets["marathon-pe"].p1[s] = { target: 3, minQty: 3 };  // ALL high priority
+    stockPe.p1[s] = cell(0); stockHub.p1[s] = cell(9);
+    if (i < 5) { targets.trophy.p1[s] = { target: 3, minQty: 1 }; stockTr.p1[s] = cell(0); } // few, normal priority
+  }
+  const plan = computeRefillPlan(base({
+    config: { ...CONFIG, maxIntentsPerRun: 10 },
+    products, targets,
+    stock: { "marathon-pe": stockPe, trophy: stockTr, hub2: stockHub, central: {} },
+  }));
+  assert.equal(plan.intents.length, 10);
+  const trophyGot = plan.intents.filter((i) => i.dest === "trophy").length;
+  assert.equal(trophyGot, 5, "trophy gets its full share despite PE's bigger, higher-priority backlog");
+});
+
+test("hub2 excess includes UNTARGETED products (strict buffer: target 0)", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: PRODUCTS.p1, pDormant: { productType: "clothing", sizes: ["M"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: {
+      "marathon-pe": { p1: { M: cell(3) }, pDormant: { M: cell(4) } },  // store untargeted → NOT excess
+      hub2: { pDormant: { M: cell(6) } },                                // hub2 untargeted → ALL excess
+      central: {}, trophy: {},
+    },
+  }));
+  const items = plan.exceptions.excess.items;
+  assert.deepEqual(items, [{ loc: "hub2", pid: "pDormant", sizeKey: "M", have: 6, target: 0, excess: 6 }]);
+});
+
 test("circuit breaker caps intents and reports an error", () => {
   const targets = { "marathon-pe": { p1: {} } };
   const stockPe = { p1: {} }; const stockHub = { p1: {} };
