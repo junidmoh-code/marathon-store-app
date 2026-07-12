@@ -10870,7 +10870,7 @@ function SourceOnHoldTab({ items, fulfilCtx }) {
           hub, then the exact same response write); without it, plain Sent. */}
       {pending.map(item => {
         const pid = fulfilCtx ? fulfilCtx.resolveId({ productId: item.productId, productName: item.productName }) : null;
-        const canFulfil = !!(fulfilCtx?.canTransfer && pid && item.size);
+        const canFulfil = !!(fulfilCtx?.canTransfer && pid && item.size && fulfilCtx.knownLoc(item.hub));
         const isOpen = openComposite === item.composite;
         return (
         <div key={`onhold-${item.composite}`} style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"1.1rem 1.25rem", boxShadow:"0 0 16px rgba(60,110,255,.15)", borderLeft:`3px solid ${BLUE}` }}>
@@ -11689,6 +11689,10 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   }, [products]);
   const fulfilCtx = useMemo(() => ({
     canTransfer, actorRole, locationsReg,
+    // A transfer destination must be a REGISTERED stock location — On Hold
+    // items can carry hubC (clothing-customer routing), which has no /stock
+    // presence; those cards keep the plain Sent button instead.
+    knownLoc: (id) => !!id && transferTargets(locationsReg).some(l => l.id === id),
     resolveId: (product) => {
       if (!product) return null;
       if (product.productId) return product.productId;
