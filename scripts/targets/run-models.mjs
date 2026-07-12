@@ -190,7 +190,7 @@ async function callGemini(batch, keys) {
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
       contents: [{ role: "user", parts: [{ text: batchUserMessage(batch) }] }],
-      generationConfig: { responseMimeType: "application/json", responseSchema: gSchema, maxOutputTokens: 32000 },
+      generationConfig: { responseMimeType: "application/json", responseSchema: gSchema, maxOutputTokens: 65536 },
     }),
   });
   if (!res.ok) {
@@ -203,11 +203,32 @@ async function callGemini(batch, keys) {
     throw new Error(`Gemini ${res.status}: ${body.slice(0, 300)}`);
   }
   const data = await res.json();
+  if (data.candidates?.[0]?.finishReason === "MAX_TOKENS") throw new Error("gemini output truncated (MAX_TOKENS)");
   const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("");
   return { parsed: JSON.parse(text), usage: { in: data.usageMetadata?.promptTokenCount, out: data.usageMetadata?.candidatesTokenCount } };
 }
 
 const CALLERS = { claude: callClaude, gpt: callGpt, gemini: callGemini };
+
+// A truncated/unparseable response usually means the batch was too big for the
+// model's output budget — split it and merge, down to a floor of 5 products.
+async function callSplitting(provider, batch, keys) {
+  try { return await CALLERS[provider](batch, keys); }
+  catch (e) {
+    const splittable = /JSON|truncated|Unterminated|Unexpected/i.test(String(e.message));
+    if (!splittable || batch.length <= 5) throw e;
+    console.error(`  ${provider}: splitting batch of ${batch.length} after: ${String(e.message).slice(0, 80)}`);
+    const mid = Math.ceil(batch.length / 2);
+    const [a, b] = await Promise.all([
+      callSplitting(provider, batch.slice(0, mid), keys),
+      callSplitting(provider, batch.slice(mid), keys),
+    ]);
+    return {
+      parsed: { targets: [...(a.parsed.targets || []), ...(b.parsed.targets || [])] },
+      usage: { in: (a.usage?.in || 0) + (b.usage?.in || 0), out: (a.usage?.out || 0) + (b.usage?.out || 0) },
+    };
+  }
+}
 
 // ── normalization: clamp ints, drop unknown ids/locations, count dropouts ─────
 function normalize(parsed, batch, dropLog) {
@@ -253,11 +274,14 @@ async function runProvider(provider, keys) {
         result = JSON.parse(readFileSync(cachePath, "utf8"));
       } else {
         for (let attempt = 1; ; attempt++) {
-          try { result = await CALLERS[provider](batches[i], keys); break; }
+          try { result = await callSplitting(provider, batches[i], keys); break; }
           catch (e) {
-            if (attempt >= 3) throw new Error(`${provider} batch ${i}: ${e.message}`);
-            console.error(`  ${provider} batch ${i} attempt ${attempt} failed (${String(e.message).slice(0, 120)}), retrying...`);
-            await new Promise((r) => setTimeout(r, 15000 * attempt));
+            const rateLimited = /429|rate|quota|overloaded|529/i.test(String(e.message));
+            const max = rateLimited ? 6 : 3;
+            if (attempt >= max) throw new Error(`${provider} batch ${i}: ${e.message}`);
+            const wait = rateLimited ? 60000 * attempt : 15000 * attempt;
+            console.error(`  ${provider} batch ${i} attempt ${attempt} failed (${String(e.message).slice(0, 120)}), retrying in ${wait / 1000}s...`);
+            await new Promise((r) => setTimeout(r, wait));
           }
         }
         writeFileSync(cachePath, JSON.stringify(result));

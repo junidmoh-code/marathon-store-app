@@ -67,7 +67,12 @@ for (const p of products) {
 
       stats.cells++;
       const spread = Math.max(...filled) - Math.min(...filled);
-      if (spread === 0) stats.unanimous++; else if (spread <= 1) stats.within1++; else stats.disagree++;
+      // Agreement stats only over cells ALL THREE models actually answered —
+      // null-filled cells would otherwise inflate "unanimous".
+      if (vals.every((v) => v !== null)) {
+        stats.allThree = (stats.allThree || 0) + 1;
+        if (spread === 0) stats.unanimous++; else if (spread <= 1) stats.within1++; else stats.disagree++;
+      }
       const flags = [];
       if (spread > 1) flags.push("DISAGREE");
       if (baseline > 0 && fin > 2 * baseline) flags.push("HIGH");
@@ -95,13 +100,15 @@ const csvPath = path.join(OUT_DIR, `targets-comparison-${date}.csv`);
 writeFileSync(csvPath, [headers.join(","), ...rows.map((r) => headers.map((h) => csvEsc(r[h])).join(","))].join("\n") + "\n");
 
 // ── summary.md ────────────────────────────────────────────────────────────────
-const pct = (n) => ((100 * n) / Math.max(stats.cells, 1)).toFixed(1) + "%";
+const all3 = Math.max(stats.allThree || 0, 1);
+const pct = (n) => ((100 * n) / all3).toFixed(1) + "%";
 const top = rows.filter((r) => r.spread > 1).slice(0, 20);
 const md = [
   `# Three-model stock-target comparison — ${date}`, "",
   `Window: ${meta.windowStartSa} → ${date} (**${meta.actualLedgerDays} days of real ledger history** — no seasonality claims possible).`,
   `Models: claude=${model.claude.model}, gpt=${model.gpt.model}, gemini=${model.gemini.model}.`, "",
-  `## Agreement across ${stats.cells} (product × location × size) cells`,
+  `## Agreement across ${stats.allThree || 0} of ${stats.cells} cells answered by all three models`,
+  `- Per-model missing cells: claude=${stats.missingFromModel.claude}, gpt=${stats.missingFromModel.gpt}, gemini=${stats.missingFromModel.gemini} (missing cells fall back to the other models' median)`,
   `- Unanimous: ${stats.unanimous} (${pct(stats.unanimous)})`,
   `- Within 1 unit: ${stats.within1} (${pct(stats.within1)})`,
   `- Disagree by >1: ${stats.disagree} (${pct(stats.disagree)}) — these are flagged DISAGREE in the CSV and sorted to the top`, "",
