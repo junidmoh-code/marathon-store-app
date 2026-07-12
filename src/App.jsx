@@ -6402,6 +6402,9 @@ function WarehouseView({ products = [], orders, onExit }) {
       if (!b.destShop && o.destShop) b.destShop = o.destShop;
       // Engine-created requests get an AUTO chip so staff know no human placed it.
       if (o.autoRefill) b.autoRefill = true;
+      // Shadow-mode previews are READ-ONLY: they show exactly how Live Mode will
+      // look but can't be fulfilled (fulfillCRBatch also refuses them).
+      if (o.autoShadow) b.shadow = true;
       b.items.push({
         orderId: o.id,
         size: o.size,
@@ -6846,6 +6849,9 @@ function WarehouseView({ products = [], orders, onExit }) {
   // so historical Insights + the OOS Tracker see it, exactly as before.
   // Returns { ok, fail, errors[] } so the sheet can surface partial failures.
   const fulfillCRBatch = async (batch, plan) => {
+    // Shadow previews are never fulfillable — hard guard in case any UI path
+    // slips one through (the card itself renders read-only).
+    if (batch?.shadow) return { ok: 0, fail: 0, errors: ["Shadow preview — enable Live Mode to fulfil"] };
     const now = new Date().toISOString();
     const store = batch.destShop;
     let ok = 0, fail = 0; const errors = [];
@@ -7689,7 +7695,9 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
           <div style={{ color:"rgba(255,255,255,.45)", fontSize:10, marginTop:1 }}>
             {batch.destShop ? `${labelFor(batch.destShop)} · ` : ""}{fmtTime(batch.createdAt)}
             {batch.autoRefill && (
-              <span style={{ marginLeft:6, fontSize:9, fontWeight:700, color:"#FBBF24", border:"1px solid rgba(251,191,36,.4)", borderRadius:5, padding:"1px 5px", verticalAlign:"middle" }}>AUTO</span>
+              <span style={{ marginLeft:6, fontSize:9, fontWeight:700, color:"#FBBF24", border:"1px solid rgba(251,191,36,.4)", borderRadius:5, padding:"1px 5px", verticalAlign:"middle" }}>
+                {batch.shadow ? "AUTO (SHADOW)" : "AUTO"}
+              </span>
             )}
           </div>
         </div>
@@ -7700,7 +7708,24 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
         <span style={{ color:"#4A7FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s", fontSize:13, flexShrink:0 }}>▸</span>
       </div>
 
-      {open && (
+      {open && batch.shadow && (
+        // Shadow preview: exactly what Live Mode will create, but read-only.
+        <div style={{ padding:"2px 11px 11px", borderTop:"1px solid rgba(251,191,36,.2)" }}>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:10 }}>
+            {pending.map(it => (
+              <span key={it.orderId} style={{ border:"1px solid rgba(251,191,36,.35)", background:"rgba(251,191,36,.07)", borderRadius:10, padding:"6px 11px", fontSize:12.5 }}>
+                <b style={{ color:"#fff" }}>{it.size}</b>
+                <span style={{ color:"#FBBF24", fontWeight:700 }}> ×{it.qty}</span>
+              </span>
+            ))}
+          </div>
+          <div style={{ color:"rgba(255,255,255,.4)", fontSize:11, marginTop:10 }}>
+            Shadow preview — the engine would create this request for real in Live Mode. Nothing to action yet.
+          </div>
+        </div>
+      )}
+
+      {open && !batch.shadow && (
         <div style={{ padding:"2px 11px 11px", borderTop:"1px solid rgba(60,110,255,.12)" }}>
           {resolved.length > 0 && <SizeStatusChips items={resolved} />}
 

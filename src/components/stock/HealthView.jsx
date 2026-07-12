@@ -19,7 +19,7 @@
 import React, { useMemo, useState } from "react";
 import {
   useStockExceptions, useEngineShadow, useEngineOpen, useEngineRuns,
-  useEngineConfig, useRefillRequests, useStockCells,
+  useEngineConfig, useRefillRequests,
 } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
@@ -45,64 +45,44 @@ function fmtTs(iso) {
   return today ? hm : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${hm}`;
 }
 
-// ── Auto Refills drill-in: the engine's current plan as actionable cards ──────
-// Shadow entries grouped per (store, product). Staff review size by size —
-// reject what isn't physically findable — and Transfer executes real hub2→store
-// movements immediately (same applyMovement path as every transfer). The next
-// scan reconciles whatever remains.
-function AutoRefillCards({ shadow, openIndex, byId, actorRole, hubCells }) {
-  const [edits, setEdits] = useState({});     // `${dest}|${pid}|${sizeKey}` → qty
-  const [rejects, setRejects] = useState({});
-  const [busyKey, setBusyKey] = useState(null);
-  const [done, setDone] = useState({});       // cardKey → {moved, failed[]}
+// ── Auto Refills drill-in: MONITORING ONLY (owner decision 2026-07-12 v4) ─────
+// Health never processes daily work — the warehouse Clothing queue and the
+// Source Hub 2 Refill queue are the execution surfaces (shadow copies included).
+// This screen just summarises the engine's pipeline, with every route explicit:
+//   Waiting for Hub 2   — store requests (Hub 2 → Marathon PE / Trophy)
+//   Waiting for Central — hub2 requests (Central → Hub 2)
+//   Rejected            — sizes the warehouse declined (48h window)
+function AutoRefillSummary({ shadow, openIndex, failedRefills, byId }) {
   const [destFilter, setDestFilter] = useState("all");
 
-  const canAct = ["store", "warehouse", "admin"].includes(actorRole);
-  const cards = useMemo(() => {
+  const rows = useMemo(() => {
     const byCard = new Map();
+    const add = (dest, pid, sizeKey, qty, kind, extra) => {
+      const key = `${dest}|${pid}|${kind}`;
+      if (!byCard.has(key)) byCard.set(key, { key, dest, pid, kind, sizes: [], ...extra });
+      byCard.get(key).sizes.push({ size: decodeSizeKey(sizeKey), qty });
+    };
     for (const [dest, byPid] of Object.entries(shadow || {})) {
       for (const [pid, bySize] of Object.entries(byPid || {})) {
-        const key = `${dest}|${pid}`;
-        if (!byCard.has(key)) byCard.set(key, { key, dest, pid, sizes: [] });
-        for (const [sizeKey, s] of Object.entries(bySize || {})) {
-          byCard.get(key).sizes.push({ sizeKey, size: decodeSizeKey(sizeKey), qty: s.qty, priority: s.priority });
+        for (const [sizeKey, s] of Object.entries(bySize || {})) add(dest, pid, sizeKey, s.qty, "shadow");
+      }
+    }
+    for (const [dest, byPid] of Object.entries(openIndex || {})) {
+      for (const [pid, bySize] of Object.entries(byPid || {})) {
+        for (const [sizeKey, e] of Object.entries(bySize || {})) {
+          if (e) add(dest, pid, sizeKey, e.qty || 1, "live", { orderId: e.orderId });
         }
       }
     }
     const out = [...byCard.values()];
     out.forEach((c) => c.sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size)));
-    return out.sort((a, b) => a.dest.localeCompare(b.dest) ||
-      (b.sizes.some((s) => s.priority === "high") ? 1 : 0) - (a.sizes.some((s) => s.priority === "high") ? 1 : 0));
-  }, [shadow]);
+    return out;
+  }, [shadow, openIndex]);
 
-  // LIVE open intents — requests the engine has ALREADY created (R### orders in
-  // the warehouse Clothing queue / Source requests). Read-only status cards so
-  // it's always visible WHERE each request went.
-  const liveCards = useMemo(() => {
-    const byCard = new Map();
-    for (const [dest, byPid] of Object.entries(openIndex || {})) {
-      for (const [pid, bySize] of Object.entries(byPid || {})) {
-        const key = `${dest}|${pid}`;
-        if (!byCard.has(key)) byCard.set(key, { key, dest, pid, sizes: [] });
-        for (const [sizeKey, e] of Object.entries(bySize || {})) {
-          if (!e) continue;
-          byCard.get(key).sizes.push({ sizeKey, size: decodeSizeKey(sizeKey), qty: e.qty || 1, orderId: e.orderId || null });
-        }
-      }
-    }
-    const out = [...byCard.values()].filter((c) => c.sizes.length);
-    out.forEach((c) => c.sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size)));
-    return out.sort((a, b) => a.dest.localeCompare(b.dest));
-  }, [openIndex]);
-
-  const destsPresent = useMemo(() => {
-    const s = new Set();
-    for (const c of cards) s.add(c.dest);
-    for (const c of liveCards) s.add(c.dest);
-    return [...s].sort();
-  }, [cards, liveCards]);
-  const shown = destFilter === "all" ? cards : cards.filter((c) => c.dest === destFilter);
-  const shownLive = destFilter === "all" ? liveCards : liveCards.filter((c) => c.dest === destFilter);
+  const dests = [...new Set(rows.map((r) => r.dest))].sort();
+  const shown = destFilter === "all" ? rows : rows.filter((r) => r.dest === destFilter);
+  const storeRows = shown.filter((r) => r.dest !== "hub2");
+  const hubRows = shown.filter((r) => r.dest === "hub2");
 
   const pill = (on) => ({
     padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer",
@@ -111,121 +91,49 @@ function AutoRefillCards({ shadow, openIndex, byId, actorRole, hubCells }) {
     color: on ? BLUE_L : "rgba(255,255,255,.45)",
   });
 
-  const availOf = (pid, size) => Math.max(Number(hubCells?.[pid]?.[String(size)]?.qty) || 0, 0);
-  const qtyOf = (c, s) => {
-    const v = edits[`${c.key}|${s.sizeKey}`];
-    const cap = Math.min(s.qty, availOf(c.pid, s.size));
-    return Math.max(0, Math.min(v == null ? cap : v, cap));
+  const summaryCard = (c) => {
+    const p = byId.get(c.pid);
+    const route = c.dest === "hub2" ? "Central → Hub 2" : `Hub 2 → ${locLabel(c.dest)}`;
+    const queue = c.dest === "hub2" ? "Source → Hub 2 Refill" : "Warehouse → Clothing";
+    return (
+      <ProductCard key={c.key}
+        photo={p?.photoUrl} name={p?.name || c.pid}
+        badges={<>
+          <Badge tone={BLUE_L}>{route}</Badge>
+          <Badge tone={c.kind === "shadow" ? AMBER : GREEN}>{c.kind === "shadow" ? "AUTO (SHADOW)" : "AUTO · LIVE"}</Badge>
+        </>}
+        sub={`${c.sizes.map((s) => `${s.size}×${s.qty}`).join(" · ")} — in ${queue}`}
+      />
+    );
   };
 
-  const transfer = async (c) => {
-    if (busyKey || !canAct) return;
-    const lines = c.sizes.filter((s) => !rejects[`${c.key}|${s.sizeKey}`]).map((s) => ({ s, qty: qtyOf(c, s) })).filter((l) => l.qty > 0);
-    if (!lines.length) return;
-    setBusyKey(c.key);
-    const batch = `har_${Date.now().toString(36)}`;
-    let moved = 0; const failed = [];
-    for (const { s, qty } of lines) {
-      let res;
-      try {
-        res = await applyMovement({
-          type: "transfer_out", productId: c.pid, size: s.size, qty,
-          from: "hub2", to: c.dest, actorRole,
-          reason: "clothing_refill",
-          movementId: `${batch}_${c.pid}_${s.sizeKey}`,
-          link: { transferId: batch },
-        });
-      } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
-      if (res.ok) moved += qty; else failed.push(`${s.size}: ${res.reason}`);
-    }
-    setDone((d) => ({ ...d, [c.key]: { moved, failed } }));
-    setBusyKey(null);
-  };
-
-  if (!cards.length && !liveCards.length) {
-    return <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>Nothing planned and nothing in flight — every managed size is at target or already inbound.</div>;
-  }
   return (
     <>
-      {/* Store separation — Marathon PE / Trophy / Hub 2 never mix */}
+      <div style={{ ...GLASS, padding: "11px 14px", marginBottom: 12, color: GRAY, fontSize: 12 }}>
+        Monitoring only — staff fulfil these in <b style={{ color: "#fff" }}>Warehouse → Clothing</b> (store refills)
+        and <b style={{ color: "#fff" }}>Source → Hub 2 Refill</b> (hub restock). Shadow entries are read-only previews.
+      </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
         <button onClick={() => setDestFilter("all")} style={pill(destFilter === "all")}>All</button>
-        {destsPresent.map((d) => (
-          <button key={d} onClick={() => setDestFilter(d)} style={pill(destFilter === d)}>{locLabel(d)}</button>
-        ))}
+        {dests.map((d) => <button key={d} onClick={() => setDestFilter(d)} style={pill(destFilter === d)}>{locLabel(d)}</button>)}
       </div>
-
-      {/* In flight: already created — shows exactly WHERE each request lives */}
-      {shownLive.length > 0 && (
+      {storeRows.length > 0 && <div style={{ fontSize: 10.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", margin: "2px 2px 8px" }}>Waiting for Hub 2 ({storeRows.length})</div>}
+      {storeRows.map(summaryCard)}
+      {hubRows.length > 0 && <div style={{ fontSize: 10.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", margin: "10px 2px 8px" }}>Waiting for Central ({hubRows.length})</div>}
+      {hubRows.map(summaryCard)}
+      {failedRefills.length > 0 && (
         <>
-          <div style={{ fontSize: 10.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", margin: "2px 2px 8px" }}>
-            In the queues now ({shownLive.length})
-          </div>
-          {shownLive.map((c) => {
-            const p = byId.get(c.pid);
-            return (
-              <ProductCard key={`live-${c.key}`}
-                photo={p?.photoUrl} name={p?.name || c.pid}
-                badges={<>
-                  <Badge tone={BLUE_L}>{locLabel(c.dest)}</Badge>
-                  <Badge tone={GREEN}>{c.dest === "hub2" ? "IN SOURCE → HUB 2 REFILL" : "IN WAREHOUSE → CLOTHING"}</Badge>
-                </>}
-                sub={c.sizes.map((s) => `${s.size}×${s.qty}${s.orderId ? ` (${s.orderId})` : ""}`).join(" · ")}
-              />
-            );
-          })}
-          {shown.length > 0 && (
-            <div style={{ fontSize: 10.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", margin: "10px 2px 8px" }}>
-              Planned next ({shown.length})
-            </div>
-          )}
+          <div style={{ fontSize: 10.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", margin: "10px 2px 8px" }}>Rejected by warehouse (48h)</div>
+          {failedRefills.map((r, i) => (
+            <ProductCard key={i} photo={byId.get(r.pid)?.photoUrl} name={byId.get(r.pid)?.name || r.pid}
+              badges={<Badge tone={RED}>REJECTED</Badge>}
+              sub={`size ${r.size} · was for ${locLabel(r.dest)} · ${r.orderId || ""}`} />
+          ))}
         </>
       )}
-
-      {!canAct && shown.length > 0 && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to transfer — viewing only.</div>}
-      {shown.map((c) => {
-        const p = byId.get(c.pid);
-        const result = done[c.key];
-        const total = c.sizes.filter((s) => !rejects[`${c.key}|${s.sizeKey}`]).reduce((t, s) => t + qtyOf(c, s), 0);
-        return (
-          <ProductCard key={c.key}
-            photo={p?.photoUrl} name={p?.name || c.pid}
-            badges={<>
-              <Badge tone={BLUE_L}>{locLabel(c.dest)}</Badge>
-              <Badge tone={AMBER}>AUTO</Badge>
-              {c.sizes.some((s) => s.priority === "high") && <Badge tone={RED}>URGENT</Badge>}
-            </>}
-          >
-            {result ? (
-              <div style={{ fontSize: 12.5 }}>
-                <span style={{ color: GREEN, fontWeight: 700 }}>{result.moved} units → {locLabel(c.dest)} ✓</span>
-                {result.failed.length > 0 && <div style={{ color: RED, marginTop: 4 }}>Failed: {result.failed.join(" · ")}</div>}
-              </div>
-            ) : (
-              <>
-                <div style={CHIP_GRID}>
-                  {c.sizes.map((s) => (
-                    <SizeStepperChip key={s.sizeKey}
-                      size={s.size}
-                      qty={qtyOf(c, s)}
-                      max={Math.min(s.qty, availOf(c.pid, s.size))}
-                      onChange={(v) => setEdits((e) => ({ ...e, [`${c.key}|${s.sizeKey}`]: v }))}
-                      rejected={!!rejects[`${c.key}|${s.sizeKey}`]}
-                      onReject={() => setRejects((r) => ({ ...r, [`${c.key}|${s.sizeKey}`]: !r[`${c.key}|${s.sizeKey}`] }))}
-                      hint={`asked ×${s.qty} · ${availOf(c.pid, s.size)} here`}
-                      disabled={!canAct}
-                    />
-                  ))}
-                </div>
-                <button onClick={() => transfer(c)} disabled={busyKey === c.key || total === 0 || !canAct}
-                        style={{ ...bGreen, width: "100%", marginTop: 12, padding: "12px", opacity: busyKey === c.key || total === 0 || !canAct ? 0.5 : 1 }}>
-                  {busyKey === c.key ? "Transferring…" : `Transfer ${total} unit${total === 1 ? "" : "s"} to ${locLabel(c.dest)}`}
-                </button>
-              </>
-            )}
-          </ProductCard>
-        );
-      })}
+      {!rows.length && !failedRefills.length && (
+        <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>Nothing planned or in flight — every managed size is at target.</div>
+      )}
     </>
   );
 }
@@ -283,7 +191,6 @@ export default function HealthView({ products = [], onExit }) {
   const runs = useEngineRuns(8);
   const config = useEngineConfig();
   const openRequests = useRefillRequests("open");
-  const hubCells = useStockCells("hub2");
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
 
@@ -309,6 +216,18 @@ export default function HealthView({ products = [], onExit }) {
     for (const byPid of Object.values(openEngine || {})) for (const bySize of Object.values(byPid || {})) n += Object.keys(bySize || {}).length;
     return n;
   }, [openEngine]);
+  // Store-leg pipeline (shadow previews + live open intents, hub2 excluded) —
+  // these are the requests sitting in Warehouse → Clothing.
+  const storeWaiting = useMemo(() => {
+    let n = 0;
+    for (const node of [shadow, openEngine]) {
+      for (const [dest, byPid] of Object.entries(node || {})) {
+        if (dest === "hub2") continue;
+        for (const bySize of Object.values(byPid || {})) n += Object.keys(bySize || {}).length;
+      }
+    }
+    return n;
+  }, [shadow, openEngine]);
   const centralQueue = openRequests.filter((r) => r.requestingLocation === "hub2").length;
   const missingProducts = count("onlyInCentral") + count("onlyInHub2");
   // ("Needs Review" was removed 2026-07-12 v3 — the confidence signal still
@@ -340,8 +259,8 @@ export default function HealthView({ products = [], onExit }) {
     switch (screen) {
       case "autorefills":
         return (
-          <DetailShell title="Auto Refills" sub="The engine's current plan — reject what you can't find, transfer the rest" count={shadowCards} onBack={back}>
-            <AutoRefillCards shadow={shadow} openIndex={openEngine} byId={byId} actorRole={actorRole} hubCells={hubCells} />
+          <DetailShell title="Auto Refills" sub="Monitoring — fulfilment happens in the Warehouse and Source queues" count={openCount + shadowCards} onBack={back}>
+            <AutoRefillSummary shadow={shadow} openIndex={openEngine} failedRefills={items("failedRefills")} byId={byId} />
           </DetailShell>
         );
       case "central":
@@ -464,11 +383,12 @@ export default function HealthView({ products = [], onExit }) {
               <StatCard label="Auto Refill Status" value={modeSummary} tone={modeTone}
                         sub={lastRun?.counts ? `${lastRun.counts.intents || 0} created · ${lastRun.counts.shadow || 0} planned last scan` : undefined}
                         onClick={() => setScreen("activity")} />
-              <StatCard label="Active Refill Requests" value={openCount + shadowCards} tone={openCount + shadowCards ? BLUE_L : GREEN}
-                        sub={openCount ? `${openCount} in queues · ${shadowCards} planned` : "Engine plan — review & transfer"}
-                        onClick={() => setScreen("autorefills")} />
-              <StatCard label="Central Refill Requests" value={centralQueue} tone={centralQueue ? BLUE_L : GREEN}
-                        sub="Hub 2 restock queue" onClick={() => setScreen("central")} />
+              <StatCard label="Waiting for Hub 2" value={storeWaiting} tone={storeWaiting ? BLUE_L : GREEN}
+                        sub="Store refills · in Warehouse → Clothing" onClick={() => setScreen("autorefills")} />
+              <StatCard label="Waiting for Central" value={centralQueue} tone={centralQueue ? BLUE_L : GREEN}
+                        sub="Hub 2 restock · in Source → Hub 2 Refill" onClick={() => setScreen("central")} />
+              <StatCard label="Rejected / Failed" value={count("failedRefills")} tone={count("failedRefills") ? RED : GREEN}
+                        sub="Declined by warehouse (48h)" onClick={() => setScreen("autorefills")} />
               <StatCard label="Excess Inventory" value={count("excess")} tone={count("excess") ? AMBER : GREEN}
                         sub="Hub 2 + shops above target → rebalance" onClick={() => setScreen("excess")} />
               <StatCard label="Missing Products" value={missingProducts} tone={missingProducts ? AMBER : GREEN}

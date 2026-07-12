@@ -17,7 +17,7 @@ import React, { useMemo, useState } from "react";
 import { useStockCells, useStockTargets } from "./useStock";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
-import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGhost, FONT } from "./ui";
+import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -30,20 +30,12 @@ const isClothing = (p) =>
   p?.productType === "clothing" ||
   (!p?.productType && (p?.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s))));
 
-const destChip = (on) => ({
-  padding: "8px 13px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
-  border: on ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(255,255,255,.1)",
-  background: on ? "rgba(60,110,255,.15)" : "rgba(255,255,255,.03)",
-  color: on ? BLUE_L : "rgba(255,255,255,.5)",
-});
-
 export default function MoveExcess({ products = [], actorRole }) {
   const allStock = useStockCells();          // { loc: { pid: { rawSize: cell } } }
   const allTargets = useStockTargets();      // { loc: { pid: { encodedSize: {target} } } }
   const [edits, setEdits] = useState({});    // `${loc}|${pid}|${size}` → qty
   const [dests, setDests] = useState({});    // `${loc}|${pid}` → destination
-  const [skipped, setSkipped] = useState({});
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(false);   // card key being transferred | false
   const [lastResult, setLastResult] = useState(null);
   const [movedTotal, setMovedTotal] = useState(0);
 
@@ -79,8 +71,9 @@ export default function MoveExcess({ products = [], actorRole }) {
     return out.sort((a, b) => b.totalExcess - a.totalExcess);
   }, [allStock, allTargets, byId]);
 
-  const active = cards.filter((c) => !skipped[c.key]);
-  const card = active[0] || cards[0] || null;
+  const [locFilter, setLocFilter] = useState("all");
+  const shown = locFilter === "all" ? cards : cards.filter((c) => c.loc === locFilter);
+  const locCount = (loc) => cards.filter((c) => c.loc === loc).length;
 
   const destOptions = (c) => (c.loc === "hub2" ? ["central"] : ["hub2", "central"]);
   const qtyOf = (c, s) => {
@@ -93,7 +86,7 @@ export default function MoveExcess({ products = [], actorRole }) {
     const dest = dests[c.key] || destOptions(c)[0];
     const lines = c.sizes.map((s) => ({ s, qty: qtyOf(c, s) })).filter((l) => l.qty > 0);
     if (!lines.length) return;
-    setBusy(true);
+    setBusy(c.key);
     const batchId = `exc_${Date.now().toString(36)}`;
     let moved = 0; const failed = [];
     for (const { s, qty } of lines) {
@@ -114,18 +107,36 @@ export default function MoveExcess({ products = [], actorRole }) {
     setBusy(false);
   };
 
+  const pill = (on) => ({
+    padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+    border: on ? "1px solid rgba(60,110,255,.5)" : "1px solid rgba(255,255,255,.1)",
+    background: on ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.03)",
+    color: on ? BLUE_L : "rgba(255,255,255,.45)",
+  });
+
   return (
     <div>
+      {/* Summary strip */}
       <div style={{ ...GLASS, padding: "11px 14px", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
         <div>
           <div style={{ fontSize: 13.5, fontWeight: 800 }}>Excess rebalance</div>
           <div style={{ color: GRAY, fontSize: 11, marginTop: 2 }}>
-            Hub 2 + shops above approved targets{movedTotal > 0 ? ` · ${movedTotal} units moved` : ""}
+            Above approved targets{movedTotal > 0 ? ` · ${movedTotal} units moved this session` : ""}
           </div>
         </div>
         <span style={{ fontSize: 12, fontWeight: 800, color: BLUE_L, background: "rgba(60,110,255,.1)", border: "1px solid rgba(60,110,255,.3)", borderRadius: 999, padding: "5px 12px", whiteSpace: "nowrap" }}>
-          {cards.length} left
+          {shown.length} product{shown.length === 1 ? "" : "s"}
         </span>
+      </div>
+
+      {/* Location sections — every excess product visible, per location */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        <button onClick={() => setLocFilter("all")} style={pill(locFilter === "all")}>All ({cards.length})</button>
+        {SOURCES.map((l) => (
+          <button key={l} onClick={() => setLocFilter(l)} style={pill(locFilter === l)}>
+            {LOC_LABEL[l]} ({locCount(l)})
+          </button>
+        ))}
       </div>
 
       {lastResult && (
@@ -135,54 +146,50 @@ export default function MoveExcess({ products = [], actorRole }) {
         </div>
       )}
 
-      {!card && (
+      {shown.length === 0 && (
         <div style={{ ...GLASS, padding: 24, textAlign: "center" }}>
-          <div style={{ fontSize: 16, fontWeight: 800, color: GREEN }}>Network balanced 🎉</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: GREEN }}>Nothing to rebalance 🎉</div>
           <div style={{ color: GRAY, fontSize: 12.5, marginTop: 6 }}>
-            No location holds meaningfully more than its approved targets{movedTotal > 0 ? ` — ${movedTotal} units rebalanced this session` : ""}.
+            {locFilter === "all" ? "No location holds" : `${LOC_LABEL[locFilter]} holds nothing`} meaningfully above its approved targets.
           </div>
         </div>
       )}
 
-      {card && (() => {
-        const dest = dests[card.key] || destOptions(card)[0];
-        const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
+      {shown.map((c) => {
+        const dest = dests[c.key] || destOptions(c)[0];
+        const total = c.sizes.reduce((t, s) => t + qtyOf(c, s), 0);
         return (
-          <ProductCard
-            photo={card.photo} name={card.name}
+          <ProductCard key={c.key}
+            photo={c.photo} name={c.name}
             badges={<>
-              <Badge tone={BLUE_L}>{LOC_LABEL[card.loc]}</Badge>
-              <Badge tone={AMBER}>{card.totalExcess} ABOVE TARGET</Badge>
+              <Badge tone={BLUE_L}>{LOC_LABEL[c.loc]}</Badge>
+              <Badge tone={AMBER}>{c.totalExcess} ABOVE TARGET</Badge>
             </>}
           >
             <div style={CHIP_GRID}>
-              {card.sizes.map((s) => (
+              {c.sizes.map((s) => (
                 <SizeStepperChip key={s.size}
-                  size={s.size} qty={qtyOf(card, s)} max={s.have}
-                  onChange={(v) => setEdits((prev) => ({ ...prev, [`${card.key}|${s.size}`]: v }))}
-                  hint={`have ${s.have} · target ${s.target}`}
-                  disabled={busy}
+                  size={s.size} qty={qtyOf(c, s)} max={s.have}
+                  onChange={(v) => setEdits((prev) => ({ ...prev, [`${c.key}|${s.size}`]: v }))}
+                  hint={`have ${s.have} · target ${s.target} · +${s.excess}`}
+                  disabled={busy === c.key}
                 />
               ))}
             </div>
             <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
-              {destOptions(card).map((d) => (
-                <button key={d} onClick={() => setDests((prev) => ({ ...prev, [card.key]: d }))} style={destChip(dest === d)}>
+              {destOptions(c).map((d) => (
+                <button key={d} onClick={() => setDests((prev) => ({ ...prev, [c.key]: d }))} style={pill(dest === d)}>
                   → {LOC_LABEL[d]}
                 </button>
               ))}
             </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <button onClick={() => setSkipped((p) => ({ ...p, [card.key]: true }))} disabled={busy}
-                      style={{ ...bGhost, flex: 1, padding: "12px" }}>Skip</button>
-              <button onClick={() => transfer(card)} disabled={busy || total === 0}
-                      style={{ ...bGreen, flex: 2.2, padding: "12px", opacity: busy ? 0.6 : 1 }}>
-                {busy ? "Transferring…" : `Transfer ${total} units to ${LOC_LABEL[dest]}`}
-              </button>
-            </div>
+            <button onClick={() => transfer(c)} disabled={busy === c.key || total === 0}
+                    style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: busy === c.key ? 0.6 : 1 }}>
+              {busy === c.key ? "Transferring…" : `Transfer ${total} units to ${LOC_LABEL[dest]}`}
+            </button>
           </ProductCard>
         );
-      })()}
+      })}
     </div>
   );
 }

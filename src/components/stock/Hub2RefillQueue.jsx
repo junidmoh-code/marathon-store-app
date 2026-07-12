@@ -45,8 +45,13 @@ export default function Hub2RefillQueue({ products = [] }) {
     }
     return [...byPid.entries()].map(([pid, reqs]) => {
       reqs.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
-      return { pid, reqs, auto: reqs.some((r) => r.createdFrom?.engine) };
-    }).sort((a, b) => b.reqs.length - a.reqs.length);
+      return {
+        pid, reqs,
+        auto: reqs.some((r) => r.createdFrom?.engine),
+        // Shadow previews are read-only — Live Mode creates the real thing.
+        shadow: reqs.every((r) => r.shadow),
+      };
+    }).sort((a, b) => (a.shadow === b.shadow ? b.reqs.length - a.reqs.length : a.shadow ? 1 : -1));
   }, [openRequests, byId]);
 
   const availOf = (pid, size) => Math.max(Number(centralCells?.[pid]?.[String(size)]?.qty) || 0, 0);
@@ -108,35 +113,54 @@ export default function Hub2RefillQueue({ products = [] }) {
           <ProductCard key={card.pid}
             photo={p?.photoUrl} name={p?.name || card.pid}
             badges={<>
-              <Badge tone={AMBER}>HUB 2 REFILL</Badge>
-              {card.auto && <Badge tone={BLUE_L}>AUTO</Badge>}
+              <Badge tone={AMBER}>{card.shadow ? "HUB 2 REFILL · AUTO (SHADOW)" : "HUB 2 REFILL"}</Badge>
+              {card.auto && !card.shadow && <Badge tone={BLUE_L}>AUTO</Badge>}
             </>}
-            sub={`${card.reqs.length} size${card.reqs.length === 1 ? "" : "s"} requested`}
+            sub={`${card.reqs.length} size${card.reqs.length === 1 ? "" : "s"} requested · from Central`}
           >
-            <div style={CHIP_GRID}>
-              {card.reqs.map((r) => {
-                const avail = availOf(r.productId, r.size);
-                return (
-                  <SizeStepperChip key={r.id}
-                    size={String(r.size)}
-                    qty={pickOf(r)}
-                    max={Math.min(r.qty || 1, avail)}
-                    onChange={(v) => setPicks((prev) => ({ ...prev, [r.id]: v }))}
-                    hint={avail > 0 ? `need ×${r.qty || 1} · ${avail} here` : "none at Central"}
-                    disabled={!canTransfer || avail <= 0 || busyCard === card.pid}
-                  />
-                );
-              })}
-            </div>
-            {msg[card.pid] && (
-              <div style={{ color: msg[card.pid].includes("failed") ? RED : GREEN, fontSize: 12.5, fontWeight: 600, marginTop: 10 }}>{msg[card.pid]}</div>
+            {card.shadow ? (
+              <>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {card.reqs.map((r) => (
+                    <span key={r.id} style={{ border: "1px solid rgba(251,191,36,.35)", background: "rgba(251,191,36,.07)", borderRadius: 10, padding: "6px 11px", fontSize: 12.5 }}>
+                      <b style={{ color: "#fff" }}>{String(r.size)}</b>
+                      <span style={{ color: AMBER, fontWeight: 700 }}> ×{r.qty || 1}</span>
+                      <span style={{ color: GRAY }}> · {availOf(r.productId, r.size)} at Central</span>
+                    </span>
+                  ))}
+                </div>
+                <div style={{ color: GRAY, fontSize: 11, marginTop: 10 }}>
+                  Shadow preview — the engine would create this request for real in Live Mode. Nothing to action yet.
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={CHIP_GRID}>
+                  {card.reqs.map((r) => {
+                    const avail = availOf(r.productId, r.size);
+                    return (
+                      <SizeStepperChip key={r.id}
+                        size={String(r.size)}
+                        qty={pickOf(r)}
+                        max={Math.min(r.qty || 1, avail)}
+                        onChange={(v) => setPicks((prev) => ({ ...prev, [r.id]: v }))}
+                        hint={avail > 0 ? `need ×${r.qty || 1} · ${avail} here` : "none at Central"}
+                        disabled={!canTransfer || avail <= 0 || busyCard === card.pid}
+                      />
+                    );
+                  })}
+                </div>
+                {msg[card.pid] && (
+                  <div style={{ color: msg[card.pid].includes("failed") ? RED : GREEN, fontSize: 12.5, fontWeight: 600, marginTop: 10 }}>{msg[card.pid]}</div>
+                )}
+                <button
+                  onClick={() => transfer(card)}
+                  disabled={busyCard === card.pid || totalPick === 0 || !canTransfer}
+                  style={{ ...bGreen, width: "100%", marginTop: 12, padding: "12px", opacity: busyCard === card.pid || totalPick === 0 || !canTransfer ? 0.5 : 1 }}>
+                  {busyCard === card.pid ? "Transferring…" : `Transfer ${totalPick} unit${totalPick === 1 ? "" : "s"} to Hub 2`}
+                </button>
+              </>
             )}
-            <button
-              onClick={() => transfer(card)}
-              disabled={busyCard === card.pid || totalPick === 0 || !canTransfer}
-              style={{ ...bGreen, width: "100%", marginTop: 12, padding: "12px", opacity: busyCard === card.pid || totalPick === 0 || !canTransfer ? 0.5 : 1 }}>
-              {busyCard === card.pid ? "Transferring…" : `Transfer ${totalPick} unit${totalPick === 1 ? "" : "s"} to Hub 2`}
-            </button>
           </ProductCard>
         );
       })}

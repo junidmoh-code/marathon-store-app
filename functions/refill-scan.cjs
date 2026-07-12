@@ -114,6 +114,72 @@ async function runScan() {
     // Shadow is a full replace each run, so satisfied plans disappear on their own.
     await db.ref("refill_engine/shadow").set(Object.keys(shadowNode).length ? shadowNode : null);
 
+    // ── SHADOW COPIES in the REAL queues (owner decision 2026-07-12 v4) ───────
+    // While a destination runs in shadow, its planned requests appear in the
+    // actual operational surfaces — the warehouse Clothing queue and the Source
+    // Hub 2 Refill queue — as read-only "AUTO (Shadow)" artifacts, so staff see
+    // exactly how Live Mode will look. Deterministic keys make this a SYNC, not
+    // an append: each scan upserts the current plan and deletes stale entries
+    // (and any leg that flipped to live sheds its shadows automatically).
+    //   store legs → /orders/SHDW-{dest}-{pid}-{sizeKey}   (autoShadow: true)
+    //   hub2 legs  → /refill_requests/SHDWrr-{pid}-{sizeKey} (shadow: true)
+    // Shadow orders carry NO insight events, take NO open locks, never touch
+    // the refill counter, and the engine's inbound math ignores them
+    // (autoRefill orders are excluded there). UI renders them read-only;
+    // fulfillCRBatch refuses them outright as a second line of defence.
+    {
+      const upd = {};
+      const wantOrders = new Set();
+      const wantRrs = new Set();
+      for (const [dest, byPid] of Object.entries(shadowNode)) {
+        for (const [pid, bySize] of Object.entries(byPid)) {
+          for (const [sizeKey, s] of Object.entries(bySize)) {
+            const p = products[pid] || {};
+            if (dest === "hub2") {
+              const key = `SHDWrr-${pid}-${sizeKey}`;
+              wantRrs.add(key);
+              const existing = refillRequests[key];
+              upd[`refill_requests/${key}`] = {
+                productId: pid, size: sizeKey === "_" ? "" : sizeKey, qty: s.qty,
+                requestingLocation: "hub2", status: "open", shadow: true,
+                createdFrom: { engine: true, shadow: true, runId, source: s.source },
+                createdAt: existing?.createdAt || startedAt,
+              };
+            } else {
+              const key = `SHDW-${dest}-${pid}-${sizeKey}`;
+              wantOrders.add(key);
+              const existing = orders[key];
+              const createdAt = existing?.createdAt || startedAt;
+              upd[`orders/${key}`] = {
+                id: key, productId: pid, productName: p.name || "Unknown",
+                productPhoto: p.photo || null, productPhotoUrl: p.photoUrl ?? null,
+                size: sizeKey === "_" ? "" : sizeKey, sentSize: null, qty: s.qty,
+                customerName: "Shop Refill", customerPhone: null,
+                hub: s.source, placedAtHub: s.source,
+                placedStore: UNIVERSE_BY_SHOP[dest] || "central", destShop: dest,
+                productType: "clothing", requestDisplay: false, requestDisplayPartner: false,
+                status: "incoming", createdAt, updatedAt: startedAt,
+                readyAt: null, outOfStockAt: null, comingTomorrowAt: null, collectedAt: null,
+                displayRefillScheduledAt: null, displayRefillHub: null, displayRefillStatus: null,
+                displayRefilledAt: null, displayRefillStockDepletedAt: null, displayRefilledBy: null,
+                clothingRefillStatus: null, clothingRefilledAt: null, clothingOutOfStockAt: null,
+                clothingRefilledBy: null,
+                autoRefill: true, autoShadow: true, autoRefillPriority: s.priority, autoRefillRunId: runId,
+              };
+            }
+          }
+        }
+      }
+      // Delete stale shadow artifacts (fulfilled plans, live-flipped legs).
+      for (const key of Object.keys(orders)) {
+        if (key.startsWith("SHDW-") && !wantOrders.has(key)) upd[`orders/${key}`] = null;
+      }
+      for (const key of Object.keys(refillRequests)) {
+        if (key.startsWith("SHDWrr-") && !wantRrs.has(key)) upd[`refill_requests/${key}`] = null;
+      }
+      if (Object.keys(upd).length) await db.ref().update(upd);
+    }
+
     for (const [dest, intents] of liveByDest) {
       const isStoreLeg = UNIVERSE_BY_SHOP[dest] != null;
       // ONE R-number per destination per run (mirrors "one R### per cart"), and

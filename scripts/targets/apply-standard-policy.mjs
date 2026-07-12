@@ -48,7 +48,21 @@ for (const p of active) {
       (s.hub2Qty || 0) > 0 || (s.centralQty || 0) > 0
     ))
     .map(([size]) => size);
-  for (const loc of LOCATIONS) {
+
+  // ASSORTMENT SCOPE (owner correction 2026-07-12): a store is only targeted
+  // for products in ITS OWN assortment — it sold it in the window, or it
+  // physically stocks it. Without this gate, a Marathon-only product got
+  // Trophy targets and the engine "correctly" requested Marathon's products
+  // for Trophy. Hub 2 buffers anything either store carries.
+  const activeAt = (store) => Object.values(p.sizes).some(
+    (s) => (s[store]?.sold90 || 0) > 0 || (s[store]?.qty || 0) > 0
+  );
+  const locsForProduct = [];
+  if (activeAt("marathon-pe")) locsForProduct.push("marathon-pe");
+  if (activeAt("trophy")) locsForProduct.push("trophy");
+  if (locsForProduct.length) locsForProduct.push("hub2");
+
+  for (const loc of locsForProduct) {
     for (const size of carried) {
       const target = STANDARD_RUN[size];
       rows.push([p.productId, esc(p.name), loc, size, target, Math.ceil(target / 2)].join(","));
