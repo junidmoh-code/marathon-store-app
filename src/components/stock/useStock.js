@@ -137,3 +137,9 @@ export function useEngineConfig() {
 export function useStockTargets(locationId) {
   return usePath(locationId ? `stock_targets/${locationId}` : "stock_targets");
 }
+
+// /stock_targets_decisions → { loc: { pid: {decision,decidedAt} } } — "keep as
+// is" acks from the Health No Target queue; the engine skips decided products.
+export function useTargetDecisions() {
+  return usePath("stock_targets_decisions");
+}

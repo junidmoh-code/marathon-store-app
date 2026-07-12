@@ -65,7 +65,8 @@ async function runScan() {
     }
     const locs = [...new Set([...Object.keys(config.routes || {}), ...Object.values(config.routes || {})])];
     const windowStart = new Date(nowMs - MOVEMENTS_WINDOW_DAYS * 864e5).toISOString();
-    const [targets, products, openIndex, refillRequests, orders, movementsSnap, ...stockSnaps] = await Promise.all([
+    const [targetDecisions, targets, products, openIndex, refillRequests, orders, movementsSnap, ...stockSnaps] = await Promise.all([
+      db.ref("stock_targets_decisions").once("value").then((s) => s.val() || {}),
       db.ref("stock_targets").once("value").then((s) => s.val() || {}),
       db.ref("products").once("value").then((s) => s.val() || {}),
       db.ref("refill_engine/open").once("value").then((s) => s.val() || {}),
@@ -78,7 +79,7 @@ async function runScan() {
     const movements = Object.values(movementsSnap.val() || {});
 
     const plan = engine.computeRefillPlan({
-      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements,
+      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions,
     });
     counts.errors.push(...plan.errors);
 

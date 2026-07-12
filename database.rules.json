@@ -427,6 +427,14 @@
     "stock_confidence": {
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       ".write": "false"
+    },
+    "stock_targets_decisions": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$loc": {
+        "$pid": {
+          ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()"
+        }
+      }
     }
   }
 }

@@ -29,6 +29,7 @@ import { StatCard, DetailShell, ProductCard, Badge, SizeStepperChip, SizeFactChi
 import Hub2RefillQueue from "./Hub2RefillQueue";
 import MoveExcess from "./MoveExcess";
 import NetworkTransfer from "./NetworkTransfer";
+import NoTargetQueue from "./NoTargetQueue";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 const locLabel = (l) => LOC_LABEL[l] || l || "—";
@@ -289,17 +290,8 @@ export default function HealthView({ products = [], onExit }) {
         );
       case "noTarget":
         return (
-          <DetailShell title="No Target Configured" sub="Stock the engine is NOT managing — keep it, transfer it, or configure a target" count={count("noTarget")} onBack={back}>
-            {items("noTarget").map((r, i) => (
-              <ProductCard key={i} photo={byId.get(r.pid)?.photoUrl} name={nameOf(r.pid)}
-                badges={<>
-                  <Badge tone={BLUE_L}>{locLabel(r.loc)}</Badge>
-                  <Badge tone={GRAY}>AWAITING TARGET</Badge>
-                </>}
-                right={<span style={{ fontSize: 13, fontWeight: 800, color: BLUE_L }}>{r.units} units</span>}
-                sub="Not excess, not a problem — just unconfigured. Use Transfer/Move Excess if it should live elsewhere."
-              />
-            ))}
+          <DetailShell title="No Target Configured" sub="Decide per product: set targets · transfer · exclude · keep — the card clears instantly" count={count("noTarget")} onBack={back}>
+            <NoTargetQueue products={products} />
           </DetailShell>
         );
       case "negative":

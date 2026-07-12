@@ -197,6 +197,21 @@ test("three states: no target = noTarget surface (NOT excess); explicit 0 = all 
   assert.ok(!plan.intents.some((i) => i.productId === "pUnset"));
 });
 
+test("keep-as-is decision clears a product from the No Target queue", () => {
+  const over = {
+    products: { p1: PRODUCTS.p1, pUnset: { productType: "clothing", sizes: ["M"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: { pUnset: { M: cell(6) } }, central: {}, trophy: {} },
+  };
+  const before = computeRefillPlan(base(over));
+  assert.equal(before.exceptions.noTarget.count, 1);
+  const after = computeRefillPlan(base({
+    ...over,
+    targetDecisions: { hub2: { pUnset: { decision: "keep", decidedAt: iso(1) } } },
+  }));
+  assert.equal(after.exceptions.noTarget.count, 0, "decided products never reappear");
+});
+
 test("engine is driven by explicit targets only — no default-run auto-activation", () => {
   const plan = computeRefillPlan(base({
     targets: {},

@@ -71,6 +71,7 @@ function computeRefillPlan(snapshot) {
   const {
     nowMs, config, targets = {}, stock = {}, products = {},
     openIndex = {}, refillRequests = {}, orders = {}, movements = [],
+    targetDecisions = {},   // /stock_targets_decisions — "keep as is" acks from the No Target queue
   } = snapshot;
 
   const errors = [];
@@ -295,13 +296,15 @@ function computeRefillPlan(snapshot) {
 
   // ── No Target Configured (v5): stock the engine is NOT managing ─────────────
   // Clothing physically present at a managed location with no target node for
-  // that product there. Not excess, not a warning — just surfaced work: the
-  // humans decide to keep it, transfer it, or configure a target for it.
+  // that product there. Not excess, not a warning — an ACTIONABLE QUEUE: the
+  // humans configure targets, transfer, exclude (target 0), or record a
+  // "keep as is" decision (/stock_targets_decisions) — any of which clears it.
   const noTarget = [];
   for (const loc of dests) {
     for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
       if (!isClothing(products?.[pid])) continue;
-      if (targets?.[loc]?.[pid]) continue;          // some target exists → managed
+      if (targets?.[loc]?.[pid]) continue;             // some target exists → managed
+      if (targetDecisions?.[loc]?.[pid]) continue;     // human already decided: keep as is
       const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
       if (units > 0) noTarget.push({ loc, pid, units });
     }
