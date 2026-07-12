@@ -129,6 +129,9 @@ function computeRefillPlan(snapshot) {
   const closes = [];
   const stuckRefills = [];
   const staleMs = (num(config?.staleIntentHours) || 48) * 3600e3;
+  // Total on-hand for a (pid,size) across every location the scan can see.
+  const networkQtyOf = (pid, size) =>
+    Object.keys(stock).reduce((t, loc) => t + avail(cellQty(stock, loc, pid, size)), 0);
   for (const [dest, byPid] of Object.entries(openIndex)) {
     for (const [pid, bySize] of Object.entries(byPid || {})) {
       for (const [sizeKey, entry] of Object.entries(bySize || {})) {
@@ -139,7 +142,21 @@ function computeRefillPlan(snapshot) {
         // daily, so a same-key node created later is a DIFFERENT order.
         const orderIsOurs = order && order.productId === pid &&
           encodeSizeKey(order.size) === sizeKey && order.createdAt === entry.orderCreatedAt;
-        if (rr && rr.status && rr.status !== "open") {
+        const size = order?.size ?? rr?.size ?? (sizeKey === "_" ? "" : sizeKey);
+        // Certainly-unfillable PURGE (owner rule 2026-07-13): an open ENGINE
+        // request whose size has zero stock anywhere upstream is withdrawn —
+        // order deleted, request cancelled — so staff never wade through
+        // requests that provably cannot be picked. The creation gate stops new
+        // ones; this clears any already in the queues (incl. the first wave).
+        const destHave = avail(cellQty(stock, dest, pid, size));
+        const unresolvedOurs = (orderIsOurs && order.clothingRefillStatus == null) || (!entry.orderId && rr && rr.status === "open");
+        if (unresolvedOurs && networkQtyOf(pid, size) - destHave <= 0) {
+          closes.push({
+            dest, pid, sizeKey, refillId: entry.refillId, reason: "unfillable",
+            rrStatus: "cancelled",
+            removeOrderId: orderIsOurs ? entry.orderId : null,
+          });
+        } else if (rr && rr.status && rr.status !== "open") {
           closes.push({ dest, pid, sizeKey, refillId: entry.refillId, reason: rr.status });
         } else if (orderIsOurs && order.clothingRefillStatus != null) {
           closes.push({
@@ -224,24 +241,19 @@ function computeRefillPlan(snapshot) {
 
         belowTarget.push({ loc: dest, pid, size, have: q, target: t.target, inbound: inb, deficit });
 
-        // Genuinely nothing anywhere in the network → reorder candidate (the
-        // request below still goes out — the shelf may disagree with the DB).
+        // Certainly unfillable — ZERO stock anywhere else in the network — is
+        // never a request (owner rule 2026-07-13: "if you're 100% sure it
+        // exists nowhere, don't even start it — 1000s of unavailable requests
+        // are a lot"). It goes straight to the Missing Sizes reorder list and
+        // returns to the queue the moment inventory for it appears anywhere.
         if (networkQty(pid, size) - have <= 0) {
           missingSizes.push({ loc: dest, pid, size, wanted: deficit, note: "zero stock upstream — reorder candidate" });
+          continue;
         }
 
-        // Suppress for: an intent already on its way, or a rejection.
+        // Suppress for: an intent already on its way, or a fresh rejection.
         if (inb > 0) continue;
-        const rejTs = rejectedAt.get(`${dest}|${pid}|${sizeKey}`) || 0;
-        if (rejTs) {
-          // A human said "not available". Rest 24h — and if the system can't
-          // see this size ANYWHERE upstream, stay silent indefinitely: the ask
-          // only returns when inventory for it actually appears (owner rule
-          // 2026-07-12: one shelf-check ask is fine; re-asking daily for stock
-          // that provably doesn't exist is spam, not diligence).
-          if (nowMs - rejTs < cooldownMs) continue;
-          if (networkQty(pid, size) - have <= 0) continue;
-        }
+        if (nowMs - (rejectedAt.get(`${dest}|${pid}|${sizeKey}`) || 0) < cooldownMs) continue;
 
         intents.push({
           dest, source: src, productId: pid, size, sizeKey,

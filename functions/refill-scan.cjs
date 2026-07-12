@@ -103,10 +103,16 @@ async function runScan() {
         if (c.refillId && c.rrStatus) {
           upd[`refill_requests/${c.refillId}/status`] = c.rrStatus;
           upd[`refill_requests/${c.refillId}/resolvedAt`] = startedAt;
+          if (c.reason === "unfillable") upd[`refill_requests/${c.refillId}/cancelReason`] = "unfillable";
         }
+        // Certainly-unfillable engine orders are WITHDRAWN from the warehouse
+        // queue entirely — staff never see requests that can't be picked.
+        if (c.removeOrderId) upd[`orders/${c.removeOrderId}`] = null;
       }
       await db.ref().update(upd);
       counts.closes = plan.closes.length;
+      const withdrawn = plan.closes.filter((c) => c.reason === "unfillable").length;
+      if (withdrawn) counts.withdrawn = withdrawn;
     }
 
     // ── act on intents, by destination mode ──────────────────────────────────
