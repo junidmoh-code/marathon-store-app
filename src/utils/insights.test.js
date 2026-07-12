@@ -230,6 +230,17 @@ describe("restockCountsFromLog (Source History rebuilt from the durable log)", (
     expect(out.Marathon_Tee).toBeUndefined();
   });
 
+  it("carries productId from any event in the group (Transfer & Fulfil needs it)", () => {
+    // First event predates the productId field; a later event has it — the
+    // group must still end up with the id so the transfer flow can resolve it.
+    const log = [rdy("001", "08"), rdy("002", "09", { productId: "p123" })];
+    const out = restockCountsFromLog({ log, dateStr: DATE, hub: "hub1" });
+    expect(out.Nike_Air.productId).toBe("p123");
+    // No event carries one → null, and the card falls back by name.
+    const none = restockCountsFromLog({ log: [rdy("001", "08")], dateStr: DATE, hub: "hub1" });
+    expect(none.Nike_Air.productId).toBeNull();
+  });
+
   it("dedupes a flapped order (same date+orderNumber counts once)", () => {
     const out = restockCountsFromLog({ log: [rdy("001", "08"), rdy("001", "09")], dateStr: DATE, hub: "hub1" });
     expect(out.Nike_Air.sizes).toEqual({ "8": 1 });

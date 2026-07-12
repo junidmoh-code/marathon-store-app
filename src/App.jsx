@@ -6,7 +6,7 @@ import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
-import { stockCellPath } from "./utils/sizeKey";
+import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import UpdateBanner from "./update/UpdateBanner";
 import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
@@ -26,7 +26,7 @@ import HealthView from "./components/stock/HealthView";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { input as stockInput } from "./components/stock/ui";
-import { sellableLocations, labelFor, transferTargets } from "./components/stock/locations";
+import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useLocations } from "./components/stock/useStock";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
@@ -877,16 +877,24 @@ function normalizeSourceResponse(v) {
 }
 
 // Live listener for all Source responses.
-// Shape on read: { "YYYY-MM-DD": { productKey: { size: { response, respondedOn } } } }
+// Returns { responses, progress }:
+//   responses — { "YYYY-MM-DD": { productKey: { size: { response, respondedOn } } } }
+//   progress  — { "YYYY-MM-DD": { productKey: { size: { fulfilledQty } } } }
+// A progress leaf is a PARTIAL Transfer & Fulfil: some units already moved but the
+// cell is still open. It deliberately has NO `response` field, so normalize
+// returns null and every completed/badge check keeps treating the cell as
+// pending — partials stay visible until the last unit ships.
 // Old compiled nodes (with createdAt/date/products keys) are filtered out gracefully.
 function useAllSourceResponses() {
   const authReady = useAuthReady();
   const [responses, setResponses] = useState({});
+  const [progress, setProgress] = useState({});
   useEffect(() => {
     if (!authReady) return;
     const unsub = onValue(ref(database, "restock_requests"), snap => {
       const data = snap.val() || {};
       const result = {};
+      const prog = {};
       Object.entries(data).forEach(([date, dateNode]) => {
         if (!dateNode || typeof dateNode !== "object") return;
         result[date] = {};
@@ -898,15 +906,21 @@ function useAllSourceResponses() {
           Object.entries(val).forEach(([size, raw]) => {
             const norm = normalizeSourceResponse(raw);
             if (norm) sizes[size] = norm;
+            else if (raw && typeof raw === "object" && Number(raw.fulfilledQty) > 0) {
+              if (!prog[date]) prog[date] = {};
+              if (!prog[date][key]) prog[date][key] = {};
+              prog[date][key][size] = { fulfilledQty: Number(raw.fulfilledQty) };
+            }
           });
           if (Object.keys(sizes).length) result[date][key] = sizes;
         });
       });
       setResponses(result);
+      setProgress(prog);
     });
     return () => unsub();
   }, [authReady]);
-  return responses;
+  return { responses, progress };
 }
 
 // Saves Source's Available / OOS response for a product size on a given date.
@@ -914,10 +928,22 @@ function useAllSourceResponses() {
 // `date` is the request's ORIGINAL day (today for Today's Request, day-N for
 // History stragglers). `respondedOn` is always now — that field is the
 // "stamp with today's date" the warehouse-response model needs.
-function saveSourceResponse(date, productKey, size, response) {
+// `extra` (optional) rides along for the audit trail — e.g. fulfilledQty +
+// transferred flags from Transfer & Fulfil. Readers only consume
+// response/respondedOn, so extras are DB-only forensics.
+function saveSourceResponse(date, productKey, size, response, extra) {
   update(ref(database, `restock_requests/${date}/${productKey}`), {
-    [size]: { response, respondedOn: new Date().toISOString() }
+    [size]: { response, respondedOn: new Date().toISOString(), ...(extra || {}) }
   }).catch(err => console.warn("saveSourceResponse failed:", err));
+}
+
+// Records PARTIAL Transfer & Fulfil progress on a still-open cell. No `response`
+// field on purpose (see useAllSourceResponses) — the cell stays pending with a
+// "n of m sent" badge until the remainder ships and saveSourceResponse closes it.
+function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
+  update(ref(database, `restock_requests/${date}/${productKey}`), {
+    [size]: { fulfilledQty, lastFulfilledAt: new Date().toISOString(), ...(meta || {}) }
+  }).catch(err => console.warn("saveSourceFulfilProgress failed:", err));
 }
 
 // Reverses a Source response — removes the single (size) leaf so the cell
@@ -1195,7 +1221,7 @@ function computeCollectedCounts(collectedOrders) {
   (collectedOrders || []).forEach(order => {
     const key = toKey(order.productName);
     if (!result[key]) {
-      result[key] = { productName: order.productName, photo: order.productPhoto || "", photoUrl: order.productPhotoUrl || null, sizes: {} };
+      result[key] = { productName: order.productName, productId: order.productId || null, photo: order.productPhoto || "", photoUrl: order.productPhotoUrl || null, sizes: {} };
     } else if (result[key].productName !== order.productName) {
       // Two distinct product names collapsed to the same key (toKey strips spaces, ., #, $, [, ], /).
       // This breaks Source: their responses share the same restock_requests path and they
@@ -1207,6 +1233,9 @@ function computeCollectedCounts(collectedOrders) {
       }
     }
     if (order.productPhotoUrl && !result[key].photoUrl) result[key].photoUrl = order.productPhotoUrl;
+    // productId powers Transfer & Fulfil — take it from any order in the group
+    // (very old orders predate the field; those cards fall back by name).
+    if (!result[key].productId && order.productId) result[key].productId = order.productId;
     const displaySize = sourceDisplaySize(order);
     if (displaySize) result[key].sizes[displaySize] = (result[key].sizes[displaySize] || 0) + 1;
   });
@@ -10215,7 +10244,7 @@ function CompletedTogglePill({ on, count, onClick }) {
 // rawCounts  = { productKey: { productName, photo, photoUrl, sizes: { size: count } } }
 // responses  = { productKey: { size: { response, respondedOn } } }  — live from Firebase
 // hub        = "hub1" | "hub2"  — used only for keying/labels; data is already filtered upstream.
-function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, wide = false }) {
+function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, wide = false, fulfilCtx, progress, onFulfilProgress }) {
   // Desktop lays the pending / completed cells in a responsive grid so the wide
   // pane isn't a single stretched column; mobile stays a vertical stack.
   const listStyle = wide
@@ -10305,6 +10334,16 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, w
             product={cell.product}
             size={cell.size}
             count={cell.count}
+            fulfil={fulfilCtx ? {
+              enabled: fulfilCtx.canTransfer,
+              productId: fulfilCtx.resolveId(cell.product),
+              destHub: hub,
+              sent: progress?.[cell.key]?.[cell.size]?.fulfilledQty || 0,
+              movementIdSeed: `srcful_${date}_${cell.key}_${encodeSizeKey(cell.size)}`,
+              locationsReg: fulfilCtx.locationsReg,
+              actorRole: fulfilCtx.actorRole,
+              onProgress: (newSent, complete, meta) => onFulfilProgress(date, cell.key, cell.size, newSent, complete, meta),
+            } : null}
             onAvailable={() => onResponse(cell.key, cell.size, "available")}
             onOutOfStock={() => onResponse(cell.key, cell.size, "out_of_stock")}
           />
@@ -10337,10 +10376,161 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, w
   );
 }
 
-// Single pending (product, size) cell — Available / Out of Stock buttons.
+// ─── SOURCE: TRANSFER & FULFIL ────────────────────────────────────────────────
+// Source is the inventory transfer engine (owner redesign 2026-07-13): fulfilling
+// a refill card MOVES REAL STOCK. The runner picks the supply location, picks the
+// quantity, and "Transfer & Fulfil" fires ONE applyMovement from that location to
+// the requesting hub — no manual inventory adjustment afterwards, ever.
+//
+// Mechanics, all reusing established precedents:
+//   • Counted source cell → `transfer_out` source→hub with allowNegative:true —
+//     the parcel physically leaves whether or not the count is right, and a
+//     resulting negative is the same honest shortage signal a dispatch leaves
+//     (A1 rule in applyMovement).
+//   • Source cell that has never been counted (absent) → `received` into the hub
+//     only, reason source_uncounted_send — the CR-uncounted precedent (#191-193):
+//     the hub gains real stock, nothing phantom is deducted.
+//   • Idempotency: movementId = {seed}_{unitsAlreadySent}. A double-tap resolves
+//     to the same id and applyMovement no-ops; the next partial gets a fresh id.
+//   • Partial fulfilment: fewer units than requested leaves the cell OPEN with a
+//     "n of m sent" badge (progress leaf, see saveSourceFulfilProgress); the
+//     response record only closes it when the last unit ships.
+//   • Users without a stockRole (can't write /stock) and legacy cards with no
+//     resolvable productId keep the original plain buttons — nothing breaks.
+const SOURCE_REFILL_REASON    = "source_refill";
+const SOURCE_UNCOUNTED_REASON = "source_uncounted_send";
+const SOURCE_TRANSFER_ROLES   = ["store", "warehouse", "admin"];
+
+// Inline expandable panel: supply-location chips (with live counted qty), a qty
+// stepper when more than one unit is open, and the Transfer & Fulfil confirm.
+function SourceFulfilPanel({ productId, size, destHub, remaining, alreadySent, movementIdSeed, locationsReg, actorRole, onDone, onCancel, onWithoutTransfer }) {
+  const [avail, setAvail] = useState(null);   // { locId: qty | null } — null = never counted there
+  const [pick, setPick]   = useState(null);
+  const [qty, setQty]     = useState(Math.max(1, remaining));
+  const [busy, setBusy]   = useState(false);
+  const [err, setErr]     = useState(null);
+
+  const sources = useMemo(
+    () => warehouseLocations(locationsReg).filter(l => l.id !== destHub),
+    [locationsReg, destHub]
+  );
+
+  // One targeted read per warehouse for THIS product+size — cheap on phones,
+  // no /stock-wide listener. Best-stocked location is pre-selected.
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      const out = {};
+      for (const l of sources) {
+        try {
+          const snap = await get(ref(database, stockCellPath(l.id, productId, size)));
+          const cell = snap.val();
+          out[l.id] = cell && typeof cell.qty === "number" ? cell.qty : null;
+        } catch { out[l.id] = null; }
+      }
+      if (dead) return;
+      setAvail(out);
+      setPick(p => {
+        if (p) return p;
+        const best = sources.slice().sort((a, b) => (out[b.id] ?? -1) - (out[a.id] ?? -1))[0];
+        return best ? best.id : null;
+      });
+    })();
+    return () => { dead = true; };
+  }, [productId, size, destHub, sources]);
+
+  const doTransfer = async () => {
+    if (!pick || busy) return;
+    setBusy(true); setErr(null);
+    const counted = !!avail && typeof avail[pick] === "number";
+    const q = Math.max(1, Math.min(Math.round(qty) || 1, remaining));
+    const mvId = `${movementIdSeed}_${alreadySent}`;
+    let res;
+    try {
+      res = await applyMovement(counted ? {
+        type: "transfer_out", productId, size, qty: q,
+        from: pick, to: destHub, actorRole,
+        allowNegative: true,
+        reason: SOURCE_REFILL_REASON,
+        movementId: mvId, link: { refillId: movementIdSeed },
+      } : {
+        type: "received", productId, size, qty: q,
+        to: destHub, actorRole,
+        reason: SOURCE_UNCOUNTED_REASON,
+        movementId: mvId, link: { refillId: movementIdSeed },
+      });
+    } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
+    setBusy(false);
+    if (res.ok) onDone(q, pick, counted);
+    else setErr(`Transfer failed: ${res.reason || "unknown"}. Check your stock access and retry.`);
+  };
+
+  const chip = (l) => {
+    const q = avail ? avail[l.id] : undefined;
+    const active = pick === l.id;
+    return (
+      <button key={l.id} onClick={() => setPick(l.id)} disabled={busy}
+              style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 10px", borderRadius:10,
+                       border: active ? "1px solid rgba(60,110,255,.7)" : "1px solid rgba(255,255,255,.1)",
+                       background: active ? "rgba(60,110,255,.16)" : "rgba(255,255,255,.03)",
+                       color: active ? "#6A9FFF" : "rgba(255,255,255,.65)", fontWeight:700, fontSize:11, cursor:"pointer" }}>
+        {l.label || labelFor(l.id, locationsReg)}
+        <span style={{ fontSize:10, fontWeight:600, color: q == null ? "rgba(255,255,255,.35)" : (q > 0 ? "#4ADE80" : "#F87171") }}>
+          {avail == null ? "…" : (q == null ? "uncounted" : q)}
+        </span>
+      </button>
+    );
+  };
+
+  const pickedUncounted = !!pick && !!avail && avail[pick] == null;
+  return (
+    <div style={{ marginTop:10, borderTop:"1px solid rgba(60,110,255,.15)", paddingTop:10 }}>
+      <div style={{ fontSize:10, fontWeight:700, letterSpacing:".8px", color:"rgba(255,255,255,.45)", marginBottom:7 }}>SUPPLY FROM</div>
+      <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 }}>{sources.map(chip)}</div>
+      {pickedUncounted && (
+        <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", marginBottom:8 }}>
+          Not counted at {labelFor(pick, locationsReg)} — units will be added to {labelFor(destHub, locationsReg)} only.
+        </div>
+      )}
+      {remaining > 1 && (
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+          <span style={{ fontSize:11, color:"rgba(255,255,255,.55)", fontWeight:600 }}>Quantity</span>
+          <button onClick={() => setQty(v => Math.max(1, v - 1))} disabled={busy}
+                  style={{ width:30, height:30, borderRadius:8, border:"1px solid rgba(255,255,255,.14)", background:"rgba(255,255,255,.04)", color:"#fff", fontWeight:800, cursor:"pointer" }}>−</button>
+          <span style={{ minWidth:24, textAlign:"center", fontWeight:800, color:"#fff", fontSize:15 }}>{Math.max(1, Math.min(qty, remaining))}</span>
+          <button onClick={() => setQty(v => Math.min(remaining, v + 1))} disabled={busy}
+                  style={{ width:30, height:30, borderRadius:8, border:"1px solid rgba(255,255,255,.14)", background:"rgba(255,255,255,.04)", color:"#fff", fontWeight:800, cursor:"pointer" }}>+</button>
+          <span style={{ fontSize:10, color:"rgba(255,255,255,.35)" }}>of {remaining} open</span>
+        </div>
+      )}
+      {err && <div style={{ fontSize:11, color:"#F87171", marginBottom:8 }}>{err}</div>}
+      <div style={{ display:"flex", gap:8 }}>
+        <button onClick={doTransfer} disabled={busy || !pick}
+                style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(74,222,128,.5)", background:"rgba(74,222,128,.12)", color:"#4ADE80", fontWeight:700, fontSize:12, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+          {busy ? "Transferring…" : "Transfer & Fulfil"}
+        </button>
+        <button onClick={onCancel} disabled={busy}
+                style={{ padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.6)", fontWeight:600, fontSize:12, cursor:"pointer" }}>
+          Cancel
+        </button>
+      </div>
+      {onWithoutTransfer && (
+        <button onClick={onWithoutTransfer} disabled={busy}
+                style={{ marginTop:8, width:"100%", padding:"7px", borderRadius:8, border:"none", background:"transparent", color:"rgba(255,255,255,.35)", fontSize:10, fontWeight:600, cursor:"pointer", textDecoration:"underline" }}>
+          Complete without stock transfer
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Single pending (product, size) cell. With transfer access + a resolvable
+// productId, the primary action is Fulfil → SourceFulfilPanel (real stock
+// movement); otherwise the original Available button. Out of Stock unchanged.
 // Local pending state suppresses double-taps while Firebase echoes the write back.
-function PendingCard({ product, size, count, onAvailable, onOutOfStock }) {
+function PendingCard({ product, size, count, onAvailable, onOutOfStock, fulfil, subtitle }) {
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
   const tap = (fn) => {
     if (busy) return;
     setBusy(true);
@@ -10349,6 +10539,9 @@ function PendingCard({ product, size, count, onAvailable, onOutOfStock }) {
     // guard for the tiny window between tap and Firebase round-trip.
     setTimeout(() => setBusy(false), 1500);
   };
+  const sent = fulfil?.sent || 0;
+  const remaining = Math.max(1, count - sent);
+  const canFulfil = !!(fulfil && fulfil.enabled && fulfil.productId);
   return (
     <div style={{
       background:"rgba(4,5,10,1)",
@@ -10363,24 +10556,58 @@ function PendingCard({ product, size, count, onAvailable, onOutOfStock }) {
         <ProductPhoto url={product.photoUrl} photo={product.photo} size={48} radius={10}/>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{product.productName}</div>
+          {subtitle && <div style={{ color:"rgba(255,255,255,.4)", fontSize:10, marginTop:2 }}>{subtitle}</div>}
         </div>
       </div>
-      <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px", marginBottom:10 }}>
-        <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
-        {count > 1 && <span style={{ fontSize:10, color:"#4A7FFF", fontWeight:600 }}>×{count}</span>}
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
+        <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px" }}>
+          <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
+          {count > 1 && <span style={{ fontSize:10, color:"#4A7FFF", fontWeight:600 }}>×{count}</span>}
+        </div>
+        {sent > 0 && (
+          <span style={{ fontSize:10, fontWeight:700, color:"#4ADE80", background:"rgba(74,222,128,.1)", border:"1px solid rgba(74,222,128,.3)", borderRadius:999, padding:"3px 9px" }}>
+            {sent} of {count} sent
+          </span>
+        )}
       </div>
       <div style={{ display:"flex", gap:8 }}>
-        <button disabled={busy} onClick={() => tap(onAvailable)}
-                style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          Available
-        </button>
+        {canFulfil ? (
+          <button disabled={busy} onClick={() => setOpen(v => !v)}
+                  style={{ flex:1, padding:"10px 12px", borderRadius:10, border: open ? "1px solid rgba(74,222,128,.5)" : "1px solid rgba(255,255,255,.1)", background: open ? "rgba(74,222,128,.08)" : "rgba(255,255,255,.03)", color: open ? "#4ADE80" : "rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>
+            Fulfil
+          </button>
+        ) : (
+          <button disabled={busy} onClick={() => tap(onAvailable)}
+                  style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Available
+          </button>
+        )}
         <button disabled={busy} onClick={() => tap(onOutOfStock)}
                 style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           Out of Stock
         </button>
       </div>
+      {canFulfil && open && (
+        <SourceFulfilPanel
+          productId={fulfil.productId}
+          size={size}
+          destHub={fulfil.destHub}
+          remaining={remaining}
+          alreadySent={sent}
+          movementIdSeed={fulfil.movementIdSeed}
+          locationsReg={fulfil.locationsReg}
+          actorRole={fulfil.actorRole}
+          onDone={(q, from, counted) => {
+            setOpen(false);
+            fulfil.onProgress(sent + q, sent + q >= count, { lastFrom: from, counted });
+          }}
+          onCancel={() => setOpen(false)}
+          onWithoutTransfer={() => { setOpen(false); tap(onAvailable); }}
+        />
+      )}
     </div>
   );
 }
@@ -10446,7 +10673,7 @@ const HISTORY_RETENTION_DAYS = 5;
 // Reactions write to restock_requests/{day-N}/{key}/{size} = { response, respondedOn:NOW }
 // — see saveSourceResponse. The original-day path is what makes resolution
 // stick across page loads; respondedOn carries "today's stamp" for the audit.
-function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoForName, onResponse }) {
+function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoForName, onResponse, fulfilCtx, fulfilProgress, onFulfilProgress }) {
   // Default expand: yesterday open, older closed. Stored by daysAgo number.
   const [openDays, setOpenDays] = useState(() => new Set([1]));
   const toggle = (d) => setOpenDays(prev => {
@@ -10523,38 +10750,25 @@ function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoForName, on
                   return sizes.map(size => {
                     const count = typeof product.sizes[size] === "number" ? product.sizes[size] : 1;
                     return (
-                      <div key={`${hub}-${g.daysAgo}-${key}-${size}`} style={{
-                        background:"rgba(4,5,10,1)",
-                        border:"1px solid rgba(60,110,255,.6)",
-                        borderRadius:14, padding:14,
-                        boxShadow:"0 0 10px rgba(60,110,255,.12)",
-                      }}>
-                        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
-                          <ProductPhoto url={product.photoUrl} photo={product.photo} size={48} radius={10}/>
-                          <div style={{ flex:1, minWidth:0 }}>
-                            <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{product.productName}</div>
-                            <div style={{ color:"rgba(255,255,255,.4)", fontSize:10, marginTop:2 }}>
-                              Requested {g.daysAgo === 1 ? "yesterday" : `${g.daysAgo} days ago`}
-                            </div>
-                          </div>
-                        </div>
-                        <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px", marginBottom:10 }}>
-                          <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
-                          {count > 1 && <span style={{ fontSize:10, color:"#4A7FFF", fontWeight:600 }}>×{count}</span>}
-                        </div>
-                        <div style={{ display:"flex", gap:8 }}>
-                          <button onClick={() => onResponse(g.dateStr, key, size, "available")}
-                                  style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor:"pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                            Available
-                          </button>
-                          <button onClick={() => onResponse(g.dateStr, key, size, "out_of_stock")}
-                                  style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor:"pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                            Out of Stock
-                          </button>
-                        </div>
-                      </div>
+                      <PendingCard
+                        key={`${hub}-${g.daysAgo}-${key}-${size}`}
+                        product={product}
+                        size={size}
+                        count={count}
+                        subtitle={`Requested ${g.daysAgo === 1 ? "yesterday" : `${g.daysAgo} days ago`}`}
+                        fulfil={fulfilCtx ? {
+                          enabled: fulfilCtx.canTransfer,
+                          productId: fulfilCtx.resolveId(product),
+                          destHub: hub,
+                          sent: fulfilProgress?.[g.dateStr]?.[key]?.[size]?.fulfilledQty || 0,
+                          movementIdSeed: `srcful_${g.dateStr}_${key}_${encodeSizeKey(size)}`,
+                          locationsReg: fulfilCtx.locationsReg,
+                          actorRole: fulfilCtx.actorRole,
+                          onProgress: (newSent, complete, meta) => onFulfilProgress(g.dateStr, key, size, newSent, complete, meta),
+                        } : null}
+                        onAvailable={() => onResponse(g.dateStr, key, size, "available")}
+                        onOutOfStock={() => onResponse(g.dateStr, key, size, "out_of_stock")}
+                      />
                     );
                   });
                 })}
@@ -10571,8 +10785,10 @@ function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoForName, on
 // Tracks per-order responses at source_onhold_responses/{key}. Cards vanish
 // when responded; the Completed toggle reveals them with green/red indicators
 // and Undo removes the response so the order returns to the active list.
-function SourceOnHoldTab({ items }) {
+function SourceOnHoldTab({ items, fulfilCtx }) {
   const [showCompleted, setShowCompleted] = useState(false);
+  // Composite key of the card whose Transfer & Fulfil panel is open (one at a time).
+  const [openComposite, setOpenComposite] = useState(null);
 
   // `items` is the shared merged on-hold list (live today + durable log for past
   // days), already newest-first, returned-excluded, with a `responded` flag and
@@ -10648,8 +10864,15 @@ function SourceOnHoldTab({ items }) {
         </div>
       )}
 
-      {/* Active list */}
-      {pending.map(item => (
+      {/* Active list. Customer info, collection date and the "sent" response
+          record are untouched by the transfer redesign — with transfer access
+          the Sent button becomes Fulfil (real stock movement to the order's
+          hub, then the exact same response write); without it, plain Sent. */}
+      {pending.map(item => {
+        const pid = fulfilCtx ? fulfilCtx.resolveId({ productId: item.productId, productName: item.productName }) : null;
+        const canFulfil = !!(fulfilCtx?.canTransfer && pid && item.size);
+        const isOpen = openComposite === item.composite;
+        return (
         <div key={`onhold-${item.composite}`} style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"1.1rem 1.25rem", boxShadow:"0 0 16px rgba(60,110,255,.15)", borderLeft:`3px solid ${BLUE}` }}>
           <div style={{ display:"flex", alignItems:"center", gap:"1rem", marginBottom:"0.85rem" }}>
             <ProductPhoto url={item.photoUrl} photo={item.photo} size={48} radius={8}/>
@@ -10665,10 +10888,10 @@ function SourceOnHoldTab({ items }) {
           </div>
           <div style={{ display:"flex", gap:"0.6rem" }}>
             <button
-              onClick={() => handleRespond(item, "sent")}
+              onClick={() => canFulfil ? setOpenComposite(isOpen ? null : item.composite) : handleRespond(item, "sent")}
               style={{ ...bGreen, flex:1, padding:"0.55rem", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Sent
+              {canFulfil ? "Fulfil" : "Sent"}
             </button>
             <button
               onClick={() => handleRespond(item, "out_of_stock")}
@@ -10677,8 +10900,24 @@ function SourceOnHoldTab({ items }) {
               Out of Stock
             </button>
           </div>
+          {canFulfil && isOpen && (
+            <SourceFulfilPanel
+              productId={pid}
+              size={item.size}
+              destHub={item.hub}
+              remaining={1}
+              alreadySent={0}
+              movementIdSeed={`srcoh_${item.composite}`}
+              locationsReg={fulfilCtx.locationsReg}
+              actorRole={fulfilCtx.actorRole}
+              onDone={() => { setOpenComposite(null); handleRespond(item, "sent"); }}
+              onCancel={() => setOpenComposite(null)}
+              onWithoutTransfer={() => { setOpenComposite(null); handleRespond(item, "sent"); }}
+            />
+          )}
         </div>
-      ))}
+        );
+      })}
 
       {/* Completed list — revealed by toggle */}
       {showCompleted && completed.length > 0 && (
@@ -11428,6 +11667,44 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // Desktop workspace gate (>=1024px). Mobile keeps the single-column layout.
   const isWide = !useIsNarrow(1024);
 
+  // ── Transfer & Fulfil context (shared by all three tabs) ────────────────────
+  // Same access gate as every other stock-writing surface (Hub2RefillQueue):
+  // a stockRole is required to move inventory. Users without one keep the
+  // original Available / Sent buttons — the tab never breaks for them.
+  const { permRecord, isSuperAdmin } = usePermissions();
+  const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
+  const canTransfer = SOURCE_TRANSFER_ROLES.includes(actorRole);
+  const locationsReg = useLocations();
+  // Fallback productId resolution by (normalized) product name — for cells
+  // rebuilt from log events or orders that predate the productId field.
+  const productIdByName = useMemo(() => {
+    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
+    const map = {};
+    (products || []).forEach(p => {
+      if (!p.name || !p.id) return;
+      map[p.name] = p.id;
+      map[normKey(p.name)] = p.id;
+    });
+    return map;
+  }, [products]);
+  const fulfilCtx = useMemo(() => ({
+    canTransfer, actorRole, locationsReg,
+    resolveId: (product) => {
+      if (!product) return null;
+      if (product.productId) return product.productId;
+      const name = product.productName;
+      if (!name) return null;
+      const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
+      return productIdByName[name] || productIdByName[normKey(name)] || null;
+    },
+  }), [canTransfer, actorRole, locationsReg, productIdByName]);
+  // Partial complete → progress leaf (cell stays open); final units → the exact
+  // same response record the old Available button wrote, plus audit extras.
+  const handleFulfilProgress = useCallback((date, key, size, newQty, complete, meta) => {
+    if (complete) saveSourceResponse(date, key, size, "available", { fulfilledQty: newQty, transferred: true, ...(meta || {}) });
+    else saveSourceFulfilProgress(date, key, size, newQty, meta);
+  }, []);
+
   // Immutable insights_log — the durable source for PAST-day History and On Hold.
   // Live /orders is keyed by the daily orderNumber (resets each morning), so
   // today's orders overwrite yesterday's slots; past-day + on-hold requests read
@@ -11504,7 +11781,8 @@ function SourceView({ onExit, orders, returnsLog, products }) {
 
   // All Source responses: { date: { productKey: { size: { response, respondedOn } } } }
   // History tab derives its straggler list from this + live orders (5-day window).
-  const allResponses = useAllSourceResponses();
+  // fulfilProgress carries the partial Transfer & Fulfil leaves (same node).
+  const { responses: allResponses, progress: fulfilProgress } = useAllSourceResponses();
 
   // SA-time (UTC+2) YYYY-MM-DD of any timestamp — same convention as orderSaleDate.
   const saDateOfTs = (ts) => ts ? new Date(new Date(ts).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10) : null;
@@ -11528,7 +11806,8 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       const composite = onHoldKey(saDate, o.id);
       byComposite.set(composite, {
         composite, orderNumber: o.id, saDate,
-        productName: o.productName, size: sourceDisplaySize(o), hub: (o.hub || "hub1"),
+        productName: o.productName, productId: o.productId || null,
+        size: sourceDisplaySize(o), hub: (o.hub || "hub1"),
         customerName: o.customerName || null,
         photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
         ts: o.comingTomorrowAt || o.updatedAt,
@@ -11542,7 +11821,8 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       const ph = photoForName(e.productName);
       byComposite.set(composite, {
         composite, orderNumber: e.orderNumber, saDate: e.saDate,
-        productName: e.productName, size: e.size, hub: e.hub,
+        productName: e.productName, productId: e.productId || null,
+        size: e.size, hub: e.hub,
         customerName: e.customerName || null,
         photoUrl: ph.photoUrl, photo: ph.photo, ts: e.timestamp,
       });
@@ -11705,6 +11985,9 @@ function SourceView({ onExit, orders, returnsLog, products }) {
                               date={todayDate}
                               hub={hub}
                               wide={isWide}
+                              fulfilCtx={fulfilCtx}
+                              progress={fulfilProgress[todayDate] || {}}
+                              onFulfilProgress={handleFulfilProgress}
                               onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
                               onUndo={(key, size) => handleUndo(todayDate, key, size)} />}
         {tab==="history" && <SourceHistoryTab
@@ -11713,8 +11996,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
                               allResponses={allResponses}
                               hub={hub}
                               photoForName={photoForName}
+                              fulfilCtx={fulfilCtx}
+                              fulfilProgress={fulfilProgress}
+                              onFulfilProgress={handleFulfilProgress}
                               onResponse={handleResponse} />}
-        {tab==="onhold"  && <SourceOnHoldTab items={onHoldMerged} />}
+        {tab==="onhold"  && <SourceOnHoldTab items={onHoldMerged} fulfilCtx={fulfilCtx} />}
         {/* "Clothing Sold" (per-store manual worklist) replaced by the Hub 2
             auto-refill queue — the engine detects sold→below-target itself and
             Central fulfils from this single tab (owner decision 2026-07-12). */}
