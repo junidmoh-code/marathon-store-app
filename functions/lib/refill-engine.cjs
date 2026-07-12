@@ -143,16 +143,25 @@ function computeRefillPlan(snapshot) {
         const orderIsOurs = order && order.productId === pid &&
           encodeSizeKey(order.size) === sizeKey && order.createdAt === entry.orderCreatedAt;
         const size = order?.size ?? rr?.size ?? (sizeKey === "_" ? "" : sizeKey);
-        // Certainly-unfillable PURGE (owner rule 2026-07-13): an open ENGINE
-        // request whose size has zero stock anywhere upstream is withdrawn —
-        // order deleted, request cancelled — so staff never wade through
-        // requests that provably cannot be picked. The creation gate stops new
-        // ones; this clears any already in the queues (incl. the first wave).
         const destHave = avail(cellQty(stock, dest, pid, size));
         const unresolvedOurs = (orderIsOurs && order.clothingRefillStatus == null) || (!entry.orderId && rr && rr.status === "open");
-        if (unresolvedOurs && networkQtyOf(pid, size) - destHave <= 0) {
+        // SELF-REVERSAL (owner rule 2026-07-13): stock can arrive by paths the
+        // engine didn't plan — a manual Central→shop transfer, a direct stock
+        // add, a bulk customer return. If the destination no longer NEEDS this
+        // request (target met counting all OTHER inbound), the engine withdraws
+        // its own ask — order deleted, request cancelled — instead of letting
+        // the warehouse deliver a surplus.
+        const t = unresolvedOurs ? resolveTarget(ctx, dest, pid, size) : null;
+        const otherInbound = Math.max((inbound.get(`${dest}|${pid}|${sizeKey}`) || 0) - (num(entry.qty) || 1), 0);
+        const needGone = unresolvedOurs && (!t || t.target <= 0 || t.target - destHave - otherInbound <= 0);
+        // Certainly-unfillable PURGE (owner rule 2026-07-13): zero stock
+        // anywhere upstream → withdrawn; staff never see unpickable requests.
+        const unfillable = unresolvedOurs && networkQtyOf(pid, size) - destHave <= 0;
+        if (needGone || unfillable) {
           closes.push({
-            dest, pid, sizeKey, refillId: entry.refillId, reason: "unfillable",
+            dest, pid, sizeKey, refillId: entry.refillId,
+            reason: needGone ? "no_longer_needed" : "unfillable",
+            cancelReason: needGone ? "no_longer_needed" : "unfillable",
             rrStatus: "cancelled",
             removeOrderId: orderIsOurs ? entry.orderId : null,
           });
@@ -215,6 +224,10 @@ function computeRefillPlan(snapshot) {
   }
   for (const [id, rr] of Object.entries(refillRequests)) {
     if (!rr || rr.status !== "cancelled" || !rr.requestingLocation || !rr.productId) continue;
+    // Engine self-withdrawals (unfillable / no_longer_needed) are NOT human
+    // rejections — they must never impose a cooldown. If the shop dips below
+    // target again five minutes later, the engine may re-ask immediately.
+    if (rr.cancelReason) continue;
     const ts = Date.parse(rr.resolvedAt || 0) || 0;
     const k = `${rr.requestingLocation}|${rr.productId}|${encodeSizeKey(rr.size)}`;
     if (ts > (rejectedAt.get(k) || 0)) rejectedAt.set(k, ts);
