@@ -87,28 +87,27 @@ test("propose-don't-suppress: full deficit requested even when the source shows 
   assert.equal(hubLeg.source, "central");
 });
 
-test("zero stock anywhere → request STILL created + missingSizes reorder candidate", () => {
+test("zero stock anywhere → NO request at all, straight to the reorder list", () => {
   const plan = computeRefillPlan(base({
     stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: {}, central: {}, trophy: {} },
     targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } }, hub2: { p1: { M: { target: 2, minQty: 1 } } } },
   }));
-  assert.equal(plan.intents.length, 2, "both legs still ask — shelves beat database cells");
-  assert.ok(plan.exceptions.missingSizes.count >= 1, "and the reorder candidate is surfaced");
+  assert.equal(plan.intents.length, 0, "provably unfillable — never enters a queue");
+  assert.ok(plan.exceptions.missingSizes.count >= 1, "surfaced as a reorder candidate instead");
 });
 
-test("rejection cooldown: a size the warehouse rejected today is not re-asked", () => {
-  const plan = computeRefillPlan(base({
-    orders: {
-      "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(2), status: "incoming", createdAt: iso(2) },
-    },
+test("rejection cooldown: a rejected size WITH upstream stock rests 24h, then re-asks", () => {
+  const withStock = { stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} } };
+  const fresh = computeRefillPlan(base({
+    ...withStock,
+    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(2), status: "incoming", createdAt: iso(2) } },
   }));
-  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0);
+  assert.equal(fresh.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "2h since rejection → resting");
   const old = computeRefillPlan(base({
-    orders: {
-      "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(30), status: "incoming", createdAt: iso(30) },
-    },
+    ...withStock,
+    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(30), status: "incoming", createdAt: iso(30) } },
   }));
-  assert.equal(old.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "cooldown expired → ask again");
+  assert.equal(old.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "cooldown passed + stock exists → ask again");
 });
 
 test("excess: hub2 strict, stores only when significant; sneakers never counted", () => {
@@ -132,30 +131,35 @@ test("excess: hub2 strict, stores only when significant; sneakers never counted"
   assert.ok(plan.exceptions.negativeCells.items.every((n) => n.pid !== "pSnk"), "sneaker negatives filtered out");
 });
 
-test("rejected + zero upstream = silent until inventory appears (no daily spam)", () => {
+test("restock resurrects a size: no stock = absent; stock appears = requested again", () => {
   const rejected = {
     orders: {
       "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(30), status: "incoming", createdAt: iso(30) },
     },
   };
-  // 30h since rejection (cooldown long expired) but NOTHING upstream → still silent.
   const dry = computeRefillPlan(base({
     ...rejected,
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: {}, central: {}, trophy: {} },
   }));
-  assert.equal(dry.intents.filter((x) => x.sizeKey === "M").length, 0, "no upstream stock → never re-asked");
-  assert.ok(dry.exceptions.missingSizes.count >= 1, "…but it stays on the reorder list");
-  // Stock lands at Central → the ask returns on the next scan.
+  assert.equal(dry.intents.filter((x) => x.sizeKey === "M").length, 0, "nothing upstream → absent from queues");
   const restocked = computeRefillPlan(base({
     ...rejected,
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: {}, central: { p1: { M: cell(12) } }, trophy: {} },
   }));
-  assert.equal(restocked.intents.filter((x) => x.sizeKey === "M").length, 1, "inventory appeared → ask again");
-  // Never-rejected zero-upstream size still gets its ONE shelf-check ask.
-  const firstAsk = computeRefillPlan(base({
-    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: {}, central: {}, trophy: {} },
+  assert.equal(restocked.intents.filter((x) => x.sizeKey === "M").length, 1, "stock appeared + cooldown passed → asked again");
+});
+
+test("PURGE: open engine request that became unfillable is withdrawn from the queue", () => {
+  const plan = computeRefillPlan(base({
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: {}, trophy: {} },
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R002-4", orderCreatedAt: iso(2), qty: 2, source: "hub2", createdAt: iso(2) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe" } },
+    orders: { "R002-4": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(2), clothingRefillStatus: null, status: "incoming" } },
   }));
-  assert.equal(firstAsk.intents.filter((x) => x.sizeKey === "M").length, 1, "first ask always goes out");
+  const c = plan.closes.find((x) => x.reason === "unfillable");
+  assert.ok(c, "withdrawn");
+  assert.equal(c.rrStatus, "cancelled");
+  assert.equal(c.removeOrderId, "R002-4", "the queue card is deleted, not left for staff to reject");
 });
 
 test("Cortez fix: surplus is HELD for downstream deficits, never excess past a starving store", () => {
