@@ -333,6 +333,16 @@ function computeRefillPlan(snapshot) {
     if (d.decision === "until_change") return d.fingerprint === stockFingerprint(stock, pid);
     return false;
   };
+  // NEW products at Central FIRST — the exceptions snapshot caps its item list,
+  // and the introduction queue is the primary workflow, so it must never be the
+  // part that gets truncated.
+  for (const [pid, bySize] of Object.entries(stock?.central || {})) {
+    if (!isClothing(products?.[pid])) continue;
+    if (dests.some((d) => targets?.[d]?.[pid])) continue;   // introduced somewhere
+    if (decisionActive("central", pid)) continue;
+    const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
+    if (units > 0) noTarget.push({ loc: "central", pid, units, isNew: true });
+  }
   for (const loc of dests) {
     for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
       if (!isClothing(products?.[pid])) continue;
@@ -341,14 +351,6 @@ function computeRefillPlan(snapshot) {
       const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
       if (units > 0) noTarget.push({ loc, pid, units });
     }
-  }
-  // New products at Central (no targets anywhere in the network yet).
-  for (const [pid, bySize] of Object.entries(stock?.central || {})) {
-    if (!isClothing(products?.[pid])) continue;
-    if (dests.some((d) => targets?.[d]?.[pid])) continue;   // introduced somewhere
-    if (decisionActive("central", pid)) continue;
-    const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
-    if (units > 0) noTarget.push({ loc: "central", pid, units, isNew: true });
   }
   // (v5: the Policy Warnings layer was REMOVED at the owner's direction — the
   // engine no longer second-guesses targets. Unconfigured stock is surfaced as
