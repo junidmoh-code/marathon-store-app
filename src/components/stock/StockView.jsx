@@ -18,6 +18,7 @@ import CountSession from "./CountSession";
 import SetQuantity from "./SetQuantity";
 import CountedStockReview from "./CountedStockReview";
 import StockErrorBoundary from "./StockErrorBoundary";
+import MoveExcess from "./MoveExcess";
 
 // Stock rework: Transfer (assistant-style, one-step) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
@@ -25,23 +26,28 @@ import StockErrorBoundary from "./StockErrorBoundary";
 // admin-only for now (gated below).
 const BASE_TABS = [
   ["transfer",  "Transfer"],
+  // "Health" moved to its own home-screen module (HealthView) — owner decision.
   ["locate",    "Where is it"],
   ["setqty",    "Set Qty"],
   ["history",   "History"],
   ["adjust",    "Adjust"],
   ["count",     "Count"],
   ["recount",   "Counted ⚠"],   // TEMPORARY recount tool (admin-only)
+  ["excess",    "Move Excess"],  // TEMPORARY bulk hub2→central rebalance (admin-only)
 ];
 
 // Tabs only an ADMIN sees — they write `adjustment` movements, which the rule layer
 // permits for stockRole==admin only. Everything else (transfer/locate/setqty[received,
 // opening]/history) is available to warehouse|admin. (Barcodes moved to the home page.)
-const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount"]);
+// Move Excess writes transfer_out (warehouse-permitted at the rule layer) but is a
+// bulk tool — deliberately admin-gated in the UI.
+const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount", "excess"]);
 
 // Desktop shell — icons per tool, grouped in the sidebar, plus a one-line
 // header per tool. Tool CONTENTS are unchanged (they render in the main pane).
 const TAB_ICON = {
   transfer: <path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4" />,
+  excess:   <><path d="M12 3v11" /><path d="m8 10 4 4 4-4" /><path d="M4 21h16" /></>,
   locate:   <><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></>,
   setqty:   <path d="M12 5v14M5 12h14" />,
   history:  <><path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l4 2" /></>,
@@ -51,6 +57,7 @@ const TAB_ICON = {
 };
 const TAB_META = {
   transfer: ["Transfer", "Move stock between locations."],
+  excess:   ["Move Excess", "Bulk hub 2 → central rebalance (admin)."],
   locate:   ["Where is it", "Find any product across every location."],
   setqty:   ["Set Qty", "Set received / opening on-hand."],
   history:  ["History", "The full movement ledger."],
@@ -60,7 +67,7 @@ const TAB_META = {
 };
 const TAB_GROUPS = [
   ["Move & find", ["transfer", "locate", "setqty"]],
-  ["Audit", ["history", "adjust", "count", "recount"]],
+  ["Audit", ["history", "adjust", "count", "recount", "excess"]],
 ];
 
 export default function StockView({ products = [], onExit }) {
@@ -91,6 +98,7 @@ export default function StockView({ products = [], onExit }) {
   const content = (
     <>
       {tab === "transfer" && <Transfer {...shared} />}
+      {tab === "excess"   && isAdmin && <MoveExcess {...shared} />}
       {tab === "locate"   && <Locator {...shared} />}
       {tab === "setqty"   && canStock && <SetQuantity {...shared} canStock={canStock} isAdmin={isAdmin} />}
       {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}
