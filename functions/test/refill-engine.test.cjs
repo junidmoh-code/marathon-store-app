@@ -132,6 +132,32 @@ test("excess: hub2 strict, stores only when significant; sneakers never counted"
   assert.ok(plan.exceptions.negativeCells.items.every((n) => n.pid !== "pSnk"), "sneaker negatives filtered out");
 });
 
+test("rejected + zero upstream = silent until inventory appears (no daily spam)", () => {
+  const rejected = {
+    orders: {
+      "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(30), status: "incoming", createdAt: iso(30) },
+    },
+  };
+  // 30h since rejection (cooldown long expired) but NOTHING upstream → still silent.
+  const dry = computeRefillPlan(base({
+    ...rejected,
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: {}, central: {}, trophy: {} },
+  }));
+  assert.equal(dry.intents.filter((x) => x.sizeKey === "M").length, 0, "no upstream stock → never re-asked");
+  assert.ok(dry.exceptions.missingSizes.count >= 1, "…but it stays on the reorder list");
+  // Stock lands at Central → the ask returns on the next scan.
+  const restocked = computeRefillPlan(base({
+    ...rejected,
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: {}, central: { p1: { M: cell(12) } }, trophy: {} },
+  }));
+  assert.equal(restocked.intents.filter((x) => x.sizeKey === "M").length, 1, "inventory appeared → ask again");
+  // Never-rejected zero-upstream size still gets its ONE shelf-check ask.
+  const firstAsk = computeRefillPlan(base({
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: {}, central: {}, trophy: {} },
+  }));
+  assert.equal(firstAsk.intents.filter((x) => x.sizeKey === "M").length, 1, "first ask always goes out");
+});
+
 test("Cortez fix: surplus is HELD for downstream deficits, never excess past a starving store", () => {
   const over = {
     products: { p1: { name: "Cortez tracksuit", productType: "clothing", sizes: ["XL"] } },
