@@ -103,7 +103,7 @@ async function runScan() {
         if (c.refillId && c.rrStatus) {
           upd[`refill_requests/${c.refillId}/status`] = c.rrStatus;
           upd[`refill_requests/${c.refillId}/resolvedAt`] = startedAt;
-          if (c.reason === "unfillable") upd[`refill_requests/${c.refillId}/cancelReason`] = "unfillable";
+          if (c.cancelReason) upd[`refill_requests/${c.refillId}/cancelReason`] = c.cancelReason;
         }
         // Certainly-unfillable engine orders are WITHDRAWN from the warehouse
         // queue entirely — staff never see requests that can't be picked.
@@ -111,7 +111,7 @@ async function runScan() {
       }
       await db.ref().update(upd);
       counts.closes = plan.closes.length;
-      const withdrawn = plan.closes.filter((c) => c.reason === "unfillable").length;
+      const withdrawn = plan.closes.filter((c) => c.cancelReason).length;
       if (withdrawn) counts.withdrawn = withdrawn;
     }
 

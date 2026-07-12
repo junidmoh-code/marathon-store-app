@@ -149,6 +149,38 @@ test("restock resurrects a size: no stock = absent; stock appears = requested ag
   assert.equal(restocked.intents.filter((x) => x.sizeKey === "M").length, 1, "stock appeared + cooldown passed → asked again");
 });
 
+test("SELF-REVERSAL: request withdrawn when stock arrives by another path", () => {
+  const openReq = {
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R003-2", orderCreatedAt: iso(1), qty: 2, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe" } },
+    orders: { "R003-2": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming" } },
+  };
+  // Manual transfer / direct add / bulk return raised the shop to target (3/3):
+  const topped = computeRefillPlan(base({
+    ...openReq,
+    stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
+  }));
+  const c = topped.closes.find((x) => x.reason === "no_longer_needed");
+  assert.ok(c, "withdrawn on the next scan");
+  assert.equal(c.removeOrderId, "R003-2", "warehouse card deleted before anyone picks it");
+  assert.equal(c.rrStatus, "cancelled");
+  // Still partially needed (1/3, ask covers it) → NOT withdrawn.
+  const partial = computeRefillPlan(base({
+    ...openReq,
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
+  }));
+  assert.ok(!partial.closes.some((x) => x.reason === "no_longer_needed"), "still needed → stays in the queue");
+});
+
+test("engine self-withdrawal imposes NO cooldown — a fresh dip re-asks immediately", () => {
+  const plan = computeRefillPlan(base({
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
+    refillRequests: { rOld: { status: "cancelled", cancelReason: "no_longer_needed", resolvedAt: iso(1), productId: "p1", size: "M", requestingLocation: "marathon-pe" } },
+  }));
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1,
+    "withdrawal an hour ago ≠ human rejection — deficit re-asks at once");
+});
+
 test("PURGE: open engine request that became unfillable is withdrawn from the queue", () => {
   const plan = computeRefillPlan(base({
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: {}, trophy: {} },
