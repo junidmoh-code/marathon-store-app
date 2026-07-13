@@ -327,6 +327,23 @@ export default function HealthView({ products = [], onExit }) {
             ))}
           </DetailShell>
         );
+      // Demand parked behind a warehouse rejection. The engine holds the ask
+      // (cooldown) but keeps watching the ledger: the moment stock ARRIVES at
+      // the rejecting source, the request reopens on the next scan — nothing
+      // here needs action, it exists so parked demand is never invisible.
+      case "waitingForStock":
+        return (
+          <DetailShell title="Waiting for Stock" sub="Rejected by the warehouse — reopens automatically the moment stock arrives at the source" count={count("waitingForStock")} onBack={back}>
+            {groupByProduct(items("waitingForStock")).map(([pid, rows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
+                badges={<Badge tone={AMBER}>WAITING</Badge>}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {rows.map((r) => <SizeFactChip key={`${r.loc}|${r.size}`} size={r.size} value={`need ${r.deficit} · ${locLabel(r.loc)} ← ${locLabel(r.source)}`} tone={AMBER} />)}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
       case "noTarget":
         return (
           <DetailShell title="Decision Queue" sub="Introduce new products · set targets · distribute · exclude · postpone — cards clear instantly" count={count("noTarget")} onBack={back}>
@@ -448,6 +465,8 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Hub 2 restock · in Source → Hub 2 Refill" onClick={() => setScreen("central")} />
               <StatCard label="Rejected / Failed" value={count("failedRefills")} tone={count("failedRefills") ? RED : GREEN}
                         sub="Declined by warehouse (48h)" onClick={() => setScreen("autorefills")} />
+              <StatCard label="Waiting for Stock" value={count("waitingForStock")} tone={count("waitingForStock") ? AMBER : GREEN}
+                        sub="Rejected demand — auto-reopens on arrival" onClick={() => setScreen("waitingForStock")} />
               <StatCard label="Excess Inventory" value={count("excess")} tone={count("excess") ? AMBER : GREEN}
                         sub="Hub 2 + shops above target → rebalance" onClick={() => setScreen("excess")} />
               <StatCard label="Missing Products" value={missingProducts} tone={missingProducts ? AMBER : GREEN}

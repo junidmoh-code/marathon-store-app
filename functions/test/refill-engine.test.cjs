@@ -110,6 +110,137 @@ test("rejection cooldown: a rejected size WITH upstream stock rests 24h, then re
   assert.equal(old.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "cooldown passed + stock exists → ask again");
 });
 
+test("ARRIVAL LIFT: stock arriving at the source AFTER a rejection reopens the demand at once", () => {
+  const withStock = { stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} } };
+  const rejected5hAgo = {
+    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(5), status: "incoming", createdAt: iso(5) } },
+  };
+  // Hub 2 received stock an hour ago (AFTER the 5h-old rejection) → the "no"
+  // is stale; the engine re-asks immediately instead of resting out 24h.
+  const arrived = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 10, ts: iso(1) }],
+  }));
+  assert.equal(arrived.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "arrival after rejection → reopened");
+  // The only arrival PREDATES the rejection (they looked and said no AFTER the
+  // stock came in) → the cooldown holds, and the parked demand is visible as
+  // waitingForStock instead of vanishing.
+  const stale = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 10, ts: iso(9) }],
+  }));
+  assert.equal(stale.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "arrival predates the rejection → still resting");
+  assert.ok(stale.exceptions.waitingForStock.items.some((w) => w.pid === "p1" && w.loc === "marathon-pe" && w.source === "hub2"),
+    "parked demand surfaced as Waiting for Stock");
+  // An outbound movement (a sale at the source) is NOT an arrival — no lift.
+  const soldOnly = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "sold", from: "hub2", productId: "p1", size: "M", qty: 1, ts: iso(1) }],
+  }));
+  assert.equal(soldOnly.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "a sale never lifts a rejection");
+  // EVERY inbound type counts as arrival evidence (transfers carry a REAL
+  // from+to in this system — no in_transit hop — so both legs qualify).
+  for (const type of ["return", "adjustment", "transfer_in", "transfer_out", "opening"]) {
+    const lifted = computeRefillPlan(base({
+      ...withStock, ...rejected5hAgo,
+      movements: [{ type, from: type.startsWith("transfer") ? "central" : undefined, to: "hub2", productId: "p1", size: "M", qty: 3, ts: iso(1) }],
+    }));
+    assert.equal(lifted.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, `${type} after rejection → reopened`);
+  }
+});
+
+test("BOOKKEEPING ≠ ARRIVAL: a movement that leaves the cell at ≤0 lifts nothing", () => {
+  const withStock = { stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(4) } }, trophy: {} } };
+  const rejected5hAgo = {
+    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(5), status: "incoming", createdAt: iso(5) } },
+  };
+  // The Negative Inventory "Fix → 0" adjustment records after:{hub2:0} — a
+  // bookkeeping correction, not pickable stock. Must NOT reopen the demand.
+  const negFix = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "adjustment", to: "hub2", productId: "p1", size: "M", qty: 2, ts: iso(1), reason: "health_negative_zero_fix", after: { hub2: 0 } }],
+  }));
+  assert.equal(negFix.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "clearing a negative to 0 is not an arrival");
+  assert.ok(negFix.exceptions.waitingForStock.items.some((w) => w.pid === "p1"), "still parked as Waiting for Stock");
+  // A receive into a deep oversell hole (after still negative) lifts nothing.
+  const intoHole = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 2, ts: iso(1), after: { hub2: -1 } }],
+  }));
+  assert.equal(intoHole.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "arrival swallowed by an oversell hole ≠ available stock");
+  // The same receive that ends POSITIVE is a real arrival → reopened.
+  const real = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 3, ts: iso(1), after: { hub2: 3 } }],
+  }));
+  assert.equal(real.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "positive resulting balance → reopened");
+  // Legacy movements without an after snapshot keep the old behavior (lift).
+  const legacy = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 3, ts: iso(1) }],
+  }));
+  assert.equal(legacy.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "no after snapshot → counted as before");
+});
+
+test("SAME-SCAN REOPEN: a rejected lock releases its inbound so the re-ask lands in the same plan", () => {
+  // Rejection and arrival both happened since the last scan. The stale lock
+  // must not keep counting as inbound — close AND fresh intent in ONE plan.
+  const plan = computeRefillPlan(base({
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R004-7", orderCreatedAt: iso(6), qty: 2, source: "hub2", createdAt: iso(6) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" } },
+    orders: { "R004-7": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", createdAt: iso(6), clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(5), status: "incoming" } },
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 10, ts: iso(1) }],
+  }));
+  assert.ok(plan.closes.some((c) => c.refillId === "r1"), "stale lock closed");
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "re-ask in the SAME plan, not next scan");
+});
+
+test("DENIER-PINNED: after a route change, only arrival at the location that SAID no lifts the rejection", () => {
+  const cfg = { ...CONFIG, routes: { "marathon-pe": "hub3", trophy: "hub2", hub2: "central" } };
+  const rejectedByHub2 = {
+    config: cfg,
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub3: { p1: { M: cell(8) } }, hub2: {}, central: {}, trophy: {} },
+    orders: { "R011-3": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", placedAtHub: "hub2", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(5), status: "incoming", createdAt: iso(6) } },
+  };
+  // Arrival at the NEW route source (hub3) is no evidence against hub2's "no".
+  const wrongLoc = computeRefillPlan(base({
+    ...rejectedByHub2,
+    movements: [{ type: "received", to: "hub3", productId: "p1", size: "M", qty: 5, ts: iso(1) }],
+  }));
+  assert.equal(wrongLoc.intents.filter((x) => x.dest === "marathon-pe").length, 0, "hub3 arrival ≠ hub2 evidence");
+  assert.ok(wrongLoc.exceptions.waitingForStock.items.some((w) => w.source === "hub2"), "watches the denier, not today's route");
+  // Arrival at the RECORDED denier (hub2) lifts it; the new route then supplies.
+  const rightLoc = computeRefillPlan(base({
+    ...rejectedByHub2,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 5, ts: iso(1) }],
+  }));
+  assert.equal(rightLoc.intents.filter((x) => x.dest === "marathon-pe" && x.source === "hub3").length, 1, "hub2 arrival reopens; intent routed via hub3");
+});
+
+test("ARRIVAL LIFT: confirmed-out clears when stock arrives at a denying level after its denial", () => {
+  const denials = {
+    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(30), status: "incoming", createdAt: iso(30) } },
+    refillRequests: { rHub: { status: "cancelled", resolvedAt: iso(30), productId: "p1", size: "M", requestingLocation: "hub2", rejectedBy: "warehouse" } },
+  };
+  // Central receives the size from a supplier AFTER both denials → no longer
+  // confirmed out; the normal cycle resumes (the 30h-old rejection has cooled
+  // down, so the store's deficit is asked again right away).
+  const restocked = computeRefillPlan(base({
+    ...denials,
+    movements: [{ type: "received", to: "central", productId: "p1", size: "M", qty: 6, ts: iso(2) }],
+  }));
+  assert.equal(restocked.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "arrival at Central un-confirms the out");
+  assert.ok(!restocked.exceptions.missingSizes.items.some((m) => m.pid === "p1" && /confirmed out/.test(m.note)), "off the confirmed-out reorder list");
+  // Arrival BEFORE the denials changes nothing — still confirmed out.
+  const priorArrival = computeRefillPlan(base({
+    ...denials,
+    movements: [{ type: "received", to: "central", productId: "p1", size: "M", qty: 6, ts: iso(40) }],
+  }));
+  assert.equal(priorArrival.intents.filter((x) => x.productId === "p1" && x.sizeKey === "M").length, 0, "old arrival ≠ fresh evidence");
+  assert.ok(priorArrival.exceptions.missingSizes.items.some((m) => m.pid === "p1" && /confirmed out/.test(m.note)), "stays on the reorder list");
+});
+
 test("excess: hub2 strict, stores only when significant; sneakers never counted", () => {
   const plan = computeRefillPlan(base({
     products: {
