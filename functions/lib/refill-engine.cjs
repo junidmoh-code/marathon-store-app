@@ -187,7 +187,17 @@ function computeRefillPlan(snapshot) {
       stuckRefills.push({ dest: o.destShop || null, pid: o.productId || null, sizeKey: encodeSizeKey(o.size), orderId: id, manual: true, ageHours: Math.round((nowMs - Date.parse(o.createdAt || 0)) / 3600e3) });
     }
   }
-  const closedSet = new Set(closes.map((c) => `${c.dest}|${c.pid}|${c.sizeKey}`));
+  // A lock being closed THIS scan no longer holds real inbound units — release
+  // them so the deficit is honest in the SAME pass (a rejected ask whose stock
+  // just arrived re-plans now, not 15 minutes later). Releasing fulfilled
+  // closes is equally safe: their units are already inside destHave.
+  for (const c of closes) {
+    const entry = openIndex[c.dest]?.[c.pid]?.[c.sizeKey];
+    if (!entry) continue;
+    const k = `${c.dest}|${c.pid}|${c.sizeKey}`;
+    const left = (inbound.get(k) || 0) - (num(entry.qty) || 1);
+    if (left > 0) inbound.set(k, left); else inbound.delete(k);
+  }
 
   // ── managed universe per dest: EXPLICIT targets only (v5, no policy layer) ──
   const managedPids = (dest) => new Set(Object.keys(targets?.[dest] || {}));
@@ -234,9 +244,17 @@ function computeRefillPlan(snapshot) {
   const arrivedAfter = (loc, pid, sizeKey, ts) =>
     (arrivedAt.get(`${loc}|${pid}|${sizeKey}`) || 0) > ts;
 
-  // Rejection cooldown: (dest|pid|sizeKey) → most recent rejection timestamp.
+  // Rejection cooldown: (dest|pid|sizeKey) → { ts, by } — the most recent human
+  // rejection AND the location that physically said no (recorded on the record
+  // itself: order.placedAtHub / rr.source; falls back to the CURRENT route for
+  // legacy data). The arrival lift must watch the location that denied, not
+  // whatever the route happens to be today — topology is config and can change.
   const cooldownMs = (num(config?.rejectCooldownHours) || 24) * 3600e3;
   const rejectedAt = new Map();
+  const setDenial = (map, key, ts, by) => {
+    const cur = map.get(key);
+    if (!cur || ts > cur.ts) map.set(key, { ts, by: by || null });
+  };
   // Confirmed-out learning (owner rule 2026-07-13): a human "not available" at
   // BOTH supply levels beats the counted cells. Track the latest denial per
   // (pid|sizeKey) at each level — SHOP level (a Shop Refill line rejected by
@@ -248,10 +266,11 @@ function computeRefillPlan(snapshot) {
     if (!o || o.customerName !== "Shop Refill" || o.clothingRefillStatus !== "rejected") continue;
     if (!o.destShop || !o.productId || o.size == null) continue;
     const ts = Date.parse(o.clothingOutOfStockAt || o.updatedAt || 0) || 0;
+    const by = o.placedAtHub || o.hub || routes[o.destShop] || null;
     const k = `${o.destShop}|${o.productId}|${encodeSizeKey(o.size)}`;
-    if (ts > (rejectedAt.get(k) || 0)) rejectedAt.set(k, ts);
+    setDenial(rejectedAt, k, ts, by);
     const lk = `${o.productId}|${encodeSizeKey(o.size)}`;
-    if (ts > (rejShopLevel.get(lk) || 0)) rejShopLevel.set(lk, ts);
+    setDenial(rejShopLevel, lk, ts, by);
   }
   for (const [id, rr] of Object.entries(refillRequests)) {
     if (!rr || rr.status !== "cancelled" || !rr.requestingLocation || !rr.productId) continue;
@@ -260,31 +279,33 @@ function computeRefillPlan(snapshot) {
     // target again five minutes later, the engine may re-ask immediately.
     if (rr.cancelReason) continue;
     const ts = Date.parse(rr.resolvedAt || 0) || 0;
+    const by = rr.source || rr.createdFrom?.source || routes[rr.requestingLocation] || null;
     const k = `${rr.requestingLocation}|${rr.productId}|${encodeSizeKey(rr.size)}`;
-    if (ts > (rejectedAt.get(k) || 0)) rejectedAt.set(k, ts);
+    setDenial(rejectedAt, k, ts, by);
     const lk = `${rr.productId}|${encodeSizeKey(rr.size)}`;
     const levelMap = rr.requestingLocation === "hub2" ? rejCentralLevel : rejShopLevel;
-    if (ts > (levelMap.get(lk) || 0)) levelMap.set(lk, ts);
+    setDenial(levelMap, lk, ts, by);
   }
   // Both levels denied within the window (default 14 days) → the size is OUT
   // no matter what the cells claim: no requests to ANY destination, straight
   // to the Missing Sizes reorder list. When the window lapses, the normal
   // cooldown cycle resumes — one re-ask; two fresh denials re-confirm it out.
   const confirmedOutMs = (num(config?.confirmedOutDays) || 14) * 86400e3;
-  // The denying LOCATION behind each level, from the routes topology: Central
-  // (hub2's source) denies hub2 asks; the stores' source (hub2) denies store
-  // asks. An arrival THERE after the denial makes that "no" stale.
+  // Route-derived fallbacks for LEGACY denial records that carry no source of
+  // their own: Central (hub2's source) denies hub2 asks; the stores' sources
+  // deny store asks. Denials recorded with a `by` use that exact location.
   const centralLevelLoc = routes["hub2"] || "central";
   const shopLevelLocs = [...new Set(dests.filter((d) => d !== "hub2").map((d) => routes[d]).filter(Boolean))];
   const confirmedOut = (pid, sizeKey) => {
     const lk = `${pid}|${sizeKey}`;
-    const c = rejCentralLevel.get(lk) || 0;
-    const s = rejShopLevel.get(lk) || 0;
-    if (!(c > 0 && s > 0 && nowMs - c < confirmedOutMs && nowMs - s < confirmedOutMs)) return false;
-    // Stock arrived at a denying level AFTER it said no → no longer confirmed
-    // out: one re-ask resumes (two fresh denials re-confirm it out).
-    if (arrivedAfter(centralLevelLoc, pid, sizeKey, c)) return false;
-    if (shopLevelLocs.some((l) => arrivedAfter(l, pid, sizeKey, s))) return false;
+    const c = rejCentralLevel.get(lk);
+    const s = rejShopLevel.get(lk);
+    if (!c || !s || nowMs - c.ts >= confirmedOutMs || nowMs - s.ts >= confirmedOutMs) return false;
+    // Stock arrived at the denying location AFTER it said no → no longer
+    // confirmed out: one re-ask resumes (two fresh denials re-confirm it out).
+    if (arrivedAfter(c.by || centralLevelLoc, pid, sizeKey, c.ts)) return false;
+    if (s.by ? arrivedAfter(s.by, pid, sizeKey, s.ts)
+             : shopLevelLocs.some((l) => arrivedAfter(l, pid, sizeKey, s.ts))) return false;
     return true;
   };
 
@@ -334,11 +355,13 @@ function computeRefillPlan(snapshot) {
         // A cell still resting on its cooldown is surfaced as WAITING FOR
         // STOCK so parked demand is always visible, never silently dropped.
         if (inb > 0) continue;
-        const rejTs = rejectedAt.get(`${dest}|${pid}|${sizeKey}`) || 0;
-        if (nowMs - rejTs < cooldownMs && !arrivedAfter(src, pid, sizeKey, rejTs)) {
+        const rej = rejectedAt.get(`${dest}|${pid}|${sizeKey}`);
+        const rejTs = rej?.ts || 0;
+        const denier = rej?.by || src;   // watch the location that SAID no, not today's route
+        if (nowMs - rejTs < cooldownMs && !arrivedAfter(denier, pid, sizeKey, rejTs)) {
           waitingForStock.push({
-            loc: dest, pid, size, deficit, source: src, rejectedAt: new Date(rejTs).toISOString(),
-            note: `rejected at ${src} — reopens when stock arrives at ${src} (or after the ${Math.round(cooldownMs / 3600e3)}h cooldown)`,
+            loc: dest, pid, size, deficit, source: denier, rejectedAt: new Date(rejTs).toISOString(),
+            note: `rejected at ${denier} — reopens when stock arrives at ${denier} (or after the ${Math.round(cooldownMs / 3600e3)}h cooldown)`,
           });
           continue;
         }
