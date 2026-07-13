@@ -732,20 +732,33 @@ function computeRefillPlan(snapshot) {
       noTarget.push({ loc, pid, units });   // assortment leftover — genuine decision
     }
   }
-  // SIZE-SCOPED blind-spot guard (review 2026-07-13): a MANAGED product can
-  // still hold stocked sizes the standard run doesn't cover and no human ever
-  // targeted (mixed letter+numeric garments — migrated on M/L while a "32"
-  // sits in stock). The pid-level managed gate above would hide those cells
-  // forever, so they surface here as a size-scoped noStandard decision.
+  // SIZE-SCOPED blind-spot guard (review 2026-07-13; WIDENED 2026-07-13 after
+  // the owner's "can a refill ever be silently missed?" audit found 13 live
+  // cells): a MANAGED product can hold stocked sizes no human ever targeted —
+  // numeric sizes the standard run doesn't cover, AND standard sizes that
+  // arrived after the product was introduced (a new "S" of a product migrated
+  // on M/L). The pid-level managed gate above would hide those cells forever:
+  // no deficit is ever computed for an untargeted size, so no refill would
+  // EVER generate — the exact silent-miss class. Every stocked size lacking a
+  // target under a managed product surfaces as a decision. Hub 2 additionally
+  // checks sizes stocked at ITS SOURCE (central) — a brand-new size arriving
+  // upstream must surface at the buffer before it can flow anywhere.
   for (const loc of dests) {
     for (const [pid, byTarget] of Object.entries(targets?.[loc] || {})) {
       if (!isClothing(products?.[pid])) continue;
-      if (!stock?.[loc]?.[pid]) continue;
       if (decisionActive(loc, pid)) continue;
       let units = 0;
-      for (const [sk, c] of Object.entries(stock[loc][pid])) {
+      const seenSk = new Set();
+      for (const [sk, c] of Object.entries(stock?.[loc]?.[pid] || {})) {
         const q = avail(num(c?.qty));
-        if (q > 0 && !STANDARD_SIZE_RE.test(sk) && !byTarget[sk]) units += q;
+        if (q > 0 && !byTarget[sk]) { units += q; seenSk.add(sk); }
+      }
+      if (loc === "hub2") {
+        const up = routes[loc];   // central — new sizes land there first
+        for (const [sk, c] of Object.entries(stock?.[up]?.[pid] || {})) {
+          if (seenSk.has(sk) || byTarget[sk]) continue;
+          if (avail(num(c?.qty)) > 0 && !dests.some((d) => targets?.[d]?.[pid]?.[sk])) units += avail(num(c?.qty));
+        }
       }
       if (units > 0) noTarget.push({ loc, pid, units, noStandard: true });
     }

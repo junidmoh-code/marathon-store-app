@@ -157,22 +157,32 @@ export default function NoTargetQueue({ products = [] }) {
         });
       }
     }
-    // SIZE-SCOPED blind spot (lockstep with the engine's guard): a MANAGED
-    // product can still hold stocked sizes the standard run doesn't cover and
-    // nobody targeted (mixed letter+numeric garments). Card carries ONLY those
-    // sizes, so "Set targets" configures exactly the unmanaged cells.
-    const STD = /^(S|M|L|XL|XXL|XXXL)$/i;
+    // SIZE-SCOPED blind spot (lockstep with the engine's guard; WIDENED
+    // 2026-07-13): EVERY stocked size lacking a target under a managed product
+    // surfaces — numeric sizes AND standard sizes that arrived after the
+    // product was introduced (a new "S" of a product migrated on M/L would
+    // otherwise never generate a refill, silently, forever). Hub 2 cards also
+    // pick up new sizes stocked at Central with no target anywhere — new sizes
+    // land upstream first and must surface at the buffer to start flowing.
     for (const loc of dests) {
       for (const [pid, byTarget] of Object.entries(allTargets?.[loc] || {})) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
-        const bySize = allStock?.[loc]?.[pid];
-        if (!bySize) continue;
         if (decisionActive(loc, pid)) continue;
-        const sizes = Object.entries(bySize)
+        const sizes = Object.entries(allStock?.[loc]?.[pid] || {})
           .map(([size, c]) => ({ size, qty: Math.max(Number(c?.qty) || 0, 0) }))
-          .filter((s) => s.qty > 0 && !STD.test(String(s.size)) && !byTarget[encodeSizeKey(s.size)])
-          .sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+          .filter((s) => s.qty > 0 && !byTarget[encodeSizeKey(s.size)]);
+        if (loc === "hub2") {
+          const seen = new Set(sizes.map((s) => encodeSizeKey(s.size)));
+          for (const [size, c] of Object.entries(allStock?.central?.[pid] || {})) {
+            const sk = encodeSizeKey(size);
+            if (seen.has(sk) || byTarget[sk]) continue;
+            if ((Number(c?.qty) || 0) > 0 && !dests.some((d) => allTargets?.[d]?.[pid]?.[sk])) {
+              sizes.push({ size, qty: Math.max(Number(c?.qty) || 0, 0), atCentral: true });
+            }
+          }
+        }
+        sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
         if (!sizes.length) continue;
         out.push({
           key: `${loc}|${pid}|sizes`, loc, pid, isNew: false, noStandard: true,

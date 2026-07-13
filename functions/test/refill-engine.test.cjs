@@ -682,6 +682,29 @@ test("TWO-LEG MOVE EXCESS: allocation is threaded — two stores never both fill
   assert.equal(items.reduce((t, e) => t + e.excess, 0), 6, "both stores still move their whole overage");
 });
 
+test("NO SILENT MISS: a stocked STANDARD size without a target surfaces under a managed product", () => {
+  // The owner audit case: Diesel Jeans managed on L, but M×4 sits at hub2 with
+  // no M target — no deficit ever computes for M, so no refill would EVER
+  // generate. It must surface as a decision instead of vanishing.
+  const plan = computeRefillPlan(base({
+    products: { p1: { name: "Diesel Jeans", productType: "clothing", sizes: ["M", "L"] } },
+    targets: { hub2: { p1: { L: { target: 3, minQty: 2 } } } },
+    stock: { hub2: { p1: { L: cell(3), M: cell(4) } }, central: {}, "marathon-pe": {}, trophy: {} },
+  }));
+  const card = plan.exceptions.noTarget.items.find((c) => c.pid === "p1" && c.noStandard);
+  assert.ok(card, "untargeted stocked M surfaces");
+  assert.equal(card.units, 4);
+  // And a NEW size arriving at CENTRAL (upstream) surfaces on the hub2 card
+  // even though hub2 itself holds none of it yet.
+  const upstream = computeRefillPlan(base({
+    products: { p1: { name: "Diesel Jeans", productType: "clothing", sizes: ["S", "L"] } },
+    targets: { hub2: { p1: { L: { target: 3, minQty: 2 } } } },
+    stock: { hub2: { p1: { L: cell(3) } }, central: { p1: { S: cell(6) } }, "marathon-pe": {}, trophy: {} },
+  }));
+  const up = upstream.exceptions.noTarget.items.find((c) => c.pid === "p1" && c.loc === "hub2");
+  assert.ok(up && up.units === 6, "central-stocked new size surfaces at the buffer");
+});
+
 test("Cortez fix: surplus is HELD for downstream deficits, never excess past a starving store", () => {
   const over = {
     products: { p1: { name: "Cortez tracksuit", productType: "clothing", sizes: ["XL"] } },
