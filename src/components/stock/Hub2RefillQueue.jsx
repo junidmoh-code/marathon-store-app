@@ -9,6 +9,18 @@
 // the Transfer screen. Transfer to Hub 2 executes immediate one-step ledger
 // transfers per size via applyMovement; unpicked sizes stay open and any
 // shortfall is re-detected by the next 15-minute scan.
+//
+// Owner additions (2026-07-13):
+// • UNCOUNTED SEND — a size showing 0 at Central is no longer inert. Central
+//   can still enter a quantity: the units are `received` into Hub 2 with no
+//   deduction anywhere (reason hub2_refill_uncounted — the CR-uncounted
+//   precedent). Real shelves beat database cells.
+// • REJECT — the ✕ on a chip marks that size "not available"; the footer
+//   button commits transfers AND rejections in one tap. A rejection cancels
+//   the refill request WITHOUT a cancelReason, which is exactly the shape the
+//   engine reads as a HUMAN rejection (24h cooldown; and if the same
+//   product+size is also rejected at the shop level, the engine confirms it
+//   out — no more requests, straight to the Missing Sizes reorder list).
 
 import React, { useMemo, useState } from "react";
 import { ref, update } from "firebase/database";
@@ -16,7 +28,7 @@ import { database } from "../../firebase";
 import { useRefillRequests, useStockCells } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
-import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen } from "./ui";
+import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bRed } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 
 const SOURCE_LOC = "central";
@@ -30,6 +42,7 @@ export default function Hub2RefillQueue({ products = [] }) {
   const openRequests = useRefillRequests("open");
   const centralCells = useStockCells(SOURCE_LOC);
   const [picks, setPicks] = useState({});       // refillId → qty
+  const [rejects, setRejects] = useState({});   // refillId → true (marked "not available")
   const [busyCard, setBusyCard] = useState(null);
   const [msg, setMsg] = useState({});           // productId → result line
 
@@ -55,25 +68,46 @@ export default function Hub2RefillQueue({ products = [] }) {
   }, [openRequests, byId]);
 
   const availOf = (pid, size) => Math.max(Number(centralCells?.[pid]?.[String(size)]?.qty) || 0, 0);
+  // A size with counted Central stock is capped by it; a size showing ZERO can
+  // still be sent up to the requested quantity (uncounted send — no deduction).
+  // Uncounted sizes default to 0 picked so nothing ships by accident.
+  const capOf = (r) => {
+    const avail = availOf(r.productId, r.size);
+    return avail > 0 ? Math.min(r.qty || 1, avail) : (r.qty || 1);
+  };
   const pickOf = (r) => {
-    const cap = Math.min(r.qty || 1, availOf(r.productId, r.size));
+    if (rejects[r.id]) return 0;
+    const avail = availOf(r.productId, r.size);
+    const cap = capOf(r);
     const v = picks[r.id];
-    return Math.max(0, Math.min(v == null ? cap : v, cap));
+    return Math.max(0, Math.min(v == null ? (avail > 0 ? cap : 0) : v, cap));
   };
 
-  const transfer = async (card) => {
+  // One tap commits the whole card: picked quantities transfer (counted stock)
+  // or arrive uncounted (zero at Central), and ✕-marked sizes are rejected —
+  // the request is cancelled with NO cancelReason, the engine's human-rejection
+  // shape (cooldown + confirmed-out learning when the shop level also said no).
+  const commit = async (card) => {
     if (busyCard || !canTransfer) return;
-    const lines = card.reqs.map((r) => ({ r, qty: pickOf(r) })).filter((l) => l.qty > 0);
-    if (!lines.length) return;
+    const lines = card.reqs.map((r) => ({ r, qty: pickOf(r) })).filter((l) => l.qty > 0 && !rejects[l.r.id]);
+    const denied = card.reqs.filter((r) => rejects[r.id]);
+    if (!lines.length && !denied.length) return;
     setBusyCard(card.pid);
     let ok = 0, fail = 0;
     for (const { r, qty } of lines) {
+      const counted = availOf(r.productId, r.size) > 0;
       let res;
       try {
-        res = await applyMovement({
+        res = await applyMovement(counted ? {
           type: "transfer_out", productId: r.productId, size: r.size, qty,
           from: SOURCE_LOC, to: DEST_LOC, actorRole,
           reason: "hub2_auto_refill",
+          movementId: `rrf_${r.id}`,
+          link: { refillId: r.id },
+        } : {
+          type: "received", productId: r.productId, size: r.size, qty,
+          to: DEST_LOC, actorRole,
+          reason: "hub2_refill_uncounted",
           movementId: `rrf_${r.id}`,
           link: { refillId: r.id },
         });
@@ -82,12 +116,29 @@ export default function Hub2RefillQueue({ products = [] }) {
         ok += qty;
         await update(ref(database), {
           [`refill_requests/${r.id}/status`]: "fulfilled",
-          [`refill_requests/${r.id}/fulfilledBy`]: { movementId: `rrf_${r.id}`, qty },
+          [`refill_requests/${r.id}/fulfilledBy`]: { movementId: `rrf_${r.id}`, qty, ...(counted ? {} : { uncounted: true }) },
           [`refill_requests/${r.id}/resolvedAt`]: new Date().toISOString(),
         }).catch(() => {});
       } else fail += 1;
     }
-    setMsg((m) => ({ ...m, [card.pid]: fail ? `${ok} sent · ${fail} failed — retry` : `${ok} unit(s) → Hub 2 ✓` }));
+    let rejected = 0;
+    if (denied.length) {
+      const upd = {};
+      const now = new Date().toISOString();
+      for (const r of denied) {
+        upd[`refill_requests/${r.id}/status`] = "cancelled";
+        upd[`refill_requests/${r.id}/resolvedAt`] = now;
+        upd[`refill_requests/${r.id}/rejectedBy`] = actorRole || "unknown";
+        // Deliberately NO cancelReason — that field marks engine self-withdrawals.
+      }
+      try { await update(ref(database), upd); rejected = denied.length; }
+      catch { fail += denied.length; }
+    }
+    const parts = [];
+    if (ok) parts.push(`${ok} unit(s) → Hub 2 ✓`);
+    if (rejected) parts.push(`${rejected} size(s) rejected`);
+    if (fail) parts.push(`${fail} failed — retry`);
+    setMsg((m) => ({ ...m, [card.pid]: parts.join(" · ") }));
     setBusyCard(null);
   };
 
@@ -142,10 +193,12 @@ export default function Hub2RefillQueue({ products = [] }) {
                       <SizeStepperChip key={r.id}
                         size={String(r.size)}
                         qty={pickOf(r)}
-                        max={Math.min(r.qty || 1, avail)}
+                        max={capOf(r)}
                         onChange={(v) => setPicks((prev) => ({ ...prev, [r.id]: v }))}
-                        hint={avail > 0 ? `need ×${r.qty || 1} · ${avail} here` : "none at Central"}
-                        disabled={!canTransfer || avail <= 0 || busyCard === card.pid}
+                        rejected={!!rejects[r.id]}
+                        onReject={() => setRejects((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}
+                        hint={avail > 0 ? `need ×${r.qty || 1} · ${avail} here` : `need ×${r.qty || 1} · 0 counted — adds to Hub 2 only`}
+                        disabled={!canTransfer || busyCard === card.pid}
                       />
                     );
                   })}
@@ -153,12 +206,24 @@ export default function Hub2RefillQueue({ products = [] }) {
                 {msg[card.pid] && (
                   <div style={{ color: msg[card.pid].includes("failed") ? RED : GREEN, fontSize: 12.5, fontWeight: 600, marginTop: 10 }}>{msg[card.pid]}</div>
                 )}
-                <button
-                  onClick={() => transfer(card)}
-                  disabled={busyCard === card.pid || totalPick === 0 || !canTransfer}
-                  style={{ ...bGreen, width: "100%", marginTop: 12, padding: "12px", opacity: busyCard === card.pid || totalPick === 0 || !canTransfer ? 0.5 : 1 }}>
-                  {busyCard === card.pid ? "Transferring…" : `Transfer ${totalPick} unit${totalPick === 1 ? "" : "s"} to Hub 2`}
-                </button>
+                {(() => {
+                  const deniedCount = card.reqs.filter((r) => rejects[r.id]).length;
+                  const allDenied = deniedCount === card.reqs.length && deniedCount > 0;
+                  const idle = busyCard !== card.pid;
+                  const nothing = totalPick === 0 && deniedCount === 0;
+                  const label = !idle ? "Working…"
+                    : allDenied ? "Reject request — not available"
+                    : deniedCount > 0 ? `Transfer ${totalPick} · reject ${deniedCount} size${deniedCount === 1 ? "" : "s"}`
+                    : `Transfer ${totalPick} unit${totalPick === 1 ? "" : "s"} to Hub 2`;
+                  return (
+                    <button
+                      onClick={() => commit(card)}
+                      disabled={!idle || nothing || !canTransfer}
+                      style={{ ...(allDenied ? bRed : bGreen), width: "100%", marginTop: 12, padding: "12px", opacity: !idle || nothing || !canTransfer ? 0.5 : 1 }}>
+                      {label}
+                    </button>
+                  );
+                })()}
               </>
             )}
           </ProductCard>

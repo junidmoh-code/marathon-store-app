@@ -149,6 +149,39 @@ test("restock resurrects a size: no stock = absent; stock appears = requested ag
   assert.equal(restocked.intents.filter((x) => x.sizeKey === "M").length, 1, "stock appeared + cooldown passed → asked again");
 });
 
+test("CONFIRMED OUT: denied at BOTH levels → no request anywhere, reorder list instead", () => {
+  // Shop level said no (rejected Shop Refill line, 30h ago — past the 24h
+  // cooldown, so WITHOUT the rule an intent would be re-created) AND Central
+  // said no (cancelled hub2 request, no cancelReason). Counted cells still
+  // show plenty — humans beat the database.
+  const denials = {
+    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(30), status: "incoming", createdAt: iso(30) } },
+    refillRequests: { rHub: { status: "cancelled", resolvedAt: iso(30), productId: "p1", size: "M", requestingLocation: "hub2", rejectedBy: "warehouse" } },
+  };
+  const plan = computeRefillPlan(base(denials));
+  assert.equal(plan.intents.filter((x) => x.productId === "p1" && x.sizeKey === "M").length, 0, "confirmed out — never asked again");
+  assert.ok(plan.exceptions.missingSizes.items.some((m) => m.pid === "p1" && /confirmed out/.test(m.note)), "surfaced on the reorder list as confirmed out");
+
+  // Only ONE level denied → normal lifecycle: the 30h-old shop rejection has
+  // cooled down and stock exists upstream, so the engine re-asks.
+  const oneLevel = computeRefillPlan(base({ orders: denials.orders }));
+  assert.equal(oneLevel.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "single-level denial keeps the cooldown cycle");
+
+  // An engine SELF-withdrawal at the central level never counts as a denial.
+  const selfWithdraw = computeRefillPlan(base({
+    orders: denials.orders,
+    refillRequests: { rHub: { status: "cancelled", cancelReason: "unfillable", resolvedAt: iso(30), productId: "p1", size: "M", requestingLocation: "hub2" } },
+  }));
+  assert.equal(selfWithdraw.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "self-withdrawal ≠ human denial");
+
+  // Window lapse (15 days > confirmedOutDays 14) → one re-ask resumes.
+  const lapsed = computeRefillPlan(base({
+    orders: { "R009-1": { ...denials.orders["R009-1"], clothingOutOfStockAt: iso(15 * 24), createdAt: iso(15 * 24) } },
+    refillRequests: { rHub: { ...denials.refillRequests.rHub, resolvedAt: iso(15 * 24) } },
+  }));
+  assert.equal(lapsed.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "denials aged out — engine may re-ask once");
+});
+
 test("SELF-REVERSAL: request withdrawn when stock arrives by another path", () => {
   const openReq = {
     openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R003-2", orderCreatedAt: iso(1), qty: 2, source: "hub2", createdAt: iso(1) } } } },

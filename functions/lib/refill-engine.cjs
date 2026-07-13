@@ -215,12 +215,21 @@ function computeRefillPlan(snapshot) {
   // Rejection cooldown: (dest|pid|sizeKey) → most recent rejection timestamp.
   const cooldownMs = (num(config?.rejectCooldownHours) || 24) * 3600e3;
   const rejectedAt = new Map();
+  // Confirmed-out learning (owner rule 2026-07-13): a human "not available" at
+  // BOTH supply levels beats the counted cells. Track the latest denial per
+  // (pid|sizeKey) at each level — SHOP level (a Shop Refill line rejected by
+  // the hub2 warehouse, or a cancelled store-destined request) and CENTRAL
+  // level (a cancelled hub2 request — Central's Hub 2 Refill queue said no).
+  const rejShopLevel = new Map();
+  const rejCentralLevel = new Map();
   for (const o of Object.values(orders)) {
     if (!o || o.customerName !== "Shop Refill" || o.clothingRefillStatus !== "rejected") continue;
     if (!o.destShop || !o.productId || o.size == null) continue;
     const ts = Date.parse(o.clothingOutOfStockAt || o.updatedAt || 0) || 0;
     const k = `${o.destShop}|${o.productId}|${encodeSizeKey(o.size)}`;
     if (ts > (rejectedAt.get(k) || 0)) rejectedAt.set(k, ts);
+    const lk = `${o.productId}|${encodeSizeKey(o.size)}`;
+    if (ts > (rejShopLevel.get(lk) || 0)) rejShopLevel.set(lk, ts);
   }
   for (const [id, rr] of Object.entries(refillRequests)) {
     if (!rr || rr.status !== "cancelled" || !rr.requestingLocation || !rr.productId) continue;
@@ -231,7 +240,21 @@ function computeRefillPlan(snapshot) {
     const ts = Date.parse(rr.resolvedAt || 0) || 0;
     const k = `${rr.requestingLocation}|${rr.productId}|${encodeSizeKey(rr.size)}`;
     if (ts > (rejectedAt.get(k) || 0)) rejectedAt.set(k, ts);
+    const lk = `${rr.productId}|${encodeSizeKey(rr.size)}`;
+    const levelMap = rr.requestingLocation === "hub2" ? rejCentralLevel : rejShopLevel;
+    if (ts > (levelMap.get(lk) || 0)) levelMap.set(lk, ts);
   }
+  // Both levels denied within the window (default 14 days) → the size is OUT
+  // no matter what the cells claim: no requests to ANY destination, straight
+  // to the Missing Sizes reorder list. When the window lapses, the normal
+  // cooldown cycle resumes — one re-ask; two fresh denials re-confirm it out.
+  const confirmedOutMs = (num(config?.confirmedOutDays) || 14) * 86400e3;
+  const confirmedOut = (pid, sizeKey) => {
+    const lk = `${pid}|${sizeKey}`;
+    const c = rejCentralLevel.get(lk) || 0;
+    const s = rejShopLevel.get(lk) || 0;
+    return c > 0 && s > 0 && nowMs - c < confirmedOutMs && nowMs - s < confirmedOutMs;
+  };
 
   const networkQty = (pid, size) =>
     Object.keys(stock).reduce((t, loc) => t + avail(cellQty(stock, loc, pid, size)), 0);
@@ -253,6 +276,15 @@ function computeRefillPlan(snapshot) {
         if (deficit <= 0) continue;
 
         belowTarget.push({ loc: dest, pid, size, have: q, target: t.target, inbound: inb, deficit });
+
+        // Denied by humans at BOTH supply levels → confirmed out. The counted
+        // cells may still show stock, but Central and the hub both physically
+        // looked and said no — the shelves beat the database. Reorder list,
+        // no request, regardless of destination.
+        if (confirmedOut(pid, sizeKey)) {
+          missingSizes.push({ loc: dest, pid, size, wanted: deficit, note: "denied at both Hub 2 and Central — confirmed out, reorder candidate" });
+          continue;
+        }
 
         // Certainly unfillable — ZERO stock anywhere else in the network — is
         // never a request (owner rule 2026-07-13: "if you're 100% sure it
