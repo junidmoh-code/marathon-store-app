@@ -8257,12 +8257,23 @@ function WarehouseView({ products = [], orders, onExit }) {
       // A line whose split was LOCKED by a prior partial attempt (of this same gen) is
       // driven by that locked plan, not the freshly-entered qty — see the split below.
       const locked = it.planGen === it.gen && it.planCountedQty != null;
-      const qty = locked
+      let qty = locked
         ? (it.planCountedQty + it.planUncountedQty)
         : Math.max(0, Math.floor(plan.qtys?.[it.orderId] || 0));
       const reject = !locked && !!plan.rejects?.[it.orderId];
       if (qty > 0) {
         if (!store) { fail++; errors.push(`${formatSize(it.size)}: no destination shop on this request`); continue; }
+        // STALE-QTY CLAMP (review 2026-07-13): the engine may auto-resize an
+        // order between render and this tap. Re-read the live quantity and
+        // never send more than the request currently asks — the entered
+        // number was captured against a card that may have shrunk.
+        if (!locked) {
+          try {
+            const liveQ = (await get(ref(database, `orders/${it.orderId}/qty`))).val();
+            if (typeof liveQ === "number" && liveQ >= 0 && qty > liveQ) qty = liveQ;
+            if (qty <= 0) { errors.push(`${formatSize(it.size)}: request was resized to 0 — refresh`); fail++; continue; }
+          } catch { /* offline read — proceed with entered qty; movement idempotency still guards */ }
+        }
         const from = it.placedAtHub || "hub2";
         // SILENT SPLIT: whatever the hub has COUNTED for this size goes as a real
         // hub→shop transfer (deducts the hub); any OVERAGE is booked as an uncounted

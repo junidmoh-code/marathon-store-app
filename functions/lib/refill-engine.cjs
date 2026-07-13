@@ -235,13 +235,27 @@ function computeRefillPlan(snapshot) {
           const srcLoc2 = entry.source || routes[dest];
           const srcHave2 = srcLoc2 ? avail(cellQty(stock, srcLoc2, pid, size)) : 0;
           const ownQty = num(entry.qty) || 1;
-          const reservedByOthers = Math.max((sourceReserved.get(`${srcLoc2}|${pid}|${sizeKey}`) || 0) - ownQty, 0);
-          const expected = Math.min(
-            Math.max((t?.target || 0) - destHave - otherInbound, 0),
-            Math.max(srcHave2 - reservedByOthers, 0),
-            num(config?.maxUnitsPerIntent) || 20,
-          );
+          const srcKey2 = `${srcLoc2}|${pid}|${sizeKey}`;
+          // SHRINK to real demand is always safe (a reduced claim can never
+          // overcommit) — no source math needed. GROW only into units that are
+          // genuinely unclaimed: srcHave minus the FULL threaded reservation
+          // (which this block MUTATES on every decision — Sonnet HIGH
+          // 2026-07-13: reading stale reservations let two growing siblings
+          // promise 16 units against 10 physical, and a grow + a same-scan new
+          // intent overcommit a shared source. Every decision below is
+          // immediately visible to later siblings AND to the deficit loop).
+          const desired = Math.min(Math.max((t?.target || 0) - destHave - otherInbound, 0), num(config?.maxUnitsPerIntent) || 20);
+          // Sequential fair allocation: my share = source on-hand minus what
+          // everyone ELSE currently reserves (threaded — later siblings see my
+          // decision). If my share is zero but I am oversized, I still shrink
+          // to my true demand (a reduced claim can never overcommit) — this is
+          // what converges the fully-overcommitted symmetric case instead of
+          // freezing it.
+          const availForMe = Math.max(srcHave2 - ((sourceReserved.get(srcKey2) || 0) - ownQty), 0);
+          let expected = Math.min(desired, availForMe);
+          if (expected === 0 && desired > 0) expected = Math.min(desired, ownQty);
           if (expected > 0 && expected !== ownQty) {
+            bump(sourceReserved, srcKey2, expected - ownQty);   // thread the decision
             resizes.push({ dest, pid, sizeKey, refillId: entry.refillId || null, orderId: orderIsOurs ? entry.orderId : null, from: ownQty, to: expected });
           }
         }
@@ -266,6 +280,14 @@ function computeRefillPlan(snapshot) {
     const k = `${c.dest}|${c.pid}|${c.sizeKey}`;
     const left = (inbound.get(k) || 0) - (num(entry.qty) || 1);
     if (left > 0) inbound.set(k, left); else inbound.delete(k);
+    // Release the SOURCE reservation too — a closed lock frees its units for
+    // siblings and new intents in this same pass (symmetric with inbound).
+    const sLoc = entry.source || routes[c.dest];
+    if (sLoc) {
+      const sk = `${sLoc}|${c.pid}|${c.sizeKey}`;
+      const sLeft = (sourceReserved.get(sk) || 0) - (num(entry.qty) || 1);
+      if (sLeft > 0) sourceReserved.set(sk, sLeft); else sourceReserved.delete(sk);
+    }
   }
 
   // ── managed universe per dest: EXPLICIT targets only (v5, no policy layer) ──
