@@ -209,8 +209,27 @@ function computeRefillPlan(snapshot) {
   const intents = [];
   const belowTarget = [];
   const missingSizes = [];
+  const waitingForStock = [];  // demand parked behind a rejection — never silently dropped
   let managedCells = 0;   // cells with a resolvable target > 0 (Health-score denominator)
   const maxUnits = num(config?.maxUnitsPerIntent) || 20;
+
+  // ── ARRIVAL LIFT (owner rule 2026-07-13: requests are LIVE demand) ──────────
+  // A human "not available" is trusted only until stock demonstrably ARRIVES at
+  // the location that said no. Any inbound ledger movement — supplier receive,
+  // return, positive adjustment, either transfer leg — newer than the denial is
+  // fresh physical evidence that beats the stale "no": the demand re-asks on
+  // the very next scan instead of resting out the cooldown / confirmed-out
+  // window. arrivedAt: (loc|pid|sizeKey) → latest inbound movement ts there.
+  // (Movement types whose `to` gains stock mirror applyMovement's cellDeltas.)
+  const INBOUND_TYPES = new Set(["received", "opening", "return", "adjustment", "transfer_in", "transfer_out"]);
+  const arrivedAt = new Map();
+  for (const m of movements) {
+    if (!m || !m.to || !m.productId || m.size == null) continue;
+    if (!INBOUND_TYPES.has(m.type) || num(m.qty) <= 0) continue;
+    const ts = Date.parse(m.ts || 0) || 0;
+    const k = `${m.to}|${m.productId}|${encodeSizeKey(m.size)}`;
+    if (ts > (arrivedAt.get(k) || 0)) arrivedAt.set(k, ts);
+  }
 
   // Rejection cooldown: (dest|pid|sizeKey) → most recent rejection timestamp.
   const cooldownMs = (num(config?.rejectCooldownHours) || 24) * 3600e3;
@@ -249,11 +268,21 @@ function computeRefillPlan(snapshot) {
   // to the Missing Sizes reorder list. When the window lapses, the normal
   // cooldown cycle resumes — one re-ask; two fresh denials re-confirm it out.
   const confirmedOutMs = (num(config?.confirmedOutDays) || 14) * 86400e3;
+  // The denying LOCATION behind each level, from the routes topology: Central
+  // (hub2's source) denies hub2 asks; the stores' source (hub2) denies store
+  // asks. An arrival THERE after the denial makes that "no" stale.
+  const centralLevelLoc = routes["hub2"] || "central";
+  const shopLevelLocs = [...new Set(dests.filter((d) => d !== "hub2").map((d) => routes[d]).filter(Boolean))];
   const confirmedOut = (pid, sizeKey) => {
     const lk = `${pid}|${sizeKey}`;
     const c = rejCentralLevel.get(lk) || 0;
     const s = rejShopLevel.get(lk) || 0;
-    return c > 0 && s > 0 && nowMs - c < confirmedOutMs && nowMs - s < confirmedOutMs;
+    if (!(c > 0 && s > 0 && nowMs - c < confirmedOutMs && nowMs - s < confirmedOutMs)) return false;
+    // Stock arrived at a denying level AFTER it said no → no longer confirmed
+    // out: one re-ask resumes (two fresh denials re-confirm it out).
+    if ((arrivedAt.get(`${centralLevelLoc}|${pid}|${sizeKey}`) || 0) > c) return false;
+    if (shopLevelLocs.some((l) => (arrivedAt.get(`${l}|${pid}|${sizeKey}`) || 0) > s)) return false;
+    return true;
   };
 
   const networkQty = (pid, size) =>
@@ -296,9 +325,20 @@ function computeRefillPlan(snapshot) {
           continue;
         }
 
-        // Suppress for: an intent already on its way, or a fresh rejection.
+        // Suppress for: an intent already on its way, or a fresh rejection —
+        // UNLESS stock has arrived at the source since the rejection (arrival
+        // lift above: the "no" is stale, the demand reopens automatically).
+        // A cell still resting on its cooldown is surfaced as WAITING FOR
+        // STOCK so parked demand is always visible, never silently dropped.
         if (inb > 0) continue;
-        if (nowMs - (rejectedAt.get(`${dest}|${pid}|${sizeKey}`) || 0) < cooldownMs) continue;
+        const rejTs = rejectedAt.get(`${dest}|${pid}|${sizeKey}`) || 0;
+        if (nowMs - rejTs < cooldownMs && (arrivedAt.get(`${src}|${pid}|${sizeKey}`) || 0) <= rejTs) {
+          waitingForStock.push({
+            loc: dest, pid, size, deficit, source: src, rejectedAt: new Date(rejTs).toISOString(),
+            note: `rejected at ${src} — reopens when stock arrives at ${src} (or after the ${Math.round(cooldownMs / 3600e3)}h cooldown)`,
+          });
+          continue;
+        }
 
         intents.push({
           dest, source: src, productId: pid, size, sizeKey,
@@ -455,6 +495,7 @@ function computeRefillPlan(snapshot) {
       noTarget: cap(noTarget),
       belowTarget: cap(belowTarget, 1500),
       missingSizes: cap(missingSizes),
+      waitingForStock: cap(waitingForStock),
       stuckRefills: cap(stuckRefills),
       failedRefills: cap(failedRefills),
       onlyInCentral: cap(onlyInCentral),

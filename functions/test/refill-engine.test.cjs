@@ -110,6 +110,59 @@ test("rejection cooldown: a rejected size WITH upstream stock rests 24h, then re
   assert.equal(old.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "cooldown passed + stock exists → ask again");
 });
 
+test("ARRIVAL LIFT: stock arriving at the source AFTER a rejection reopens the demand at once", () => {
+  const withStock = { stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} } };
+  const rejected5hAgo = {
+    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(5), status: "incoming", createdAt: iso(5) } },
+  };
+  // Hub 2 received stock an hour ago (AFTER the 5h-old rejection) → the "no"
+  // is stale; the engine re-asks immediately instead of resting out 24h.
+  const arrived = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 10, ts: iso(1) }],
+  }));
+  assert.equal(arrived.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "arrival after rejection → reopened");
+  // The only arrival PREDATES the rejection (they looked and said no AFTER the
+  // stock came in) → the cooldown holds, and the parked demand is visible as
+  // waitingForStock instead of vanishing.
+  const stale = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 10, ts: iso(9) }],
+  }));
+  assert.equal(stale.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "arrival predates the rejection → still resting");
+  assert.ok(stale.exceptions.waitingForStock.items.some((w) => w.pid === "p1" && w.loc === "marathon-pe" && w.source === "hub2"),
+    "parked demand surfaced as Waiting for Stock");
+  // An outbound movement (a sale at the source) is NOT an arrival — no lift.
+  const soldOnly = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "sold", from: "hub2", productId: "p1", size: "M", qty: 1, ts: iso(1) }],
+  }));
+  assert.equal(soldOnly.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "a sale never lifts a rejection");
+});
+
+test("ARRIVAL LIFT: confirmed-out clears when stock arrives at a denying level after its denial", () => {
+  const denials = {
+    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(30), status: "incoming", createdAt: iso(30) } },
+    refillRequests: { rHub: { status: "cancelled", resolvedAt: iso(30), productId: "p1", size: "M", requestingLocation: "hub2", rejectedBy: "warehouse" } },
+  };
+  // Central receives the size from a supplier AFTER both denials → no longer
+  // confirmed out; the normal cycle resumes (the 30h-old rejection has cooled
+  // down, so the store's deficit is asked again right away).
+  const restocked = computeRefillPlan(base({
+    ...denials,
+    movements: [{ type: "received", to: "central", productId: "p1", size: "M", qty: 6, ts: iso(2) }],
+  }));
+  assert.equal(restocked.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "arrival at Central un-confirms the out");
+  assert.ok(!restocked.exceptions.missingSizes.items.some((m) => m.pid === "p1" && /confirmed out/.test(m.note)), "off the confirmed-out reorder list");
+  // Arrival BEFORE the denials changes nothing — still confirmed out.
+  const priorArrival = computeRefillPlan(base({
+    ...denials,
+    movements: [{ type: "received", to: "central", productId: "p1", size: "M", qty: 6, ts: iso(40) }],
+  }));
+  assert.equal(priorArrival.intents.filter((x) => x.productId === "p1" && x.sizeKey === "M").length, 0, "old arrival ≠ fresh evidence");
+  assert.ok(priorArrival.exceptions.missingSizes.items.some((m) => m.pid === "p1" && /confirmed out/.test(m.note)), "stays on the reorder list");
+});
+
 test("excess: hub2 strict, stores only when significant; sneakers never counted", () => {
   const plan = computeRefillPlan(base({
     products: {
