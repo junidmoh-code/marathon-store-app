@@ -32,6 +32,21 @@ const isClothing = (p) =>
   p?.productType === "clothing" ||
   (!p?.productType && (p?.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s))));
 
+// Shelf-order categories (owner request 2026-07-13): staff work one physical
+// section at a time — all tracksuits together, all tees together — instead of
+// hopping shelf-to-shelf product by product. Name-based, first match wins.
+const GARMENT_TYPES = [
+  ["Tracksuits", /track\s*suit|tracksuit/i],
+  ["Hoodies & Sweats", /hoodie|sweatshirt|sweater|crewneck|fleece(?!.*track)/i],
+  ["Jackets & Puffers", /jacket|puffer|windbreaker|coat|varsity/i],
+  ["T-Shirts & Polos", /t[- ]?shirt|\btee\b|polo/i],
+  ["Jerseys", /jersey|\bkit\b/i],
+  ["Jeans & Pants", /jean|denim|cargo|pant|trouser|chino/i],
+  ["Shorts", /short/i],
+];
+const garmentType = (name) => (GARMENT_TYPES.find(([, re]) => re.test(String(name || ""))) || ["Other"])[0];
+const GARMENT_ORDER = [...GARMENT_TYPES.map(([g]) => g), "Other"];
+
 export default function MoveExcess({ products = [], actorRole }) {
   const allStock = useStockCells();          // { loc: { pid: { rawSize: cell } } }
   const allTargets = useStockTargets();      // { loc: { pid: { encodedSize: {target} } } }
@@ -131,8 +146,20 @@ export default function MoveExcess({ products = [], actorRole }) {
   }, [allStock, allTargets, byId]);
 
   const [locFilter, setLocFilter] = useState("all");
-  const shown = locFilter === "all" ? cards : cards.filter((c) => c.loc === locFilter);
+  const [search, setSearch] = useState("");
+  const shown = (locFilter === "all" ? cards : cards.filter((c) => c.loc === locFilter))
+    .filter((c) => !search.trim() || c.name.toLowerCase().includes(search.trim().toLowerCase()));
   const locCount = (loc) => cards.filter((c) => c.loc === loc).length;
+  // Shelf-order grouping: one category section at a time.
+  const groups = useMemo(() => {
+    const byType = new Map();
+    for (const c of shown) {
+      const g = garmentType(c.name);
+      (byType.get(g) || byType.set(g, []).get(g)).push(c);
+    }
+    return GARMENT_ORDER.filter((g) => byType.has(g))
+      .map((g) => ({ label: g, items: byType.get(g), units: byType.get(g).reduce((t, c) => t + c.totalExcess, 0) }));
+  }, [shown]);
 
   // ── MANUAL PER-DESTINATION EXECUTION (owner UX directive 2026-07-13) ────────
   // The engine CALCULATES and RECOMMENDS (the per-size split prefills the
@@ -232,7 +259,7 @@ export default function MoveExcess({ products = [], actorRole }) {
       </div>
 
       {/* Location sections — every excess product visible, per location */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
         <button onClick={() => setLocFilter("all")} style={pill(locFilter === "all")}>All ({cards.length})</button>
         {sources.map((l) => (
           <button key={l} onClick={() => setLocFilter(l)} style={pill(locFilter === l)}>
@@ -240,6 +267,12 @@ export default function MoveExcess({ products = [], actorRole }) {
           </button>
         ))}
       </div>
+      <input
+        value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products…"
+        style={{ width: "100%", boxSizing: "border-box", marginBottom: 12, padding: "11px 14px", borderRadius: 12,
+                 border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.04)", color: "#fff",
+                 fontSize: 13.5, fontFamily: FONT, outline: "none" }}
+      />
 
       {lastResult && (
         <div style={{ ...GLASS, padding: "10px 13px", marginBottom: 12, fontSize: 12.5 }}>
@@ -257,7 +290,14 @@ export default function MoveExcess({ products = [], actorRole }) {
         </div>
       )}
 
-      {shown.map((c) => {
+      {groups.map((g) => (
+        <React.Fragment key={g.label}>
+          <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".08em",
+                        fontWeight: 800, margin: "16px 2px 8px", display: "flex", alignItems: "baseline", gap: 8 }}>
+            <span style={{ color: "#fff" }}>{g.label}</span>
+            <span>{g.items.length} product{g.items.length === 1 ? "" : "s"} · {g.units} units above target</span>
+          </div>
+          {g.items.map((c) => {
         // The engine RECOMMENDS (prefilled steppers); the warehouse DECIDES —
         // one Transfer button per destination, each independently editable and
         // skippable (owner UX directive 2026-07-13).
@@ -322,7 +362,9 @@ export default function MoveExcess({ products = [], actorRole }) {
             </div>
           </ProductCard>
         );
-      })}
+          })}
+        </React.Fragment>
+      ))}
     </div>
   );
 }
