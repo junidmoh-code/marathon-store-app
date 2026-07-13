@@ -113,12 +113,18 @@ export default function Hub2RefillQueue({ products = [] }) {
         });
       } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
       if (res.ok) {
-        ok += qty;
-        await update(ref(database), {
-          [`refill_requests/${r.id}/status`]: "fulfilled",
-          [`refill_requests/${r.id}/fulfilledBy`]: { movementId: `rrf_${r.id}`, qty, ...(counted ? {} : { uncounted: true }) },
-          [`refill_requests/${r.id}/resolvedAt`]: new Date().toISOString(),
-        }).catch(() => {});
+        // Only count success once the request is marked fulfilled too. If this
+        // write fails the card stays open and shows "failed — retry": the
+        // retry's movement is an idempotent no-op (same movementId), so stock
+        // never moves twice — only the status write is re-attempted.
+        try {
+          await update(ref(database), {
+            [`refill_requests/${r.id}/status`]: "fulfilled",
+            [`refill_requests/${r.id}/fulfilledBy`]: { movementId: `rrf_${r.id}`, qty, ...(counted ? {} : { uncounted: true }) },
+            [`refill_requests/${r.id}/resolvedAt`]: new Date().toISOString(),
+          });
+          ok += qty;
+        } catch { fail += 1; }
       } else fail += 1;
     }
     let rejected = 0;
@@ -209,9 +215,12 @@ export default function Hub2RefillQueue({ products = [] }) {
                 {(() => {
                   const deniedCount = card.reqs.filter((r) => rejects[r.id]).length;
                   const allDenied = deniedCount === card.reqs.length && deniedCount > 0;
-                  const idle = busyCard !== card.pid;
+                  // commit() serializes across ALL cards — mirror that here so a
+                  // tap during another card's commit is visibly disabled, not a
+                  // silent no-op.
+                  const idle = busyCard === null;
                   const nothing = totalPick === 0 && deniedCount === 0;
-                  const label = !idle ? "Working…"
+                  const label = busyCard === card.pid ? "Working…"
                     : allDenied ? "Reject request — not available"
                     : deniedCount > 0 ? `Transfer ${totalPick} · reject ${deniedCount} size${deniedCount === 1 ? "" : "s"}`
                     : `Transfer ${totalPick} unit${totalPick === 1 ? "" : "s"} to Hub 2`;
