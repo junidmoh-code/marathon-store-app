@@ -1,18 +1,28 @@
-// ─── DECISION QUEUE — inventory SETUP, separated from operations ──────────────
-// (owner architecture 2026-07-12 v6) This is where products are INTRODUCED into
-// the inventory network, primarily by Central:
+// ─── DECISION QUEUE — GENUINE business decisions ONLY (owner v8, 2026-07-13) ──
+// This is where products are INTRODUCED into the inventory network, primarily
+// by Central:
 //
 //   Supplier → receive into Central → unpack/count/QC (Receiving Session keeps
 //   the engine paused) → THIS QUEUE → distribute → the engine takes over.
 //
-// Two card kinds, all clothing, all live-computed (decisions clear instantly):
-//   NEW PRODUCT  — stock at Central, no targets anywhere: the introduction
-//                  wizard (targets per size × location toggles + a suggested
-//                  initial distribution from Central, editable, one confirm
-//                  generates every transfer and saves the targets)
-//   UNCONFIGURED — stock at PE/Trophy/Hub 2 with no target there: set targets,
-//                  transfer, or exclude
-// Both kinds support the two postponements (never a permanent blind spot):
+// v8 split: a product already circulating at PE/Trophy/Hub 2 with no targets is
+// NOT new and NOT a decision — the approved standard run already covers it. It
+// belongs to the one-tap "Introduce Existing Products" migration on the Health
+// screen (IntroduceExisting.jsx) and NEVER appears here. Classification is in
+// LOCKSTEP with functions/lib/refill-engine.cjs — change both together.
+//
+// Card kinds that remain (all clothing, live-computed, cards clear instantly):
+//   NEW PRODUCT     — stock at Central ONLY (no stock at any destination, no
+//                     targets anywhere): genuinely entering the business for
+//                     the first time. The introduction wizard sets targets and
+//                     suggests the initial distribution — the one place target
+//                     quantities are a business decision.
+//   NO STANDARD RUN — circulating with no targets, but its stocked sizes are
+//                     numeric (jeans etc.): no approved standard quantities
+//                     exist, a human must set them.
+//   UNCONFIGURED    — stock at a location with no target THERE for a product
+//                     that HAS targets elsewhere: include, transfer, or exclude.
+// All kinds support the two postponements (never a permanent blind spot):
 //   Remind me later          — 30/60/90 days, then the card returns
 //   Ignore until stock moves — suppressed until the product's network-wide
 //                              stock fingerprint changes (any receive / sale /
@@ -27,6 +37,7 @@ import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
+import { computeUnintroduced, stockedStandardSizes } from "./introduceExisting";
 
 const DESTS = ["marathon-pe", "trophy", "hub2"];
 const ALL_LOCS = ["marathon-pe", "trophy", "hub2", "central"];
@@ -93,11 +104,13 @@ export default function NoTargetQueue({ products = [] }) {
 
   const cards = useMemo(() => {
     const out = [];
-    // NEW PRODUCTS at Central — the introduction queue (listed first).
+    // GENUINELY NEW at Central — no targets anywhere AND not circulating at any
+    // destination (v8: circulating products go to Introduce Existing instead).
     for (const [pid, bySize] of Object.entries(allStock?.central || {})) {
       const p = byId.get(pid);
       if (!isClothing(p)) continue;
       if (DESTS.some((d) => allTargets?.[d]?.[pid])) continue;
+      if (DESTS.some((d) => sumAt(d, pid) > 0)) continue;
       if (decisionActive("central", pid)) continue;
       const sizes = Object.entries(bySize || {})
         .map(([size, c]) => ({ size, qty: Math.max(Number(c?.qty) || 0, 0) }))
@@ -110,19 +123,24 @@ export default function NoTargetQueue({ products = [] }) {
         network: ALL_LOCS.map((l) => ({ loc: l, units: sumAt(l, pid) })),
       });
     }
-    // Unconfigured stock at managed locations.
+    // Remaining GENUINE decisions at managed locations: numeric-size products
+    // (no approved standard quantities) and assortment leftovers (targets exist
+    // elsewhere, none here). Standard-size circulating products are handled by
+    // the Introduce Existing migration and are deliberately absent.
     for (const loc of DESTS) {
       for (const [pid, bySize] of Object.entries(allStock?.[loc] || {})) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
         if (allTargets?.[loc]?.[pid]) continue;
+        const introducedElsewhere = DESTS.some((d) => allTargets?.[d]?.[pid]);
+        if (!introducedElsewhere && stockedStandardSizes(allStock, pid).length) continue; // → migration
         if (decisionActive(loc, pid)) continue;
         const sizes = Object.entries(bySize || {})
           .map(([size, c]) => ({ size, qty: Math.max(Number(c?.qty) || 0, 0) }))
           .filter((s) => s.qty > 0).sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
         if (!sizes.length) continue;
         out.push({
-          key: `${loc}|${pid}`, loc, pid, isNew: false,
+          key: `${loc}|${pid}`, loc, pid, isNew: false, noStandard: !introducedElsewhere,
           name: p?.name || pid, photo: p?.photoUrl, sizes,
           units: sizes.reduce((t, s) => t + s.qty, 0),
           network: ALL_LOCS.map((l) => ({ loc: l, units: sumAt(l, pid) })),
@@ -131,6 +149,12 @@ export default function NoTargetQueue({ products = [] }) {
     }
     return out.sort((a, b) => (a.isNew === b.isNew ? b.units - a.units : a.isNew ? -1 : 1));
   }, [allStock, allTargets, decisions, byId]);
+
+  // Pointer only — migration lives on the Health screen, not in this queue.
+  const migratableCount = useMemo(
+    () => computeUnintroduced(allStock, allTargets, byId).filter((i) => i.migratable).length,
+    [allStock, allTargets, byId],
+  );
 
   // ── shared decision writers ──────────────────────────────────────────────────
   const finish = (card, text) => { setDoneMsg({ name: card.name, text }); setBusyKey(null); };
@@ -263,7 +287,10 @@ export default function NoTargetQueue({ products = [] }) {
     return (
       <div style={{ ...GLASS, padding: 24, textAlign: "center" }}>
         <div style={{ fontSize: 16, fontWeight: 800, color: GREEN }}>Queue clear 🎉</div>
-        <div style={{ color: GRAY, fontSize: 12.5, marginTop: 6 }}>Every product is introduced, excluded, or deliberately postponed.</div>
+        <div style={{ color: GRAY, fontSize: 12.5, marginTop: 6 }}>
+          Every product is introduced, excluded, or deliberately postponed.
+          {migratableCount > 0 && <> {migratableCount} existing product{migratableCount === 1 ? "" : "s"} await engine onboarding under <b>Introduce Existing</b> on Health — not decisions, one tap.</>}
+        </div>
       </div>
     );
   }
@@ -276,6 +303,12 @@ export default function NoTargetQueue({ products = [] }) {
         <div style={{ ...GLASS, padding: "10px 13px", marginBottom: 12, fontSize: 12.5 }}>
           <span style={{ color: doneMsg.text.includes("failed") ? RED : GREEN, fontWeight: 700 }}>{doneMsg.name}</span>
           <span style={{ color: GRAY }}> — {doneMsg.text}</span>
+        </div>
+      )}
+      {migratableCount > 0 && (
+        <div style={{ ...GLASS, padding: "10px 13px", marginBottom: 12, fontSize: 12.5, color: GRAY }}>
+          {migratableCount} existing product{migratableCount === 1 ? "" : "s"} are waiting for engine onboarding — those are
+          <b> not decisions</b>: use <b>Introduce Existing</b> on the Health screen to migrate them in one tap.
         </div>
       )}
       {newCount > 0 && (
@@ -298,8 +331,10 @@ export default function NoTargetQueue({ products = [] }) {
             <ProductCard
               photo={card.photo} name={card.name}
               badges={<>
-                <Badge tone={card.isNew ? GREEN : BLUE_L}>{card.isNew ? "NEW PRODUCT" : LOC_LABEL[card.loc]}</Badge>
-                <Badge tone={GRAY}>{card.isNew ? `CENTRAL · ${card.units} UNITS` : "AWAITING TARGET"}</Badge>
+                <Badge tone={card.isNew ? GREEN : card.noStandard ? AMBER : BLUE_L}>
+                  {card.isNew ? "NEW PRODUCT" : card.noStandard ? "NO STANDARD RUN" : LOC_LABEL[card.loc]}
+                </Badge>
+                <Badge tone={GRAY}>{card.isNew ? `CENTRAL · ${card.units} UNITS` : card.noStandard ? "SIZES NEED QUANTITIES" : "AWAITING TARGET"}</Badge>
               </>}
               sub={card.network.filter((n) => n.units > 0).map((n) => `${LOC_LABEL[n.loc]} ${n.units}`).join(" · ")}
               right={

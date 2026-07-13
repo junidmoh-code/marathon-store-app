@@ -437,8 +437,12 @@ test("three states: no target = noTarget surface (NOT excess); explicit 0 = all 
       central: {}, trophy: {},
     },
   }));
-  // Unconfigured stock: surfaced for humans, never auto-classified as excess.
-  assert.deepEqual(plan.exceptions.noTarget.items, [{ loc: "hub2", pid: "pUnset", units: 6 }]);
+  // Unconfigured circulating stock with standard sizes: awaiting MIGRATION
+  // (v8), not a decision — and never auto-classified as excess.
+  assert.equal(plan.exceptions.noTarget.count, 0, "standard-size circulating product is not a decision");
+  assert.deepEqual(plan.exceptions.unintroduced.items, [
+    { pid: "pUnset", standardSizes: ["M"], units: 6, byLoc: { central: 0, hub2: 6, "marathon-pe": 0, trophy: 0 } },
+  ]);
   assert.ok(!plan.exceptions.excess.items.some((e) => e.pid === "pUnset"), "no-target is NOT excess");
   // Deliberate exclusion (target 0): every unit is excess, even a single one.
   assert.deepEqual(plan.exceptions.excess.items, [{ loc: "hub2", pid: "pBanned", sizeKey: "M", have: 1, target: 0, excess: 1 }]);
@@ -447,10 +451,13 @@ test("three states: no target = noTarget surface (NOT excess); explicit 0 = all 
 });
 
 test("decision types: keep (permanent), snooze (expires), until_change (fingerprint)", () => {
+  // pUnset is numeric-size (no standard run) so it stays a GENUINE decision
+  // under v8 — postponements only ever apply to decision cards, never to the
+  // unintroduced migration list.
   const over = {
-    products: { p1: PRODUCTS.p1, pUnset: { productType: "clothing", sizes: ["M"] } },
+    products: { p1: PRODUCTS.p1, pUnset: { productType: "clothing", sizes: ["32"] } },
     targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
-    stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: { pUnset: { M: cell(6) } }, central: {}, trophy: {} },
+    stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: { pUnset: { 32: cell(6) } }, central: {}, trophy: {} },
   };
   assert.equal(computeRefillPlan(base(over)).exceptions.noTarget.count, 1);
   // keep: permanent
@@ -467,9 +474,41 @@ test("decision types: keep (permanent), snooze (expires), until_change (fingerpr
   assert.equal(computeRefillPlan(base({ ...over,
     targetDecisions: { hub2: { pUnset: { decision: "until_change", fingerprint: fp } } } })).exceptions.noTarget.count, 0);
   const changed = JSON.parse(JSON.stringify(base(over).stock));
-  changed.hub2.pUnset.M = cell(5); // one unit sold
+  changed.hub2.pUnset["32"] = cell(5); // one unit sold
   assert.equal(computeRefillPlan(base({ ...over, stock: changed,
     targetDecisions: { hub2: { pUnset: { decision: "until_change", fingerprint: fp } } } })).exceptions.noTarget.count, 1, "inventory change resurfaces the card");
+});
+
+test("v8 split: circulating = unintroduced (migration) · central-only = NEW · numeric = decision · leftover = decision", () => {
+  const plan = computeRefillPlan(base({
+    products: {
+      p1: PRODUCTS.p1,                                          // targeted at PE
+      pCirc: { productType: "clothing", sizes: ["M", "L"] },    // circulating, no targets → MIGRATION
+      pFresh: { productType: "clothing", sizes: ["M"] },        // central-only, no targets → NEW
+      pJeans: { productType: "clothing", sizes: ["32", "34"] }, // numeric circulating → DECISION (noStandard)
+    },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: {
+      central: { pCirc: { M: cell(9) }, pFresh: { M: cell(7) } },
+      "marathon-pe": { p1: { M: cell(3) } },
+      hub2: { pCirc: { L: cell(4) }, pJeans: { 32: cell(5) } },
+      trophy: { p1: { M: cell(2) } },                           // leftover: targets elsewhere, none here
+    },
+  }));
+  const nt = plan.exceptions.noTarget.items;
+  // pCirc: stock at Central AND hub2 — NOT new, NOT a decision; one migration entry.
+  assert.ok(!nt.some((c) => c.pid === "pCirc"), "circulating product never appears in the Decision Queue");
+  const mig = plan.exceptions.unintroduced.items.find((u) => u.pid === "pCirc");
+  assert.deepEqual(mig, { pid: "pCirc", standardSizes: ["M", "L"], units: 4, byLoc: { central: 9, hub2: 4, "marathon-pe": 0, trophy: 0 } });
+  // pFresh: genuinely new (central-only) — leads the queue.
+  assert.deepEqual(nt[0], { loc: "central", pid: "pFresh", units: 7, isNew: true });
+  // pJeans: no standard quantities exist for numeric sizes — a real decision.
+  assert.ok(nt.some((c) => c.pid === "pJeans" && c.noStandard && c.loc === "hub2"), "numeric-size product stays a decision");
+  // p1 at Trophy: has targets at PE but none at Trophy — assortment decision.
+  assert.ok(nt.some((c) => c.pid === "p1" && c.loc === "trophy" && !c.isNew && !c.noStandard), "leftover with targets elsewhere stays a decision");
+  // Exactly one card per product — no duplicates across lists.
+  const all = [...nt.map((c) => c.pid), ...plan.exceptions.unintroduced.items.map((u) => u.pid)];
+  assert.equal(new Set(all).size, all.length, "one card per product, no dup across NEW/migration/decision");
 });
 
 test("NEW PRODUCT at Central (no targets anywhere) enters the Decision Queue", () => {
