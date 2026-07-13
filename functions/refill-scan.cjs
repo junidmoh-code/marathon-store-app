@@ -130,7 +130,14 @@ async function runScan() {
         if (!proceed) continue;   // fulfilment won the race — leave rr + lock for the next scan
         if (c.refillId && c.rrStatus) {
           await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => {
-            if (!cur || (cur.status && cur.status !== "open")) return;   // resolved meanwhile — leave it
+            // NULL-TOLERANT (the #199 lesson, relearned 2026-07-13 the hard
+            // way): the FIRST pass runs against the cold local cache and sees
+            // null even when the node exists. Returning undefined there ABORTS
+            // permanently — 2,304 statuses silently never wrote. Returning
+            // null probes: a real node fails the compare and the callback
+            // re-runs with true data; a genuinely-missing node no-ops.
+            if (cur === null) return null;
+            if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
             return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
           }).catch(() => {});
         }
