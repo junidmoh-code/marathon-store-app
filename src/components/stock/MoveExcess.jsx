@@ -14,6 +14,8 @@
 // re-opening recomputes, so double-moves are structurally impossible.
 
 import React, { useMemo, useState } from "react";
+import { ref, get } from "firebase/database";
+import { database } from "../../firebase";
 import { useStockCells, useStockTargets } from "./useStock";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey, decodeSizeKey } from "../../utils/sizeKey";
@@ -34,7 +36,6 @@ export default function MoveExcess({ products = [], actorRole }) {
   const allStock = useStockCells();          // { loc: { pid: { rawSize: cell } } }
   const allTargets = useStockTargets();      // { loc: { pid: { encodedSize: {target} } } }
   const [edits, setEdits] = useState({});    // `${loc}|${pid}|${size}` → qty
-  const [dests, setDests] = useState({});    // `${loc}|${pid}` → destination
   const [busy, setBusy] = useState(false);   // card key being transferred | false
   const [lastResult, setLastResult] = useState(null);
   const [movedTotal, setMovedTotal] = useState(0);
@@ -76,10 +77,25 @@ export default function MoveExcess({ products = [], actorRole }) {
           // engine never assumes unconfigured stock is misplaced).
           if (!t || typeof t.target !== "number") continue;
           const raw = qty - t.target;
-          const held = Math.min(Math.max(raw, 0), deficitBySize.get(`${pid}|${encodeSizeKey(size)}`) || 0);
-          const excessQty = raw - held;
+          const dKey = `${pid}|${encodeSizeKey(size)}`;
           const lineMin = t.target === 0 ? 1 : minEx;
-          if (excessQty >= lineMin) sizes.push({ size, have: qty, target: t.target, excess: excessQty, held });
+          if (loc === "hub2") {
+            // Hub 2 stays NET-based: its held units flow onward automatically
+            // via the engine's hub→store refill legs.
+            const held = Math.min(Math.max(raw, 0), deficitBySize.get(dKey) || 0);
+            const excessQty = raw - held;
+            if (excessQty >= lineMin) sizes.push({ size, have: qty, target: t.target, excess: excessQty, toHub: 0, toCentral: excessQty });
+          } else if (raw >= lineMin) {
+            // TWO-LEG split (owner directive 2026-07-13): stores move their
+            // WHOLE overage in one visit — deficit-covering units → Hub 2
+            // (Cortez preserved: never to Central), remainder → Central. The
+            // deficit is CONSUMED as cards allocate so two stores never both
+            // fill the same Hub 2 need (lockstep with the engine).
+            const need = deficitBySize.get(dKey) || 0;
+            const toHub = Math.min(raw, need);
+            deficitBySize.set(dKey, need - toHub);
+            sizes.push({ size, have: qty, target: t.target, excess: raw, toHub, toCentral: raw - toHub });
+          }
         }
         if (!sizes.length) continue;
         sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
@@ -96,7 +112,6 @@ export default function MoveExcess({ products = [], actorRole }) {
   const shown = locFilter === "all" ? cards : cards.filter((c) => c.loc === locFilter);
   const locCount = (loc) => cards.filter((c) => c.loc === loc).length;
 
-  const destOptions = (c) => (c.loc === "hub2" ? ["central"] : ["hub2", "central"]);
   const qtyOf = (c, s) => {
     const v = edits[`${c.key}|${s.size}`];
     return Math.max(0, Math.min(v == null ? s.excess : v, s.have));
@@ -104,27 +119,41 @@ export default function MoveExcess({ products = [], actorRole }) {
 
   const transfer = async (c) => {
     if (busy) return;
-    const dest = dests[c.key] || destOptions(c)[0];
     const lines = c.sizes.map((s) => ({ s, qty: qtyOf(c, s) })).filter((l) => l.qty > 0);
     if (!lines.length) return;
     setBusy(c.key);
     const batchId = `exc_${Date.now().toString(36)}`;
-    let moved = 0; const failed = [];
+    let moved = 0; const failed = []; const destsHit = new Set();
     for (const { s, qty } of lines) {
-      let res;
+      // TAP-TIME CLAMP (design review 2026-07-13): a sale between render and
+      // tap can shrink the true overage — never move the shop below target.
+      let total = qty;
       try {
-        res = await applyMovement({
-          type: "transfer_out", productId: c.pid, size: s.size, qty,
-          from: c.loc, to: dest, actorRole,
-          reason: "excess_rebalance",
-          movementId: `${batchId}_${c.pid}_${encodeSizeKey(s.size)}`,
-          link: { transferId: batchId },
-        });
-      } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
-      if (res.ok) moved += qty; else failed.push(`${s.size}: ${res.reason}`);
+        const live = (await get(ref(database, `stock/${c.loc}/${c.pid}/${encodeSizeKey(s.size)}/qty`))).val();
+        if (typeof live === "number") total = Math.max(0, Math.min(total, live - s.target));
+      } catch { /* offline read — proceed with entered qty */ }
+      if (total <= 0) continue;
+      // Two legs, deficit-first (hub2 cards have toHub 0 → single central leg).
+      const legs = [
+        { dest: "hub2", qty: Math.min(total, s.toHub || 0) },
+        { dest: "central", qty: total - Math.min(total, s.toHub || 0) },
+      ].filter((l) => l.qty > 0 && l.dest !== c.loc);
+      for (const leg of legs) {
+        let res;
+        try {
+          res = await applyMovement({
+            type: "transfer_out", productId: c.pid, size: s.size, qty: leg.qty,
+            from: c.loc, to: leg.dest, actorRole,
+            reason: "excess_rebalance",
+            movementId: `${batchId}_${c.pid}_${encodeSizeKey(s.size)}_${leg.dest}`,
+            link: { transferId: batchId },
+          });
+        } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
+        if (res.ok) { moved += leg.qty; destsHit.add(leg.dest); } else failed.push(`${s.size}→${leg.dest}: ${res.reason}`);
+      }
     }
     setMovedTotal((t) => t + moved);
-    setLastResult({ name: c.name, dest, moved, failed });
+    setLastResult({ name: c.name, dest: [...destsHit].join(" + ") || "—", moved, failed });
     setBusy(false);
   };
 
@@ -162,7 +191,7 @@ export default function MoveExcess({ products = [], actorRole }) {
 
       {lastResult && (
         <div style={{ ...GLASS, padding: "10px 13px", marginBottom: 12, fontSize: 12.5 }}>
-          <span style={{ color: GREEN, fontWeight: 700 }}>{lastResult.name}: {lastResult.moved} units → {LOC_LABEL[lastResult.dest]} ✓</span>
+          <span style={{ color: GREEN, fontWeight: 700 }}>{lastResult.name}: {lastResult.moved} units → {String(lastResult.dest).split(" + ").map((d) => LOC_LABEL[d] || d).join(" + ")} ✓</span>
           {lastResult.failed.length > 0 && <div style={{ color: RED, marginTop: 4 }}>Failed: {lastResult.failed.join(" · ")}</div>}
         </div>
       )}
@@ -177,8 +206,16 @@ export default function MoveExcess({ products = [], actorRole }) {
       )}
 
       {shown.map((c) => {
-        const dest = dests[c.key] || destOptions(c)[0];
         const total = c.sizes.reduce((t, s) => t + qtyOf(c, s), 0);
+        // Auto-split, deficit-first: Hub 2 receives what the network needs of
+        // each size (never Central — Cortez), the true remainder goes to
+        // Central. One tap fires both legs; the shop lands exactly on target.
+        const split = c.sizes.reduce((acc, s) => {
+          const q = qtyOf(c, s);
+          const hub = Math.min(q, s.toHub || 0);
+          return { hub: acc.hub + hub, central: acc.central + (q - hub) };
+        }, { hub: 0, central: 0 });
+        const splitLabel = [split.hub > 0 && `${split.hub} → Hub 2`, split.central > 0 && `${split.central} → Central`].filter(Boolean).join(" · ");
         return (
           <ProductCard key={c.key}
             photo={c.photo} name={c.name}
@@ -190,23 +227,16 @@ export default function MoveExcess({ products = [], actorRole }) {
             <div style={CHIP_GRID}>
               {c.sizes.map((s) => (
                 <SizeStepperChip key={s.size}
-                  size={s.size} qty={qtyOf(c, s)} max={s.have}
+                  size={s.size} qty={qtyOf(c, s)} max={Math.max(s.have - s.target, 0)}
                   onChange={(v) => setEdits((prev) => ({ ...prev, [`${c.key}|${s.size}`]: v }))}
-                  hint={`have ${s.have} · target ${s.target}${s.held ? ` · ${s.held} held for refills` : ''}`}
+                  hint={`have ${s.have} · target ${s.target}${s.toHub ? ` · ${s.toHub} → Hub 2` : ""}${s.toCentral ? ` · ${s.toCentral} → Central` : ""}`}
                   disabled={busy === c.key}
                 />
               ))}
             </div>
-            <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
-              {destOptions(c).map((d) => (
-                <button key={d} onClick={() => setDests((prev) => ({ ...prev, [c.key]: d }))} style={pill(dest === d)}>
-                  → {LOC_LABEL[d]}
-                </button>
-              ))}
-            </div>
             <button onClick={() => transfer(c)} disabled={busy === c.key || total === 0}
-                    style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: busy === c.key ? 0.6 : 1 }}>
-              {busy === c.key ? "Transferring…" : `Transfer ${total} units to ${LOC_LABEL[dest]}`}
+                    style={{ ...bGreen, width: "100%", marginTop: 12, padding: "12px", opacity: busy === c.key ? 0.6 : 1 }}>
+              {busy === c.key ? "Transferring…" : `Transfer ${total} units — ${splitLabel || "nothing to move"}`}
             </button>
           </ProductCard>
         );

@@ -640,6 +640,48 @@ test("PURGE: open engine request that became unfillable is withdrawn from the qu
   assert.equal(c.removeOrderId, "R002-4", "the queue card is deleted, not left for staff to reject");
 });
 
+test("TWO-LEG MOVE EXCESS: store overage splits deficit-first to Hub 2, remainder to Central, in one card", () => {
+  // The Shambeen case: PE M 7/2 (raw 5), hub2 M 0/3 (deficit 3) →
+  // ONE card moving all 5: 3 → Hub 2 (Cortez preserved), 2 → Central.
+  const plan = computeRefillPlan(base({
+    products: { p1: { name: "Shambeen", productType: "clothing", sizes: ["M", "XL", "XXL"] } },
+    targets: {
+      "marathon-pe": { p1: { M: { target: 2, minQty: 1 }, XL: { target: 1, minQty: 1 }, XXL: { target: 1, minQty: 1 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 }, XL: { target: 2, minQty: 1 }, XXL: { target: 2, minQty: 1 } } },
+    },
+    stock: {
+      "marathon-pe": { p1: { M: cell(7), XL: cell(2), XXL: cell(3) } },
+      hub2: { p1: { M: cell(0), XL: cell(0), XXL: cell(0) } },
+      central: {}, trophy: {},
+    },
+  }));
+  const ex = (sk) => plan.exceptions.excess.items.find((e) => e.loc === "marathon-pe" && e.sizeKey === sk);
+  assert.deepEqual({ excess: ex("M").excess, toHub: ex("M").toHub, toCentral: ex("M").toCentral }, { excess: 5, toHub: 3, toCentral: 2 }, "M: whole overage, split deficit-first");
+  assert.equal(ex("XL"), undefined, "XL raw 1 stays below the store threshold (sells down naturally)");
+  assert.deepEqual({ toHub: ex("XXL").toHub, toCentral: ex("XXL").toCentral }, { toHub: 2, toCentral: 0 }, "XXL: fully-held overage now VISIBLE and routed to Hub 2");
+});
+
+test("TWO-LEG MOVE EXCESS: allocation is threaded — two stores never both fill the same Hub 2 need", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: { name: "Tee", productType: "clothing", sizes: ["M"] } },
+    targets: {
+      "marathon-pe": { p1: { M: { target: 1, minQty: 1 } } },
+      trophy: { p1: { M: { target: 1, minQty: 1 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 } } },
+    },
+    stock: {
+      "marathon-pe": { p1: { M: cell(4) } },   // raw 3
+      trophy: { p1: { M: cell(4) } },          // raw 3
+      hub2: { p1: { M: cell(0) } },            // deficit 3
+      central: {},
+    },
+  }));
+  const items = plan.exceptions.excess.items.filter((e) => e.loc !== "hub2" && e.sizeKey === "M");
+  const hubTotal = items.reduce((t, e) => t + (e.toHub || 0), 0);
+  assert.equal(hubTotal, 3, "combined Hub 2 allocation equals its deficit exactly — no double-fill");
+  assert.equal(items.reduce((t, e) => t + e.excess, 0), 6, "both stores still move their whole overage");
+});
+
 test("Cortez fix: surplus is HELD for downstream deficits, never excess past a starving store", () => {
   const over = {
     products: { p1: { name: "Cortez tracksuit", productType: "clothing", sizes: ["XL"] } },
