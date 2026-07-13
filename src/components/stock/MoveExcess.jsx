@@ -147,9 +147,22 @@ export default function MoveExcess({ products = [], actorRole }) {
 
   const [locFilter, setLocFilter] = useState("all");
   const [search, setSearch] = useState("");
+  // DESTINATION-FIRST batching (owner UX 2026-07-13): the warehouse does ALL
+  // Hub 2 transfers in one run, then ALL Central transfers — so the screen is
+  // split by destination, not by product. Each view lists only the cards with
+  // a recommendation for that destination.
+  const [destView, setDestView] = useState("hub");   // "hub" | "central"
+  const hubSum = (c) => c.sizes.reduce((t, s) => t + (s.toHub || 0), 0);
+  const centralSum = (c) => c.sizes.reduce((t, s) => t + (s.toCentral || 0), 0);
+  const destTotals = useMemo(() => ({
+    hub: cards.reduce((t, c) => t + hubSum(c), 0),
+    central: cards.reduce((t, c) => t + centralSum(c), 0),
+  }), [cards]);
   const shown = (locFilter === "all" ? cards : cards.filter((c) => c.loc === locFilter))
+    .filter((c) => (destView === "hub" ? c.loc !== "hub2" && hubSum(c) > 0 : centralSum(c) > 0))
     .filter((c) => !search.trim() || c.name.toLowerCase().includes(search.trim().toLowerCase()));
-  const locCount = (loc) => cards.filter((c) => c.loc === loc).length;
+  const locCount = (loc) => cards.filter((c) => c.loc === loc &&
+    (destView === "hub" ? c.loc !== "hub2" && hubSum(c) > 0 : centralSum(c) > 0)).length;
   // Shelf-order grouping: one category section at a time.
   const groups = useMemo(() => {
     const byType = new Map();
@@ -158,8 +171,8 @@ export default function MoveExcess({ products = [], actorRole }) {
       (byType.get(g) || byType.set(g, []).get(g)).push(c);
     }
     return GARMENT_ORDER.filter((g) => byType.has(g))
-      .map((g) => ({ label: g, items: byType.get(g), units: byType.get(g).reduce((t, c) => t + c.totalExcess, 0) }));
-  }, [shown]);
+      .map((g) => ({ label: g, items: byType.get(g), units: byType.get(g).reduce((t, c) => t + (destView === "hub" ? hubSum(c) : centralSum(c)), 0) }));
+  }, [shown, destView]);
 
   // ── MANUAL PER-DESTINATION EXECUTION (owner UX directive 2026-07-13) ────────
   // The engine CALCULATES and RECOMMENDS (the per-size split prefills the
@@ -259,8 +272,18 @@ export default function MoveExcess({ products = [], actorRole }) {
       </div>
 
       {/* Location sections — every excess product visible, per location */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <button onClick={() => setDestView("hub")}
+                style={{ ...pill(destView === "hub"), flex: 1, padding: "12px", textAlign: "center", fontSize: 13 }}>
+          → Hub 2 · {destTotals.hub} units
+        </button>
+        <button onClick={() => setDestView("central")}
+                style={{ ...pill(destView === "central"), flex: 1, padding: "12px", textAlign: "center", fontSize: 13 }}>
+          → Central · {destTotals.central} units
+        </button>
+      </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-        <button onClick={() => setLocFilter("all")} style={pill(locFilter === "all")}>All ({cards.length})</button>
+        <button onClick={() => setLocFilter("all")} style={pill(locFilter === "all")}>All ({shown.length})</button>
         {sources.map((l) => (
           <button key={l} onClick={() => setLocFilter(l)} style={pill(locFilter === l)}>
             {LOC_LABEL[l]} ({locCount(l)})
@@ -317,7 +340,7 @@ export default function MoveExcess({ products = [], actorRole }) {
             </>}
             sub={c.sizes.map((s) => `${s.size}: have ${s.have} / target ${s.target}`).join(" · ")}
           >
-            {c.loc !== "hub2" && hubRecommended > 0 && (
+            {destView === "hub" && c.loc !== "hub2" && hubRecommended > 0 && (
               <div style={section}>
                 <div style={sectionHead}>
                   <span style={{ fontWeight: 800, color: BLUE_L }}>→ {LOC_LABEL[hubDest] || hubDest}</span>
@@ -339,6 +362,7 @@ export default function MoveExcess({ products = [], actorRole }) {
                 </button>
               </div>
             )}
+            {destView === "central" && (
             <div style={section}>
               <div style={sectionHead}>
                 <span style={{ fontWeight: 800, color: AMBER }}>→ Central</span>
@@ -360,6 +384,7 @@ export default function MoveExcess({ products = [], actorRole }) {
                 {busy === c.key ? "Transferring…" : `Transfer ${centralTotal} to Central`}
               </button>
             </div>
+            )}
           </ProductCard>
         );
           })}
