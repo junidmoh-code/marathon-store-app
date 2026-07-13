@@ -41,7 +41,15 @@ export default function MoveExcess({ products = [], actorRole }) {
   const openRequests = useRefillRequests("open");
   const engineConfig = useEngineConfig();
   const routesCfg = engineConfig?.routes || { "marathon-pe": "hub2", trophy: "hub2", hub2: "central" };
-  const sources = Object.keys(routesCfg).length ? Object.keys(routesCfg) : SOURCES;
+  // Same deterministic order as the engine (downstream stores before their
+  // source) so per-card allocation attribution matches the scan's advisory
+  // numbers — the greedy split is sum-invariant but not order-invariant.
+  const sources = (Object.keys(routesCfg).length ? Object.keys(routesCfg) : SOURCES).slice().sort((a, b) => {
+    if (routesCfg[a] === b) return -1;
+    if (routesCfg[b] === a) return 1;
+    return a.localeCompare(b);
+  });
+  const storeMin = Number(engineConfig?.storeExcessMinUnits) || STORE_EXCESS_MIN;
   const [edits, setEdits] = useState({});    // `${loc}|${pid}|${size}` → qty
   const [busy, setBusy] = useState(false);   // card key being transferred | false
   const [lastResult, setLastResult] = useState(null);
@@ -77,7 +85,7 @@ export default function MoveExcess({ products = [], actorRole }) {
       }
     }
     for (const loc of sources) {
-      const minEx = loc === "hub2" ? 1 : STORE_EXCESS_MIN;
+      const minEx = loc === "hub2" ? 1 : storeMin;
       for (const [pid, bySize] of Object.entries(allStock?.[loc] || {})) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
@@ -128,9 +136,12 @@ export default function MoveExcess({ products = [], actorRole }) {
 
   const qtyOf = (c, s) => {
     const v = edits[`${c.key}|${s.size}`];
-    // Never above the true overage — a stale edit from a previous render can
-    // exceed the recomputed max (the tap-time clamp is the hard backstop).
-    return Math.max(0, Math.min(v == null ? s.excess : v, Math.max(s.have - s.target, 0)));
+    // Never above the movable ceiling — for hub2 that is the NET excess (its
+    // held units belong to downstream refills: Cortez is not manually
+    // overridable), for stores the raw overage. Stale edits clamp here; the
+    // tap-time clamp is the hard backstop.
+    const ceil = c.loc === "hub2" ? s.excess : Math.max(s.have - s.target, 0);
+    return Math.max(0, Math.min(v == null ? s.excess : v, ceil));
   };
 
   const transfer = async (c) => {
@@ -217,7 +228,7 @@ export default function MoveExcess({ products = [], actorRole }) {
       {/* Location sections — every excess product visible, per location */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
         <button onClick={() => setLocFilter("all")} style={pill(locFilter === "all")}>All ({cards.length})</button>
-        {SOURCES.map((l) => (
+        {sources.map((l) => (
           <button key={l} onClick={() => setLocFilter(l)} style={pill(locFilter === l)}>
             {LOC_LABEL[l]} ({locCount(l)})
           </button>
@@ -262,7 +273,8 @@ export default function MoveExcess({ products = [], actorRole }) {
             <div style={CHIP_GRID}>
               {c.sizes.map((s) => (
                 <SizeStepperChip key={s.size}
-                  size={s.size} qty={qtyOf(c, s)} max={Math.max(s.have - s.target, 0)}
+                  size={s.size} qty={qtyOf(c, s)}
+                  max={c.loc === "hub2" ? s.excess : Math.max(s.have - s.target, 0)}
                   onChange={(v) => setEdits((prev) => ({ ...prev, [`${c.key}|${s.size}`]: v }))}
                   hint={`have ${s.have} · target ${s.target}${s.toHub ? ` · ${s.toHub} → Hub 2` : ""}${s.toCentral ? ` · ${s.toCentral} → Central` : ""}`}
                   disabled={busy === c.key}
