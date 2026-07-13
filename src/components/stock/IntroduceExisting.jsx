@@ -10,7 +10,7 @@
 import React, { useMemo, useState } from "react";
 import { useStockCells, useStockTargets, useEngineConfig } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
-import { computeUnintroduced, migrateToEngine, destsFrom, effectiveRun } from "./introduceExisting";
+import { computeUnintroduced, migrateToEngine, destsFrom, effectiveRun } from "./introduceExistingCore";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge } from "./healthWidgets";
 

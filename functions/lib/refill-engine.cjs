@@ -519,7 +519,7 @@ function computeRefillPlan(snapshot) {
   };
   // Sizes the standard run covers (letters only — numeric sizes have no
   // approved standard quantity). MUST stay in lockstep with the client copy in
-  // src/components/stock/introduceExisting.js.
+  // src/components/stock/introduceExistingCore.js.
   const STANDARD_SIZE_RE = /^(S|M|L|XL|XXL|XXXL)$/i;
   // Cell PRESENCE, not quantity (consistent with `circulates`): a standard
   // size whose cells all sold to zero still gets a target on migration — its
