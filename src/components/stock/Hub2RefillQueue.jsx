@@ -25,7 +25,7 @@
 import React, { useMemo, useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
-import { useRefillRequests, useStockCells } from "./useStock";
+import { useRefillRequests, useStockCells, useStockExceptions } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bRed } from "./ui";
@@ -41,6 +41,26 @@ export default function Hub2RefillQueue({ products = [] }) {
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const openRequests = useRefillRequests("open");
   const centralCells = useStockCells(SOURCE_LOC);
+  // v9 actionable-only: every card below IS ready to fulfil (the engine only
+  // creates a request when Central physically has the stock, and withdraws it
+  // if Central sells out). The passive demand — waiting on supplier/upstream —
+  // is summarised here for visibility, never as scrollable work.
+  const exceptions = useStockExceptions();
+  const passive = useMemo(() => {
+    const count = (k) => (exceptions?.[k]?.items || []).filter((w) => w.loc === DEST_LOC).length;
+    return {
+      awaitingSupplier: count("awaitingSupplier") + count("missingSizes"),
+      waitingForStock: count("waitingForStock"),
+      awaitingUpstream: count("awaitingUpstream"),
+    };
+  }, [exceptions]);
+  const passiveLine = (prefix) => {
+    const bits = [];
+    if (passive.awaitingSupplier) bits.push(`${passive.awaitingSupplier} waiting for supplier`);
+    if (passive.awaitingUpstream) bits.push(`${passive.awaitingUpstream} awaiting upstream stock`);
+    if (passive.waitingForStock) bits.push(`${passive.waitingForStock} resting after rejection`);
+    return bits.length ? `${prefix}${bits.join(" · ")} — these reappear automatically when stock allows.` : "";
+  };
   const [picks, setPicks] = useState({});       // refillId → qty
   const [rejects, setRejects] = useState({});   // refillId → true (marked "not available")
   const [busyCard, setBusyCard] = useState(null);
@@ -151,8 +171,9 @@ export default function Hub2RefillQueue({ products = [] }) {
   if (!cards.length) {
     return (
       <div style={{ ...GLASS, padding: 16, margin: "8px 0", color: GRAY, fontSize: 13 }}>
-        No open Hub 2 refill requests. When Hub 2 drops below its approved targets,
-        the engine's requests appear here automatically.
+        No refill requests Central can act on right now. When Hub 2 drops below its
+        approved targets AND Central has the stock, requests appear here automatically.
+        {passiveLine(" In the background: ")}
       </div>
     );
   }
@@ -160,7 +181,8 @@ export default function Hub2RefillQueue({ products = [] }) {
   return (
     <div style={{ paddingBottom: 30 }}>
       <div style={{ color: GRAY, fontSize: 11.5, margin: "6px 2px 10px" }}>
-        {cards.length} product{cards.length === 1 ? "" : "s"} waiting · set what's physically available, then Transfer.
+        <b style={{ color: GREEN }}>{cards.length} ready to fulfil</b> — every card below is pickable at Central right now.
+        {" "}{passiveLine("Not shown: ")}
         {!canTransfer && <span style={{ color: AMBER }}> You need a stock role to transfer — viewing only.</span>}
       </div>
       {cards.map((card) => {
