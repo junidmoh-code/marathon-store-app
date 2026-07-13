@@ -76,7 +76,12 @@ async function runScan() {
       return;
     }
     const locs = [...new Set([...Object.keys(config.routes || {}), ...Object.values(config.routes || {})])];
-    const windowStart = new Date(nowMs - MOVEMENTS_WINDOW_DAYS * 864e5).toISOString();
+    // The ledger window must cover the LONGEST lookback that reads it — the
+    // confidence score (30d) and the config-adjustable confirmed-out window —
+    // else arrivals older than the window silently stop counting as lift
+    // evidence and a size stays confirmed-out longer than configured.
+    const windowDays = Math.max(MOVEMENTS_WINDOW_DAYS, (Number(config.confirmedOutDays) || 14) + 1);
+    const windowStart = new Date(nowMs - windowDays * 864e5).toISOString();
     const [targetDecisions, targets, products, openIndex, refillRequests, orders, movementsSnap, ...stockSnaps] = await Promise.all([
       db.ref("stock_targets_decisions").once("value").then((s) => s.val() || {}),
       db.ref("stock_targets").once("value").then((s) => s.val() || {}),

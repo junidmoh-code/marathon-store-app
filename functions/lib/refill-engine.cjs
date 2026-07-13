@@ -223,27 +223,6 @@ function computeRefillPlan(snapshot) {
   let managedCells = 0;   // cells with a resolvable target > 0 (Health-score denominator)
   const maxUnits = num(config?.maxUnitsPerIntent) || 20;
 
-  // ── ARRIVAL LIFT (owner rule 2026-07-13: requests are LIVE demand) ──────────
-  // A human "not available" is trusted only until stock demonstrably ARRIVES at
-  // the location that said no. Any inbound ledger movement — supplier receive,
-  // return, positive adjustment, either transfer leg — newer than the denial is
-  // fresh physical evidence that beats the stale "no": the demand re-asks on
-  // the very next scan instead of resting out the cooldown / confirmed-out
-  // window. arrivedAt: (loc|pid|sizeKey) → latest inbound movement ts there.
-  // (Movement types whose `to` gains stock mirror applyMovement's cellDeltas;
-  // transfers carry a REAL from+to — no in_transit hop — so both legs count.)
-  const INBOUND_TYPES = new Set(["received", "opening", "return", "adjustment", "transfer_in", "transfer_out"]);
-  const arrivedAt = new Map();
-  for (const m of movements) {
-    if (!m || !m.to || !m.productId || m.size == null) continue;
-    if (!INBOUND_TYPES.has(m.type) || num(m.qty) <= 0) continue;
-    const ts = Date.parse(m.ts || 0) || 0;
-    const k = `${m.to}|${m.productId}|${encodeSizeKey(m.size)}`;
-    if (ts > (arrivedAt.get(k) || 0)) arrivedAt.set(k, ts);
-  }
-  const arrivedAfter = (loc, pid, sizeKey, ts) =>
-    (arrivedAt.get(`${loc}|${pid}|${sizeKey}`) || 0) > ts;
-
   // Rejection cooldown: (dest|pid|sizeKey) → { ts, by } — the most recent human
   // rejection AND the location that physically said no (recorded on the record
   // itself: order.placedAtHub / rr.source; falls back to the CURRENT route for
@@ -286,6 +265,39 @@ function computeRefillPlan(snapshot) {
     const levelMap = rr.requestingLocation === "hub2" ? rejCentralLevel : rejShopLevel;
     setDenial(levelMap, lk, ts, by);
   }
+
+  // ── ARRIVAL LIFT (owner rule 2026-07-13: requests are LIVE demand) ──────────
+  // A human "not available" is trusted only until stock demonstrably ARRIVES at
+  // the location that said no. Any inbound ledger movement — supplier receive,
+  // return, positive adjustment, either transfer leg — newer than the denial is
+  // fresh physical evidence that beats the stale "no": the demand re-asks on
+  // the very next scan instead of resting out the cooldown / confirmed-out
+  // window. arrivedAt: (loc|pid|sizeKey) → latest inbound movement ts there.
+  // (Movement types whose `to` gains stock mirror applyMovement's cellDeltas;
+  // transfers carry a REAL from+to — no in_transit hop — so both legs count.)
+  // Only cells with an active denial can need lift evidence, so the map covers
+  // exactly those (pid|size) pairs — not every movement in the 45-day window.
+  // Where the ledger recorded the resulting balance, it must be POSITIVE: an
+  // arrival that leaves the cell at ≤0 (the Negative Inventory "Fix → 0"
+  // adjustment, a receive into a deep oversell hole) created no pickable stock
+  // and lifts nothing.
+  const INBOUND_TYPES = new Set(["received", "opening", "return", "adjustment", "transfer_in", "transfer_out"]);
+  const deniedPairs = new Set([...rejShopLevel.keys(), ...rejCentralLevel.keys()]);
+  for (const k of rejectedAt.keys()) deniedPairs.add(k.slice(k.indexOf("|") + 1));
+  const arrivedAt = new Map();
+  for (const m of movements) {
+    if (!m || !m.to || !m.productId || m.size == null) continue;
+    if (!INBOUND_TYPES.has(m.type) || num(m.qty) <= 0) continue;
+    const sizeKey = encodeSizeKey(m.size);
+    if (!deniedPairs.has(`${m.productId}|${sizeKey}`)) continue;
+    const afterTo = m.after?.[m.to];
+    if (typeof afterTo === "number" && afterTo <= 0) continue;
+    const ts = Date.parse(m.ts || 0) || 0;
+    const k = `${m.to}|${m.productId}|${sizeKey}`;
+    if (ts > (arrivedAt.get(k) || 0)) arrivedAt.set(k, ts);
+  }
+  const arrivedAfter = (loc, pid, sizeKey, ts) =>
+    (arrivedAt.get(`${loc}|${pid}|${sizeKey}`) || 0) > ts;
   // Both levels denied within the window (default 14 days) → the size is OUT
   // no matter what the cells claim: no requests to ANY destination, straight
   // to the Missing Sizes reorder list. When the window lapses, the normal

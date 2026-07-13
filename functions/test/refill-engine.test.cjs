@@ -149,6 +149,39 @@ test("ARRIVAL LIFT: stock arriving at the source AFTER a rejection reopens the d
   }
 });
 
+test("BOOKKEEPING ≠ ARRIVAL: a movement that leaves the cell at ≤0 lifts nothing", () => {
+  const withStock = { stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(4) } }, trophy: {} } };
+  const rejected5hAgo = {
+    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(5), status: "incoming", createdAt: iso(5) } },
+  };
+  // The Negative Inventory "Fix → 0" adjustment records after:{hub2:0} — a
+  // bookkeeping correction, not pickable stock. Must NOT reopen the demand.
+  const negFix = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "adjustment", to: "hub2", productId: "p1", size: "M", qty: 2, ts: iso(1), reason: "health_negative_zero_fix", after: { hub2: 0 } }],
+  }));
+  assert.equal(negFix.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "clearing a negative to 0 is not an arrival");
+  assert.ok(negFix.exceptions.waitingForStock.items.some((w) => w.pid === "p1"), "still parked as Waiting for Stock");
+  // A receive into a deep oversell hole (after still negative) lifts nothing.
+  const intoHole = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 2, ts: iso(1), after: { hub2: -1 } }],
+  }));
+  assert.equal(intoHole.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "arrival swallowed by an oversell hole ≠ available stock");
+  // The same receive that ends POSITIVE is a real arrival → reopened.
+  const real = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 3, ts: iso(1), after: { hub2: 3 } }],
+  }));
+  assert.equal(real.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "positive resulting balance → reopened");
+  // Legacy movements without an after snapshot keep the old behavior (lift).
+  const legacy = computeRefillPlan(base({
+    ...withStock, ...rejected5hAgo,
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 3, ts: iso(1) }],
+  }));
+  assert.equal(legacy.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "no after snapshot → counted as before");
+});
+
 test("SAME-SCAN REOPEN: a rejected lock releases its inbound so the re-ask lands in the same plan", () => {
   // Rejection and arrival both happened since the last scan. The stale lock
   // must not keep counting as inbound — close AND fresh intent in ONE plan.
