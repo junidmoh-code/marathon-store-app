@@ -39,7 +39,8 @@ export default function IntroduceExisting({ products = [] }) {
   );
   const migratable = items.filter((i) => i.migratable);
   const numeric = items.filter((i) => !i.migratable);
-  const cellEstimate = migratable.reduce((t, i) => t + i.standardSizes.length * dests.length, 0);
+  const cellEstimate = migratable.reduce((t, i) =>
+    t + i.standardSizes.length * dests.filter((l) => l === "hub2" || i.carries?.[l]).length, 0);
   // Preview EXACTLY the runs the migration will apply (validated config or the
   // per-location fallback) — never a raw config value the writer would reject.
   const run = effectiveRun(config, "marathon-pe");
@@ -105,7 +106,8 @@ export default function IntroduceExisting({ products = [] }) {
           given targets — they are <b>not new products</b> and this is <b>not a decision</b>: your approved
           policy — shops {Object.entries(run).map(([s, q]) => `${s}${q}`).join(" ")} · Hub 2
           buffer {Object.entries(hubRun).map(([s, q]) => `${s}${q}`).join(" ")} — is applied
-          to each product's stocked sizes at all {dests.length} locations ({cellEstimate.toLocaleString()} target cells).
+          following each store's own assortment (a store gets targets only for products it actually
+          carries — sales or stock evidence; Hub 2 buffers everything) — {cellEstimate.toLocaleString()} target cells.
           From the next scan the engine creates the refill and distribution work — paced by the circuit breaker at{" "}
           {config?.maxIntentsPerRun ?? 200} requests per 15-minute scan — and the warehouse validates it; nothing
           moves without a human. <b>Expect busy warehouse queues while the backlog drains</b>; before

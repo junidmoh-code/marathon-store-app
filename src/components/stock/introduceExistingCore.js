@@ -92,6 +92,14 @@ export function computeUnintroduced(allStock, allTargets, productsById, dests = 
         pid, standardSizes, migratable: standardSizes.length > 0,
         units: dests.reduce((t, d) => t + sumAt(allStock, d, pid), 0),
         byLoc: Object.fromEntries(["central", ...dests].map((l) => [l, sumAt(allStock, l, pid)])),
+        // ASSORTMENT EVIDENCE (owner rule 2026-07-13): which STORES carry this
+        // product. Cell presence covers every evidence source — POS sales
+        // decrement a cell (so sold ⇒ cell), and transfers/receives create
+        // cells — so presence ≡ (sold ∪ stocked ∪ distributed) for the ledger
+        // era every unintroduced product belongs to. The migration writes
+        // store targets ONLY where the store carries the product; the
+        // quantity policy says how much, never WHERE a product belongs.
+        carries: Object.fromEntries(dests.map((l) => [l, !!allStock?.[l]?.[pid] && Object.keys(allStock[l][pid]).length > 0])),
       });
     }
   }
@@ -128,6 +136,10 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
     let chunkCells = 0;
     for (const item of chunk) {
       for (const loc of dests) {
+        // Stores follow their own assortment (evidence: the store carries the
+        // product). Hub 2 is the buffer for BOTH shops, so it targets every
+        // migrated product regardless — the union of the network's assortment.
+        if (loc !== "hub2" && item.carries && !item.carries[loc]) continue;
         const run = runFor(loc);
         for (const size of item.standardSizes) {
           const t = Number(run[String(size).toUpperCase()]) || 0;
