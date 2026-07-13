@@ -1,18 +1,28 @@
-// ─── DECISION QUEUE — inventory SETUP, separated from operations ──────────────
-// (owner architecture 2026-07-12 v6) This is where products are INTRODUCED into
-// the inventory network, primarily by Central:
+// ─── DECISION QUEUE — GENUINE business decisions ONLY (owner v8, 2026-07-13) ──
+// This is where products are INTRODUCED into the inventory network, primarily
+// by Central:
 //
 //   Supplier → receive into Central → unpack/count/QC (Receiving Session keeps
 //   the engine paused) → THIS QUEUE → distribute → the engine takes over.
 //
-// Two card kinds, all clothing, all live-computed (decisions clear instantly):
-//   NEW PRODUCT  — stock at Central, no targets anywhere: the introduction
-//                  wizard (targets per size × location toggles + a suggested
-//                  initial distribution from Central, editable, one confirm
-//                  generates every transfer and saves the targets)
-//   UNCONFIGURED — stock at PE/Trophy/Hub 2 with no target there: set targets,
-//                  transfer, or exclude
-// Both kinds support the two postponements (never a permanent blind spot):
+// v8 split: a product already circulating at PE/Trophy/Hub 2 with no targets is
+// NOT new and NOT a decision — the approved standard run already covers it. It
+// belongs to the one-tap "Introduce Existing Products" migration on the Health
+// screen (IntroduceExisting.jsx) and NEVER appears here. Classification is in
+// LOCKSTEP with functions/lib/refill-engine.cjs — change both together.
+//
+// Card kinds that remain (all clothing, live-computed, cards clear instantly):
+//   NEW PRODUCT     — stock at Central ONLY (no stock at any destination, no
+//                     targets anywhere): genuinely entering the business for
+//                     the first time. The introduction wizard sets targets and
+//                     suggests the initial distribution — the one place target
+//                     quantities are a business decision.
+//   NO STANDARD RUN — circulating with no targets, but its stocked sizes are
+//                     numeric (jeans etc.): no approved standard quantities
+//                     exist, a human must set them.
+//   UNCONFIGURED    — stock at a location with no target THERE for a product
+//                     that HAS targets elsewhere: include, transfer, or exclude.
+// All kinds support the two postponements (never a permanent blind spot):
 //   Remind me later          — 30/60/90 days, then the card returns
 //   Ignore until stock moves — suppressed until the product's network-wide
 //                              stock fingerprint changes (any receive / sale /
@@ -21,17 +31,19 @@
 import React, { useMemo, useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
-import { useStockCells, useStockTargets, useTargetDecisions } from "./useStock";
+import { useStockCells, useStockTargets, useTargetDecisions, useEngineConfig } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
+import { computeUnintroduced, stockedStandardSizes, destsFrom } from "./introduceExisting";
 
-const DESTS = ["marathon-pe", "trophy", "hub2"];
 const ALL_LOCS = ["marathon-pe", "trophy", "hub2", "central"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
-const STANDARD_RUN = { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 };
+// Approved standard run (owner policy 2026-07-13, reduced) — single source of
+// truth is introduceExisting.js; this import keeps the wizard prefill aligned.
+const STANDARD_RUN = { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 };
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
 const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
 
@@ -64,8 +76,14 @@ const pill = (on) => ({
 
 export default function NoTargetQueue({ products = [] }) {
   const allStock = useStockCells();
-  const allTargets = useStockTargets() || {};
+  const allTargetsRaw = useStockTargets();   // null until the listener answers
+  const allTargets = allTargetsRaw || {};
   const decisions = useTargetDecisions() || {};
+  const engineConfig = useEngineConfig();
+  const dests = useMemo(() => destsFrom(engineConfig), [engineConfig]);
+  // Never classify against half-loaded data: with targets still null EVERY
+  // product would render as a wrong card for a moment.
+  const loading = allTargetsRaw == null || !allStock || !Object.keys(allStock).length;
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const isAdmin = actorRole === "admin";
@@ -93,11 +111,16 @@ export default function NoTargetQueue({ products = [] }) {
 
   const cards = useMemo(() => {
     const out = [];
-    // NEW PRODUCTS at Central — the introduction queue (listed first).
+    if (loading) return out;
+    // GENUINELY NEW at Central — no targets anywhere AND never circulated.
+    // Circulation evidence is cell PRESENCE, not quantity (lockstep with the
+    // engine): a sold-to-zero destination cell still proves the product was
+    // out in the network, so it can never flip back to "NEW".
     for (const [pid, bySize] of Object.entries(allStock?.central || {})) {
       const p = byId.get(pid);
       if (!isClothing(p)) continue;
-      if (DESTS.some((d) => allTargets?.[d]?.[pid])) continue;
+      if (dests.some((d) => allTargets?.[d]?.[pid])) continue;
+      if (dests.some((d) => Object.keys(allStock?.[d]?.[pid] || {}).length)) continue;
       if (decisionActive("central", pid)) continue;
       const sizes = Object.entries(bySize || {})
         .map(([size, c]) => ({ size, qty: Math.max(Number(c?.qty) || 0, 0) }))
@@ -110,19 +133,49 @@ export default function NoTargetQueue({ products = [] }) {
         network: ALL_LOCS.map((l) => ({ loc: l, units: sumAt(l, pid) })),
       });
     }
-    // Unconfigured stock at managed locations.
-    for (const loc of DESTS) {
+    // Remaining GENUINE decisions at managed locations: numeric-size products
+    // (no approved standard quantities) and assortment leftovers (targets exist
+    // elsewhere, none here). Standard-size circulating products are handled by
+    // the Introduce Existing migration and are deliberately absent.
+    for (const loc of dests) {
       for (const [pid, bySize] of Object.entries(allStock?.[loc] || {})) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
         if (allTargets?.[loc]?.[pid]) continue;
+        const introducedElsewhere = dests.some((d) => allTargets?.[d]?.[pid]);
+        if (!introducedElsewhere && stockedStandardSizes(allStock, pid).length) continue; // → migration
         if (decisionActive(loc, pid)) continue;
         const sizes = Object.entries(bySize || {})
           .map(([size, c]) => ({ size, qty: Math.max(Number(c?.qty) || 0, 0) }))
           .filter((s) => s.qty > 0).sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
         if (!sizes.length) continue;
         out.push({
-          key: `${loc}|${pid}`, loc, pid, isNew: false,
+          key: `${loc}|${pid}`, loc, pid, isNew: false, noStandard: !introducedElsewhere,
+          name: p?.name || pid, photo: p?.photoUrl, sizes,
+          units: sizes.reduce((t, s) => t + s.qty, 0),
+          network: ALL_LOCS.map((l) => ({ loc: l, units: sumAt(l, pid) })),
+        });
+      }
+    }
+    // SIZE-SCOPED blind spot (lockstep with the engine's guard): a MANAGED
+    // product can still hold stocked sizes the standard run doesn't cover and
+    // nobody targeted (mixed letter+numeric garments). Card carries ONLY those
+    // sizes, so "Set targets" configures exactly the unmanaged cells.
+    const STD = /^(S|M|L|XL|XXL|XXXL)$/i;
+    for (const loc of dests) {
+      for (const [pid, byTarget] of Object.entries(allTargets?.[loc] || {})) {
+        const p = byId.get(pid);
+        if (!isClothing(p)) continue;
+        const bySize = allStock?.[loc]?.[pid];
+        if (!bySize) continue;
+        if (decisionActive(loc, pid)) continue;
+        const sizes = Object.entries(bySize)
+          .map(([size, c]) => ({ size, qty: Math.max(Number(c?.qty) || 0, 0) }))
+          .filter((s) => s.qty > 0 && !STD.test(String(s.size)) && !byTarget[encodeSizeKey(s.size)])
+          .sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+        if (!sizes.length) continue;
+        out.push({
+          key: `${loc}|${pid}|sizes`, loc, pid, isNew: false, noStandard: true,
           name: p?.name || pid, photo: p?.photoUrl, sizes,
           units: sizes.reduce((t, s) => t + s.qty, 0),
           network: ALL_LOCS.map((l) => ({ loc: l, units: sumAt(l, pid) })),
@@ -130,7 +183,21 @@ export default function NoTargetQueue({ products = [] }) {
       }
     }
     return out.sort((a, b) => (a.isNew === b.isNew ? b.units - a.units : a.isNew ? -1 : 1));
-  }, [allStock, allTargets, decisions, byId]);
+  }, [loading, allStock, allTargets, decisions, byId, dests]);
+
+  // Pointer only — migration lives on the Health screen, not in this queue.
+  const migratableCount = useMemo(
+    () => (loading ? 0 : computeUnintroduced(allStock, allTargets, byId, dests).filter((i) => i.migratable).length),
+    [loading, allStock, allTargets, byId, dests],
+  );
+
+  if (loading) {
+    return (
+      <div style={{ ...GLASS, padding: 24, textAlign: "center" }}>
+        <div style={{ fontSize: 13.5, color: GRAY }}>Loading live stock and targets…</div>
+      </div>
+    );
+  }
 
   // ── shared decision writers ──────────────────────────────────────────────────
   const finish = (card, text) => { setDoneMsg({ name: card.name, text }); setBusyKey(null); };
@@ -155,7 +222,7 @@ export default function NoTargetQueue({ products = [] }) {
   const distributionOf = (card) => {
     const remaining = Object.fromEntries(card.sizes.map((s) => [s.size, s.qty]));
     const perLoc = [];
-    for (const loc of DESTS) {
+    for (const loc of dests) {
       if (!locEnabled(card, loc)) continue;
       const lines = [];
       for (const s of card.sizes) {
@@ -174,7 +241,7 @@ export default function NoTargetQueue({ products = [] }) {
     setBusyKey(card.key);
     const now = new Date().toISOString();
     const upd = {};
-    const locs = card.isNew ? DESTS.filter((l) => locEnabled(card, l)) : [card.loc];
+    const locs = card.isNew ? dests.filter((l) => locEnabled(card, l)) : [card.loc];
     for (const loc of locs) {
       for (const s of card.sizes) {
         const t = targetOf(card, s.size);
@@ -219,7 +286,7 @@ export default function NoTargetQueue({ products = [] }) {
     setBusyKey(card.key);
     const now = new Date().toISOString();
     const upd = {};
-    const locs = card.isNew ? DESTS.filter((l) => locEnabled(card, l)) : [card.loc];
+    const locs = card.isNew ? dests.filter((l) => locEnabled(card, l)) : [card.loc];
     for (const loc of locs) {
       for (const s of card.sizes) {
         upd[`stock_targets/${loc}/${card.pid}/${encodeSizeKey(s.size)}`] = {
@@ -263,7 +330,10 @@ export default function NoTargetQueue({ products = [] }) {
     return (
       <div style={{ ...GLASS, padding: 24, textAlign: "center" }}>
         <div style={{ fontSize: 16, fontWeight: 800, color: GREEN }}>Queue clear 🎉</div>
-        <div style={{ color: GRAY, fontSize: 12.5, marginTop: 6 }}>Every product is introduced, excluded, or deliberately postponed.</div>
+        <div style={{ color: GRAY, fontSize: 12.5, marginTop: 6 }}>
+          Every product is introduced, excluded, or deliberately postponed.
+          {migratableCount > 0 && <> {migratableCount} existing product{migratableCount === 1 ? "" : "s"} await engine onboarding under <b>Introduce Existing</b> on Health — not decisions, one tap.</>}
+        </div>
       </div>
     );
   }
@@ -276,6 +346,12 @@ export default function NoTargetQueue({ products = [] }) {
         <div style={{ ...GLASS, padding: "10px 13px", marginBottom: 12, fontSize: 12.5 }}>
           <span style={{ color: doneMsg.text.includes("failed") ? RED : GREEN, fontWeight: 700 }}>{doneMsg.name}</span>
           <span style={{ color: GRAY }}> — {doneMsg.text}</span>
+        </div>
+      )}
+      {migratableCount > 0 && (
+        <div style={{ ...GLASS, padding: "10px 13px", marginBottom: 12, fontSize: 12.5, color: GRAY }}>
+          {migratableCount} existing product{migratableCount === 1 ? "" : "s"} are waiting for engine onboarding — those are
+          <b> not decisions</b>: use <b>Introduce Existing</b> on the Health screen to migrate them in one tap.
         </div>
       )}
       {newCount > 0 && (
@@ -298,8 +374,10 @@ export default function NoTargetQueue({ products = [] }) {
             <ProductCard
               photo={card.photo} name={card.name}
               badges={<>
-                <Badge tone={card.isNew ? GREEN : BLUE_L}>{card.isNew ? "NEW PRODUCT" : LOC_LABEL[card.loc]}</Badge>
-                <Badge tone={GRAY}>{card.isNew ? `CENTRAL · ${card.units} UNITS` : "AWAITING TARGET"}</Badge>
+                <Badge tone={card.isNew ? GREEN : card.noStandard ? AMBER : BLUE_L}>
+                  {card.isNew ? "NEW PRODUCT" : card.noStandard ? "NO STANDARD RUN" : LOC_LABEL[card.loc]}
+                </Badge>
+                <Badge tone={GRAY}>{card.isNew ? `CENTRAL · ${card.units} UNITS` : card.noStandard ? "SIZES NEED QUANTITIES" : "AWAITING TARGET"}</Badge>
               </>}
               sub={card.network.filter((n) => n.units > 0).map((n) => `${LOC_LABEL[n.loc]} ${n.units}`).join(" · ")}
               right={
@@ -339,7 +417,7 @@ export default function NoTargetQueue({ products = [] }) {
                     <>
                       {card.isNew && (
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "10px 0 2px" }}>
-                          {DESTS.map((l) => (
+                          {dests.map((l) => (
                             <button key={l} onClick={() => setLocsOn((o) => ({ ...o, [`${card.key}|${l}`]: !locEnabled(card, l) }))} style={pill(locEnabled(card, l))}>
                               {locEnabled(card, l) ? "✓ " : ""}{LOC_LABEL[l]}
                             </button>

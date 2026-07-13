@@ -22,7 +22,10 @@ import { database } from "../../firebase";
 import {
   useStockExceptions, useEngineShadow, useEngineOpen, useEngineRuns,
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
+  useStockTargets,
 } from "./useStock";
+import IntroduceExisting from "./IntroduceExisting";
+import { computeUnintroduced, destsFrom } from "./introduceExisting";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { decodeSizeKey, encodeSizeKey } from "../../utils/sizeKey";
@@ -202,6 +205,18 @@ export default function HealthView({ products = [], onExit }) {
   const session = useReceivingSession();
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const allStock = useStockCells();   // live — drives Negative Inventory truthfully
+  const allTargetsRaw = useStockTargets();   // null until the listener answers
+  const allTargets = allTargetsRaw || {};
+  // Live count of existing products awaiting the one-tap engine migration
+  // (v8) — live like Negative Inventory, so the card clears the moment the
+  // migration lands instead of lagging a scan cycle. Until stock AND targets
+  // have both loaded, fall back to the scan snapshot count (never classify
+  // against half-loaded data — with targets null EVERYTHING looks unintroduced).
+  const stockReady = allTargetsRaw != null && allStock && Object.keys(allStock).length > 0;
+  const migratableLive = useMemo(
+    () => (stockReady ? computeUnintroduced(allStock, allTargets, byId, destsFrom(config)).filter((i) => i.migratable).length : null),
+    [stockReady, allStock, allTargets, byId, config],
+  );
 
   // Live negative clothing cells across the whole network (never the snapshot:
   // the scan exceptions lag up to 15 min, which made fixed cells look unfixed).
@@ -344,9 +359,18 @@ export default function HealthView({ products = [], onExit }) {
             ))}
           </DetailShell>
         );
+      // Migration, deliberately NOT a decision (owner v8): existing products
+      // that never entered engine management get the approved standard run in
+      // one tap; the engine takes over on the next scan.
+      case "introduceExisting":
+        return (
+          <DetailShell title="Introduce Existing Products" sub="Already circulating, never onboarded — one tap applies your approved standard targets" count={migratableLive ?? count("unintroduced")} onBack={back}>
+            <IntroduceExisting products={products} />
+          </DetailShell>
+        );
       case "noTarget":
         return (
-          <DetailShell title="Decision Queue" sub="Introduce new products · set targets · distribute · exclude · postpone — cards clear instantly" count={count("noTarget")} onBack={back}>
+          <DetailShell title="Decision Queue" sub="Genuinely new supplier products · numeric-size quantities · assortment leftovers — real decisions only" count={count("noTarget")} onBack={back}>
             <NoTargetQueue products={products} />
           </DetailShell>
         );
@@ -474,7 +498,9 @@ export default function HealthView({ products = [], onExit }) {
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
               <StatCard label="Decision Queue" value={count("noTarget")} tone={count("noTarget") ? BLUE_L : GREEN}
-                        sub="New products & unconfigured stock" onClick={() => setScreen("noTarget")} />
+                        sub="New supplier products & real decisions only" onClick={() => setScreen("noTarget")} />
+              <StatCard label="Introduce Existing" value={migratableLive ?? count("unintroduced")} tone={(migratableLive ?? count("unintroduced")) ? AMBER : GREEN}
+                        sub="Existing stock → engine management, one tap" onClick={() => setScreen("introduceExisting")} />
               <StatCard label="Negative Inventory"
                         value={liveNegatives == null ? count("negativeCells") : liveNegatives.length}
                         tone={(liveNegatives == null ? count("negativeCells") : liveNegatives.length) ? RED : GREEN}

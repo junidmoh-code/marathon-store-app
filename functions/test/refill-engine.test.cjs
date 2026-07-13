@@ -11,8 +11,8 @@ const CONFIG = {
   mode: { "marathon-pe": "live", trophy: "live", hub2: "live" },
   routes: { "marathon-pe": "hub2", trophy: "hub2", hub2: "central" },
   defaultRunByStore: {
-    "marathon-pe": { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 },
-    trophy: { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 },
+    "marathon-pe": { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 },
+    trophy: { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 },
   },
   defaultRunRecentSaleDays: 14,
   staleIntentHours: 48,
@@ -336,6 +336,26 @@ test("SELF-REVERSAL: request withdrawn when stock arrives by another path", () =
   assert.ok(!partial.closes.some((x) => x.reason === "no_longer_needed"), "still needed → stays in the queue");
 });
 
+test("POLICY DROP reconciliation: lowering a target withdraws the now-oversized open request", () => {
+  // Request for 2 units was created under the old policy (target 3, have 1).
+  // The policy drops to target 1 → the shop already holds enough → the very
+  // next scan withdraws the request (no human cleanup, no obsolete work).
+  const openReq = {
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R003-2", orderCreatedAt: iso(1), qty: 2, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" } },
+    orders: { "R003-2": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming" } },
+  };
+  const plan = computeRefillPlan(base({
+    ...openReq,
+    targets: { "marathon-pe": { p1: { M: { target: 1, minQty: 1 } } } },  // NEW reduced policy
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
+  }));
+  const c = plan.closes.find((x) => x.reason === "no_longer_needed");
+  assert.ok(c, "request obsolete under the new policy → withdrawn");
+  assert.equal(c.removeOrderId, "R003-2", "warehouse card deleted");
+  assert.equal(plan.intents.length, 0, "and no replacement is created — target is met");
+});
+
 test("engine self-withdrawal imposes NO cooldown — a fresh dip re-asks immediately", () => {
   const plan = computeRefillPlan(base({
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
@@ -437,8 +457,12 @@ test("three states: no target = noTarget surface (NOT excess); explicit 0 = all 
       central: {}, trophy: {},
     },
   }));
-  // Unconfigured stock: surfaced for humans, never auto-classified as excess.
-  assert.deepEqual(plan.exceptions.noTarget.items, [{ loc: "hub2", pid: "pUnset", units: 6 }]);
+  // Unconfigured circulating stock with standard sizes: awaiting MIGRATION
+  // (v8), not a decision — and never auto-classified as excess.
+  assert.equal(plan.exceptions.noTarget.count, 0, "standard-size circulating product is not a decision");
+  assert.deepEqual(plan.exceptions.unintroduced.items, [
+    { pid: "pUnset", standardSizes: ["M"], units: 6, byLoc: { central: 0, hub2: 6, "marathon-pe": 0, trophy: 0 } },
+  ]);
   assert.ok(!plan.exceptions.excess.items.some((e) => e.pid === "pUnset"), "no-target is NOT excess");
   // Deliberate exclusion (target 0): every unit is excess, even a single one.
   assert.deepEqual(plan.exceptions.excess.items, [{ loc: "hub2", pid: "pBanned", sizeKey: "M", have: 1, target: 0, excess: 1 }]);
@@ -447,10 +471,13 @@ test("three states: no target = noTarget surface (NOT excess); explicit 0 = all 
 });
 
 test("decision types: keep (permanent), snooze (expires), until_change (fingerprint)", () => {
+  // pUnset is numeric-size (no standard run) so it stays a GENUINE decision
+  // under v8 — postponements only ever apply to decision cards, never to the
+  // unintroduced migration list.
   const over = {
-    products: { p1: PRODUCTS.p1, pUnset: { productType: "clothing", sizes: ["M"] } },
+    products: { p1: PRODUCTS.p1, pUnset: { productType: "clothing", sizes: ["32"] } },
     targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
-    stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: { pUnset: { M: cell(6) } }, central: {}, trophy: {} },
+    stock: { "marathon-pe": { p1: { M: cell(3) } }, hub2: { pUnset: { 32: cell(6) } }, central: {}, trophy: {} },
   };
   assert.equal(computeRefillPlan(base(over)).exceptions.noTarget.count, 1);
   // keep: permanent
@@ -467,9 +494,95 @@ test("decision types: keep (permanent), snooze (expires), until_change (fingerpr
   assert.equal(computeRefillPlan(base({ ...over,
     targetDecisions: { hub2: { pUnset: { decision: "until_change", fingerprint: fp } } } })).exceptions.noTarget.count, 0);
   const changed = JSON.parse(JSON.stringify(base(over).stock));
-  changed.hub2.pUnset.M = cell(5); // one unit sold
+  changed.hub2.pUnset["32"] = cell(5); // one unit sold
   assert.equal(computeRefillPlan(base({ ...over, stock: changed,
     targetDecisions: { hub2: { pUnset: { decision: "until_change", fingerprint: fp } } } })).exceptions.noTarget.count, 1, "inventory change resurfaces the card");
+});
+
+test("v8 split: circulating = unintroduced (migration) · central-only = NEW · numeric = decision · leftover = decision", () => {
+  const plan = computeRefillPlan(base({
+    products: {
+      p1: PRODUCTS.p1,                                          // targeted at PE
+      pCirc: { productType: "clothing", sizes: ["M", "L"] },    // circulating, no targets → MIGRATION
+      pFresh: { productType: "clothing", sizes: ["M"] },        // central-only, no targets → NEW
+      pJeans: { productType: "clothing", sizes: ["32", "34"] }, // numeric circulating → DECISION (noStandard)
+    },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: {
+      central: { pCirc: { M: cell(9) }, pFresh: { M: cell(7) } },
+      "marathon-pe": { p1: { M: cell(3) } },
+      hub2: { pCirc: { L: cell(4) }, pJeans: { 32: cell(5) } },
+      trophy: { p1: { M: cell(2) } },                           // leftover: targets elsewhere, none here
+    },
+  }));
+  const nt = plan.exceptions.noTarget.items;
+  // pCirc: stock at Central AND hub2 — NOT new, NOT a decision; one migration entry.
+  assert.ok(!nt.some((c) => c.pid === "pCirc"), "circulating product never appears in the Decision Queue");
+  const mig = plan.exceptions.unintroduced.items.find((u) => u.pid === "pCirc");
+  assert.deepEqual(mig, { pid: "pCirc", standardSizes: ["M", "L"], units: 4, byLoc: { central: 9, hub2: 4, "marathon-pe": 0, trophy: 0 } });
+  // pFresh: genuinely new (central-only) — leads the queue.
+  assert.deepEqual(nt[0], { loc: "central", pid: "pFresh", units: 7, isNew: true });
+  // pJeans: no standard quantities exist for numeric sizes — a real decision.
+  assert.ok(nt.some((c) => c.pid === "pJeans" && c.noStandard && c.loc === "hub2"), "numeric-size product stays a decision");
+  // p1 at Trophy: has targets at PE but none at Trophy — assortment decision.
+  assert.ok(nt.some((c) => c.pid === "p1" && c.loc === "trophy" && !c.isNew && !c.noStandard), "leftover with targets elsewhere stays a decision");
+  // Exactly one card per product — no duplicates across lists.
+  const all = [...nt.map((c) => c.pid), ...plan.exceptions.unintroduced.items.map((u) => u.pid)];
+  assert.equal(new Set(all).size, all.length, "one card per product, no dup across NEW/migration/decision");
+});
+
+test("numeric-only product at TWO locations gets a decision card per location (dedup is migration-only)", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: PRODUCTS.p1, pJeans: { productType: "clothing", sizes: ["32", "34"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } } },
+    stock: {
+      "marathon-pe": { p1: { M: cell(2) } },
+      hub2: { pJeans: { 32: cell(5) } },
+      trophy: { pJeans: { 34: cell(3) } },
+      central: {},
+    },
+  }));
+  const cards = plan.exceptions.noTarget.items.filter((c) => c.pid === "pJeans" && c.noStandard);
+  assert.equal(cards.length, 2, "one decision card per location holding stock");
+  assert.deepEqual(cards.map((c) => c.loc).sort(), ["hub2", "trophy"], "no location's stock goes invisible");
+});
+
+test("sold-to-zero destination cell still counts as circulated — never NEW again", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: PRODUCTS.p1, pSoldOut: { productType: "clothing", sizes: ["M"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: { central: { pSoldOut: { M: cell(6) } }, "marathon-pe": { p1: { M: cell(3) } }, hub2: { pSoldOut: { M: cell(0) } }, trophy: {} },
+  }));
+  assert.ok(!plan.exceptions.noTarget.items.some((c) => c.pid === "pSoldOut" && c.isNew), "a zero-qty cell is circulation evidence — not NEW");
+  assert.ok(plan.exceptions.unintroduced.items.some((u) => u.pid === "pSoldOut"), "sold-through product goes to migration (demand proven)");
+});
+
+test("size-scoped guard: a managed product's stocked numeric sizes surface as noStandard", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: { name: "Mixed jeans", productType: "clothing", sizes: ["M", "32"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(3), 32: cell(4) } }, hub2: {}, central: {}, trophy: {} },
+  }));
+  const card = plan.exceptions.noTarget.items.find((c) => c.pid === "p1" && c.noStandard);
+  assert.ok(card, "numeric leftover under a MANAGED pid is never silently lost");
+  assert.equal(card.units, 4);
+  assert.equal(card.loc, "marathon-pe");
+  assert.equal(plan.exceptions.noTarget.items.filter((c) => c.pid === "p1").length, 1, "the targeted M cell creates no extra decision");
+});
+
+test("orphaned pending lock (crashed scan) self-heals; the freed deficit re-asks in the same plan", () => {
+  const plan = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: { qty: 2, createdAt: iso(2), runId: "old", pending: true } } } },
+  }));
+  const c = plan.closes.find((x) => x.reason === "orphaned_pending");
+  assert.ok(c, "pending lock older than 1h is removed");
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "released inbound → re-ask in the SAME plan");
+  // A young pending lock is in-flight: untouched, still suppressing.
+  const young = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: { qty: 2, createdAt: iso(0.5), runId: "cur", pending: true } } } },
+  }));
+  assert.ok(!young.closes.some((x) => x.reason === "orphaned_pending"), "young pending lock left alone");
+  assert.equal(young.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "in-flight lock still counts as inbound");
 });
 
 test("NEW PRODUCT at Central (no targets anywhere) enters the Decision Queue", () => {
