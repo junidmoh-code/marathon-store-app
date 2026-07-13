@@ -37,7 +37,7 @@ import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
-import { computeUnintroduced, stockedStandardSizes, destsFrom } from "./introduceExistingCore";
+import { computeUnintroduced, stockedStandardSizes, destsFrom, effectiveRun } from "./introduceExistingCore";
 
 const ALL_LOCS = ["marathon-pe", "trophy", "hub2", "central"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -214,7 +214,15 @@ export default function NoTargetQueue({ products = [] }) {
     } catch (e) { finish(card, `write failed — ${String(e?.message || e)}`); }
   };
 
+  // The wizard's steppers define the SHOP quantities. Hub 2 — when ticked on a
+  // NEW-product introduction — always receives its own deeper BUFFER run
+  // (effectiveRun), never the shop numbers: the buffer supplies both stores.
+  // Editing a stepper therefore never under-fills Hub 2.
   const targetOf = (card, size) => Math.max(0, Number(edits[`${card.key}|${size}`] ?? (STANDARD_RUN[size] ?? 1)) || 0);
+  const targetFor = (card, size, loc) =>
+    (card.isNew && loc === "hub2")
+      ? Math.max(0, Number(effectiveRun(engineConfig, "hub2")[String(size).toUpperCase()] ?? 1) || 0)
+      : targetOf(card, size);
   const locEnabled = (card, loc) => locsOn[`${card.key}|${loc}`] !== false;
 
   // Suggested initial distribution: deal each enabled location its target from
@@ -226,7 +234,7 @@ export default function NoTargetQueue({ products = [] }) {
       if (!locEnabled(card, loc)) continue;
       const lines = [];
       for (const s of card.sizes) {
-        const want = targetOf(card, s.size);
+        const want = targetFor(card, s.size, loc);
         const give = Math.max(0, Math.min(want, remaining[s.size]));
         if (give > 0) lines.push({ size: s.size, qty: give });
         remaining[s.size] -= give;
@@ -244,7 +252,7 @@ export default function NoTargetQueue({ products = [] }) {
     const locs = card.isNew ? dests.filter((l) => locEnabled(card, l)) : [card.loc];
     for (const loc of locs) {
       for (const s of card.sizes) {
-        const t = targetOf(card, s.size);
+        const t = targetFor(card, s.size, loc);
         upd[`stock_targets/${loc}/${card.pid}/${encodeSizeKey(s.size)}`] = {
           target: t, minQty: Math.ceil(t / 2), source: "manual",
           batchId: "decision-queue", approvedBy: "decision-queue", approvedAt: now,
@@ -425,7 +433,7 @@ export default function NoTargetQueue({ products = [] }) {
                         </div>
                       )}
                       <div style={{ color: GRAY, fontSize: 11, margin: "8px 0 4px" }}>
-                        Target per size{card.isNew ? " (applied to every ticked location)" : ` at ${LOC_LABEL[card.loc]}`} — prefilled with the standard run:
+                        Target per size{card.isNew ? " (applied to every ticked shop — Hub 2 automatically gets its deeper buffer run)" : ` at ${LOC_LABEL[card.loc]}`} — prefilled with the standard run:
                       </div>
                       <div style={CHIP_GRID}>
                         {card.sizes.map((s) => (

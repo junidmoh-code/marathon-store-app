@@ -1,12 +1,14 @@
-// ─── RETARGET to the REDUCED standard run (owner policy 2026-07-13) ───────────
+// ─── RETARGET to the split standard policy (owner, 2026-07-13) ────────────────
 // During physical stocking both stores were full before half the range was out:
-// the original standard (S2 M3 L3 XL2 XXL2 XXXL1) is too high. New approved
-// standard for marathon-pe, trophy AND hub2:
+// the original standard is too high FOR THE SHOPS. Approved policy:
 //
-//     S=1  M=2  L=2  XL=1  XXL=1  XXXL=1
+//   marathon-pe / trophy:  S=1  M=2  L=2  XL=1  XXL=1  XXXL=1   (reduced)
+//   hub2:                  S=2  M=3  L=3  XL=2  XXL=2  XXXL=1   (unchanged —
+//     the buffer supplies BOTH shops and must cover simultaneous deficits)
 //
-// This script rewrites every EXISTING standard-policy target cell to the new
-// quantities and updates /config/refillEngine/defaultRunByStore to match, so
+// This script rewrites every EXISTING standard-policy SHOP target cell to the
+// reduced quantities (hub2 cells stay on the buffer run — they already carry
+// it, so hub2 rewrites are naturally zero) and updates /config/refillEngine/defaultRunByStore to match, so
 // the engine, the Decision Queue wizard prefill, and the Introduce Existing
 // migration all share one policy. Everything downstream (excess, below-target,
 // refill requests, Health, Move Excess) recomputes on the next 15-min scan —
@@ -33,7 +35,11 @@ import os from "node:os";
 
 const PROJECT = "marathon-club";
 const COMMIT = process.argv.includes("--commit");
-const NEW_RUN = { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 };
+// Owner correction 2026-07-13: the reduction applies to the SHOPS only.
+// Hub 2 keeps the ORIGINAL buffer quantities — it supplies both stores.
+const STORE_RUN = { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 };
+const HUB2_RUN  = { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 };
+const RUN_BY_LOC = { "marathon-pe": STORE_RUN, trophy: STORE_RUN, hub2: HUB2_RUN };
 const LOCS = ["marathon-pe", "trophy", "hub2"];
 const STD = /^(S|M|L|XL|XXL|XXXL)$/i;
 const now = new Date().toISOString();
@@ -68,8 +74,10 @@ for (const loc of LOCS) {
       }
       if (cellVal.target === 0) { stats.skippedExcluded++; continue; }   // explicit exclusion — a human decision
       if (!STD.test(sizeKey)) { stats.skippedNonStandard++; continue; }
-      const t = NEW_RUN[sizeKey.toUpperCase()];
-      if (cellVal.target === t) { stats.alreadyNew++; continue; }
+      const t = RUN_BY_LOC[loc][sizeKey.toUpperCase()];
+      // Skip only fully-consistent cells: target AND minQty must both match,
+      // so an anomalous standard-policy cell is corrected, not preserved.
+      if (cellVal.target === t && cellVal.minQty === (t > 0 ? Math.ceil(t / 2) : 0)) { stats.alreadyNew++; continue; }
       updates[`${loc}/${pid}/${sizeKey}`] = {
         ...cellVal,
         target: t, minQty: t > 0 ? Math.ceil(t / 2) : 0,
@@ -83,16 +91,16 @@ for (const loc of LOCS) {
 }
 
 const newConfigRun = {
-  "defaultRunByStore/marathon-pe": NEW_RUN,
-  "defaultRunByStore/trophy": NEW_RUN,
-  "defaultRunByStore/hub2": NEW_RUN,   // now explicit — was implicit fallback
+  "defaultRunByStore/marathon-pe": STORE_RUN,
+  "defaultRunByStore/trophy": STORE_RUN,
+  "defaultRunByStore/hub2": HUB2_RUN,   // explicit: hub2 keeps the deeper buffer
   updatedAt: now, updatedBy: "retarget-script",
 };
 
 console.error(`\nPreview (${batchId}):`);
 console.error(`  cells to retarget: ${stats.changed}  ${JSON.stringify(stats.byLoc)}`);
 console.error(`  already at new policy: ${stats.alreadyNew} · manual kept: ${stats.skippedManual} · explicit-0 kept: ${stats.skippedExcluded} · non-standard sizes kept: ${stats.skippedNonStandard}`);
-console.error(`  config.defaultRunByStore → ${JSON.stringify(NEW_RUN)} for ${LOCS.join(", ")}`);
+console.error(`  config runs → stores ${JSON.stringify(STORE_RUN)} · hub2 ${JSON.stringify(HUB2_RUN)}`);
 for (const [k, v] of Object.entries(updates).slice(0, 5)) console.error(`  e.g. ${k}: target ${v.target}, minQty ${v.minQty}`);
 
 if (!COMMIT) {
