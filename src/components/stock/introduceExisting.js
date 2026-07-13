@@ -19,7 +19,7 @@
 //     convention every existing target cell uses.
 
 import { ref, update, get } from "firebase/database";
-import { database } from "../../firebase";
+import { database, auth } from "../../firebase";
 import { encodeSizeKey } from "../../utils/sizeKey";
 
 // Approved standard run — owner policy 2026-07-13 (REDUCED from the original
@@ -137,6 +137,23 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
       failed.push(`${chunk.length} products (batch ${i / CHUNK + 1}): ${String(e?.message || e)}`);
     }
     onProgress?.({ done, total: migratable.length });
+  }
+  // MIGRATION COMPLETE record (owner request 2026-07-13): a durable audit row —
+  // date, policy version, products onboarded, operator — for troubleshooting
+  // or rollback months later. Lives under stock_targets_decisions/_migrations
+  // ("_migrations" is never a real location key, so the engine and Decision
+  // Queue, which only read configured destination keys, never see it).
+  if (done > 0) {
+    const run = runFor(dests[0]);
+    const policyVersion = Object.keys(STANDARD_RUN).map((s) => `${s}${Number(run[s]) ?? 0}`).join("-");
+    await update(ref(database), {
+      [`stock_targets_decisions/_migrations/${batchId.replace(/[.#$/\[\]]/g, "_")}`]: {
+        kind: "introduce_existing_complete", completedAt: new Date().toISOString(),
+        policyVersion, productsOnboarded: done, cellsWritten: cells,
+        skippedAlreadyTargeted: skippedTaken || 0, failedBatches: failed.length,
+        operator: auth.currentUser?.uid || null, operatorLabel: approvedBy || "introduce-existing",
+      },
+    }).catch(() => {});   // best-effort: the audit row must never fail the migration
   }
   return { done, total: migratable.length, cells, failed, batchId, skippedTaken };
 }
