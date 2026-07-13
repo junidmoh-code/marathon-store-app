@@ -120,6 +120,38 @@ test("AWAITING SUPPLIER (v9): whole upstream chain empty → passive category, n
   assert.ok(!plan.exceptions.missingSizes.items.some((m) => m.pid === "p1"), "not on the reorder list — stock exists, just stranded");
 });
 
+test("SOURCE RESERVATION (v9): two stores never get cards for the same physical unit", () => {
+  const targets = {
+    "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
+    trophy: { p1: { M: { target: 2, minQty: 1 } } },
+  };
+  const stock = { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(3) } }, central: {} };
+  const plan = computeRefillPlan(base({ targets, stock }));
+  const totalAsked = plan.intents.reduce((t, i) => t + i.qty, 0);
+  assert.equal(totalAsked, 3, "combined asks never exceed the 3 units hub2 actually holds (demand is 4)");
+  // And an EXISTING open request reserves its units across scans too:
+  const scan2 = computeRefillPlan(base({
+    targets: { "marathon-pe": targets["marathon-pe"], trophy: targets.trophy },
+    stock: { ...stock, hub2: { p1: { M: cell(1) } } },
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", qty: 1, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" } },
+  }));
+  assert.equal(scan2.intents.filter((x) => x.dest === "trophy").length, 0, "hub2's last unit is already promised to PE — no Trophy card");
+  assert.ok(scan2.exceptions.awaitingUpstream.items.some((w) => w.loc === "trophy") || scan2.exceptions.awaitingSupplier.items.some((w) => w.loc === "trophy"),
+    "Trophy demand parks passively instead");
+});
+
+test("IN-FLIGHT GUARD (v9): a card being picked is never withdrawn under the picker", () => {
+  const plan = computeRefillPlan(base({
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(9) } }, trophy: {} },
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R005-3", orderCreatedAt: iso(1), qty: 2, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" } },
+    // The warehouse has LOCKED a split for this card (attempt underway).
+    orders: { "R005-3": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming", clothingPlanGen: 0 } },
+  }));
+  assert.ok(!plan.closes.some((x) => x.reason === "awaiting_upstream"), "in-flight fulfilment is untouchable");
+});
+
 test("SOURCE-EMPTY WITHDRAW (v9): an open request the source can no longer fill leaves the queue", () => {
   const plan = computeRefillPlan(base({
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(9) } }, trophy: {} },

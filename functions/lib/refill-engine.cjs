@@ -109,12 +109,17 @@ function computeRefillPlan(snapshot) {
   // request a shop just placed — engine-created orders carry autoRefill:true and
   // are already represented by their open lock, so they're excluded here.
   const inbound = new Map();
+  // v9: units at a SOURCE already promised to open requests — a second
+  // destination must never get a card for the same physical unit.
+  const sourceReserved = new Map();
   const bump = (map, key, q) => map.set(key, (map.get(key) || 0) + q);
   for (const [dest, byPid] of Object.entries(openIndex)) {
     for (const [pid, bySize] of Object.entries(byPid || {})) {
       for (const [sizeKey, entry] of Object.entries(bySize || {})) {
         if (!entry) continue;
         bump(inbound, `${dest}|${pid}|${sizeKey}`, num(entry.qty) || 1);
+        const s = entry.source || routes[dest];
+        if (s) bump(sourceReserved, `${s}|${pid}|${sizeKey}`, num(entry.qty) || 1);
       }
     }
   }
@@ -175,8 +180,14 @@ function computeRefillPlan(snapshot) {
         // it) leaves the working queue — staff must never scroll past work
         // they can't do. Self-withdrawal, so NO cooldown: the moment the
         // source restocks, the deficit re-proposes automatically (cascade).
+        // IN-FLIGHT GUARD: a fulfil attempt that has locked its split
+        // (clothingPlanGen) or already partially sent (clothingRefillGen > 0)
+        // must never have its card deleted under the picker's hands — the
+        // warehouse finishes what it started; the scan only tidies untouched
+        // requests.
+        const inFlight = orderIsOurs && (order.clothingPlanGen != null || (order.clothingRefillGen || 0) > 0);
         const sourceLoc = entry.source || routes[dest];
-        const sourceEmpty = unresolvedOurs && !needGone && !unfillable &&
+        const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
         if (needGone || unfillable || sourceEmpty) {
           const why = needGone ? "no_longer_needed" : unfillable ? "unfillable" : "awaiting_upstream";
@@ -413,7 +424,11 @@ function computeRefillPlan(snapshot) {
         // cannot complete. qty is capped to what the source actually has —
         // every card is fully pickable as written; the remainder re-proposes
         // after the upstream chain tops the source up.
-        const srcAvail = avail(cellQty(stock, src, pid, size));
+        // Free = on-hand at the source MINUS units already promised to open
+        // requests (any destination) MINUS units allocated to intents earlier
+        // in THIS scan — two stores can never be sent after one physical unit.
+        const srcKey = `${src}|${pid}|${sizeKey}`;
+        const srcAvail = avail(cellQty(stock, src, pid, size)) - (sourceReserved.get(srcKey) || 0);
         if (srcAvail <= 0) {
           const upstreamOfSrc = routes[src];   // e.g. central for hub2-sourced legs
           const upstreamAvail = upstreamOfSrc ? avail(cellQty(stock, upstreamOfSrc, pid, size)) : 0;
@@ -429,10 +444,11 @@ function computeRefillPlan(snapshot) {
           continue;
         }
 
+        const qty = Math.min(deficit, srcAvail, maxUnits);
+        bump(sourceReserved, srcKey, qty);   // claim the units within this scan
         intents.push({
           dest, source: src, productId: pid, size, sizeKey,
-          qty: Math.min(deficit, srcAvail, maxUnits),
-          priority: have < t.minQty ? "high" : "normal", mode,
+          qty, priority: have < t.minQty ? "high" : "normal", mode,
         });
       }
     }
