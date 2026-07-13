@@ -319,7 +319,7 @@ export default function HealthView({ products = [], onExit }) {
         );
       case "excess":
         return (
-          <DetailShell title="Excess Rebalance" sub="Hub 2 + shops above target — send back to Hub 2 or Central" count={count("excess")} onBack={back}>
+          <DetailShell title="Excess Rebalance" sub="Above target — one tap auto-splits: network needs → Hub 2, true surplus → Central" count={count("excess")} onBack={back}>
             <MoveExcess products={products} actorRole={actorRole} />
           </DetailShell>
         );

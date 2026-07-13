@@ -16,7 +16,7 @@
 import React, { useMemo, useState } from "react";
 import { ref, get } from "firebase/database";
 import { database } from "../../firebase";
-import { useStockCells, useStockTargets } from "./useStock";
+import { useStockCells, useStockTargets, useRefillRequests, useEngineConfig } from "./useStock";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
@@ -35,6 +35,13 @@ const isClothing = (p) =>
 export default function MoveExcess({ products = [], actorRole }) {
   const allStock = useStockCells();          // { loc: { pid: { rawSize: cell } } }
   const allTargets = useStockTargets();      // { loc: { pid: { encodedSize: {target} } } }
+  // Open engine requests already bringing stock toward a deficit — WITHOUT
+  // netting these, a store card would route excess to a Hub 2 need that a
+  // Central fulfilment is about to cover (over-delivery → ping-pong hop back).
+  const openRequests = useRefillRequests("open");
+  const engineConfig = useEngineConfig();
+  const routesCfg = engineConfig?.routes || { "marathon-pe": "hub2", trophy: "hub2", hub2: "central" };
+  const sources = Object.keys(routesCfg).length ? Object.keys(routesCfg) : SOURCES;
   const [edits, setEdits] = useState({});    // `${loc}|${pid}|${size}` → qty
   const [busy, setBusy] = useState(false);   // card key being transferred | false
   const [lastResult, setLastResult] = useState(null);
@@ -49,12 +56,19 @@ export default function MoveExcess({ products = [], actorRole }) {
     // "Cortez fix" netting; client-side we approximate without inbound data,
     // which only errs toward holding MORE back — the safe direction).
     const deficitBySize = new Map();
-    for (const loc of SOURCES) {
+    // Inbound already on its way per (dest,pid,size) — open engine requests.
+    const inbound = new Map();
+    for (const r of openRequests || []) {
+      if (!r?.productId || !r.requestingLocation || r.shadow) continue;
+      const k = `${r.requestingLocation}|${r.productId}|${encodeSizeKey(r.size)}`;
+      inbound.set(k, (inbound.get(k) || 0) + (Number(r.qty) || 1));
+    }
+    for (const loc of sources) {
       for (const [pid, bySize] of Object.entries(allTargets?.[loc] || {})) {
         for (const [sizeKey, t] of Object.entries(bySize || {})) {
           if (!t || typeof t.target !== "number") continue;
           const have = Math.max(Number(allStock?.[loc]?.[pid]?.[decodeSizeKey ? decodeSizeKey(sizeKey) : sizeKey]?.qty) || 0, 0);
-          const deficit = t.target - have;
+          const deficit = t.target - have - (inbound.get(`${loc}|${pid}|${sizeKey}`) || 0);
           if (deficit > 0) {
             const k = `${pid}|${sizeKey}`;
             deficitBySize.set(k, (deficitBySize.get(k) || 0) + deficit);
@@ -62,7 +76,7 @@ export default function MoveExcess({ products = [], actorRole }) {
         }
       }
     }
-    for (const loc of SOURCES) {
+    for (const loc of sources) {
       const minEx = loc === "hub2" ? 1 : STORE_EXCESS_MIN;
       for (const [pid, bySize] of Object.entries(allStock?.[loc] || {})) {
         const p = byId.get(pid);
@@ -135,10 +149,22 @@ export default function MoveExcess({ products = [], actorRole }) {
         if (typeof live === "number") total = Math.max(0, Math.min(total, live - s.target));
       } catch { /* offline read — proceed with entered qty */ }
       if (total <= 0) continue;
-      // Two legs, deficit-first (hub2 cards have toHub 0 → single central leg).
+      // DESTINATION-SIDE tap check (review 2026-07-13): Hub 2 may have been
+      // filled meanwhile (a Central fulfilment, another operator). Cap the
+      // hub leg by its LIVE remaining need; anything above goes to Central
+      // instead — never dumped on a full buffer.
+      const hubDest = routesCfg[c.loc] || "hub2";
+      let hubLeg = Math.min(total, s.toHub || 0);
+      if (hubLeg > 0) {
+        try {
+          const hLive = (await get(ref(database, `stock/${hubDest}/${c.pid}/${encodeSizeKey(s.size)}/qty`))).val();
+          const hTarget = Number(allTargets?.[hubDest]?.[c.pid]?.[encodeSizeKey(s.size)]?.target);
+          if (typeof hLive === "number" && Number.isFinite(hTarget)) hubLeg = Math.max(0, Math.min(hubLeg, hTarget - Math.max(hLive, 0)));
+        } catch { /* offline read — keep planned split */ }
+      }
       const legs = [
-        { dest: "hub2", qty: Math.min(total, s.toHub || 0) },
-        { dest: "central", qty: total - Math.min(total, s.toHub || 0) },
+        { dest: hubDest, qty: hubLeg },
+        { dest: "central", qty: total - hubLeg },
       ].filter((l) => l.qty > 0 && l.dest !== c.loc);
       for (const leg of legs) {
         let res;
@@ -156,6 +182,13 @@ export default function MoveExcess({ products = [], actorRole }) {
     }
     setMovedTotal((t) => t + moved);
     setLastResult({ name: c.name, dest: [...destsHit].join(" + ") || "—", moved, failed });
+    // Clear this card's edits: quantities must recompute from the moved-down
+    // live stock, never linger from the pre-transfer render.
+    setEdits((prev) => {
+      const next = { ...prev };
+      for (const k of Object.keys(next)) if (k.startsWith(`${c.key}|`)) delete next[k];
+      return next;
+    });
     setBusy(false);
   };
 
