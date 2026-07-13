@@ -1,133 +1,183 @@
-# Demand Lifecycle — the complete state map
+# Refill Engine — Demand Lifecycle (Production Specification)
 
-Every possible state a unit of demand can be in, derived from the shipped
-engine (`functions/lib/refill-engine.cjs`, v9 + 2026-07-13 hardening). One
-guarantee governs everything below: **demand can wait, but it can never
-vanish** — every state is visible somewhere, and every wait has a defined,
-automatic exit.
+> Owner-authored specification, 2026-07-14. This is the canonical description
+> of the engine's behavior — for warehouse training, operations questions
+> ("why is this sitting in Waiting for Supplier?"), and future debugging.
+> Engine-level precision notes are in the appendix.
 
-The engine re-derives ALL of this from scratch every 15 minutes (stateless):
-`demand = target − on-hand − inbound` per (location, product, size).
+## Core Principle
+
+**Demand can wait, but it can never disappear.**
+
+Every demand state is visible somewhere in the system, and every waiting state
+has a defined automatic exit.
+
+The refill engine is stateless. Every 15 minutes it recomputes demand from
+current inventory, targets, reservations, movements, and supply-chain state.
+
+## Path A — Normal Refill
+
+```
+Demand detected
+  ↓ Source has available stock
+Request created (quantity = exact deficit, limited by available
+                 source stock and reservations)
+  ↓ Warehouse Queue
+  ↓ Warehouse fulfils
+Request closes
+```
+
+**Continuous reconciliation while open** — an open request automatically
+updates itself if reality changes:
+
+- Manual transfer satisfies demand → request withdraws.
+- Inventory changes → request auto-resizes.
+- Source sells out → request withdraws; demand parks (Waiting for
+  Supplier / Awaiting Previous Transfer) and re-creates on restock.
+- Request becomes stale → automatically reconciled.
+- Stuck for excessive time → flagged for investigation.
+
+## Path B — Cascading Supply Chain
+
+```
+Store needs stock
+  ↓ Hub 2 empty
+  ↓ Central has stock
+Awaiting Previous Transfer
+  ↓ Central → Hub 2 request
+  ↓ Hub 2 receives stock
+Store request automatically appears
+  ↓ Warehouse fulfils
+Closed
+```
+
+**No downstream request is ever created before its upstream transfer exists.**
+
+## Path C — Supplier Chain Empty
+
+```
+Demand detected
+  ↓ No stock anywhere upstream
+Waiting for Supplier
+  ↓ Supplier delivers → Central receives
+Cascade resumes automatically
+  ↓ Warehouse Queue
+Closed
+```
+
+If stock exists nowhere in the network, the size also appears in the
+**Reorder List**.
+
+## Path D — Rejection Memory
+
+```
+Warehouse rejects
+  ↓
+Waiting for Stock
+  ↓ Stock arrives
+Request automatically reopens (within one scan)
+```
+
+Rules:
+
+- Single rejection → 24-hour cooldown.
+- Double rejection (both supply levels) → Confirmed Out (14-day cooldown).
+- Any genuine stock arrival immediately removes the cooldown.
+
+**Warehouse decisions are never forgotten, but they never permanently block
+demand.**
+
+## Path E — Engine Pacing
+
+```
+Demand calculated
+  ↓ Deferred by circuit breaker
+Automatically proposed during a later scan
+  ↓ Warehouse Queue
+```
+
+Demand is delayed, never lost.
+
+## Pre-Demand States
+
+Demand cannot be calculated until the engine knows the intended stock level.
+Untargeted inventory therefore appears in the **Decision Queue**:
+
+- Brand-new supplier product.
+- New size introduced to an existing product (including sizes arriving at
+  Central — surfaced at the Hub 2 buffer).
+- Existing product awaiting migration.
+- Assortment decision.
+- Explicit exclusion.
+- Deferred decision (always resurfaces — by timer or by stock movement).
+
+Once targets exist, the engine manages that inventory forever.
+
+## Operational Guarantees
+
+Every demand must always exist in exactly one visible state:
+
+Warehouse Queue · Source → Hub 2 Queue · Waiting for Previous Transfer ·
+Waiting for Supplier · Waiting for Stock · Decision Queue · Reorder List ·
+Closed.
+
+**There is no hidden state.**
+
+## Engine Invariants
+
+The following must always remain true:
+
+1. No duplicate requests.
+2. No duplicate reservations.
+3. No zombie requests.
+4. No oversized requests.
+5. No incorrect assortment routing.
+6. No queue/request mismatches.
+7. No source over-allocation.
+8. No request larger than the current mathematical deficit.
+9. No request larger than currently available source inventory.
+10. No request modified while actively being fulfilled.
+11. No silent demand loss.
+
+## Warehouse Philosophy
+
+The refill engine exists to **create** work — not perform it.
+
+> The engine calculates.
+> The engine recommends.
+> The warehouse validates.
+> The warehouse executes.
+
+Every recommendation is mathematically derived from live inventory, targets,
+reservations, movements, and supply-chain rules. **The warehouse always has
+the final operational decision.**
 
 ---
 
-## State 0 — Not yet demand (no target)
+## Appendix — engine-level precision notes
 
-A cell with no target computes no demand. Every such cell with stock is
-surfaced somewhere — none are silent:
+(Implementation reference: `functions/lib/refill-engine.cjs`.)
 
-| State | Where it shows | Exit |
-|---|---|---|
-| Genuinely NEW (Central only, never circulated) | Decision Queue → introduction wizard | human sets targets (+ optional initial distribution) → managed |
-| Untargeted stocked size under a managed product (numeric sizes, or a NEW size arriving after introduction — incl. new sizes landing at Central, surfaced on the Hub 2 card) | Decision Queue → "Set targets" | human sets targets → managed |
-| Assortment leftover (targets exist at another location) | Decision Queue → include / transfer / exclude | human decision |
-| Unintroduced (zero targets anywhere, circulating) | Health → Introduce Existing (one-tap migration) | standard run applied → managed |
-| Postponed (snooze until date · until stock moves · keep) | suppressed, recorded in decisions | timer lapse / any stock movement resurfaces it |
-| Excluded (explicit target 0) | never demand; all stock counts as excess | human raises the target |
-
-## Path A — the happy path
-
-```
-Demand detected (deficit > 0)
-   ↓  source has stock (net of ALL reservations)
-REQUEST CREATED  — qty = min(deficit, free source units, max per request)
-   ↓  store legs → R### card in Warehouse → Clothing
-   ↓  hub legs   → request in Source → Hub 2 Refill
-OPEN (reserved: no duplicate can ever be created for this cell)
-   ↓  warehouse transfers (full or partial; counted or uncounted-override)
-FULFILLED → CLOSED   (partial remainder = fresh demand next scan)
-```
-
-While OPEN, a request is continuously reconciled every scan:
-
-| Event while open | Result |
-|---|---|
-| Stock arrives by another path (manual transfer, return, adjustment) and the need is gone | **self-reversal**: withdrawn, card deleted, no cooldown |
-| Source sells out | withdrawn (`awaiting_upstream`), no cooldown → parks passively; re-creates the moment the source restocks |
-| Network stock hits zero | withdrawn (`unfillable`) → supplier reorder list |
-| Targets/stock/reservations change | **auto-resized** to the exact current need (in-flight picks are never touched) |
-| Warehouse rejects it | → Path D |
-| Open > 48h untouched | flagged **Stuck Refills** in Health (visibility; stays open) |
-| Crashed scan left a half-created lock | self-heals within the hour; demand re-proposes the same scan |
-
-## Path B — source empty, chain flowing
-
-```
-Demand detected
-   ↓  source empty, BUT its own upstream has stock
-   ↓  (and the source has a buffer target, and its leg isn't rejection-parked)
-AWAITING PREVIOUS TRANSFER   (Health card — visibility, not work)
-   ↓  upstream leg created THIS scan (the cascade: Central → Hub 2 first)
-   ↓  source physically receives
-QUEUE CREATED automatically next scan → Path A
-```
-No downstream request ever exists before its upstream leg is fulfilled, and
-nobody re-creates anything by hand.
-
-## Path C — chain empty
-
-```
-Demand detected
-   ↓  source empty AND nothing upstream of it
-WAITING FOR SUPPLIER   (Health card; three labelled flavors:)
-   • upstream chain empty → reorder or return stranded stock via Move Excess
-   • upstream leg blocked (recently rejected / confirmed-out)
-   • source has NO buffer target for this size → config gap, set one
-   ↓  supplier stock arrives at Central (or excess returns)
-Path B → Path A automatically
-```
-Zero stock anywhere in the whole network is the extreme case: it goes to the
-**Missing Sizes reorder list** — pure purchasing signal, never a queue card —
-and returns to the flow the moment inventory appears anywhere.
-
-## Path D — human rejection (the "no" memory)
-
-```
-OPEN request → warehouse rejects ("not physically here")
-   ↓
-WAITING FOR STOCK   (24h cooldown; visible in Health)
-   ↓  EITHER stock physically ARRIVES at the location that said no
-   ↓         (any inbound ledger movement with a positive resulting balance —
-   ↓          bookkeeping fixes don't count) → reopens within 15 minutes
-   ↓  OR the 24h cooldown lapses (and stock exists) → one re-ask
-QUEUE REOPENS automatically
-```
-Escalation: rejected at BOTH supply levels within 14 days = **CONFIRMED OUT** —
-the shelves beat the database; no requests anywhere; sits on the reorder list.
-A fresh arrival at either denying level un-confirms it immediately.
-
-## Path E — deferred by pacing (never lost)
-
-```
-Demand detected → request computed → circuit breaker / scan time budget hit
-   ↓
-DEFERRED (counted in the run record)
-   ↓  next scan, 15 minutes later
-QUEUE CREATED
-```
-
-## The inverse flow — excess (demand's mirror)
-
-Above-target stock follows the same philosophy in reverse: engine recommends
-(Move Excess: deficit-covering units → Hub 2, true surplus → Central,
-destination-first batching), warehouse executes manually. Store surplus that
-the network needs is never routed to Central (Cortez rule); Hub 2's held
-surplus flows onward automatically via normal refill legs.
-
-## Terminal states
-
-Every request ends in exactly one of: **fulfilled** (full/partial, ledger-
-linked), or **cancelled** with a recorded reason (`rejected by human`,
-`no_longer_needed`, `unfillable`, `awaiting_upstream`) and `resolvedAt`.
-History is never deleted — the request record plus the movements ledger
-reconstruct every decision after the fact.
-
-## The invariants (what "can't happen")
-
-- No duplicate request per (location, product, size) — ever (lock-enforced).
-- No request the source cannot physically fill at creation time.
-- Combined asks never exceed the source's on-hand (reservation-threaded).
-- No card deleted or resized under a picker's hands (in-flight guards +
-  conditional transactions).
-- No demand silently dropped: every non-queue state above has a Health surface
-  and an automatic exit.
+- **Arrival lift (Path D):** an "arrival" is any inbound ledger movement at
+  the location that rejected, timestamped after the rejection, whose
+  resulting balance is positive — bookkeeping corrections (negative-to-zero
+  fixes) and arrivals swallowed by oversell holes do not count.
+- **Waiting for Supplier has three labelled flavors:** upstream chain empty
+  (reorder / return excess); upstream leg blocked (recently rejected or
+  confirmed-out); source has no buffer target for the size (config gap — set
+  one in the Decision Queue).
+- **Reservation threading:** free source units = on-hand − all open-request
+  reservations − same-scan allocations, evaluated in deterministic order, so
+  sibling requests and resizes can never jointly over-promise a source.
+- **In-flight protection:** a card whose fulfilment has locked its split, or
+  whose order has a ledger movement linked to it, is never withdrawn or
+  resized; the scan's writes are conditional transactions that re-read live
+  state (a stale plan can never clobber a concurrent fulfilment).
+- **Self-healing:** pending locks orphaned by a crashed scan are removed
+  after one hour and the demand re-proposes the same scan; deferred work
+  (circuit breaker / apply time budget) re-proposes next scan; everything is
+  re-derivable because the engine never trusts its own prior output.
+- **Excess is demand's mirror:** Move Excess recommends a deficit-first split
+  (network needs → Hub 2, never Central — the Cortez rule; true surplus →
+  Central), destination-first batching, warehouse executes manually. Hub 2's
+  held surplus flows onward automatically via normal refill legs.
