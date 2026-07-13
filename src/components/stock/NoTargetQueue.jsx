@@ -37,7 +37,7 @@ import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
-import { computeUnintroduced, stockedStandardSizes, destsFrom } from "./introduceExisting";
+import { computeUnintroduced, stockedStandardSizes, destsFrom } from "./introduceExistingCore";
 
 const ALL_LOCS = ["marathon-pe", "trophy", "hub2", "central"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };

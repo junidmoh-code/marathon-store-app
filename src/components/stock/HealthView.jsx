@@ -25,7 +25,7 @@ import {
   useStockTargets,
 } from "./useStock";
 import IntroduceExisting from "./IntroduceExisting";
-import { computeUnintroduced, destsFrom } from "./introduceExisting";
+import { computeUnintroduced, destsFrom } from "./introduceExistingCore";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { decodeSizeKey, encodeSizeKey } from "../../utils/sizeKey";
