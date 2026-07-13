@@ -609,8 +609,7 @@ function computeRefillPlan(snapshot) {
         if (loc === "hub2") {
           const heldForRefills = Math.min(Math.max(raw, 0), deficitBySize.get(dKey) || 0);
           const ex = raw - heldForRefills;
-          const minEx = t.target === 0 ? 1 : 1;
-          if (ex >= minEx) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex, ...(heldForRefills > 0 ? { heldForRefills } : {}) });
+          if (ex >= 1) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex, ...(heldForRefills > 0 ? { heldForRefills } : {}) });
         } else {
           const minEx = t.target === 0 ? 1 : storeExcessMin;
           if (raw >= minEx) {

@@ -114,7 +114,9 @@ export default function MoveExcess({ products = [], actorRole }) {
 
   const qtyOf = (c, s) => {
     const v = edits[`${c.key}|${s.size}`];
-    return Math.max(0, Math.min(v == null ? s.excess : v, s.have));
+    // Never above the true overage — a stale edit from a previous render can
+    // exceed the recomputed max (the tap-time clamp is the hard backstop).
+    return Math.max(0, Math.min(v == null ? s.excess : v, Math.max(s.have - s.target, 0)));
   };
 
   const transfer = async (c) => {
