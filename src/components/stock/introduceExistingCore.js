@@ -22,12 +22,15 @@ import { ref, update, get } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { encodeSizeKey } from "../../utils/sizeKey";
 
-// Approved standard run — owner policy 2026-07-13 (REDUCED from the original
-// S2 M3 L3 XL2 XXL2 XXXL1: both stores were full before half the range was
-// stocked). Applies to marathon-pe, trophy AND hub2. /config/refillEngine
-// .defaultRunByStore must carry the SAME values — retarget script:
-// scripts/targets/retarget-standard-policy.mjs.
+// Approved standard runs — owner policy 2026-07-13 (corrected same day):
+//   STORES (marathon-pe, trophy) — REDUCED run: both stores were full before
+//   half the range was stocked, so shop targets dropped.
+//   HUB 2 — keeps the ORIGINAL buffer quantities: it supplies BOTH shops, so
+//   its buffer must stay deep enough to cover simultaneous store deficits.
+// /config/refillEngine.defaultRunByStore must carry the SAME values —
+// retarget script: scripts/targets/retarget-standard-policy.mjs.
 export const STANDARD_RUN = { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 };
+export const HUB2_RUN = { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 };
 export const MIGRATION_DESTS = ["marathon-pe", "trophy", "hub2"];
 // Managed destinations from live engine config when available (topology is
 // config, never code); the constant is only the pre-load fallback.
@@ -41,9 +44,12 @@ const validRun = (m) =>
   m && Object.keys(STANDARD_RUN).every((k) => Number.isInteger(m[k]) && m[k] >= 0) &&
   Object.values(m).some((v) => v > 0);
 // The run the migration will actually apply for a location — exported so the
-// UI previews exactly what gets written (validated config or the fallback).
+// UI previews exactly what gets written (validated config or the per-location
+// fallback: hub2 keeps its deeper buffer, stores use the reduced run).
 export const effectiveRun = (config, loc) =>
-  (validRun(config?.defaultRunByStore?.[loc]) ? config.defaultRunByStore[loc] : STANDARD_RUN);
+  (validRun(config?.defaultRunByStore?.[loc])
+    ? config.defaultRunByStore[loc]
+    : (loc === "hub2" ? HUB2_RUN : STANDARD_RUN));
 
 const isClothing = (p) =>
   p?.productType === "clothing" ||

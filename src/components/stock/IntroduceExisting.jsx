@@ -40,9 +40,10 @@ export default function IntroduceExisting({ products = [] }) {
   const migratable = items.filter((i) => i.migratable);
   const numeric = items.filter((i) => !i.migratable);
   const cellEstimate = migratable.reduce((t, i) => t + i.standardSizes.length * dests.length, 0);
-  // Preview EXACTLY the run the migration will apply (validated config or the
-  // approved fallback) — never a raw config value the writer would reject.
+  // Preview EXACTLY the runs the migration will apply (validated config or the
+  // per-location fallback) — never a raw config value the writer would reject.
   const run = effectiveRun(config, "marathon-pe");
+  const hubRun = effectiveRun(config, "hub2");
 
   const apply = async () => {
     if (busy || !isAdmin || !migratable.length) return;
@@ -101,8 +102,9 @@ export default function IntroduceExisting({ products = [] }) {
         </div>
         <div style={{ color: GRAY, fontSize: 12, marginTop: 6, lineHeight: 1.65 }}>
           These already circulate at {dests.map((l) => LOC_LABEL[l] || l).join(" / ")} but were never
-          given targets — they are <b>not new products</b> and this is <b>not a decision</b>: your approved standard
-          run ({Object.entries(run).map(([s, q]) => `${s}${q}`).join(" ")}, per-location config where set) is applied
+          given targets — they are <b>not new products</b> and this is <b>not a decision</b>: your approved
+          policy — shops {Object.entries(run).map(([s, q]) => `${s}${q}`).join(" ")} · Hub 2
+          buffer {Object.entries(hubRun).map(([s, q]) => `${s}${q}`).join(" ")} — is applied
           to each product's stocked sizes at all {dests.length} locations ({cellEstimate.toLocaleString()} target cells).
           From the next scan the engine creates the refill and distribution work — paced by the circuit breaker at{" "}
           {config?.maxIntentsPerRun ?? 200} requests per 15-minute scan — and the warehouse validates it; nothing

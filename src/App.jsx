@@ -1969,7 +1969,7 @@ function CustomersView({ onExit }) {
       );
     };
     return (
-      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "240px minmax(0,1fr)", overflow: "hidden" }}>
+      <div style={{ height: "100vh", maxHeight: "100dvh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "240px minmax(0,1fr)", overflow: "hidden" }}>
         <aside style={{ background: "rgba(255,255,255,.015)", borderRight: "1px solid rgba(255,255,255,.08)", padding: "22px 13px 16px", display: "flex", flexDirection: "column", gap: 3, overflow: "auto" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 9px 10px" }}>
             <span style={{ fontSize: 19, fontWeight: 800, fontStyle: "italic", letterSpacing: "-0.6px" }}>marathon</span>
@@ -4841,7 +4841,7 @@ function AdminView({ products, orders, onExit }) {
       ? "Sort uncategorised products into the browse tree."
       : "Add products, set sizes & pricing, and manage the catalogue.";
     return (
-      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+      <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
           <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
@@ -5494,7 +5494,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   // ── DESKTOP WORKSPACE (>=1024px) — rail with product summary + main pane. ──
   if (isWide) {
     return (
-      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"250px minmax(0,1fr)", overflow:"hidden" }}>
+      <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"250px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 15px 18px", display:"flex", flexDirection:"column", gap:12, overflow:"auto" }}>
           <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 3px" }}>
@@ -8720,7 +8720,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       );
     };
     return (
-      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+      <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {printToast && (
           <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
                         background: printToast.kind === "ok" ? "rgba(6,20,12,.97)" : "rgba(24,8,8,.97)",
@@ -9530,7 +9530,7 @@ function CustomerView({ orders, onExit }) {
       </div>
     );
     return (
-      <div style={{ height: "100vh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "340px minmax(0,1fr)", overflow: "hidden" }}>
+      <div style={{ height: "100vh", maxHeight: "100dvh", background: "#000", color: "#f3f6ff", fontFamily: FONT, display: "grid", gridTemplateColumns: "340px minmax(0,1fr)", overflow: "hidden" }}>
         <style>{`@keyframes otPulse{0%,100%{box-shadow:0 0 0 0 rgba(74,127,255,.5)}50%{box-shadow:0 0 0 6px rgba(74,127,255,0)}}
           .ot-press{transition:transform .1s ease, filter .12s ease}.ot-press:active{transform:scale(.98)}.ot-press:hover{filter:brightness(1.08)}
           .ot-row{transition:background .12s ease, border-color .12s ease}.ot-row:hover{background:rgba(255,255,255,.05)}`}</style>
@@ -12034,7 +12034,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       );
     };
     return (
-      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+      <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
           <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
@@ -12370,7 +12370,7 @@ function ReturnsView({ orders, products = [], onExit }) {
   // ── DESKTOP WORKSPACE (>=1024px). Mobile keeps the single column below. ──
   if (isWide) {
     return (
-      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+      <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {/* RAIL */}
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
           <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 10px" }}>
@@ -14310,7 +14310,7 @@ function InsightsView({ onExit }) {
   //    over the active report. Mobile keeps the tab strip below. ──
   if (isDesktop) {
     return (
-      <div style={{ height:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
+      <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         <aside style={{ background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.08)", padding:"22px 13px 16px", display:"flex", flexDirection:"column", gap:3, overflow:"auto" }}>
           <div style={{ display:"flex", alignItems:"baseline", gap:8, padding:"0 9px 6px" }}>
             <span style={{ fontSize:19, fontWeight:800, fontStyle:"italic", letterSpacing:-.6 }}>marathon</span>
