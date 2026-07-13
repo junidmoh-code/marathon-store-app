@@ -158,8 +158,9 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
   // ("_migrations" is never a real location key, so the engine and Decision
   // Queue, which only read configured destination keys, never see it).
   if (done > 0) {
-    const run = runFor(dests[0]);
-    const policyVersion = Object.keys(STANDARD_RUN).map((s) => `${s}${Number(run[s]) ?? 0}`).join("-");
+    // Both runs in the label — shops and hub2 differ by design (split policy).
+    const label = (m) => Object.keys(STANDARD_RUN).map((s) => `${s}${Number(m[s]) ?? 0}`).join("-");
+    const policyVersion = `shops:${label(runFor("marathon-pe"))}|hub2:${label(runFor("hub2"))}`;
     await update(ref(database), {
       [`stock_targets_decisions/_migrations/${batchId.replace(/[.#$/\[\]]/g, "_")}`]: {
         kind: "introduce_existing_complete", completedAt: new Date().toISOString(),
