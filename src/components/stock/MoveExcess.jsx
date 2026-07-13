@@ -21,6 +21,7 @@ import { applyMovement } from "./applyMovement";
 import { encodeSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
+import { openPickList } from "../../print/pickList";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 const SOURCES = ["hub2", "marathon-pe", "trophy"];
@@ -154,6 +155,41 @@ export default function MoveExcess({ products = [], actorRole }) {
   const [destView, setDestView] = useState("hub");   // "hub" | "central"
   const hubSum = (c) => c.sizes.reduce((t, s) => t + (s.toHub || 0), 0);
   const centralSum = (c) => c.sizes.reduce((t, s) => t + (s.toCentral || 0), 0);
+  // ── PDF pick lists (owner spec 2026-07-14) ─────────────────────────────────
+  // One printable job sheet per transfer route, so supervisors can hand each
+  // to a different staff member and the work runs in parallel on paper.
+  // Printing NEVER moves stock — staff confirm here afterwards, with all the
+  // usual live validation.
+  const routes = useMemo(() => {
+    const defs = [];
+    for (const from of sources.filter((l) => l !== "hub2")) {
+      const hubD = routesCfg[from] || "hub2";
+      defs.push({ from, to: hubD, pick: (s) => s.toHub || 0 });
+      defs.push({ from, to: "central", pick: (s) => s.toCentral || 0 });
+    }
+    defs.push({ from: "hub2", to: "central", pick: (s) => s.toCentral || 0 });
+    return defs.map((d) => {
+      const groups = cards
+        .filter((c) => c.loc === d.from)
+        .map((c) => ({
+          name: c.name, photoUrl: c.photo,
+          lines: c.sizes.filter((s) => d.pick(s) > 0).map((s) => ({ label: s.size, qty: d.pick(s) })),
+        }))
+        .filter((g) => g.lines.length);
+      return { ...d, groups, units: groups.reduce((t, g) => t + g.lines.reduce((u, l) => u + l.qty, 0), 0) };
+    });
+  }, [cards, sources, routesCfg]);
+
+  const printRoute = (r) => {
+    const ok = openPickList({
+      title: "Move Excess Pick List",
+      route: `${LOC_LABEL[r.from] || r.from} → ${LOC_LABEL[r.to] || r.to}`,
+      generatedBy: actorRole || "warehouse",
+      groups: r.groups,
+    });
+    if (!ok) setLastResult({ name: "Pick list", dest: r.to, moved: 0, failed: ["popup blocked — allow popups for this site and retry"] });
+  };
+
   const destTotals = useMemo(() => ({
     hub: cards.reduce((t, c) => t + hubSum(c), 0),
     central: cards.reduce((t, c) => t + centralSum(c), 0),
@@ -272,6 +308,19 @@ export default function MoveExcess({ products = [], actorRole }) {
       </div>
 
       {/* Location sections — every excess product visible, per location */}
+      <div style={{ ...GLASS, padding: "10px 12px", marginBottom: 10 }}>
+        <div style={{ fontSize: 10.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 800, marginBottom: 8 }}>
+          Print pick lists — hand each route to a different staff member (printing moves nothing; confirm here after)
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {routes.map((r) => (
+            <button key={`${r.from}>${r.to}`} onClick={() => printRoute(r)} disabled={!r.units}
+                    style={{ ...pill(false), opacity: r.units ? 1 : 0.4 }}>
+              🖨 {LOC_LABEL[r.from] || r.from} → {LOC_LABEL[r.to] || r.to} ({r.units})
+            </button>
+          ))}
+        </div>
+      </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
         <button onClick={() => setDestView("hub")}
                 style={{ ...pill(destView === "hub"), flex: 1, padding: "12px", textAlign: "center", fontSize: 13 }}>
