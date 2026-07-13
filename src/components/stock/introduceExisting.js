@@ -18,13 +18,23 @@
 //     the hardcoded approved standard), minQty = ceil(target/2) — the same
 //     convention every existing target cell uses.
 
-import { ref, update } from "firebase/database";
+import { ref, update, get } from "firebase/database";
 import { database } from "../../firebase";
 import { encodeSizeKey } from "../../utils/sizeKey";
 
 export const STANDARD_RUN = { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 };
 export const MIGRATION_DESTS = ["marathon-pe", "trophy", "hub2"];
+// Managed destinations from live engine config when available (topology is
+// config, never code); the constant is only the pre-load fallback.
+export const destsFrom = (config) =>
+  config?.routes && Object.keys(config.routes).length ? Object.keys(config.routes) : MIGRATION_DESTS;
 const STANDARD_SIZE_RE = /^(S|M|L|XL|XXL|XXXL)$/i;
+// A configured run is authoritative only if it defines a sane positive-integer
+// quantity for every standard size — a partial or decimal map falls back to
+// the approved constant instead of silently writing junk targets.
+const validRun = (m) =>
+  m && Object.keys(STANDARD_RUN).every((k) => Number.isInteger(m[k]) && m[k] >= 0) &&
+  Object.values(m).some((v) => v > 0);
 
 const isClothing = (p) =>
   p?.productType === "clothing" ||
@@ -47,21 +57,24 @@ export function stockedStandardSizes(allStock, pid) {
 // Every zero-target circulating clothing product, one entry each:
 //   { pid, standardSizes, byLoc, units, migratable }
 // migratable=false → numeric-size product: shown in the Decision Queue instead.
-export function computeUnintroduced(allStock, allTargets, productsById) {
+export function computeUnintroduced(allStock, allTargets, productsById, dests = MIGRATION_DESTS) {
   const out = [];
   const seen = new Set();
-  for (const loc of MIGRATION_DESTS) {
+  for (const loc of dests) {
     for (const pid of Object.keys(allStock?.[loc] || {})) {
       if (seen.has(pid)) continue;
       if (!isClothing(productsById.get(pid))) continue;
-      if (MIGRATION_DESTS.some((d) => allTargets?.[d]?.[pid])) continue; // introduced somewhere
-      if (sumAt(allStock, loc, pid) <= 0) continue;
+      if (dests.some((d) => allTargets?.[d]?.[pid])) continue; // introduced somewhere
+      // Cell PRESENCE, not quantity: a sold-to-zero cell still proves the
+      // product circulated (lockstep with the engine) — it migrates too, so
+      // its proven demand gets redistributed the moment targets exist.
+      if (!Object.keys(allStock?.[loc]?.[pid] || {}).length) continue;
       seen.add(pid);
       const standardSizes = stockedStandardSizes(allStock, pid);
       out.push({
         pid, standardSizes, migratable: standardSizes.length > 0,
-        units: MIGRATION_DESTS.reduce((t, d) => t + sumAt(allStock, d, pid), 0),
-        byLoc: Object.fromEntries(["central", ...MIGRATION_DESTS].map((l) => [l, sumAt(allStock, l, pid)])),
+        units: dests.reduce((t, d) => t + sumAt(allStock, d, pid), 0),
+        byLoc: Object.fromEntries(["central", ...dests].map((l) => [l, sumAt(allStock, l, pid)])),
       });
     }
   }
@@ -74,8 +87,21 @@ export function computeUnintroduced(allStock, allTargets, productsById) {
 export async function migrateToEngine(items, { config, approvedBy, onProgress } = {}) {
   const now = new Date().toISOString();
   const batchId = `introduce-existing-${now.slice(0, 10)}`;
-  const runFor = (loc) => config?.defaultRunByStore?.[loc] || STANDARD_RUN;
-  const migratable = items.filter((i) => i.migratable);
+  const dests = destsFrom(config);
+  const runFor = (loc) => (validRun(config?.defaultRunByStore?.[loc]) ? config.defaultRunByStore[loc] : STANDARD_RUN);
+  // FRESH conflict check (review 2026-07-13): the on-screen list may be stale —
+  // another admin, a wizard introduction, or an earlier partial run may have
+  // written targets since. Re-read /stock_targets once and skip any product
+  // that now has targets ANYWHERE, so the migration never overwrites a
+  // human-set target with the standard run.
+  let liveTargets = {};
+  try {
+    liveTargets = (await get(ref(database, "stock_targets"))).val() || {};
+  } catch (e) {
+    return { done: 0, total: 0, cells: 0, batchId, failed: [`could not re-check current targets — nothing written (${String(e?.message || e)})`] };
+  }
+  const migratable = items.filter((i) => i.migratable && !dests.some((d) => liveTargets?.[d]?.[i.pid]));
+  const skippedTaken = items.filter((i) => i.migratable).length - migratable.length;
   let done = 0, cells = 0;
   const failed = [];
   const CHUNK = 100;
@@ -83,13 +109,16 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
     const chunk = migratable.slice(i, i + CHUNK);
     const upd = {};
     for (const item of chunk) {
-      for (const loc of MIGRATION_DESTS) {
+      for (const loc of dests) {
         const run = runFor(loc);
         for (const size of item.standardSizes) {
           const t = Number(run[String(size).toUpperCase()]) || 0;
-          if (t <= 0) continue;
+          // A deliberate 0 in the configured run is a real business state
+          // ("we don't stock XXXL here") — write the explicit target:0 the
+          // Exclude flow writes, never silently omit the cell (three target
+          // states, never conflated: >0 maintain, 0 excluded, absent unmanaged).
           upd[`stock_targets/${loc}/${item.pid}/${encodeSizeKey(size)}`] = {
-            target: t, minQty: Math.ceil(t / 2),
+            target: t, minQty: t > 0 ? Math.ceil(t / 2) : 0,
             source: "standard_policy_migration", batchId, approvedBy: approvedBy || "introduce-existing", approvedAt: now,
           };
           cells++;
@@ -104,5 +133,5 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
     }
     onProgress?.({ done, total: migratable.length });
   }
-  return { done, total: migratable.length, cells, failed, batchId };
+  return { done, total: migratable.length, cells, failed, batchId, skippedTaken };
 }

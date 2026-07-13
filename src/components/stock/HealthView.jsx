@@ -25,7 +25,7 @@ import {
   useStockTargets,
 } from "./useStock";
 import IntroduceExisting from "./IntroduceExisting";
-import { computeUnintroduced } from "./introduceExisting";
+import { computeUnintroduced, destsFrom } from "./introduceExisting";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { decodeSizeKey, encodeSizeKey } from "../../utils/sizeKey";
@@ -205,13 +205,17 @@ export default function HealthView({ products = [], onExit }) {
   const session = useReceivingSession();
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const allStock = useStockCells();   // live — drives Negative Inventory truthfully
-  const allTargets = useStockTargets() || {};
+  const allTargetsRaw = useStockTargets();   // null until the listener answers
+  const allTargets = allTargetsRaw || {};
   // Live count of existing products awaiting the one-tap engine migration
   // (v8) — live like Negative Inventory, so the card clears the moment the
-  // migration lands instead of lagging a scan cycle.
-  const migratableCount = useMemo(
-    () => computeUnintroduced(allStock || {}, allTargets, byId).filter((i) => i.migratable).length,
-    [allStock, allTargets, byId],
+  // migration lands instead of lagging a scan cycle. Until stock AND targets
+  // have both loaded, fall back to the scan snapshot count (never classify
+  // against half-loaded data — with targets null EVERYTHING looks unintroduced).
+  const stockReady = allTargetsRaw != null && allStock && Object.keys(allStock).length > 0;
+  const migratableLive = useMemo(
+    () => (stockReady ? computeUnintroduced(allStock, allTargets, byId, destsFrom(config)).filter((i) => i.migratable).length : null),
+    [stockReady, allStock, allTargets, byId, config],
   );
 
   // Live negative clothing cells across the whole network (never the snapshot:
@@ -360,7 +364,7 @@ export default function HealthView({ products = [], onExit }) {
       // one tap; the engine takes over on the next scan.
       case "introduceExisting":
         return (
-          <DetailShell title="Introduce Existing Products" sub="Already circulating, never onboarded — one tap applies your approved standard targets" count={migratableCount} onBack={back}>
+          <DetailShell title="Introduce Existing Products" sub="Already circulating, never onboarded — one tap applies your approved standard targets" count={migratableLive ?? count("unintroduced")} onBack={back}>
             <IntroduceExisting products={products} />
           </DetailShell>
         );
@@ -495,7 +499,7 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
               <StatCard label="Decision Queue" value={count("noTarget")} tone={count("noTarget") ? BLUE_L : GREEN}
                         sub="New supplier products & real decisions only" onClick={() => setScreen("noTarget")} />
-              <StatCard label="Introduce Existing" value={migratableCount} tone={migratableCount ? AMBER : GREEN}
+              <StatCard label="Introduce Existing" value={migratableLive ?? count("unintroduced")} tone={(migratableLive ?? count("unintroduced")) ? AMBER : GREEN}
                         sub="Existing stock → engine management, one tap" onClick={() => setScreen("introduceExisting")} />
               <StatCard label="Negative Inventory"
                         value={liveNegatives == null ? count("negativeCells") : liveNegatives.length}

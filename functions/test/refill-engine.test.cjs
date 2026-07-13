@@ -511,6 +511,44 @@ test("v8 split: circulating = unintroduced (migration) · central-only = NEW · 
   assert.equal(new Set(all).size, all.length, "one card per product, no dup across NEW/migration/decision");
 });
 
+test("sold-to-zero destination cell still counts as circulated — never NEW again", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: PRODUCTS.p1, pSoldOut: { productType: "clothing", sizes: ["M"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: { central: { pSoldOut: { M: cell(6) } }, "marathon-pe": { p1: { M: cell(3) } }, hub2: { pSoldOut: { M: cell(0) } }, trophy: {} },
+  }));
+  assert.ok(!plan.exceptions.noTarget.items.some((c) => c.pid === "pSoldOut" && c.isNew), "a zero-qty cell is circulation evidence — not NEW");
+  assert.ok(plan.exceptions.unintroduced.items.some((u) => u.pid === "pSoldOut"), "sold-through product goes to migration (demand proven)");
+});
+
+test("size-scoped guard: a managed product's stocked numeric sizes surface as noStandard", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: { name: "Mixed jeans", productType: "clothing", sizes: ["M", "32"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(3), 32: cell(4) } }, hub2: {}, central: {}, trophy: {} },
+  }));
+  const card = plan.exceptions.noTarget.items.find((c) => c.pid === "p1" && c.noStandard);
+  assert.ok(card, "numeric leftover under a MANAGED pid is never silently lost");
+  assert.equal(card.units, 4);
+  assert.equal(card.loc, "marathon-pe");
+  assert.equal(plan.exceptions.noTarget.items.filter((c) => c.pid === "p1").length, 1, "the targeted M cell creates no extra decision");
+});
+
+test("orphaned pending lock (crashed scan) self-heals; the freed deficit re-asks in the same plan", () => {
+  const plan = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: { qty: 2, createdAt: iso(2), runId: "old", pending: true } } } },
+  }));
+  const c = plan.closes.find((x) => x.reason === "orphaned_pending");
+  assert.ok(c, "pending lock older than 1h is removed");
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "released inbound → re-ask in the SAME plan");
+  // A young pending lock is in-flight: untouched, still suppressing.
+  const young = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: { qty: 2, createdAt: iso(0.5), runId: "cur", pending: true } } } },
+  }));
+  assert.ok(!young.closes.some((x) => x.reason === "orphaned_pending"), "young pending lock left alone");
+  assert.equal(young.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "in-flight lock still counts as inbound");
+});
+
 test("NEW PRODUCT at Central (no targets anywhere) enters the Decision Queue", () => {
   const plan = computeRefillPlan(base({
     products: { p1: PRODUCTS.p1, pNew: { productType: "clothing", sizes: ["M", "L"] } },

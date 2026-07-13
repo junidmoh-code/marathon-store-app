@@ -204,6 +204,14 @@ async function runScan() {
       if (Object.keys(upd).length) await db.ref().update(upd);
     }
 
+    // TIME-BOXED apply (review 2026-07-13): creating intents is serial RTDB
+    // I/O; an unbounded backlog (e.g. the first scan after a bulk target
+    // migration computed 4,849 intents) would blow the 300s function timeout
+    // mid-write. The engine is stateless — anything not applied this run is
+    // simply re-proposed next scan — so stopping at a deadline loses nothing.
+    const applyDeadlineMs = nowMs + 200e3;
+    let applyDeferred = 0;
+    applyLoop:
     for (const [dest, intents] of liveByDest) {
       const isStoreLeg = UNIVERSE_BY_SHOP[dest] != null;
       // ONE R-number per destination per run (mirrors "one R### per cart"), and
@@ -214,6 +222,11 @@ async function runScan() {
       const destCreatedAt = new Date().toISOString();
       let lineIdx = 0;
       for (const intent of intents) {
+        if (Date.now() > applyDeadlineMs) {
+          applyDeferred = plan.intents.length - counts.intents - counts.shadow;
+          counts.errors.push(`apply time budget reached — ${applyDeferred} intents defer to the next scan`);
+          break applyLoop;
+        }
         const { productId: pid, sizeKey, size, qty, source } = intent;
         // Idempotency lock FIRST — create-if-absent; a concurrent/manual intent wins.
         const lockPath = `refill_engine/open/${dest}/${pid}/${sizeKey}`;
@@ -222,12 +235,12 @@ async function runScan() {
         }));
         if (!claim.committed || claim.snapshot.val()?.runId !== runId) continue;
 
-        const rrRef = db.ref("refill_requests").push();
+        const rrKey = db.ref("refill_requests").push().key;
         const rr = {
           productId: pid, size, qty, requestingLocation: dest, status: "open",
           createdFrom: { engine: true, runId, source }, createdAt: startedAt,
         };
-        let orderId = null, orderCreatedAt = null;
+        let orderId = null, orderCreatedAt = null, order = null, insight = null;
         if (isStoreLeg) {
           lineIdx += 1;
           orderId = `${refillNum}-${lineIdx}`;
@@ -235,7 +248,7 @@ async function runScan() {
           const p = products[pid] || {};
           // EXACT shape of placeRefillRequests' order node (App.jsx) + autoRefill
           // marker so the engine's inbound math can tell its own orders apart.
-          const order = {
+          order = {
             id: orderId, productId: pid, productName: p.name || "Unknown",
             productPhoto: p.photo || null, productPhotoUrl: p.photoUrl ?? null,
             size, sentSize: null, qty, customerName: "Shop Refill", customerPhone: null,
@@ -250,16 +263,26 @@ async function runScan() {
             clothingRefilledBy: null,
             autoRefill: true, autoRefillPriority: intent.priority, autoRefillRunId: runId,
           };
-          await db.ref(`orders/${orderId}`).set(order);
-          await db.ref("insights_log").push({
+          insight = {
             timestamp: orderCreatedAt, productId: pid, productName: p.name || "Unknown",
             productCategory: p.category || "", productType: "clothing", size, qty,
             customerName: "Shop Refill", customerPhone: null, orderNumber: orderId,
             action: "placed", placedAtHub: source,
-          });
+          };
         }
-        await rrRef.set(rr);
-        await db.ref(lockPath).update({ refillId: rrRef.key, orderId, orderCreatedAt, pending: null });
+        // ONE atomic multi-path update per intent (review 2026-07-13): request,
+        // order, insight and the finalized lock land together or not at all —
+        // no window where a claimed lock points at nothing (the orphaned-
+        // pending self-heal in the engine covers a crash before this line).
+        const upd = {
+          [`refill_requests/${rrKey}`]: rr,
+          [lockPath]: { qty, source, createdAt: startedAt, runId, refillId: rrKey, orderId, orderCreatedAt },
+        };
+        if (order) {
+          upd[`orders/${orderId}`] = order;
+          upd[`insights_log/${db.ref("insights_log").push().key}`] = insight;
+        }
+        await db.ref().update(upd);
         counts.intents++;
       }
     }

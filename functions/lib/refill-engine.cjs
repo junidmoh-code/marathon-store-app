@@ -136,6 +136,19 @@ function computeRefillPlan(snapshot) {
     for (const [pid, bySize] of Object.entries(byPid || {})) {
       for (const [sizeKey, entry] of Object.entries(bySize || {})) {
         if (!entry) continue;
+        // ORPHANED PENDING LOCK self-heal: a scan that died between claiming a
+        // lock and creating its request (function timeout, crash) leaves
+        // pending:true with no refillId — phantom inbound that would suppress
+        // the cell forever while merely being reported stale. Any pending lock
+        // older than an hour can't belong to a live run (run-lock steal is
+        // 10 min) → remove it; the released inbound lets the deficit re-propose
+        // in this very plan. Younger pending locks stay untouched (in-flight).
+        if (entry.pending && !entry.refillId) {
+          if (nowMs - Date.parse(entry.createdAt || 0) > 3600e3) {
+            closes.push({ dest, pid, sizeKey, refillId: null, reason: "orphaned_pending" });
+          }
+          continue;
+        }
         const rr = entry.refillId ? refillRequests[entry.refillId] : null;
         const order = entry.orderId ? orders[entry.orderId] : null;
         // The order node is only "ours" if it still matches — R-numbers recycle
@@ -520,10 +533,15 @@ function computeRefillPlan(snapshot) {
   // NEW products at Central FIRST — the exceptions snapshot caps its item list,
   // and the introduction queue is the primary workflow, so it must never be the
   // part that gets truncated.
+  // Circulation evidence is cell PRESENCE, not current quantity: applyMovement
+  // never deletes a cell, so a destination cell at qty 0 still proves the
+  // product has been out in the network — a sell-through to zero must NOT flip
+  // a product back to "NEW" (it already circulated; it belongs to migration).
+  const circulates = (pid) => dests.some((d) => stock?.[d]?.[pid] && Object.keys(stock[d][pid]).length > 0);
   for (const [pid, bySize] of Object.entries(stock?.central || {})) {
     if (!isClothing(products?.[pid])) continue;
     if (dests.some((d) => targets?.[d]?.[pid])) continue;   // introduced somewhere
-    if (dests.some((d) => sumLoc(d, pid) > 0)) continue;    // circulating → unintroduced, NOT new
+    if (circulates(pid)) continue;                          // circulating → unintroduced, NOT new
     if (decisionActive("central", pid)) continue;
     const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
     if (units > 0) noTarget.push({ loc: "central", pid, units, isNew: true });
@@ -533,11 +551,13 @@ function computeRefillPlan(snapshot) {
     for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
       if (!isClothing(products?.[pid])) continue;
       if (targets?.[loc]?.[pid]) continue;             // some target here → managed
+      if (!Object.keys(bySize || {}).length) continue;
       const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
-      if (units <= 0) continue;
       if (!dests.some((d) => targets?.[d]?.[pid])) {
-        // Zero targets anywhere + circulating = awaiting migration, one entry
-        // per product (never per location — no duplicate cards).
+        // Zero targets anywhere + has circulated = awaiting migration, one
+        // entry per product (never per location — no duplicate cards). A
+        // sold-to-zero product still migrates: its demand is proven and the
+        // engine will redistribute it the moment targets exist.
         if (seenUnintroduced.has(pid)) continue;
         seenUnintroduced.add(pid);
         const standardSizes = stockedStandardSizes(pid);
@@ -547,13 +567,32 @@ function computeRefillPlan(snapshot) {
             units: dests.reduce((t, d) => t + sumLoc(d, pid), 0),
             byLoc: Object.fromEntries(["central", ...dests].map((l) => [l, sumLoc(l, pid)])),
           });
-        } else if (!decisionActive(loc, pid)) {
+        } else if (units > 0 && !decisionActive(loc, pid)) {
           noTarget.push({ loc, pid, units, noStandard: true });
         }
         continue;
       }
+      if (units <= 0) continue;
       if (decisionActive(loc, pid)) continue;
       noTarget.push({ loc, pid, units });   // assortment leftover — genuine decision
+    }
+  }
+  // SIZE-SCOPED blind-spot guard (review 2026-07-13): a MANAGED product can
+  // still hold stocked sizes the standard run doesn't cover and no human ever
+  // targeted (mixed letter+numeric garments — migrated on M/L while a "32"
+  // sits in stock). The pid-level managed gate above would hide those cells
+  // forever, so they surface here as a size-scoped noStandard decision.
+  for (const loc of dests) {
+    for (const [pid, byTarget] of Object.entries(targets?.[loc] || {})) {
+      if (!isClothing(products?.[pid])) continue;
+      if (!stock?.[loc]?.[pid]) continue;
+      if (decisionActive(loc, pid)) continue;
+      let units = 0;
+      for (const [sk, c] of Object.entries(stock[loc][pid])) {
+        const q = avail(num(c?.qty));
+        if (q > 0 && !STANDARD_SIZE_RE.test(sk) && !byTarget[sk]) units += q;
+      }
+      if (units > 0) noTarget.push({ loc, pid, units, noStandard: true });
     }
   }
   // (v5: the Policy Warnings layer was REMOVED at the owner's direction — the

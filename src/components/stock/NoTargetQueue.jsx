@@ -31,13 +31,13 @@
 import React, { useMemo, useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
-import { useStockCells, useStockTargets, useTargetDecisions } from "./useStock";
+import { useStockCells, useStockTargets, useTargetDecisions, useEngineConfig } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
-import { computeUnintroduced, stockedStandardSizes } from "./introduceExisting";
+import { computeUnintroduced, stockedStandardSizes, destsFrom } from "./introduceExisting";
 
 const DESTS = ["marathon-pe", "trophy", "hub2"];
 const ALL_LOCS = ["marathon-pe", "trophy", "hub2", "central"];
@@ -75,8 +75,14 @@ const pill = (on) => ({
 
 export default function NoTargetQueue({ products = [] }) {
   const allStock = useStockCells();
-  const allTargets = useStockTargets() || {};
+  const allTargetsRaw = useStockTargets();   // null until the listener answers
+  const allTargets = allTargetsRaw || {};
   const decisions = useTargetDecisions() || {};
+  const engineConfig = useEngineConfig();
+  const dests = useMemo(() => destsFrom(engineConfig), [engineConfig]);
+  // Never classify against half-loaded data: with targets still null EVERY
+  // product would render as a wrong card for a moment.
+  const loading = allTargetsRaw == null || !allStock || !Object.keys(allStock).length;
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const isAdmin = actorRole === "admin";
@@ -104,13 +110,16 @@ export default function NoTargetQueue({ products = [] }) {
 
   const cards = useMemo(() => {
     const out = [];
-    // GENUINELY NEW at Central — no targets anywhere AND not circulating at any
-    // destination (v8: circulating products go to Introduce Existing instead).
+    if (loading) return out;
+    // GENUINELY NEW at Central — no targets anywhere AND never circulated.
+    // Circulation evidence is cell PRESENCE, not quantity (lockstep with the
+    // engine): a sold-to-zero destination cell still proves the product was
+    // out in the network, so it can never flip back to "NEW".
     for (const [pid, bySize] of Object.entries(allStock?.central || {})) {
       const p = byId.get(pid);
       if (!isClothing(p)) continue;
-      if (DESTS.some((d) => allTargets?.[d]?.[pid])) continue;
-      if (DESTS.some((d) => sumAt(d, pid) > 0)) continue;
+      if (dests.some((d) => allTargets?.[d]?.[pid])) continue;
+      if (dests.some((d) => Object.keys(allStock?.[d]?.[pid] || {}).length)) continue;
       if (decisionActive("central", pid)) continue;
       const sizes = Object.entries(bySize || {})
         .map(([size, c]) => ({ size, qty: Math.max(Number(c?.qty) || 0, 0) }))
@@ -127,12 +136,12 @@ export default function NoTargetQueue({ products = [] }) {
     // (no approved standard quantities) and assortment leftovers (targets exist
     // elsewhere, none here). Standard-size circulating products are handled by
     // the Introduce Existing migration and are deliberately absent.
-    for (const loc of DESTS) {
+    for (const loc of dests) {
       for (const [pid, bySize] of Object.entries(allStock?.[loc] || {})) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
         if (allTargets?.[loc]?.[pid]) continue;
-        const introducedElsewhere = DESTS.some((d) => allTargets?.[d]?.[pid]);
+        const introducedElsewhere = dests.some((d) => allTargets?.[d]?.[pid]);
         if (!introducedElsewhere && stockedStandardSizes(allStock, pid).length) continue; // → migration
         if (decisionActive(loc, pid)) continue;
         const sizes = Object.entries(bySize || {})
@@ -147,14 +156,47 @@ export default function NoTargetQueue({ products = [] }) {
         });
       }
     }
+    // SIZE-SCOPED blind spot (lockstep with the engine's guard): a MANAGED
+    // product can still hold stocked sizes the standard run doesn't cover and
+    // nobody targeted (mixed letter+numeric garments). Card carries ONLY those
+    // sizes, so "Set targets" configures exactly the unmanaged cells.
+    const STD = /^(S|M|L|XL|XXL|XXXL)$/i;
+    for (const loc of dests) {
+      for (const [pid, byTarget] of Object.entries(allTargets?.[loc] || {})) {
+        const p = byId.get(pid);
+        if (!isClothing(p)) continue;
+        const bySize = allStock?.[loc]?.[pid];
+        if (!bySize) continue;
+        if (decisionActive(loc, pid)) continue;
+        const sizes = Object.entries(bySize)
+          .map(([size, c]) => ({ size, qty: Math.max(Number(c?.qty) || 0, 0) }))
+          .filter((s) => s.qty > 0 && !STD.test(String(s.size)) && !byTarget[encodeSizeKey(s.size)])
+          .sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+        if (!sizes.length) continue;
+        out.push({
+          key: `${loc}|${pid}|sizes`, loc, pid, isNew: false, noStandard: true,
+          name: p?.name || pid, photo: p?.photoUrl, sizes,
+          units: sizes.reduce((t, s) => t + s.qty, 0),
+          network: ALL_LOCS.map((l) => ({ loc: l, units: sumAt(l, pid) })),
+        });
+      }
+    }
     return out.sort((a, b) => (a.isNew === b.isNew ? b.units - a.units : a.isNew ? -1 : 1));
-  }, [allStock, allTargets, decisions, byId]);
+  }, [loading, allStock, allTargets, decisions, byId, dests]);
 
   // Pointer only — migration lives on the Health screen, not in this queue.
   const migratableCount = useMemo(
-    () => computeUnintroduced(allStock, allTargets, byId).filter((i) => i.migratable).length,
-    [allStock, allTargets, byId],
+    () => (loading ? 0 : computeUnintroduced(allStock, allTargets, byId, dests).filter((i) => i.migratable).length),
+    [loading, allStock, allTargets, byId, dests],
   );
+
+  if (loading) {
+    return (
+      <div style={{ ...GLASS, padding: 24, textAlign: "center" }}>
+        <div style={{ fontSize: 13.5, color: GRAY }}>Loading live stock and targets…</div>
+      </div>
+    );
+  }
 
   // ── shared decision writers ──────────────────────────────────────────────────
   const finish = (card, text) => { setDoneMsg({ name: card.name, text }); setBusyKey(null); };
