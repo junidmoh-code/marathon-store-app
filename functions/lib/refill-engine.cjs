@@ -132,6 +132,7 @@ function computeRefillPlan(snapshot) {
 
   // ── reconcile: close locks whose intent finished; flag stale ones (L6) ─────
   const closes = [];
+  const resizes = [];   // owner approval 2026-07-13: open requests track reality, not history
   const stuckRefills = [];
   // Orders with PHYSICAL fulfilment evidence in the ledger (a movement linked
   // to them) — their status write may still be in flight, so the PLAN skips
@@ -220,6 +221,29 @@ function computeRefillPlan(snapshot) {
           });
         } else if (nowMs - Date.parse(entry.createdAt || 0) > staleMs) {
           stuckRefills.push({ dest, pid, sizeKey, refillId: entry.refillId || null, ageHours: Math.round((nowMs - Date.parse(entry.createdAt || 0)) / 3600e3) });
+        }
+        // AUTO-RESIZE (owner approval 2026-07-13): every surviving open request
+        // is continuously trued to expected = min(current deficit, source stock
+        // net of OTHER reservations, maxUnitsPerIntent). Same request identity,
+        // history preserved, never a replacement — a quantity is data, not
+        // demand. Skipped while a pick is in flight (retries next scan). An
+        // expected of 0 never lands here: the withdraw branches above own the
+        // zero cases; the one residue (source stocked but fully reserved by a
+        // sibling request) deliberately keeps its quantity until the sibling
+        // resolves — deterministic, no claim-stealing between open requests.
+        if (unresolvedOurs && !inFlight && !needGone && !unfillable && !sourceEmpty) {
+          const srcLoc2 = entry.source || routes[dest];
+          const srcHave2 = srcLoc2 ? avail(cellQty(stock, srcLoc2, pid, size)) : 0;
+          const ownQty = num(entry.qty) || 1;
+          const reservedByOthers = Math.max((sourceReserved.get(`${srcLoc2}|${pid}|${sizeKey}`) || 0) - ownQty, 0);
+          const expected = Math.min(
+            Math.max((t?.target || 0) - destHave - otherInbound, 0),
+            Math.max(srcHave2 - reservedByOthers, 0),
+            num(config?.maxUnitsPerIntent) || 20,
+          );
+          if (expected > 0 && expected !== ownQty) {
+            resizes.push({ dest, pid, sizeKey, refillId: entry.refillId || null, orderId: orderIsOurs ? entry.orderId : null, from: ownQty, to: expected });
+          }
         }
       }
     }
@@ -700,6 +724,7 @@ function computeRefillPlan(snapshot) {
   return {
     intents: plannedIntents,
     closes,
+    resizes,
     errors,
     stats: { managedCells },
     exceptions: {

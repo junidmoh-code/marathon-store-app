@@ -120,6 +120,68 @@ test("AWAITING SUPPLIER (v9): whole upstream chain empty → passive category, n
   assert.ok(!plan.exceptions.missingSizes.items.some((m) => m.pid === "p1"), "not on the reorder list — stock exists, just stranded");
 });
 
+test("AUTO-RESIZE: open requests continuously track reality — shrink, grow, cap, and in-flight skip", () => {
+  const mkOpen = (qty, extra = {}) => ({
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R007-1", orderCreatedAt: iso(2), qty, source: "hub2", createdAt: iso(2) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" } },
+    orders: { "R007-1": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(2), clothingRefillStatus: null, status: "incoming", ...extra } },
+  });
+  // SHRINK: policy dropped to target 2; legacy ask was 3.
+  const shrink = computeRefillPlan(base({
+    ...mkOpen(3),
+    targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(9) } }, central: {}, trophy: {} },
+  }));
+  assert.deepEqual(shrink.resizes[0] && { from: shrink.resizes[0].from, to: shrink.resizes[0].to }, { from: 3, to: 2 }, "3 → 2 (new deficit)");
+  // GROW capped by source: deficit rose to 3 but hub2 only has 2.
+  const grow = computeRefillPlan(base({
+    ...mkOpen(1),
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(2) } }, central: {}, trophy: {} },
+  }));
+  assert.deepEqual(grow.resizes[0] && { from: grow.resizes[0].from, to: grow.resizes[0].to }, { from: 1, to: 2 }, "1 → 2 (deficit 3, source caps at 2)");
+  // IN-FLIGHT: locked split → never resized this scan.
+  const picking = computeRefillPlan(base({
+    ...mkOpen(3, { clothingPlanGen: 0 }),
+    targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(9) } }, central: {}, trophy: {} },
+  }));
+  assert.equal(picking.resizes.length, 0, "a card being picked keeps its quantity");
+  // EXACT already: no resize entry.
+  const exact = computeRefillPlan(base({
+    ...mkOpen(2),
+    targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(9) } }, central: {}, trophy: {} },
+  }));
+  assert.equal(exact.resizes.length, 0, "correct quantities are untouched");
+});
+
+test("AUTO-RESIZE respects sibling reservations — never steals another request's units", () => {
+  const plan = computeRefillPlan(base({
+    targets: {
+      "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
+      trophy: { p1: { M: { target: 3, minQty: 2 } } },
+    },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(3) } }, central: {} },
+    openIndex: {
+      "marathon-pe": { p1: { M: { refillId: "rA", orderId: "R008-1", orderCreatedAt: iso(1), qty: 2, source: "hub2", createdAt: iso(1) } } },
+      trophy: { p1: { M: { refillId: "rB", orderId: "R009-1", orderCreatedAt: iso(1), qty: 3, source: "hub2", createdAt: iso(1) } } },
+    },
+    refillRequests: {
+      rA: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" },
+      rB: { status: "open", productId: "p1", size: "M", requestingLocation: "trophy", source: "hub2" },
+    },
+    orders: {
+      "R008-1": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming" },
+      "R009-1": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming" },
+    },
+  }));
+  // hub2 holds 3; PE reserves 2 → Trophy's ask must shrink to the 1 unit left.
+  const rb = plan.resizes.find((r) => r.dest === "trophy");
+  assert.deepEqual(rb && { from: rb.from, to: rb.to }, { from: 3, to: 1 }, "trophy 3 → 1 (PE's reservation respected)");
+  assert.ok(!plan.resizes.some((r) => r.dest === "marathon-pe"), "PE ask (2) already ≤ its share");
+});
+
 test("NO SILENT STARVATION (v9): a source with no buffer target is a CONFIG block, never 'chain flowing'", () => {
   // Stores need M; hub2 is empty AND has NO target for the cell — no
   // central→hub2 leg will ever auto-create, so labelling this
