@@ -108,28 +108,37 @@ async function runScan() {
     // by a stale cancel/delete. A skipped conditional simply re-reconciles on
     // the next scan (stateless).
     if (plan.closes.length) {
-      const upd = {};
-      for (const c of plan.closes) upd[`refill_engine/open/${c.dest}/${c.pid}/${c.sizeKey}`] = null;
-      await db.ref().update(upd);
+      // ORDER OF OPERATIONS (Sonnet MEDIUM, 2026-07-13): for withdraw-type
+      // closes the order transaction runs FIRST and is the decider — if it
+      // bails (the card was touched by a fulfilment in the snapshot gap), the
+      // request is NOT cancelled and the lock is NOT removed; the next scan
+      // re-reconciles from truth. This keeps orders/{id} and
+      // refill_requests/{id} from ever disagreeing about what happened.
+      let applied = 0, withdrawn = 0;
       for (const c of plan.closes) {
+        let proceed = true;
+        if (c.removeOrderId) {
+          try {
+            const res = await db.ref(`orders/${c.removeOrderId}`).transaction((cur) => {
+              if (!cur) return null;                                     // already gone — fine
+              if (cur.clothingRefillStatus != null || cur.clothingPlanGen != null || !cur.autoRefill) return; // touched — abort
+              return null;
+            });
+            proceed = res.committed;
+          } catch { proceed = false; }
+        }
+        if (!proceed) continue;   // fulfilment won the race — leave rr + lock for the next scan
         if (c.refillId && c.rrStatus) {
           await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => {
             if (!cur || (cur.status && cur.status !== "open")) return;   // resolved meanwhile — leave it
             return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
           }).catch(() => {});
         }
-        // Withdrawn engine orders leave the warehouse queue — but ONLY while
-        // still untouched (unresolved, no fulfilment fields landed).
-        if (c.removeOrderId) {
-          await db.ref(`orders/${c.removeOrderId}`).transaction((cur) => {
-            if (!cur) return;                                            // already gone
-            if (cur.clothingRefillStatus != null || cur.clothingPlanGen != null || !cur.autoRefill) return; // touched — keep
-            return null;
-          }).catch(() => {});
-        }
+        await db.ref(`refill_engine/open/${c.dest}/${c.pid}/${c.sizeKey}`).remove().catch(() => {});
+        applied++;
+        if (c.cancelReason) withdrawn++;
       }
-      counts.closes = plan.closes.length;
-      const withdrawn = plan.closes.filter((c) => c.cancelReason).length;
+      counts.closes = applied;
       if (withdrawn) counts.withdrawn = withdrawn;
     }
 

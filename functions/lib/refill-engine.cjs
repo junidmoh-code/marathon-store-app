@@ -134,8 +134,11 @@ function computeRefillPlan(snapshot) {
   const closes = [];
   const stuckRefills = [];
   // Orders with PHYSICAL fulfilment evidence in the ledger (a movement linked
-  // to them) — their status write may still be in flight, so scans must never
-  // withdraw them on stale snapshots (Codex P0, 2026-07-13).
+  // to them) — their status write may still be in flight, so the PLAN skips
+  // withdrawing them. NOTE: this is plan-level advisory only — the actual
+  // safety boundary is the conditional transaction in refill-scan.cjs that
+  // re-reads the order live at write time. Never relax that guard because
+  // this set exists (it is built from the same stale snapshot).
   const physicallyTouched = new Set();
   for (const m of movements) if (m?.link?.orderId) physicallyTouched.add(m.link.orderId);
   const staleMs = (num(config?.staleIntentHours) || 48) * 3600e3;
@@ -190,8 +193,12 @@ function computeRefillPlan(snapshot) {
         // must never have its card deleted under the picker's hands — the
         // warehouse finishes what it started; the scan only tidies untouched
         // requests.
-        const inFlight = (orderIsOurs && (order.clothingPlanGen != null || (order.clothingRefillGen || 0) > 0)) ||
-          (entry.orderId && physicallyTouched.has(entry.orderId));   // ledger says a pick already happened
+        // clothingPlanGen = a fulfil attempt locked its split; ledger link = a
+        // pick physically happened (status write may lag). Either one parks
+        // the withdraw. (clothingRefillGen deliberately NOT used — it only
+        // counts UNDOs, not in-progress picks.)
+        const inFlight = (orderIsOurs && order.clothingPlanGen != null) ||
+          (entry.orderId && physicallyTouched.has(entry.orderId));
         const sourceLoc = entry.source || routes[dest];
         const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
@@ -444,12 +451,22 @@ function computeRefillPlan(snapshot) {
           // (Codex P2 — otherwise demand sits mislabelled for the whole window).
           const srcRej = rejectedAt.get(`${src}|${pid}|${sizeKey}`);
           const srcParked = (srcRej && nowMs - srcRej.ts < cooldownMs && !arrivedAfter(srcRej.by || upstreamOfSrc, pid, sizeKey, srcRej.ts)) || confirmedOut(pid, sizeKey);
-          if ((inbound.get(`${src}|${pid}|${sizeKey}`) || 0) > 0 || (upstreamAvail > 0 && !srcParked)) {
+          // "Chain is flowing" additionally requires the source to HAVE a
+          // buffer target for this cell — without one the engine will never
+          // compute a source deficit, so no upstream leg would EVER create and
+          // the demand would starve silently behind a self-healing label
+          // (Sonnet HIGH, 2026-07-13). No target at the source = a CONFIG gap,
+          // surfaced as blocked, not as flowing.
+          const srcTarget = upstreamOfSrc ? resolveTarget(ctx, src, pid, size) : null;
+          const srcCanPull = !!(srcTarget && srcTarget.target > 0);
+          if ((inbound.get(`${src}|${pid}|${sizeKey}`) || 0) > 0 || (upstreamAvail > 0 && srcCanPull && !srcParked)) {
             awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, note: `waiting for ${src} to receive stock${upstreamOfSrc ? ` from ${upstreamOfSrc}` : ""}` });
           } else {
             awaitingSupplier.push({
               loc: dest, pid, size, deficit, source: src,
-              note: srcParked ? `upstream leg blocked — ${src} recently rejected / confirmed out` : "upstream chain empty — supplier reorder or excess return needed",
+              note: srcParked ? `upstream leg blocked — ${src} recently rejected / confirmed out`
+                : (upstreamAvail > 0 && !srcCanPull) ? `${src} has no buffer target for this size — set one (or transfer manually); stock waits at ${upstreamOfSrc}`
+                : "upstream chain empty — supplier reorder or excess return needed",
             });
           }
           continue;

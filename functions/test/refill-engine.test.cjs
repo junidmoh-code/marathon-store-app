@@ -120,6 +120,46 @@ test("AWAITING SUPPLIER (v9): whole upstream chain empty → passive category, n
   assert.ok(!plan.exceptions.missingSizes.items.some((m) => m.pid === "p1"), "not on the reorder list — stock exists, just stranded");
 });
 
+test("NO SILENT STARVATION (v9): a source with no buffer target is a CONFIG block, never 'chain flowing'", () => {
+  // Stores need M; hub2 is empty AND has NO target for the cell — no
+  // central→hub2 leg will ever auto-create, so labelling this
+  // awaiting-upstream would starve silently behind a self-healing promise.
+  const plan = computeRefillPlan(base({
+    targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } }, trophy: { p1: { M: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } } },
+  }));
+  assert.equal(plan.exceptions.awaitingUpstream.count, 0, "nothing may claim the chain is flowing");
+  const blocked = plan.exceptions.awaitingSupplier.items.filter((w) => /no buffer target/.test(w.note));
+  assert.equal(blocked.length, 2, "both stores surface as blocked-by-config, demanding a human");
+  // Give hub2 its buffer target → the chain genuinely flows: hub2 leg created,
+  // stores correctly park as awaiting-upstream.
+  const flowing = computeRefillPlan(base({
+    targets: {
+      "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } }, trophy: { p1: { M: { target: 2, minQty: 1 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 } } },
+    },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } } },
+  }));
+  assert.equal(flowing.intents.filter((x) => x.dest === "hub2").length, 1, "upstream leg created");
+  assert.equal(flowing.exceptions.awaitingUpstream.items.filter((w) => w.loc !== "hub2").length, 2, "stores now genuinely awaiting upstream");
+});
+
+test("BLOCKED UPSTREAM (v9): a rejection-parked source leg is labelled blocked, not flowing", () => {
+  const plan = computeRefillPlan(base({
+    targets: {
+      "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 } } },
+    },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } }, trophy: {} },
+    // Central's queue rejected hub2's ask 2h ago (cooldown active, no arrival since)
+    refillRequests: { rHub: { status: "cancelled", resolvedAt: iso(2), productId: "p1", size: "M", requestingLocation: "hub2", source: "central", rejectedBy: "warehouse" } },
+  }));
+  assert.equal(plan.intents.length, 0, "hub2 leg rests on its cooldown");
+  assert.ok(plan.exceptions.awaitingSupplier.items.some((w) => w.loc === "marathon-pe" && /blocked/.test(w.note)),
+    "store demand shows the truth: upstream leg blocked, not flowing");
+  assert.equal(plan.exceptions.awaitingUpstream.count, 0);
+});
+
 test("SOURCE RESERVATION (v9): two stores never get cards for the same physical unit", () => {
   const targets = {
     "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
@@ -154,6 +194,10 @@ test("IN-FLIGHT GUARD (v9): a card being picked is never withdrawn under the pic
 
 test("SOURCE-EMPTY WITHDRAW (v9): an open request the source can no longer fill leaves the queue", () => {
   const plan = computeRefillPlan(base({
+    targets: {
+      "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 } } },   // buffer target — chain genuinely flows
+    },
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(9) } }, trophy: {} },
     openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R005-3", orderCreatedAt: iso(1), qty: 2, source: "hub2", createdAt: iso(1) } } } },
     refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" } },
@@ -354,9 +398,11 @@ test("restock resurrects a size: no stock = absent; stock appears = requested ag
   }));
   assert.equal(dry.intents.filter((x) => x.sizeKey === "M").length, 0, "nothing upstream → absent from queues");
   // Stock lands at CENTRAL only → v9 cascade: still no store card (hub2 is
-  // empty), but the demand is visibly awaiting the upstream leg.
+  // empty), but the demand is visibly awaiting the upstream leg (hub2 has a
+  // buffer target, so the chain genuinely flows).
   const centralOnly = computeRefillPlan(base({
     ...rejected,
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } }, hub2: { p1: { M: { target: 3, minQty: 2 } } } },
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: {}, central: { p1: { M: cell(12) } }, trophy: {} },
   }));
   assert.equal(centralOnly.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "hub2 still empty → cascades, no store card yet");
