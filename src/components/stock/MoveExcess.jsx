@@ -32,6 +32,21 @@ const isClothing = (p) =>
   p?.productType === "clothing" ||
   (!p?.productType && (p?.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s))));
 
+// Shelf-order categories (owner request 2026-07-13): staff work one physical
+// section at a time — all tracksuits together, all tees together — instead of
+// hopping shelf-to-shelf product by product. Name-based, first match wins.
+const GARMENT_TYPES = [
+  ["Tracksuits", /track\s*suit|tracksuit/i],
+  ["Hoodies & Sweats", /hoodie|sweatshirt|sweater|crewneck|fleece(?!.*track)/i],
+  ["Jackets & Puffers", /jacket|puffer|windbreaker|coat|varsity/i],
+  ["T-Shirts & Polos", /t[- ]?shirt|\btee\b|polo/i],
+  ["Jerseys", /jersey|\bkit\b/i],
+  ["Jeans & Pants", /jean|denim|cargo|pant|trouser|chino/i],
+  ["Shorts", /short/i],
+];
+const garmentType = (name) => (GARMENT_TYPES.find(([, re]) => re.test(String(name || ""))) || ["Other"])[0];
+const GARMENT_ORDER = [...GARMENT_TYPES.map(([g]) => g), "Other"];
+
 export default function MoveExcess({ products = [], actorRole }) {
   const allStock = useStockCells();          // { loc: { pid: { rawSize: cell } } }
   const allTargets = useStockTargets();      // { loc: { pid: { encodedSize: {target} } } }
@@ -131,68 +146,86 @@ export default function MoveExcess({ products = [], actorRole }) {
   }, [allStock, allTargets, byId]);
 
   const [locFilter, setLocFilter] = useState("all");
-  const shown = locFilter === "all" ? cards : cards.filter((c) => c.loc === locFilter);
+  const [search, setSearch] = useState("");
+  const shown = (locFilter === "all" ? cards : cards.filter((c) => c.loc === locFilter))
+    .filter((c) => !search.trim() || c.name.toLowerCase().includes(search.trim().toLowerCase()));
   const locCount = (loc) => cards.filter((c) => c.loc === loc).length;
+  // Shelf-order grouping: one category section at a time.
+  const groups = useMemo(() => {
+    const byType = new Map();
+    for (const c of shown) {
+      const g = garmentType(c.name);
+      (byType.get(g) || byType.set(g, []).get(g)).push(c);
+    }
+    return GARMENT_ORDER.filter((g) => byType.has(g))
+      .map((g) => ({ label: g, items: byType.get(g), units: byType.get(g).reduce((t, c) => t + c.totalExcess, 0) }));
+  }, [shown]);
 
-  const qtyOf = (c, s) => {
-    const v = edits[`${c.key}|${s.size}`];
-    // Never above the movable ceiling — for hub2 that is the NET excess (its
-    // held units belong to downstream refills: Cortez is not manually
-    // overridable), for stores the raw overage. Stale edits clamp here; the
-    // tap-time clamp is the hard backstop.
+  // ── MANUAL PER-DESTINATION EXECUTION (owner UX directive 2026-07-13) ────────
+  // The engine CALCULATES and RECOMMENDS (the per-size split prefills the
+  // steppers); the WAREHOUSE decides and executes — one Transfer button per
+  // destination, quantities editable within valid limits, either destination
+  // skippable. Nothing fires automatically. All tap-time validation (live
+  // source clamp, live destination-need cap for the hub leg) is unchanged.
+  //   hub-leg limit:     the destination's recommended need (pushing more
+  //                      belongs to Central — that is what the second leg is for)
+  //   central-leg limit: the full movable overage (the warehouse may override
+  //                      the recommendation and send everything to Central;
+  //                      hub2 cards stay capped at NET excess — Cortez holds)
+  const hubQtyOf = (c, s) => {
+    const v = edits[`${c.key}|${s.size}|hub`];
+    return Math.max(0, Math.min(v == null ? (s.toHub || 0) : v, s.toHub || 0));
+  };
+  const centralQtyOf = (c, s) => {
+    const v = edits[`${c.key}|${s.size}|central`];
     const ceil = c.loc === "hub2" ? s.excess : Math.max(s.have - s.target, 0);
-    return Math.max(0, Math.min(v == null ? s.excess : v, ceil));
+    return Math.max(0, Math.min(v == null ? (s.toCentral || 0) : v, ceil));
   };
 
-  const transfer = async (c) => {
+  const transferTo = async (c, which) => {   // which: "hub" | "central"
     if (busy) return;
-    const lines = c.sizes.map((s) => ({ s, qty: qtyOf(c, s) })).filter((l) => l.qty > 0);
+    const hubDest = routesCfg[c.loc] || "hub2";
+    const dest = which === "hub" ? hubDest : "central";
+    if (dest === c.loc) return;
+    const lines = c.sizes
+      .map((s) => ({ s, qty: which === "hub" ? hubQtyOf(c, s) : centralQtyOf(c, s) }))
+      .filter((l) => l.qty > 0);
     if (!lines.length) return;
     setBusy(c.key);
     const batchId = `exc_${Date.now().toString(36)}`;
-    let moved = 0; const failed = []; const destsHit = new Set();
+    let moved = 0; const failed = [];
     for (const { s, qty } of lines) {
-      // TAP-TIME CLAMP (design review 2026-07-13): a sale between render and
-      // tap can shrink the true overage — never move the shop below target.
-      let total = qty;
+      // TAP-TIME CLAMP: a sale between render and tap can shrink the true
+      // overage — never move the shop below target.
+      let q = qty;
       try {
         const live = (await get(ref(database, `stock/${c.loc}/${c.pid}/${encodeSizeKey(s.size)}/qty`))).val();
-        if (typeof live === "number") total = Math.max(0, Math.min(total, live - s.target));
+        if (typeof live === "number") q = Math.max(0, Math.min(q, live - s.target));
       } catch { /* offline read — proceed with entered qty */ }
-      if (total <= 0) continue;
-      // DESTINATION-SIDE tap check (review 2026-07-13): Hub 2 may have been
-      // filled meanwhile (a Central fulfilment, another operator). Cap the
-      // hub leg by its LIVE remaining need; anything above goes to Central
-      // instead — never dumped on a full buffer.
-      const hubDest = routesCfg[c.loc] || "hub2";
-      let hubLeg = Math.min(total, s.toHub || 0);
-      if (hubLeg > 0) {
+      // DESTINATION-SIDE tap check (hub leg only): never dump on a buffer
+      // another fulfilment just filled.
+      if (which === "hub" && q > 0) {
         try {
-          const hLive = (await get(ref(database, `stock/${hubDest}/${c.pid}/${encodeSizeKey(s.size)}/qty`))).val();
-          const hTarget = Number(allTargets?.[hubDest]?.[c.pid]?.[encodeSizeKey(s.size)]?.target);
-          if (typeof hLive === "number" && Number.isFinite(hTarget)) hubLeg = Math.max(0, Math.min(hubLeg, hTarget - Math.max(hLive, 0)));
-        } catch { /* offline read — keep planned split */ }
+          const hLive = (await get(ref(database, `stock/${dest}/${c.pid}/${encodeSizeKey(s.size)}/qty`))).val();
+          const hTarget = Number(allTargets?.[dest]?.[c.pid]?.[encodeSizeKey(s.size)]?.target);
+          if (typeof hLive === "number" && Number.isFinite(hTarget)) q = Math.max(0, Math.min(q, hTarget - Math.max(hLive, 0)));
+        } catch { /* offline read — keep entered qty */ }
       }
-      const legs = [
-        { dest: hubDest, qty: hubLeg },
-        { dest: "central", qty: total - hubLeg },
-      ].filter((l) => l.qty > 0 && l.dest !== c.loc);
-      for (const leg of legs) {
-        let res;
-        try {
-          res = await applyMovement({
-            type: "transfer_out", productId: c.pid, size: s.size, qty: leg.qty,
-            from: c.loc, to: leg.dest, actorRole,
-            reason: "excess_rebalance",
-            movementId: `${batchId}_${c.pid}_${encodeSizeKey(s.size)}_${leg.dest}`,
-            link: { transferId: batchId },
-          });
-        } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
-        if (res.ok) { moved += leg.qty; destsHit.add(leg.dest); } else failed.push(`${s.size}→${leg.dest}: ${res.reason}`);
-      }
+      if (q <= 0) continue;
+      let res;
+      try {
+        res = await applyMovement({
+          type: "transfer_out", productId: c.pid, size: s.size, qty: q,
+          from: c.loc, to: dest, actorRole,
+          reason: "excess_rebalance",
+          movementId: `${batchId}_${c.pid}_${encodeSizeKey(s.size)}_${dest}`,
+          link: { transferId: batchId },
+        });
+      } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
+      if (res.ok) moved += q; else failed.push(`${s.size}→${dest}: ${res.reason}`);
     }
     setMovedTotal((t) => t + moved);
-    setLastResult({ name: c.name, dest: [...destsHit].join(" + ") || "—", moved, failed });
+    setLastResult({ name: c.name, dest, moved, failed });
     // Clear this card's edits: quantities must recompute from the moved-down
     // live stock, never linger from the pre-transfer render.
     setEdits((prev) => {
@@ -226,7 +259,7 @@ export default function MoveExcess({ products = [], actorRole }) {
       </div>
 
       {/* Location sections — every excess product visible, per location */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
         <button onClick={() => setLocFilter("all")} style={pill(locFilter === "all")}>All ({cards.length})</button>
         {sources.map((l) => (
           <button key={l} onClick={() => setLocFilter(l)} style={pill(locFilter === l)}>
@@ -234,6 +267,12 @@ export default function MoveExcess({ products = [], actorRole }) {
           </button>
         ))}
       </div>
+      <input
+        value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products…"
+        style={{ width: "100%", boxSizing: "border-box", marginBottom: 12, padding: "11px 14px", borderRadius: 12,
+                 border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.04)", color: "#fff",
+                 fontSize: 13.5, fontFamily: FONT, outline: "none" }}
+      />
 
       {lastResult && (
         <div style={{ ...GLASS, padding: "10px 13px", marginBottom: 12, fontSize: 12.5 }}>
@@ -251,17 +290,24 @@ export default function MoveExcess({ products = [], actorRole }) {
         </div>
       )}
 
-      {shown.map((c) => {
-        const total = c.sizes.reduce((t, s) => t + qtyOf(c, s), 0);
-        // Auto-split, deficit-first: Hub 2 receives what the network needs of
-        // each size (never Central — Cortez), the true remainder goes to
-        // Central. One tap fires both legs; the shop lands exactly on target.
-        const split = c.sizes.reduce((acc, s) => {
-          const q = qtyOf(c, s);
-          const hub = Math.min(q, s.toHub || 0);
-          return { hub: acc.hub + hub, central: acc.central + (q - hub) };
-        }, { hub: 0, central: 0 });
-        const splitLabel = [split.hub > 0 && `${split.hub} → Hub 2`, split.central > 0 && `${split.central} → Central`].filter(Boolean).join(" · ");
+      {groups.map((g) => (
+        <React.Fragment key={g.label}>
+          <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".08em",
+                        fontWeight: 800, margin: "16px 2px 8px", display: "flex", alignItems: "baseline", gap: 8 }}>
+            <span style={{ color: "#fff" }}>{g.label}</span>
+            <span>{g.items.length} product{g.items.length === 1 ? "" : "s"} · {g.units} units above target</span>
+          </div>
+          {g.items.map((c) => {
+        // The engine RECOMMENDS (prefilled steppers); the warehouse DECIDES —
+        // one Transfer button per destination, each independently editable and
+        // skippable (owner UX directive 2026-07-13).
+        const hubDest = routesCfg[c.loc] || "hub2";
+        const hubTotal = c.sizes.reduce((t, s) => t + hubQtyOf(c, s), 0);
+        const hubRecommended = c.sizes.reduce((t, s) => t + (s.toHub || 0), 0);
+        const centralTotal = c.sizes.reduce((t, s) => t + centralQtyOf(c, s), 0);
+        const centralRecommended = c.sizes.reduce((t, s) => t + (s.toCentral || 0), 0);
+        const section = { border: "1px solid rgba(255,255,255,.09)", borderRadius: 12, padding: "10px 12px", marginTop: 10 };
+        const sectionHead = { display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, fontSize: 12.5 };
         return (
           <ProductCard key={c.key}
             photo={c.photo} name={c.name}
@@ -269,25 +315,56 @@ export default function MoveExcess({ products = [], actorRole }) {
               <Badge tone={BLUE_L}>{LOC_LABEL[c.loc]}</Badge>
               <Badge tone={AMBER}>{c.totalExcess} ABOVE TARGET</Badge>
             </>}
+            sub={c.sizes.map((s) => `${s.size}: have ${s.have} / target ${s.target}`).join(" · ")}
           >
-            <div style={CHIP_GRID}>
-              {c.sizes.map((s) => (
-                <SizeStepperChip key={s.size}
-                  size={s.size} qty={qtyOf(c, s)}
-                  max={c.loc === "hub2" ? s.excess : Math.max(s.have - s.target, 0)}
-                  onChange={(v) => setEdits((prev) => ({ ...prev, [`${c.key}|${s.size}`]: v }))}
-                  hint={`have ${s.have} · target ${s.target}${s.toHub ? ` · ${s.toHub} → Hub 2` : ""}${s.toCentral ? ` · ${s.toCentral} → Central` : ""}`}
-                  disabled={busy === c.key}
-                />
-              ))}
+            {c.loc !== "hub2" && hubRecommended > 0 && (
+              <div style={section}>
+                <div style={sectionHead}>
+                  <span style={{ fontWeight: 800, color: BLUE_L }}>→ {LOC_LABEL[hubDest] || hubDest}</span>
+                  <span style={{ color: GRAY }}>engine recommends {hubRecommended} (covers its refill need)</span>
+                </div>
+                <div style={CHIP_GRID}>
+                  {c.sizes.filter((s) => (s.toHub || 0) > 0).map((s) => (
+                    <SizeStepperChip key={`h-${s.size}`}
+                      size={s.size} qty={hubQtyOf(c, s)} max={s.toHub || 0}
+                      onChange={(v) => setEdits((prev) => ({ ...prev, [`${c.key}|${s.size}|hub`]: v }))}
+                      hint={`recommended ${s.toHub}`}
+                      disabled={busy === c.key}
+                    />
+                  ))}
+                </div>
+                <button onClick={() => transferTo(c, "hub")} disabled={busy === c.key || hubTotal === 0}
+                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "11px", opacity: busy === c.key || hubTotal === 0 ? 0.55 : 1 }}>
+                  {busy === c.key ? "Transferring…" : `Transfer ${hubTotal} to ${LOC_LABEL[hubDest] || hubDest}`}
+                </button>
+              </div>
+            )}
+            <div style={section}>
+              <div style={sectionHead}>
+                <span style={{ fontWeight: 800, color: AMBER }}>→ Central</span>
+                <span style={{ color: GRAY }}>engine recommends {centralRecommended} (true surplus)</span>
+              </div>
+              <div style={CHIP_GRID}>
+                {c.sizes.map((s) => (
+                  <SizeStepperChip key={`c-${s.size}`}
+                    size={s.size} qty={centralQtyOf(c, s)}
+                    max={c.loc === "hub2" ? s.excess : Math.max(s.have - s.target, 0)}
+                    onChange={(v) => setEdits((prev) => ({ ...prev, [`${c.key}|${s.size}|central`]: v }))}
+                    hint={`recommended ${s.toCentral || 0}`}
+                    disabled={busy === c.key}
+                  />
+                ))}
+              </div>
+              <button onClick={() => transferTo(c, "central")} disabled={busy === c.key || centralTotal === 0}
+                      style={{ ...bGreen, width: "100%", marginTop: 10, padding: "11px", opacity: busy === c.key || centralTotal === 0 ? 0.55 : 1 }}>
+                {busy === c.key ? "Transferring…" : `Transfer ${centralTotal} to Central`}
+              </button>
             </div>
-            <button onClick={() => transfer(c)} disabled={busy === c.key || total === 0}
-                    style={{ ...bGreen, width: "100%", marginTop: 12, padding: "12px", opacity: busy === c.key ? 0.6 : 1 }}>
-              {busy === c.key ? "Transferring…" : `Transfer ${total} units — ${splitLabel || "nothing to move"}`}
-            </button>
           </ProductCard>
         );
-      })}
+          })}
+        </React.Fragment>
+      ))}
     </div>
   );
 }
