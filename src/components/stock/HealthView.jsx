@@ -368,6 +368,34 @@ export default function HealthView({ products = [], onExit }) {
             <IntroduceExisting products={products} />
           </DetailShell>
         );
+      // v9 passive categories — visibility, never work. These cells re-enter
+      // the working queues automatically the moment the upstream stock allows.
+      case "awaitingUpstream":
+        return (
+          <DetailShell title="Awaiting Previous Transfer" sub="The chain is flowing — these legs auto-create the scan after their source receives stock" count={count("awaitingUpstream")} onBack={back}>
+            {groupByProduct(items("awaitingUpstream")).map(([pid, rows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
+                badges={<Badge tone={BLUE_L}>IN TRANSIT CHAIN</Badge>}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {rows.map((r) => <SizeFactChip key={`${r.loc}|${r.size}`} size={r.size} value={`need ${r.deficit} · ${locLabel(r.loc)} ← ${locLabel(r.source)}`} tone={BLUE_L} />)}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      case "awaitingSupplier":
+        return (
+          <DetailShell title="Waiting for Supplier" sub="Nothing upstream can fill these — reorder from the supplier or return stranded store stock via Move Excess" count={count("awaitingSupplier")} onBack={back}>
+            {groupByProduct(items("awaitingSupplier")).map(([pid, rows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
+                badges={<Badge tone={AMBER}>UPSTREAM EMPTY</Badge>}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {rows.map((r) => <SizeFactChip key={`${r.loc}|${r.size}`} size={r.size} value={`need ${r.deficit} · ${locLabel(r.loc)}`} tone={AMBER} />)}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
       case "noTarget":
         return (
           <DetailShell title="Decision Queue" sub="Genuinely new supplier products · numeric-size quantities · assortment leftovers — real decisions only" count={count("noTarget")} onBack={back}>
@@ -491,6 +519,10 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Declined by warehouse (48h)" onClick={() => setScreen("autorefills")} />
               <StatCard label="Waiting for Stock" value={count("waitingForStock")} tone={count("waitingForStock") ? AMBER : GREEN}
                         sub="Rejected demand — auto-reopens on arrival" onClick={() => setScreen("waitingForStock")} />
+              <StatCard label="Awaiting Transfer" value={count("awaitingUpstream")} tone={count("awaitingUpstream") ? BLUE_L : GREEN}
+                        sub="Chain flowing — auto-creates when stock lands" onClick={() => setScreen("awaitingUpstream")} />
+              <StatCard label="Waiting for Supplier" value={count("awaitingSupplier")} tone={count("awaitingSupplier") ? AMBER : GREEN}
+                        sub="Upstream empty — reorder or return excess" onClick={() => setScreen("awaitingSupplier")} />
               <StatCard label="Excess Inventory" value={count("excess")} tone={count("excess") ? AMBER : GREEN}
                         sub="Hub 2 + shops above target → rebalance" onClick={() => setScreen("excess")} />
               <StatCard label="Missing Products" value={missingProducts} tone={missingProducts ? AMBER : GREEN}

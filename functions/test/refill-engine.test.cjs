@@ -67,7 +67,7 @@ test("manual Shop Refill order counts as inbound; engine autoRefill order does n
   assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "manual refill already covers the deficit");
 });
 
-test("propose-don't-suppress: full deficit requested even when the source shows less", () => {
+test("ACTIONABLE-ONLY (v9): qty capped to what the source actually has; every card fully pickable", () => {
   const plan = computeRefillPlan(base({
     targets: {
       "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } },
@@ -75,16 +75,138 @@ test("propose-don't-suppress: full deficit requested even when the source shows 
     },
     stock: {
       "marathon-pe": { p1: { M: cell(0) } },
-      hub2: { p1: { M: cell(1) } },       // system says 1 — the shelf decides
+      hub2: { p1: { M: cell(1) } },       // source has exactly 1
       central: { p1: { M: cell(50) } },
       trophy: {},
     },
   }));
   const storeLeg = plan.intents.find((x) => x.dest === "marathon-pe");
-  assert.equal(storeLeg.qty, 3, "full deficit — warehouse validates availability");
+  assert.equal(storeLeg.qty, 1, "capped to source availability — the card is fully pickable as written");
   const hubLeg = plan.intents.find((x) => x.dest === "hub2");
-  assert.equal(hubLeg.qty, 3); // hub2 target 4 − have 1
+  assert.equal(hubLeg.qty, 3); // hub2 target 4 − have 1, central has plenty
   assert.equal(hubLeg.source, "central");
+});
+
+test("CASCADE (v9): downstream leg is created only after the upstream leg lands", () => {
+  const targets = {
+    trophy: { p1: { M: { target: 2, minQty: 1 } } },
+    hub2: { p1: { M: { target: 3, minQty: 2 } } },
+  };
+  // Scan 1: Trophy needs M, hub2 has NONE, central has plenty →
+  // ONLY the central→hub2 leg is created; Trophy parks as awaiting-upstream.
+  const scan1 = computeRefillPlan(base({
+    targets,
+    stock: { trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(20) } }, "marathon-pe": {} },
+  }));
+  assert.equal(scan1.intents.filter((x) => x.dest === "trophy").length, 0, "no Trophy card while hub2 is empty");
+  assert.equal(scan1.intents.filter((x) => x.dest === "hub2" && x.source === "central").length, 1, "the upstream leg IS created");
+  assert.ok(scan1.exceptions.awaitingUpstream.items.some((w) => w.loc === "trophy" && w.source === "hub2"), "Trophy demand parked visibly, not dropped");
+  // Scan 2: hub2 received → the Trophy leg auto-creates. Nobody recreated anything.
+  const scan2 = computeRefillPlan(base({
+    targets,
+    stock: { trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(3) } }, central: { p1: { M: cell(17) } }, "marathon-pe": {} },
+  }));
+  assert.equal(scan2.intents.filter((x) => x.dest === "trophy" && x.source === "hub2").length, 1, "downstream leg lands the scan after the stock does");
+});
+
+test("AWAITING SUPPLIER (v9): whole upstream chain empty → passive category, never a card", () => {
+  const plan = computeRefillPlan(base({
+    targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } } },
+    // stock exists ONLY at the other store — nothing hub2 or central can pick
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(4) } }, hub2: {}, central: {} },
+  }));
+  assert.equal(plan.intents.length, 0, "no impossible work");
+  assert.ok(plan.exceptions.awaitingSupplier.items.some((w) => w.loc === "marathon-pe"), "parked under Awaiting Supplier");
+  assert.ok(!plan.exceptions.missingSizes.items.some((m) => m.pid === "p1"), "not on the reorder list — stock exists, just stranded");
+});
+
+test("NO SILENT STARVATION (v9): a source with no buffer target is a CONFIG block, never 'chain flowing'", () => {
+  // Stores need M; hub2 is empty AND has NO target for the cell — no
+  // central→hub2 leg will ever auto-create, so labelling this
+  // awaiting-upstream would starve silently behind a self-healing promise.
+  const plan = computeRefillPlan(base({
+    targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } }, trophy: { p1: { M: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } } },
+  }));
+  assert.equal(plan.exceptions.awaitingUpstream.count, 0, "nothing may claim the chain is flowing");
+  const blocked = plan.exceptions.awaitingSupplier.items.filter((w) => /no buffer target/.test(w.note));
+  assert.equal(blocked.length, 2, "both stores surface as blocked-by-config, demanding a human");
+  // Give hub2 its buffer target → the chain genuinely flows: hub2 leg created,
+  // stores correctly park as awaiting-upstream.
+  const flowing = computeRefillPlan(base({
+    targets: {
+      "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } }, trophy: { p1: { M: { target: 2, minQty: 1 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 } } },
+    },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } } },
+  }));
+  assert.equal(flowing.intents.filter((x) => x.dest === "hub2").length, 1, "upstream leg created");
+  assert.equal(flowing.exceptions.awaitingUpstream.items.filter((w) => w.loc !== "hub2").length, 2, "stores now genuinely awaiting upstream");
+});
+
+test("BLOCKED UPSTREAM (v9): a rejection-parked source leg is labelled blocked, not flowing", () => {
+  const plan = computeRefillPlan(base({
+    targets: {
+      "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 } } },
+    },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } }, trophy: {} },
+    // Central's queue rejected hub2's ask 2h ago (cooldown active, no arrival since)
+    refillRequests: { rHub: { status: "cancelled", resolvedAt: iso(2), productId: "p1", size: "M", requestingLocation: "hub2", source: "central", rejectedBy: "warehouse" } },
+  }));
+  assert.equal(plan.intents.length, 0, "hub2 leg rests on its cooldown");
+  assert.ok(plan.exceptions.awaitingSupplier.items.some((w) => w.loc === "marathon-pe" && /blocked/.test(w.note)),
+    "store demand shows the truth: upstream leg blocked, not flowing");
+  assert.equal(plan.exceptions.awaitingUpstream.count, 0);
+});
+
+test("SOURCE RESERVATION (v9): two stores never get cards for the same physical unit", () => {
+  const targets = {
+    "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
+    trophy: { p1: { M: { target: 2, minQty: 1 } } },
+  };
+  const stock = { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(3) } }, central: {} };
+  const plan = computeRefillPlan(base({ targets, stock }));
+  const totalAsked = plan.intents.reduce((t, i) => t + i.qty, 0);
+  assert.equal(totalAsked, 3, "combined asks never exceed the 3 units hub2 actually holds (demand is 4)");
+  // And an EXISTING open request reserves its units across scans too:
+  const scan2 = computeRefillPlan(base({
+    targets: { "marathon-pe": targets["marathon-pe"], trophy: targets.trophy },
+    stock: { ...stock, hub2: { p1: { M: cell(1) } } },
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", qty: 1, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" } },
+  }));
+  assert.equal(scan2.intents.filter((x) => x.dest === "trophy").length, 0, "hub2's last unit is already promised to PE — no Trophy card");
+  assert.ok(scan2.exceptions.awaitingUpstream.items.some((w) => w.loc === "trophy") || scan2.exceptions.awaitingSupplier.items.some((w) => w.loc === "trophy"),
+    "Trophy demand parks passively instead");
+});
+
+test("IN-FLIGHT GUARD (v9): a card being picked is never withdrawn under the picker", () => {
+  const plan = computeRefillPlan(base({
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(9) } }, trophy: {} },
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R005-3", orderCreatedAt: iso(1), qty: 2, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" } },
+    // The warehouse has LOCKED a split for this card (attempt underway).
+    orders: { "R005-3": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming", clothingPlanGen: 0 } },
+  }));
+  assert.ok(!plan.closes.some((x) => x.reason === "awaiting_upstream"), "in-flight fulfilment is untouchable");
+});
+
+test("SOURCE-EMPTY WITHDRAW (v9): an open request the source can no longer fill leaves the queue", () => {
+  const plan = computeRefillPlan(base({
+    targets: {
+      "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 } } },   // buffer target — chain genuinely flows
+    },
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(9) } }, trophy: {} },
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R005-3", orderCreatedAt: iso(1), qty: 2, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" } },
+    orders: { "R005-3": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming" } },
+  }));
+  const c = plan.closes.find((x) => x.reason === "awaiting_upstream");
+  assert.ok(c, "withdrawn — staff never scroll past unpickable cards");
+  assert.equal(c.removeOrderId, "R005-3", "the queue card is deleted");
+  assert.ok(plan.exceptions.awaitingUpstream.items.some((w) => w.loc === "marathon-pe"), "and the demand stays visible passively");
 });
 
 test("zero stock anywhere → NO request at all, straight to the reorder list", () => {
@@ -168,15 +290,17 @@ test("BOOKKEEPING ≠ ARRIVAL: a movement that leaves the cell at ≤0 lifts not
     movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 2, ts: iso(1), after: { hub2: -1 } }],
   }));
   assert.equal(intoHole.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "arrival swallowed by an oversell hole ≠ available stock");
-  // The same receive that ends POSITIVE is a real arrival → reopened.
+  // The same receive that ends POSITIVE is a real arrival → reopened. (The
+  // hub2 CELL carries the arrived stock too — v9 only queues actionable work.)
+  const arrivedStock = { stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(3) } }, central: { p1: { M: cell(4) } }, trophy: {} } };
   const real = computeRefillPlan(base({
-    ...withStock, ...rejected5hAgo,
+    ...arrivedStock, ...rejected5hAgo,
     movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 3, ts: iso(1), after: { hub2: 3 } }],
   }));
   assert.equal(real.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "positive resulting balance → reopened");
   // Legacy movements without an after snapshot keep the old behavior (lift).
   const legacy = computeRefillPlan(base({
-    ...withStock, ...rejected5hAgo,
+    ...arrivedStock, ...rejected5hAgo,
     movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 3, ts: iso(1) }],
   }));
   assert.equal(legacy.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "no after snapshot → counted as before");
@@ -273,11 +397,22 @@ test("restock resurrects a size: no stock = absent; stock appears = requested ag
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: {}, central: {}, trophy: {} },
   }));
   assert.equal(dry.intents.filter((x) => x.sizeKey === "M").length, 0, "nothing upstream → absent from queues");
-  const restocked = computeRefillPlan(base({
+  // Stock lands at CENTRAL only → v9 cascade: still no store card (hub2 is
+  // empty), but the demand is visibly awaiting the upstream leg (hub2 has a
+  // buffer target, so the chain genuinely flows).
+  const centralOnly = computeRefillPlan(base({
     ...rejected,
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } }, hub2: { p1: { M: { target: 3, minQty: 2 } } } },
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: {}, central: { p1: { M: cell(12) } }, trophy: {} },
   }));
-  assert.equal(restocked.intents.filter((x) => x.sizeKey === "M").length, 1, "stock appeared + cooldown passed → asked again");
+  assert.equal(centralOnly.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "hub2 still empty → cascades, no store card yet");
+  assert.ok(centralOnly.exceptions.awaitingUpstream.items.some((w) => w.loc === "marathon-pe"), "parked as awaiting-upstream");
+  // Stock reaches HUB 2 → the request returns to the queue.
+  const restocked = computeRefillPlan(base({
+    ...rejected,
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(6) } }, central: { p1: { M: cell(6) } }, trophy: {} },
+  }));
+  assert.equal(restocked.intents.filter((x) => x.sizeKey === "M").length, 1, "stock at the source + cooldown passed → asked again");
 });
 
 test("CONFIRMED OUT: denied at BOTH levels → no request anywhere, reorder list instead", () => {

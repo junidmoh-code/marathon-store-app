@@ -109,12 +109,17 @@ function computeRefillPlan(snapshot) {
   // request a shop just placed — engine-created orders carry autoRefill:true and
   // are already represented by their open lock, so they're excluded here.
   const inbound = new Map();
+  // v9: units at a SOURCE already promised to open requests — a second
+  // destination must never get a card for the same physical unit.
+  const sourceReserved = new Map();
   const bump = (map, key, q) => map.set(key, (map.get(key) || 0) + q);
   for (const [dest, byPid] of Object.entries(openIndex)) {
     for (const [pid, bySize] of Object.entries(byPid || {})) {
       for (const [sizeKey, entry] of Object.entries(bySize || {})) {
         if (!entry) continue;
         bump(inbound, `${dest}|${pid}|${sizeKey}`, num(entry.qty) || 1);
+        const s = entry.source || routes[dest];
+        if (s) bump(sourceReserved, `${s}|${pid}|${sizeKey}`, num(entry.qty) || 1);
       }
     }
   }
@@ -128,6 +133,14 @@ function computeRefillPlan(snapshot) {
   // ── reconcile: close locks whose intent finished; flag stale ones (L6) ─────
   const closes = [];
   const stuckRefills = [];
+  // Orders with PHYSICAL fulfilment evidence in the ledger (a movement linked
+  // to them) — their status write may still be in flight, so the PLAN skips
+  // withdrawing them. NOTE: this is plan-level advisory only — the actual
+  // safety boundary is the conditional transaction in refill-scan.cjs that
+  // re-reads the order live at write time. Never relax that guard because
+  // this set exists (it is built from the same stale snapshot).
+  const physicallyTouched = new Set();
+  for (const m of movements) if (m?.link?.orderId) physicallyTouched.add(m.link.orderId);
   const staleMs = (num(config?.staleIntentHours) || 48) * 3600e3;
   // Total on-hand for a (pid,size) across every location the scan can see.
   const networkQtyOf = (pid, size) =>
@@ -170,11 +183,30 @@ function computeRefillPlan(snapshot) {
         // Certainly-unfillable PURGE (owner rule 2026-07-13): zero stock
         // anywhere upstream → withdrawn; staff never see unpickable requests.
         const unfillable = unresolvedOurs && networkQtyOf(pid, size) - destHave <= 0;
-        if (needGone || unfillable) {
+        // ACTIONABLE-ONLY withdraw (owner v9, 2026-07-13): an open engine
+        // request whose SOURCE can no longer fulfil it (sold out / never had
+        // it) leaves the working queue — staff must never scroll past work
+        // they can't do. Self-withdrawal, so NO cooldown: the moment the
+        // source restocks, the deficit re-proposes automatically (cascade).
+        // IN-FLIGHT GUARD: a fulfil attempt that has locked its split
+        // (clothingPlanGen) or already partially sent (clothingRefillGen > 0)
+        // must never have its card deleted under the picker's hands — the
+        // warehouse finishes what it started; the scan only tidies untouched
+        // requests.
+        // clothingPlanGen = a fulfil attempt locked its split; ledger link = a
+        // pick physically happened (status write may lag). Either one parks
+        // the withdraw. (clothingRefillGen deliberately NOT used — it only
+        // counts UNDOs, not in-progress picks.)
+        const inFlight = (orderIsOurs && order.clothingPlanGen != null) ||
+          (entry.orderId && physicallyTouched.has(entry.orderId));
+        const sourceLoc = entry.source || routes[dest];
+        const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
+          sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
+        if (needGone || unfillable || sourceEmpty) {
+          const why = needGone ? "no_longer_needed" : unfillable ? "unfillable" : "awaiting_upstream";
           closes.push({
             dest, pid, sizeKey, refillId: entry.refillId,
-            reason: needGone ? "no_longer_needed" : "unfillable",
-            cancelReason: needGone ? "no_longer_needed" : "unfillable",
+            reason: why, cancelReason: why,
             rrStatus: "cancelled",
             removeOrderId: orderIsOurs ? entry.orderId : null,
           });
@@ -232,7 +264,9 @@ function computeRefillPlan(snapshot) {
   const intents = [];
   const belowTarget = [];
   const missingSizes = [];
-  const waitingForStock = [];  // demand parked behind a rejection — never silently dropped
+  const waitingForStock = [];   // demand parked behind a rejection — never silently dropped
+  const awaitingUpstream = [];  // v9: source empty but the chain is flowing — auto-creates when it lands
+  const awaitingSupplier = [];  // v9: whole upstream chain empty — supplier reorder / excess return
   let managedCells = 0;   // cells with a resolvable target > 0 (Health-score denominator)
   const maxUnits = num(config?.maxUnitsPerIntent) || 20;
 
@@ -391,10 +425,58 @@ function computeRefillPlan(snapshot) {
           continue;
         }
 
+        // ── ACTIONABLE-ONLY QUEUES (owner v9, 2026-07-13 — supersedes v3's
+        // propose-don't-suppress) ────────────────────────────────────────────
+        // A request enters a working queue ONLY if the source can physically
+        // fulfil it right now. Source empty → no card; the demand parks in a
+        // passive category instead, and the CASCADE emerges naturally:
+        // Trophy needs X, hub2 has none, central does → this scan creates only
+        // the central→hub2 leg (hub2's own buffer deficit); when hub2 receives,
+        // the NEXT scan creates the Trophy leg. No downstream request exists
+        // before its upstream leg is fulfilled, and staff never see work they
+        // cannot complete. qty is capped to what the source actually has —
+        // every card is fully pickable as written; the remainder re-proposes
+        // after the upstream chain tops the source up.
+        // Free = on-hand at the source MINUS units already promised to open
+        // requests (any destination) MINUS units allocated to intents earlier
+        // in THIS scan — two stores can never be sent after one physical unit.
+        const srcKey = `${src}|${pid}|${sizeKey}`;
+        const srcAvail = avail(cellQty(stock, src, pid, size)) - (sourceReserved.get(srcKey) || 0);
+        if (srcAvail <= 0) {
+          const upstreamOfSrc = routes[src];   // e.g. central for hub2-sourced legs
+          const upstreamAvail = upstreamOfSrc ? avail(cellQty(stock, upstreamOfSrc, pid, size)) : 0;
+          // "Chain is flowing" must be TRUE, not hopeful: stock already on its
+          // way to the source, or stock one level up AND the source's own leg
+          // is not itself parked behind a rejection cooldown / confirmed-out
+          // (Codex P2 — otherwise demand sits mislabelled for the whole window).
+          const srcRej = rejectedAt.get(`${src}|${pid}|${sizeKey}`);
+          const srcParked = (srcRej && nowMs - srcRej.ts < cooldownMs && !arrivedAfter(srcRej.by || upstreamOfSrc, pid, sizeKey, srcRej.ts)) || confirmedOut(pid, sizeKey);
+          // "Chain is flowing" additionally requires the source to HAVE a
+          // buffer target for this cell — without one the engine will never
+          // compute a source deficit, so no upstream leg would EVER create and
+          // the demand would starve silently behind a self-healing label
+          // (Sonnet HIGH, 2026-07-13). No target at the source = a CONFIG gap,
+          // surfaced as blocked, not as flowing.
+          const srcTarget = upstreamOfSrc ? resolveTarget(ctx, src, pid, size) : null;
+          const srcCanPull = !!(srcTarget && srcTarget.target > 0);
+          if ((inbound.get(`${src}|${pid}|${sizeKey}`) || 0) > 0 || (upstreamAvail > 0 && srcCanPull && !srcParked)) {
+            awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, note: `waiting for ${src} to receive stock${upstreamOfSrc ? ` from ${upstreamOfSrc}` : ""}` });
+          } else {
+            awaitingSupplier.push({
+              loc: dest, pid, size, deficit, source: src,
+              note: srcParked ? `upstream leg blocked — ${src} recently rejected / confirmed out`
+                : (upstreamAvail > 0 && !srcCanPull) ? `${src} has no buffer target for this size — set one (or transfer manually); stock waits at ${upstreamOfSrc}`
+                : "upstream chain empty — supplier reorder or excess return needed",
+            });
+          }
+          continue;
+        }
+
+        const qty = Math.min(deficit, srcAvail, maxUnits);
+        bump(sourceReserved, srcKey, qty);   // claim the units within this scan
         intents.push({
           dest, source: src, productId: pid, size, sizeKey,
-          qty: Math.min(deficit, maxUnits),
-          priority: have < t.minQty ? "high" : "normal", mode,
+          qty, priority: have < t.minQty ? "high" : "normal", mode,
         });
       }
     }
@@ -626,6 +708,8 @@ function computeRefillPlan(snapshot) {
       belowTarget: cap(belowTarget, 1500),
       missingSizes: cap(missingSizes),
       waitingForStock: cap(waitingForStock),
+      awaitingUpstream: cap(awaitingUpstream, 900),
+      awaitingSupplier: cap(awaitingSupplier, 900),
       stuckRefills: cap(stuckRefills),
       failedRefills: cap(failedRefills),
       onlyInCentral: cap(onlyInCentral),
