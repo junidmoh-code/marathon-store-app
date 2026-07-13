@@ -592,12 +592,33 @@ function computeRefillPlan(snapshot) {
         //   no target          → NOT excess; surfaced as noTarget below instead
         if (!t || typeof t.target !== "number") continue;
         const raw = num(cell?.qty) - t.target;
-        // Net the surplus against what the rest of the network still NEEDS of
-        // this exact size — that portion is held for refills, not for Central.
-        const heldForRefills = Math.min(Math.max(raw, 0), deficitBySize.get(`${pid}|${sizeKey}`) || 0);
-        const ex = raw - heldForRefills;
-        const minEx = t.target === 0 ? 1 : (loc === "hub2" ? 1 : storeExcessMin);
-        if (ex >= minEx) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex, ...(heldForRefills > 0 ? { heldForRefills } : {}) });
+        // TWO-LEG MOVE EXCESS (owner directive 2026-07-13, supersedes the
+        // net-only display of the Cortez fix while KEEPING its protection):
+        //   • HUB 2 rows stay NET-based — its held units have an automated
+        //     mover (the hub→store refill legs), so they are not excess.
+        //   • STORE rows are RAW-based with an allocation split — a store has
+        //     NO automated mover; Move Excess is its only path, so the card
+        //     must move the WHOLE overage in one visit: deficit-covering units
+        //     → Hub 2 (never Central — Cortez preserved), remainder → Central.
+        //     The shop finishes exactly on target in one operation.
+        //   • Allocation is THREADED: deficitBySize is consumed as stores
+        //     allocate, so two over-target stores can never both be told to
+        //     fill the same Hub 2 deficit (the resize-reservation lesson,
+        //     applied at design time).
+        const dKey = `${pid}|${sizeKey}`;
+        if (loc === "hub2") {
+          const heldForRefills = Math.min(Math.max(raw, 0), deficitBySize.get(dKey) || 0);
+          const ex = raw - heldForRefills;
+          if (ex >= 1) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex, ...(heldForRefills > 0 ? { heldForRefills } : {}) });
+        } else {
+          const minEx = t.target === 0 ? 1 : storeExcessMin;
+          if (raw >= minEx) {
+            const need = deficitBySize.get(dKey) || 0;
+            const toHub = Math.min(raw, need);
+            deficitBySize.set(dKey, need - toHub);   // consume — no double-fill
+            excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: raw, toHub, toCentral: raw - toHub, ...(toHub > 0 ? { heldForRefills: toHub } : {}) });
+          }
+        }
       }
     }
   }
