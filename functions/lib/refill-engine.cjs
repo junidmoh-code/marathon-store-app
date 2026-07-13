@@ -133,6 +133,11 @@ function computeRefillPlan(snapshot) {
   // ── reconcile: close locks whose intent finished; flag stale ones (L6) ─────
   const closes = [];
   const stuckRefills = [];
+  // Orders with PHYSICAL fulfilment evidence in the ledger (a movement linked
+  // to them) — their status write may still be in flight, so scans must never
+  // withdraw them on stale snapshots (Codex P0, 2026-07-13).
+  const physicallyTouched = new Set();
+  for (const m of movements) if (m?.link?.orderId) physicallyTouched.add(m.link.orderId);
   const staleMs = (num(config?.staleIntentHours) || 48) * 3600e3;
   // Total on-hand for a (pid,size) across every location the scan can see.
   const networkQtyOf = (pid, size) =>
@@ -185,7 +190,8 @@ function computeRefillPlan(snapshot) {
         // must never have its card deleted under the picker's hands — the
         // warehouse finishes what it started; the scan only tidies untouched
         // requests.
-        const inFlight = orderIsOurs && (order.clothingPlanGen != null || (order.clothingRefillGen || 0) > 0);
+        const inFlight = (orderIsOurs && (order.clothingPlanGen != null || (order.clothingRefillGen || 0) > 0)) ||
+          (entry.orderId && physicallyTouched.has(entry.orderId));   // ledger says a pick already happened
         const sourceLoc = entry.source || routes[dest];
         const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
@@ -432,14 +438,19 @@ function computeRefillPlan(snapshot) {
         if (srcAvail <= 0) {
           const upstreamOfSrc = routes[src];   // e.g. central for hub2-sourced legs
           const upstreamAvail = upstreamOfSrc ? avail(cellQty(stock, upstreamOfSrc, pid, size)) : 0;
-          if (upstreamAvail > 0 || (inbound.get(`${src}|${pid}|${sizeKey}`) || 0) > 0) {
-            // The chain is flowing: stock exists one level up (or is already on
-            // its way to the source) — this leg auto-creates once it lands.
+          // "Chain is flowing" must be TRUE, not hopeful: stock already on its
+          // way to the source, or stock one level up AND the source's own leg
+          // is not itself parked behind a rejection cooldown / confirmed-out
+          // (Codex P2 — otherwise demand sits mislabelled for the whole window).
+          const srcRej = rejectedAt.get(`${src}|${pid}|${sizeKey}`);
+          const srcParked = (srcRej && nowMs - srcRej.ts < cooldownMs && !arrivedAfter(srcRej.by || upstreamOfSrc, pid, sizeKey, srcRej.ts)) || confirmedOut(pid, sizeKey);
+          if ((inbound.get(`${src}|${pid}|${sizeKey}`) || 0) > 0 || (upstreamAvail > 0 && !srcParked)) {
             awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, note: `waiting for ${src} to receive stock${upstreamOfSrc ? ` from ${upstreamOfSrc}` : ""}` });
           } else {
-            // Nothing anywhere upstream of the source — only a supplier (or a
-            // Move Excess back-transfer) can unblock this demand.
-            awaitingSupplier.push({ loc: dest, pid, size, deficit, source: src, note: "upstream chain empty — supplier reorder or excess return needed" });
+            awaitingSupplier.push({
+              loc: dest, pid, size, deficit, source: src,
+              note: srcParked ? `upstream leg blocked — ${src} recently rejected / confirmed out` : "upstream chain empty — supplier reorder or excess return needed",
+            });
           }
           continue;
         }

@@ -181,7 +181,8 @@ export default function Hub2RefillQueue({ products = [] }) {
   return (
     <div style={{ paddingBottom: 30 }}>
       <div style={{ color: GRAY, fontSize: 11.5, margin: "6px 2px 10px" }}>
-        <b style={{ color: GREEN }}>{cards.length} ready to fulfil</b> — every card below is pickable at Central right now.
+        <b style={{ color: GREEN }}>{cards.length} ready to fulfil</b> — created against live Central stock; if a size
+        sold out since, the card withdraws itself on the next scan (≤15 min).
         {" "}{passiveLine("Not shown: ")}
         {!canTransfer && <span style={{ color: AMBER }}> You need a stock role to transfer — viewing only.</span>}
       </div>

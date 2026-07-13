@@ -100,21 +100,34 @@ async function runScan() {
     });
     counts.errors.push(...plan.errors);
 
-    // ── apply closes (lock removal + refill_request status) in one update ────
+    // ── apply closes ──────────────────────────────────────────────────────────
+    // Lock removals are a plain bulk update, but refill_request statuses and
+    // order deletions are CONDITIONAL transactions (review 2026-07-13): the
+    // plan was computed from a snapshot that may be a minute old — a request
+    // fulfilled or an order resolved in the meantime must never be clobbered
+    // by a stale cancel/delete. A skipped conditional simply re-reconciles on
+    // the next scan (stateless).
     if (plan.closes.length) {
       const upd = {};
-      for (const c of plan.closes) {
-        upd[`refill_engine/open/${c.dest}/${c.pid}/${c.sizeKey}`] = null;
-        if (c.refillId && c.rrStatus) {
-          upd[`refill_requests/${c.refillId}/status`] = c.rrStatus;
-          upd[`refill_requests/${c.refillId}/resolvedAt`] = startedAt;
-          if (c.cancelReason) upd[`refill_requests/${c.refillId}/cancelReason`] = c.cancelReason;
-        }
-        // Certainly-unfillable engine orders are WITHDRAWN from the warehouse
-        // queue entirely — staff never see requests that can't be picked.
-        if (c.removeOrderId) upd[`orders/${c.removeOrderId}`] = null;
-      }
+      for (const c of plan.closes) upd[`refill_engine/open/${c.dest}/${c.pid}/${c.sizeKey}`] = null;
       await db.ref().update(upd);
+      for (const c of plan.closes) {
+        if (c.refillId && c.rrStatus) {
+          await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => {
+            if (!cur || (cur.status && cur.status !== "open")) return;   // resolved meanwhile — leave it
+            return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
+          }).catch(() => {});
+        }
+        // Withdrawn engine orders leave the warehouse queue — but ONLY while
+        // still untouched (unresolved, no fulfilment fields landed).
+        if (c.removeOrderId) {
+          await db.ref(`orders/${c.removeOrderId}`).transaction((cur) => {
+            if (!cur) return;                                            // already gone
+            if (cur.clothingRefillStatus != null || cur.clothingPlanGen != null || !cur.autoRefill) return; // touched — keep
+            return null;
+          }).catch(() => {});
+        }
+      }
       counts.closes = plan.closes.length;
       const withdrawn = plan.closes.filter((c) => c.cancelReason).length;
       if (withdrawn) counts.withdrawn = withdrawn;
@@ -217,8 +230,10 @@ async function runScan() {
       // ONE R-number per destination per run (mirrors "one R### per cart"), and
       // ONE shared createdAt per destination — the warehouse Clothing tab groups
       // cards by (product, destShop, createdAt), so a shared stamp makes all of
-      // one product's sizes land on a single per-store card.
-      const refillNum = isStoreLeg && intents.length ? await drawRefillNumber(db, nowMs) : null;
+      // one product's sizes land on a single per-store card. Drawn LAZILY after
+      // the first successful claim, so a run whose claims all lose never burns
+      // a number (review 2026-07-13).
+      let refillNum = null;
       const destCreatedAt = new Date().toISOString();
       let lineIdx = 0;
       for (const intent of intents) {
@@ -242,6 +257,7 @@ async function runScan() {
         };
         let orderId = null, orderCreatedAt = null, order = null, insight = null;
         if (isStoreLeg) {
+          if (!refillNum) refillNum = await drawRefillNumber(db, nowMs);
           lineIdx += 1;
           orderId = `${refillNum}-${lineIdx}`;
           orderCreatedAt = destCreatedAt;
@@ -268,6 +284,10 @@ async function runScan() {
             productCategory: p.category || "", productType: "clothing", size, qty,
             customerName: "Shop Refill", customerPhone: null, orderNumber: orderId,
             action: "placed", placedAtHub: source,
+            // Engine-placed marker (review 2026-07-13): withdraw/recreate cycles
+            // append new "placed" rows — analytics must be able to exclude
+            // engine churn from human demand.
+            autoRefill: true,
           };
         }
         // ONE atomic multi-path update per intent (review 2026-07-13): request,
