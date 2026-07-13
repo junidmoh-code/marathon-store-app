@@ -9192,7 +9192,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontWeight:700, color:"#fff", fontSize:13, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{batch.productName}</div>
           <div style={{ color:"rgba(255,255,255,.45)", fontSize:10, marginTop:1 }}>
-            {batch.destShop ? `${labelFor(batch.destShop)} · ` : ""}{fmtTime(batch.createdAt)}
+            {batch.destShop ? `${labelFor(batch.destShop)} · ` : ""}{relativeTimeFromIso(batch.createdAt) || fmtTime(batch.createdAt)}
             {batch.autoRefill && (
               <span style={{ marginLeft:6, fontSize:9, fontWeight:700, color:"#FBBF24", border:"1px solid rgba(251,191,36,.4)", borderRadius:5, padding:"1px 5px", verticalAlign:"middle" }}>
                 {batch.shadow ? "AUTO (SHADOW)" : "AUTO"}
@@ -9361,25 +9361,24 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
         ))}
       </div>
 
-      {/* OPEN — the working queue. includeOlder keeps half-resolved requests
-          (some sizes deliberately left pending) reachable past the 3-day window;
-          keyOf pins each STATEFUL card to its batch so same-timestamp neighbours
-          can't inherit each other's state. */}
+      {/* OPEN — the working queue, ONE flat list (owner directive 2026-07-13):
+          this is operational work, not a history view. Every unfulfilled
+          request stays visible until fulfilled, withdrawn, or cancelled —
+          sorted oldest-first so nothing rots at the bottom of a collapsed
+          "yesterday" section. Age shows on each card; day-grouping lives only
+          in History below. */}
       {view === "open" && (activeBatches.length > 0 ? (
-        <DayCollapsible
-          sectionKey="clothing-due"
-          items={shownActive}
-          dateOf={(b) => b.createdAt}
-          keyOf={(b) => b.batchKey}
-          includeOlder
-          emptyMessage="No clothing refills pending."
-          renderItem={(batch) => (
-            <CRFulfillCard batch={batch} hubCells={hubCells} hubLabel={hubLabel} canFulfil={canFulfil}
-                           onFulfill={onFulfill} onViewPhoto={onViewPhoto} products={products} fmtTime={fmtTime}
-                           open={openKey === batch.batchKey}
-                           onToggle={() => setOpenKey(k => k === batch.batchKey ? null : batch.batchKey)} />
-          )}
-        />
+        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          {[...shownActive]
+            .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))
+            .map((batch) => (
+              <CRFulfillCard key={batch.batchKey}
+                             batch={batch} hubCells={hubCells} hubLabel={hubLabel} canFulfil={canFulfil}
+                             onFulfill={onFulfill} onViewPhoto={onViewPhoto} products={products} fmtTime={fmtTime}
+                             open={openKey === batch.batchKey}
+                             onToggle={() => setOpenKey(k => k === batch.batchKey ? null : batch.batchKey)} />
+            ))}
+        </div>
       ) : (
         <div style={{ textAlign:"center", color:"#444", padding:"3rem 1rem" }}>
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeOpacity="0.6" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/></svg>
