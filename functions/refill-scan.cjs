@@ -168,12 +168,22 @@ async function runScan() {
           } catch { proceed = false; }
         }
         if (!proceed) continue;
+        // The rr transaction is the decider for its own node (review
+        // 2026-07-13): if it bails — resolved concurrently, e.g. Hub 2 legs
+        // fulfilled between plan and apply — the lock is NOT touched and the
+        // resize does NOT count. resizedFrom comes from the authoritative
+        // in-transaction value, never the planning snapshot.
         if (rz.refillId) {
-          await db.ref(`refill_requests/${rz.refillId}`).transaction((cur) => {
-            if (cur === null) return null;                                   // probe
-            if (cur.status !== "open") return;
-            return { ...cur, qty: rz.to, resizedAt: startedAt, resizedFrom: rz.from };
-          }).catch(() => {});
+          let ok = false;
+          try {
+            const r2 = await db.ref(`refill_requests/${rz.refillId}`).transaction((cur) => {
+              if (cur === null) return null;                                 // probe
+              if (cur.status !== "open") return;
+              return { ...cur, qty: rz.to, resizedAt: startedAt, resizedFrom: cur.qty ?? rz.from };
+            });
+            ok = r2.committed && r2.snapshot.exists() && r2.snapshot.val()?.qty === rz.to;
+          } catch { ok = false; }
+          if (!ok) continue;
         }
         await db.ref(`refill_engine/open/${rz.dest}/${rz.pid}/${rz.sizeKey}/qty`).set(rz.to).catch(() => {});
         resized++;

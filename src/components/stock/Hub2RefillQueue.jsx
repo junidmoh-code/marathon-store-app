@@ -23,7 +23,7 @@
 //   out — no more requests, straight to the Missing Sizes reorder list).
 
 import React, { useMemo, useState } from "react";
-import { ref, update } from "firebase/database";
+import { ref, update, get } from "firebase/database";
 import { database } from "../../firebase";
 import { useRefillRequests, useStockCells, useStockExceptions } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
@@ -114,7 +114,17 @@ export default function Hub2RefillQueue({ products = [] }) {
     if (!lines.length && !denied.length) return;
     setBusyCard(card.pid);
     let ok = 0, fail = 0;
-    for (const { r, qty } of lines) {
+    for (const { r, qty: pickedQty } of lines) {
+      // STALE-QTY CLAMP (review 2026-07-13): the engine may auto-resize this
+      // request between render and tap. Re-read the live request; never send
+      // more than it currently asks, and skip it entirely if it resolved.
+      let qty = pickedQty;
+      try {
+        const live = (await get(ref(database, `refill_requests/${r.id}`))).val();
+        if (!live || live.status !== "open") { fail++; continue; }
+        if (typeof live.qty === "number" && qty > live.qty) qty = live.qty;
+        if (qty <= 0) { fail++; continue; }
+      } catch { /* offline read — proceed; movement idempotency still guards */ }
       const counted = availOf(r.productId, r.size) > 0;
       let res;
       try {

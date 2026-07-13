@@ -156,6 +156,71 @@ test("AUTO-RESIZE: open requests continuously track reality — shrink, grow, ca
   assert.equal(exact.resizes.length, 0, "correct quantities are untouched");
 });
 
+test("AUTO-RESIZE threading: sibling grows share the source, never overcommit (Sonnet HIGH)", () => {
+  // hub2 holds 10; A and B both hold qty-1 locks and both deficits widen to 8.
+  // Stale-read math promised 16 vs 10 physical; threaded math shares exactly 10.
+  const two = (qa, qb) => ({
+    openIndex: {
+      "marathon-pe": { p1: { M: { refillId: "rA", orderId: "R008-1", orderCreatedAt: iso(1), qty: qa, source: "hub2", createdAt: iso(1) } } },
+      trophy: { p1: { M: { refillId: "rB", orderId: "R009-1", orderCreatedAt: iso(1), qty: qb, source: "hub2", createdAt: iso(1) } } },
+    },
+    refillRequests: {
+      rA: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" },
+      rB: { status: "open", productId: "p1", size: "M", requestingLocation: "trophy", source: "hub2" },
+    },
+    orders: {
+      "R008-1": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming" },
+      "R009-1": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming" },
+    },
+  });
+  const grow = computeRefillPlan(base({
+    ...two(1, 1),
+    targets: { "marathon-pe": { p1: { M: { target: 8, minQty: 2 } } }, trophy: { p1: { M: { target: 8, minQty: 2 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(10) } }, central: {} },
+  }));
+  const total = grow.resizes.reduce((t, r) => t + r.to, 0) +
+    2 - grow.resizes.length * 1;   // resized locks new qty + untouched locks old qty (1 each)
+  assert.ok(total <= 10, `combined promises (${total}) never exceed the 10 physical units`);
+  assert.ok(grow.resizes.length >= 1, "at least one sibling grows into the free units");
+  // Symmetric SHRINK converges: both qty-3 locks against deficits of 2 shrink
+  // to 2 each — never frozen at their oversized quantities (old deadlock).
+  const shrink = computeRefillPlan(base({
+    ...two(3, 3),
+    targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } }, trophy: { p1: { M: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(3) } }, central: {} },
+  }));
+  assert.equal(shrink.resizes.length, 2, "both oversized siblings shrink — never frozen");
+  assert.ok(shrink.resizes.every((r) => r.to <= 2 && r.to >= 1), "each lands within its true deficit");
+  assert.equal(shrink.resizes.reduce((t, r) => t + r.to, 0), 3, "combined claims converge to exactly the 3 physical units");
+});
+
+test("AUTO-RESIZE threading: a grow consumes the units BEFORE the deficit loop sees them", () => {
+  // trophy lock grows 1→5 over hub2 five units; PE (no lock) must then park —
+  // stale reservations previously let PE create a fresh 3-unit intent (8 vs 5).
+  const plan = computeRefillPlan(base({
+    openIndex: { trophy: { p1: { M: { refillId: "rB", orderId: "R009-1", orderCreatedAt: iso(1), qty: 1, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { rB: { status: "open", productId: "p1", size: "M", requestingLocation: "trophy", source: "hub2" } },
+    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming" } },
+    targets: { trophy: { p1: { M: { target: 5, minQty: 2 } } }, "marathon-pe": { p1: { M: { target: 3, minQty: 1 } } } },
+    stock: { trophy: { p1: { M: cell(0) } }, "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(5) } }, central: {} },
+  }));
+  const rb = plan.resizes.find((r) => r.dest === "trophy");
+  assert.deepEqual(rb && { from: rb.from, to: rb.to }, { from: 1, to: 5 }, "trophy grows into all 5");
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe").length, 0, "PE cannot claim already-promised units");
+  assert.ok(plan.exceptions.awaitingUpstream.items.some((w) => w.loc === "marathon-pe") || plan.exceptions.awaitingSupplier.items.some((w) => w.loc === "marathon-pe"), "PE parks passively");
+});
+
+test("AUTO-RESIZE emits for hub2 legs too (no orderId on the lock)", () => {
+  const plan = computeRefillPlan(base({
+    openIndex: { hub2: { p1: { M: { refillId: "rH", qty: 3, source: "central", createdAt: iso(1) } } } },
+    refillRequests: { rH: { status: "open", productId: "p1", size: "M", requestingLocation: "hub2", source: "central" } },
+    targets: { hub2: { p1: { M: { target: 2, minQty: 1 } } } },
+    stock: { hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(9) } }, "marathon-pe": {}, trophy: {} },
+  }));
+  const rz = plan.resizes.find((r) => r.dest === "hub2");
+  assert.deepEqual(rz && { from: rz.from, to: rz.to, orderId: rz.orderId }, { from: 3, to: 2, orderId: null }, "hub2 leg resizes with null orderId");
+});
+
 test("AUTO-RESIZE respects sibling reservations — never steals another request's units", () => {
   const plan = computeRefillPlan(base({
     targets: {
