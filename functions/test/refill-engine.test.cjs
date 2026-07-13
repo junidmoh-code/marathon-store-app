@@ -138,6 +138,15 @@ test("ARRIVAL LIFT: stock arriving at the source AFTER a rejection reopens the d
     movements: [{ type: "sold", from: "hub2", productId: "p1", size: "M", qty: 1, ts: iso(1) }],
   }));
   assert.equal(soldOnly.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "a sale never lifts a rejection");
+  // EVERY inbound type counts as arrival evidence (transfers carry a REAL
+  // from+to in this system — no in_transit hop — so both legs qualify).
+  for (const type of ["return", "adjustment", "transfer_in", "transfer_out", "opening"]) {
+    const lifted = computeRefillPlan(base({
+      ...withStock, ...rejected5hAgo,
+      movements: [{ type, from: type.startsWith("transfer") ? "central" : undefined, to: "hub2", productId: "p1", size: "M", qty: 3, ts: iso(1) }],
+    }));
+    assert.equal(lifted.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, `${type} after rejection → reopened`);
+  }
 });
 
 test("ARRIVAL LIFT: confirmed-out clears when stock arrives at a denying level after its denial", () => {

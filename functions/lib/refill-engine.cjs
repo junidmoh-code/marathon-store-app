@@ -220,7 +220,8 @@ function computeRefillPlan(snapshot) {
   // fresh physical evidence that beats the stale "no": the demand re-asks on
   // the very next scan instead of resting out the cooldown / confirmed-out
   // window. arrivedAt: (loc|pid|sizeKey) → latest inbound movement ts there.
-  // (Movement types whose `to` gains stock mirror applyMovement's cellDeltas.)
+  // (Movement types whose `to` gains stock mirror applyMovement's cellDeltas;
+  // transfers carry a REAL from+to — no in_transit hop — so both legs count.)
   const INBOUND_TYPES = new Set(["received", "opening", "return", "adjustment", "transfer_in", "transfer_out"]);
   const arrivedAt = new Map();
   for (const m of movements) {
@@ -230,6 +231,8 @@ function computeRefillPlan(snapshot) {
     const k = `${m.to}|${m.productId}|${encodeSizeKey(m.size)}`;
     if (ts > (arrivedAt.get(k) || 0)) arrivedAt.set(k, ts);
   }
+  const arrivedAfter = (loc, pid, sizeKey, ts) =>
+    (arrivedAt.get(`${loc}|${pid}|${sizeKey}`) || 0) > ts;
 
   // Rejection cooldown: (dest|pid|sizeKey) → most recent rejection timestamp.
   const cooldownMs = (num(config?.rejectCooldownHours) || 24) * 3600e3;
@@ -280,8 +283,8 @@ function computeRefillPlan(snapshot) {
     if (!(c > 0 && s > 0 && nowMs - c < confirmedOutMs && nowMs - s < confirmedOutMs)) return false;
     // Stock arrived at a denying level AFTER it said no → no longer confirmed
     // out: one re-ask resumes (two fresh denials re-confirm it out).
-    if ((arrivedAt.get(`${centralLevelLoc}|${pid}|${sizeKey}`) || 0) > c) return false;
-    if (shopLevelLocs.some((l) => (arrivedAt.get(`${l}|${pid}|${sizeKey}`) || 0) > s)) return false;
+    if (arrivedAfter(centralLevelLoc, pid, sizeKey, c)) return false;
+    if (shopLevelLocs.some((l) => arrivedAfter(l, pid, sizeKey, s))) return false;
     return true;
   };
 
@@ -332,7 +335,7 @@ function computeRefillPlan(snapshot) {
         // STOCK so parked demand is always visible, never silently dropped.
         if (inb > 0) continue;
         const rejTs = rejectedAt.get(`${dest}|${pid}|${sizeKey}`) || 0;
-        if (nowMs - rejTs < cooldownMs && (arrivedAt.get(`${src}|${pid}|${sizeKey}`) || 0) <= rejTs) {
+        if (nowMs - rejTs < cooldownMs && !arrivedAfter(src, pid, sizeKey, rejTs)) {
           waitingForStock.push({
             loc: dest, pid, size, deficit, source: src, rejectedAt: new Date(rejTs).toISOString(),
             note: `rejected at ${src} — reopens when stock arrives at ${src} (or after the ${Math.round(cooldownMs / 3600e3)}h cooldown)`,

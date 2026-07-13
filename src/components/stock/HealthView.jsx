@@ -338,7 +338,7 @@ export default function HealthView({ products = [], onExit }) {
               <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
                 badges={<Badge tone={AMBER}>WAITING</Badge>}>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {rows.map((r, i) => <SizeFactChip key={i} size={r.size} value={`need ${r.deficit} · ${locLabel(r.loc)} ← ${locLabel(r.source)}`} tone={AMBER} />)}
+                  {rows.map((r) => <SizeFactChip key={`${r.loc}|${r.size}`} size={r.size} value={`need ${r.deficit} · ${locLabel(r.loc)} ← ${locLabel(r.source)}`} tone={AMBER} />)}
                 </div>
               </ProductCard>
             ))}
