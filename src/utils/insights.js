@@ -141,7 +141,11 @@ export function restockCountsFromLog({ log, dateStr, hub, returnedIds }) {
     if (!size) continue;
     const name = e.productName || "Unknown";
     const key = sanitizeKey(name);
-    if (!result[key]) result[key] = { productName: name, sizes: {} };
+    if (!result[key]) result[key] = { productName: name, productId: e.productId ?? null, sizes: {} };
+    // productId powers the Source "Transfer & Fulfil" flow. Older log events
+    // predate the field, so take the first one any event in the group carries;
+    // cards without one fall back to name-resolution, then to the plain buttons.
+    if (!result[key].productId && e.productId) result[key].productId = e.productId;
     result[key].sizes[size] = (result[key].sizes[size] || 0) + 1;
   }
   return result;
