@@ -149,6 +149,38 @@ async function runScan() {
       if (withdrawn) counts.withdrawn = withdrawn;
     }
 
+    // ── apply resizes (owner approval 2026-07-13) ─────────────────────────────
+    // Same identity, history preserved: the warehouse ORDER transaction decides
+    // (bails on any touched/in-flight card — exactly the withdraw guard), then
+    // the request and the lock follow. A bailed resize retries next scan.
+    if (plan.resizes && plan.resizes.length) {
+      let resized = 0;
+      for (const rz of plan.resizes) {
+        let proceed = true;
+        if (rz.orderId) {
+          try {
+            const r = await db.ref(`orders/${rz.orderId}`).transaction((cur) => {
+              if (cur === null) return null;                                 // cold-cache probe (null-tolerant)
+              if (cur.clothingRefillStatus != null || cur.clothingPlanGen != null || !cur.autoRefill) return; // in-flight/touched
+              return { ...cur, qty: rz.to, updatedAt: startedAt };
+            });
+            proceed = r.committed && r.snapshot.exists();                    // vanished order → let the close path own it
+          } catch { proceed = false; }
+        }
+        if (!proceed) continue;
+        if (rz.refillId) {
+          await db.ref(`refill_requests/${rz.refillId}`).transaction((cur) => {
+            if (cur === null) return null;                                   // probe
+            if (cur.status !== "open") return;
+            return { ...cur, qty: rz.to, resizedAt: startedAt, resizedFrom: rz.from };
+          }).catch(() => {});
+        }
+        await db.ref(`refill_engine/open/${rz.dest}/${rz.pid}/${rz.sizeKey}/qty`).set(rz.to).catch(() => {});
+        resized++;
+      }
+      if (resized) counts.resized = resized;
+    }
+
     // ── act on intents, by destination mode ──────────────────────────────────
     const shadowNode = {};
     const liveByDest = new Map();
