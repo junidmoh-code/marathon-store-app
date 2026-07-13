@@ -75,7 +75,9 @@ for (const loc of LOCS) {
       if (cellVal.target === 0) { stats.skippedExcluded++; continue; }   // explicit exclusion — a human decision
       if (!STD.test(sizeKey)) { stats.skippedNonStandard++; continue; }
       const t = RUN_BY_LOC[loc][sizeKey.toUpperCase()];
-      if (cellVal.target === t) { stats.alreadyNew++; continue; }
+      // Skip only fully-consistent cells: target AND minQty must both match,
+      // so an anomalous standard-policy cell is corrected, not preserved.
+      if (cellVal.target === t && cellVal.minQty === (t > 0 ? Math.ceil(t / 2) : 0)) { stats.alreadyNew++; continue; }
       updates[`${loc}/${pid}/${sizeKey}`] = {
         ...cellVal,
         target: t, minQty: t > 0 ? Math.ceil(t / 2) : 0,
