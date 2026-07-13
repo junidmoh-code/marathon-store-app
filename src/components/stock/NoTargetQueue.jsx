@@ -42,7 +42,9 @@ import { computeUnintroduced, stockedStandardSizes, destsFrom } from "./introduc
 const DESTS = ["marathon-pe", "trophy", "hub2"];
 const ALL_LOCS = ["marathon-pe", "trophy", "hub2", "central"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
-const STANDARD_RUN = { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 };
+// Approved standard run (owner policy 2026-07-13, reduced) — single source of
+// truth is introduceExisting.js; this import keeps the wizard prefill aligned.
+const STANDARD_RUN = { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 };
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
 const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
 

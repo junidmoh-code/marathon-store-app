@@ -11,8 +11,8 @@ const CONFIG = {
   mode: { "marathon-pe": "live", trophy: "live", hub2: "live" },
   routes: { "marathon-pe": "hub2", trophy: "hub2", hub2: "central" },
   defaultRunByStore: {
-    "marathon-pe": { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 },
-    trophy: { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 },
+    "marathon-pe": { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 },
+    trophy: { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 },
   },
   defaultRunRecentSaleDays: 14,
   staleIntentHours: 48,
@@ -334,6 +334,26 @@ test("SELF-REVERSAL: request withdrawn when stock arrives by another path", () =
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
   }));
   assert.ok(!partial.closes.some((x) => x.reason === "no_longer_needed"), "still needed → stays in the queue");
+});
+
+test("POLICY DROP reconciliation: lowering a target withdraws the now-oversized open request", () => {
+  // Request for 2 units was created under the old policy (target 3, have 1).
+  // The policy drops to target 1 → the shop already holds enough → the very
+  // next scan withdraws the request (no human cleanup, no obsolete work).
+  const openReq = {
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R003-2", orderCreatedAt: iso(1), qty: 2, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", requestingLocation: "marathon-pe", source: "hub2" } },
+    orders: { "R003-2": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming" } },
+  };
+  const plan = computeRefillPlan(base({
+    ...openReq,
+    targets: { "marathon-pe": { p1: { M: { target: 1, minQty: 1 } } } },  // NEW reduced policy
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
+  }));
+  const c = plan.closes.find((x) => x.reason === "no_longer_needed");
+  assert.ok(c, "request obsolete under the new policy → withdrawn");
+  assert.equal(c.removeOrderId, "R003-2", "warehouse card deleted");
+  assert.equal(plan.intents.length, 0, "and no replacement is created — target is met");
 });
 
 test("engine self-withdrawal imposes NO cooldown — a fresh dip re-asks immediately", () => {
