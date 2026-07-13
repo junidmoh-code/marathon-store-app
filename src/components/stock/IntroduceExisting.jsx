@@ -10,7 +10,7 @@
 import React, { useMemo, useState } from "react";
 import { useStockCells, useStockTargets, useEngineConfig } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
-import { computeUnintroduced, migrateToEngine, destsFrom, STANDARD_RUN } from "./introduceExisting";
+import { computeUnintroduced, migrateToEngine, destsFrom, effectiveRun } from "./introduceExisting";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge } from "./healthWidgets";
 
@@ -40,7 +40,9 @@ export default function IntroduceExisting({ products = [] }) {
   const migratable = items.filter((i) => i.migratable);
   const numeric = items.filter((i) => !i.migratable);
   const cellEstimate = migratable.reduce((t, i) => t + i.standardSizes.length * dests.length, 0);
-  const run = config?.defaultRunByStore?.["marathon-pe"] || STANDARD_RUN;
+  // Preview EXACTLY the run the migration will apply (validated config or the
+  // approved fallback) — never a raw config value the writer would reject.
+  const run = effectiveRun(config, "marathon-pe");
 
   const apply = async () => {
     if (busy || !isAdmin || !migratable.length) return;
@@ -104,8 +106,8 @@ export default function IntroduceExisting({ products = [] }) {
           to each product's stocked sizes at all {dests.length} locations ({cellEstimate.toLocaleString()} target cells).
           From the next scan the engine creates the refill and distribution work — paced by the circuit breaker at{" "}
           {config?.maxIntentsPerRun ?? 200} requests per 15-minute scan — and the warehouse validates it; nothing
-          moves without a human. <b>Expect busy warehouse queues for the first day or two</b> while the backlog
-          drains; for a calmer rollout, lower maxIntentsPerRun (e.g. 300) before tapping.
+          moves without a human. <b>Expect busy warehouse queues while the backlog drains</b>; before
+          tapping, set maxIntentsPerRun to the pace the warehouse can absorb per scan (e.g. 300 ≈ a 4-hour drain).
           {numeric.length > 0 && <> <span style={{ color: AMBER }}>{numeric.length} product{numeric.length === 1 ? "" : "s"} with numeric sizes</span> (no
           approved standard quantities) stay in the Decision Queue.</>}
         </div>

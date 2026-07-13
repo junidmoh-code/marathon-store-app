@@ -521,11 +521,15 @@ function computeRefillPlan(snapshot) {
   // approved standard quantity). MUST stay in lockstep with the client copy in
   // src/components/stock/introduceExisting.js.
   const STANDARD_SIZE_RE = /^(S|M|L|XL|XXL|XXXL)$/i;
+  // Cell PRESENCE, not quantity (consistent with `circulates`): a standard
+  // size whose cells all sold to zero still gets a target on migration — its
+  // demand is proven and the engine should replenish or reorder it, not let
+  // the product vanish from both workflows.
   const stockedStandardSizes = (pid) => {
     const out = new Set();
     for (const l of Object.keys(stock)) {
-      for (const [sk, c] of Object.entries(stock[l]?.[pid] || {})) {
-        if (avail(num(c?.qty)) > 0 && STANDARD_SIZE_RE.test(sk)) out.add(sk);
+      for (const sk of Object.keys(stock[l]?.[pid] || {})) {
+        if (STANDARD_SIZE_RE.test(sk)) out.add(sk);
       }
     }
     return [...out];
@@ -557,11 +561,13 @@ function computeRefillPlan(snapshot) {
         // Zero targets anywhere + has circulated = awaiting migration, one
         // entry per product (never per location — no duplicate cards). A
         // sold-to-zero product still migrates: its demand is proven and the
-        // engine will redistribute it the moment targets exist.
-        if (seenUnintroduced.has(pid)) continue;
-        seenUnintroduced.add(pid);
+        // engine will redistribute it the moment targets exist. The dedup
+        // applies ONLY to the network-wide migration entry — noStandard
+        // decisions stay per-location so no location's stock goes invisible.
         const standardSizes = stockedStandardSizes(pid);
         if (standardSizes.length) {
+          if (seenUnintroduced.has(pid)) continue;
+          seenUnintroduced.add(pid);
           unintroduced.push({
             pid, standardSizes,
             units: dests.reduce((t, d) => t + sumLoc(d, pid), 0),

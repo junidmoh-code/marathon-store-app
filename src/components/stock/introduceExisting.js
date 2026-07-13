@@ -40,6 +40,10 @@ const STANDARD_SIZE_RE = /^(S|M|L|XL|XXL|XXXL)$/i;
 const validRun = (m) =>
   m && Object.keys(STANDARD_RUN).every((k) => Number.isInteger(m[k]) && m[k] >= 0) &&
   Object.values(m).some((v) => v > 0);
+// The run the migration will actually apply for a location — exported so the
+// UI previews exactly what gets written (validated config or the fallback).
+export const effectiveRun = (config, loc) =>
+  (validRun(config?.defaultRunByStore?.[loc]) ? config.defaultRunByStore[loc] : STANDARD_RUN);
 
 const isClothing = (p) =>
   p?.productType === "clothing" ||
@@ -48,12 +52,14 @@ const isClothing = (p) =>
 const sumAt = (allStock, loc, pid) =>
   Object.values(allStock?.[loc]?.[pid] || {}).reduce((t, c) => t + Math.max(Number(c?.qty) || 0, 0), 0);
 
-// Sizes stocked (>0) ANYWHERE in the network that the standard run covers.
+// Standard-run sizes with a cell ANYWHERE in the network — presence, not
+// quantity (lockstep with the engine): a size that sold to zero still gets a
+// target on migration so its proven demand is replenished or reordered.
 export function stockedStandardSizes(allStock, pid) {
   const out = new Set();
   for (const loc of Object.keys(allStock || {})) {
-    for (const [size, c] of Object.entries(allStock[loc]?.[pid] || {})) {
-      if ((Number(c?.qty) || 0) > 0 && STANDARD_SIZE_RE.test(String(size))) out.add(String(size));
+    for (const size of Object.keys(allStock[loc]?.[pid] || {})) {
+      if (STANDARD_SIZE_RE.test(String(size))) out.add(String(size));
     }
   }
   return [...out];
@@ -93,7 +99,7 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
   const now = new Date().toISOString();
   const batchId = `introduce-existing-${now.slice(0, 10)}`;
   const dests = destsFrom(config);
-  const runFor = (loc) => (validRun(config?.defaultRunByStore?.[loc]) ? config.defaultRunByStore[loc] : STANDARD_RUN);
+  const runFor = (loc) => effectiveRun(config, loc);
   // FRESH conflict check (review 2026-07-13): the on-screen list may be stale —
   // another admin, a wizard introduction, or an earlier partial run may have
   // written targets since. Re-read /stock_targets once and skip any product
@@ -113,6 +119,7 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
   for (let i = 0; i < migratable.length; i += CHUNK) {
     const chunk = migratable.slice(i, i + CHUNK);
     const upd = {};
+    let chunkCells = 0;
     for (const item of chunk) {
       for (const loc of dests) {
         const run = runFor(loc);
@@ -126,13 +133,14 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
             target: t, minQty: t > 0 ? Math.ceil(t / 2) : 0,
             source: "standard_policy_migration", batchId, approvedBy: approvedBy || "introduce-existing", approvedAt: now,
           };
-          cells++;
+          chunkCells++;
         }
       }
     }
     try {
       await update(ref(database), upd);
       done += chunk.length;
+      cells += chunkCells;   // only cells that actually landed
     } catch (e) {
       failed.push(`${chunk.length} products (batch ${i / CHUNK + 1}): ${String(e?.message || e)}`);
     }

@@ -531,6 +531,22 @@ test("v8 split: circulating = unintroduced (migration) · central-only = NEW · 
   assert.equal(new Set(all).size, all.length, "one card per product, no dup across NEW/migration/decision");
 });
 
+test("numeric-only product at TWO locations gets a decision card per location (dedup is migration-only)", () => {
+  const plan = computeRefillPlan(base({
+    products: { p1: PRODUCTS.p1, pJeans: { productType: "clothing", sizes: ["32", "34"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } } },
+    stock: {
+      "marathon-pe": { p1: { M: cell(2) } },
+      hub2: { pJeans: { 32: cell(5) } },
+      trophy: { pJeans: { 34: cell(3) } },
+      central: {},
+    },
+  }));
+  const cards = plan.exceptions.noTarget.items.filter((c) => c.pid === "pJeans" && c.noStandard);
+  assert.equal(cards.length, 2, "one decision card per location holding stock");
+  assert.deepEqual(cards.map((c) => c.loc).sort(), ["hub2", "trophy"], "no location's stock goes invisible");
+});
+
 test("sold-to-zero destination cell still counts as circulated — never NEW again", () => {
   const plan = computeRefillPlan(base({
     products: { p1: PRODUCTS.p1, pSoldOut: { productType: "clothing", sizes: ["M"] } },

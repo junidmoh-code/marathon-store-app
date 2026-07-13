@@ -39,7 +39,6 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { computeUnintroduced, stockedStandardSizes, destsFrom } from "./introduceExisting";
 
-const DESTS = ["marathon-pe", "trophy", "hub2"];
 const ALL_LOCS = ["marathon-pe", "trophy", "hub2", "central"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 // Approved standard run (owner policy 2026-07-13, reduced) — single source of
@@ -223,7 +222,7 @@ export default function NoTargetQueue({ products = [] }) {
   const distributionOf = (card) => {
     const remaining = Object.fromEntries(card.sizes.map((s) => [s.size, s.qty]));
     const perLoc = [];
-    for (const loc of DESTS) {
+    for (const loc of dests) {
       if (!locEnabled(card, loc)) continue;
       const lines = [];
       for (const s of card.sizes) {
@@ -242,7 +241,7 @@ export default function NoTargetQueue({ products = [] }) {
     setBusyKey(card.key);
     const now = new Date().toISOString();
     const upd = {};
-    const locs = card.isNew ? DESTS.filter((l) => locEnabled(card, l)) : [card.loc];
+    const locs = card.isNew ? dests.filter((l) => locEnabled(card, l)) : [card.loc];
     for (const loc of locs) {
       for (const s of card.sizes) {
         const t = targetOf(card, s.size);
@@ -287,7 +286,7 @@ export default function NoTargetQueue({ products = [] }) {
     setBusyKey(card.key);
     const now = new Date().toISOString();
     const upd = {};
-    const locs = card.isNew ? DESTS.filter((l) => locEnabled(card, l)) : [card.loc];
+    const locs = card.isNew ? dests.filter((l) => locEnabled(card, l)) : [card.loc];
     for (const loc of locs) {
       for (const s of card.sizes) {
         upd[`stock_targets/${loc}/${card.pid}/${encodeSizeKey(s.size)}`] = {
@@ -418,7 +417,7 @@ export default function NoTargetQueue({ products = [] }) {
                     <>
                       {card.isNew && (
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "10px 0 2px" }}>
-                          {DESTS.map((l) => (
+                          {dests.map((l) => (
                             <button key={l} onClick={() => setLocsOn((o) => ({ ...o, [`${card.key}|${l}`]: !locEnabled(card, l) }))} style={pill(locEnabled(card, l))}>
                               {locEnabled(card, l) ? "✓ " : ""}{LOC_LABEL[l]}
                             </button>
