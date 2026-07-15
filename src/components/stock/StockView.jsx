@@ -19,6 +19,7 @@ import SetQuantity from "./SetQuantity";
 import CountedStockReview from "./CountedStockReview";
 import StockErrorBoundary from "./StockErrorBoundary";
 import MoveExcess from "./MoveExcess";
+import { isInventoryProduct } from "../../utils/productType";
 
 // Stock rework: Transfer (assistant-style, one-step) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
@@ -64,7 +65,9 @@ export default function StockView({ products = [], onExit }) {
   // Guard against a stale/unknown persisted tab key rendering blank content.
   const tab = TABS.some(([k]) => k === tabRaw) ? tabRaw : "transfer";
 
-  const shared = { products, registry, actorRole };
+  // This is the common entry point for every stock write/search/count screen.
+  // Services stay out even if an erroneous /stock cell exists.
+  const shared = { products: products.filter(isInventoryProduct), registry, actorRole };
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>

@@ -210,7 +210,9 @@ function computeRefillPlan(snapshot) {
     const mode = config?.mode?.[dest] || "off";
     const src = routes[dest];
     for (const pid of managedPids(dest)) {
-      if (!isClothing(products?.[pid]) && !targets?.[dest]?.[pid]) continue;
+      // The refill engine owns physical clothing only. A courier service must
+      // stay invisible even if an accidental target or /stock cell exists.
+      if (!isClothing(products?.[pid])) continue;
       for (const sizeKey of sizesFor(dest, pid)) {
         const size = rawSize(pid, sizeKey);
         const t = resolveTarget(ctx, dest, pid, size);

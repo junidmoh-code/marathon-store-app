@@ -24,6 +24,7 @@ import {
   useEngineConfig, useRefillRequests, useReceivingSession,
 } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
+import { isInventoryProduct } from "../../utils/productType";
 import { applyMovement } from "./applyMovement";
 import { decodeSizeKey, encodeSizeKey } from "../../utils/sizeKey";
 import { FONT, BG, GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen } from "./ui";
@@ -209,7 +210,8 @@ export default function HealthView({ products = [], onExit }) {
     }).catch(() => {});
   };
 
-  const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+  const inventoryProducts = useMemo(() => products.filter(isInventoryProduct), [products]);
+  const byId = useMemo(() => new Map(inventoryProducts.map((p) => [p.id, p])), [inventoryProducts]);
   const nameOf = (pid) => byId.get(pid)?.name || pid || "—";
 
   const ex = exceptions || {};
@@ -274,19 +276,19 @@ export default function HealthView({ products = [], onExit }) {
       case "central":
         return (
           <DetailShell title="Central → Hub 2 Refills" sub="Also available on the Source card" count={centralQueue} onBack={back}>
-            <Hub2RefillQueue products={products} />
+            <Hub2RefillQueue products={inventoryProducts} />
           </DetailShell>
         );
       case "excess":
         return (
           <DetailShell title="Excess Rebalance" sub="Hub 2 + shops above target — send back to Hub 2 or Central" count={count("excess")} onBack={back}>
-            <MoveExcess products={products} actorRole={actorRole} />
+            <MoveExcess products={inventoryProducts} actorRole={actorRole} />
           </DetailShell>
         );
       case "missingProducts":
         return (
           <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts} onBack={back}>
-            <NetworkTransfer products={products} />
+            <NetworkTransfer products={inventoryProducts} />
           </DetailShell>
         );
       case "missingSizes":
@@ -305,7 +307,7 @@ export default function HealthView({ products = [], onExit }) {
       case "noTarget":
         return (
           <DetailShell title="Decision Queue" sub="Introduce new products · set targets · distribute · exclude · postpone — cards clear instantly" count={count("noTarget")} onBack={back}>
-            <NoTargetQueue products={products} />
+            <NoTargetQueue products={inventoryProducts} />
           </DetailShell>
         );
       case "negative":

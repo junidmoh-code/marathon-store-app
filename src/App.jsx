@@ -6,6 +6,7 @@ import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
+import { isInventoryProduct } from "./utils/productType";
 import { stockCellPath } from "./utils/sizeKey";
 import UpdateBanner from "./update/UpdateBanner";
 import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED } from "./utils/productCategory";
@@ -4194,7 +4195,7 @@ function AdminView({ products, orders, onExit }) {
 
       {/* TYPE TABS — manage Sneakers and Clothing separately. */}
       <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2, marginBottom:14 }}>
-        {[["sneaker","Sneakers"],["clothing","Clothing"]].map(([val, label]) => {
+        {[["sneaker","Sneakers"],["clothing","Clothing"],["courier_service","Courier"]].map(([val, label]) => {
           const on = typeFilter === val;
           const count = products.filter(p => (p.productType || "sneaker") === val).length;
           return (
@@ -4287,6 +4288,7 @@ function AdminProductRow({ product }) {
 // confirmation then navigates back.
 function AdminProductDetail({ product, insightsLog, onBack }) {
   const isClothing = (product.productType || "sneaker") === "clothing";
+  const isCourier = product.productType === "courier_service";
   const productSizes = Array.isArray(product.sizes) && product.sizes.length
     ? product.sizes
     : (isClothing && product.stock ? Object.keys(product.stock) : []);
@@ -4390,7 +4392,12 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   const setType = (nextType) => {
     if (nextType === (product.productType || "sneaker")) return;
     const patch = { productType: nextType };
-    if (nextType === "clothing") {
+    if (nextType === "courier_service") {
+      patch.sizes = [];
+      patch.hubs = [];
+      patch.hub = null;
+      patch.hasShoeBoxOption = false;
+    } else if (nextType === "clothing") {
       const stripped = productHubs.filter(h => h !== "hub1");
       patch.hubs = stripped.length ? stripped : ["hub2"];
       patch.hub  = patch.hubs[0];
@@ -4444,7 +4451,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       if (field === "retailPrice") setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
       return;
     }
-    update(ref(database, `products/${product.id}`), { [field]: num })
+    update(ref(database, `products/${product.id}`), isCourier
+      ? { stockPrice: num, retailPrice: num }
+      : { [field]: num })
       .catch(err => console.warn(`update ${field} failed:`, err));
   };
   const toggleShoebox = () => {
@@ -4526,6 +4535,16 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding:"24px 18px 8px" };
   const card         = { background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.07)", borderRadius:14, margin:"0 14px", overflow:"hidden" };
   const cardInner    = { padding:"14px 16px" };
+
+  if (isCourier) return (
+    <div>
+      <div style={{ padding:"44px 8px 8px" }}><button onClick={onBack} style={{ background:"transparent", border:"none", color:"#4A7FFF", fontSize:15, cursor:"pointer" }}>← Products</button></div>
+      <div style={{ padding:"4px 18px 8px" }}><div style={{ fontSize:22, fontWeight:700 }}>{product.name}</div><div style={{ marginTop:8, color:"#9DBBFF", fontWeight:700 }}>SERVICE PRODUCT · COURIER SERVICE</div></div>
+      <div style={sectionTitle}>Product name</div><div style={card}><div style={cardInner}><input value={nameDraft} onChange={e => setNameDraft(e.target.value)} onBlur={saveName} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }} style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, fontFamily:"inherit" }}/></div></div>
+      <div style={sectionTitle}>Selling price (ZAR)</div><div style={card}><div style={cardInner}><input type="number" inputMode="decimal" min="0" step="0.01" value={retailPriceDraft} onChange={e => { setRetailPriceDraft(e.target.value); setStockPriceDraft(e.target.value); }} onBlur={() => savePrice("retailPrice", retailPriceDraft)} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }} style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, fontFamily:"inherit" }}/><div style={{ fontSize:11, color:"#777", marginTop:6 }}>One price is saved to both retail and stock pricing.</div></div></div>
+      <div style={sectionTitle}>Availability</div><div style={card}><button onClick={() => update(ref(database, `products/${product.id}/active`), product.active === false)} style={{ ...cardInner, width:"100%", display:"flex", justifyContent:"space-between", background:"transparent", border:"none", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:15 }}><span>{product.active === false ? "Inactive — hidden from POS" : "Active — sellable in POS"}</span><b style={{ color: product.active === false ? "#4ADE80" : "#FF9B9B" }}>{product.active === false ? "Activate" : "Deactivate"}</b></button></div>
+    </div>
+  );
 
   return (
     <div>
@@ -13193,9 +13212,9 @@ function AppInner() {
   else if (role === ROLES.AI_STUDIO) view = isSuperAdmin ? <AiStudioView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
-  else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
+  else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products.filter(isInventoryProduct)} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
-  else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products.filter(isInventoryProduct)} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.BROADCAST_GROUPS) view = guard(ROLES.BROADCAST_GROUPS, <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />);

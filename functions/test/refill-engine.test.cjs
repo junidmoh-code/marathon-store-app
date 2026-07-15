@@ -249,6 +249,17 @@ test("engine is driven by explicit targets only — no default-run auto-activati
   assert.equal(plan.intents.length, 0, "no targets → no requests, regardless of sales");
 });
 
+test("courier_service is ignored even when accidental stock and targets exist", () => {
+  const { intents, exceptions } = computeRefillPlan({
+    nowMs: NOW, config: CONFIG,
+    products: { courier: { productType: "courier_service", sizes: ["_"] } },
+    targets: { "marathon-pe": { courier: { _: { target: 5, minQty: 1 } } } },
+    stock: { "marathon-pe": { courier: { _: { qty: 0 } } }, central: { courier: { _: { qty: 10 } } } },
+  });
+  assert.equal(intents.length, 0);
+  assert.equal(exceptions.belowTarget.count, 0);
+});
+
 test("circuit breaker caps intents and reports an error", () => {
   const targets = { "marathon-pe": { p1: {} } };
   const stockPe = { p1: {} }; const stockHub = { p1: {} };
