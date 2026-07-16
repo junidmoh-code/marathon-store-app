@@ -78,19 +78,33 @@ function defaultQty(family, dest, size) {
   return 0;
 }
 
-// The one entry point the wizard calls. Returns the standard-run suggestion
-// for every destination and every size the product actually has:
-//   { family, suggestions: { [dest]: { [size]: qty } } }
-// Quantities are raw table values — availability clamping, destination
-// toggling and operator edits are all the wizard's job, not this module's.
+// Hubs are OFFERED but never pre-selected (owner decision, 2026-07-16
+// post-launch): a hub buffer send is a deliberate operator choice, so the
+// wizard opens with only the shops that have a non-zero suggestion ticked.
+const NEVER_DEFAULT_ON = new Set(["hub1", "hub2"]);
+
+// The one entry point the wizard calls. Returns, for every destination and
+// every size the product actually has:
+//   { family, suggestions: { [dest]: { [size]: qty } }, defaultOn: { [dest]: bool } }
+// Quantities are ALWAYS the raw table values — never reduced to fit Central
+// (owner decision, 2026-07-16: the tables are the recommendation; a shortage
+// is the operator's call, surfaced by the wizard's over-allocation block).
+// Destination toggling and operator edits are the wizard's job.
 export function suggestInitialDistribution({ product }) {
   const family = sizeFamily(product);
   const sizes = Array.isArray(product?.sizes) ? product.sizes : [];
   const suggestions = {};
+  const defaultOn = {};
   for (const dest of DISTRIBUTION_DESTS) {
     const perSize = {};
-    for (const size of sizes) perSize[size] = defaultQty(family, dest, size);
+    let any = false;
+    for (const size of sizes) {
+      const q = defaultQty(family, dest, size);
+      perSize[size] = q;
+      if (q > 0) any = true;
+    }
     suggestions[dest] = perSize;
+    defaultOn[dest] = any && !NEVER_DEFAULT_ON.has(dest);
   }
-  return { family, suggestions };
+  return { family, suggestions, defaultOn };
 }

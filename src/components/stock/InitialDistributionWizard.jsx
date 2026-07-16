@@ -29,11 +29,11 @@
 // The draft clears ONLY when every line of the batch has completed
 // successfully.
 //
-// Preload policy (owner-visible): the standard tables are dealt against
-// Central's pool in destination order (PE → Trophy → Pine → Hub 1 → Hub 2),
-// so on a short receipt the shops win the limited pool before the hub
-// buffers. Purely fit-to-availability — never destination-stock-aware (V1
-// owner decision: consistency over intelligence).
+// Preload policy (owner-visible, 2026-07-16 post-launch): the standard
+// tables load EXACTLY as specified — never reduced to fit Central's pool.
+// On a short receipt the remaining-at-Central strip goes red and Confirm is
+// blocked until the operator trims; the shortage decision is theirs, not
+// the system's. Hubs are offered but never pre-selected.
 // ============================================================================
 import { useEffect, useMemo, useState } from "react";
 import { ref, onValue, push, child } from "firebase/database";
@@ -86,11 +86,10 @@ export default function InitialDistributionWizard({ product, onClose }) {
   const [dests, setDests] = useState([]);               // destination list, from the suggestion output
   const [alloc, setAlloc] = useState({});               // { dest: { size: qty } } operator numbers
   const [locsOn, setLocsOn] = useState({});             // { dest: bool }
-  const [clamped, setClamped] = useState(false);        // preload reduced to fit Central
   const [busy, setBusy] = useState(false);
   const [batchId, setBatchId] = useState(draft?.batchId || null); // minted lazily at first confirm
-  const [draftWarn, setDraftWarn] = useState(false);    // storage blocked — no crash recovery on this device
-  const [result, setResult] = useState(null);           // { moved, failed:[{dest,size,qty,reason}] }
+  const [draftWarn, setDraftWarn] = useState(false);   // storage blocked — no crash recovery on this device
+  const [result, setResult] = useState(null);          // { moved, failed:[{dest,size,qty,reason}] }
   const sizes = Array.isArray(product?.sizes) && product.sizes.length ? product.sizes : [];
 
   // Live Central on-hand for this one product — a single-node subscription,
@@ -106,28 +105,19 @@ export default function InitialDistributionWizard({ product, onClose }) {
     return unsub;
   }, [product.id]);
 
-  // Preload: the standard tables, dealt against Central's pool (policy in the
-  // header comment). Destination list comes from the suggestion output.
+  // Preload: the raw standard tables and the module's default destination
+  // selection (policy in the header comment). No availability clamping —
+  // the over-allocation block below is the only shortage mechanism.
   const start = () => {
-    const { suggestions } = suggestInitialDistribution({ product });
+    const { suggestions, defaultOn } = suggestInitialDistribution({ product });
     const destList = Object.keys(suggestions);
-    const pool = {};
-    for (const s of sizes) pool[s] = central?.[s] ?? 0;
-    const nextAlloc = {}; const nextOn = {}; let didClamp = false;
+    const nextAlloc = {};
     for (const dest of destList) {
-      const lines = {}; let suggestedAny = false;
-      for (const s of sizes) {
-        const want = suggestions[dest]?.[s] ?? 0;
-        if (want > 0) suggestedAny = true;
-        const give = Math.min(want, pool[s]);
-        if (give < want) didClamp = true;
-        lines[s] = give;
-        pool[s] -= give;
-      }
+      const lines = {};
+      for (const s of sizes) lines[s] = suggestions[dest]?.[s] ?? 0;
       nextAlloc[dest] = lines;
-      nextOn[dest] = suggestedAny; // shoes: hubs on, shops off (still selectable)
     }
-    setDests(destList); setAlloc(nextAlloc); setLocsOn(nextOn); setClamped(didClamp); setStep("edit");
+    setDests(destList); setAlloc(nextAlloc); setLocsOn({ ...defaultOn }); setStep("edit");
   };
 
   // Remaining at Central per size = on-hand minus everything allocated to
@@ -228,10 +218,11 @@ export default function InitialDistributionWizard({ product, onClose }) {
   const retryLines = result ? result.failed.filter((f) => f.qty > 0).map(({ dest, size, qty }) => ({ dest, size, qty })) : [];
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+    <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.72)", backdropFilter: "blur(3px)", WebkitBackdropFilter: "blur(3px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
          onClick={() => !busy && onClose()}>
+      {/* Centered card (owner: middle of the screen, not a bottom sheet). */}
       <div onClick={(e) => e.stopPropagation()}
-           style={{ ...GLASS_SOLID, width: "100%", maxWidth: 560, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: 16, maxHeight: "88vh", overflowY: "auto" }}>
+           style={{ ...GLASS_SOLID, width: "100%", maxWidth: 560, borderRadius: 20, border: "1px solid rgba(74,127,255,.35)", boxShadow: "0 0 60px -12px rgba(60,110,255,.35), 0 30px 80px -20px rgba(0,0,0,.85)", padding: "18px 18px 16px", maxHeight: "86vh", overflowY: "auto" }}>
 
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
@@ -290,11 +281,6 @@ export default function InitialDistributionWizard({ product, onClose }) {
 
         {step === "edit" && (
           <div>
-            {clamped && (
-              <div style={{ fontSize: 11.5, color: "#FBBF24", margin: "6px 0 2px" }}>
-                Central holds less than the standard run — some quantities were reduced to fit. Adjust freely.
-              </div>
-            )}
             {/* Destination pills */}
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "10px 0 4px" }}>
               {dests.map((dest) => (
