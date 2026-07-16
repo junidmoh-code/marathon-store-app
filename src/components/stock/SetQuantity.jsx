@@ -28,6 +28,7 @@ import { searchProducts } from "../../utils/productSearch";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
 import BarcodePrint from "./BarcodePrint";
+import InitialDistributionWizard from "./InitialDistributionWizard";
 
 function Thumb({ url }) {
   if (url) return <img src={url} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }}
@@ -55,6 +56,9 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
   const [toast, setToast] = useState(null);
   const [lastSaved, setLastSaved] = useState(null); // { productId, productName, items:[{size,added}] }
   const [printOpen, setPrintOpen] = useState(false);
+  // Initial Distribution Wizard: opens after a Received/Opening commit into
+  // Central (every receiving event qualifies — owner decision, 2026-07-16).
+  const [distribOpen, setDistribOpen] = useState(false);
 
   // Adjustment intents (Stock-take/Correction) are admin-only — the rule layer
   // permits `adjustment` for stockRole==admin only. Warehouse keeps Received/Opening.
@@ -142,6 +146,8 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
     }
     // Offer barcode printing for the sizes that saved (count defaults to units added).
     if (savedItems.length) setLastSaved({ productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems });
+    // A receipt into Central → offer initial distribution (adjustments don't qualify).
+    if (savedItems.length && intent.additive && loc === "central") setDistribOpen(true);
     if (!fail) { setTargets({}); setNote(""); flash("ok", `${intent.label}: ${ok} size${ok > 1 ? "s" : ""} updated — print barcodes below`); }
     else flash("err", `${ok} done, ${fail} failed — ${failed.join("; ")}`);
   };
@@ -253,6 +259,12 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
         </Card>
       )}
 
+      {distribOpen && product && (
+        <InitialDistributionWizard
+          product={product}
+          onClose={() => setDistribOpen(false)}
+        />
+      )}
       {printOpen && lastSaved && (
         <BarcodePrint
           product={{ id: lastSaved.productId, name: lastSaved.productName, photoUrl: lastSaved.photoUrl }}

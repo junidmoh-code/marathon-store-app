@@ -36,6 +36,7 @@ import {
 } from "./utils/clothingSold";
 import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
+import InitialDistributionWizard from "./components/stock/InitialDistributionWizard";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
 import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
@@ -4238,6 +4239,9 @@ function AdminView({ products, orders, onExit }) {
   // it survives the New Product form unmounting on save.
   const [lastReceived, setLastReceived] = useState(null); // { productId, productName, items:[{size,added}] }
   const [printOpen, setPrintOpen] = useState(false);
+  // Initial Distribution Wizard: set to the just-saved product when opening
+  // stock landed at Central. Wizard shows first; the print sheet follows on close.
+  const [distribProduct, setDistribProduct] = useState(null);
   const recvRegistry = useLocations();
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
@@ -4402,7 +4406,11 @@ function AdminView({ products, orders, onExit }) {
           // Surface the inline Print-barcodes sheet for the sizes that saved.
           if (savedItems.length) {
             setLastReceived({ productId: id, productName: newProduct.name, photoUrl: newProduct.photoUrl ?? null, items: savedItems });
-            setPrintOpen(true);
+            // Stock landed at Central → offer initial distribution first; the
+            // print sheet opens when the wizard closes. Other locations keep
+            // the original save → print flow.
+            if (recvLoc === "central") setDistribProduct(newProduct);
+            else setPrintOpen(true);
           }
         }
       } catch (recErr) {
@@ -4801,6 +4809,14 @@ function AdminView({ products, orders, onExit }) {
         </div>
       </div>
 
+      {/* Initial Distribution Wizard — after a new-product save with opening
+          stock at Central. Closing it (skip or done) opens the print sheet. */}
+      {distribProduct && (
+        <InitialDistributionWizard
+          product={distribProduct}
+          onClose={() => { setDistribProduct(null); setPrintOpen(true); }}
+        />
+      )}
       {/* Inline Print-barcodes sheet (#73), surfaced after a save with opening
           stock. Lives here (not in the unmounting New Product form) so it persists. */}
       {printOpen && lastReceived && (
@@ -5162,6 +5178,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
   const [recvMsg,  setRecvMsg]  = useState(null);
   const [lastReceived, setLastReceived] = useState(null); // { productId, productName, items:[{size,added}] }
   const [printOpen, setPrintOpen] = useState(false);
+  // Initial Distribution Wizard: opens after a receive into Central (every
+  // receiving event qualifies — owner decision). Print sheet follows on close.
+  const [distribOpen, setDistribOpen] = useState(false);
   const recvRegistry = useLocations();
   const flashRecv = (ok, text) => { setRecvMsg({ ok, text }); setTimeout(() => setRecvMsg(null), 4000); };
   const doReceive = async () => {
@@ -5182,7 +5201,12 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     const locLabel = labelFor(recvLoc, recvRegistry);
     if (fail) flashRecv(false, `${ok} received, ${fail} failed — you may not have stock permission (stockRole).`);
     else flashRecv(true, `Received ${ok} size${ok > 1 ? "s" : ""} into ${locLabel}.`);
-    if (savedItems.length) { setLastReceived({ productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems }); setPrintOpen(true); }
+    if (savedItems.length) {
+      setLastReceived({ productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems });
+      // Receive into Central → offer initial distribution first; print follows.
+      if (recvLoc === "central") setDistribOpen(true);
+      else setPrintOpen(true);
+    }
   };
 
   const sectionTitle = { fontSize:12, fontWeight:600, color:"rgba(255,255,255,.5)", textTransform:"uppercase", letterSpacing:"0.06em", padding: isWide ? "14px 2px 8px" : "24px 18px 8px" };
@@ -5472,6 +5496,14 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
         </button>
       </div>
 
+      {/* Initial Distribution Wizard — after a receive into Central. Closing
+          it (skip or done) opens the print sheet. */}
+      {distribOpen && (
+        <InitialDistributionWizard
+          product={product}
+          onClose={() => { setDistribOpen(false); setPrintOpen(true); }}
+        />
+      )}
       {/* Inline Print-barcodes sheet (#73), surfaced after a re-order receive. */}
       {printOpen && lastReceived && (
         <BarcodePrint
