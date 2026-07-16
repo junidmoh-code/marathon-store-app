@@ -26,8 +26,12 @@ const SCHEMA = 1;
 // the same `stockSizeKey` encoder used for /stock cell paths so a half-size
 // ("5.5") can't produce an RTDB-illegal key. ":" is a legal RTDB key char and
 // matches the existing `sold:…` movement-key convention.
-export function transferMovementId(transferId, productId, size) {
-  return `${transferId}:${productId}:${stockSizeKey(size)}`;
+// The optional `dest` segment lets one batch fan the SAME product/size out to
+// several destinations (Initial Distribution Wizard) without id collisions;
+// single-destination callers omit it and keep their historical id shape.
+export function transferMovementId(transferId, productId, size, dest) {
+  const base = `${transferId}:${productId}:${stockSizeKey(size)}`;
+  return dest ? `${base}:${dest}` : base;
 }
 
 // Load the persisted draft, or null when there's nothing usable to restore.

@@ -262,7 +262,6 @@ export default function SetQuantity({ products, registry, actorRole, isAdmin, ca
       {distribOpen && product && (
         <InitialDistributionWizard
           product={product}
-          actorRole={actorRole}
           onClose={() => setDistribOpen(false)}
         />
       )}
