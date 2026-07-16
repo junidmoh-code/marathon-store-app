@@ -90,6 +90,30 @@ describe("suggestInitialDistribution — bottoms (waist positional mapping)", ()
   });
 });
 
+describe("suggestInitialDistribution — defaultOn (pre-selected destinations)", () => {
+  it("hubs are never pre-selected, even with non-zero suggestions", () => {
+    const { defaultOn } = suggestInitialDistribution({ product: clothing(["M", "L"]) });
+    expect(defaultOn.hub1).toBe(false);
+    expect(defaultOn.hub2).toBe(false);
+  });
+  it("shops with non-zero suggestions are pre-selected for clothing", () => {
+    const { defaultOn } = suggestInitialDistribution({ product: clothing(["M", "L"]) });
+    expect(defaultOn["marathon-pe"]).toBe(true);
+    expect(defaultOn.trophy).toBe(true);
+    expect(defaultOn["marathon-pine"]).toBe(true);
+  });
+  it("sneakers open with nothing pre-selected (shops suggest 0, hubs never default)", () => {
+    const { defaultOn } = suggestInitialDistribution({ product: sneaker(["7", "8"]) });
+    for (const dest of DISTRIBUTION_DESTS) expect(defaultOn[dest]).toBe(false);
+  });
+  it("a shop whose suggestions are all zero is not pre-selected", () => {
+    // S-only product: PE/Trophy tables give S=0 → off; Pine gives S=2 → on.
+    const { defaultOn } = suggestInitialDistribution({ product: clothing(["S"]) });
+    expect(defaultOn["marathon-pe"]).toBe(false);
+    expect(defaultOn["marathon-pine"]).toBe(true);
+  });
+});
+
 describe("suggestInitialDistribution — unknown family", () => {
   it("suggests zero everywhere so the operator drives", () => {
     const { family, suggestions } = suggestInitialDistribution({ product: { sizes: ["one size"] } });
