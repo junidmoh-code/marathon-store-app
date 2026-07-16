@@ -169,6 +169,25 @@ function computeRefillPlan(snapshot) {
         // daily, so a same-key node created later is a DIFFERENT order.
         const orderIsOurs = order && order.productId === pid &&
           encodeSizeKey(order.size) === sizeKey && order.createdAt === entry.orderCreatedAt;
+        // ZOMBIE LEG (owner decision 2026-07-16): a store leg whose /orders
+        // node is GONE (or was recycled by the daily R-number reset into a
+        // different order) can never resolve — its clothingRefillStatus lived
+        // on the lost node, so unresolvedOurs is false and every branch below
+        // skips the entry forever, while the lock keeps suppressing re-proposal
+        // for that product+size (found live 2026-07-16: 26 such requests, some
+        // with REAL unmet need that the engine could no longer re-ask for).
+        // Withdraw it: cancel the request, drop the lock. Stateless self-heal —
+        // if the deficit is still real, the very next scan re-proposes a fresh
+        // request + order. removeOrderId is deliberately NOT set: a same-key
+        // node, when present, belongs to a DIFFERENT (later) order.
+        const orderLost = entry.orderId && !orderIsOurs && rr && rr.status === "open";
+        if (orderLost) {
+          closes.push({
+            dest, pid, sizeKey, refillId: entry.refillId,
+            reason: "order_lost", cancelReason: "order_lost", rrStatus: "cancelled",
+          });
+          continue;
+        }
         const size = order?.size ?? rr?.size ?? (sizeKey === "_" ? "" : sizeKey);
         const destHave = avail(cellQty(stock, dest, pid, size));
         const unresolvedOurs = (orderIsOurs && order.clothingRefillStatus == null) || (!entry.orderId && rr && rr.status === "open");

@@ -992,3 +992,48 @@ test("saTodayKey matches device-local SA format (0-based month)", () => {
   assert.equal(encodeSizeKey("5.5"), "5_5");
   assert.equal(encodeSizeKey(""), "_");
 });
+
+test("ZOMBIE LEG: lock whose order node is GONE → request cancelled order_lost, lock closed", () => {
+  const plan = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: {
+      refillId: "r9", qty: 1, source: "hub2", createdAt: iso(30),
+      orderId: "R013-1", orderCreatedAt: iso(30),
+    } } } },
+    refillRequests: { r9: { productId: "p1", size: "M", qty: 1, requestingLocation: "marathon-pe", status: "open" } },
+    orders: {},   // the R013-1 node was clobbered by the daily reset
+  }));
+  const c = plan.closes.find((x) => x.refillId === "r9");
+  assert.ok(c, "zombie close emitted");
+  assert.equal(c.reason, "order_lost");
+  assert.equal(c.rrStatus, "cancelled");
+  assert.equal(c.cancelReason, "order_lost");
+  assert.ok(!c.removeOrderId, "must never delete a same-key node that belongs to a later order");
+});
+
+test("ZOMBIE LEG: order node RECYCLED (same key, different createdAt) → order_lost, node untouched", () => {
+  const plan = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: {
+      refillId: "r9", qty: 1, source: "hub2", createdAt: iso(30),
+      orderId: "R013-1", orderCreatedAt: iso(30),
+    } } } },
+    refillRequests: { r9: { productId: "p1", size: "M", qty: 1, requestingLocation: "marathon-pe", status: "open" } },
+    // Same key, but a DIFFERENT (later) order: createdAt no longer matches.
+    orders: { "R013-1": { productId: "p1", size: "M", createdAt: iso(2), customerName: "Shop Refill", status: "incoming", autoRefill: true } },
+  }));
+  const c = plan.closes.find((x) => x.refillId === "r9");
+  assert.ok(c, "recycled-node zombie close emitted");
+  assert.equal(c.cancelReason, "order_lost");
+  assert.ok(!c.removeOrderId, "the recycled node belongs to the newer order — never deleted");
+});
+
+test("ZOMBIE guard: a matching, unresolved order is NOT order_lost (normal reconcile continues)", () => {
+  const plan = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: {
+      refillId: "r9", qty: 1, source: "hub2", createdAt: iso(1),
+      orderId: "R013-1", orderCreatedAt: iso(1),
+    } } } },
+    refillRequests: { r9: { productId: "p1", size: "M", qty: 1, requestingLocation: "marathon-pe", status: "open" } },
+    orders: { "R013-1": { productId: "p1", size: "M", createdAt: iso(1), customerName: "Shop Refill", status: "incoming", autoRefill: true, clothingRefillStatus: null } },
+  }));
+  assert.ok(!plan.closes.find((x) => x.cancelReason === "order_lost"), "live matching leg untouched");
+});
