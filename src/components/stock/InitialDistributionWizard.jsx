@@ -19,13 +19,15 @@
 //      link.transferId batch, ledger reason "initial_distribution".
 //
 // RESUMABLE, like an unfinished manual transfer: the confirmed batch is
-// persisted to localStorage (transferDraft idiom, single slot) BEFORE the
-// first write and re-saved after every line, so a refresh / crash / network
-// drop / accidental close can never lose unfinished work. Reopening the
-// wizard for the same product offers Resume (same batchId → same
-// movementIds → already-landed lines are recognised as idempotent, never
-// re-applied) or Discard. The draft clears ONLY when every line of the
-// batch has completed successfully.
+// persisted to localStorage (transferDraft idiom, one slot per product)
+// BEFORE the first write and re-saved after every line, so a refresh /
+// crash / network drop / accidental close can never lose unfinished work.
+// Reopening the wizard for the same product offers Resume (same batchId →
+// same movementIds → already-landed lines are recognised as idempotent,
+// never re-applied) or Discard (abandons pending lines and closes — never
+// straight into a fresh full run, which could re-send ack-lost lines).
+// The draft clears ONLY when every line of the batch has completed
+// successfully.
 //
 // Preload policy (owner-visible): the standard tables are dealt against
 // Central's pool in destination order (PE → Trophy → Pine → Hub 1 → Hub 2),
@@ -49,22 +51,25 @@ const bBtn = (bg, color = "#fff") => ({
   fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
 });
 
-// ---- persisted batch draft (transferDraft idiom, single slot) --------------
-const DRAFT_KEY = "initial_distribution_draft_v1";
+// ---- persisted batch draft (transferDraft idiom, one slot PER PRODUCT so a
+// second product's distribution can never clobber another's unfinished batch)
 const DRAFT_SCHEMA = 1;
+const draftKey = (productId) => `initial_distribution_draft_v1:${productId}`;
 function loadDistDraft(productId) {
   try {
-    const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+    const d = JSON.parse(localStorage.getItem(draftKey(productId)) || "null");
     if (d && d.schema === DRAFT_SCHEMA && d.productId === productId &&
         d.batchId && Array.isArray(d.pending) && d.pending.length) return d;
   } catch { /* corrupt draft = no draft */ }
   return null;
 }
+// Returns false when storage is blocked (quota/private mode) so the wizard can
+// warn that this device has no crash recovery; transfers stay idempotent.
 function saveDistDraft(draft) {
-  try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ schema: DRAFT_SCHEMA, ...draft })); } catch { /* full/blocked storage: resume degrades, transfers stay idempotent */ }
+  try { localStorage.setItem(draftKey(draft.productId), JSON.stringify({ schema: DRAFT_SCHEMA, ...draft })); return true; } catch { return false; }
 }
-function clearDistDraft() {
-  try { localStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
+function clearDistDraft(productId) {
+  try { localStorage.removeItem(draftKey(productId)); } catch { /* ignore */ }
 }
 
 export default function InitialDistributionWizard({ product, onClose }) {
@@ -84,6 +89,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
   const [clamped, setClamped] = useState(false);        // preload reduced to fit Central
   const [busy, setBusy] = useState(false);
   const [batchId, setBatchId] = useState(draft?.batchId || null); // minted lazily at first confirm
+  const [draftWarn, setDraftWarn] = useState(false);    // storage blocked — no crash recovery on this device
   const [result, setResult] = useState(null);           // { moved, failed:[{dest,size,qty,reason}] }
   const sizes = Array.isArray(product?.sizes) && product.sizes.length ? product.sizes : [];
 
@@ -165,7 +171,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
     setBatchId(batch);
     let moved = movedBase; const failed = [];
     let pending = lines.slice();
-    saveDistDraft({ productId: product.id, productName: product.name, batchId: batch, moved, pending });
+    setDraftWarn(!saveDistDraft({ productId: product.id, productName: product.name, batchId: batch, moved, pending }));
     for (const { dest, size, qty } of lines) {
       let res;
       try {
@@ -185,7 +191,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
         pending = [...pending, { dest, size, qty }];
       }
       if (pending.length) saveDistDraft({ productId: product.id, productName: product.name, batchId: batch, moved, pending });
-      else clearDistDraft();
+      else clearDistDraft(product.id);
     }
     setBusy(false);
     setResult({ moved, failed });
@@ -200,7 +206,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
       const failedNext = r.failed.map((f, i) => (i === idx ? { ...f, qty: Math.max(0, qty) } : f));
       const pending = failedNext.filter((f) => f.qty > 0).map(({ dest, size, qty: q }) => ({ dest, size, qty: q }));
       if (pending.length) saveDistDraft({ productId: product.id, productName: product.name, batchId, moved: r.moved, pending });
-      else clearDistDraft();
+      else clearDistDraft(product.id);
       return { ...r, failed: failedNext };
     });
   };
@@ -251,11 +257,17 @@ export default function InitialDistributionWizard({ product, onClose }) {
                 <div key={i}>{DEST_LABELS[l.dest] || l.dest} · size {l.size} × {l.qty}</div>
               ))}
             </div>
+            <div style={{ fontSize: 11.5, color: GRAY, marginBottom: 12 }}>
+              Resume finishes exactly this batch — lines that already landed are recognised and never sent twice.
+              Discard abandons the pending lines and closes; anything already sent stays in Movement History.
+            </div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-              {/* Discard abandons the PENDING lines (already-landed lines are in
-                  the ledger regardless) and drops the batchId so a fresh run
-                  can never collide with the discarded batch's movementIds. */}
-              <button onClick={() => { clearDistDraft(); setBatchId(null); setStep("ask"); }} style={bBtn("rgba(255,255,255,.08)", GRAY)}>Discard Distribution</button>
+              {/* Discard CLOSES rather than offering a fresh standard run: a
+                  full re-run after a partial batch is how duplicate transfers
+                  happen (the ack-lost lines of the old batch would be sent
+                  again under new movementIds). Finishing a partial batch is
+                  Resume's job; anything else is a deliberate manual Transfer. */}
+              <button disabled={busy} onClick={() => { clearDistDraft(product.id); onClose(); }} style={{ ...bBtn("rgba(255,255,255,.08)", GRAY), opacity: busy ? 0.5 : 1 }}>Discard Distribution</button>
               <button disabled={busy} onClick={() => runTransfers(draft.pending, draft.moved || 0)}
                       style={{ ...bBtn("#4A7FFF"), opacity: busy ? 0.5 : 1 }}>
                 {busy ? "Resuming…" : "Resume Distribution"}
@@ -352,6 +364,11 @@ export default function InitialDistributionWizard({ product, onClose }) {
             </div>
             {result.failed.length > 0 && (
               <>
+                {draftWarn && (
+                  <div style={{ fontSize: 11.5, color: "#FBBF24", marginBottom: 6 }}>
+                    Storage is blocked on this device, so the recovery draft could NOT be saved — note these failed lines before closing.
+                  </div>
+                )}
                 <div style={{ fontSize: 12, color: GRAY, marginBottom: 4 }}>
                   Failed lines are kept safe — closing now saves them, and this product offers Resume next time. Lower a quantity (or set it to 0 to drop the line) and retry:
                 </div>
