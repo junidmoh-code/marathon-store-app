@@ -6147,12 +6147,10 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
           <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/></svg>
           Clothing order
         </button>
-        {/* "Clothing refill" workspace retired (engine go-live 2026-07-12) —
-            refills are automatic now; the rail slot became the tracking view. */}
-        <button className="ad-nav" onClick={onOpenTracking}>
-          <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-          Refill tracking{trackingPending > 0 ? ` (${trackingPending})` : ""}
-        </button>
+        {/* "Refill tracking" rail slot REMOVED (owner decision 2026-07-16) —
+            engine refills are the warehouse's concern, not the shop's. The
+            onOpenTracking/trackingPending props stay threaded for the CR
+            fallback's trackbar (unreachable while CR is retired). */}
         <div style={{ flex: 1 }} />
         <button className="ad-nav" onClick={onSwitchView}>
           <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M18 2l4 4-9 9H9v-4z"/></svg>
@@ -6563,12 +6561,12 @@ function AssistantView({ products, onExit, orders = [] }) {
   // `availableShops` expands that assignment into the physical shops the user may
   // pick: a "central" user → Marathon PE + Trophy; "pine" → Pine. Drives the
   // toggle below: 0 → block screen, 1 → auto-select + hide toggle, ≥2 → show.
-  const { user: assistantUser, signOut: assistantSignOut, storeIds: allowedStores, permRecord: stockPermRecord, isSuperAdmin: stockIsSuperAdmin, hasPermission: stockHasPermission } = usePermissions();
+  // (isSuperAdmin/hasPermission no longer destructured here — their only
+  // consumer, the "Shop stock · view only" card's canAccessStock gate, was
+  // removed with the card. Owner decision 2026-07-16.)
+  const { user: assistantUser, signOut: assistantSignOut, storeIds: allowedStores, permRecord: stockPermRecord } = usePermissions();
   // Desktop workspace kicks in at ≥1024px (laptop); phone + iPad keep tap→sheet.
   const isDesktop = !useIsNarrow(1024);
-  // Shop-stock visibility: stock permission OR a stock-capable stockRole (mirrors the
-  // Stock section gate).
-  const canAccessStock = stockIsSuperAdmin || ["warehouse", "admin"].includes(stockPermRecord?.stockRole) || stockHasPermission("stock_management");
   // Single-store assignment (destShop) locks the picker to exactly that shop — the
   // user can only place/act on their store. Falls back to the older central/pine
   // storeIds gating when no destShop is set (warehouse/admin/unassigned).
@@ -7338,9 +7336,9 @@ function AssistantView({ products, onExit, orders = [] }) {
         </div>
       )}
 
-      {/* Read-only per-shop stock (Marathon PE / Trophy / Pine) — visibility only,
-          separate from the Central/Pine order toggle above. Locked to stockRole. */}
-      {canAccessStock && <ShopStockPanel products={products} />}
+      {/* "Shop stock · view only" card REMOVED from the assistant view (owner
+          decision 2026-07-16). The ShopStockPanel/ShopStockList components are
+          kept intact above in case the card returns elsewhere. */}
 
       {/* PLACE ORDER HERO */}
       <div style={{ position:"relative", width:"100%", height:160, overflow:"hidden", marginBottom:4 }}>
@@ -7390,21 +7388,11 @@ function AssistantView({ products, onExit, orders = [] }) {
         );
       })()}
 
-      {/* Refill tracking — opens the dedicated tracking page. ALWAYS visible
-          now (was CR-tab-only): with the engine live, this is where shop staff
-          watch the AUTOMATIC refill requests headed their way. */}
-      {(
-        <button onClick={() => setTrackingOpen(true)}
-                style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"11px 14px", marginBottom:"1rem", borderRadius:12, cursor:"pointer",
-                         background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.35)", color:"#fff", fontFamily:FONT }}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-          <span style={{ flex:1, textAlign:"left", fontSize:13, fontWeight:700 }}>Track requests</span>
-          {trackingPending > 0 && (
-            <span style={{ background:"rgba(245,196,81,.15)", color:"#F5C451", border:"1px solid rgba(245,196,81,.4)", borderRadius:999, padding:"2px 9px", fontSize:11, fontWeight:700 }}>{trackingPending} pending</span>
-          )}
-          <span style={{ color:"#4A7FFF", fontSize:13 }}>▸</span>
-        </button>
-      )}
+      {/* "Track requests" (refill tracking) button REMOVED from the assistant
+          view (owner decision 2026-07-16) — the engine's refill requests are
+          the warehouse's concern; shop staff don't need the card. The tracking
+          page (RefillTrackingPage / trackingOpen) is kept intact below in case
+          an entry point ever returns. */}
 
 
       {/* Inline cart summary removed (Phase 12B) — the floating bottom bar
