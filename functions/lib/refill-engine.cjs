@@ -216,9 +216,17 @@ function computeRefillPlan(snapshot) {
         // the true residual deficit re-asks in this very plan (the L3
         // self-healing promise, kept for lost anchors). The foreign order
         // node is NEVER touched (no removeOrderId).
+        // (No inFlight gate here, deliberately: movements link the RECYCLED
+        // key, so physicallyTouched can't tell the old order's pick from the
+        // new one's — gating would re-zombify any cell whose R-number is
+        // reused by a busy card. If the old pick landed, destHave already
+        // reflects the stock and the deficit loop simply won't re-ask; a
+        // wrong label on an already-destroyed order never beats a starved
+        // cell. A falsy rr status counts as "open": a half-damaged record
+        // must not park the lock in the very limbo this branch removes.)
         const anchorLost =
-          (entry.orderId && !orderIsOurs && (!rr || rr.status === "open")) ||
-          (!entry.orderId && entry.refillId && !rr);
+          (entry.orderId && !orderIsOurs && (!rr || !rr.status || rr.status === "open")) ||
+          (!entry.orderId && !rr);
         if (anchorLost) {
           closes.push({
             dest, pid, sizeKey, refillId: entry.refillId || null,

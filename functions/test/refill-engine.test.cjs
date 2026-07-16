@@ -660,13 +660,14 @@ test("LOST ANCHOR: R-number recycle overwrote the order → lock withdrawn, fore
   assert.equal(again.qty, 2); // target 3 − have 1
 });
 
-test("LOST ANCHOR: same key, same product, LATER createdAt is still a different order — identity is exact", () => {
+test("LOST ANCHOR: a half-damaged request record (falsy status) does not park the lock in limbo", () => {
   const plan = computeRefillPlan(base({
     openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R002-1", orderCreatedAt: iso(30), qty: 2, source: "hub2", createdAt: iso(30) } } } },
-    refillRequests: { r1: { status: "open", productId: "p1", size: "M", qty: 2, requestingLocation: "marathon-pe", createdAt: iso(30) } },
-    orders: { "R002-1": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", qty: 1, createdAt: iso(1), clothingRefillStatus: null, status: "incoming" } },
+    refillRequests: { r1: { status: null, productId: "p1", size: "M", qty: 2, requestingLocation: "marathon-pe", createdAt: iso(30) } },
+    orders: { "R002-1": { customerName: "Shop Refill", autoRefill: true, productId: "p9", size: "M", qty: 1, createdAt: iso(1), clothingRefillStatus: null, status: "incoming" } },
   }));
-  assert.ok(plan.closes.some((x) => x.reason === "anchor_lost"), "createdAt mismatch → not ours → withdrawn");
+  assert.ok(plan.closes.some((x) => x.reason === "anchor_lost"),
+    "order recycled + rr status cleared by damage → still withdrawn, never a permanent zombie");
 });
 
 test("LOST ANCHOR: hub2 lock whose request record was deleted → lock withdrawn, deficit re-asks", () => {
