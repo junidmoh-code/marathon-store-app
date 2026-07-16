@@ -5933,6 +5933,10 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
   // clothing catalog with live per-size availability at the serving CR hub
   // (hubQty/servingHubLabel from AssistantView) greying out zero-stock sizes.
   const clothingOrder = mode === "clothing";
+  // Cart units of a clothing product+size — mirrors AssistantView's helper so
+  // the quick-view can explain adds blocked by cart-vs-hub availability.
+  const clothingInCart = (pid, size) =>
+    (cart || []).filter(l => l.productType === "clothing" && l.product?.id === pid && l.size === size).length;
   const [brand, setBrand] = useState("All");
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
@@ -6016,8 +6020,8 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
   }, []);
 
   const [qvRefill, setQvRefill] = useState({});   // { size: qty } for refill quick-view
-  // Quick-view "not available" note — the zero-at-hub clothing size that was
-  // tapped (mirrors the mobile sheet's naSize; live via hubQty every render).
+  // Quick-view availability note — { size, left } (mirrors the mobile sheet's
+  // naNote; live via hubQty/cart every render).
   const [qvNa, setQvNa] = useState(null);
   const openQv = (p) => {
     setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); setQvNa(null);
@@ -6237,7 +6241,11 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
                                   title={out ? `Not available at ${servingHubLabel}` : undefined}
                                   style={out ? { opacity:.3, cursor:"not-allowed", textDecoration:"line-through" } : undefined}
                                   onClick={e => {
-                                    e.stopPropagation(); if (out) return; onQuickAdd(p, sz, 1);
+                                    e.stopPropagation(); if (out) return;
+                                    // quickAdd returns 0 when the cart already
+                                    // holds everything the hub has — no ✓ flash
+                                    // for an add that didn't happen.
+                                    if (!onQuickAdd(p, sz, 1)) return;
                                     const b = e.currentTarget, t = b.textContent; b.classList.add("flash"); b.textContent = "✓";
                                     setTimeout(() => { b.classList.remove("flash"); b.textContent = t; }, 430);
                                   }}>{sz === "Free Size" ? "OS" : sz}</button>
@@ -6349,21 +6357,33 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
                 <>
                   <div>
                     <div className="ad-qlab">Select a size</div>
-                    {/* Inline "not available" note — above the size row, shown
-                        when a greyed (zero-at-hub) clothing size is tapped.
-                        Live: clears itself once the hub cell goes positive. */}
-                    {clothingOrder && qvNa && hubQty(qv.id, qvNa) <= 0 && (
-                      <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
-                        Size {formatSize(qvNa)} isn't available at {servingHubLabel} right now — it can't be ordered.
-                      </div>
-                    )}
+                    {/* Inline availability note — above the size row, shown when
+                        a greyed (zero-at-hub) size is tapped or an add asked for
+                        more than the hub can still cover. Live: recomputes
+                        remaining (hub minus cart) every render and hides once
+                        more is addable than when it was raised. */}
+                    {clothingOrder && qvNa && (() => {
+                      const have = hubQty(qv.id, qvNa.size);
+                      const rem = have - clothingInCart(qv.id, qvNa.size);
+                      if (rem > qvNa.left) return null;
+                      const text = have <= 0
+                        ? `Size ${formatSize(qvNa.size)} isn't available at ${servingHubLabel} right now — it can't be ordered.`
+                        : rem <= 0
+                          ? `Your cart already has all ${have} of size ${formatSize(qvNa.size)} that ${servingHubLabel} holds.`
+                          : `Only ${rem} more of size ${formatSize(qvNa.size)} can be added — ${servingHubLabel} holds ${have}.`;
+                      return (
+                        <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
+                          {text}
+                        </div>
+                      );
+                    })()}
                     <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                       {sizesOf(qv).map(sz => {
                         const out = clothingOrder && hubQty(qv.id, sz) <= 0;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
                             style={out ? { opacity:.35, cursor:"not-allowed", textDecoration:"line-through" } : undefined}
-                            onClick={() => { if (out) { setQvNa(sz); return; } setQvNa(null); setQvSize(sz); }}>
+                            onClick={() => { if (out) { setQvNa({ size: sz, left: 0 }); return; } setQvNa(null); setQvSize(sz); }}>
                             {sz === "Free Size" ? "One size" : formatSize(sz)}
                           </button>
                         );
@@ -6389,7 +6409,16 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
                     // hidden above; ignore any lingering qvDP from sneaker mode).
                     const dp = !clothingOrder && qvDP;
                     const canAdd = clothingOrder ? !!qvSize : (!!qvSize || dp);
-                    const doAdd = () => { if (!canAdd) return; if (dp) onAddDisplayPartner(qv, qvSize || null); else onQuickAdd(qv, qvSize, qvQty); setQv(null); };
+                    const doAdd = () => {
+                      if (!canAdd) return;
+                      if (dp) { onAddDisplayPartner(qv, qvSize || null); setQv(null); return; }
+                      // Clothing: quickAdd caps at hub-minus-cart availability
+                      // and returns what it actually added — a short add keeps
+                      // the quick-view open with the explanatory note.
+                      const added = onQuickAdd(qv, qvSize, qvQty);
+                      if (clothingOrder && added < qvQty) { setQvNa({ size: qvSize, left: 0 }); return; }
+                      setQv(null);
+                    };
                     const label = dp
                       ? (qvSize ? `Add size ${formatSize(qvSize)} + Display Partner` : "Add Display Partner request")
                       : (qvSize ? `Add ${qvQty} × ${qvSize === "Free Size" ? "OS" : formatSize(qvSize)} to order` : (clothingOrder ? "Select a size" : "Select a size or Display Partner"));
@@ -6657,11 +6686,14 @@ function AssistantView({ products, onExit, orders = [] }) {
   }, []);
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
   const [pendingSize, setPendingSize]                   = useState("");
-  // Clothing size the assistant tapped that the serving hub has ZERO of —
-  // renders the inline "not available" note above the size row. Self-clears
-  // live: the note only shows while hubQty is still 0 (stock arriving at the
-  // hub un-greys the button and drops the note on the next snapshot).
-  const [naSize, setNaSize]                             = useState(null);
+  // Clothing availability note — { size, left } for the size the assistant
+  // tapped/added that the serving hub can't (fully) cover; `left` is how many
+  // more units could still be added when it was raised (0 = none). Renders
+  // the inline note above the size row. Self-clears live: it only shows while
+  // remaining-at-hub (hub qty minus units already in the cart) is still ≤
+  // `left`, so arriving stock or a shrinking cart drops it on the next
+  // snapshot.
+  const [naNote, setNaNote]                             = useState(null);
   // No-size products (bags, accessories, perfume, one-size) order as "Free Size" —
   // "_"/blank placeholders aren't real sizes. Keeps the size sheet from dead-ending.
   const selectedSizes = useMemo(() => {
@@ -6675,6 +6707,11 @@ function AssistantView({ products, onExit, orders = [] }) {
   //   sneaker: { product, size, requestDisplay, requestDisplayPartner }
   //   clothing: { product, size, qty, productType:"clothing" }
   const [cart, setCart]                                 = useState([]);
+  // Units of a clothing product+size already in the cart — availability checks
+  // compare against hubQty MINUS these, so stacked adds (stepper, repeated
+  // quick-adds) can never order more than the hub actually holds.
+  const clothingInCart = (pid, size) =>
+    cart.filter(l => l.productType === "clothing" && l.product?.id === pid && l.size === size).length;
   const [checkoutOpen, setCheckoutOpen]                 = useState(false);
   const [customerName, setCustomerName]                 = useState("");
   const [customerPhone, setCustomerPhone]               = useState("");
@@ -6790,7 +6827,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   const customerCount     = cart.filter(isCustomerLine).length;
   const refillCount       = cart.length - customerCount;
 
-  const resetSheet = () => { setSelected(null); setPendingSize(""); setNaSize(null); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
+  const resetSheet = () => { setSelected(null); setPendingSize(""); setNaNote(null); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
 
   const addToCart = () => {
     if (!selected) return;
@@ -6800,11 +6837,19 @@ function AssistantView({ products, onExit, orders = [] }) {
     const isClothingCustomer = (selected.productType || "sneaker") === "clothing";
     if (isClothingCustomer) {
       if (!pendingSize) return;
-      // Belt-and-braces availability re-check at Add time — the size could
-      // have sold out at the hub between tapping it and tapping Add. The
-      // dispatch-side negative guard is the final backstop.
-      if (hubQty(selected.id, pendingSize) <= 0) { setNaSize(pendingSize); setPendingSize(""); return; }
+      // Availability check at Add time, net of units already in the cart —
+      // covers both the sold-out-since-tap race AND a quantity larger than
+      // the hub can supply (a 10-qty add into a hub holding 1). Blocks with
+      // the explanatory note rather than silently clamping; the dispatch-side
+      // negative guard stays the concurrency backstop.
       const reps = Math.max(1, Math.min(10, pendingQty));
+      const remaining = hubQty(selected.id, pendingSize) - clothingInCart(selected.id, pendingSize);
+      if (reps > remaining) {
+        setNaNote({ size: pendingSize, left: Math.max(0, remaining) });
+        if (remaining <= 0) setPendingSize("");
+        return;
+      }
+      setNaNote(null);
       const line = { product: selected, size: pendingSize, productType: "clothing", intent: "customer" };
       setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
       resetSheet();
@@ -6833,16 +6878,22 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Desktop quick-add: add a size straight to the cart (qty lines) — the pointer
   // shortcut past the bottom sheet. Same line shapes as addToCart (clothing→
   // customer order, else sneaker); the sheet stays available on mobile.
+  // Returns the number of units actually added — clothing adds are capped at
+  // what the hub can still cover beyond the cart (repeated quick-adds can't
+  // stack past availability); desktop uses the return value to explain a
+  // blocked/partial add. Sneakers always add the full amount.
   const quickAdd = (p, size, qty = 1) => {
-    const reps = Math.max(1, Math.min(10, qty | 0 || 1));
+    let reps = Math.max(1, Math.min(10, qty | 0 || 1));
     const isClothingCustomer = (p.productType || "sneaker") === "clothing";
-    // Zero-at-hub clothing sizes are greyed/disabled in the desktop UI; this
-    // guard covers the race where the last unit sells between render and tap.
-    if (isClothingCustomer && hubQty(p.id, size) <= 0) return;
+    if (isClothingCustomer) {
+      reps = Math.min(reps, Math.max(0, hubQty(p.id, size) - clothingInCart(p.id, size)));
+      if (reps <= 0) return 0;
+    }
     const line = isClothingCustomer
       ? { product: p, size, productType: "clothing", intent: "customer" }
       : { product: p, size, requestDisplay: false, requestDisplayPartner: false };
     setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
+    return reps;
   };
   // Remove one cart line matching a product+size (+ display-partner flag) — the
   // desktop drawer − / remove.
@@ -7504,15 +7555,27 @@ function AssistantView({ products, onExit, orders = [] }) {
             </div>
 
             <div style={{ color:"#888", fontSize:"0.75rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Select Size</div>
-            {/* Inline "not available" note — shows when a greyed (zero-at-hub)
-                clothing size is tapped, ABOVE the size row. Live: it re-checks
-                hubQty every render, so it disappears the moment the hub cell
-                goes positive (and the button un-greys with it). */}
-            {(selected.productType || "sneaker") === "clothing" && naSize && hubQty(selected.id, naSize) <= 0 && (
-              <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:"0.82rem", fontWeight:600, marginBottom:"0.65rem" }}>
-                Size {formatSize(naSize)} isn't available at {HUB_LABELS[servingHub] || servingHub} right now — it can't be ordered.
-              </div>
-            )}
+            {/* Inline availability note — shows ABOVE the size row when a
+                greyed (zero-at-hub) size is tapped or an Add asks for more
+                than the hub can still cover. Live: it recomputes remaining
+                (hub qty minus cart) every render and hides the moment more
+                stock is actually addable than when it was raised. */}
+            {(selected.productType || "sneaker") === "clothing" && naNote && (() => {
+              const have = hubQty(selected.id, naNote.size);
+              const rem = have - clothingInCart(selected.id, naNote.size);
+              if (rem > naNote.left) return null;
+              const label = HUB_LABELS[servingHub] || servingHub;
+              const text = have <= 0
+                ? `Size ${formatSize(naNote.size)} isn't available at ${label} right now — it can't be ordered.`
+                : rem <= 0
+                  ? `Your cart already has all ${have} of size ${formatSize(naNote.size)} that ${label} holds.`
+                  : `Only ${rem} more of size ${formatSize(naNote.size)} can be added — ${label} holds ${have}.`;
+              return (
+                <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:"0.82rem", fontWeight:600, marginBottom:"0.65rem" }}>
+                  {text}
+                </div>
+              );
+            })()}
             <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
               {selectedSizes.map(s => {
                 // Clothing sizes the serving hub has ZERO of are greyed out and
@@ -7521,7 +7584,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                 // availability lives with the warehouse, not a single CR hub).
                 const out = (selected.productType || "sneaker") === "clothing" && hubQty(selected.id, s) <= 0;
                 return (
-                  <button key={s} onClick={() => { if (out) { setNaSize(s); return; } setNaSize(null); setPendingSize(s); }}
+                  <button key={s} onClick={() => { if (out) { setNaNote({ size: s, left: 0 }); return; } setNaNote(null); setPendingSize(s); }}
                     style={out
                       ? { padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor:"not-allowed", fontWeight:"700", fontSize:"1rem" }
                       : { padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
@@ -7867,7 +7930,13 @@ function WarehouseView({ products = [], orders, onExit }) {
   const { clothingActiveBatches, clothingCompletedBatches } = useMemo(() => {
     const byKey = new Map();
     (orders || []).forEach(o => {
-      if (o.productType !== "clothing") return;
+      // CR Orders = "Shop Refill" requests ONLY. Customer clothing orders now
+      // also land on this hub (they route via CR_HUB_BY_UNIVERSE since
+      // 2026-07-16) but belong to the main Order Queue, whose Send fires the
+      // dispatch transfer — accepting them here too would let staff move the
+      // same stock twice (CR fulfil + queue dispatch). Mirrors the main
+      // queue's inverse filter (customerName !== "Shop Refill").
+      if (o.productType !== "clothing" || o.customerName !== "Shop Refill") return;
       // Each CR hub sees ONLY its own requests: PE/Trophy CRs land on hub2,
       // Pine CRs on hub3 (placedAtHub, written by placeRefillRequests via
       // CR_HUB_BY_UNIVERSE; o.hub fallback covers legacy hub2-era orders).
