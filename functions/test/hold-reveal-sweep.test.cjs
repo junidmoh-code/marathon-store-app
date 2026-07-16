@@ -34,9 +34,10 @@ function fakeDb(initialOrders, { failSets = {} } = {}) {
     node[last] = value;
   };
 
-  return {
+  const api = {
     writes,
     state,
+    transactionAttempts: 0,
     ref(path) {
       return {
         orderByChild(child) {
@@ -49,9 +50,14 @@ function fakeDb(initialOrders, { failSets = {} } = {}) {
                 async once(evt) {
                   assert.equal(evt, "value");
                   // What the server returns for the indexed equalTo(true) query.
-                  const matched = Object.fromEntries(
+                  // CLONED — a real RTDB snapshot is a point-in-time copy, not a
+                  // live reference into the server state. Without the clone, a
+                  // test that mutates state AFTER the query would also mutate the
+                  // snapshot, and the sweep would skip via its in-memory flag
+                  // check instead of reaching the CAS claim (CodeRabbit #233).
+                  const matched = structuredClone(Object.fromEntries(
                     Object.entries(state.orders).filter(([, o]) => o && o.readyNotifyPending === true)
-                  );
+                  ));
                   return { val: () => (Object.keys(matched).length ? matched : null) };
                 },
               };
@@ -69,6 +75,7 @@ function fakeDb(initialOrders, { failSets = {} } = {}) {
           setPath(path, value);
         },
         async transaction(fn) {
+          api.transactionAttempts++;
           // COLD-CACHE first run: fn(null). undefined → abort before the
           // server is consulted (this is the branch that must NOT fire for a
           // legitimate claim). Otherwise the CAS re-run against the true
@@ -89,6 +96,7 @@ function fakeDb(initialOrders, { failSets = {} } = {}) {
       };
     },
   };
+  return api;
 }
 
 const readyOrder = (over = {}) => ({
@@ -190,6 +198,11 @@ test("already claimed by a prior/overlapping sweep → not double-notified", asy
   assert.equal(res.sent, 0);
   assert.equal(enqueue.calls.length, 0, "the losing sweep must not send");
   assert.equal(db.state.orders.o1.readyNotifiedAt, undefined);
+  // Prove the intended path (CodeRabbit #233): the sweep REACHED the CAS claim
+  // (snapshot is a point-in-time clone, so the stale in-memory flag can't
+  // short-circuit it) and the claim aborted against the server's false.
+  assert.equal(db.transactionAttempts, 1, "claim transaction was attempted");
+  assert.equal(db.writes.filter((w) => w.op === "transaction").length, 0, "and did not commit");
 });
 
 test("retry path: enqueue fails → re-held; next sweep sends exactly once", async () => {
