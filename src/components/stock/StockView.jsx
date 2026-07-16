@@ -32,7 +32,7 @@ const BASE_TABS = [
   ["history",   "History"],
   ["adjust",    "Adjust"],
   ["count",     "Count"],
-  ["recount",   "Counted ⚠"],   // TEMPORARY recount tool (admin-only)
+  ["recount",   "Counted"],      // PERMANENT counted-stock review (admin-only; owner decision 2026-07-16)
   ["excess",    "Move Excess"],  // TEMPORARY bulk hub2→central rebalance (admin-only)
 ];
 

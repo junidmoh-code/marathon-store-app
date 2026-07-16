@@ -19,7 +19,7 @@ import { ref, update, push, child, get } from "firebase/database";
 import { database } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { transferMovementId, loadDraft, saveDraft, clearDraft } from "./transferDraft";
-import { useRefillRequests, useStockCells } from "./useStock";
+import { useStockCells } from "./useStock";
 import { transferTargets, labelFor } from "./locations";
 import { Toast, Empty } from "./widgets";
 import { GLASS, GLASS_SOLID, CARD, BLUE_L, GREEN, GRAY, AMBER, BORDER, FONT, input, bGreen, bGhost } from "./ui";
@@ -102,7 +102,6 @@ export default function Transfer({ products, registry, actorRole }) {
   // A draft found in storage on mount, awaiting the user's Restore / Discard choice.
   const [draftToRestore, setDraftToRestore] = useState(null);
   const scanRef = useRef(null);
-  const openRefills = useRefillRequests("open");
   // Guard: an empty `from` would make useStockCells subscribe to the WHOLE /stock
   // node (and return a different shape). Feed a non-existent id so it resolves to
   // {} until a real source is picked.
@@ -126,11 +125,16 @@ export default function Transfer({ products, registry, actorRole }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [products, srcCells]);
 
-  // Only products WITH stock at the source; then category + forgiving search.
+  // SEARCH-DRIVEN ONLY (owner decision 2026-07-16): the list stays EMPTY until
+  // a search is typed — no auto-dump of everything at the source when a
+  // location/category is picked. Candidates are still products WITH stock at
+  // the source, narrowed by the category chip; scanning bypasses this list
+  // entirely (scans drop straight into the cart).
   const shown = useMemo(() => {
+    if (!search.trim()) return [];
     const atSource = (products || []).filter((p) => p && p.id && p.name && srcCells?.[p.id] && srcTotal(p.id) > 0);
     const predicate = (p) => cat === "all" || p.category === cat;
-    const base = search.trim() ? searchProducts(atSource, search, { predicate, limit: 500 }) : atSource.filter(predicate);
+    const base = searchProducts(atSource, search, { predicate, limit: 500 });
     return [...base].sort((a, b) => a.name.localeCompare(b.name));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [products, srcCells, cat, search]);
@@ -266,15 +270,10 @@ export default function Transfer({ products, registry, actorRole }) {
     return () => { unsub(); uninstall(); };
   }, []);
 
-  const prefillRefill = (r) => {
-    const p = productsById[r.productId];
-    setBasket({ [keyOf(r.productId, r.size)]: { productId: r.productId, productName: p?.name || r.productId, size: r.size, qty: r.qty || 1 } });
-    setRefillId(r.id);
-    setTo(r.requestingLocation || "");
-    setOpenId(r.productId);
-    setTransferId(null); setLineResults({}); setLastAttempt(null);
-    flash("ok", "Prefilled from refill — check the source has stock, then confirm.");
-  };
+  // (The "Open refill requests" prefill list was removed from this tab — owner
+  // decision 2026-07-16: refill fulfilment lives in the Source flow, not here.
+  // The refillId plumbing below stays: a restored draft that was prefilled
+  // before the removal still marks its request fulfilled on confirm.)
 
   // Clear a stale destination if it ends up equal to the source.
   useEffect(() => { if (to && to === from) setTo(""); }, [from, to]);
@@ -428,30 +427,6 @@ export default function Transfer({ products, registry, actorRole }) {
         );
       })()}
 
-      {/* Open refill requests (Source chain) — prefill a transfer */}
-      {openRefills.length > 0 && (
-        <div style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
-          <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>Open refill requests</div>
-          {openRefills.map((r) => {
-            const nm = productsById[r.productId]?.name || r.productId;
-            return (
-              <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderTop: BORDER, fontSize: 13 }}>
-                <span style={{ color: "#fff" }}>
-                  {nm} · <SizeTag size={r.size} /> ×{r.qty || 1}
-                  <span style={{ color: GRAY }}> → {labelFor(r.requestingLocation, registry)}</span>
-                  {/* Engine-created requests (refillHealthScan) get a badge so staff
-                      know no human is waiting on the other end. */}
-                  {r.createdFrom?.engine && (
-                    <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#FBBF24", border: "1px solid rgba(251,191,36,.4)", borderRadius: 6, padding: "1px 5px" }}>AUTO</span>
-                  )}
-                </span>
-                <button onClick={() => prefillRefill(r)} style={{ ...bGhost, padding: "5px 10px", fontSize: 12 }}>Prefill</button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {/* Source (pick first — the grid + scan act on this location). */}
       <FilterPicker label="Transfer from" value={from} onChange={pickSource} placeholder="Choose source…" defaultOpen={!from}
         options={locations.map((l) => ({ id: l.id, label: labelFor(l.id, registry) }))} />
@@ -550,9 +525,9 @@ export default function Transfer({ products, registry, actorRole }) {
       <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search in ${labelFor(from, registry)}…`}
              style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 12 }} />
 
-      {/* Product list — only products with stock at the source. */}
+      {/* Product list — search results only (empty until a search is typed). */}
       {shown.length === 0 ? (
-        <Empty>{search.trim() ? "No products match." : `Nothing in stock at ${labelFor(from, registry)}.`}</Empty>
+        <Empty>{search.trim() ? "No products match." : "Search above or scan to add items to the transfer."}</Empty>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: lines.length ? 84 : 8 }}>
           {shown.map((p) => {
