@@ -191,6 +191,67 @@ test("completedIdsOf collects exactly the completed checks", () => {
   assert.deepEqual(lib.completedIdsOf(null), new Set());
 });
 
+// ── processed-claim: idempotency lease (stable saDate, recoverable) ──────────
+test("lease: first fire claims with frozen saDate; done → skip forever", () => {
+  const now = 1_000_000;
+  assert.deepEqual(
+    lib.processedClaimDecision({ cur: null, nowMs: now, saDate: "2026-07-16" }),
+    { at: now, saDate: "2026-07-16", done: false }
+  );
+  assert.equal(
+    lib.processedClaimDecision({ cur: { at: 1, saDate: "2026-07-16", done: true }, nowMs: now, saDate: "2026-07-17" }),
+    undefined
+  );
+});
+
+test("lease: fresh in-flight claim → skip (concurrent execution holds it)", () => {
+  const now = 1_000_000;
+  assert.equal(
+    lib.processedClaimDecision({
+      cur: { at: now - 5_000, saDate: "2026-07-16", done: false }, nowMs: now, saDate: "2026-07-16",
+    }),
+    undefined
+  );
+});
+
+test("lease: failure-after-claim is retryable — stale lease steals, movement not dropped", () => {
+  const now = 10_000_000;
+  const stale = { at: now - lib.PROCESS_LEASE_MS - 1, saDate: "2026-07-16", done: false };
+  assert.deepEqual(
+    lib.processedClaimDecision({ cur: stale, nowMs: now, saDate: "2026-07-17" }),
+    { at: now, saDate: "2026-07-16", done: false }
+  );
+});
+
+test("lease: retry ACROSS MIDNIGHT keeps the FIRST claim's saDate (day node stays stable)", () => {
+  const now = 10_000_000;
+  const stale = { at: now - lib.PROCESS_LEASE_MS - 1, saDate: "2026-07-16", done: false };
+  const stolen = lib.processedClaimDecision({ cur: stale, nowMs: now, saDate: "2026-07-17" });
+  assert.equal(stolen.saDate, "2026-07-16"); // NOT the new day
+  // malformed record without saDate falls back to the caller's current day
+  const malformed = { at: now - lib.PROCESS_LEASE_MS - 1, done: false };
+  assert.equal(lib.processedClaimDecision({ cur: malformed, nowMs: now, saDate: "2026-07-17" }).saDate, "2026-07-17");
+});
+
+// ── bump transaction body: atomic status validation + monotonic lastSoldAt ───
+test("bumpTxn: bumps open and held; adds units; keeps lastSoldAt monotonic", () => {
+  const open = { status: "open", saleCount: 3, lastSoldAt: "2026-07-16T10:00:00.000Z" };
+  const next = lib.bumpTxn(open, { qty: 2, movementTs: "2026-07-16T11:00:00.000Z" });
+  assert.equal(next.saleCount, 5);
+  assert.equal(next.lastSoldAt, "2026-07-16T11:00:00.000Z");
+  // an OLDER ts must not regress lastSoldAt (out-of-order executions)
+  const regressed = lib.bumpTxn(next, { qty: 1, movementTs: "2026-07-16T09:00:00.000Z" });
+  assert.equal(regressed.lastSoldAt, "2026-07-16T11:00:00.000Z");
+  // a null ts must not clear it
+  assert.equal(lib.bumpTxn(next, { qty: 1, movementTs: null }).lastSoldAt, "2026-07-16T11:00:00.000Z");
+});
+
+test("bumpTxn: aborts on completed (immutable), absent, and PARTIAL (no status) nodes", () => {
+  assert.equal(lib.bumpTxn({ status: "completed", saleCount: 1 }, { qty: 1, movementTs: null }), undefined);
+  assert.equal(lib.bumpTxn(null, { qty: 1, movementTs: null }), undefined);
+  assert.equal(lib.bumpTxn({ saleCount: 1 }, { qty: 1, movementTs: null }), undefined); // winner mid-publish
+});
+
 // ── new-check body ───────────────────────────────────────────────────────────
 const BASE = {
   productId: "p1", product: { name: "Nike Tee", photoUrl: "https://x/p.jpg", productType: "clothing" },

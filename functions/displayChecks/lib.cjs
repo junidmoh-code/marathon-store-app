@@ -161,6 +161,35 @@ function resolveAssignment({ cover, roster, saDate }) {
   return null;
 }
 
+// ── Processed-claim (idempotency lease — stable saDate, recoverable) ──────────
+// The idempotency record for one movement, at a DATE-INDEPENDENT path
+// (…_meta/{store}/processed/{movementId}) so an at-least-once redelivery after
+// SA midnight hits the SAME claim instead of a fresh day-bucketed one (which
+// would double-process). Value: { at, saDate, done }.
+//   cur == null            → claim { at, saDate, done:false }   (first fire)
+//   cur.done === true      → skip  (fully processed — the normal double-fire exit)
+//   cur stale (> lease)    → STEAL, preserving the ORIGINAL saDate — a crash
+//     after claim but before completion must not drop the movement forever,
+//     and the retry must write into the day node the first attempt targeted,
+//     even if midnight passed in between.
+//   cur fresh, not done    → skip  (another execution is in flight)
+// Lease matches the refill engine's claim-before-act steal window
+// (refill-scan.cjs LOCK_STEAL_MS). Honest trade-off, documented: a steal after
+// a mid-write crash can re-apply a bump (rare, cosmetic over-count) — chosen
+// over the alternative, which silently DROPS the movement (a check that never
+// appears). done:true is written only after every write lands.
+const PROCESS_LEASE_MS = 10 * 60e3;
+
+function processedClaimDecision({ cur, nowMs, saDate }) {
+  if (cur == null) return { at: nowMs, saDate, done: false };
+  if (cur.done === true) return undefined;
+  const at = Number(cur.at);
+  if (!Number.isFinite(at) || nowMs - at > PROCESS_LEASE_MS) {
+    return { at: nowMs, saDate: cur.saDate || saDate, done: false };
+  }
+  return undefined;
+}
+
 // ── Create-mutex claim (TTL — self-expiring, no external release) ─────────────
 // The mutex closes exactly ONE window: two concurrent trigger executions that
 // both read an empty day node before either wrote (two tills, same SKU, same
@@ -241,11 +270,31 @@ function buildNewCheck({
   return check;
 }
 
+// ── Bump transaction body ─────────────────────────────────────────────────────
+// Runs INSIDE an RTDB transaction on the whole check node, so the three races
+// CodeRabbit flagged close at once: (1) status is validated atomically — a
+// check completed after the day snapshot was read aborts the bump instead of
+// mutating an immutable record; (2) lastSoldAt is monotonic — out-of-order
+// executions can't regress it to an older or null ts; (3) a partial node the
+// winner hasn't finished publishing (no status yet) aborts rather than
+// producing a half-bumped orphan. Returns the next node, or undefined (abort).
+function bumpTxn(check, { qty, movementTs }) {
+  if (!check || (check.status !== "open" && check.status !== "held")) return undefined;
+  const next = { ...check, saleCount: (Number(check.saleCount) || 0) + qty };
+  if (movementTs && (!next.lastSoldAt || movementTs > next.lastSoldAt)) {
+    next.lastSoldAt = movementTs;
+  }
+  return next;
+}
+
 module.exports = {
   TRIGGER_STORE_FLAGS,
   CREATE_MUTEX_TTL_MS,
+  PROCESS_LEASE_MS,
+  processedClaimDecision,
   mutexClaimDecision,
   completedIdsOf,
+  bumpTxn,
   isTriggerStoreEnabled,
   encodeSizeKey,
   stockSizeKey,
