@@ -196,7 +196,8 @@ decided.
 
 The onClothingSale trigger WRITES day nodes keyed by `saDateStringFromMs`
 (`functions/lib/sa-time.cjs` — the single functions-side source). The PR-5 feed will READ
-day nodes keyed by the client's `saDateOf` (`src/utils/clothingSold.js:60-64`). The two
+day nodes keyed by the client's `saDateOf` (the exported symbol in
+`src/utils/clothingSold.js` — symbol reference, line numbers drift). The two
 live on opposite sides of the ESM/CJS boundary and cannot share a module today. If they
 ever disagree, the feed reads an empty node while the trigger populates another — an
 outage that exists ONLY between 00:00 and 02:00 SAST and is never reproducible in

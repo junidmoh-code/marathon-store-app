@@ -80,11 +80,14 @@ if (!admin.apps.length) {
   });
 }
 
-// One audit event, appended under the SA month of the day node (§4.2). Written
-// server-side only; `actor` marks the machine, mirroring the design's
-// system-written event types.
-function logEvent(updates, db, store, saDate, { checkId, type, at, payload }) {
-  const eventId = db.ref(`displayChecks_log/${store}`).push().key;
+// One audit event under the SA month of the day node (§4.2). Written
+// server-side only; `actor` marks the machine. The event key is DETERMINISTIC
+// per (movement, type) — a lease-reclaimed replay overwrites the same event
+// instead of appending a duplicate, which is what keeps the append-only log
+// honest under at-least-once delivery. (Keys therefore sort by movement id,
+// not strictly by time; consumers order by the `at` field.)
+function logEvent(updates, db, store, saDate, { checkId, type, at, payload, movementId }) {
+  const eventId = movementId ? `${movementId}_${type}` : db.ref(`displayChecks_log/${store}`).push().key;
   updates[`displayChecks_log/${store}/${saMonthOfDate(saDate)}/${eventId}`] = {
     checkId: checkId || null,
     type,
@@ -102,7 +105,7 @@ function logEvent(updates, db, store, saDate, { checkId, type, at, payload }) {
 async function bumpCheck(db, { store, saDate, checkId, qty, movementId, movementTs, nowMs }) {
   const res = await db
     .ref(`displayChecks/${store}/${saDate}/${checkId}`)
-    .transaction((c) => bumpTxn(c, { qty, movementTs }));
+    .transaction((c) => bumpTxn(c, { qty, movementTs, movementId }));
   if (!res.committed) {
     const v = res.snapshot && res.snapshot.val();
     return { ok: false, status: (v && v.status) || null };
@@ -121,6 +124,7 @@ async function bumpCheck(db, { store, saDate, checkId, qty, movementId, movement
     checkId,
     type: logType,
     at: nowMs,
+    movementId,
     payload: {
       movementId,
       qty,
@@ -232,6 +236,7 @@ exports.onClothingSale = onValueCreated(
           checkId: winnerId || null,
           type: "orphaned_sale",
           at: nowMs,
+          movementId,
           payload: { movementId, qty, dedupeKey: key, reason: "create_winner_never_published" },
         });
         await db.ref().update(updates);
@@ -263,19 +268,22 @@ exports.onClothingSale = onValueCreated(
       });
 
       // Check + its audit events land in ONE multi-path update (§13: state
-      // change and log event in the same operation). PER-FIELD paths, not a
-      // node set — and saleCount is EXCLUDED and applied via the same
-      // validating transaction as every bump, so a concurrent loser's bump is
-      // never clobbered and both increments serialize.
-      const { saleCount: initialCount, ...checkFields } = check;
+      // change and log event in the same operation). saleCount and the
+      // movement fence PUBLISH ATOMICALLY with status: a mutex loser only
+      // bumps after `status` exists, and status arrives in this very update —
+      // so nothing can have bumped this node yet, and the initial count can't
+      // clobber anything. No follow-up transaction, no visible
+      // saleCount-less window. (Per-field paths remain deliberate: defensive
+      // against any future writer touching the node concurrently.)
       const updates = {};
-      for (const [field, value] of Object.entries(checkFields)) {
+      for (const [field, value] of Object.entries(check)) {
         updates[`displayChecks/${store}/${saDate}/${newCheckId}/${field}`] = value;
       }
       logEvent(updates, db, store, saDate, {
         checkId: newCheckId,
         type: status === "held" ? "held" : "suggested",
         at: nowMs,
+        movementId,
         payload: { movementId, qty, stockQty: Number.isFinite(stockQty) ? stockQty : null },
       });
       if (resolution.repeat) {
@@ -283,6 +291,7 @@ exports.onClothingSale = onValueCreated(
           checkId: newCheckId,
           type: resolution.repeat.logType, // repeat_detected | contradiction_detected
           at: nowMs,
+          movementId,
           payload: {
             repeatOf: resolution.repeat.repeatOf,
             followedResult: resolution.repeat.followedResult,
@@ -291,20 +300,21 @@ exports.onClothingSale = onValueCreated(
         });
       }
       await db.ref().update(updates);
-      await db.ref(`displayChecks/${store}/${saDate}/${newCheckId}`)
-        .transaction((c) => bumpTxn(c, { qty: initialCount, movementTs }));
       await processedRef.update({ done: true, doneAt: nowMs });
       return;
     }
 
     // Both resolution attempts aborted (statuses kept shifting under us) —
     // visible, bounded exit; the movement is marked handled so the lease
-    // doesn't retry into the same contention forever.
+    // doesn't retry into the same contention forever. Logged against the
+    // FROZEN saDate — a cross-midnight lease retry must audit into the day
+    // it was processing, not the current one.
     const updates = {};
-    logEvent(updates, db, store, saDateStringFromMs(nowMs), {
+    logEvent(updates, db, store, saDate, {
       checkId: null,
       type: "orphaned_sale",
       at: nowMs,
+      movementId,
       payload: { movementId, qty, dedupeKey: key, reason: "resolution_contention" },
     });
     await db.ref().update(updates);

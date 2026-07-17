@@ -252,6 +252,16 @@ test("bumpTxn: aborts on completed (immutable), absent, and PARTIAL (no status) 
   assert.equal(lib.bumpTxn({ saleCount: 1 }, { qty: 1, movementTs: null }), undefined); // winner mid-publish
 });
 
+test("bumpTxn: MOVEMENT FENCE — a lease-reclaimed replay is a committed no-op, never a double count", () => {
+  const open = { status: "open", saleCount: 2, appliedMovements: { mvA: true } };
+  // replay of an already-absorbed movement → unchanged node (commit, no bump)
+  assert.deepEqual(lib.bumpTxn(open, { qty: 2, movementTs: null, movementId: "mvA" }), open);
+  // a NEW movement bumps and joins the fence
+  const next = lib.bumpTxn(open, { qty: 3, movementTs: null, movementId: "mvB" });
+  assert.equal(next.saleCount, 5);
+  assert.deepEqual(next.appliedMovements, { mvA: true, mvB: true });
+});
+
 // ── new-check body ───────────────────────────────────────────────────────────
 const BASE = {
   productId: "p1", product: { name: "Nike Tee", photoUrl: "https://x/p.jpg", productType: "clothing" },
@@ -263,6 +273,8 @@ test("open check: activatedAt + frozen assignment slot; units not events", () =>
   const c = lib.buildNewCheck({ ...BASE, status: "open", assignedTo: { uid: "u1", name: "A" } });
   assert.equal(c.status, "open");
   assert.equal(c.saleCount, 2);                 // qty-2 cell = 2 units
+  // fence seeded with the creating movement — a reclaimed replay no-ops
+  assert.deepEqual(c.appliedMovements, { mv1: true });
   assert.equal(c.activatedAt, 1000);
   assert.deepEqual(c.assignedTo, { uid: "u1", name: "A" });
   assert.equal(c.heldAt, undefined);

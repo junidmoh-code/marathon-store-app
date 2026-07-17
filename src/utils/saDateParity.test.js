@@ -1,7 +1,7 @@
 // ─── CLIENT ↔ FUNCTIONS DAY-KEY PARITY (Display Checks PR-5 gate) ─────────────
 // Two SA-date implementations exist across the ESM/CJS boundary and CANNOT
 // share a module today:
-//   • client:    saDateOf(iso)            src/utils/clothingSold.js:60-64
+//   • client:    saDateOf(iso)            `saDateOf` in src/utils/clothingSold.js
 //   • functions: saDateStringFromMs(ms)   functions/lib/sa-time.cjs
 // The functions copy computes the day key the onClothingSale trigger WRITES
 // (/displayChecks/{store}/{DAY}); the client copy computes the day key the

@@ -174,10 +174,14 @@ function resolveAssignment({ cover, roster, saDate }) {
 //     even if midnight passed in between.
 //   cur fresh, not done    → skip  (another execution is in flight)
 // Lease matches the refill engine's claim-before-act steal window
-// (refill-scan.cjs LOCK_STEAL_MS). Honest trade-off, documented: a steal after
-// a mid-write crash can re-apply a bump (rare, cosmetic over-count) — chosen
-// over the alternative, which silently DROPS the movement (a check that never
-// appears). done:true is written only after every write lands.
+// (refill-scan.cjs LOCK_STEAL_MS). Reclamation is IDEMPOTENT at the mutation
+// level: every check mutation is fenced by movementId (bumpTxn's
+// appliedMovements ledger — a replayed movement is a committed no-op) and
+// every audit event uses a deterministic per-(movement,type) key (a replay
+// overwrites the same event, never appends a duplicate). So a steal after a
+// mid-write crash re-runs the remaining writes without re-applying the landed
+// ones — no over-count, no dropped movement. done:true is written only after
+// every write lands.
 const PROCESS_LEASE_MS = 10 * 60e3;
 
 function processedClaimDecision({ cur, nowMs, saDate }) {
@@ -253,6 +257,9 @@ function buildNewCheck({
     firstSoldAt: movementTs || null,
     lastSoldAt: movementTs || null,
     saleCount: Math.max(1, Number(qty) || 1),   // units, not events — a qty-2 cell is 2 units
+    // Movement fence, seeded with the creating movement: a lease-reclaimed
+    // replay of this movement finds itself here (bumpTxn) and no-ops.
+    appliedMovements: { [movementId]: true },
     status,                                     // "open" | "held"
     result: null,
     createdAt: nowMs,
@@ -271,16 +278,27 @@ function buildNewCheck({
 }
 
 // ── Bump transaction body ─────────────────────────────────────────────────────
-// Runs INSIDE an RTDB transaction on the whole check node, so the three races
-// CodeRabbit flagged close at once: (1) status is validated atomically — a
-// check completed after the day snapshot was read aborts the bump instead of
-// mutating an immutable record; (2) lastSoldAt is monotonic — out-of-order
-// executions can't regress it to an older or null ts; (3) a partial node the
-// winner hasn't finished publishing (no status yet) aborts rather than
-// producing a half-bumped orphan. Returns the next node, or undefined (abort).
-function bumpTxn(check, { qty, movementTs }) {
+// Runs INSIDE an RTDB transaction on the whole check node, closing four races
+// at once: (1) status is validated atomically — a check completed after the
+// day snapshot was read aborts the bump instead of mutating an immutable
+// record; (2) lastSoldAt is monotonic — out-of-order executions can't regress
+// it to an older or null ts; (3) a partial node the winner hasn't finished
+// publishing (no status yet) aborts rather than producing a half-bumped
+// orphan; (4) MOVEMENT FENCING — appliedMovements records every movementId
+// whose units this check has absorbed, so a lease-reclaimed replay of the
+// same movement commits as a NO-OP instead of double-counting. Size note: one
+// short key per absorbed movement, bounded by the day's sales of one SKU —
+// the ×N dedupe keeps this a handful in practice.
+// Returns the next node, undefined (abort), or the unchanged node (fenced no-op).
+function bumpTxn(check, { qty, movementTs, movementId }) {
   if (!check || (check.status !== "open" && check.status !== "held")) return undefined;
+  if (movementId && check.appliedMovements && check.appliedMovements[movementId]) {
+    return check; // already absorbed this movement — idempotent replay
+  }
   const next = { ...check, saleCount: (Number(check.saleCount) || 0) + qty };
+  if (movementId) {
+    next.appliedMovements = { ...(check.appliedMovements || {}), [movementId]: true };
+  }
   if (movementTs && (!next.lastSoldAt || movementTs > next.lastSoldAt)) {
     next.lastSoldAt = movementTs;
   }
