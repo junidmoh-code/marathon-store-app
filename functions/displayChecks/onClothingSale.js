@@ -27,11 +27,17 @@
 // …/processed/{movementId} before any write; a second fire loses the claim and
 // exits. Counter bumps are transactions, never read-then-write.
 //
-// PR-7 SEAM (documented, deliberate): …/meta/active/{dedupeKey} maps a live
-// (open|held) check so two near-simultaneous sales of one SKU can't both
-// create. completeDisplayCheck (PR 7) MUST clear this key in the same
-// operation that sets status "completed" — until PR 7 exists nothing
-// completes, so the map is exact for this PR's whole lifetime.
+// CREATE-MUTEX — TTL, SELF-EXPIRING (no external release, no PR-7 obligation):
+// …/meta/active/{dedupeKey} closes only the concurrent-create window (two
+// tills, same SKU, same seconds — both executions read an empty day node
+// before either wrote). Entries expire by CREATE_MUTEX_TTL_MS (120s) inside
+// the claim transaction itself; nothing anywhere has to clear them. A stuck
+// entry can cost at most one TTL of mutex-level dedupe — it can never block a
+// SKU permanently. The non-concurrent case never touches the mutex at all:
+// the day-node scan finds the open/held check and bumps it. A fresh entry
+// pointing at a COMPLETED check is also claimable (completed checks are
+// immutable — a bump must never land on one). See mutexClaimDecision in
+// lib.cjs, with tests.
 //
 // DEPLOY (Junid only; scoped — NEVER bare --only functions, POS shares this
 // project):  firebase deploy --only functions:onClothingSale
@@ -50,6 +56,8 @@ const {
   resolveSale,
   resolveAssignment,
   buildNewCheck,
+  mutexClaimDecision,
+  completedIdsOf,
 } = require("./lib.cjs");
 
 // index.js initialises admin at module scope; guard for standalone imports
@@ -161,20 +169,23 @@ exports.onClothingSale = onValueCreated(
       return;
     }
 
-    // ── Create path: claim the per-key create-mutex first ──
+    // ── Create path: claim the per-key create-mutex (TTL, self-expiring) ──
     // Two concurrent movements of the same SKU race here; the transaction lets
-    // exactly one create. The loser sees the winner's checkId and bumps it
-    // instead (its own idempotency claim already succeeded, so this is its
-    // one and only handling of that movement).
+    // exactly one create. The loser sees the winner's fresh entry and bumps
+    // that checkId instead (its own idempotency claim already succeeded, so
+    // this is its one and only handling of that movement). Entries expire by
+    // TTL inside the claim itself and a fresh entry pointing at a completed
+    // check is claimable — see mutexClaimDecision (lib.cjs) for the rules.
     const newCheckId = db.ref(`displayChecks/${store}/${saDate}`).push().key;
+    const completedIds = completedIdsOf(dayNode);
     const mutex = await db
       .ref(`displayChecks_meta/${store}/${saDate}/active/${key}`)
-      .transaction((cur) => (cur === null ? newCheckId : undefined));
+      .transaction((cur) => mutexClaimDecision({ cur, nowMs, newCheckId, completedIds }));
     if (!mutex.committed) {
-      const winnerId = mutex.snapshot.val();
-      if (winnerId) {
+      const winner = mutex.snapshot.val();
+      if (winner && winner.checkId) {
         await bumpCheck(db, {
-          store, saDate, checkId: winnerId, qty,
+          store, saDate, checkId: winner.checkId, qty,
           movementId, movementTs: m.ts || null,
           logType: "sale_bumped", stockQty: null, nowMs,
         });

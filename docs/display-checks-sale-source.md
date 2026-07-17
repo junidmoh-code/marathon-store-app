@@ -82,9 +82,26 @@ in one source and not the other.**
   till, and excludes returns/refunds by type — which is precisely the "customer took an
   item off a display" event the design needs.
 
+## 4. Trophy — same comparison, same day (pre-enablement check)
+
+Same pipeline, same SA day (2026-07-16), store `trophy` (POS `storeId:"trophy"` ↔ ledger
+`from:"trophy"`), same classifier and decode rules. Run before enabling the trigger for
+trophy because POS habits differ per store:
+
+| Metric | `/pos/sales` | `/stock_movements` | Match |
+|---|---|---|---|
+| Line items / movements | **30** | **30** | ✅ |
+| Distinct {productId, size} | **23** | **23** | ✅ (set-equal) |
+| Total units | **30** | **30** | ✅ |
+| Per-(saleId, productId, size) unit join | — | — | ✅ zero residual, both directions |
+
+All three counts identical — no line-vs-cell collapse case even occurred at trophy that
+day. **Trophy is clear to enable.**
+
 **Caveats recorded, not hidden:**
-- One store-day proven (PE, 2026-07-16). The design's own PR-2 plan (design §15: dormant
-  trigger runs for a few days, output compared against the floor) is the extended proof.
+- Two store-days proven (PE + Trophy, 2026-07-16). The design's own PR-2 plan (design
+  §15: dormant trigger runs for a few days, output compared against the floor) is the
+  extended proof.
 - `sold` movements exist for hubs too (e.g. `from:"hub2"` in test fixtures); the trigger's
   per-store flag gate makes non-shop `from` values a non-issue.
 - The layby `sold` movement is written at layby CREATION (2 layby records → 2 sold

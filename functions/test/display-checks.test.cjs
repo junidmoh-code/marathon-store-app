@@ -147,6 +147,50 @@ test("no cover, no roster, or unassigned weekday → null (PR 11 is data, not su
   assert.equal(lib.resolveAssignment({ cover: null, roster: ROSTER, saDate: "2026-07-19" }), null);
 });
 
+// ── create-mutex: TTL, self-expiring, never blocks a SKU permanently ─────────
+test("mutex: empty → claim; fresh foreign entry → abort (loser bumps)", () => {
+  const now = 1_000_000;
+  assert.deepEqual(
+    lib.mutexClaimDecision({ cur: null, nowMs: now, newCheckId: "me", completedIds: new Set() }),
+    { checkId: "me", at: now }
+  );
+  assert.equal(
+    lib.mutexClaimDecision({
+      cur: { checkId: "other", at: now - 5_000 }, nowMs: now, newCheckId: "me", completedIds: new Set(),
+    }),
+    undefined
+  );
+});
+
+test("mutex: expired entry is claimable — correctness never depends on a release call", () => {
+  const now = 1_000_000;
+  const stale = { checkId: "other", at: now - lib.CREATE_MUTEX_TTL_MS - 1 };
+  assert.deepEqual(
+    lib.mutexClaimDecision({ cur: stale, nowMs: now, newCheckId: "me", completedIds: new Set() }),
+    { checkId: "me", at: now }
+  );
+  // malformed `at` (never written properly) must also expire, not wedge
+  assert.deepEqual(
+    lib.mutexClaimDecision({ cur: { checkId: "other" }, nowMs: now, newCheckId: "me", completedIds: new Set() }),
+    { checkId: "me", at: now }
+  );
+});
+
+test("mutex: fresh entry pointing at a COMPLETED check is claimable — bumps never land on immutable checks", () => {
+  const now = 1_000_000;
+  const fresh = { checkId: "done1", at: now - 1_000 };
+  assert.deepEqual(
+    lib.mutexClaimDecision({ cur: fresh, nowMs: now, newCheckId: "me", completedIds: new Set(["done1"]) }),
+    { checkId: "me", at: now }
+  );
+});
+
+test("completedIdsOf collects exactly the completed checks", () => {
+  const day = { a: { status: "open" }, b: { status: "completed" }, c: { status: "held" }, d: null };
+  assert.deepEqual(lib.completedIdsOf(day), new Set(["b"]));
+  assert.deepEqual(lib.completedIdsOf(null), new Set());
+});
+
 // ── new-check body ───────────────────────────────────────────────────────────
 const BASE = {
   productId: "p1", product: { name: "Nike Tee", photoUrl: "https://x/p.jpg", productType: "clothing" },

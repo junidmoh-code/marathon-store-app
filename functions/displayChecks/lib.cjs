@@ -161,6 +161,48 @@ function resolveAssignment({ cover, roster, saDate }) {
   return null;
 }
 
+// ── Create-mutex claim (TTL — self-expiring, no external release) ─────────────
+// The mutex closes exactly ONE window: two concurrent trigger executions that
+// both read an empty day node before either wrote (two tills, same SKU, same
+// seconds). Everything non-concurrent is already covered by the day-node scan
+// (resolveSale: an open/held check → bump path, which never consults the
+// mutex). So the lock's useful life IS that window — seconds — and it expires
+// by TTL, not by a release call. PR 2 is correct with PR 7 not existing:
+// nothing anywhere is obliged to clear this key, ever. A stuck entry can cost
+// at most TTL of dedupe-by-mutex; it can never block a SKU permanently.
+//
+// Claim rules (transaction callback semantics: return value = write, undefined
+// = abort):
+//   cur == null                      → claim (first creator)
+//   cur older than TTL               → claim (expired — self-heal)
+//   cur.checkId completed in my day  → claim (a fresh-but-stale entry must not
+//     snapshot                          route a bump onto a completed check;
+//                                       checks are never edited after completion)
+//   otherwise (fresh, active)        → abort — caller bumps cur.checkId
+const CREATE_MUTEX_TTL_MS = 120e3;
+
+function mutexClaimDecision({ cur, nowMs, newCheckId, completedIds }) {
+  if (cur == null) return { checkId: newCheckId, at: nowMs };
+  const at = Number(cur.at);
+  if (!Number.isFinite(at) || nowMs - at > CREATE_MUTEX_TTL_MS) {
+    return { checkId: newCheckId, at: nowMs };
+  }
+  if (completedIds && completedIds.has(cur.checkId)) {
+    return { checkId: newCheckId, at: nowMs };
+  }
+  return undefined;
+}
+
+// Ids in a day-node snapshot whose check is completed — feeds the claim rule
+// above so a mutex loser can never bump a completed (immutable) check.
+function completedIdsOf(dayNode) {
+  const out = new Set();
+  for (const [checkId, c] of Object.entries(dayNode || {})) {
+    if (c && c.status === "completed") out.add(checkId);
+  }
+  return out;
+}
+
 // ── New-check body ────────────────────────────────────────────────────────────
 // The denormalised record (§4.1 + PR-2 spec). photoUrl is the FULL-SIZE product
 // photo — Phase 0 found no thumbnail derivative.
@@ -201,6 +243,9 @@ function buildNewCheck({
 
 module.exports = {
   TRIGGER_STORE_FLAGS,
+  CREATE_MUTEX_TTL_MS,
+  mutexClaimDecision,
+  completedIdsOf,
   isTriggerStoreEnabled,
   encodeSizeKey,
   stockSizeKey,
