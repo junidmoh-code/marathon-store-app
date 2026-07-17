@@ -38,6 +38,21 @@ export function describeSkew(absMs) {
   return `about ${days} day${days === 1 ? "" : "s"}`;
 }
 
+// How often the displayed date is re-read while the banner is up. Only ever
+// runs on an already-misconfigured device, so a minute is cheap and plenty.
+const DATE_REFRESH_MS = 60 * 1000;
+
+/** The real date in SA — pinned to Africa/Johannesburg, NOT the device's
+ *  timezone. A device can be wrong about the zone as well as the clock, and this
+ *  banner's whole job is to state a fact the device is getting wrong. Every
+ *  other date in the app is SA-anchored (see serverTime.js), so this matches. */
+export function formatSaDate(ms) {
+  return new Date(ms).toLocaleDateString("en-ZA", {
+    timeZone: "Africa/Johannesburg",
+    weekday: "long", day: "numeric", month: "long", year: "numeric",
+  });
+}
+
 /** Whether the clock is wrong enough to shout about. Pure + exported: this repo
  *  has no DOM test env, so the decision is tested here rather than via render. */
 export function shouldWarn(offsetMs) {
@@ -55,15 +70,26 @@ export function clockWarningText(offsetMs) {
 
 export default function ClockWarningBanner() {
   const [offset, setOffset] = useState(0);
-  useEffect(() => onServerTimeOffsetChange(setOffset), []);
-
-  if (!shouldWarn(offset)) return null;
-
   // The real date, per the server — the single most useful fact for someone
   // about to fix the device, and the one its own screen is lying about.
-  const realDate = new Date(serverNowMs()).toLocaleDateString("en-ZA", {
-    weekday: "long", day: "numeric", month: "long", year: "numeric",
-  });
+  // Held in state and refreshed on a timer: this banner only re-renders when the
+  // OFFSET changes, and a misconfigured till sits untouched for hours. Computing
+  // the date at render alone let it cross midnight and keep displaying
+  // yesterday — a banner about wrong dates showing a wrong date.
+  const [realDate, setRealDate] = useState(() => formatSaDate(serverNowMs()));
+  useEffect(() => onServerTimeOffsetChange(setOffset), []);
+  useEffect(() => {
+    if (!shouldWarn(offset)) return undefined;
+    // Re-read on appear, then poll. A plain interval beats a scheduled
+    // next-midnight timeout here: no boundary arithmetic to get wrong, it
+    // self-corrects if the offset shifts under us, and it only ticks on a
+    // device that is already misconfigured.
+    setRealDate(formatSaDate(serverNowMs()));
+    const id = setInterval(() => setRealDate(formatSaDate(serverNowMs())), DATE_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [offset]);
+
+  if (!shouldWarn(offset)) return null;
 
   return (
     <div

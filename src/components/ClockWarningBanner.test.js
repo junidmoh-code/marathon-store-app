@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shouldWarn, describeSkew, clockWarningText, CLOCK_WARN_THRESHOLD_MS } from "./ClockWarningBanner.jsx";
+import { shouldWarn, describeSkew, clockWarningText, formatSaDate, CLOCK_WARN_THRESHOLD_MS } from "./ClockWarningBanner.jsx";
 import { setServerTimeOffsetMs, onServerTimeOffsetChange, getServerTimeOffsetMs } from "../utils/serverTime";
 
 const MIN = 60 * 1000, HOUR = 60 * MIN, DAY = 24 * HOUR;
@@ -58,6 +58,23 @@ describe("clockWarningText — the words staff actually read", () => {
 
   it("says AHEAD when the device runs fast", () => {
     expect(clockWarningText(-2 * HOUR)).toContain("about 2 hours ahead");
+  });
+});
+
+describe("formatSaDate — the fact the device is getting wrong", () => {
+  it("reports the SA date for a server instant", () => {
+    expect(formatSaDate(Date.parse("2026-07-17T10:17:00Z"))).toBe("Friday, 17 July 2026");
+  });
+
+  it("is pinned to SA, not the host timezone — 23:30 UTC is already tomorrow in SA", () => {
+    // 2026-07-17T23:30Z === 2026-07-18 01:30 SAST. A device formatting in its
+    // own zone (or UTC) would say the 17th; the shop is on the 18th.
+    expect(formatSaDate(Date.parse("2026-07-17T23:30:00Z"))).toBe("Saturday, 18 July 2026");
+  });
+
+  it("holds the SA day right up to the SA midnight boundary", () => {
+    expect(formatSaDate(Date.parse("2026-07-17T21:59:59Z"))).toBe("Friday, 17 July 2026"); // 23:59 SAST
+    expect(formatSaDate(Date.parse("2026-07-17T22:00:00Z"))).toBe("Saturday, 18 July 2026"); // 00:00 SAST
   });
 });
 
