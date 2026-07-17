@@ -237,17 +237,45 @@ decided here; the reconciliation harness must cover whichever is chosen.**
 - **Does not serve:** Recent-activity list, Product-Search order-history list (raw event
   rows — §2.4); anything customer-keyed (§2.3); Admin product line (§2.2).
 - **Write path:** a scheduled Cloud Function (the repo's proven pattern — cf. PR 1's sweep)
-  runs every N minutes: reads `/insights/meta/cursor` (last processed push key), queries
-  `orderByKey().startAt(cursor)` (no index needed), folds new events into the open day's
-  node with a **read-modify-write on the day node guarded by a transaction on the cursor** —
-  the cursor advance and the aggregate write happen in one multi-path update, so a crash
-  re-processes from the same cursor and overwrites the same aggregates (fold is recomputed
-  from the cursor, not incremented blindly) — **idempotent by construction, not by hope**.
+  runs every N minutes:
+  1. read `/insights/meta/cursor` (last durably processed push key);
+  2. `orderByKey().startAt(cursor)` (no index needed) to fetch the unprocessed range;
+  3. read the day nodes those events bucket into (by each event's own `saDate(timestamp)` —
+     see the late-event policy below);
+  4. compute the new **absolute** day-node values (fold, never blind increments);
+  5. commit **one multi-path `update()` writing the folded day nodes AND the advanced
+     cursor together** — a single RTDB multi-path update is atomic, so the cursor can never
+     advance without its aggregates landing, and a crash anywhere before that commit leaves
+     the cursor unmoved and the next run refolds the identical range to identical values.
+
+  What this design does **not** claim (review finding on the earlier draft, corrected): a
+  transaction on the cursor alone cannot make the separate day-node read-modify-write
+  atomic. Concurrency is handled instead by (a) the scheduled function running with
+  `maxInstances: 1` (no overlapping sweeps by configuration), and (b) determinism as the
+  backstop — two runs that both started from the same durable cursor read the same range and
+  the same prior day-node state and therefore commit byte-identical updates, so even an
+  overlap that slips past (a) is benign, and the atomic {aggregates+cursor} commit means
+  there is no interleaving in which the cursor and the aggregates disagree.
+
   Client-side dual-writes were rejected: seven writers across two apps and a Cloud Function
   cannot all be made atomic with their aggregate updates, and one missed writer corrupts a
-  counter forever. Eventual consistency is acceptable **only because closed days are
-  immutable and the open day is never served from the projection** (§2.4): the projection is
-  authoritative for *closed days only*, where "eventually" has already happened.
+  counter forever. Eventual consistency is acceptable **only because the open day is never
+  served from the projection** (§2.4) — the projection is authoritative where the sweep has
+  already durably passed.
+
+- **Late events and the finalization watermark** (review finding on the earlier draft,
+  corrected — "closed days are immutable" was too strong): the fold buckets every event into
+  the day node of **its own `saDate(timestamp)`**, regardless of when it arrives — so an
+  event written late (an offline POS till replaying `collected`, a warehouse tablet syncing
+  after midnight) updates its *historical* day node on the sweep that ingests it. Days are
+  therefore never structurally closed to the writer. "Frozen" is a serving concept with an
+  explicit watermark: a day node gains `finalizedAt` once the cursor has passed
+  `dayEnd + 24h` grace; before that, widgets may still see the day's numbers move (exactly
+  as they do today on the live listener). After `finalizedAt`, a late event that still
+  arrives is folded in all the same and bumps a `lateEvents` counter on the day node — a
+  post-finalization change is thus visible, counted, and reconcilable rather than silently
+  dropped. The reconciliation fence (Part 3) is on push keys, so both sides always see the
+  same event set at comparison time regardless of lateness.
 - **Backfill:** one script (owner-run, dry-run first) reads the full log once —
   ~12.85 MB ≈ **~$0.02 one-time** at RTDB egress rates *(derived)* — folds per-day nodes,
   writes them, sets the cursor. Rerunnable: it recomputes and overwrites, never increments.
@@ -333,7 +361,7 @@ measured, expected rare (manual drill).
 
 | Consumer | Query shape | Bound |
 |---|---|---|
-| Overview Recent-activity (top-30, all actions) | `orderByKey().limitToLast(K)` on `/insights_log`, K≈200 *(30 needed; headroom for the store/category filters — K tuned in PR 3 by measurement)* | last K events (~60 KB *derived*) |
+| Overview Recent-activity (top-30, all actions) | `orderByKey().startAt(windowStartKey).endAt(windowEndKey).limitToLast(K)` — the window bound comes FIRST (synthetic keys from the selected window's SA-day edges), then newest-K **within** it; K≈200 *(30 needed; headroom for the store/category filters — K tuned in PR 3 by measurement; if filters exhaust K, page backward with `endAt(oldestFetchedKey)`)*. Plain `limitToLast` without the range is only valid in all-time mode — newest-K-global returns the wrong rows for any historical window (review finding, corrected) | newest K inside the window (~60 KB *derived*) |
 | Insights "today" figures + hourly chart (open day) | `orderByKey().startAt(todayStartKey)` where `todayStartKey` is a **synthetic push key built from SA-midnight epoch ms** (push ids encode their timestamp in the first 8 chars — derivable client-side, no index) | one day (~600 events / ~180 KB *derived*) |
 | Source History + On Hold (5-day, needs event rows) | `orderByKey().startAt(fiveDaysAgoKey)` — same synthetic-key trick | 5 days (~3k events / ~0.9 MB *derived*; vs 12.85 MB today) |
 | Product-Search order-history list | window-bounded key-range (as above) filtered client-side by name; for all-time searches this remains a **full read — kept behind an explicit user action** ("search all history" button), never on view mount | user-invoked only |
