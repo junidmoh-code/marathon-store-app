@@ -208,7 +208,7 @@ decided.
 
 ### CodeRabbit (PR #241) — design findings DEFERRED to PR 2 (owner decision)
 The consistency/accuracy findings were folded into the design doc on PR #241; these
-three are behavioural design choices left for the owner to settle when PR 2 is built:
+behavioural design choices are left for the owner to settle when PR 2 is built:
 5. **Deduplicate `held` checks, not just `open`.** The §1.2 lifecycle only dedups against
    `open`; repeated sales while a size is unavailable can spawn multiple `held` records for
    the same SKU → duplicate wake cards and doubled stats. The trigger must dedup against
@@ -217,7 +217,52 @@ three are behavioural design choices left for the owner to settle when PR 2 is b
    today" is ambiguous — a completed `no_stock` check must NOT set `repeatOf`/
    `repeatWithinMinutes`, or the repeat metric contradicts the "repeats follow Display
    Confirmed" rule.
-7. **Make date boundaries explicitly SA-timezone.** Day nodes (`{YYYY-MM-DD}`), mark months
-   (`{YYYY-MM}`) and the 03:00 rollover must key on SA-time, not UTC/local — reuse the
-   repo's `saDateOf`/`saStartIso` helpers (`src/utils/clothingSold.js:60-75`) so a sale near
-   midnight lands in the right day node.
+7. **Sale after a `no_stock` result = CONTRADICTION, not repeat (owner-requested flag —
+   do NOT build yet).** If a SKU sells again after a check was closed **No Stock
+   Available**, the till has just proven the item existed in the store. That is not a
+   display-repeat — it's a direct contradiction of the signed result, and a sharper
+   integrity signal than a repeat (either the shelf wasn't checked or the no-stock was a
+   shortcut tap). The design currently has **no home** for this event: the repeat path
+   only follows `confirmed`, so a post-`no_stock` sale silently opens a fresh check and
+   the contradiction is lost. PR 2's trigger needs an event/field for it (e.g.
+   `contradicts` on the new check + a `no_stock_contradicted` log type) and analytics a
+   counter — design decision pending, flag only.
+
+**Timezone — SETTLED, no longer a PR-2 question.** All date boundaries and schedules are
+**Africa/Johannesburg** (SAST, UTC+2, no DST) — now written into the design as governing
+constraint **§0.6**: day-node keys, mark months, the 03:00 rollover, `closeTime`, roster
+days, cover dates. Reuse `saDateOf`/`saStartIso` (`src/utils/clothingSold.js:60-75`);
+scheduled functions declare `timeZone: "Africa/Johannesburg"`. A stated constant, not a
+call for the owner to make.
+
+---
+
+## Root RTDB audit — HARD BLOCKING DEPENDENCY for PR 12 (marks) and PR 13 (analytics)
+
+Not background context. CodeRabbit is right that a child `.write: false` (or `.read:
+false`) **cannot revoke an open root grant** — Firebase rules cascade permissively, and
+the live root currently grants broad access to any authenticated account
+(2026-07-10 audit; see also the live-rules-drift note — the local `database.rules.json`
+is stale and is never deployed).
+
+Why this bites exactly at PR 12/13: `/displayChecks_marks` and `/displayChecks_stats`
+are **named staff performance records** — per-uid marks, completion times, repeat
+failures, override counts. Under the open root grant, *any* authenticated account
+(every PIN staff account, the TV device, the POS accounts) can read — and write —
+them, regardless of any child rule this module adds. The design's own privacy rule
+("visible to the staff member and managers, never to other staff, no leaderboard")
+is unenforceable at the data layer until the root is closed.
+
+Consequence, stated as a gate:
+
+- **PR 12 (`rolloverAndMark` + My Marks) and PR 13 (stats counters + Analytics tab)
+  MUST NOT deploy before the root RTDB audit lands** (root-level deny/allowlist,
+  console-managed, by the owner). Child rules on `displayChecks*` are welcome but are
+  NOT the mitigation — they are inert until the root closes.
+- Earlier PRs are less exposed but not exempt: `/displayChecks` day nodes carry
+  assignee names and per-check attribution. Acceptable operational data under the
+  current posture (same class as `/orders`), owner's call — but marks/stats are a
+  different category and wait for the root.
+
+Flag only. No rules change is part of this module's PRs (RTDB rules are console-managed
+by the owner, always — standing constraint).

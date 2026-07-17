@@ -13,6 +13,7 @@ Revision 3 — single confirm result, full Availability tab, static clothing cat
 3. **RTDB rules are console-managed.** `database.rules.json` is stale and is never deployed.
 4. **No existing behaviour changes.** Reads only. Writes exclusively to `displayChecks*`.
 5. Feature flag from PR 1.
+6. **All date boundaries and schedules are Africa/Johannesburg.** Every place a date or time appears — day-node keys (`{YYYY-MM-DD}`), mark months (`{YYYY-MM}`), the 03:00 rollover, `closeTime`, roster weekdays, cover dates, the repeat window's "today" — is computed in **Africa/Johannesburg** (SAST, UTC+2, no DST). Never client-local, never UTC. Reuse the repo's existing SA-date helpers (`saDateOf` / `saStartIso`, `src/utils/clothingSold.js:60-75`); scheduled functions declare `timeZone: "Africa/Johannesburg"`. This is a stated constant of the design, not an open question.
 
 ---
 
@@ -108,7 +109,7 @@ Dismissible per session, returns on the next escalation.
 
 ### 2.2 Marks
 
-At 03:00 rollover, every check still `open` marks **the person who was on duty that day** — not whoever inherits it.
+At 03:00 rollover (Africa/Johannesburg, per §0.6 — as is every date boundary in this design), every check still `open` marks **the person who was on duty that day** — not whoever inherits it.
 
 ```text
 /displayChecks_marks/{storeId}/{uid}/{YYYY-MM}/{markId}

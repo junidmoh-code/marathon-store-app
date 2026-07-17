@@ -78,14 +78,18 @@ function useTick() {
 }
 
 // ── On-duty identity strip (§8.3) — a fact, not a warning ─────────────────────
+// The dot carries the design's specified slow pulse; the clock ticks to the
+// second (ledger precision, §8.4). Presentational only.
 function OnDutyStrip({ name }) {
   const now = useTick();
   const clock = now.toLocaleTimeString("en-GB", { hour12: false });
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, ...META, color: "rgba(233,238,255,.6)" }}>
+      <style>{`@keyframes dcPulse{0%,100%{opacity:1}50%{opacity:.35}}`}</style>
       <span style={{ width: 7, height: 7, borderRadius: "50%", background: BLUE,
-                     boxShadow: `0 0 8px ${BLUE}`, display: "inline-block" }} />
-      <span>ON DUTY · {(name || "—").toUpperCase()} · {clock}</span>
+                     boxShadow: `0 0 8px ${BLUE}`, display: "inline-block",
+                     animation: "dcPulse 2.6s ease-in-out infinite" }} />
+      <span style={{ fontVariantNumeric: "tabular-nums" }}>ON DUTY · {(name || "—").toUpperCase()} · {clock}</span>
     </div>
   );
 }
@@ -149,8 +153,9 @@ export default function DisplayChecks({ onExit }) {
   // If the store toggle lands on a store the viewer can't manage, a manager tab
   // could be selected but hidden — fall back to Today so the frame never blanks.
   useEffect(() => {
-    if (!visibleTabs.some((t) => t.key === tab)) setTab("today");
-  }, [tab, visibleTabs]);
+    const t = TABS.find((x) => x.key === tab);
+    if (t?.manager && !canManage) setTab("today");
+  }, [tab, canManage]);
 
   const displayName = permRecord?.displayName || permRecord?.username
     || user?.email?.split("@")[0] || "Staff";
@@ -167,9 +172,10 @@ export default function DisplayChecks({ onExit }) {
         {/* Header */}
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <button onClick={onExit}
+            <button type="button" onClick={onExit}
                     style={{ ...META, background: "none", border: "none", cursor: "pointer",
-                             color: "rgba(233,238,255,.45)", padding: 0, textAlign: "left" }}>
+                             color: "rgba(233,238,255,.45)", padding: "6px 12px 6px 0",
+                             margin: "-6px 0", textAlign: "left" }}>
               ‹ BACK
             </button>
             <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.01em" }}>Display Checks</div>
@@ -186,7 +192,7 @@ export default function DisplayChecks({ onExit }) {
             {ENABLED_STORES.map((s) => {
               const on = s.id === store;
               return (
-                <button key={s.id} onClick={() => setSuperStore(s.id)}
+                <button key={s.id} type="button" onClick={() => setSuperStore(s.id)}
                         style={{ ...META, letterSpacing: "0.1em", cursor: "pointer",
                                  padding: "7px 13px", borderRadius: 999,
                                  background: on ? "rgba(74,127,255,.18)" : GLASS_BG,
@@ -199,14 +205,16 @@ export default function DisplayChecks({ onExit }) {
           </div>
         )}
 
-        {/* Tab bar */}
-        <div style={{ display: "flex", gap: 4, marginBottom: 18, borderBottom: "1px solid rgba(255,255,255,.06)" }}>
+        {/* Tab bar — horizontally scrollable so four tabs never clip on a phone */}
+        <div style={{ display: "flex", gap: 4, marginBottom: 18, borderBottom: "1px solid rgba(255,255,255,.06)",
+                      overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
           {visibleTabs.map((t) => {
             const on = t.key === tab;
             return (
-              <button key={t.key} onClick={() => setTab(t.key)}
+              <button key={t.key} type="button" onClick={() => setTab(t.key)}
                       style={{ fontFamily: FONT, fontSize: 14, fontWeight: 650, cursor: "pointer",
                                background: "none", border: "none", padding: "10px 14px",
+                               flexShrink: 0, whiteSpace: "nowrap",
                                color: on ? INK : "rgba(233,238,255,.4)",
                                borderBottom: on ? `2px solid ${BLUE}` : "2px solid transparent",
                                marginBottom: -1 }}>
