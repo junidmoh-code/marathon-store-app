@@ -18,6 +18,7 @@ import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
+import { serverNowMs } from "../../utils/serverTime";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -88,7 +89,7 @@ export default function NetworkTransfer({ products = [] }) {
     const lines = card.sizes.map((s) => ({ s, qty: qtyOf(card, s) })).filter((l) => l.qty > 0);
     if (!lines.length) return;
     setBusyPid(card.pid);
-    const batch = `net_${Date.now().toString(36)}`;
+    const batch = `net_${serverNowMs().toString(36)}`;
     let moved = 0; const failed = [];
     for (const { s, qty } of lines) {
       let res;

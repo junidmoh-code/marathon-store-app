@@ -20,6 +20,7 @@
 import { ref, get, set, runTransaction } from "firebase/database";
 import { database } from "../../firebase";
 import { isValidBarcode, nextBarcodeFromMeta, barcodeSizeKey, barcodeIndexRecord } from "./barcode";
+import { serverNowIso } from "../../utils/serverTime";
 
 // Reserve the next 8-digit code from /products_meta.lastBarcode, atomically.
 // Only advances lastBarcode (sku is per-product, reserved elsewhere).
@@ -44,7 +45,7 @@ async function writeIndexIfMissing(code, productId, size) {
     // Create-only at the rules layer (!data.exists()) — a concurrent winner's
     // write makes ours a rejected no-op; that's fine, the index already exists.
     // Unsized items omit the size field (see barcodeIndexRecord).
-    await set(idxRef, barcodeIndexRecord(productId, size, new Date().toISOString()));
+    await set(idxRef, barcodeIndexRecord(productId, size, serverNowIso()));
   }
 }
 

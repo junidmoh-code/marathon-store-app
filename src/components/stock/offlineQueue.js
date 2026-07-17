@@ -17,6 +17,7 @@ import { useEffect, useState } from "react";
 import { ref, get, child, update } from "firebase/database";
 import { database } from "../../firebase";
 import { applyMovement } from "./applyMovement";
+import { serverNowIso } from "../../utils/serverTime";
 
 const DB_NAME = "marathon-stock-offline";
 const STORE = "pendingSales";
@@ -48,7 +49,7 @@ function tx(db, mode, fn) {
 // Resolves as soon as it is durably queued — the till proceeds immediately.
 export async function enqueueSale(sale) {
   const db = await openDb();
-  await tx(db, "readwrite", (store) => store.put({ ...sale, queuedAt: new Date().toISOString() }));
+  await tx(db, "readwrite", (store) => store.put({ ...sale, queuedAt: serverNowIso() }));
   notify();
   // Opportunistic immediate sync (no-op offline); never awaited by the caller path.
   if (typeof navigator === "undefined" || navigator.onLine) drainQueue().catch(() => {});
@@ -118,7 +119,7 @@ export async function drainQueue() {
               total: sale.total ?? null,
               tenderType: sale.tenderType ?? null,
               deviceId: sale.deviceId ?? null,
-              syncedAt: new Date().toISOString(),
+              syncedAt: serverNowIso(),
             },
           });
         } catch { continue; } // leave queued; retry

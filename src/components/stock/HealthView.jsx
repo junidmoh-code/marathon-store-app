@@ -35,6 +35,7 @@ import Hub2RefillQueue from "./Hub2RefillQueue";
 import MoveExcess from "./MoveExcess";
 import NetworkTransfer from "./NetworkTransfer";
 import NoTargetQueue from "./NoTargetQueue";
+import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 const locLabel = (l) => LOC_LABEL[l] || l || "—";
@@ -46,7 +47,7 @@ function fmtTs(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  const today = new Date().toDateString() === d.toDateString();
+  const today = new Date(serverNowMs()).toDateString() === d.toDateString();
   const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   return today ? hm : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${hm}`;
 }
@@ -242,7 +243,7 @@ export default function HealthView({ products = [], onExit }) {
 
   const toggleSession = async () => {
     if (!canRunSession) return;
-    const now = new Date().toISOString();
+    const now = serverNowIso();
     await update(ref(database), {
       receiving_session: session?.active
         ? { active: false, openedAt: session.openedAt || null, closedAt: now }

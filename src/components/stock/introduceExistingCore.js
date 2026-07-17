@@ -21,6 +21,7 @@
 import { ref, update, get } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { encodeSizeKey } from "../../utils/sizeKey";
+import { serverNowIso } from "../../utils/serverTime";
 
 // Approved standard runs — owner policy 2026-07-13 (corrected same day):
 //   STORES (marathon-pe, trophy) — REDUCED run: both stores were full before
@@ -110,7 +111,7 @@ export function computeUnintroduced(allStock, allTargets, productsById, dests = 
 // update can never trip RTDB limits; each chunk is atomic, and re-running after
 // a partial failure is safe (writing the same target twice is idempotent).
 export async function migrateToEngine(items, { config, approvedBy, onProgress } = {}) {
-  const now = new Date().toISOString();
+  const now = serverNowIso();
   const batchId = `introduce-existing-${now.slice(0, 10)}`;
   const dests = destsFrom(config);
   const runFor = (loc) => effectiveRun(config, loc);
@@ -175,7 +176,7 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
     const policyVersion = `shops:${label(runFor("marathon-pe"))}|hub2:${label(runFor("hub2"))}`;
     await update(ref(database), {
       [`stock_targets_decisions/_migrations/${batchId.replace(/[.#$/\[\]]/g, "_")}`]: {
-        kind: "introduce_existing_complete", completedAt: new Date().toISOString(),
+        kind: "introduce_existing_complete", completedAt: serverNowIso(),
         policyVersion, productsOnboarded: done, cellsWritten: cells,
         skippedAlreadyTargeted: skippedTaken || 0, failedBatches: failed.length,
         operator: auth.currentUser?.uid || null, operatorLabel: approvedBy || "introduce-existing",

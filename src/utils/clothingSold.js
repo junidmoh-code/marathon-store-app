@@ -29,6 +29,7 @@
 // the crew acknowledges it can't/won't refill, so it stops reappearing).
 
 import { inferProductType } from "./insights";
+import { saDateString } from "./serverTime";
 
 // Marker on the refill transfer_out movement's `reason`, so refill replenishments
 // are distinguishable from any other transfer to a store (e.g. the sneaker
@@ -80,8 +81,9 @@ export const saStartIso = (saDate) => {
 //   • Sold Backlog   → sale saDate <  cutoff  (yesterday … 14 days back)
 // The daily per-store list is the actionable "sold today, refill it" worklist;
 // backlog is the aging pile. (cutoff=tomorrow would leave per-store tabs empty.)
-export const clothingSoldCutoff = () =>
-  new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
+// Server-anchored — this cutoff decides what counts as "sold today" vs backlog,
+// so a device with a wrong date would silently show the wrong worklist.
+export const clothingSoldCutoff = () => saDateString();
 
 // Tally refilled UNITS per (store, productId, size) from the windowed ledger:
 // sum the qty of every refill-tagged `transfer_out` whose destination is a store,
