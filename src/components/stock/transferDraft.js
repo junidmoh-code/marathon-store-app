@@ -16,6 +16,7 @@
 //      the transfer can never double-move a line.
 
 import { stockSizeKey } from "../../utils/sizeKey";
+import { serverNowIso } from "../../utils/serverTime";
 
 const KEY = "transfer_draft_v1";
 const SCHEMA = 1;
@@ -63,7 +64,7 @@ export function saveDraft({ from, to, refillId, transferId, basket, lineResults 
       KEY,
       JSON.stringify({
         schema: SCHEMA,
-        savedAt: new Date().toISOString(),
+        savedAt: serverNowIso(),
         from: from || "",
         to: to || "",
         refillId: refillId || null,

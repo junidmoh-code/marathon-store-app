@@ -28,6 +28,7 @@ import { SizeTag } from "../SizeTag";
 import { resolveScan, realSizesOf, forgivingBarcodeCandidates } from "./scanResolve";
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import FilterPicker from "./FilterPicker";
+import { serverNowIso } from "../../utils/serverTime";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found", not a
 // mis-pathed read. (Mirrors the POS barcodeLookup reader.)
@@ -384,7 +385,7 @@ export default function Transfer({ products, registry, actorRole }) {
       await update(ref(database), {
         [`refill_requests/${refillId}/status`]: "fulfilled",
         [`refill_requests/${refillId}/fulfilledBy`]: { transferId: tId },
-        [`refill_requests/${refillId}/resolvedAt`]: new Date().toISOString(),
+        [`refill_requests/${refillId}/resolvedAt`]: serverNowIso(),
       }).catch(() => {});
     }
 

@@ -15,6 +15,7 @@
 
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "./firebase";
+import { serverNowIso } from "./utils/serverTime";
 
 const MAX_PHOTO_BYTES = 16  * 1024 * 1024;
 const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
@@ -72,7 +73,8 @@ export async function uploadBroadcastMedia(file) {
     throw new Error(`${kind} too large: ${mb} MB. Max ${maxMb} MB.`);
   }
 
-  const utcDate     = new Date().toISOString().slice(0, 10);
+  // Server-anchored: a device with a wrong date would file media under the wrong day.
+  const utcDate     = serverNowIso().slice(0, 10);
   const path        = `broadcast-media/${utcDate}-UTC/${crypto.randomUUID()}.${ext}`;
   const ref         = storageRef(storage, path);
   const contentType = file.type || EXT_TO_MIME[ext] || "application/octet-stream";

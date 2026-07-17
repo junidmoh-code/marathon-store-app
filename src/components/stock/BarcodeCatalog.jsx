@@ -24,6 +24,7 @@ import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGho
 import { searchProducts } from "../../utils/productSearch";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
+import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 
 const keyOf = (pid, size) => `${pid}|${size}`;
 
@@ -91,7 +92,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     // doesn't have to transcribe anything). Best-effort — never blocks the UI.
     try {
       await set(ref(database, "printer_diag/latest"), {
-        at: new Date().toISOString(),
+        at: serverNowIso(),
         ok: !!res.ok,
         diag: res.diag || null,
         error: res.error || null,
@@ -119,7 +120,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   }, [products]);
 
   // Forgiving search (fuzzy name + barcode/sku/per-size codes; code hits first).
-  // Empty query lists products NEWEST-FIRST — a product id is "p" + Date.now()
+  // Empty query lists products NEWEST-FIRST — a product id is "p" + serverNowMs()
   // at creation (App.jsx), so the id encodes the upload time; just-added
   // products sit at the top ready to select and print, instead of being buried
   // alphabetically. Ties/legacy ids fall back to name order. Location +

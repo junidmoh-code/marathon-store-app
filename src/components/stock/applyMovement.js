@@ -34,6 +34,7 @@
 import { ref, child, get, update, push } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { stockCellPath } from "../../utils/sizeKey";
+import { serverNowIso } from "../../utils/serverTime";
 
 const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
 
@@ -120,7 +121,7 @@ export async function applyMovement(movement, opts = {}) {
       after[loc]  = c.newQty;
     });
 
-    const now = new Date().toISOString();
+    const now = serverNowIso();
     const mv = {
       type: movement.type,
       productId: movement.productId,
@@ -175,7 +176,7 @@ export async function setCellState(loc, productId, size, state) {
   if (!user) return { ok: false, reason: "not_authenticated" };
   if (!["untracked", "counting", "live"].includes(state)) return { ok: false, reason: "invalid_state" };
   const cellPath = stockCellPath(loc, productId, size);   // encoded size key (half-size safe)
-  const now = new Date().toISOString();
+  const now = serverNowIso();
   const snap = await get(child(ref(database), cellPath));
   const updates = {};
   if (snap.exists()) {

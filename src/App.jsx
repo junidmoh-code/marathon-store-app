@@ -7,6 +7,7 @@ import { database, storage, auth, googleProvider, functions, functionsUS } from 
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
+import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import UpdateBanner from "./update/UpdateBanner";
 import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
@@ -110,7 +111,7 @@ async function uploadBoxPhoto(productId, file) {
   const sRef = storageRef(storage, `products/${productId}/source_box.jpg`);
   await uploadBytes(sRef, blob, { contentType: "image/jpeg" });
   const url = await getDownloadURL(sRef);
-  await update(ref(database, `products/${productId}`), { photoBoxUrl: url, boxPhotoUpdatedAt: Date.now() });
+  await update(ref(database, `products/${productId}`), { photoBoxUrl: url, boxPhotoUpdatedAt: serverNowMs() });
   return url;
 }
 
@@ -700,14 +701,12 @@ function useInsightsLog() {
 }
 
 // ─── SOUTH AFRICA TIME HELPERS ────────────────────────────────────────────────
-function getSADateString() {
-  const now = new Date(Date.now() + 2 * 60 * 60 * 1000);
-  return now.toISOString().slice(0, 10);
-}
-
-function getSAHour() {
-  return new Date(Date.now() + 2 * 60 * 60 * 1000).getUTCHours();
-}
+// Server-anchored (see src/utils/serverTime.js). These are load-bearing in BOTH
+// directions: getSADateString() stamps the restock log's `date` AND decides what
+// counts as "today" in the queues. A device whose date was a day behind wrote
+// orders into yesterday and the warehouse queue never showed them.
+const getSADateString = saDateString;
+const getSAHour = saHour;
 
 // Parses "YYYY-MM-DD" as a local-time Date (avoids UTC-parse gotcha).
 function dateStrToLocal(s) {
@@ -934,7 +933,7 @@ function useAllSourceResponses() {
 // response/respondedOn, so extras are DB-only forensics.
 function saveSourceResponse(date, productKey, size, response, extra) {
   update(ref(database, `restock_requests/${date}/${productKey}`), {
-    [size]: { response, respondedOn: new Date().toISOString(), ...(extra || {}) }
+    [size]: { response, respondedOn: serverNowIso(), ...(extra || {}) }
   }).catch(err => console.warn("saveSourceResponse failed:", err));
 }
 
@@ -943,7 +942,7 @@ function saveSourceResponse(date, productKey, size, response, extra) {
 // "n of m sent" badge until the remainder ships and saveSourceResponse closes it.
 function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
   update(ref(database, `restock_requests/${date}/${productKey}`), {
-    [size]: { fulfilledQty, lastFulfilledAt: new Date().toISOString(), ...(meta || {}) }
+    [size]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}) }
   }).catch(err => console.warn("saveSourceFulfilProgress failed:", err));
 }
 
@@ -998,7 +997,7 @@ function useClothingOos() {
 function saveClothingOut(store, productId, size, hub) {
   const uid = auth.currentUser?.uid || null;
   update(ref(database, `clothing_sold_refills/${store}/${productId}`), {
-    [String(size)]: { outHub: hub || null, at: new Date().toISOString(), by: uid }
+    [String(size)]: { outHub: hub || null, at: serverNowIso(), by: uid }
   }).catch(err => console.warn("saveClothingOut failed:", err));
 }
 function clearClothingOut(store, productId, size) {
@@ -1168,7 +1167,7 @@ function relativeTimeFromIso(iso) {
   if (!iso) return "";
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return "";
-  const mins = Math.floor((Date.now() - then) / 60000);
+  const mins = Math.floor((serverNowMs() - then) / 60000);
   if (mins < 1)  return "just now";
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.floor(mins / 60);
@@ -1573,6 +1572,15 @@ function useGroupBroadcastHistory() {
   return items;
 }
 
+// ─── SERVER TIME BINDING ──────────────────────────────────────────────────────
+// The ONE place /.info/serverTimeOffset is read. Everything that writes a
+// timestamp goes through src/utils/serverTime.js, which this feeds — see the
+// rationale there. Bound at module load (the firebase handle is live from
+// import) so the offset is settled before the first order of the day; until it
+// lands the offset is 0, i.e. the old device-clock behaviour, never a blocked
+// sale. `database` is imported above, so this cannot run before init.
+onValue(ref(database, ".info/serverTimeOffset"), (snap) => setServerTimeOffsetMs(snap.val()));
+
 // ─── ORDER NUMBER COUNTER ─────────────────────────────────────────────────────
 // Cycles 001 → 999 → 001, resets at SA midnight. Uses a Firebase transaction so
 // two devices placing orders at the same time get unique numbers.
@@ -1584,32 +1592,8 @@ function useGroupBroadcastHistory() {
 // resets the sequence for EVERYONE, re-issuing 001, 002 … Because orders are
 // keyed by their number (/orders/001), a re-issued number silently OVERWRITES
 // the earlier order. On 2026-07-17 this reset the counter 4 times and destroyed
-// 42 of 70 orders before the numbers were pinned to server time here.
-//
-// /.info/serverTimeOffset is the RTDB server clock minus this device's clock;
-// adding it makes the key derive from SERVER time, so neither a bad timezone nor
-// a bad device clock can move it. It is client-side metadata (no rules, no
-// round-trip) and is bound once at module load so the offset is already settled
-// before the first order of the day. If it never arrives the offset stays 0 and
-// we degrade to the old device-clock behaviour rather than blocking a sale.
-let serverTimeOffsetMs = 0;
-onValue(ref(database, ".info/serverTimeOffset"), (snap) => {
-  const v = snap.val();
-  if (typeof v === "number" && Number.isFinite(v)) serverTimeOffsetMs = v;
-});
-
-// SA is UTC+2 year-round (no DST). Shift, then read UTC parts so the local
-// timezone never enters. Deliberately byte-identical in output to saTodayKey()
-// in functions/lib/refill-engine.cjs — the engine draws from the SAME
-// /refillCounter, so if these two ever disagree they reset each other.
-function saNowMs() {
-  return Date.now() + serverTimeOffsetMs;
-}
-
-function getTodayKey() {
-  const d = new Date(saNowMs() + 2 * 60 * 60 * 1000);
-  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
-}
+// 47 orders before the numbers were pinned to server time (PR #236).
+const getTodayKey = saTodayKey;
 
 async function getNextOrderNumber() {
   const todayKey = getTodayKey();
@@ -1749,7 +1733,7 @@ function CustomersView({ onExit }) {
         console.warn("Broadcast send failed for", c.phone, e);
       }
     }
-    saveBroadcast({ message: broadcastMsg.trim(), sentAt: new Date().toISOString(), recipientCount: sent });
+    saveBroadcast({ message: broadcastMsg.trim(), sentAt: serverNowIso(), recipientCount: sent });
     setSendResult(`Sent to ${sent} customer${sent !== 1 ? "s" : ""}`);
     setBroadcastMsg("");
     setSending(false);
@@ -1771,7 +1755,7 @@ function CustomersView({ onExit }) {
   // ── Customer insights ─────────────────────────────────────────────────────
   // All derived from insights_log "placed" events (the durable per-order feed).
   const stats = useMemo(() => {
-    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(serverNowMs()); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
     const startMs = period === "month" ? monthStart.getTime() : 0;
     const custKeyOf = (phone, name) => phoneToKey(phone) !== "unknown" ? phoneToKey(phone) : `name:${(name || "").trim().toLowerCase()}`;
 
@@ -1819,8 +1803,8 @@ function CustomersView({ onExit }) {
     newInPeriod.forEach(c => { dow[new Date(c.first).getDay()]++; });
     const dowMax = Math.max(...dow, 1);
     const peakDow = newInPeriod.length ? dow.indexOf(Math.max(...dow)) : -1;
-    const firstEver = arr.length ? Math.min(...arr.map(c => tsMs(c.first))) : Date.now();
-    const spanDays = period === "month" ? Math.max(1, new Date().getDate()) : Math.max(1, Math.ceil((Date.now() - firstEver) / 86400000));
+    const firstEver = arr.length ? Math.min(...arr.map(c => tsMs(c.first))) : serverNowMs();
+    const spanDays = period === "month" ? Math.max(1, new Date(serverNowMs()).getDate()) : Math.max(1, Math.ceil((serverNowMs() - firstEver) / 86400000));
     const avgNewPerDay = newInPeriod.length / spanDays;
     const orderKey = period === "month" ? "inPeriod" : "all";
     const mostOrders  = [...arr].filter(c => c[orderKey] > 0).sort((a, b) => b[orderKey] - a[orderKey]).slice(0, 12);
@@ -1832,14 +1816,14 @@ function CustomersView({ onExit }) {
     // New-customer trend — day buckets (this month) or the last 12 months (all time).
     const trend = [];
     if (period === "month") {
-      const days = new Date().getDate();
+      const days = new Date(serverNowMs()).getDate();
       const counts = {};
       newInPeriod.forEach(c => { const dd = new Date(c.first).getDate(); counts[dd] = (counts[dd] || 0) + 1; });
       for (let dd = 1; dd <= days; dd++) trend.push({ label: String(dd), value: counts[dd] || 0 });
     } else {
       const counts = {};
       arr.forEach(c => { const m = (c.first || "").slice(0, 7); counts[m] = (counts[m] || 0) + 1; });
-      const now = new Date();
+      const now = new Date(serverNowMs());
       for (let i = 11; i >= 0; i--) {
         const dt = new Date(now.getFullYear(), now.getMonth() - i, 1);
         const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
@@ -2746,7 +2730,7 @@ const FIX_PRESETS = [
 // ─── "RECENT" PICKER CATEGORY ─────────────────────────────────────────────────
 // Newest photo uploads across ALL categories. Upload time = photoUpdatedAt
 // (stamped on every admin photo upload/replace since 2026-07); fallback is the
-// creation time encoded in the product id ("p" + Date.now() — every product id
+// creation time encoded in the product id ("p" + serverNowMs() — every product id
 // in the DB conforms), so legacy products sort correctly too. AI-studio
 // approvals deliberately do NOT stamp photoUpdatedAt: an approved re-shoot
 // isn't a new upload.
@@ -2761,8 +2745,8 @@ const uploadTs = (p) => {
 const saDay = (ms) => new Date(ms + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
 const RECENT_MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const recentDayLabel = (day) => {
-  if (day === saDay(Date.now())) return "Today";
-  if (day === saDay(Date.now() - 864e5)) return "Yesterday";
+  if (day === saDay(serverNowMs())) return "Today";
+  if (day === saDay(serverNowMs() - 864e5)) return "Yesterday";
   return `${Number(day.slice(8, 10))} ${RECENT_MONTHS[Number(day.slice(5, 7)) - 1]}`;
 };
 
@@ -2859,7 +2843,7 @@ function AdminReviewPhotosTab({ products = [] }) {
     if (pickFilter === "recent") {
       // Newest uploads across all categories: last RECENT_DAYS days, newest
       // first, capped at RECENT_CAP for the grid.
-      const cutoff = Date.now() - RECENT_DAYS * 864e5;
+      const cutoff = serverNowMs() - RECENT_DAYS * 864e5;
       return avail.filter(p => uploadTs(p) >= cutoff)
         .sort((a, b) => uploadTs(b) - uploadTs(a))
         .slice(0, RECENT_CAP);
@@ -2928,7 +2912,7 @@ function AdminReviewPhotosTab({ products = [] }) {
     setBusyId(row.id);
     try {
       await update(ref(database, `products/${row.id}`), { photoUrl: row.proposedUrl, photoUrlOriginal: row.originalUrl });
-      await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "approved", decidedAt: Date.now() });
+      await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "approved", decidedAt: serverNowMs() });
       return true;
     } catch (e) { setRunMsg(`Approve failed for “${row.name || row.id}”: ${e?.message || e}`); return false; }
     finally { setBusyId(null); }
@@ -3005,7 +2989,7 @@ function AdminReviewPhotosTab({ products = [] }) {
   };
   const reject = async (row) => {
     setBusyId(row.id);
-    try { await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "rejected", decidedAt: Date.now() }); }
+    try { await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "rejected", decidedAt: serverNowMs() }); }
     catch (e) { setRunMsg(`Reject failed for “${row.name || row.id}”: ${e?.message || e}`); }
     finally { setBusyId(null); }
   };
@@ -3574,13 +3558,13 @@ function StyleKitPanel() {
       try {
         // References drive scene fidelity — keep more detail than product thumbs.
         const blob = await compressImageFile(file, 1600, 800 * 1024);
-        const refId = `r${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const refId = `r${serverNowMs()}_${Math.random().toString(36).slice(2, 7)}`;
         const path = `aiStudio/styleKit/${template}/${refId}.jpg`;
         const sRef = storageRef(storage, path);
         await uploadBytes(sRef, blob, { contentType: "image/jpeg" });
         const url = await getDownloadURL(sRef);
         await set(ref(database, `aiAssistant/styleKit/${template}/refs/${refId}`), {
-          url, path, enabled: true, addedAt: Date.now(), by: user?.email || "",
+          url, path, enabled: true, addedAt: serverNowMs(), by: user?.email || "",
           ...(template === "clothing" ? { kind: uploadKind } : {}),
         });
         ok++;
@@ -3869,14 +3853,14 @@ function AdminReviewNamesTab({ products }) {
     setBusyId(row.id);
     try {
       await updateProductName(row.id, name);
-      await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "approved", appliedName: name, decidedAt: Date.now() });
+      await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "approved", appliedName: name, decidedAt: serverNowMs() });
       return true;
     } catch (e) { setRunMsg(`Approve failed for “${row.current || row.id}”: ${e?.message || e}`); return false; }
     finally { setBusyId(null); }
   };
   const reject = async (row) => {
     setBusyId(row.id);
-    try { await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "rejected", decidedAt: Date.now() }); }
+    try { await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "rejected", decidedAt: serverNowMs() }); }
     catch (e) { setRunMsg(`Reject failed for “${row.current || row.id}”: ${e?.message || e}`); }
     finally { setBusyId(null); }
   };
@@ -4338,7 +4322,7 @@ function AdminView({ products, orders, onExit }) {
     if (hasOpeningQty && !recvLoc) { alert("Pick a location for the opening stock (or clear the quantities) before saving."); return; }
     setSaving(true);
     try {
-      const id = "p" + Date.now();
+      const id = "p" + serverNowMs();
       let photoUrl = form.photoUrl; // may be null or a preview data-URL
 
       if (form.photoBlob) {
@@ -4385,7 +4369,7 @@ function AdminView({ products, orders, onExit }) {
       // A real photo was uploaded with the product — stamp the upload time
       // (drives the AI Photo Studio picker's "Recent" view; legacy products
       // fall back to the id-encoded creation time).
-      if (form.photoBlob) newProduct.photoUpdatedAt = Date.now();
+      if (form.photoBlob) newProduct.photoUpdatedAt = serverNowMs();
       // POS Phase 2: parse the price strings. Empty / non-finite / non-positive
       // → omit the field entirely. We never want to write `0` and have the POS
       // treat the product as free.
@@ -5051,7 +5035,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           // photoUpdatedAt: upload-time stamp for the AI Photo Studio "Recent"
           // view. Only human uploads stamp it — an approved AI re-shoot isn't
           // a new upload, so approve() deliberately leaves it alone.
-          await update(ref(database, `products/${product.id}`), { photoUrl: url, photoUpdatedAt: Date.now() });
+          await update(ref(database, `products/${product.id}`), { photoUrl: url, photoUpdatedAt: serverNowMs() });
         } catch (err) {
           console.error("photo upload failed:", err);
           alert("Failed to save photo. Please try again.");
@@ -5186,7 +5170,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     if (sold.length > 0) {
       const ts = sold[0].timestamp; // log is sorted newest-first
       if (ts) {
-        const daysAgo = Math.floor((Date.now() - new Date(ts).getTime()) / (24*60*60*1000));
+        const daysAgo = Math.floor((serverNowMs() - new Date(ts).getTime()) / (24*60*60*1000));
         if (daysAgo <= 0)    lastSoldLabel = "Last sold today";
         else if (daysAgo === 1) lastSoldLabel = "Last sold yesterday";
         else                 lastSoldLabel = `Last sold ${daysAgo} days ago`;
@@ -6985,7 +6969,7 @@ function AssistantView({ products, onExit, orders = [] }) {
     setSubmitting(true);
     try {
       const normalizedPhone = normalizeSAPhone(customerPhone);
-      const now = new Date().toISOString();
+      const now = serverNowIso();
       const placed = [];
       // The checkout flow handles every line that needs customer info: sneakers
       // (always) plus clothing tagged "customer" (trial). Clothing "refill"
@@ -7115,7 +7099,7 @@ function AssistantView({ products, onExit, orders = [] }) {
     if (!bypassDestConfirm && needsDestConfirm) { setDestConfirm({ run: () => placeRefillRequests(true) }); return; }
     setSubmitting(true);
     try {
-      const now = new Date().toISOString();
+      const now = serverNowIso();
       const placed = [];
       // ONE refill number for the WHOLE cart (not per line) — clothing refills
       // must not consume the sneaker sequence one-per-size. Each line still needs
@@ -7940,9 +7924,9 @@ function WarehouseView({ products = [], orders, onExit }) {
   const [menuOpenId, setMenuOpenId] = useState(null);
   // Dispatch-label print toast (non-blocking — Send never waits on the printer).
   const [printToast, setPrintToast] = useState(null);
-  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [nowTick, setNowTick] = useState(() => serverNowMs());
   useEffect(() => {
-    const id = setInterval(() => setNowTick(Date.now()), 30 * 1000);
+    const id = setInterval(() => setNowTick(serverNowMs()), 30 * 1000);
     return () => clearInterval(id);
   }, []);
   // ── Layby (warehouse side) ───────────────────────────────────────────────
@@ -8131,7 +8115,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       // PENDING = unactioned work: bucket it as current-day so the queue's 3-day
       // window can NEVER hide it (the whole point — never miss a layby). The card
       // still shows the true requested-age via the pull's requestedAt.
-      if (st === PULL_STATUS.PENDING) return { id: p.invoiceNo, status: STATUS.INCOMING, isLayby: true, _pull: p, createdAt: new Date().toISOString() };
+      if (st === PULL_STATUS.PENDING) return { id: p.invoiceNo, status: STATUS.INCOMING, isLayby: true, _pull: p, createdAt: serverNowIso() };
       if (st === PULL_STATUS.SENT)    return { id: p.invoiceNo, status: STATUS.READY,    isLayby: true, _pull: p, readyAt: p.sentAt, updatedAt: p.sentAt, createdAt: p.sentAt || p.requestedAt || "" };
       return null; // rejected / returnedToStock → resolved, not shown in the queue
     })
@@ -8148,7 +8132,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // log order.size (the customer-requested value); only Source view surfaces
   // sentSize, by design.
   const updateStatus = async (order, status, extraPatch = {}) => {
-    const now = new Date().toISOString();
+    const now = serverNowIso();
     // When an item is COLLECTED (sold/given to customer), log a refill request so
     // Source knows what needs restocking. OOS items are NOT logged — they're
     // completely unavailable and can't be refilled.
@@ -8178,7 +8162,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     patch.readyNotifyPending = isHeldReady;
     // Write the reveal instant for a held Ready; clear any stale one otherwise so a
     // later non-held transition can never be wrongly held by a leftover notifyReadyAt.
-    patch.notifyReadyAt = isHeldReady ? new Date(Date.now() + HUB2_DISPATCH_HOLD_MS).toISOString() : null;
+    patch.notifyReadyAt = isHeldReady ? new Date(serverNowMs() + HUB2_DISPATCH_HOLD_MS).toISOString() : null;
     if (status === STATUS.COMING_TOMORROW) patch.comingTomorrowAt = now;
     if (status === STATUS.COLLECTED)       patch.collectedAt = now;
 
@@ -8361,7 +8345,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         actorRole: "warehouse",
         reason: isClothing ? "clothing_order" : null,
         link: { orderId: order.id },
-        ts: new Date().toISOString(),
+        ts: serverNowIso(),
         movementId,
         // A1 (stock-integrity) — a SNEAKER dispatch ALWAYS moves the ledger. A
         // short or never-counted hub cell goes NEGATIVE instead of silently
@@ -8413,7 +8397,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // feeds Phase 11 Insights). displayRefilledBy stores the hub label
   // (anonymous auth has no email; selectedHub is the meaningful signal).
   const setDisplayRefillStatus = (order, status) => {
-    const now = new Date().toISOString();
+    const now = serverNowIso();
     const patch = {
       displayRefillStatus: status,
       displayRefilledBy:   selectedHub,
@@ -8470,7 +8454,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       displayRefilledAt:            null,
       displayRefillStockDepletedAt: null,
       displayRefilledBy:            null,
-      updatedAt:                    new Date().toISOString(),
+      updatedAt:                    serverNowIso(),
     });
   };
 
@@ -8504,7 +8488,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     // Shadow previews are never fulfillable — hard guard in case any UI path
     // slips one through (the card itself renders read-only).
     if (batch?.shadow) return { ok: 0, fail: 0, errors: ["Shadow preview — enable Live Mode to fulfil"] };
-    const now = new Date().toISOString();
+    const now = serverNowIso();
     const store = batch.destShop;
     let ok = 0, fail = 0; const errors = [];
     for (const it of batch.items) {
@@ -8597,7 +8581,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // line bumps clothingRefillGen, giving the next fulfil cycle fresh idempotency
   // keys. Returns { ok, fail, errors } for the button to surface.
   const undoClothingRefill = async (batch) => {
-    const now = new Date().toISOString();
+    const now = serverNowIso();
     let ok = 0, fail = 0; const errors = [];
     for (const it of batch.items) {
       if (it.status === "available" && (it.refilledQty || 0) > 0 && batch.destShop) {
@@ -9698,7 +9682,7 @@ function orderShopLabel(o) {
 // "2h ago" / "just now" relative time (recomputed on render).
 function relTime(iso) {
   if (!iso) return null;
-  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  const mins = Math.floor((serverNowMs() - new Date(iso).getTime()) / 60000);
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.floor(mins / 60);
@@ -9721,8 +9705,8 @@ function CustomerView({ orders, onExit }) {
   // Respect the Hub-2 dispatch hold on this customer-facing page: a READY order
   // whose reveal instant hasn't passed must read as "being prepared". Ticks every
   // 10s so the hold releases at the reveal time (mirrors the TV board).
-  const [revealClock, setRevealClock] = useState(() => Date.now());
-  useEffect(() => { const id = setInterval(() => setRevealClock(Date.now()), 10000); return () => clearInterval(id); }, []);
+  const [revealClock, setRevealClock] = useState(() => serverNowMs());
+  useEffect(() => { const id = setInterval(() => setRevealClock(serverNowMs()), 10000); return () => clearInterval(id); }, []);
   const heldOrders = useMemo(() => (orders || []).map(o => holdHub2Ready(o, revealClock)), [orders, revealClock]);
   // Keep an open detail pane live: re-sync `found` from heldOrders as the reveal
   // clock ticks and as orders update — else a held order never flips to Ready at
@@ -10133,7 +10117,9 @@ function DisplayView({ orders }) {
     return () => clearInterval(t);
   }, []);
 
-  const now     = new Date();
+  // Customer-facing TV clock — server-anchored so a TV with a wrong clock can't
+  // display the wrong date/time to the shop floor.
+  const now     = new Date(serverNowMs());
   const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
   const dateStr = `${TV_DAY_NAMES[now.getDay()]} ${now.getDate()} ${TV_MONTH_NAMES[now.getMonth()]}`;
 
@@ -10149,7 +10135,7 @@ function DisplayView({ orders }) {
   const hiddenComingTomorrow = useRef(new Set());
   useEffect(() => {
     const check = () => {
-      const nowMs = Date.now();
+      const nowMs = serverNowMs();
       const liveIds = new Set(orders.map(o => o.id));
       // Prune refs of orders no longer present (daily counter reset, etc.)
       for (const id of expiredRef.current)           if (!liveIds.has(id)) expiredRef.current.delete(id);
@@ -10927,7 +10913,7 @@ function CompletedCard({ product, size, count, response, onUndo }) {
 
 // Returns YYYY-MM-DD for `daysAgo` days before today in SA time.
 function getSAPastDateString(daysAgo) {
-  const t = Date.now() + 2 * 60 * 60 * 1000 - daysAgo * 24 * 60 * 60 * 1000;
+  const t = serverNowMs() + 2 * 60 * 60 * 1000 - daysAgo * 24 * 60 * 60 * 1000;
   return new Date(t).toISOString().slice(0, 10);
 }
 
@@ -11083,7 +11069,7 @@ function SourceOnHoldTab({ items, fulfilCtx }) {
       size: item.size,
       customerName: item.customerName || null,
       response,
-      timestamp: new Date().toISOString(),
+      timestamp: serverNowIso(),
     }).catch(err => console.warn("saveOnHoldResponse failed:", err));
   };
 
@@ -11240,7 +11226,7 @@ function SourceOnHoldTab({ items, fulfilCtx }) {
 
 // Returns "YYYY-MM-DD" for yesterday in SA time.
 function getSAYesterdayString() {
-  const now = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  const now = new Date(serverNowMs() + 2 * 60 * 60 * 1000);
   now.setUTCDate(now.getUTCDate() - 1);
   return now.toISOString().slice(0, 10);
 }
@@ -11735,7 +11721,7 @@ function ClothingSoldView({ products }) {
     if (undoTimer.current) clearTimeout(undoTimer.current);
     const units = batch.lines.reduce((n, l) => n + l.qty, 0);
     setUndoMsg(null);
-    setUndo({ ...batch, id: String(Date.now()), units });
+    setUndo({ ...batch, id: String(serverNowMs()), units });
     setUndoLeft(60);
     undoTimer.current = setTimeout(() => setUndo(null), 60000);
   };
@@ -12453,7 +12439,7 @@ function ReturnsView({ orders, products = [], onExit }) {
           actorRole: "warehouse",
           reason: "order return (reverses dispatch)",
           link: { orderId: order.id, reverses: dispId },
-          ts: new Date().toISOString(),
+          ts: serverNowIso(),
           movementId: retId,
           allowNegative: true,
         });
@@ -12488,7 +12474,7 @@ function ReturnsView({ orders, products = [], onExit }) {
       failMsg = `Return error — stock not moved. Not marked returned.`;
     }
     logReturn({
-      timestamp:   new Date().toISOString(),
+      timestamp:   serverNowIso(),
       date:        todayDate,
       orderNumber: order.id,
       productName: order.productName,
@@ -12704,7 +12690,9 @@ function ReturnsView({ orders, products = [], onExit }) {
 
 // ─── INSIGHTS: HELPERS ───────────────────────────────────────────────────────
 function periodStart(p) {
-  const d = new Date();
+  // Server-anchored: these boundaries are compared against stored (server-stamped)
+  // timestamps, so a wrong device clock would silently shift every Insights window.
+  const d = new Date(serverNowMs());
   if (p === "today") { d.setHours(0,0,0,0); }
   if (p === "week")  { d.setDate(d.getDate() - ((d.getDay()+6)%7)); d.setHours(0,0,0,0); }
   if (p === "month") { d.setDate(1); d.setHours(0,0,0,0); }
@@ -13578,7 +13566,7 @@ function InsightClothingRefillsTab({ orders, log, productPhotoMap, filterStart, 
 
   const fmtAgo = (iso) => {
     if (!iso) return "—";
-    const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    const mins = Math.floor((serverNowMs() - new Date(iso).getTime()) / 60000);
     if (mins < 1)    return "just now";
     if (mins < 60)   return `${mins}m ago`;
     const hrs = Math.floor(mins / 60);
@@ -13706,7 +13694,7 @@ function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, fi
   // filter changes; absolute precision isn't needed).
   const fmtAgo = (iso) => {
     if (!iso) return "—";
-    const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    const mins = Math.floor((serverNowMs() - new Date(iso).getTime()) / 60000);
     if (mins < 1)    return "just now";
     if (mins < 60)   return `${mins}m ago`;
     const hrs = Math.floor(mins / 60);
@@ -15144,7 +15132,7 @@ function BroadcastGroupsView({ authUser, onExit }) {
       const broadcastId = result.data?.broadcastId ?? null;
 
       push(ref(database, "broadcastHistory"), {
-        timestamp:       new Date().toISOString(),
+        timestamp:       serverNowIso(),
         userEmail:       authUser?.email || null,
         groupCount:      groupIds.length,
         totalRecipients,
@@ -15381,7 +15369,7 @@ function BroadcastHistoryRow({ item }) {
 }
 
 function bcastRelTime(date) {
-  const diff = Math.floor((Date.now() - date.getTime()) / 1000);
+  const diff = Math.floor((serverNowMs() - date.getTime()) / 1000);
   if (diff < 60)     return "just now";
   if (diff < 3600)   { const m = Math.floor(diff / 60);    return `${m} min${m === 1 ? "" : "s"} ago`; }
   if (diff < 86400)  { const h = Math.floor(diff / 3600);  return `${h} hr${h === 1 ? "" : "s"} ago`; }
@@ -15932,9 +15920,9 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
   // Drop them here so they never reach the board, the announcer, or the timers.
   // Steady clock so the Hub 2 dispatch hold reveals on time (a held order flips
   // INCOMING → READY purely with the passage of time, not a data change).
-  const [revealClock, setRevealClock] = useState(() => Date.now());
+  const [revealClock, setRevealClock] = useState(() => serverNowMs());
   useEffect(() => {
-    const id = setInterval(() => setRevealClock(Date.now()), 10 * 1000);
+    const id = setInterval(() => setRevealClock(serverNowMs()), 10 * 1000);
     return () => clearInterval(id);
   }, []);
   const orders = useMemo(
@@ -16108,7 +16096,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
       const ts = (o.status === STATUS.READY ? o.readyAt
                 : o.status === STATUS.OUT_OF_STOCK ? o.outOfStockAt
                 : o.comingTomorrowAt) || o.updatedAt;
-      if (!ts || Date.now() - new Date(ts).getTime() > ANNOUNCE_MAX_AGE_MS) continue;
+      if (!ts || serverNowMs() - new Date(ts).getTime() > ANNOUNCE_MAX_AGE_MS) continue;
       const ctx = audioCtxRef.current;
       // Backlog cap: if clips are already queued far past now (a batch of orders just
       // went ready), skip rather than pile on — there's no mute, so an unbounded queue
@@ -16193,7 +16181,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
 
   useEffect(() => {
     const check = () => {
-      const nowMs    = Date.now();
+      const nowMs    = serverNowMs();
       const liveKeys = new Set(allOrders.map(orderKey));
       for (const k of hiddenReadyRef.current)    if (!liveKeys.has(k)) hiddenReadyRef.current.delete(k);
       for (const k of hiddenOosRef.current)      if (!liveKeys.has(k)) hiddenOosRef.current.delete(k);

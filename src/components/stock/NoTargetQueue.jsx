@@ -38,6 +38,7 @@ import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { computeUnintroduced, stockedStandardSizes, destsFrom, effectiveRun } from "./introduceExistingCore";
+import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 
 const ALL_LOCS = ["marathon-pe", "trophy", "hub2", "central"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -104,7 +105,7 @@ export default function NoTargetQueue({ products = [] }) {
     const d = decisions?.[loc]?.[pid];
     if (!d) return false;
     if (d.decision === "keep") return true;
-    if (d.decision === "snooze") return Date.parse(d.until || 0) > Date.now();
+    if (d.decision === "snooze") return Date.parse(d.until || 0) > serverNowMs();
     if (d.decision === "until_change") return d.fingerprint === stockFingerprint(allStock, pid);
     return false;
   };
@@ -216,8 +217,8 @@ export default function NoTargetQueue({ products = [] }) {
     if (busyKey) return;
     setBusyKey(card.key);
     const d = days
-      ? { decision: "snooze", until: new Date(Date.now() + days * 864e5).toISOString(), decidedAt: new Date().toISOString() }
-      : { decision: "until_change", fingerprint: stockFingerprint(allStock, card.pid), decidedAt: new Date().toISOString() };
+      ? { decision: "snooze", until: new Date(serverNowMs() + days * 864e5).toISOString(), decidedAt: serverNowIso() }
+      : { decision: "until_change", fingerprint: stockFingerprint(allStock, card.pid), decidedAt: serverNowIso() };
     try {
       await update(ref(database), { [`stock_targets_decisions/${card.loc}/${card.pid}`]: d });
       finish(card, days ? `snoozed — returns in ${days} days` : "ignored until its stock moves again");
@@ -257,7 +258,7 @@ export default function NoTargetQueue({ products = [] }) {
   const saveTargets = async (card, { distribute }) => {
     if (busyKey || !isAdmin) return;
     setBusyKey(card.key);
-    const now = new Date().toISOString();
+    const now = serverNowIso();
     const upd = {};
     const locs = card.isNew ? dests.filter((l) => locEnabled(card, l)) : [card.loc];
     for (const loc of locs) {
@@ -277,7 +278,7 @@ export default function NoTargetQueue({ products = [] }) {
 
     // Initial distribution: generate every Central→location transfer.
     const { perLoc } = distributionOf(card);
-    const batch = `intro_${Date.now().toString(36)}`;
+    const batch = `intro_${serverNowMs().toString(36)}`;
     let moved = 0; const failed = [];
     for (const { loc, lines } of perLoc) {
       for (const { size, qty } of lines) {
@@ -302,7 +303,7 @@ export default function NoTargetQueue({ products = [] }) {
   const excludeHere = async (card) => {
     if (busyKey || !isAdmin) return;
     setBusyKey(card.key);
-    const now = new Date().toISOString();
+    const now = serverNowIso();
     const upd = {};
     const locs = card.isNew ? dests.filter((l) => locEnabled(card, l)) : [card.loc];
     for (const loc of locs) {
@@ -326,7 +327,7 @@ export default function NoTargetQueue({ products = [] }) {
       .filter((l) => l.qty > 0);
     if (!lines.length) return;
     setBusyKey(card.key);
-    const batch = `ntq_${Date.now().toString(36)}`;
+    const batch = `ntq_${serverNowMs().toString(36)}`;
     let moved = 0; const failed = [];
     for (const { s, qty } of lines) {
       let res;

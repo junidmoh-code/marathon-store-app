@@ -13,6 +13,7 @@ import { ref, onValue, update } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
 import { LAYBY_STATUS, PULL_STATUS } from "./contract";
+import { serverNowIso } from "../../utils/serverTime";
 
 // Local mirror of App.jsx's useAuthReady — RTDB rejects reads before sign-in and
 // will not auto-retry on a permission error, so every listener gates on this.
@@ -76,7 +77,7 @@ export function useLaybyPulls() {
 export function receiveLayby(layby, hubLabel) {
   const laybyId = layby?.laybyId || layby?.key;
   if (!laybyId) return Promise.reject(new Error("receiveLayby: missing laybyId"));
-  const now = new Date().toISOString();
+  const now = serverNowIso();
   return update(ref(database, `laybys/${laybyId}`), {
     status:     LAYBY_STATUS.STORED,
     receivedAt: now,
@@ -89,7 +90,7 @@ export function receiveLayby(layby, hubLabel) {
 export function markPullSent(pull, hubLabel) {
   const pullId = pull?.pullId || pull?.key;
   if (!pullId) return Promise.reject(new Error("markPullSent: missing pullId"));
-  const now = new Date().toISOString();
+  const now = serverNowIso();
   const patch = {
     [`laybyPulls/${pullId}/status`]: PULL_STATUS.SENT,
     [`laybyPulls/${pullId}/sentAt`]: now,
@@ -111,7 +112,7 @@ export function markPullSent(pull, hubLabel) {
 export function returnPullToStock(pull, hubLabel) {
   const pullId = pull?.pullId || pull?.key;
   if (!pullId) return Promise.reject(new Error("returnPullToStock: missing pullId"));
-  const now = new Date().toISOString();
+  const now = serverNowIso();
   return update(ref(database, `laybyPulls/${pullId}`), {
     status:     PULL_STATUS.RETURNED_TO_STOCK,
     returnedAt: now,
@@ -127,7 +128,7 @@ export function rejectPull(pull, reason, hubLabel) {
   if (!pullId) return Promise.reject(new Error("rejectPull: missing pullId"));
   const trimmed = (reason || "").trim();
   if (!trimmed) return Promise.reject(new Error("rejectPull: reason required"));
-  const now = new Date().toISOString();
+  const now = serverNowIso();
   const patch = {
     [`laybyPulls/${pullId}/status`]:          PULL_STATUS.REJECTED,
     [`laybyPulls/${pullId}/rejectedAt`]:      now,

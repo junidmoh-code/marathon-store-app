@@ -22,6 +22,7 @@ import { encodeSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { openPickList } from "../../print/pickList";
+import { serverNowMs } from "../../utils/serverTime";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 const SOURCES = ["hub2", "marathon-pe", "trophy"];
@@ -241,7 +242,7 @@ export default function MoveExcess({ products = [], actorRole }) {
       .filter((l) => l.qty > 0);
     if (!lines.length) return;
     setBusy(c.key);
-    const batchId = `exc_${Date.now().toString(36)}`;
+    const batchId = `exc_${serverNowMs().toString(36)}`;
     let moved = 0; const failed = [];
     for (const { s, qty } of lines) {
       // TAP-TIME CLAMP: a sale between render and tap can shrink the true

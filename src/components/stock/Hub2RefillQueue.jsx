@@ -30,6 +30,7 @@ import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bRed } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
+import { serverNowIso } from "../../utils/serverTime";
 
 const SOURCE_LOC = "central";
 const DEST_LOC = "hub2";
@@ -151,7 +152,7 @@ export default function Hub2RefillQueue({ products = [] }) {
           await update(ref(database), {
             [`refill_requests/${r.id}/status`]: "fulfilled",
             [`refill_requests/${r.id}/fulfilledBy`]: { movementId: `rrf_${r.id}`, qty, ...(counted ? {} : { uncounted: true }) },
-            [`refill_requests/${r.id}/resolvedAt`]: new Date().toISOString(),
+            [`refill_requests/${r.id}/resolvedAt`]: serverNowIso(),
           });
           ok += qty;
         } catch { fail += 1; }
@@ -160,7 +161,7 @@ export default function Hub2RefillQueue({ products = [] }) {
     let rejected = 0;
     if (denied.length) {
       const upd = {};
-      const now = new Date().toISOString();
+      const now = serverNowIso();
       for (const r of denied) {
         upd[`refill_requests/${r.id}/status`] = "cancelled";
         upd[`refill_requests/${r.id}/resolvedAt`] = now;
