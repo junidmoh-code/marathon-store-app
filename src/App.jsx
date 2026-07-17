@@ -9,6 +9,7 @@ import { productMatchesQuery } from "./utils/productSearch";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import UpdateBanner from "./update/UpdateBanner";
+import ClockWarningBanner from "./components/ClockWarningBanner";
 import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
@@ -16291,6 +16292,11 @@ export default function App() {
           TV shell (which never navigates or re-auths) updates itself too. */}
       <UpdateBanner />
       <AuthGate renderTv={() => <TvOnlyShell />}>
+        {/* Inside AuthGate's STAFF children on purpose — never the TV shell.
+            A "your clock is wrong" alert on the customer-facing board would be
+            worse than the bug it reports. Outside the error boundary so it still
+            warns on a screen that has crashed. */}
+        <ClockWarningBanner />
         <AppErrorBoundary>
           <AppInner />
         </AppErrorBoundary>
