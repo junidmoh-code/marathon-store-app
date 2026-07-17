@@ -795,11 +795,46 @@ function computeRefillPlan(snapshot) {
     }
   }
 
+  // ── AUTO-ADOPT (owner policy 2026-07-17) ────────────────────────────────────
+  // For locations listed in config.autoAdoptTargets, the owner has declared the
+  // standard run (config.defaultRunByStore[loc]) to BE the policy: any stocked
+  // clothing size there with no explicit target gets one automatically, stamped
+  // source "auto_adopt". Closes the manual-transfer blind spot permanently —
+  // stock used to arrive via plain Transfer with no target, leaving the engine
+  // blind (found live 2026-07-17: 468 unmanaged hub2 cells; the Decision Queue
+  // backstop had 4 approvals ever). Human decisions still outrank the engine:
+  // explicit targets (including 0 = deliberate exclusion) and active Decision
+  // Queue records are never overridden, and only sizes in the standard run
+  // qualify (numeric sizes never auto-adopt). Locations NOT in the config key
+  // keep the v5 human-only rule — enabling one is a single config write.
+  const adopts = [];
+  for (const loc of dests) {
+    if (!config?.autoAdoptTargets?.[loc]) continue;
+    const matrix = config?.defaultRunByStore?.[loc] || {};
+    for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
+      if (!isClothing(products?.[pid])) continue;
+      if (decisionActive(loc, pid)) continue;
+      for (const [sk, c] of Object.entries(bySize || {})) {
+        if (avail(num(c?.qty)) <= 0) continue;                       // availability-gated
+        // Letter sizes only, enforced HERE — a misconfigured numeric entry in
+        // defaultRunByStore must never make the engine adopt a numeric size
+        // (the policy is standard-run sizes only, config can't widen it).
+        if (!STANDARD_SIZE_RE.test(sk)) continue;
+        const std = num(matrix[sk]);
+        if (std <= 0) continue;                                      // size outside the standard run
+        const existing = targets?.[loc]?.[pid]?.[sk];
+        if (existing && typeof existing.target === "number") continue; // human/explicit wins (incl. 0)
+        adopts.push({ loc, pid, sizeKey: sk, target: std, minQty: Math.max(1, std - 1) });
+      }
+    }
+  }
+
   const cap = (arr, n = 300) => ({ count: arr.length, items: arr.slice(0, n) });
   return {
     intents: plannedIntents,
     closes,
     resizes,
+    adopts,
     errors,
     stats: { managedCells },
     exceptions: {
