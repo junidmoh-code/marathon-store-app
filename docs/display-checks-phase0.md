@@ -205,3 +205,19 @@ decided.
    "marathon-pine"` — only needed if the trigger stays on `/pos/sales`.
 4. **Thumbnail source** — none exists (§4). Either generate thumbnails first or accept
    full-size in the denormalised `imageUrl`.
+
+### CodeRabbit (PR #241) — design findings DEFERRED to PR 2 (owner decision)
+The consistency/accuracy findings were folded into the design doc on PR #241; these
+three are behavioural design choices left for the owner to settle when PR 2 is built:
+5. **Deduplicate `held` checks, not just `open`.** The §1.2 lifecycle only dedups against
+   `open`; repeated sales while a size is unavailable can spawn multiple `held` records for
+   the same SKU → duplicate wake cards and doubled stats. The trigger must dedup against
+   BOTH `open` and `held` (bump `saleCount`/`lastSoldAt` on the existing record).
+6. **Define "repeat" as `result === "confirmed"`.** With two results, "a confirmed check
+   today" is ambiguous — a completed `no_stock` check must NOT set `repeatOf`/
+   `repeatWithinMinutes`, or the repeat metric contradicts the "repeats follow Display
+   Confirmed" rule.
+7. **Make date boundaries explicitly SA-timezone.** Day nodes (`{YYYY-MM-DD}`), mark months
+   (`{YYYY-MM}`) and the 03:00 rollover must key on SA-time, not UTC/local — reuse the
+   repo's `saDateOf`/`saStartIso` helpers (`src/utils/clothingSold.js:60-75`) so a sale near
+   midnight lands in the right day node.

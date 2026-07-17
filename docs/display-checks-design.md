@@ -22,7 +22,7 @@ A **display check** is a task, not a stock movement. Created by a sale, closed b
 
 ### 1.1 Two results
 
-```
+```text
 ┌────────────────────────────┐
 │     Display Confirmed      │   ← blue   → PIN signing pad
 └────────────────────────────┘
@@ -39,7 +39,7 @@ The name holds your original principle. It says the person **checked and confirm
 
 ### 1.2 Lifecycle
 
-```
+```text
 clothing sale written to /pos/sales   (product + colour + SIZE)
         ↓  RTDB onCreate trigger
 open check already exists for this exact SKU?
@@ -64,9 +64,9 @@ Everything is **size-specific**. Sold M is a check about M. Sold M and L is two 
 
 ### 1.3 Hold and wake
 
-Sold M, no M in the store → nothing anyone can do. Check is created `held`, not `open`. No feed, no denominator, no mark.
+Sold M, no M in the store → nothing anyone can do. Check is created `held`, not `open`. It never enters the **actionable** work feed, the completion denominator, or the mark logic — but it is NOT hidden: held checks surface in a muted "Waiting on stock" section (see below and §10/§11). "No feed" means "not in the work you can act on," never "invisible."
 
-```
+```text
 held check for {product, colour, size, store}
         ↓  sweep every 5 min (one-shot get, only for stores holding checks)
 inventory qty > 0 and stockSeenAt == null
@@ -110,7 +110,7 @@ Dismissible per session, returns on the next escalation.
 
 At 03:00 rollover, every check still `open` marks **the person who was on duty that day** — not whoever inherits it.
 
-```
+```text
 /displayChecks_marks/{storeId}/{uid}/{YYYY-MM}/{markId}
   checkId, forDate, productName, colour, size, reason: "not_completed", createdAt
 ```
@@ -156,7 +156,7 @@ Also confirm whether these people already exist as users from the Phase 1 staff 
 
 Settings shows the week as a draft. Seven rows, one dropdown each, nothing is live yet:
 
-```
+```text
 ────────────────────────────────────────
  MARATHON PE · ROSTER · DRAFT
 ────────────────────────────────────────
@@ -175,7 +175,7 @@ Settings shows the week as a draft. Seven rows, one dropdown each, nothing is li
 
 You review the whole week at once, then one action locks it. Confirm dialog states plainly what locking means. After that:
 
-```
+```text
 ────────────────────────────────────────
  MARATHON PE · ROSTER · 🔒 LOCKED
  LOCKED BY JUNID · 17 JUL 2026 · 09:14:22
@@ -202,7 +202,7 @@ Consequences, all deliberate:
 - Every cover is logged with who set it, when, and for whom.
 - Covers are counted. `Lihle: 6 covers this month` in manager analytics is a number worth having, because a roster that's covered half the time isn't a roster either.
 
-```
+```text
 /displayChecks_settings/{storeId}/roster
   locked        true
   lockedBy      { uid, name }
@@ -222,7 +222,7 @@ All new. Nothing existing is touched.
 
 ### 3.1 Live checks — the only thing the UI listens to
 
-```
+```text
 /displayChecks/{storeId}/{YYYY-MM-DD}/{checkId}
   productId, productName, colour, size
   imageUrl         thumbnail, denormalised
@@ -242,7 +242,7 @@ One store's clothing sales in a day collapse to ~20–60 distinct SKUs. At ~380 
 
 ### 3.2 Audit log — append-only, server-written
 
-```
+```text
 /displayChecks_log/{storeId}/{YYYY-MM}/{eventId}
   checkId, type, at, actor: { uid, name }, payload
 ```
@@ -253,7 +253,7 @@ Never updated, never deleted by the app. Monthly buckets so it archives without 
 
 ### 3.3 Roster and config — per store
 
-```
+```text
 /displayChecks_settings/{storeId}/roster/{mon…sun}   → uid, name, setBy, setAt
 /displayChecks_settings/{storeId}/config
   wakeDelayMinutes 20, repeatWindowMinutes 30, closeTime "18:00"
@@ -263,7 +263,7 @@ Three stores, three independent rosters and configs.
 
 ### 3.4 Counters — written by functions, read by Analytics
 
-```
+```text
 /displayChecks_stats/{storeId}/{YYYY-MM}/staff/{uid}
   assigned, completed, outstanding, marks
   completionMsTotal, completionCount, responseMsTotal
@@ -295,7 +295,7 @@ The Availability tab needs name search and barcode lookup. Doing either against 
 
 Instead, a nightly Cloud Function writes a static file and deploys it to Hosting:
 
-```
+```text
 https://marathon-club.web.app/data/clothing-catalog.v{n}.json
 
 [ { id, name, colour, barcode, thumb }, … ]
@@ -313,7 +313,7 @@ Live quantities are never in the catalog. Once a product is identified, sizes an
 
 Replaces the old Scan Item tab and absorbs it. One tab, three ways in, one result.
 
-```
+```text
 ┌─ Scan ─┬─ Barcode ─┬─ Name ─┐      ← segmented control
 ```
 
@@ -325,7 +325,7 @@ Replaces the old Scan Item tab and absorbs it. One tab, three ways in, one resul
 
 ### Result card
 
-```
+```text
    ┌──────────────┐   Nike Tech Fleece Hoodie
    │              │   Black
    │   [ image ]  │   ─────────────────────────
@@ -373,13 +373,15 @@ The tab itself, plus a floating scan button on the Today feed so someone mid-che
 
 Non-clothing staff, warehouse, and POS users see no card and no route.
 
-Enforcement, honestly: **UI gating is cosmetic.** Real enforcement is in the callables — every mutation re-derives role and store from the auth token server-side. `context.auth.uid` is the only trusted input. Console rules (`.write: false` for clients on `/displayChecks`, `_log`, `_stats`, `_marks`) go in now so the module is already correct when the root audit lands.
+Enforcement, honestly: **UI gating is cosmetic.** Real enforcement is in the callables — every mutation re-derives role and store from the auth token server-side. `context.auth.uid` is the only trusted input. "Mutation via callable" here means **client-originated** writes; the triggers and scheduled functions (§12) also write server-side, with admin privileges, and are not client-reachable.
+
+**Rules caveat — a child `.write: false` does NOT make these paths safe while the root grant is open.** Firebase grants cascade and a sub-rule cannot revoke a parent allow (§0.2), so adding `.write: false` on `/displayChecks`, `_log`, `_stats`, `_marks` is *not* sufficient on its own — an open root `.write` still permits writes to them. Before deploying any client-readable or writable Display Checks path, a **root-level deny/allowlist** must land (the root audit). Until then, treat these paths as writable-by-anyone and rely on the callables + server-only writes, not on child denies.
 
 ---
 
 ## 8. Navigation
 
-```
+```text
 Store App Home
   └─ Dashboard card: "Display Checks"      ← badge = your store's outstanding
        └─ /display-checks
@@ -395,7 +397,7 @@ Three stores run separately — separate rosters, separate feeds, separate marks
 
 Reads `/displayChecks_stats/{store}/today` ×3 — three tiny nodes, no day-node subscriptions:
 
-```
+```text
 ┌─────────────────────────────┐  ┌─────────────────────────────┐
 │ ● MARATHON PINE     ← live  │  │ ⚠ TROPHY                    │
 │ [av] Nomusa                 │  │ [av] Zee                    │
@@ -426,7 +428,7 @@ The iPad is shared. If sign-in is a session, then Nomusa signs in at 09:00, leav
 
 So: **PIN to sign.** Confirming a check requires the 4-digit PIN they already have. Two seconds, one thumb, on the sheet itself. Not to open a card, not to browse — only to sign a result, because that's the consequential write.
 
-```
+```text
 ┌──────────────────────────────────┐
 │  SIGN AS                         │
 │  NOMUSA MKHIZE                   │
@@ -444,13 +446,13 @@ So: **PIN to sign.** Confirming a check requires the 4-digit PIN they already ha
 
 This is the whole feature. Everything after it is presentation. A signature that costs two seconds and can't be borrowed is what makes a name mean something — and staff understand signing. Everyone has signed for something.
 
-The callable verifies the PIN server-side against the same transform as login (`pin-${pin}`, byte-identical to `seedUsers.cjs` and `Login.jsx`), rate-limits to 5 attempts per uid per minute, and records `signedAt` separately from `completedAt`. A wrong PIN is logged too.
+The callable verifies the PIN server-side against the same transform as login (`pin-${pin}`). Note the transform lives in **two mirrored copies** — `src/utils/auth-utils.js` (login) and `functions/lib/auth-utils.cjs` (seeding + the callable) — kept in sync by a header comment, not a shared import. They are byte-identical today but *can* drift, so add a parity test (or collapse to one shared module) before this PR ships. The callable `require`s the `.cjs` copy, so callable↔seed can't drift; callable↔login parity rides on the two copies matching. The callable rate-limits to 5 attempts per uid per minute, and records `signedAt` separately from `completedAt`. A wrong PIN is logged too.
 
 ### 8.3 Identity is always on screen
 
 Top-right of every screen in the module, desktop and mobile:
 
-```
+```text
 ● ON DUTY · NOMUSA MKHIZE · 14:32:07
 ```
 
@@ -470,7 +472,7 @@ That single typographic split does more work than any colour ever will.
 
 Completed cards don't say "Nomusa completed this." They read like a receipt:
 
-```
+```text
 ────────────────────────────────
  NIKE TECH FLEECE HOODIE
  BLACK · M
@@ -489,7 +491,7 @@ Permanent, uneditable, and visible to everyone in the store. Not because it sham
 
 Every open card carries a live counter, ticking, since the check was suggested:
 
-```
+```text
  ⏱ 00:14:22
 ```
 
@@ -501,7 +503,7 @@ Time is the most honest pressure there is, and it never gets old the way a scary
 
 The strongest moment in the whole design is the repeat card. It doesn't accuse. It puts two facts next to each other and stops talking:
 
-```
+```text
 ┌ REPEAT ────────────────────────┐
 │ NIKE TECH · BLACK · M          │
 │                                │
@@ -517,7 +519,7 @@ No "you failed to replenish." No red. Amber and flat. The unsettling part is tha
 
 Same energy in the no-stock guard, and it's already in the design:
 
-```
+```text
  INVENTORY SHOWS 3 × M
  CHECK THE SHELF AGAIN
 ```
@@ -528,7 +530,7 @@ The system contradicting a person, calmly, with a number. Never raise the voice.
 
 At close, one card, permanent, in the feed:
 
-```
+```text
 ────────────────────────────────
  17 JUL 2026 · MARATHON PINE
  ON DUTY   NOMUSA MKHIZE
@@ -574,7 +576,7 @@ Marathon Glass: pitch-black glossy ground, frosted panels, electric blue accents
 
 **Check card**
 
-```
+```text
 ┌──────────────────────────────┐
 │  [ product image, 1:1 ]      │
 │                              │
@@ -589,7 +591,7 @@ Marathon Glass: pitch-black glossy ground, frosted panels, electric blue accents
 
 **Completed cards** dim to 40% and the button swaps for a result tag:
 
-```
+```text
   ✓ Confirmed · Nomusa · 14:41        ← blue tag
   ✗ No Stock · Zee · 15:02            ← grey tag
   ✗ No Stock · overridden · Zee       ← amber tag, manager sees the flag
@@ -613,7 +615,7 @@ Same functionality, different shape. One hand, walking the floor.
 
 ## 12. Component architecture
 
-```
+```text
 src/pages/DisplayChecks/
   index.jsx                 route shell + tab router + role gate
   StoreToggle.jsx
@@ -702,7 +704,7 @@ Every question in the proposal maps to a counter. No scans.
 | Repeat check rate | `repeats / checksGenerated` |
 | Inventory trust | `noStockOverrides` — stock data wrong, or nobody looking |
 
-**Display Accuracy** = `1 − (repeatFailures / resultCounts.confirmed)`. How often "confirmed" held up. Merging the two positive results actually makes this cleaner — one denominator, no judgement call about which button they should have pressed.
+**Display Accuracy** = `1 − (repeatFailures / resultCounts.confirmed)` **when `resultCounts.confirmed > 0`; otherwise undefined — show "—", never 100% and never a divide-by-zero.** How often "confirmed" held up. Merging the two positive results actually makes this cleaner — one denominator, no judgement call about which button they should have pressed. (`repeatFailures` is bounded by `confirmed`, so the ratio stays in `[0, 1]`.)
 
 **Display Availability Rate** = share of the day no *open* check sat longer than 60 minutes. Held time excluded — you can't be penalised for stock you don't have. Computed at rollover, stored as one daily number.
 
