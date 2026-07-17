@@ -32,7 +32,7 @@ const BASE_TABS = [
   ["history",   "History"],
   ["adjust",    "Adjust"],
   ["count",     "Count"],
-  ["recount",   "Counted ⚠"],   // TEMPORARY recount tool (admin-only)
+  ["recount",   "Counted"],      // PERMANENT counted-stock review (admin-only; owner decision 2026-07-16)
   ["excess",    "Move Excess"],  // TEMPORARY bulk hub2→central rebalance (admin-only)
 ];
 
@@ -122,7 +122,7 @@ export default function StockView({ products = [], onExit }) {
                    color: on ? "#9DBCFF" : "rgba(233,238,255,.55)", transition: "background .14s, color .14s" }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: .9 }}>{TAB_ICON[k]}</svg>
           <span style={{ flex: 1 }}>{label}</span>
-          {k === "recount" && <span style={{ fontSize: 12, color: AMBER }}>⚠</span>}
+          {/* (recount's ⚠ badge removed — Counted is a permanent tool now.) */}
         </button>
       );
     };

@@ -1,4 +1,4 @@
-// ─── COUNTED STOCK REVIEW (TEMPORARY recount tool) ────────────────────────────
+// ─── COUNTED STOCK REVIEW ──────────────────────────────────────────────────────
 // Admin-only review of EVERY counted cell across all locations, with a per-row and a
 // scoped per-location "Clear" to zero quantities and reset them to UNCOUNTED so a fresh
 // count can be redone. Built because counted stock had errors (wrong barcodes / qtys)
@@ -8,7 +8,8 @@
 // ledger movement (applyMovement type "adjustment", NOT a raw node delete): it debits
 // the cell to 0 and sets cellState:"untracked" in the same atomic write. Reuses the
 // stock-cell read (useStockCells), the size encoder (barcodeSizeKey) and applyMovement.
-// TEMPORARY — remove once the recount is done.
+// Originally a temporary recount tool; made a PERMANENT standing feature (owner
+// decision 2026-07-16) — do not remove.
 
 import React, { useState, useMemo, useEffect } from "react";
 import { applyMovement } from "./applyMovement";
@@ -217,8 +218,8 @@ export default function CountedStockReview({ products = [], registry, actorRole 
 
   return (
     <div>
-      <div style={{ ...GLASS, padding: 12, marginBottom: 12, border: "1px solid rgba(245,158,11,.5)", background: "rgba(245,158,11,.10)" }}>
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: AMBER }}>⚠️ TEMPORARY — Counted Stock review</div>
+      <div style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>Counted Stock review</div>
         <div style={{ fontSize: 11, color: GRAY, marginTop: 4, lineHeight: 1.45 }}>
           Every cell that currently holds a quantity. <b>Clear</b> zeroes a cell (a reversible
           adjustment) and marks it <b>uncounted</b> so it's clearly waiting to be re-counted.
