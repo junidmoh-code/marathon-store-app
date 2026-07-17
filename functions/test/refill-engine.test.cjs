@@ -1075,11 +1075,13 @@ test("AUTO-ADOPT: off by default, per-location gate, standard-run sizes only", (
   const off = computeRefillPlan(base({ stock: stockOver, targets: {} }));
   assert.ok(!off.adopts || off.adopts.length === 0, "no flag → no adopts");
   const on = computeRefillPlan(base({
-    config: { ...CONFIG, autoAdoptTargets: { hub2: true }, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { M: 3 } } },
+    // "8": 3 is a MISCONFIGURED matrix entry — the numeric-size exclusion must
+    // hold even when the config would hand out a number for it.
+    config: { ...CONFIG, autoAdoptTargets: { hub2: true }, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { M: 3, 8: 3 } } },
     stock: stockOver, targets: {},
   }));
   assert.equal(on.adopts.length, 1, "hub2 M only");
   assert.equal(on.adopts[0].loc, "hub2");
-  assert.ok(!on.adopts.find((a) => a.sizeKey === "8"), "numeric size never auto-adopts");
+  assert.ok(!on.adopts.find((a) => a.sizeKey === "8"), "numeric size never auto-adopts, even when the matrix is misconfigured");
   assert.ok(!on.adopts.find((a) => a.loc === "marathon-pe"), "unflagged store stays human-decided");
 });

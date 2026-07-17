@@ -816,6 +816,10 @@ function computeRefillPlan(snapshot) {
       if (decisionActive(loc, pid)) continue;
       for (const [sk, c] of Object.entries(bySize || {})) {
         if (avail(num(c?.qty)) <= 0) continue;                       // availability-gated
+        // Letter sizes only, enforced HERE — a misconfigured numeric entry in
+        // defaultRunByStore must never make the engine adopt a numeric size
+        // (the policy is standard-run sizes only, config can't widen it).
+        if (!STANDARD_SIZE_RE.test(sk)) continue;
         const std = num(matrix[sk]);
         if (std <= 0) continue;                                      // size outside the standard run
         const existing = targets?.[loc]?.[pid]?.[sk];

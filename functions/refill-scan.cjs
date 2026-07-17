@@ -198,19 +198,26 @@ async function runScan() {
     // exist — an existing node fails the compare, the re-run sees real data and
     // aborts by returning undefined.
     if (plan.adopts && plan.adopts.length) {
+      // Per-scan cap: a huge first enablement must never eat the function
+      // deadline before intent processing. Deferred adopts simply re-emit
+      // from the next scan's plan (stateless) — no bookkeeping needed beyond
+      // the deferred count in the run record.
+      const ADOPT_CAP_PER_SCAN = 200;
+      const batch = plan.adopts.slice(0, ADOPT_CAP_PER_SCAN);
       let adopted = 0;
-      for (const a of plan.adopts) {
+      for (const a of batch) {
         const res = await db.ref(`stock_targets/${a.loc}/${a.pid}/${a.sizeKey}`).transaction((cur) => {
           if (cur !== null) return;                      // exists — never override a human
           return {
             target: a.target, minQty: a.minQty,
             source: "auto_adopt", approvedBy: "engine-auto-adopt",
-            approvedAt: startedAt, batchId: runId,
+            approvedAt: startedAt, runId, batchId: runId,
           };
         }).catch(() => ({ committed: false }));
         if (res.committed) adopted++;
       }
       if (adopted) counts.adopts = adopted;
+      if (plan.adopts.length > batch.length) counts.adoptsDeferred = plan.adopts.length - batch.length;
     }
 
     // ── act on intents, by destination mode ──────────────────────────────────
