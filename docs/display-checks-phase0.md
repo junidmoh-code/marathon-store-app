@@ -192,6 +192,25 @@ decided.
   `display_manager` permission, single `canManageDisplayChecks()` gate. Nothing else blocks
   PR 1.
 
+## Blocks PR 5 (the Today feed) — client/functions day-key parity
+
+The onClothingSale trigger WRITES day nodes keyed by `saDateStringFromMs`
+(`functions/lib/sa-time.cjs` — the single functions-side source). The PR-5 feed will READ
+day nodes keyed by the client's `saDateOf` (the exported symbol in
+`src/utils/clothingSold.js` — symbol reference, line numbers drift). The two
+live on opposite sides of the ESM/CJS boundary and cannot share a module today. If they
+ever disagree, the feed reads an empty node while the trigger populates another — an
+outage that exists ONLY between 00:00 and 02:00 SAST and is never reproducible in
+daylight.
+
+**Gate:** `src/utils/saDateParity.test.js` (landed with PR 2, #242) pins BOTH real
+implementations to identical output at the boundary instants — 21:59:59.999Z, 22:00Z (SA
+midnight), 22:00:00.001Z, 22:01Z, UTC midnight, the leap-day open/close (2028-02-28/29),
+plus a minute-by-minute sweep of 22:00Z ± 90min. Runs in root `npm test` (vitest), so any
+drift on either side fails CI before it ships. **PR 5 must not build its feed reader on
+any other date derivation** — it reads the day key via `saDateOf` (or whatever this test
+pins), nothing hand-rolled.
+
 ## Blocks PR 2 (the trigger) and beyond — flagged, NOT reconciled or built
 1. **Sale source decision — `/pos/sales` vs `/stock_movements`.** No repo reader for
    `/pos/sales`; its `storeId` is short (`"pe"`) needing an unbuilt map; the repo already

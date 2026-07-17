@@ -559,9 +559,10 @@ function isoToMs(iso) {
   return Number.isFinite(t) ? t : 0;
 }
 
-function saDateStringFromMs(ms) {
-  return new Date(ms + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
+// SA calendar day of an epoch-ms instant — single source in lib/sa-time.cjs
+// (was a local copy here; consolidated so date logic can't drift between the
+// monolith and the displayChecks trigger).
+const { saDateStringFromMs } = require("./lib/sa-time.cjs");
 
 // Phase 14C: mirror src/App.jsx getProductHubs. Products may carry either the
 // new `hubs: [...]` array or the legacy `hub` string; this helper unifies
@@ -3095,3 +3096,11 @@ exports.updateStaffPassword = onCall(
 // node-tested); I/O wrapper in refill-scan.cjs. Deploy scoped:
 //   firebase deploy --only functions:refillHealthScan
 exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
+
+// ─── DISPLAY CHECKS — onClothingSale (PR 2: dormant trigger, writes only) ─────
+// Clothing `sold` movements at enabled stores become display checks in the
+// displayChecks* namespaces. Pure logic in displayChecks/lib.cjs (node-tested);
+// trigger I/O in displayChecks/onClothingSale.js. Sale source proven in
+// docs/display-checks-sale-source.md. Deploy scoped:
+//   firebase deploy --only functions:onClothingSale
+exports.onClothingSale = require("./displayChecks/onClothingSale.js").onClothingSale;
