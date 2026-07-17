@@ -19,6 +19,18 @@
 // metadata — no security rules, no round-trip, available while offline from the
 // last connection — so this stays synchronous and can never block a sale.
 //
+// KNOWN LIMIT — the offset is measured at the connection HANDSHAKE and is not
+// resynced while a socket stays up. So a clock changed MID-SESSION is not
+// noticed: the offset stays at its old value and serverNowMs() silently tracks
+// the now-wrong device clock until the next reconnect (network blip, tab
+// wake, updateChecker's idle reload) re-measures it. The incident case — a till
+// that BOOTS with a wrong date, then connects — is handled correctly, because
+// the handshake happens after the clock is already wrong. A device that is
+// never online at all keeps offset 0 and writes device-clock timestamps.
+// Closing this properly means stamping server-side (ServerValue.TIMESTAMP or a
+// callable) rather than trusting any client instant; that is a bigger change
+// than this module and belongs in the engine backlog.
+//
 // Deliberately dependency-free: App.jsx owns the single binding (it already
 // holds the firebase handle) and pushes the offset in via setServerTimeOffsetMs.
 // Importing firebase here would drag a live socket into every unit test of every
@@ -34,12 +46,33 @@ let offsetMs = 0;
 
 const SA_OFFSET_MS = 2 * 60 * 60 * 1000; // SA is UTC+2 year-round, no DST.
 
+// A wrong clock no longer corrupts data (that's the point of this module), which
+// means it also stops announcing itself. ClockWarningBanner subscribes here so a
+// misconfigured device says so out loud instead of hiding. Kept as a plain
+// listener set rather than a store: one value, a handful of subscribers.
+const listeners = new Set();
+
 export function setServerTimeOffsetMs(v) {
-  if (typeof v === "number" && Number.isFinite(v)) offsetMs = v;
+  if (typeof v !== "number" || !Number.isFinite(v)) return;
+  if (v === offsetMs) return;
+  offsetMs = v;
+  for (const fn of listeners) {
+    try { fn(offsetMs); } catch { /* a broken subscriber must never break a sale */ }
+  }
 }
 
 export function getServerTimeOffsetMs() {
   return offsetMs;
+}
+
+/** Subscribe to offset changes. Fires immediately with the current value.
+ *  Returns an unsubscribe fn. */
+export function onServerTimeOffsetChange(fn) {
+  listeners.add(fn);
+  // Guarded like the notify loop: subscribing must not throw into the caller
+  // (App's render tree) just because one subscriber is broken.
+  try { fn(offsetMs); } catch { /* ignore */ }
+  return () => listeners.delete(fn);
 }
 
 /** Epoch ms per the SERVER, regardless of this device's clock. */

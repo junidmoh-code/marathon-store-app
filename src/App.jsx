@@ -9,6 +9,7 @@ import { productMatchesQuery } from "./utils/productSearch";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import UpdateBanner from "./update/UpdateBanner";
+import ClockWarningBanner from "./components/ClockWarningBanner";
 import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
@@ -15845,9 +15846,18 @@ function AppInner() {
     && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === ROLES.WAREHOUSE || role === ROLES.LABEL_PRINT || role === ROLES.CUSTOMER || role === ROLES.CUSTOMERS_DB || role === null))
     && !(!isNarrowApp && wantUserMgmt);   // desktop User Management carries its own rail Exit
 
+  // "This device's clock is wrong" — gated on ROLE, not on tree position. Being a
+  // child of AuthGate is NOT enough to mean staff-only: ROLES.DISPLAY renders the
+  // SAME TvWithAutoCollect the #tv shell does, right here inside AppInner, so a
+  // tree-placed banner would paint across the customer queue board. Mirrors the
+  // showIndicator rule above — DISPLAY is customer-facing and carries no staff
+  // chrome. Sibling of the boundary, so a crash in `view` still leaves it up.
+  const showClockWarning = role !== ROLES.DISPLAY;
+
   return (
     <>
       <PWAUpdateBanner />
+      {showClockWarning && <ClockWarningBanner />}
       {!role && <AndroidInstallChip />}
       {!role && <IOSInstallTooltip />}
       <AppErrorBoundary key={role || "home"}>{view}</AppErrorBoundary>
