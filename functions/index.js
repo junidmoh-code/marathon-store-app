@@ -3095,3 +3095,11 @@ exports.updateStaffPassword = onCall(
 // node-tested); I/O wrapper in refill-scan.cjs. Deploy scoped:
 //   firebase deploy --only functions:refillHealthScan
 exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
+
+// ─── DISPLAY CHECKS — onClothingSale (PR 2: dormant trigger, writes only) ─────
+// Clothing `sold` movements at enabled stores become display checks in the
+// displayChecks* namespaces. Pure logic in displayChecks/lib.cjs (node-tested);
+// trigger I/O in displayChecks/onClothingSale.js. Sale source proven in
+// docs/display-checks-sale-source.md. Deploy scoped:
+//   firebase deploy --only functions:onClothingSale
+exports.onClothingSale = require("./displayChecks/onClothingSale.js").onClothingSale;
