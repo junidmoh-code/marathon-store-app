@@ -13,13 +13,19 @@
 //
 // Deliberate choices:
 //   • NOT dismissible. A wrong clock is a persistent misconfiguration, not a
-//     notification. It clears the instant the clock is fixed, and no sooner.
+//     notification. It clears when the clock is fixed AND the RTDB connection
+//     re-handshakes — NOT instantly: /.info/serverTimeOffset is measured at
+//     connection time and is not resynced while a socket stays up. So expect it
+//     to linger after a fix until reconnect/reload. (Same mechanism means a clock
+//     changed MID-SESSION isn't noticed until reconnect either — see the note in
+//     serverTime.js. This banner is a diagnostic, not a guarantee.)
 //   • NOT blocking. Thanks to serverTime.js the data is already correct, so this
 //     is a nag, not a stop. Never stand between a cashier and a sale.
-//   • STAFF ONLY. App renders this inside AuthGate's staff children, never on
-//     the customer-facing TV shell — a warning on the shop-floor TV is worse
-//     than the bug it reports.
-import { useEffect, useState } from "react";
+//   • STAFF ONLY — enforced by ROLE, not tree position. App.jsx gates this on
+//     role !== ROLES.DISPLAY, because ROLES.DISPLAY renders the SAME customer TV
+//     inside AppInner: being an AuthGate child does NOT mean staff-only. A
+//     warning on the shop-floor board is worse than the bug it reports.
+import { useEffect, useMemo, useState } from "react";
 import { onServerTimeOffsetChange, serverNowMs } from "../utils/serverTime";
 
 // 5 minutes. Comfortably above ordinary phone/tablet drift and network jitter,
@@ -70,24 +76,27 @@ export function clockWarningText(offsetMs) {
 
 export default function ClockWarningBanner() {
   const [offset, setOffset] = useState(0);
-  // The real date, per the server — the single most useful fact for someone
-  // about to fix the device, and the one its own screen is lying about.
-  // Held in state and refreshed on a timer: this banner only re-renders when the
-  // OFFSET changes, and a misconfigured till sits untouched for hours. Computing
-  // the date at render alone let it cross midnight and keep displaying
-  // yesterday — a banner about wrong dates showing a wrong date.
-  const [realDate, setRealDate] = useState(() => formatSaDate(serverNowMs()));
+  // Ticks only to force a re-render; the date itself is DERIVED below, never
+  // stored. Holding the date in state was wrong twice over: the initial value is
+  // built at construction, when the offset is still 0 because the RTDB round-trip
+  // hasn't landed — so the banner's FIRST paint showed the device's own wrong
+  // date before self-correcting a frame later. Deriving at render means the value
+  // cannot be stale by construction; the tick exists purely so a banner nobody
+  // touches for hours still crosses midnight.
+  const [dateTick, setDateTick] = useState(0);
   useEffect(() => onServerTimeOffsetChange(setOffset), []);
   useEffect(() => {
     if (!shouldWarn(offset)) return undefined;
-    // Re-read on appear, then poll. A plain interval beats a scheduled
-    // next-midnight timeout here: no boundary arithmetic to get wrong, it
-    // self-corrects if the offset shifts under us, and it only ticks on a
-    // device that is already misconfigured.
-    setRealDate(formatSaDate(serverNowMs()));
-    const id = setInterval(() => setRealDate(formatSaDate(serverNowMs())), DATE_REFRESH_MS);
+    // A plain interval beats a scheduled next-midnight timeout: no boundary
+    // arithmetic to get wrong, it self-corrects if the offset shifts under us,
+    // and it only ticks on a device that is already misconfigured.
+    const id = setInterval(() => setDateTick(t => t + 1), DATE_REFRESH_MS);
     return () => clearInterval(id);
   }, [offset]);
+
+  // Derived, not stored — recomputed whenever the offset lands or the tick fires,
+  // so it is correct on the very first paint AND after midnight.
+  const realDate = useMemo(() => formatSaDate(serverNowMs()), [offset, dateTick]);
 
   if (!shouldWarn(offset)) return null;
 
@@ -100,7 +109,13 @@ export default function ClockWarningBanner() {
         top: 0,
         left: 0,
         right: 0,
-        zIndex: 10000, // above UpdateBanner (9999) — a wrong clock outranks a pending refresh
+        // 10001 to outrank PWAUpdateBanner (App.jsx), which is ALSO fixed top:0
+        // at z-index 10000. There are two update banners: src/update/UpdateBanner
+        // (bottom-centre, 9999, never competed) and PWAUpdateBanner (top, 10000,
+        // collides exactly). At equal z-index DOM order wins, and this renders
+        // first — so the blue update bar covered the clock warning's first line.
+        // A wrong clock outranks a pending refresh.
+        zIndex: 10001,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",

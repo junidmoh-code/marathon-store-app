@@ -19,6 +19,18 @@
 // metadata — no security rules, no round-trip, available while offline from the
 // last connection — so this stays synchronous and can never block a sale.
 //
+// KNOWN LIMIT — the offset is measured at the connection HANDSHAKE and is not
+// resynced while a socket stays up. So a clock changed MID-SESSION is not
+// noticed: the offset stays at its old value and serverNowMs() silently tracks
+// the now-wrong device clock until the next reconnect (network blip, tab
+// wake, updateChecker's idle reload) re-measures it. The incident case — a till
+// that BOOTS with a wrong date, then connects — is handled correctly, because
+// the handshake happens after the clock is already wrong. A device that is
+// never online at all keeps offset 0 and writes device-clock timestamps.
+// Closing this properly means stamping server-side (ServerValue.TIMESTAMP or a
+// callable) rather than trusting any client instant; that is a bigger change
+// than this module and belongs in the engine backlog.
+//
 // Deliberately dependency-free: App.jsx owns the single binding (it already
 // holds the firebase handle) and pushes the offset in via setServerTimeOffsetMs.
 // Importing firebase here would drag a live socket into every unit test of every
