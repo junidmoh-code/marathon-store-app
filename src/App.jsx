@@ -1574,11 +1574,41 @@ function useGroupBroadcastHistory() {
 }
 
 // ─── ORDER NUMBER COUNTER ─────────────────────────────────────────────────────
-// Cycles 001 → 999 → 001, resets at midnight. Uses a Firebase transaction so
+// Cycles 001 → 999 → 001, resets at SA midnight. Uses a Firebase transaction so
 // two devices placing orders at the same time get unique numbers.
+//
+// The day key MUST NOT come from the device clock. /orderCounter and
+// /refillCounter are single shared nodes, and the transactions below reset the
+// counter to 1 whenever the stored day != the day key the caller computed. So a
+// device that disagrees about the calendar date — wrong timezone OR wrong clock —
+// resets the sequence for EVERYONE, re-issuing 001, 002 … Because orders are
+// keyed by their number (/orders/001), a re-issued number silently OVERWRITES
+// the earlier order. On 2026-07-17 this reset the counter 4 times and destroyed
+// 42 of 70 orders before the numbers were pinned to server time here.
+//
+// /.info/serverTimeOffset is the RTDB server clock minus this device's clock;
+// adding it makes the key derive from SERVER time, so neither a bad timezone nor
+// a bad device clock can move it. It is client-side metadata (no rules, no
+// round-trip) and is bound once at module load so the offset is already settled
+// before the first order of the day. If it never arrives the offset stays 0 and
+// we degrade to the old device-clock behaviour rather than blocking a sale.
+let serverTimeOffsetMs = 0;
+onValue(ref(database, ".info/serverTimeOffset"), (snap) => {
+  const v = snap.val();
+  if (typeof v === "number" && Number.isFinite(v)) serverTimeOffsetMs = v;
+});
+
+// SA is UTC+2 year-round (no DST). Shift, then read UTC parts so the local
+// timezone never enters. Deliberately byte-identical in output to saTodayKey()
+// in functions/lib/refill-engine.cjs — the engine draws from the SAME
+// /refillCounter, so if these two ever disagree they reset each other.
+function saNowMs() {
+  return Date.now() + serverTimeOffsetMs;
+}
+
 function getTodayKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  const d = new Date(saNowMs() + 2 * 60 * 60 * 1000);
+  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
 }
 
 async function getNextOrderNumber() {
