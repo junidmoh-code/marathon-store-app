@@ -22,6 +22,8 @@ import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import LabelPrintView from "./components/LabelPrintView";
 import AppErrorBoundary from "./AppErrorBoundary";
+import DisplayChecks from "./pages/DisplayChecks";
+import { displayChecksVisibleForViewer } from "./config/displayChecks";
 import StockView from "./components/stock/StockView";
 import Hub2RefillQueue from "./components/stock/Hub2RefillQueue";
 import HealthView from "./components/stock/HealthView";
@@ -224,7 +226,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2262,6 +2264,11 @@ const RoleIcons = {
       <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>
     </svg>
   ),
+  display_checks: (
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 3h6a1 1 0 011 1v1a1 1 0 01-1 1H9a1 1 0 01-1-1V4a1 1 0 011-1z"/><path d="M8 4H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-2"/><polyline points="9 14 11 16 15 12"/>
+    </svg>
+  ),
   insights: (
     <svg viewBox="0 0 24 24" width="30" height="30" fill="#4A7FFF" stroke="none">
       <rect x="3" y="12" width="4" height="9" rx="1"/><rect x="10" y="6" width="4" height="15" rx="1"/><rect x="17" y="9" width="4" height="12" rx="1"/>
@@ -2452,6 +2459,15 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
     o.createdAt && o.createdAt.slice(0,10) === today
   ).length : 0;
 
+  // Display Checks card — behind the master flag + the module's own access gate
+  // (super-admin, or a store-scoped display_checks grant). Dark by default. The
+  // badge slot is intentionally omitted (wired to nothing yet — a later PR feeds
+  // it the store's outstanding count).
+  const dcVisible = displayChecksVisibleForViewer(
+    { email: homeUser?.email, permissions: homePerm?.permissions, destShop: homePerm?.destShop },
+    isSuperAdmin ? null : (homePerm?.destShop || null)
+  );
+
   // Shared, permission-gated role data — rendered as a desktop tile grid or the
   // mobile RoleCard list.
   const groups = [
@@ -2462,6 +2478,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && { key:"returns", icon:RoleIcons.returns, name:"Returns", desc:"Log returned items", onClick:()=>onSelect(ROLES.RETURNS) },
       { key:"barcodes", icon:RoleIcons.stock, name:"Barcodes", desc:"Print product barcodes", onClick:()=>onSelect(ROLES.BARCODES) },
       { key:"label_print", icon:RoleIcons.stock, name:"Print Labels", desc:"Product labels · name, price, barcode", onClick:()=>onSelect(ROLES.LABEL_PRINT) },
+      dcVisible && { key:"display_checks", icon:RoleIcons.display_checks, name:"Display Checks", desc:"Clothing display checks", onClick:()=>onSelect(ROLES.DISPLAY_CHECKS) },
     ].filter(Boolean) },
     { label: "Insights & Display", cards: [
       hasPermission(ROLE_TO_PERMISSION[ROLES.INSIGHTS]) && { key:"insights", icon:RoleIcons.insights, name:"Internal Insights", desc:"Business analytics", onClick:()=>onSelect(ROLES.INSIGHTS) },
@@ -15548,6 +15565,13 @@ function UserIndicator({ label, onSignOut }) {
 // AuthGate's perspective, e.g. signed out from the Google session).
 function AppInner() {
   const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut } = usePermissions();
+  // Display Checks route access — master flag + module gate (super-admin, or a
+  // store-scoped display_checks grant). Used both to guard a stale persisted role
+  // and to mount the view. Dark by default (master flag off).
+  const displayChecksRouteOpen = displayChecksVisibleForViewer(
+    { email: authUser?.email, permissions: permRecord?.permissions, destShop: permRecord?.destShop },
+    isSuperAdmin ? null : (permRecord?.destShop || null)
+  );
   // Stock access is gated by stockRole, NOT an app permission, so warehouse seed
   // counters keep it. canMint = may create NEW barcodes (writes /barcodes — any
   // stockRole); everyone else can still reprint EXISTING codes (read-only).
@@ -15602,9 +15626,12 @@ function AppInner() {
     // else (e.g. a stale persisted role) back to the selector instead of
     // leaving them on the null view.
     if (role === ROLES.AI_STUDIO && !isSuperAdmin) { setRole(null); return; }
+    // Display Checks is gated on the master flag + module access (not a plain
+    // permission map) — drop a stale/persisted role that no longer qualifies.
+    if (role === ROLES.DISPLAY_CHECKS && !displayChecksRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -15825,6 +15852,10 @@ function AppInner() {
   // not a grantable permission string — a non-super-admin who lands here via a
   // persisted role or manual state gets null and drops back to the selector.
   else if (role === ROLES.AI_STUDIO) view = isSuperAdmin ? <AiStudioView products={products} onExit={() => setRole(null)} /> : null;
+  // Display Checks — route-guarded on the module gate (master flag + super-admin
+  // or store-scoped grant); a viewer who no longer qualifies gets null and the
+  // reset effect drops them home. Shell only — reads no data.
+  else if (role === ROLES.DISPLAY_CHECKS) view = displayChecksRouteOpen ? <DisplayChecks onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
