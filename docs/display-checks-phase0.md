@@ -85,14 +85,20 @@ presence as "observed on one record," not "contractually guaranteed by a reader.
   permission, **store-scoped**. Implemented as the single gate `canManageDisplayChecks(user,
   storeId)` in `src/config/displayChecks.js`. Inert today (nobody holds it → super-admin-only);
   seed it later to switch it on with no code change. See "Gate shape" below.
-- **PIN transform — byte-identical, verified:**
+- **PIN transform — byte-identical TODAY (two mirrored copies, not one shared module):**
   - `toAuthPassword(pin) => \`pin-${pin}\`` (4-digit guard) at `src/utils/auth-utils.js:6-13`;
     `usernameToEmail(u) => \`${u.toLowerCase().trim()}@marathon.internal\`` at `auth-utils.js:15-17`.
-  - Mirror `functions/lib/auth-utils.cjs:5-16` — **identical function bodies**.
-  - `scripts/seedUsers.cjs:22` imports the **same** `functions/lib/auth-utils.cjs`, so seed
-    and login cannot drift. `Login.jsx:34-36` uses these transforms.
-  - ✅ A future server-side PIN-verify callable can `require("../lib/auth-utils.cjs")` and
-    compare `toAuthPassword(pin)` — guaranteed to match the login password.
+  - **login** (`Login.jsx:34-36`) imports the ES-module copy `src/utils/auth-utils.js`.
+  - **seeding** (`scripts/seedUsers.cjs:22`) imports the CJS copy `functions/lib/auth-utils.cjs`.
+  - These are **two separate files** kept in sync only by a header comment, not a shared
+    import or a test. Their function bodies are identical right now (verified byte-for-byte),
+    so seeded PINs match login **today** — but they *can* drift. **Correction to an earlier
+    draft that called this "cannot drift": it can.** Before the PIN-verify PR, add a parity
+    test (or collapse to one shared module) so a future edit to one copy can't silently break
+    login for newly-seeded PINs.
+  - A future server-side PIN-verify callable would `require("../lib/auth-utils.cjs")` — the
+    SAME copy seeding uses, so callable↔seed can't drift; callable↔login parity still rides on
+    the two copies staying identical (hence the parity test above).
 
 ### Existing staff vs the design roster
 
