@@ -60,17 +60,17 @@ function isClothingSale(product, rawSize) {
 }
 
 // ── Day + month anchors ───────────────────────────────────────────────────────
-// SA calendar day of an epoch-ms instant — byte-identical to saDateStringFromMs
-// (functions/index.js:562-563): UTC+2 shift then date-slice (§0.6 of the design;
-// SAST has no DST). The trigger anchors the DAY NODE on SERVER receipt time,
-// not the movement's till-clock ts — the 2026-07-17 order-counter incident
-// (tills 24h behind, fixed with a server-time anchor, #236/#237) is exactly the
-// failure this avoids: a skewed till must not file a check into a day node
-// nobody is looking at. The movement ts still lands on the check verbatim as
-// firstSoldAt/lastSoldAt (the record); the day bucket is operational.
-function saDateStringFromMs(ms) {
-  return new Date(ms + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
+// SA calendar day — IMPORTED from the single functions-side source
+// (lib/sa-time.cjs), not copied; a third byte-identical copy of date logic is
+// the same drift trap as the PIN transform. Re-exported below so the trigger
+// and tests keep one import surface. The trigger anchors the DAY NODE on
+// SERVER receipt time, not the movement's till-clock ts — the 2026-07-17
+// order-counter incident (tills 24h behind, fixed with a server-time anchor,
+// #236/#237) is exactly the failure this avoids: a skewed till must not file
+// a check into a day node nobody is looking at. The movement ts still lands
+// on the check verbatim as firstSoldAt/lastSoldAt (the record); the day
+// bucket is operational.
+const { saDateStringFromMs } = require("../lib/sa-time.cjs");
 
 // Log month bucket "YYYY-MM" for a day-node key "YYYY-MM-DD" (§4.2).
 function saMonthOfDate(saDate) {
