@@ -1037,3 +1037,49 @@ test("ZOMBIE guard: a matching, unresolved order is NOT order_lost (normal recon
   }));
   assert.ok(!plan.closes.find((x) => x.cancelReason === "order_lost"), "live matching leg untouched");
 });
+
+test("AUTO-ADOPT: stocked untargeted standard size at a flagged loc gets the standard target", () => {
+  const plan = computeRefillPlan(base({
+    config: { ...CONFIG, autoAdoptTargets: { hub2: true }, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 } } },
+    stock: { "marathon-pe": {}, trophy: {}, central: {}, hub2: { p1: { L: cell(2), XXXL: cell(1), M: cell(0) } } },
+    targets: {},
+  }));
+  const l = plan.adopts.find((a) => a.loc === "hub2" && a.pid === "p1" && a.sizeKey === "L");
+  assert.ok(l, "L adopted");
+  assert.equal(l.target, 3);
+  assert.equal(l.minQty, 2);                    // max(1, 3−1)
+  const xxxl = plan.adopts.find((a) => a.sizeKey === "XXXL");
+  assert.equal(xxxl.target, 1);
+  assert.equal(xxxl.minQty, 1);                 // max(1, 1−1) floors at 1
+  assert.ok(!plan.adopts.find((a) => a.sizeKey === "M"), "zero-qty cell never adopts");
+});
+
+test("AUTO-ADOPT: explicit targets (incl. 0 exclusions) and Decision Queue records are never overridden", () => {
+  const over = {
+    config: { ...CONFIG, autoAdoptTargets: { hub2: true }, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { L: 3, M: 3 } } },
+    stock: { "marathon-pe": {}, trophy: {}, central: {}, hub2: { p1: { L: cell(2), M: cell(2) } } },
+    targets: { hub2: { p1: { L: { target: 0 } } } },   // explicit exclusion
+  };
+  const plan = computeRefillPlan(base(over));
+  assert.ok(!plan.adopts.find((a) => a.sizeKey === "L"), "explicit 0 wins over adopt");
+  assert.ok(plan.adopts.find((a) => a.sizeKey === "M"), "sibling size still adopts");
+  const parked = computeRefillPlan(base({
+    ...over,
+    targetDecisions: { hub2: { p1: { decision: "keep" } } },
+  }));
+  assert.equal(parked.adopts.length, 0, "decision-parked product never adopts");
+});
+
+test("AUTO-ADOPT: off by default, per-location gate, standard-run sizes only", () => {
+  const stockOver = { "marathon-pe": { p1: { M: cell(2) } }, trophy: {}, central: {}, hub2: { p1: { M: cell(2), 8: cell(4) } } };
+  const off = computeRefillPlan(base({ stock: stockOver, targets: {} }));
+  assert.ok(!off.adopts || off.adopts.length === 0, "no flag → no adopts");
+  const on = computeRefillPlan(base({
+    config: { ...CONFIG, autoAdoptTargets: { hub2: true }, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { M: 3 } } },
+    stock: stockOver, targets: {},
+  }));
+  assert.equal(on.adopts.length, 1, "hub2 M only");
+  assert.equal(on.adopts[0].loc, "hub2");
+  assert.ok(!on.adopts.find((a) => a.sizeKey === "8"), "numeric size never auto-adopts");
+  assert.ok(!on.adopts.find((a) => a.loc === "marathon-pe"), "unflagged store stays human-decided");
+});
