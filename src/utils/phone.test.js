@@ -2,7 +2,7 @@
 // flexible entry formats staff use, including the short / no-leading-0 numbers.
 
 import { describe, it, expect } from "vitest";
-import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits } from "./phone";
+import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, customerWriteKey } from "./phone";
 
 describe("normalizeSAPhone", () => {
   it("keeps empty / whitespace-only input empty (phone is optional)", () => {
@@ -91,5 +91,61 @@ describe("saSignificantDigits", () => {
     const stored = saSignificantDigits("+27712345678");
     expect(stored.startsWith(saSignificantDigits("0712"))).toBe(true); // partial local query
     expect(stored.startsWith(saSignificantDigits("0712345678"))).toBe(true); // full local query
+  });
+});
+
+// /customers record resolution: reads probe every key shape (phoneKeyVariants,
+// first hit wins in resolveCustomerKey) so an existing record is found and
+// updated in place, never duplicated; new records are minted at the canonical
+// local 0-form key (customerWriteKey).
+describe("phoneKeyVariants", () => {
+  it("probes typed digits first, then the local 0-form, then the 27-form", () => {
+    expect(phoneKeyVariants("+27656996104")).toEqual(["27656996104", "0656996104"]);
+    expect(phoneKeyVariants("0656996104")).toEqual(["0656996104", "27656996104"]);
+  });
+
+  it("0-form, +27 and 27 inputs all cover both dialect keys, so an existing record in either shape is found", () => {
+    for (const input of ["0656996104", "+27656996104", "27656996104"]) {
+      const variants = phoneKeyVariants(input);
+      expect(variants).toContain("0656996104"); // POS-minted local key
+      expect(variants).toContain("27656996104"); // legacy international key
+    }
+  });
+
+  it("pads a bare 9-digit national number to the local form", () => {
+    expect(phoneKeyVariants("656996104")).toEqual(["656996104", "0656996104", "27656996104"]);
+  });
+
+  it("returns no variants for empty / digit-less input", () => {
+    expect(phoneKeyVariants("")).toEqual([]);
+    expect(phoneKeyVariants("abc")).toEqual([]);
+    expect(phoneKeyVariants(null)).toEqual([]);
+  });
+
+  it("leaves a non-SA international number at its typed key only", () => {
+    expect(phoneKeyVariants("+14155550123")).toEqual(["14155550123"]);
+  });
+});
+
+describe("customerWriteKey (key new /customers records are minted at)", () => {
+  it("a new customer via order (+27 phone) lands at the local 0-form key, not 27", () => {
+    expect(customerWriteKey("+27656996104")).toBe("0656996104");
+  });
+
+  it("0-form, +27, 27 and bare 9-digit inputs all mint the same local key", () => {
+    expect(customerWriteKey("0656996104")).toBe("0656996104");
+    expect(customerWriteKey("+27656996104")).toBe("0656996104");
+    expect(customerWriteKey("27656996104")).toBe("0656996104");
+    expect(customerWriteKey("656996104")).toBe("0656996104");
+  });
+
+  it("the minted key is a valid local SA phone shape", () => {
+    expect(isValidLocalSAPhone(customerWriteKey("+27656996104"))).toBe(true);
+  });
+
+  it("falls back to typed digits for a non-SA number, 'unknown' when digit-less", () => {
+    expect(customerWriteKey("+14155550123")).toBe("14155550123");
+    expect(customerWriteKey("")).toBe("unknown");
+    expect(customerWriteKey(null)).toBe("unknown");
   });
 });
