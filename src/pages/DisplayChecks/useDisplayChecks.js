@@ -31,21 +31,28 @@ function useAuthReady() {
 
 // Subscribe to a keyed node → array of values carrying their node key. `enabled`
 // lets the caller stand the listener down (e.g. no store selected). Returns
-// { items, ready } — `ready` flips true once the first snapshot (or a denied
-// read) has resolved, so the UI can tell "loading" from "genuinely empty".
+// { items, ready, error } — `ready` flips true once the first snapshot OR a read
+// error has resolved, so the UI can tell "loading" from settled. `error` holds
+// the failure code when the read was DENIED/failed, so the caller can surface
+// "unavailable" instead of silently rendering an empty feed as "all clear"
+// (CodeRabbit: a masked permission/rules failure reads as completed work — the
+// exact silent-wrong a compliance feed must not do).
 function useKeyedNode(path, enabled) {
   const authReady = useAuthReady();
   const [items, setItems] = useState([]);
   const [ready, setReady] = useState(false);
+  const [error, setError] = useState(null);
   useEffect(() => {
     setReady(false);
     setItems([]);
+    setError(null);
     if (!authReady || !enabled || !path) return;
     const node = ref(database, path);
     const unsub = onValue(
       node,
       (snap) => {
         const data = snap.val();
+        setError(null);
         if (!data || typeof data !== "object") { setItems([]); setReady(true); return; }
         const arr = Object.entries(data)
           .filter(([, v]) => v && typeof v === "object")
@@ -54,15 +61,18 @@ function useKeyedNode(path, enabled) {
         setReady(true);
       },
       (err) => {
-        // Permission-denied is the expected pre-rules state. Keep the list empty.
+        // A denied/failed read is NOT an empty feed — surface it. (Permission-
+        // denied is expected while the displayChecks* paths are pre-rules, but
+        // an empty feed and an unreadable feed must look different to staff.)
         console.warn(`Display Checks read error on /${path}:`, err?.code || err);
         setItems([]);
+        setError(err?.code || "read-error");
         setReady(true);
       }
     );
     return () => unsub();
   }, [authReady, enabled, path]);
-  return { items, ready };
+  return { items, ready, error };
 }
 
 // The current SA calendar day, RE-EVALUATED on a timer so it rolls over at SA
@@ -100,6 +110,8 @@ export function useTodayFeedSources(store, saDate) {
     activeItems: active.items,
     completedItems: completed.items,
     ready: active.ready && completed.ready,
+    // Either listener failing means the feed can't be trusted as "empty".
+    error: active.error || completed.error || null,
     saDate: day,
   };
 }

@@ -11,7 +11,7 @@
 // the confirm action is PR 7 (so cards render with an inert button here).
 
 import { useMemo, useState } from "react";
-import { FONT, MONO, BLUE, BLUE_SOFT, INK, PANEL, META } from "./tokens";
+import { FONT, MONO, BLUE, BLUE_SOFT, AMBER, INK, PANEL, META } from "./tokens";
 import { useTodayFeedSources } from "./useDisplayChecks";
 import { deriveFeed } from "./feedModel";
 import CheckCard from "./CheckCard";
@@ -77,7 +77,7 @@ function CardGrid({ children }) {
 }
 
 export default function TodayView({ store }) {
-  const { activeItems, completedItems, ready } = useTodayFeedSources(store);
+  const { activeItems, completedItems, ready, error } = useTodayFeedSources(store);
   const feed = useMemo(() => deriveFeed(activeItems, completedItems), [activeItems, completedItems]);
 
   if (!store) {
@@ -89,7 +89,23 @@ export default function TodayView({ store }) {
     );
   }
 
-  const nothingYet = ready && feed.outstanding.length === 0
+  // A denied/failed read is NOT an empty day. Show it plainly rather than the
+  // "nothing outstanding" state — an unreadable feed must never read as "all
+  // caught up" in a compliance tool.
+  if (ready && error) {
+    return (
+      <div style={{ ...PANEL, padding: "40px 24px", textAlign: "center",
+                    display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ ...META, color: AMBER }}>FEED UNAVAILABLE</div>
+        <div style={{ fontFamily: FONT, fontSize: 14, color: "rgba(233,238,255,.5)" }}>
+          Today's checks couldn't be read for this store. This isn't an empty day — it's a read
+          error{typeof error === "string" ? ` (${error})` : ""}. It clears on its own once the feed is reachable.
+        </div>
+      </div>
+    );
+  }
+
+  const nothingYet = ready && !error && feed.outstanding.length === 0
     && feed.waiting.length === 0 && feed.completed.length === 0;
 
   return (
@@ -137,9 +153,11 @@ export default function TodayView({ store }) {
         </Section>
       )}
 
-      {/* Confirmed — today's completed, collapsed by default */}
+      {/* Completed — today's resolved checks (confirmed AND no-stock, each card
+          carries its own result tag), collapsed by default. Titled COMPLETED not
+          CONFIRMED because a no-stock result is completed work too. */}
       {feed.completed.length > 0 && (
-        <Section title="CONFIRMED" count={feed.completed.length}>
+        <Section title="COMPLETED" count={feed.completed.length}>
           <CardGrid>
             {feed.completed.map((c) => (
               <CheckCard key={c.key} check={c} variant="completed" />
