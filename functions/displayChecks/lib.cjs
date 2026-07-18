@@ -326,8 +326,14 @@ const WAKE_DEFAULT_DELAY_MINUTES = 20;
 // blank setting silently collapses the grace window to instant activation
 // (CodeRabbit #243). An explicit numeric 0 is still honoured.
 function wakeDelayMs(config) {
-  const raw = config && config.wakeDelayMinutes;
-  if (raw === null || raw === undefined || raw === "") return WAKE_DEFAULT_DELAY_MINUTES * 60000;
+  let raw = config && config.wakeDelayMinutes;
+  if (typeof raw === "string") raw = raw.trim();          // " " must not become 0
+  // Only a real number or a non-blank numeric string overrides the default;
+  // null / undefined / "" / whitespace / booleans / objects all fall back to 20.
+  if (raw === null || raw === undefined || raw === "" ||
+      (typeof raw !== "number" && typeof raw !== "string")) {
+    return WAKE_DEFAULT_DELAY_MINUTES * 60000;
+  }
   const m = Number(raw);
   return (Number.isFinite(m) && m >= 0 ? m : WAKE_DEFAULT_DELAY_MINUTES) * 60000;
 }

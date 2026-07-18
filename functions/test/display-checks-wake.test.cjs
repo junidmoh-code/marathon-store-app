@@ -21,9 +21,10 @@ const D = 20 * 60000;
 // Nested-object state; path get/set by "/". Supports once("value"),
 // transaction(fn) with cold-cache semantics, root update(patch) with
 // path-keyed entries, and push().key.
-function fakeDb(initial) {
+function fakeDb(initial, { failUpdates = 0 } = {}) {
   const state = structuredClone(initial);
   let pushSeq = 0;
+  let updateFailsLeft = failUpdates; // transient log-write failures to simulate
 
   const get = (path) => (path === "" ? state : path.split("/").reduce((n, k) => (n == null ? n : n[k]), state));
   const set = (path, value) => {
@@ -38,7 +39,10 @@ function fakeDb(initial) {
   api.ref = (path = "") => ({
     async once() { return { val: () => structuredClone(get(path) ?? null) }; },
     push() { return { key: `push_${++pushSeq}` }; },
-    async update(patch) { for (const [k, v] of Object.entries(patch)) set(k, v); },
+    async update(patch) {
+      if (updateFailsLeft > 0) { updateFailsLeft--; throw new Error("transient RTDB update failure"); }
+      for (const [k, v] of Object.entries(patch)) set(k, v);
+    },
     async transaction(fn) {
       api.transactionAttempts++;
       const cold = fn(null);                 // cold-cache first run
@@ -200,6 +204,19 @@ test("double-fire stock_seen writes one deterministic log entry, one stockSeenAt
   await runWakeSweep({ db, nowMs: NOW });
   assert.equal(db.state.displayChecks["marathon-pe"][SA].c1.stockSeenAt, seenAfter1);
   assert.equal(eventsOf(db).filter((e) => e.type === "stock_seen").length, 1);
+});
+
+// ── audit-log durability ─────────────────────────────────────────────────────
+test("a transient log-write failure is retried — the audit event still lands (Codex)", async () => {
+  const seenAt = NOW - D - 1;
+  const db = fakeDb(
+    { displayChecks: dayNode({ c1: heldCheck({ stockSeenAt: seenAt }) }), stock: { "marathon-pe": withStock(2) } },
+    { failUpdates: 1 } // first log update() throws, retry succeeds
+  );
+  const r = await runWakeSweep({ db, nowMs: NOW });
+  assert.deepEqual(r, { stockSeen: 0, activated: 1, reHeld: 0 });
+  assert.equal(db.state.displayChecks["marathon-pe"][SA].c1.status, "open"); // state committed
+  assert.deepEqual(eventsOf(db), [{ id: "c1_activated", type: "activated", checkId: "c1" }]); // log recovered
 });
 
 // ── scope ────────────────────────────────────────────────────────────────────

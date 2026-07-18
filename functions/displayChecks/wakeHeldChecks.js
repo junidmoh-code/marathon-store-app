@@ -69,6 +69,28 @@ function logEvent(updates, db, store, saDate, { checkId, type, at, key, payload 
   };
 }
 
+// Append the audit event, retrying transient RTDB failures. The log is written
+// AFTER the state transaction commits — deliberately: logging BEFORE would emit
+// a SPURIOUS event whenever the transaction then aborts on a race (a lie in an
+// append-only record is worse than a rare gap). The deterministic key makes the
+// write idempotent, so a retry can't duplicate. The retry closes Codex's most
+// likely failure (a transient RTDB error between the two ops); the residual — a
+// hard crash in the sub-ms window after commit, before this lands — loses one
+// audit event whose facts are still reconstructable from the check's own
+// timestamps (stockSeenAt / activatedAt). Cross-node atomic write (state node +
+// log node in one op) is not available in RTDB, so this is the honest bound.
+async function writeLogWithRetry(db, updates, attempts = 3) {
+  for (let i = 0; ; i++) {
+    try { await db.ref().update(updates); return; }
+    catch (err) {
+      if (i >= attempts - 1) {
+        console.error("wakeHeldChecks: audit log write failed after retries:", err && err.message, Object.keys(updates));
+        return; // state is already correct; do not fail the whole sweep over an audit gap
+      }
+    }
+  }
+}
+
 // Apply one transition atomically. The whole-check-node transaction (fed
 // `cur ?? preRead` for cold-cache safety) is the single write for the state
 // change; on commit, the audit event is appended with a deterministic key.
@@ -96,7 +118,7 @@ async function applyTransition(db, store, saDate, checkId, preRead, action, opts
 
   const updates = {};
   logEvent(updates, db, store, saDate, { checkId, type: logType, at, key: logKey, payload });
-  await db.ref().update(updates);
+  await writeLogWithRetry(db, updates);
   return true;
 }
 

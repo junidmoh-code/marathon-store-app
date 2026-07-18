@@ -344,7 +344,10 @@ test("wakeDelayMs: default 20 when config absent/invalid/BLANK; honours a valid 
   // Blank values must NOT collapse the grace window to zero (CodeRabbit #243):
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: null }), 20 * 60000);
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "" }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "   " }), 20 * 60000); // whitespace-only (Codex)
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: true }), 20 * 60000);  // non-numeric type
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: undefined }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: " 30 " }), 30 * 60000); // trimmed numeric string
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "x" }), 20 * 60000);
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: -5 }), 20 * 60000);
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: 30 }), 30 * 60000);
