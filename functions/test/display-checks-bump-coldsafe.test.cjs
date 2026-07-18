@@ -93,6 +93,24 @@ test("movement fence holds through the cold run: a replayed movement is a no-op,
   assert.equal(db.state.displayChecks["marathon-pe"][SA].c1.saleCount, 5); // unchanged — fenced replay
 });
 
+test("held check bump targets the FLAT held index (location=held), not the day node", async () => {
+  const db = fakeDb({
+    displayChecks_held: { "marathon-pe": { hOld: {
+      productId: "p1", productName: "Boss Tee", size: "M", sizeKey: "M", dedupeKey: "p1__M",
+      status: "held", saleCount: 1, appliedMovements: { mvFirst: true }, heldAt: NOW - 86400000,
+    } } },
+    stock: { "marathon-pe": { p1: { M: { qty: 0 } } } },
+  });
+  const res = await bumpCheck(db, {
+    store: "marathon-pe", saDate: SA, location: "held", checkId: "hOld",
+    qty: 1, movementId: "mvSecond", movementTs: "2026-07-18T09:00:00.000Z", nowMs: NOW,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.logType, "held_resale");
+  assert.equal(db.state.displayChecks_held["marathon-pe"].hOld.saleCount, 2); // bumped in the flat index
+  assert.equal(db.state.displayChecks?.["marathon-pe"], undefined);            // day node untouched
+});
+
 test("a completed check aborts the bump (write-once respected) — committed:false, no log", async () => {
   const db = dbWith(openCheck({ status: "completed", result: "confirmed", completedAt: NOW - 1000 }));
   const res = await bumpCheck(db, {

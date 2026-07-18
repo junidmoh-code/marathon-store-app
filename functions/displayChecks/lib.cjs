@@ -103,17 +103,29 @@ function dedupeKey(productId, rawSize) {
 //   "no_stock"  → logType "contradiction_detected" (till just proved the item
 //                  existed — sharper than a repeat; owner directive: never
 //                  collapse these two into one)
-function resolveSale(dayNode, key, nowMs) {
-  const checks = dayNode || {};
+function resolveSale(dayNode, heldIndex, key, nowMs) {
+  const day = dayNode || {};
+  // 1. OPEN check in today's day node → bump in place (actionable wins).
+  for (const [checkId, c] of Object.entries(day)) {
+    if (c && c.dedupeKey === key && c.status === "open") {
+      return { kind: "bump", location: "day", checkId, logType: "sale_bumped" };
+    }
+  }
+  // 2. HELD check in the flat index → held_resale bump. The held index is NOT
+  //    day-scoped, so this dedupes a resale of a held SKU across DAYS (a check
+  //    created held on Monday and resold Wednesday finds itself here). LOUD:
+  //    the till just sold what inventory says is at zero.
+  for (const [checkId, c] of Object.entries(heldIndex || {})) {
+    if (c && c.dedupeKey === key && c.status === "held") {
+      return { kind: "bump", location: "held", checkId, logType: "held_resale" };
+    }
+  }
+  // 3. COMPLETED check today → repeat / contradiction (a NEW check).
   let latestCompleted = null;
-  for (const [checkId, c] of Object.entries(checks)) {
-    if (!c || c.dedupeKey !== key) continue;
-    if (c.status === "open") return { kind: "bump", checkId, logType: "sale_bumped" };
-    if (c.status === "held") return { kind: "bump", checkId, logType: "held_resale" };
-    if (c.status === "completed") {
-      if (!latestCompleted || (c.completedAt || 0) > (latestCompleted.c.completedAt || 0)) {
-        latestCompleted = { checkId, c };
-      }
+  for (const [checkId, c] of Object.entries(day)) {
+    if (!c || c.dedupeKey !== key || c.status !== "completed") continue;
+    if (!latestCompleted || (c.completedAt || 0) > (latestCompleted.c.completedAt || 0)) {
+      latestCompleted = { checkId, c };
     }
   }
   if (latestCompleted) {

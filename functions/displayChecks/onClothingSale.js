@@ -12,7 +12,12 @@
 // unit residual): docs/display-checks-sale-source.md.
 //
 // WRITE SURFACE — displayChecks* ONLY:
-//   /displayChecks/{store}/{saDate}/{checkId}                the check
+//   /displayChecks/{store}/{saDate}/{checkId}                OPEN/COMPLETED checks
+//   /displayChecks_held/{store}/{checkId}                    HELD checks (flat, not
+//                                                            day-scoped, so they wake
+//                                                            across days; the sweep
+//                                                            relocates one into the day
+//                                                            node when it goes open)
 //   /displayChecks_log/{store}/{YYYY-MM}/{eventId}           append-only audit
 //   /displayChecks_meta/{store}/processed/{movementId}       idempotency lease
 //   /displayChecks_meta/{store}/{saDate}/active/{dedupeKey}  create-mutex (TTL)
@@ -102,8 +107,18 @@ function logEvent(updates, db, store, saDate, { checkId, type, at, payload, move
 // held → held_resale (LOUD: the till just sold something inventory says isn't
 // there; stockQty is fetched as evidence), open → sale_bumped. On abort the
 // caller decides (re-resolve or orphan): { ok:false, status } tells it why.
-async function bumpCheck(db, { store, saDate, checkId, qty, movementId, movementTs, nowMs }) {
-  const ref = db.ref(`displayChecks/${store}/${saDate}/${checkId}`);
+// The RTDB path a check lives at. OPEN/COMPLETED checks are day-scoped;
+// HELD checks live in the flat, non-day-scoped `displayChecks_held/{store}`
+// index so they can be found and woken across days (the sweep + the cross-day
+// resale dedupe both read it).
+function checkPath(store, saDate, checkId, location) {
+  return location === "held"
+    ? `displayChecks_held/${store}/${checkId}`
+    : `displayChecks/${store}/${saDate}/${checkId}`;
+}
+
+async function bumpCheck(db, { store, saDate, location, checkId, qty, movementId, movementTs, nowMs }) {
+  const ref = db.ref(checkPath(store, saDate, checkId, location));
   // COLD-CACHE SAFETY (the live undercount fix): in a Cloud Function the
   // transaction's update fn runs FIRST against a cold local cache (cur === null,
   // and .get() does NOT warm it), so `bumpTxn(null)` returned undefined and the
@@ -145,15 +160,22 @@ async function bumpCheck(db, { store, saDate, checkId, qty, movementId, movement
   return { ok: true, logType };
 }
 
-// Bounded wait for a mutex winner's check to publish (status is the marker —
-// it is written in the winner's atomic field update). ~1.2s worst case.
-async function checkMaterialized(db, path, attempts = 3, delayMs = 400) {
+// Bounded wait for a mutex winner's check to publish, returning WHERE it landed
+// ("day" | "held") or null if it never appeared. The winner decides open-vs-held
+// (and therefore day-node-vs-held-index) only AFTER claiming the mutex, so the
+// loser must look in both. `status` is the publish marker (written in the
+// winner's atomic field update). ~1.2s worst case.
+async function findPublishedLocation(db, store, saDate, checkId, attempts = 3, delayMs = 400) {
   for (let i = 0; i < attempts; i++) {
-    const s = await db.ref(`${path}/status`).get();
-    if (s.exists()) return true;
+    const [day, held] = await Promise.all([
+      db.ref(`${checkPath(store, saDate, checkId, "day")}/status`).get(),
+      db.ref(`${checkPath(store, saDate, checkId, "held")}/status`).get(),
+    ]);
+    if (day.exists()) return "day";
+    if (held.exists()) return "held";
     await new Promise((r) => setTimeout(r, delayMs));
   }
-  return false;
+  return null;
 }
 
 // Exported for the cold-cache regression test (test/display-checks-bump-coldsafe).
@@ -208,13 +230,22 @@ exports.onClothingSale = onValueCreated(
     // snapshot and the transaction), the fresh snapshot decides again — that
     // sale then correctly becomes the repeat/contradiction check.
     for (let attempt = 0; attempt < 2; attempt++) {
-      const daySnap = await db.ref(`displayChecks/${store}/${saDate}`).get();
+      // Read BOTH the day node (open/completed, ≤~25KB §4.1) and the flat held
+      // index (held checks, any age). resolveSale dedupes across both, so a
+      // resale of a SKU held since a PRIOR day is caught here (held_resale),
+      // not stranded — the cross-day gap the flat index closes.
+      const [daySnap, heldSnap] = await Promise.all([
+        db.ref(`displayChecks/${store}/${saDate}`).get(),
+        db.ref(`displayChecks_held/${store}`).get(),
+      ]);
       const dayNode = daySnap.val();
-      const resolution = resolveSale(dayNode, key, nowMs);
+      const heldIndex = heldSnap.val();
+      const resolution = resolveSale(dayNode, heldIndex, key, nowMs);
 
       if (resolution.kind === "bump") {
         const bumped = await bumpCheck(db, {
-          store, saDate, checkId: resolution.checkId, qty, movementId, movementTs, nowMs,
+          store, saDate, location: resolution.location,
+          checkId: resolution.checkId, qty, movementId, movementTs, nowMs,
         });
         if (bumped.ok) { await processedRef.update({ done: true, doneAt: nowMs }); return; }
         continue; // status changed under us — re-resolve once with fresh data
@@ -235,9 +266,10 @@ exports.onClothingSale = onValueCreated(
         // bounded and observable beats a blind bump onto a half-written node.
         const winner = mutex.snapshot.val();
         const winnerId = winner && winner.checkId;
-        if (winnerId && (await checkMaterialized(db, `displayChecks/${store}/${saDate}/${winnerId}`))) {
+        const winnerLoc = winnerId ? await findPublishedLocation(db, store, saDate, winnerId) : null;
+        if (winnerLoc) {
           const bumped = await bumpCheck(db, {
-            store, saDate, checkId: winnerId, qty, movementId, movementTs, nowMs,
+            store, saDate, location: winnerLoc, checkId: winnerId, qty, movementId, movementTs, nowMs,
           });
           if (bumped.ok) { await processedRef.update({ done: true, doneAt: nowMs }); return; }
           continue; // winner completed already (ultra-rare) — re-resolve
@@ -286,9 +318,14 @@ exports.onClothingSale = onValueCreated(
       // clobber anything. No follow-up transaction, no visible
       // saleCount-less window. (Per-field paths remain deliberate: defensive
       // against any future writer touching the node concurrently.)
+      // HELD → flat index (`displayChecks_held/{store}`), OPEN → today's day
+      // node. Held there so the sweep + cross-day resale dedupe always find it,
+      // independent of the day it was created. The sweep relocates it into the
+      // day node when it wakes (open).
+      const location = status === "held" ? "held" : "day";
       const updates = {};
       for (const [field, value] of Object.entries(check)) {
-        updates[`displayChecks/${store}/${saDate}/${newCheckId}/${field}`] = value;
+        updates[`${checkPath(store, saDate, newCheckId, location)}/${field}`] = value;
       }
       logEvent(updates, db, store, saDate, {
         checkId: newCheckId,
