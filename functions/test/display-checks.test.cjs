@@ -71,32 +71,36 @@ test("open check in the day node absorbs the sale (sale_bumped, location day)", 
   assert.deepEqual(lib.resolveSale(day, null, KEY, 0), { kind: "bump", location: "day", checkId: "c0", logType: "sale_bumped" });
 });
 
-test("held check in the FLAT INDEX absorbs the sale LOUDLY (held_resale, location held)", () => {
-  const held = mkDay([{ dedupeKey: KEY, status: "held" }]);
-  assert.deepEqual(lib.resolveSale(null, held, KEY, 0), { kind: "bump", location: "held", checkId: "c0", logType: "held_resale" });
+test("held record (keyed flat-index get) absorbs the sale LOUDLY (held_resale, location held)", () => {
+  // heldRecord is the SINGLE record from an O(1) keyed get, not a scan.
+  const held = { dedupeKey: KEY, status: "held", checkId: "cHeld" };
+  assert.deepEqual(lib.resolveSale(null, held, KEY, 0), { kind: "bump", location: "held", checkId: "cHeld", logType: "held_resale" });
 });
 
-test("cross-DAY resale: a held check created earlier (flat index) still dedupes today", () => {
-  // No day-node entry at all today; the held check lives only in the flat index.
-  const held = { hOld: { dedupeKey: KEY, status: "held", heldAt: 1 } };
+test("cross-DAY resale: a held record created earlier (flat index) still dedupes today", () => {
+  const held = { dedupeKey: KEY, status: "held", checkId: "hOld", heldAt: 1 };
   assert.deepEqual(lib.resolveSale({}, held, KEY, 0), { kind: "bump", location: "held", checkId: "hOld", logType: "held_resale" });
 });
 
-test("open (day) wins over held (index) if both somehow exist — actionable first", () => {
+test("held record for a DIFFERENT key is ignored (the keyed get can only return this SKU's)", () => {
+  const held = { dedupeKey: "p9__S", status: "held", checkId: "hZ" };
+  assert.deepEqual(lib.resolveSale(null, held, KEY, 0), { kind: "create", repeat: null });
+});
+
+test("open (day) wins over the held record if both somehow exist — actionable first", () => {
   const day = mkDay([{ dedupeKey: KEY, status: "open" }]);
-  const held = { hX: { dedupeKey: KEY, status: "held" } };
+  const held = { dedupeKey: KEY, status: "held", checkId: "hX" };
   assert.equal(lib.resolveSale(day, held, KEY, 0).location, "day");
 });
 
 test("LEGACY held in the day node (pre-deploy) → held_resale in place, not a duplicate (Codex #245)", () => {
-  // A held check written by the old trigger, still in the day node; flat index empty.
   const day = mkDay([{ dedupeKey: KEY, status: "held" }]);
   assert.deepEqual(lib.resolveSale(day, null, KEY, 0), { kind: "bump", location: "day", checkId: "c0", logType: "held_resale" });
 });
 
-test("flat-index held takes precedence over a legacy day-node held (same SKU)", () => {
-  const day = mkDay([{ dedupeKey: KEY, status: "held" }]);      // legacy
-  const held = { hNew: { dedupeKey: KEY, status: "held" } };     // flat index
+test("flat-index held record takes precedence over a legacy day-node held (same SKU)", () => {
+  const day = mkDay([{ dedupeKey: KEY, status: "held" }]);            // legacy day-node
+  const held = { dedupeKey: KEY, status: "held", checkId: "hNew" };   // flat index
   assert.deepEqual(lib.resolveSale(day, held, KEY, 0), { kind: "bump", location: "held", checkId: "hNew", logType: "held_resale" });
 });
 
