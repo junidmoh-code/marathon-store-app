@@ -316,6 +316,14 @@ test("wakeDelayMs: default 20 when config absent/invalid/BLANK; honours a valid 
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: 30 }), 30 * 60000);
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "45" }), 45 * 60000); // numeric string honoured
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: 0 }), 0);             // explicit 0 honoured
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: Number.MAX_VALUE }), 20 * 60000); // overflow → default (CodeRabbit)
+});
+
+test("applyWakeTransition activate: a stale assignedTo on the held record is CLEARED when it reopens unassigned (CodeRabbit)", () => {
+  const seenAt = 1_000;
+  const stale = { status: "held", stockSeenAt: seenAt, assignedTo: { uid: "ghost", name: "Ghost" } };
+  const next = lib.applyWakeTransition(stale, "activate", { nowMs: seenAt + D, delayMs: D, assignedTo: null, activatedSaDate: "2026-07-16" });
+  assert.equal(next.assignedTo, null); // not the ghost — reopened unassigned
 });
 
 // ── applyWakeTransition: the in-transaction re-validation (concurrency guard) ─

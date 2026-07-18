@@ -321,7 +321,10 @@ function wakeDelayMs(config) {
     return WAKE_DEFAULT_DELAY_MINUTES * 60000;
   }
   const m = Number(raw);
-  return (Number.isFinite(m) && m >= 0 ? m : WAKE_DEFAULT_DELAY_MINUTES) * 60000;
+  const ms = (Number.isFinite(m) && m >= 0 ? m : WAKE_DEFAULT_DELAY_MINUTES) * 60000;
+  // Guard the multiplication: a huge finite minutes value overflows to Infinity,
+  // which would poison wakeAt (now + Infinity) and fail the write (CodeRabbit).
+  return Number.isFinite(ms) ? ms : WAKE_DEFAULT_DELAY_MINUTES * 60000;
 }
 
 // Returns the transition to apply, or null (no-op). Guards on status "held" so
@@ -364,7 +367,10 @@ function applyWakeTransition(check, action, { nowMs, delayMs, assignedTo, cleare
     const next = { ...check, status: "open", activatedAt: nowMs, activatedSaDate: activatedSaDate || null };
     delete next.stockSeenAt;
     delete next.wakeAt;
-    if (assignedTo) next.assignedTo = assignedTo;          // null → omit (unassigned)
+    // Assign explicitly to null (not `if (assignedTo)`) so a held record that
+    // somehow carries a stale assignedTo can't reopen under the wrong person —
+    // null CLEARS the field in the transaction write (CodeRabbit).
+    next.assignedTo = assignedTo || null;
     return next;
   }
   if (action === "re_held") {
