@@ -43,6 +43,10 @@ function fakeDb(initial) {
       api.transactionAttempts++;
       const cold = fn(null);                 // cold-cache first run
       if (cold === undefined) return { committed: false, snapshot: { val: () => get(path) ?? null } };
+      // Interleave hook: a concurrent sweep can commit HERE, between our cold
+      // run and our CAS re-run against the true value — exactly the race a
+      // whole-node transaction must survive. Fires once, then clears.
+      if (api._beforeRerun) { const h = api._beforeRerun; api._beforeRerun = null; h(path, set, get); }
       const server = get(path) ?? null;      // CAS re-run against the true value
       const final = fn(server);
       if (final === undefined) return { committed: false, snapshot: { val: () => server } };
@@ -153,6 +157,38 @@ test("double-fire does not double-activate: second run is a no-op, one activatio
   assert.deepEqual(r2, { stockSeen: 0, activated: 0, reHeld: 0 }); // already open → wakeTransition null
   assert.equal(db.state.displayChecks["marathon-pe"][SA].c1.activatedAt, NOW);
   assert.equal(eventsOf(db).filter((e) => e.type === "activated").length, 1);
+});
+
+test("INTERLEAVE: a concurrent sweep activates first → our transaction aborts, no partial state, one activation", async () => {
+  const seenAt = NOW - D - 1;
+  const db = fakeDb({
+    displayChecks: dayNode({ c1: heldCheck({ stockSeenAt: seenAt }) }),
+    stock: { "marathon-pe": withStock(2) },
+  });
+  // Between our cold run and CAS re-run, "another sweep" atomically activates c1.
+  db._beforeRerun = (_path, set) => {
+    set(`displayChecks/marathon-pe/${SA}/c1`, {
+      ...db.state.displayChecks["marathon-pe"][SA].c1, status: "open", activatedAt: NOW - 1,
+    });
+  };
+  const r = await runWakeSweep({ db, nowMs: NOW });
+  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0 }); // our commit aborted
+  const c = db.state.displayChecks["marathon-pe"][SA].c1;
+  assert.equal(c.status, "open");
+  assert.equal(c.activatedAt, NOW - 1);  // the OTHER sweep's stamp survived — no overwrite, no partial
+  assert.equal(eventsOf(db).filter((e) => e.type === "activated").length, 0); // we logged nothing on abort
+});
+
+test("INTERLEAVE: a concurrent stock_seen claims first → our stock_seen aborts (single claim)", async () => {
+  const db = fakeDb({ displayChecks: dayNode({ c1: heldCheck() }), stock: { "marathon-pe": withStock(3) } });
+  db._beforeRerun = (_path, set) => {
+    set(`displayChecks/marathon-pe/${SA}/c1/stockSeenAt`, NOW - 500);
+    set(`displayChecks/marathon-pe/${SA}/c1/wakeAt`, NOW - 500 + D);
+  };
+  const r = await runWakeSweep({ db, nowMs: NOW });
+  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0 });
+  assert.equal(db.state.displayChecks["marathon-pe"][SA].c1.stockSeenAt, NOW - 500); // the other claim held
+  assert.equal(eventsOf(db).filter((e) => e.type === "stock_seen").length, 0);
 });
 
 test("double-fire stock_seen writes one deterministic log entry, one stockSeenAt", async () => {

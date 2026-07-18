@@ -338,11 +338,59 @@ test("wakeTransition: seen + stock GONE → re_held carrying the cleared stockSe
     { action: "re_held", clearedStockSeenAt: 555 });
 });
 
-test("wakeDelayMs: default 20 when config absent/invalid; honours a valid value incl. 0", () => {
+test("wakeDelayMs: default 20 when config absent/invalid/BLANK; honours a valid value incl. 0", () => {
   assert.equal(lib.wakeDelayMs(null), 20 * 60000);
   assert.equal(lib.wakeDelayMs({}), 20 * 60000);
+  // Blank values must NOT collapse the grace window to zero (CodeRabbit #243):
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: null }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "" }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: undefined }), 20 * 60000);
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "x" }), 20 * 60000);
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: -5 }), 20 * 60000);
   assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: 30 }), 30 * 60000);
-  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: 0 }), 0);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "45" }), 45 * 60000); // numeric string honoured
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: 0 }), 0);             // explicit 0 honoured
+});
+
+// ── applyWakeTransition: the in-transaction re-validation (concurrency guard) ─
+test("applyWakeTransition stock_seen: sets both fields atomically; aborts if already seen or moved", () => {
+  const held = { status: "held", productId: "p1" };
+  assert.deepEqual(
+    lib.applyWakeTransition(held, "stock_seen", { nowMs: 100, delayMs: D }),
+    { status: "held", productId: "p1", stockSeenAt: 100, wakeAt: 100 + D }
+  );
+  // a concurrent sweep already claimed stockSeenAt → abort
+  assert.equal(lib.applyWakeTransition({ ...held, stockSeenAt: 50 }, "stock_seen", { nowMs: 100, delayMs: D }), undefined);
+  // completed/open under us → abort
+  assert.equal(lib.applyWakeTransition({ status: "open" }, "stock_seen", { nowMs: 100, delayMs: D }), undefined);
+});
+
+test("applyWakeTransition activate: flips atomically; aborts if not ready or already flipped", () => {
+  const seenAt = 1_000_000;
+  const c = { status: "held", stockSeenAt: seenAt };
+  const next = lib.applyWakeTransition(c, "activate", { nowMs: seenAt + D, delayMs: D, assignedTo: { uid: "u", name: "N" } });
+  assert.equal(next.status, "open");
+  assert.equal(next.activatedAt, seenAt + D);
+  assert.deepEqual(next.assignedTo, { uid: "u", name: "N" });
+  // not ready yet → abort
+  assert.equal(lib.applyWakeTransition(c, "activate", { nowMs: seenAt + D - 1, delayMs: D }), undefined);
+  // grace cleared under us (re_held raced) → abort
+  assert.equal(lib.applyWakeTransition({ status: "held" }, "activate", { nowMs: seenAt + D, delayMs: D }), undefined);
+  // already open (another sweep won) → abort
+  assert.equal(lib.applyWakeTransition({ status: "open", stockSeenAt: seenAt }, "activate", { nowMs: seenAt + D, delayMs: D }), undefined);
+  // null assignedTo → field omitted, not written as null
+  const un = lib.applyWakeTransition(c, "activate", { nowMs: seenAt + D, delayMs: D, assignedTo: null });
+  assert.equal("assignedTo" in un, false);
+});
+
+test("applyWakeTransition re_held: clears both fields; aborts if already cleared or moved", () => {
+  const c = { status: "held", stockSeenAt: 555, wakeAt: 555 + D, saleCount: 2 };
+  const next = lib.applyWakeTransition(c, "re_held", { nowMs: 0, delayMs: D });
+  assert.equal("stockSeenAt" in next, false);
+  assert.equal("wakeAt" in next, false);
+  assert.equal(next.saleCount, 2);          // other fields preserved
+  // already cleared → abort (idempotent)
+  assert.equal(lib.applyWakeTransition({ status: "held" }, "re_held", { nowMs: 0, delayMs: D }), undefined);
+  // activated under us → abort
+  assert.equal(lib.applyWakeTransition({ status: "open", stockSeenAt: 555 }, "re_held", { nowMs: 0, delayMs: D }), undefined);
 });

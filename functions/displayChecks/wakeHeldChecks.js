@@ -10,19 +10,22 @@
 // store with no held checks, then one stock-cell get per held check. Never a
 // full-node read of /pos/sales, /orders, /stock_movements. Runs server-side.
 //
-// IDEMPOTENCY (a scheduled run can overlap / double-fire): every state change
-// is a COLD-CACHE-SAFE leaf CAS or an idempotent write, so a double-fire can't
-// double-activate:
-//   • stock_seen → CAS on …/stockSeenAt (null → now): only one run claims it.
-//   • activate   → CAS on …/status ("held" → "open"): only one run flips it;
-//     the flip is terminal, so the `activated` log key is deterministic + once.
-//   • re_held    → plain update to null (idempotent) with a deterministic log
-//     key derived from the stockSeenAt being cleared, so a concurrent repeat
-//     overwrites the same log entry rather than appending a duplicate.
-// Both CAS fns return their write value on `cur == null` (the Cloud-Function
-// cold-cache first run), so they force the server round-trip instead of
-// aborting before the CAS — the null-tolerant claim idiom this repo already
-// relies on (see lib/hold-reveal-sweep.cjs).
+// IDEMPOTENCY + ATOMICITY (a scheduled run can overlap / double-fire): EACH
+// transition is ONE whole-check-node transaction (applyWakeTransition), so the
+// state change is atomic — a crash can never leave a check `open` without
+// activatedAt, or half-cleared. The transaction re-validates the status-based
+// invariants against the authoritative current node, so two overlapping sweeps
+// are safe: the second sees the first's committed state and aborts. Only the
+// append-only audit event is written after the commit (best-effort, with a
+// deterministic key so a retry overwrites rather than duplicates).
+//
+// COLD-CACHE SAFETY: the transaction fn is fed `cur === null ? preRead : cur`,
+// so on the Cloud-Function cold-cache first run (cur null) it computes from the
+// already-read check and returns a value — forcing the server round-trip and
+// the CAS re-run against the true value — instead of aborting before the
+// server is consulted. This is the null-tolerant claim idiom this repo already
+// relies on (see lib/hold-reveal-sweep.cjs). Checks are never deleted, so a
+// truly-absent node never occurs.
 //
 // TIMEZONE: schedule declares timeZone "Africa/Johannesburg" (the runtime is
 // UTC); the day key is the shared sa-time.cjs helper (design §0.6). No
@@ -43,6 +46,7 @@ const {
   saMonthOfDate,
   wakeDelayMs,
   wakeTransition,
+  applyWakeTransition,
   resolveAssignment,
 } = require("./lib.cjs");
 
@@ -65,60 +69,35 @@ function logEvent(updates, db, store, saDate, { checkId, type, at, key, payload 
   };
 }
 
-// stock appeared: claim stockSeenAt via a cold-safe CAS (null → now). Winner
-// then writes wakeAt (display only — activation keys off stockSeenAt+delay) and
-// logs. Returns true iff this run made the transition.
-async function doStockSeen(db, store, saDate, checkId, nowMs, delayMs) {
+// Apply one transition atomically. The whole-check-node transaction (fed
+// `cur ?? preRead` for cold-cache safety) is the single write for the state
+// change; on commit, the audit event is appended with a deterministic key.
+// Returns true iff this run made the transition.
+async function applyTransition(db, store, saDate, checkId, preRead, action, opts) {
   const base = `displayChecks/${store}/${saDate}/${checkId}`;
-  const res = await db.ref(`${base}/stockSeenAt`).transaction((cur) => (cur == null ? nowMs : undefined));
-  if (!res.committed) return false;
-  const updates = {};
-  updates[`${base}/wakeAt`] = nowMs + delayMs;
-  logEvent(updates, db, store, saDate, {
-    checkId, type: "stock_seen", at: nowMs,
-    key: `${checkId}_stock_seen_${nowMs}`, payload: { wakeAt: nowMs + delayMs },
-  });
-  await db.ref().update(updates);
-  return true;
-}
-
-// grace elapsed, stock still present: flip held → open via a cold-safe CAS.
-// Only the winner resolves + freezes assignedTo (cover → locked roster → null;
-// both nodes absent until PR 11 → null, which is correct) and stamps
-// activatedAt. Returns true iff this run activated it.
-async function doActivate(db, store, saDate, checkId, nowMs) {
-  const base = `displayChecks/${store}/${saDate}/${checkId}`;
-  const res = await db.ref(`${base}/status`).transaction((cur) =>
-    cur === "held" || cur == null ? "open" : undefined
+  const res = await db.ref(base).transaction((cur) =>
+    applyWakeTransition(cur === null ? preRead : cur, action, opts)
   );
   if (!res.committed) return false;
-  const [coverSnap, rosterSnap] = await Promise.all([
-    db.ref(`displayChecks_settings/${store}/cover/${saDate}`).once("value"),
-    db.ref(`displayChecks_settings/${store}/roster`).once("value"),
-  ]);
-  const assignedTo = resolveAssignment({ cover: coverSnap.val(), roster: rosterSnap.val(), saDate });
+
+  const at = opts.nowMs;
+  // action verb → §4.2 audit log type ("activate" → "activated").
+  const logType = { stock_seen: "stock_seen", activate: "activated", re_held: "re_held" }[action];
+  const logKey = {
+    stock_seen: `${checkId}_stock_seen_${at}`,
+    activate: `${checkId}_activated`,
+    re_held: `${checkId}_re_held_${opts.clearedStockSeenAt}`,
+  }[action];
+  const payload = {
+    stock_seen: { wakeAt: at + opts.delayMs },
+    activate: { via: "wake_sweep" },
+    re_held: null,
+  }[action];
+
   const updates = {};
-  updates[`${base}/activatedAt`] = nowMs;
-  if (assignedTo) updates[`${base}/assignedTo`] = assignedTo; // null → omit (RTDB drops it)
-  logEvent(updates, db, store, saDate, {
-    checkId, type: "activated", at: nowMs, key: `${checkId}_activated`, payload: { via: "wake_sweep" },
-  });
+  logEvent(updates, db, store, saDate, { checkId, type: logType, at, key: logKey, payload });
   await db.ref().update(updates);
   return true;
-}
-
-// stock gone before wake: clear the grace clock. Idempotent — the update is
-// null-to-null on a repeat and the log key is the cleared stockSeenAt, so a
-// concurrent run overwrites the same entry.
-async function doReHeld(db, store, saDate, checkId, clearedStockSeenAt, nowMs) {
-  const base = `displayChecks/${store}/${saDate}/${checkId}`;
-  const updates = {};
-  updates[`${base}/stockSeenAt`] = null;
-  updates[`${base}/wakeAt`] = null;
-  logEvent(updates, db, store, saDate, {
-    checkId, type: "re_held", at: nowMs, key: `${checkId}_re_held_${clearedStockSeenAt}`,
-  });
-  await db.ref().update(updates);
 }
 
 // Core sweep — injectable db + nowMs so the parity test can drive it without
@@ -142,13 +121,26 @@ async function runWakeSweep({ db, nowMs }) {
       const qtySnap = await db.ref(`stock/${store}/${check.productId}/${sizeKey}/qty`).once("value");
       const t = wakeTransition(check, { qty: Number(qtySnap.val()), nowMs: now, delayMs });
       if (!t) continue;
-      if (t.action === "stock_seen") {
-        if (await doStockSeen(db, store, saDate, checkId, now, delayMs)) stockSeen++;
-      } else if (t.action === "activate") {
-        if (await doActivate(db, store, saDate, checkId, now)) activated++;
-      } else if (t.action === "re_held") {
-        await doReHeld(db, store, saDate, checkId, t.clearedStockSeenAt, now);
-        reHeld++;
+
+      // Resolve + freeze assignment only when activating (cover → LOCKED roster
+      // → null; both nodes absent until PR 11 → null, correct). Resolved before
+      // the transaction so applyWakeTransition can write it atomically.
+      let assignedTo = null;
+      if (t.action === "activate") {
+        const [coverSnap, rosterSnap] = await Promise.all([
+          db.ref(`displayChecks_settings/${store}/cover/${saDate}`).once("value"),
+          db.ref(`displayChecks_settings/${store}/roster`).once("value"),
+        ]);
+        assignedTo = resolveAssignment({ cover: coverSnap.val(), roster: rosterSnap.val(), saDate });
+      }
+
+      const committed = await applyTransition(db, store, saDate, checkId, check, t.action, {
+        nowMs: now, delayMs, assignedTo, clearedStockSeenAt: t.clearedStockSeenAt,
+      });
+      if (committed) {
+        if (t.action === "stock_seen") stockSeen++;
+        else if (t.action === "activate") activated++;
+        else if (t.action === "re_held") reHeld++;
       }
     }
   }

@@ -320,8 +320,15 @@ function bumpTxn(check, { qty, movementTs, movementId }) {
 const WAKE_DEFAULT_DELAY_MINUTES = 20;
 
 // Grace window in ms from the store config (wakeDelayMinutes), default 20.
+// Only a real, non-blank value overrides the default: null / "" / undefined /
+// missing all fall back to 20. Number("") and Number(null) are both 0, so an
+// EMPTY config value must be rejected BEFORE numeric coercion — otherwise a
+// blank setting silently collapses the grace window to instant activation
+// (CodeRabbit #243). An explicit numeric 0 is still honoured.
 function wakeDelayMs(config) {
-  const m = config && Number(config.wakeDelayMinutes);
+  const raw = config && config.wakeDelayMinutes;
+  if (raw === null || raw === undefined || raw === "") return WAKE_DEFAULT_DELAY_MINUTES * 60000;
+  const m = Number(raw);
   return (Number.isFinite(m) && m >= 0 ? m : WAKE_DEFAULT_DELAY_MINUTES) * 60000;
 }
 
@@ -342,11 +349,44 @@ function wakeTransition(check, { qty, nowMs, delayMs }) {
   return null; // still inside the grace window
 }
 
+// Apply a decided transition INSIDE the check-node transaction — the single
+// atomic write for each transition, so a crash can never leave a check `open`
+// without activatedAt, or half-cleared. Re-validates the status-based
+// invariants against the AUTHORITATIVE current node (which may have changed
+// since wakeTransition decided), so two overlapping sweeps are safe: the second
+// sees the first's committed state and aborts. Returns the next node, or
+// undefined to abort. (qty is not re-checked here — it can't be read inside a
+// transaction; it was the decision input and the transitions key off status +
+// stockSeenAt + time, all of which ARE re-validated.)
+function applyWakeTransition(check, action, { nowMs, delayMs, assignedTo }) {
+  if (!check || check.status !== "held") return undefined; // moved under us
+  if (action === "stock_seen") {
+    if (check.stockSeenAt != null) return undefined;       // another run claimed it
+    return { ...check, stockSeenAt: nowMs, wakeAt: nowMs + delayMs };
+  }
+  if (action === "activate") {
+    const seenAt = Number(check.stockSeenAt);
+    if (!Number.isFinite(seenAt) || nowMs < seenAt + delayMs) return undefined; // not ready / cleared
+    const next = { ...check, status: "open", activatedAt: nowMs };
+    if (assignedTo) next.assignedTo = assignedTo;          // null → omit (unassigned)
+    return next;
+  }
+  if (action === "re_held") {
+    if (check.stockSeenAt == null) return undefined;       // already cleared
+    const next = { ...check };
+    delete next.stockSeenAt;
+    delete next.wakeAt;
+    return next;
+  }
+  return undefined;
+}
+
 module.exports = {
   TRIGGER_STORE_FLAGS,
   WAKE_DEFAULT_DELAY_MINUTES,
   wakeDelayMs,
   wakeTransition,
+  applyWakeTransition,
   CREATE_MUTEX_TTL_MS,
   PROCESS_LEASE_MS,
   processedClaimDecision,
