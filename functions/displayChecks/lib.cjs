@@ -120,6 +120,16 @@ function resolveSale(dayNode, heldIndex, key, nowMs) {
       return { kind: "bump", location: "held", checkId, logType: "held_resale" };
     }
   }
+  // 2b. LEGACY FALLBACK — a HELD check in TODAY's day node, written by the
+  //     pre-flat-index trigger before this deploy. Bump it IN PLACE (location
+  //     "day") so a resale records held_resale instead of creating a duplicate
+  //     (Codex #245). New held checks never land here; the reworked sweep drains
+  //     any legacy day-node held records into the flat index.
+  for (const [checkId, c] of Object.entries(day)) {
+    if (c && c.dedupeKey === key && c.status === "held") {
+      return { kind: "bump", location: "day", checkId, logType: "held_resale" };
+    }
+  }
   // 3. COMPLETED check today → repeat / contradiction (a NEW check).
   let latestCompleted = null;
   for (const [checkId, c] of Object.entries(day)) {

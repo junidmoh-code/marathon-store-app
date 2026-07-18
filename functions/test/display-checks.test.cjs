@@ -88,6 +88,18 @@ test("open (day) wins over held (index) if both somehow exist — actionable fir
   assert.equal(lib.resolveSale(day, held, KEY, 0).location, "day");
 });
 
+test("LEGACY held in the day node (pre-deploy) → held_resale in place, not a duplicate (Codex #245)", () => {
+  // A held check written by the old trigger, still in the day node; flat index empty.
+  const day = mkDay([{ dedupeKey: KEY, status: "held" }]);
+  assert.deepEqual(lib.resolveSale(day, null, KEY, 0), { kind: "bump", location: "day", checkId: "c0", logType: "held_resale" });
+});
+
+test("flat-index held takes precedence over a legacy day-node held (same SKU)", () => {
+  const day = mkDay([{ dedupeKey: KEY, status: "held" }]);      // legacy
+  const held = { hNew: { dedupeKey: KEY, status: "held" } };     // flat index
+  assert.deepEqual(lib.resolveSale(day, held, KEY, 0), { kind: "bump", location: "held", checkId: "hNew", logType: "held_resale" });
+});
+
 test("active check wins over a completed one — no repeat while a card is live", () => {
   const day = mkDay([
     { dedupeKey: KEY, status: "completed", result: "confirmed", completedAt: 100 },
