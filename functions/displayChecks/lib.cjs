@@ -109,57 +109,41 @@ function dedupeKey(productId, rawSize) {
 // unbounded as chronic held SKUs accumulate). The held index is keyed by
 // dedupeKey precisely so at most one held record exists per SKU and it's found
 // in one keyed read.
-function resolveSale(dayNode, heldRecord, key, nowMs) {
-  const day = dayNode || {};
-  // 1. OPEN check in today's day node → bump in place (actionable wins).
-  for (const [checkId, c] of Object.entries(day)) {
-    if (c && c.dedupeKey === key && c.status === "open") {
-      return { kind: "bump", location: "day", checkId, logType: "sale_bumped" };
-    }
-  }
-  // 2. HELD check in the flat index (keyed by dedupeKey, so NOT day-scoped) →
-  //    held_resale. This dedupes a resale of a held SKU across DAYS (a check
-  //    held on Monday and resold Wednesday is this exact record). LOUD: the
-  //    till just sold what inventory says is at zero.
-  if (heldRecord && heldRecord.status === "held" && heldRecord.dedupeKey === key) {
-    return { kind: "bump", location: "held", checkId: heldRecord.checkId, logType: "held_resale" };
-  }
-  // 2b. LEGACY FALLBACK — a HELD check still in TODAY's day node, written by the
-  //     pre-flat-index trigger before this deploy and not yet migrated. Bump it
-  //     IN PLACE (location "day") so a resale records held_resale instead of a
-  //     duplicate (Codex #245). New held checks never land here; the one-time
-  //     migration + the reworked sweep drain legacy day-node held records.
-  for (const [checkId, c] of Object.entries(day)) {
-    if (c && c.dedupeKey === key && c.status === "held") {
-      return { kind: "bump", location: "day", checkId, logType: "held_resale" };
-    }
-  }
-  // 3. COMPLETED check today → repeat / contradiction (a NEW check).
-  let latestCompleted = null;
-  for (const [checkId, c] of Object.entries(day)) {
-    if (!c || c.dedupeKey !== key || c.status !== "completed") continue;
-    if (!latestCompleted || (c.completedAt || 0) > (latestCompleted.c.completedAt || 0)) {
-      latestCompleted = { checkId, c };
-    }
-  }
-  if (latestCompleted) {
-    const { checkId, c } = latestCompleted;
+// `activeRecord` is the SINGLE record at /displayChecks_active/{store}/{dedupeKey}
+// (one active record per SKU, whole active life — never moves, never null while
+// active). Read by an O(1) keyed get. The day node is NOT consulted: the latest
+// completed check for a SKU is exactly this record while it is a `completed`
+// tombstone (before the next sale overwrites it), so repeat/contradiction is
+// derived from it.
+//   open      → sale_bumped
+//   held      → held_resale (till sold what inventory says is at zero)
+//   completed → repeat/contradiction; a NEW check OVERWRITES the tombstone (its
+//               checkId is archived to the day node first — the create path)
+//   null      → fresh create
+function resolveSale(activeRecord, key, nowMs) {
+  const c = activeRecord;
+  if (!c || c.dedupeKey !== key) return { kind: "create", repeat: null, overwrite: false };
+  if (c.status === "open") return { kind: "bump", checkId: c.checkId, logType: "sale_bumped" };
+  if (c.status === "held") return { kind: "bump", checkId: c.checkId, logType: "held_resale" };
+  if (c.status === "completed") {
     const followedResult = c.result === "no_stock" ? "no_stock" : "confirmed";
-    // Number.isFinite, not `||` — a legitimate 0/epoch timestamp must not be
-    // swallowed as "missing" (caught by the contradiction-interval test).
+    // Number.isFinite, not `||` — a legitimate 0/epoch completedAt is real.
     const rawCompletedAt = Number(c.completedAt);
     const completedAt = Number.isFinite(rawCompletedAt) ? rawCompletedAt : nowMs;
     return {
       kind: "create",
+      overwrite: true,            // overwrite this completed tombstone at the dedupeKey
+      archiveCheckId: c.checkId,  // ensure it's archived to the day node first (idempotent)
       repeat: {
-        repeatOf: checkId,
+        repeatOf: c.checkId,
         followedResult,
         repeatWithinMinutes: Math.max(0, Math.round((nowMs - completedAt) / 60000)),
         logType: followedResult === "no_stock" ? "contradiction_detected" : "repeat_detected",
       },
     };
   }
-  return { kind: "create", repeat: null };
+  // Unknown status (e.g. a partial write) → treat as absent, create fresh.
+  return { kind: "create", repeat: null, overwrite: false };
 }
 
 // ── Assignment resolver ───────────────────────────────────────────────────────
@@ -220,48 +204,6 @@ function processedClaimDecision({ cur, nowMs, saDate }) {
   return undefined;
 }
 
-// ── Create-mutex claim (TTL — self-expiring, no external release) ─────────────
-// The mutex closes exactly ONE window: two concurrent trigger executions that
-// both read an empty day node before either wrote (two tills, same SKU, same
-// seconds). Everything non-concurrent is already covered by the day-node scan
-// (resolveSale: an open/held check → bump path, which never consults the
-// mutex). So the lock's useful life IS that window — seconds — and it expires
-// by TTL, not by a release call. PR 2 is correct with PR 7 not existing:
-// nothing anywhere is obliged to clear this key, ever. A stuck entry can cost
-// at most TTL of dedupe-by-mutex; it can never block a SKU permanently.
-//
-// Claim rules (transaction callback semantics: return value = write, undefined
-// = abort):
-//   cur == null                      → claim (first creator)
-//   cur older than TTL               → claim (expired — self-heal)
-//   cur.checkId completed in my day  → claim (a fresh-but-stale entry must not
-//     snapshot                          route a bump onto a completed check;
-//                                       checks are never edited after completion)
-//   otherwise (fresh, active)        → abort — caller bumps cur.checkId
-const CREATE_MUTEX_TTL_MS = 120e3;
-
-function mutexClaimDecision({ cur, nowMs, newCheckId, completedIds }) {
-  if (cur == null) return { checkId: newCheckId, at: nowMs };
-  const at = Number(cur.at);
-  if (!Number.isFinite(at) || nowMs - at > CREATE_MUTEX_TTL_MS) {
-    return { checkId: newCheckId, at: nowMs };
-  }
-  if (completedIds && completedIds.has(cur.checkId)) {
-    return { checkId: newCheckId, at: nowMs };
-  }
-  return undefined;
-}
-
-// Ids in a day-node snapshot whose check is completed — feeds the claim rule
-// above so a mutex loser can never bump a completed (immutable) check.
-function completedIdsOf(dayNode) {
-  const out = new Set();
-  for (const [checkId, c] of Object.entries(dayNode || {})) {
-    if (c && c.status === "completed") out.add(checkId);
-  }
-  return out;
-}
-
 // ── New-check body ────────────────────────────────────────────────────────────
 // The denormalised record (§4.1 + PR-2 spec). photoUrl is the FULL-SIZE product
 // photo — Phase 0 found no thumbnail derivative.
@@ -269,12 +211,13 @@ function completedIdsOf(dayNode) {
 // Images" extension (or equivalent) produces one; do not build a resizer here.
 function buildNewCheck({
   productId, product, rawSize, key, checkId, movementId, saleId,
-  movementTs, qty, status, assignedTo, repeat, nowMs,
+  movementTs, qty, status, assignedTo, activatedSaDate, repeat, nowMs,
 }) {
   const check = {
-    // Stored as a FIELD (not just the RTDB key): a HELD record is keyed by
-    // dedupeKey, so its checkId — the identity used in log events and preserved
-    // when the sweep relocates it into a day node — must live on the record.
+    // Stored as a FIELD (not just the RTDB key): the active index is keyed by
+    // dedupeKey, so its checkId — the identity used in log events, the bumpTxn
+    // checkId fence, and when a completed check is archived to the day node —
+    // must live on the record.
     checkId,
     productId,
     productName: (product && product.name) || "Unknown",
@@ -297,6 +240,11 @@ function buildNewCheck({
   if (status === "held") check.heldAt = nowMs;
   else {
     check.activatedAt = nowMs;
+    // The SA day this check went OPEN. The active index is dateless, so a check
+    // that opens on day 1 and is still open past 03:00 rollover carries no other
+    // record of its opening day; PR 12 attributes its mark to THIS day's
+    // assignee. Stamped at open, frozen. (Window #3.)
+    check.activatedSaDate = activatedSaDate || null;
     check.assignedTo = assignedTo || null;      // frozen; null = unassigned (§17.3)
   }
   if (repeat) {
@@ -320,8 +268,17 @@ function buildNewCheck({
 // short key per absorbed movement, bounded by the day's sales of one SKU —
 // the ×N dedupe keeps this a handful in practice.
 // Returns the next node, undefined (abort), or the unchanged node (fenced no-op).
-function bumpTxn(check, { qty, movementTs, movementId }) {
+function bumpTxn(check, { qty, movementTs, movementId, expectedCheckId }) {
   if (!check || (check.status !== "open" && check.status !== "held")) return undefined;
+  // CHECKID FENCE (the class-killer): the active index is keyed by dedupeKey, so
+  // a SKU's slot can be OVERWRITTEN by a fresh check after the previous one
+  // completes. A sale that resolved against the OLD check must never bump the
+  // NEW one — its bumpCheck passes the checkId it resolved, and a mismatch
+  // aborts (→ the trigger re-resolves onto the current check). This also means a
+  // completed-then-overwritten slot can't be mis-credited, and — with the
+  // never-null invariant (records are overwritten, not deleted, during active
+  // life) — there is no deleted-record path for `cur ?? preRead` to resurrect.
+  if (expectedCheckId != null && check.checkId !== expectedCheckId) return undefined;
   if (movementId && check.appliedMovements && check.appliedMovements[movementId]) {
     return check; // already absorbed this movement — idempotent replay
   }
@@ -335,13 +292,137 @@ function bumpTxn(check, { qty, movementTs, movementId }) {
   return next;
 }
 
+// ── Wake sweep (PR 3) — pure transition decision ──────────────────────────────
+// A held check (now in the flat index /displayChecks_held/{store}/{dedupeKey})
+// waits for stock (§1.3). The sweep reads the SAME stock cell the trigger reads
+// and moves the check: held → (stock appears) stockSeenAt + a grace window →
+// (grace elapsed, stock still there) open. If stock vanishes during the grace
+// it drops back to held. These functions are the PURE decision; the sweep
+// (wakeHeldChecks.js) does the IO around them, including RELOCATING a waking
+// check out of the flat index into today's day node.
+//
+// Key robustness choice: the activation threshold is derived from
+// `stockSeenAt + delayMs`, NOT a separately-stored `wakeAt`. wakeAt is stored
+// for display only, so a crash between writing stockSeenAt and wakeAt can't
+// wedge a check.
+const WAKE_DEFAULT_DELAY_MINUTES = 20;
+
+// Grace window in ms from the store config (wakeDelayMinutes), default 20.
+// Only a real, non-blank value overrides the default: null / "" / undefined /
+// whitespace / non-numeric types all fall back to 20. Number("") and
+// Number(null) are both 0, so a blank value is rejected BEFORE coercion —
+// otherwise it silently collapses the grace window to instant activation
+// (CodeRabbit + Codex). An explicit numeric 0 is still honoured.
+function wakeDelayMs(config) {
+  let raw = config && config.wakeDelayMinutes;
+  if (typeof raw === "string") raw = raw.trim();
+  if (raw === null || raw === undefined || raw === "" ||
+      (typeof raw !== "number" && typeof raw !== "string")) {
+    return WAKE_DEFAULT_DELAY_MINUTES * 60000;
+  }
+  const m = Number(raw);
+  const ms = (Number.isFinite(m) && m >= 0 ? m : WAKE_DEFAULT_DELAY_MINUTES) * 60000;
+  // Guard the multiplication: a huge finite minutes value overflows to Infinity,
+  // which would poison wakeAt (now + Infinity) and fail the write (CodeRabbit).
+  return Number.isFinite(ms) ? ms : WAKE_DEFAULT_DELAY_MINUTES * 60000;
+}
+
+// Returns the transition to apply, or null (no-op). Guards on status "held" so
+// a non-held record is a no-op — idempotent against a double-fire.
+//   { action:"re_held", clearedStockSeenAt }  stock gone before wake
+//   { action:"stock_seen" }                   stock appeared, start the grace clock
+//   { action:"activate" }                     grace elapsed, stock still present
+function wakeTransition(check, { qty, nowMs, delayMs }) {
+  if (!check || check.status !== "held") return null;
+  const hasStock = Number(qty) > 0;
+  const seenAt = Number(check.stockSeenAt);
+  const seen = check.stockSeenAt != null && Number.isFinite(seenAt);
+  if (!hasStock) return seen ? { action: "re_held", clearedStockSeenAt: check.stockSeenAt } : null;
+  if (!seen) return { action: "stock_seen" };
+  if (nowMs >= seenAt + delayMs) return { action: "activate" };
+  return null; // still inside the grace window
+}
+
+// Apply a decided transition INSIDE the held-record transaction — the single
+// atomic write for each transition, re-validating the status-based invariants
+// against the AUTHORITATIVE current record, so two overlapping sweeps are safe
+// (the second sees the first's committed state and aborts). For "activate" it
+// flips the record to status "open" IN PLACE (still in the flat index); the
+// sweep then relocates the open record into today's day node and deletes the
+// flat entry. Returns the next record, or undefined to abort. (qty is not
+// re-checked here — it can't be read in a transaction; it was the decision
+// input, and status + stockSeenAt + time ARE re-validated.)
+function applyWakeTransition(check, action, { nowMs, delayMs, assignedTo, clearedStockSeenAt, activatedSaDate }) {
+  if (!check || check.status !== "held") return undefined; // moved under us
+  if (action === "stock_seen") {
+    if (check.stockSeenAt != null) return undefined;       // another run claimed it
+    return { ...check, stockSeenAt: nowMs, wakeAt: nowMs + delayMs };
+  }
+  if (action === "activate") {
+    const seenAt = Number(check.stockSeenAt);
+    if (!Number.isFinite(seenAt) || nowMs < seenAt + delayMs) return undefined; // not ready / cleared
+    // Flip held → open IN PLACE (never-null invariant: the record stays at its
+    // dedupeKey, no move, no relocation race). Strip the grace fields; stamp the
+    // opening SA day for PR-12 mark attribution (window #3).
+    const next = { ...check, status: "open", activatedAt: nowMs, activatedSaDate: activatedSaDate || null };
+    delete next.stockSeenAt;
+    delete next.wakeAt;
+    // Assign explicitly to null (not `if (assignedTo)`) so a held record that
+    // somehow carries a stale assignedTo can't reopen under the wrong person —
+    // null CLEARS the field in the transaction write (CodeRabbit).
+    next.assignedTo = assignedTo || null;
+    return next;
+  }
+  if (action === "re_held") {
+    if (check.stockSeenAt == null) return undefined;       // already cleared
+    // Fence on the OBSERVED timestamp (Codex): a delayed no-stock decision must
+    // not cancel a NEWER grace window started by another sweep after the old
+    // one was cleared and stock reappeared.
+    if (clearedStockSeenAt != null && check.stockSeenAt !== clearedStockSeenAt) return undefined;
+    const next = { ...check };
+    delete next.stockSeenAt;
+    delete next.wakeAt;
+    return next;
+  }
+  return undefined;
+}
+
+// ── Feed / cleanup predicates over the active index ───────────────────────────
+// WINDOW #1 — the feed keys on the STATUS FIELD, never on "present in the active
+// index". A completed tombstone still occupying its dedupeKey (until the next
+// sale overwrites it, or the sweep cleans it) must NOT render as active work.
+// PR 5's feed filters active checks with this; a `completed` (or any non
+// held/open) record is excluded regardless of how long it lingers.
+function isActiveCheck(record) {
+  return !!record && (record.status === "held" || record.status === "open");
+}
+
+// WINDOW #2 — a completed tombstone is safe for the sweep to DELETE once it is
+// from a PRIOR SA day. Proof it can't resurrect: a bump only reaches this key
+// via bumpCheck, whose whole execution is seconds long, so any in-flight bump
+// that saw the record while it was open/held settled the same day it acted;
+// a tombstone whose completedAt is on an earlier SA day has NO in-flight bump.
+// And even a hypothetical late bump aborts — bumpTxn rejects a `completed`
+// status (write-once) and the checkId fence rejects a mismatch — so `cur ??
+// preRead` has nothing bumpable to write back. `todaySaDate` is the sweep's
+// current SA day.
+function isStaleTombstone(record, todaySaDate) {
+  if (!record || record.status !== "completed") return false;
+  const completedAt = Number(record.completedAt);
+  if (!Number.isFinite(completedAt)) return true; // malformed/undated → safe to reap
+  return saDateStringFromMs(completedAt) < todaySaDate;
+}
+
 module.exports = {
   TRIGGER_STORE_FLAGS,
-  CREATE_MUTEX_TTL_MS,
+  WAKE_DEFAULT_DELAY_MINUTES,
+  wakeDelayMs,
+  wakeTransition,
+  applyWakeTransition,
+  isActiveCheck,
+  isStaleTombstone,
   PROCESS_LEASE_MS,
   processedClaimDecision,
-  mutexClaimDecision,
-  completedIdsOf,
   bumpTxn,
   isTriggerStoreEnabled,
   encodeSizeKey,

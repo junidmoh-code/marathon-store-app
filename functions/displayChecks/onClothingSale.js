@@ -1,61 +1,41 @@
-// ─── DISPLAY CHECKS — onClothingSale TRIGGER (PR 2: writes only, no UI) ───────
+// ─── DISPLAY CHECKS — onClothingSale TRIGGER (writes only, no UI) ─────────────
 // Gen-2 RTDB onCreate on /stock_movements/{movementId}. A clothing `sold`
-// movement at an enabled store becomes (or bumps) a display check in today's
-// day node, with an append-only audit event per state change. DORMANT by
-// design: nothing reads these namespaces yet (the PR-1 shell is dark) — the
-// point of shipping the trigger first is to let its output run for a few days
-// and compare it against the floor (design §15) before any staff-facing UI.
+// movement at an enabled store becomes (or bumps) a display check. DORMANT:
+// nothing staff-facing reads these namespaces yet.
 //
-// SALE SOURCE — PROVEN, not assumed: /stock_movements `type === "sold"`,
-// one movement per (sale, product, size) cell, `from` = selling shop, `qty` =
-// units. Two-source proof against /pos/sales (PE + Trophy, 2026-07-16, zero
-// unit residual): docs/display-checks-sale-source.md.
+// SALE SOURCE — PROVEN: /stock_movements `type === "sold"`, one movement per
+// (sale, product, size) cell, `from` = selling shop, `qty` = units
+// (docs/display-checks-sale-source.md).
 //
-// WRITE SURFACE — displayChecks* ONLY:
-//   /displayChecks/{store}/{saDate}/{checkId}                OPEN/COMPLETED checks
-//   /displayChecks_held/{store}/{checkId}                    HELD checks (flat, not
-//                                                            day-scoped, so they wake
-//                                                            across days; the sweep
-//                                                            relocates one into the day
-//                                                            node when it goes open)
-//   /displayChecks_log/{store}/{YYYY-MM}/{eventId}           append-only audit
-//   /displayChecks_meta/{store}/processed/{movementId}       idempotency lease
-//   /displayChecks_meta/{store}/{saDate}/active/{dedupeKey}  create-mutex (TTL)
+// ── ACTIVE INDEX (the never-null model) ──────────────────────────────────────
+// A check lives at ONE address for its whole active life:
+//   /displayChecks_active/{store}/{dedupeKey}   held → open → completed(tombstone)
+// One record per SKU. It NEVER moves and is NEVER deleted while active — the
+// next sale OVERWRITES a completed tombstone, the sweep flips held→open IN
+// PLACE. Because the record is never null during active life, a sale bump's
+// cold-safe `cur ?? preRead` transaction can never resurrect a deleted ghost
+// (the class that bit this module repeatedly), and the bumpTxn checkId fence
+// stops a stale bump from crediting an overwritten slot.
+//   /displayChecks/{store}/{saDate}/{checkId}   COMPLETED archive (day node,
+//                                               keyed by checkId; written by
+//                                               PR-7 completion + the overwrite)
+//   /displayChecks_log/{store}/{YYYY-MM}/{eventId}   append-only audit
+//   /displayChecks_meta/{store}/processed/{movementId}   idempotency lease
 // Reads existing data only (/products, /stock, /displayChecks_settings).
-// NOTHING in POS / warehouse / refill / inventory logic changes.
+// NOTHING in POS / warehouse / refill / inventory changes.
 //
-// IDEMPOTENCY — LEASED STATE RECORD (movement-global, date-independent):
-// RTDB triggers are at-least-once, and a redelivery can arrive AFTER SA
-// midnight — so the claim path must not embed the day. The record at
-// …processed/{movementId} = { at, saDate, done }:
-//   • claimed with done:false before any write (transaction; the movement id
-//     is the idempotency key — applyMovement.js:21,87 pattern),
-//   • saDate is FROZEN on first claim, so a cross-midnight retry writes into
-//     the day node the first attempt targeted,
-//   • marked done:true only after every write lands — a crash mid-processing
-//     leaves done:false, and after PROCESS_LEASE_MS (10 min, matching
-//     refill-scan's LOCK_STEAL_MS precedent) the lease is stealable, so the
-//     movement is retried instead of silently dropped. Honest trade-off,
-//     documented in lib.cjs: a steal after a mid-write crash can re-apply a
-//     bump (rare over-count) — chosen over dropping a sale.
-// All counter bumps are transactions on the WHOLE check node (lib.cjs
-// bumpTxn): status re-validated atomically (a completed check aborts the bump
-// — completed checks are immutable), lastSoldAt monotonic, partial nodes
-// abort. Never read-then-write.
+// IDEMPOTENCY — leased state record (movement-global, survives midnight):
+// …processed/{movementId} = { at, saDate, done }. Claimed done:false before any
+// write; saDate FROZEN on first claim; done:true only after every write lands; a
+// stale (PROCESS_LEASE_MS) lease is stealable so a crash retries. Bumps are
+// transactions (bumpTxn): status re-validated, checkId fenced, movement fenced,
+// lastSoldAt monotonic.
 //
-// CREATE-MUTEX — TTL, SELF-EXPIRING (no external release, no PR-7 obligation):
-// …/meta/{saDate}/active/{dedupeKey} closes only the concurrent-create window
-// (two tills, same SKU, same seconds). Entries expire by CREATE_MUTEX_TTL_MS
-// (120s) inside the claim transaction; nothing anywhere has to clear them. A
-// mutex LOSER does not bump blindly: it waits (bounded) for the winner's check
-// to materialize, then bumps via the same status-validating transaction — the
-// log type comes from the LIVE status (a held check logs held_resale, never
-// sale_bumped). If the winner died before publishing, the loser logs a visible
-// `orphaned_sale` event and exits — bounded and observable, never a silent
-// partial write.
+// CREATE serialization is the active-record transaction itself (create-if-empty-
+// or-completed) — no separate mutex needed: one record per dedupeKey, so a
+// concurrent create loses the CAS and re-resolves into a bump.
 //
-// DEPLOY (Junid only; scoped — NEVER bare --only functions, POS shares this
-// project):  firebase deploy --only functions:onClothingSale
+// DEPLOY (Junid only; scoped): firebase deploy --only functions:onClothingSale
 
 "use strict";
 
@@ -72,25 +52,18 @@ const {
   resolveAssignment,
   buildNewCheck,
   processedClaimDecision,
-  mutexClaimDecision,
-  completedIdsOf,
   bumpTxn,
 } = require("./lib.cjs");
 
-// index.js initialises admin at module scope; guard for standalone imports
-// (tests, emulator) exactly like the other function modules.
 if (!admin.apps.length) {
   admin.initializeApp({
     databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app",
   });
 }
 
-// One audit event under the SA month of the day node (§4.2). Written
-// server-side only; `actor` marks the machine. The event key is DETERMINISTIC
-// per (movement, type) — a lease-reclaimed replay overwrites the same event
-// instead of appending a duplicate, which is what keeps the append-only log
-// honest under at-least-once delivery. (Keys therefore sort by movement id,
-// not strictly by time; consumers order by the `at` field.)
+// One audit event under the SA month (§4.2). Deterministic per (movement, type)
+// key so a lease-reclaimed replay overwrites the same event, keeping the
+// append-only log honest under at-least-once delivery.
 function logEvent(updates, db, store, saDate, { checkId, type, at, payload, movementId }) {
   const eventId = movementId ? `${movementId}_${type}` : db.ref(`displayChecks_log/${store}`).push().key;
   updates[`displayChecks_log/${store}/${saMonthOfDate(saDate)}/${eventId}`] = {
@@ -102,34 +75,22 @@ function logEvent(updates, db, store, saDate, { checkId, type, at, payload, move
   };
 }
 
-// Bump an existing check via the status-validating node transaction (lib.cjs
-// bumpTxn). On commit, the log type is derived from the check's LIVE status —
-// held → held_resale (LOUD: the till just sold something inventory says isn't
-// there; stockQty is fetched as evidence), open → sale_bumped. On abort the
-// caller decides (re-resolve or orphan): { ok:false, status } tells it why.
-// The RTDB path a check lives at. OPEN/COMPLETED checks are day-scoped, keyed by
-// push-id checkId (a day can hold several completed checks for one SKU). HELD
-// checks live in the flat `displayChecks_held/{store}` index keyed by DEDUPEKEY
-// (exactly one held record per SKU), so they're found in one O(1) keyed read
-// and woken across days. `id` is the dedupeKey for held, the checkId for day.
-function checkPath(store, saDate, location, id) {
-  return location === "held"
-    ? `displayChecks_held/${store}/${id}`
-    : `displayChecks/${store}/${saDate}/${id}`;
-}
+const activePath = (store, key) => `displayChecks_active/${store}/${key}`;
+const dayArchivePath = (store, saDate, checkId) => `displayChecks/${store}/${saDate}/${checkId}`;
 
-async function bumpCheck(db, { store, saDate, location, checkId, dedupeKey, qty, movementId, movementTs, nowMs }) {
-  const ref = db.ref(checkPath(store, saDate, location, location === "held" ? dedupeKey : checkId));
-  // COLD-CACHE SAFETY (the live undercount fix): in a Cloud Function the
-  // transaction's update fn runs FIRST against a cold local cache (cur === null,
-  // and .get() does NOT warm it), so `bumpTxn(null)` returned undefined and the
-  // SDK aborted BEFORE the server CAS — the 2nd+ sale of a SKU/day was silently
-  // dropped (saleCount stuck at 1). Feeding the pre-read check on the null run
-  // makes bumpTxn return a value, forcing the server round-trip; the real
-  // decision always runs against the authoritative server value on the re-run.
-  // Same idiom as wakeHeldChecks (`cur ?? preRead`).
+// Bump the SKU's active record. COLD-CACHE SAFETY (PR 2a): the transaction fn
+// runs first against a cold null cache, so the pre-read forces the server
+// round-trip instead of a silent abort. With the never-null invariant the
+// active record is never deleted while active, so this can't resurrect a ghost;
+// the bumpTxn checkId fence rejects a stale bump that lands on an overwritten
+// slot (→ { ok:false } → the caller re-resolves). On commit the log type comes
+// from the LIVE status (held → held_resale with the stock qty as evidence).
+async function bumpCheck(db, { store, saDate, key, expectedCheckId, qty, movementId, movementTs, nowMs }) {
+  const ref = db.ref(activePath(store, key));
   const preRead = (await ref.get()).val();
-  const res = await ref.transaction((c) => bumpTxn(c === null ? preRead : c, { qty, movementTs, movementId }));
+  const res = await ref.transaction((c) =>
+    bumpTxn(c === null ? preRead : c, { qty, movementTs, movementId, expectedCheckId })
+  );
   if (!res.committed) {
     const v = res.snapshot && res.snapshot.val();
     return { ok: false, status: (v && v.status) || null };
@@ -138,48 +99,19 @@ async function bumpCheck(db, { store, saDate, location, checkId, dedupeKey, qty,
   const logType = bumped.status === "held" ? "held_resale" : "sale_bumped";
   let stockQty = null;
   if (logType === "held_resale") {
-    const q = await db
-      .ref(`stock/${store}/${bumped.productId}/${bumped.sizeKey || stockSizeKey(bumped.size)}/qty`)
-      .get();
+    const q = await db.ref(`stock/${store}/${bumped.productId}/${bumped.sizeKey || stockSizeKey(bumped.size)}/qty`).get();
     stockQty = q.val();
   }
   const updates = {};
   logEvent(updates, db, store, saDate, {
-    checkId,
-    type: logType,
-    at: nowMs,
-    movementId,
-    payload: {
-      movementId,
-      qty,
-      // held_resale is never silenced, never "fixed" here, never a new check —
-      // stockQty is the evidence a human needs to chase the stock bug.
-      ...(logType === "held_resale" ? { stockQty } : {}),
-    },
+    checkId: expectedCheckId, type: logType, at: nowMs, movementId,
+    payload: { movementId, qty, ...(logType === "held_resale" ? { stockQty } : {}) },
   });
   await db.ref().update(updates);
   return { ok: true, logType };
 }
 
-// Bounded wait for a mutex winner's check to publish, returning WHERE it landed
-// ("day" | "held") or null if it never appeared. The winner decides open-vs-held
-// (and therefore day-node-vs-held-index) only AFTER claiming the mutex, so the
-// loser must look in both. `status` is the publish marker (written in the
-// winner's atomic field update). ~1.2s worst case.
-async function findPublishedLocation(db, store, saDate, checkId, dedupeKey, attempts = 3, delayMs = 400) {
-  for (let i = 0; i < attempts; i++) {
-    const [day, held] = await Promise.all([
-      db.ref(`${checkPath(store, saDate, "day", checkId)}/status`).get(),
-      db.ref(`${checkPath(store, saDate, "held", dedupeKey)}/status`).get(),
-    ]);
-    if (day.exists()) return "day";
-    if (held.exists()) return "held";
-    await new Promise((r) => setTimeout(r, delayMs));
-  }
-  return null;
-}
-
-// Exported for the cold-cache regression test (test/display-checks-bump-coldsafe).
+// Exported for the cold-cache / checkId-fence regression tests.
 exports.bumpCheck = bumpCheck;
 
 exports.onClothingSale = onValueCreated(
@@ -194,17 +126,13 @@ exports.onClothingSale = onValueCreated(
     const m = event.data.val();
     if (!m || typeof m !== "object") return;
 
-    // ── Early returns, cheapest first (this fires on EVERY stock movement) ──
-    // 1. per-store flag (also drops hub/central/non-shop `from` values)
+    // ── Early returns, cheapest first (fires on EVERY stock movement) ──
     const store = m.from;
-    if (!isTriggerStoreEnabled(store)) return;
-    // 2. not a sale-type movement (transfers/receiving/adjustments/returns out)
-    if (m.type !== "sold") return;
-    // 3. not clothing — first read: ONE product get (also feeds denormalisation)
+    if (!isTriggerStoreEnabled(store)) return;      // store flag (also drops hubs)
+    if (m.type !== "sold") return;                  // sale-type only
     if (!m.productId) return;
-    const productSnap = await admin.database().ref(`products/${m.productId}`).get();
-    const product = productSnap.val();
-    if (!isClothingSale(product, m.size)) return;
+    const product = (await admin.database().ref(`products/${m.productId}`).get()).val();
+    if (!isClothingSale(product, m.size)) return;   // clothing only (one product get)
 
     const db = admin.database();
     const movementId = event.params.movementId;
@@ -214,134 +142,83 @@ exports.onClothingSale = onValueCreated(
     const saleId = (m.link && m.link.saleId) || null;
     const movementTs = m.ts || null;
 
-    // ── Idempotency lease (movement-global path — survives midnight) ──
+    // ── Idempotency lease (movement-global; frozen saDate survives midnight) ──
     const processedRef = db.ref(`displayChecks_meta/${store}/processed/${movementId}`);
     const claim = await processedRef.transaction((cur) =>
       processedClaimDecision({ cur, nowMs, saDate: saDateStringFromMs(nowMs) })
     );
     if (!claim.committed) return; // done, or another execution holds a fresh lease
-    // Day node anchored on the FIRST claim's server-received SA date — stable
-    // across lease-steal retries, and server-time (not till-clock ts) per the
-    // order-counter TZ incident precedent (#236/#237). The movement ts still
-    // lands on the check verbatim as firstSoldAt/lastSoldAt.
     const saDate = (claim.snapshot.val() && claim.snapshot.val().saDate) || saDateStringFromMs(nowMs);
 
-    // ── Resolve against the day node (≤ ~25KB, §4.1 sizing) ──
-    // One re-resolution retry: if a bump aborts (check completed between the
-    // snapshot and the transaction), the fresh snapshot decides again — that
-    // sale then correctly becomes the repeat/contradiction check.
+    // ── Resolve against the ONE active record for this SKU (O(1) keyed get) ──
+    // No day-node read: the latest completed check for a SKU is its own active
+    // tombstone (until the next sale overwrites it), so repeat/contradiction is
+    // derived from the active record. Two attempts: a bump/create that aborts
+    // (the slot changed under us) re-resolves once.
     for (let attempt = 0; attempt < 2; attempt++) {
-      // Read the day node (open/completed, ≤~25KB §4.1) and the SINGLE held
-      // record for this SKU via an O(1) keyed get on the dedupeKey (NOT a
-      // full-store held scan — Codex #245). resolveSale dedupes across both, so
-      // a resale of a SKU held since a PRIOR day is caught here (held_resale),
-      // not stranded — the cross-day gap the flat index closes.
-      const [daySnap, heldSnap] = await Promise.all([
-        db.ref(`displayChecks/${store}/${saDate}`).get(),
-        db.ref(`displayChecks_held/${store}/${key}`).get(),
-      ]);
-      const dayNode = daySnap.val();
-      const resolution = resolveSale(dayNode, heldSnap.val(), key, nowMs);
+      const active = (await db.ref(activePath(store, key)).get()).val();
+      const resolution = resolveSale(active, key, nowMs);
 
       if (resolution.kind === "bump") {
         const bumped = await bumpCheck(db, {
-          store, saDate, location: resolution.location,
-          checkId: resolution.checkId, dedupeKey: key, qty, movementId, movementTs, nowMs,
+          store, saDate, key, expectedCheckId: resolution.checkId, qty, movementId, movementTs, nowMs,
         });
         if (bumped.ok) { await processedRef.update({ done: true, doneAt: nowMs }); return; }
-        continue; // status changed under us — re-resolve once with fresh data
+        continue; // slot overwritten/changed under us — re-resolve
       }
 
-      // ── Create path: claim the per-key create-mutex (TTL, self-expiring) ──
-      const newCheckId = db.ref(`displayChecks/${store}/${saDate}`).push().key;
-      const completedIds = completedIdsOf(dayNode);
-      const mutex = await db
-        .ref(`displayChecks_meta/${store}/${saDate}/active/${key}`)
-        .transaction((cur) => mutexClaimDecision({ cur, nowMs, newCheckId, completedIds }));
-
-      if (!mutex.committed) {
-        // Mutex loser: a concurrent winner is creating this SKU's check. Wait
-        // for it to PUBLISH (status present), then bump through the validating
-        // transaction — the live status picks the correct log type. If the
-        // winner died before publishing, log a visible orphaned_sale and stop:
-        // bounded and observable beats a blind bump onto a half-written node.
-        const winner = mutex.snapshot.val();
-        const winnerId = winner && winner.checkId;
-        const winnerLoc = winnerId ? await findPublishedLocation(db, store, saDate, winnerId, key) : null;
-        if (winnerLoc) {
-          const bumped = await bumpCheck(db, {
-            store, saDate, location: winnerLoc, checkId: winnerId, dedupeKey: key, qty, movementId, movementTs, nowMs,
-          });
-          if (bumped.ok) { await processedRef.update({ done: true, doneAt: nowMs }); return; }
-          continue; // winner completed already (ultra-rare) — re-resolve
-        }
-        const updates = {};
-        logEvent(updates, db, store, saDate, {
-          checkId: winnerId || null,
-          type: "orphaned_sale",
-          at: nowMs,
-          movementId,
-          payload: { movementId, qty, dedupeKey: key, reason: "create_winner_never_published" },
-        });
-        await db.ref().update(updates);
-        await processedRef.update({ done: true, doneAt: nowMs });
-        return;
+      // Overwriting a completed tombstone? ARCHIVE it to the day node first
+      // (idempotent, deterministic checkId key), so the completed check is never
+      // lost when the fresh check takes its dedupeKey slot. Archived under the
+      // SA day it completed (PR-7 completion archives it there too — same key).
+      if (resolution.overwrite && active && active.status === "completed" && active.checkId === resolution.archiveCheckId) {
+        const archDate = saDateStringFromMs(Number(active.completedAt) || nowMs);
+        const arch = {};
+        for (const [f, v] of Object.entries(active)) arch[`${dayArchivePath(store, archDate, active.checkId)}/${f}`] = v;
+        await db.ref().update(arch);
       }
 
-      // ── Winner: open vs held via ONE stock-cell get (Phase-0-proven path) ──
-      const qtySnap = await db.ref(`stock/${store}/${m.productId}/${stockSizeKey(m.size)}/qty`).get();
-      const stockQty = Number(qtySnap.val());
+      // ── Create / overwrite ──
+      const newCheckId = db.ref(`displayChecks_active/${store}`).push().key;
+      const stockQty = Number((await db.ref(`stock/${store}/${m.productId}/${stockSizeKey(m.size)}/qty`).get()).val());
       const status = stockQty > 0 ? "open" : "held";
 
-      // Assignment (open only): cover → LOCKED roster → null. Resolved NOW,
-      // frozen onto the check, never recomputed (design §3.3). Both nodes are
-      // absent until PR 11 seeds them — the resolver order is already real.
-      let assignedTo = null;
+      // Assignment + opening SA day (open only): cover → LOCKED roster → null.
+      // Frozen onto the check, never recomputed (design §3.3). Nodes absent
+      // until PR 11 — the resolver order is already real.
+      let assignedTo = null, activatedSaDate = null;
       if (status === "open") {
         const [coverSnap, rosterSnap] = await Promise.all([
           db.ref(`displayChecks_settings/${store}/cover/${saDate}`).get(),
           db.ref(`displayChecks_settings/${store}/roster`).get(),
         ]);
         assignedTo = resolveAssignment({ cover: coverSnap.val(), roster: rosterSnap.val(), saDate });
+        activatedSaDate = saDate; // window #3: freeze the opening day for PR-12 marks
       }
 
       const check = buildNewCheck({
         productId: m.productId, product, rawSize: m.size, key, checkId: newCheckId,
-        movementId, saleId, movementTs, qty,
-        status, assignedTo, repeat: resolution.repeat, nowMs,
+        movementId, saleId, movementTs, qty, status, assignedTo, activatedSaDate,
+        repeat: resolution.repeat, nowMs,
       });
 
-      // Check + its audit events land in ONE multi-path update (§13: state
-      // change and log event in the same operation). saleCount and the
-      // movement fence PUBLISH ATOMICALLY with status: a mutex loser only
-      // bumps after `status` exists, and status arrives in this very update —
-      // so nothing can have bumped this node yet, and the initial count can't
-      // clobber anything. No follow-up transaction, no visible
-      // saleCount-less window. (Per-field paths remain deliberate: defensive
-      // against any future writer touching the node concurrently.)
-      // HELD → flat index at `displayChecks_held/{store}/{dedupeKey}` (one
-      // record per SKU, O(1) lookup, wakes across days). OPEN → today's day
-      // node at the push-id checkId. The sweep relocates a held record into the
-      // day node (by its checkId field) when it wakes.
-      const location = status === "held" ? "held" : "day";
-      const storageId = status === "held" ? key : newCheckId;
+      // The create serialization: create if the slot is EMPTY or a COMPLETED
+      // tombstone; abort if an active (held/open) check already exists (a
+      // concurrent sale won → re-resolve → bump). Cold-safe: returns `check` on
+      // the null run to force the server round-trip.
+      const created = await db.ref(activePath(store, key)).transaction((cur) =>
+        cur === null || cur.status === "completed" ? check : undefined
+      );
+      if (!created.committed) continue; // lost the slot — re-resolve → bump
+
       const updates = {};
-      for (const [field, value] of Object.entries(check)) {
-        updates[`${checkPath(store, saDate, location, storageId)}/${field}`] = value;
-      }
       logEvent(updates, db, store, saDate, {
-        checkId: newCheckId,
-        type: status === "held" ? "held" : "suggested",
-        at: nowMs,
-        movementId,
+        checkId: newCheckId, type: status === "held" ? "held" : "suggested", at: nowMs, movementId,
         payload: { movementId, qty, stockQty: Number.isFinite(stockQty) ? stockQty : null },
       });
       if (resolution.repeat) {
         logEvent(updates, db, store, saDate, {
-          checkId: newCheckId,
-          type: resolution.repeat.logType, // repeat_detected | contradiction_detected
-          at: nowMs,
-          movementId,
+          checkId: newCheckId, type: resolution.repeat.logType, at: nowMs, movementId,
           payload: {
             repeatOf: resolution.repeat.repeatOf,
             followedResult: resolution.repeat.followedResult,
@@ -354,17 +231,10 @@ exports.onClothingSale = onValueCreated(
       return;
     }
 
-    // Both resolution attempts aborted (statuses kept shifting under us) —
-    // visible, bounded exit; the movement is marked handled so the lease
-    // doesn't retry into the same contention forever. Logged against the
-    // FROZEN saDate — a cross-midnight lease retry must audit into the day
-    // it was processing, not the current one.
+    // Both attempts aborted (the slot kept shifting) — bounded, visible exit.
     const updates = {};
     logEvent(updates, db, store, saDate, {
-      checkId: null,
-      type: "orphaned_sale",
-      at: nowMs,
-      movementId,
+      checkId: null, type: "orphaned_sale", at: nowMs, movementId,
       payload: { movementId, qty, dedupeKey: key, reason: "resolution_contention" },
     });
     await db.ref().update(updates);

@@ -64,85 +64,64 @@ test("dedupeKey: productId + encoded size, no colour dimension", () => {
 
 // ── resolution order ─────────────────────────────────────────────────────────
 const KEY = "p1__M";
-const mkDay = (checks) => Object.fromEntries(checks.map((c, i) => [`c${i}`, c]));
+// resolveSale now takes the SINGLE active record for the SKU (O(1) keyed get on
+// /displayChecks_active/{store}/{dedupeKey}) — no day-node scan.
+const active = (over) => ({ dedupeKey: KEY, checkId: "c0", ...over });
 
-test("open check in the day node absorbs the sale (sale_bumped, location day)", () => {
-  const day = mkDay([{ dedupeKey: KEY, status: "open" }]);
-  assert.deepEqual(lib.resolveSale(day, null, KEY, 0), { kind: "bump", location: "day", checkId: "c0", logType: "sale_bumped" });
+test("open active record absorbs the sale (sale_bumped)", () => {
+  assert.deepEqual(lib.resolveSale(active({ status: "open" }), KEY, 0),
+    { kind: "bump", checkId: "c0", logType: "sale_bumped" });
 });
 
-test("held record (keyed flat-index get) absorbs the sale LOUDLY (held_resale, location held)", () => {
-  // heldRecord is the SINGLE record from an O(1) keyed get, not a scan.
-  const held = { dedupeKey: KEY, status: "held", checkId: "cHeld" };
-  assert.deepEqual(lib.resolveSale(null, held, KEY, 0), { kind: "bump", location: "held", checkId: "cHeld", logType: "held_resale" });
+test("held active record absorbs the sale LOUDLY (held_resale) — works ACROSS days (dateless index)", () => {
+  assert.deepEqual(lib.resolveSale(active({ status: "held", heldAt: 1 }), KEY, 0),
+    { kind: "bump", checkId: "c0", logType: "held_resale" });
 });
 
-test("cross-DAY resale: a held record created earlier (flat index) still dedupes today", () => {
-  const held = { dedupeKey: KEY, status: "held", checkId: "hOld", heldAt: 1 };
-  assert.deepEqual(lib.resolveSale({}, held, KEY, 0), { kind: "bump", location: "held", checkId: "hOld", logType: "held_resale" });
+test("null active record → fresh create", () => {
+  assert.deepEqual(lib.resolveSale(null, KEY, 0), { kind: "create", repeat: null, overwrite: false });
 });
 
-test("held record for a DIFFERENT key is ignored (the keyed get can only return this SKU's)", () => {
-  const held = { dedupeKey: "p9__S", status: "held", checkId: "hZ" };
-  assert.deepEqual(lib.resolveSale(null, held, KEY, 0), { kind: "create", repeat: null });
+test("a record for a DIFFERENT key is ignored (the keyed get is per-SKU)", () => {
+  assert.deepEqual(lib.resolveSale(active({ dedupeKey: "p9__S", status: "held" }), KEY, 0),
+    { kind: "create", repeat: null, overwrite: false });
 });
 
-test("open (day) wins over the held record if both somehow exist — actionable first", () => {
-  const day = mkDay([{ dedupeKey: KEY, status: "open" }]);
-  const held = { dedupeKey: KEY, status: "held", checkId: "hX" };
-  assert.equal(lib.resolveSale(day, held, KEY, 0).location, "day");
-});
-
-test("LEGACY held in the day node (pre-deploy) → held_resale in place, not a duplicate (Codex #245)", () => {
-  const day = mkDay([{ dedupeKey: KEY, status: "held" }]);
-  assert.deepEqual(lib.resolveSale(day, null, KEY, 0), { kind: "bump", location: "day", checkId: "c0", logType: "held_resale" });
-});
-
-test("flat-index held record takes precedence over a legacy day-node held (same SKU)", () => {
-  const day = mkDay([{ dedupeKey: KEY, status: "held" }]);            // legacy day-node
-  const held = { dedupeKey: KEY, status: "held", checkId: "hNew" };   // flat index
-  assert.deepEqual(lib.resolveSale(day, held, KEY, 0), { kind: "bump", location: "held", checkId: "hNew", logType: "held_resale" });
-});
-
-test("active check wins over a completed one — no repeat while a card is live", () => {
-  const day = mkDay([
-    { dedupeKey: KEY, status: "completed", result: "confirmed", completedAt: 100 },
-    { dedupeKey: KEY, status: "open" },
-  ]);
-  assert.equal(lib.resolveSale(day, null, KEY, 200).kind, "bump");
-});
-
-test("completed confirmed → repeat_detected with interval + followedResult", () => {
-  const day = mkDay([{ dedupeKey: KEY, status: "completed", result: "confirmed", completedAt: 10 * 60000 }]);
-  const r = lib.resolveSale(day, null, KEY, 22 * 60000);
+test("completed tombstone → repeat_detected + OVERWRITE (archive the tombstone first)", () => {
+  const r = lib.resolveSale(active({ status: "completed", result: "confirmed", completedAt: 10 * 60000 }), KEY, 22 * 60000);
   assert.equal(r.kind, "create");
-  assert.deepEqual(r.repeat, {
-    repeatOf: "c0", followedResult: "confirmed",
-    repeatWithinMinutes: 12, logType: "repeat_detected",
-  });
+  assert.equal(r.overwrite, true);
+  assert.equal(r.archiveCheckId, "c0");
+  assert.deepEqual(r.repeat, { repeatOf: "c0", followedResult: "confirmed", repeatWithinMinutes: 12, logType: "repeat_detected" });
 });
 
-test("completed no_stock → CONTRADICTION, not repeat (till proves the item existed)", () => {
-  const day = mkDay([{ dedupeKey: KEY, status: "completed", result: "no_stock", completedAt: 0 }]);
-  const r = lib.resolveSale(day, null, KEY, 5 * 60000);
+test("completed no_stock tombstone → CONTRADICTION, not repeat (till proves the item existed)", () => {
+  const r = lib.resolveSale(active({ status: "completed", result: "no_stock", completedAt: 0 }), KEY, 5 * 60000);
   assert.equal(r.repeat.logType, "contradiction_detected");
   assert.equal(r.repeat.followedResult, "no_stock");
   assert.equal(r.repeat.repeatWithinMinutes, 5);
+  assert.equal(r.overwrite, true);
 });
 
-test("multiple completions: the LATEST result is the one followed", () => {
-  const day = mkDay([
-    { dedupeKey: KEY, status: "completed", result: "confirmed", completedAt: 100 },
-    { dedupeKey: KEY, status: "completed", result: "no_stock", completedAt: 200 },
-  ]);
-  assert.equal(lib.resolveSale(day, null, KEY, 300).repeat.logType, "contradiction_detected");
+// ── WINDOW #1: feed keys on the STATUS FIELD, not "present in the active index" ─
+test("isActiveCheck: held/open render; a completed tombstone NEVER renders however long it lingers", () => {
+  assert.equal(lib.isActiveCheck({ status: "held" }), true);
+  assert.equal(lib.isActiveCheck({ status: "open" }), true);
+  assert.equal(lib.isActiveCheck({ status: "completed", completedAt: 0 }), false); // yesterday's tombstone, still keyed
+  assert.equal(lib.isActiveCheck(null), false);
+  assert.equal(lib.isActiveCheck({ status: "moved" }), false);
 });
 
-test("different SKU or empty nodes → plain create; other keys never interfere", () => {
-  assert.deepEqual(lib.resolveSale(null, null, KEY, 0), { kind: "create", repeat: null });
-  const day = mkDay([{ dedupeKey: "p2__L", status: "open" }]);
-  const held = { hZ: { dedupeKey: "p9__S", status: "held" } };
-  assert.deepEqual(lib.resolveSale(day, held, KEY, 0), { kind: "create", repeat: null });
+// ── WINDOW #2: stale completed tombstones are reapable ─────────────────────────
+test("isStaleTombstone: a completed record from a PRIOR SA day is reapable; today's is not", () => {
+  const TODAY = "2026-07-18";
+  const yesterdayMs = Date.parse("2026-07-17T14:00:00.000Z"); // SA 2026-07-17
+  const todayMs = Date.parse("2026-07-18T06:00:00.000Z");     // SA 2026-07-18
+  assert.equal(lib.isStaleTombstone({ status: "completed", completedAt: yesterdayMs }, TODAY), true);
+  assert.equal(lib.isStaleTombstone({ status: "completed", completedAt: todayMs }, TODAY), false);
+  assert.equal(lib.isStaleTombstone({ status: "open" }, TODAY), false);           // never reap active
+  assert.equal(lib.isStaleTombstone({ status: "held" }, TODAY), false);
+  assert.equal(lib.isStaleTombstone({ status: "completed" }, TODAY), true);       // undated → safe to reap
 });
 
 // ── assignment resolver: cover → LOCKED roster → null ────────────────────────
@@ -174,50 +153,6 @@ test("UNLOCKED roster does not assign — drafts don't put names on records", ()
 test("no cover, no roster, or unassigned weekday → null (PR 11 is data, not surgery)", () => {
   assert.equal(lib.resolveAssignment({ cover: null, roster: null, saDate: "2026-07-16" }), null);
   assert.equal(lib.resolveAssignment({ cover: null, roster: ROSTER, saDate: "2026-07-19" }), null);
-});
-
-// ── create-mutex: TTL, self-expiring, never blocks a SKU permanently ─────────
-test("mutex: empty → claim; fresh foreign entry → abort (loser bumps)", () => {
-  const now = 1_000_000;
-  assert.deepEqual(
-    lib.mutexClaimDecision({ cur: null, nowMs: now, newCheckId: "me", completedIds: new Set() }),
-    { checkId: "me", at: now }
-  );
-  assert.equal(
-    lib.mutexClaimDecision({
-      cur: { checkId: "other", at: now - 5_000 }, nowMs: now, newCheckId: "me", completedIds: new Set(),
-    }),
-    undefined
-  );
-});
-
-test("mutex: expired entry is claimable — correctness never depends on a release call", () => {
-  const now = 1_000_000;
-  const stale = { checkId: "other", at: now - lib.CREATE_MUTEX_TTL_MS - 1 };
-  assert.deepEqual(
-    lib.mutexClaimDecision({ cur: stale, nowMs: now, newCheckId: "me", completedIds: new Set() }),
-    { checkId: "me", at: now }
-  );
-  // malformed `at` (never written properly) must also expire, not wedge
-  assert.deepEqual(
-    lib.mutexClaimDecision({ cur: { checkId: "other" }, nowMs: now, newCheckId: "me", completedIds: new Set() }),
-    { checkId: "me", at: now }
-  );
-});
-
-test("mutex: fresh entry pointing at a COMPLETED check is claimable — bumps never land on immutable checks", () => {
-  const now = 1_000_000;
-  const fresh = { checkId: "done1", at: now - 1_000 };
-  assert.deepEqual(
-    lib.mutexClaimDecision({ cur: fresh, nowMs: now, newCheckId: "me", completedIds: new Set(["done1"]) }),
-    { checkId: "me", at: now }
-  );
-});
-
-test("completedIdsOf collects exactly the completed checks", () => {
-  const day = { a: { status: "open" }, b: { status: "completed" }, c: { status: "held" }, d: null };
-  assert.deepEqual(lib.completedIdsOf(day), new Set(["b"]));
-  assert.deepEqual(lib.completedIdsOf(null), new Set());
 });
 
 // ── processed-claim: idempotency lease (stable saDate, recoverable) ──────────
@@ -333,4 +268,116 @@ test("one-size sale: display size falls back to the sentinel, photoUrl carried",
   assert.equal(c.size, "_");
   assert.equal(c.sizeKey, "_");
   assert.equal(c.photoUrl, "https://x/p.jpg");  // full-size — thumbnail TODO in lib.cjs
+});
+// ── wake sweep: pure transition decision ─────────────────────────────────────
+const HELD = (over = {}) => ({ status: "held", productId: "p1", size: "M", sizeKey: "M", ...over });
+const D = 20 * 60000; // 20-min grace
+
+test("wakeTransition: non-held check is always a no-op (idempotent guard)", () => {
+  assert.equal(lib.wakeTransition({ status: "open" }, { qty: 5, nowMs: 0, delayMs: D }), null);
+  assert.equal(lib.wakeTransition({ status: "completed" }, { qty: 5, nowMs: 0, delayMs: D }), null);
+  assert.equal(lib.wakeTransition(null, { qty: 5, nowMs: 0, delayMs: D }), null);
+});
+
+test("wakeTransition: held + no stock + not seen → wait (null)", () => {
+  assert.equal(lib.wakeTransition(HELD(), { qty: 0, nowMs: 0, delayMs: D }), null);
+  assert.equal(lib.wakeTransition(HELD(), { qty: NaN, nowMs: 0, delayMs: D }), null);
+});
+
+test("wakeTransition: held + stock appears + not seen → stock_seen", () => {
+  assert.deepEqual(lib.wakeTransition(HELD(), { qty: 3, nowMs: 100, delayMs: D }), { action: "stock_seen" });
+});
+
+test("wakeTransition: seen + stock + inside grace → null; at/after grace → activate", () => {
+  const seenAt = 1_000_000;
+  const c = HELD({ stockSeenAt: seenAt });
+  assert.equal(lib.wakeTransition(c, { qty: 2, nowMs: seenAt + D - 1, delayMs: D }), null);
+  assert.deepEqual(lib.wakeTransition(c, { qty: 2, nowMs: seenAt + D, delayMs: D }), { action: "activate" });
+});
+
+test("wakeTransition: seen + stock GONE → re_held carrying the cleared stockSeenAt", () => {
+  const c = HELD({ stockSeenAt: 555 });
+  assert.deepEqual(lib.wakeTransition(c, { qty: 0, nowMs: 9_999_999, delayMs: D }),
+    { action: "re_held", clearedStockSeenAt: 555 });
+});
+
+test("wakeDelayMs: default 20 when config absent/invalid/BLANK; honours a valid value incl. 0", () => {
+  assert.equal(lib.wakeDelayMs(null), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({}), 20 * 60000);
+  // Blank values must NOT collapse the grace window to zero (CodeRabbit #243):
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: null }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "" }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "   " }), 20 * 60000); // whitespace-only (Codex)
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: true }), 20 * 60000);  // non-numeric type
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: undefined }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: " 30 " }), 30 * 60000); // trimmed numeric string
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "x" }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: -5 }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: 30 }), 30 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "45" }), 45 * 60000); // numeric string honoured
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: 0 }), 0);             // explicit 0 honoured
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: Number.MAX_VALUE }), 20 * 60000); // overflow → default (CodeRabbit)
+});
+
+test("applyWakeTransition activate: a stale assignedTo on the held record is CLEARED when it reopens unassigned (CodeRabbit)", () => {
+  const seenAt = 1_000;
+  const stale = { status: "held", stockSeenAt: seenAt, assignedTo: { uid: "ghost", name: "Ghost" } };
+  const next = lib.applyWakeTransition(stale, "activate", { nowMs: seenAt + D, delayMs: D, assignedTo: null, activatedSaDate: "2026-07-16" });
+  assert.equal(next.assignedTo, null); // not the ghost — reopened unassigned
+});
+
+// ── applyWakeTransition: the in-transaction re-validation (concurrency guard) ─
+test("applyWakeTransition stock_seen: sets both fields atomically; aborts if already seen or moved", () => {
+  const held = { status: "held", productId: "p1" };
+  assert.deepEqual(
+    lib.applyWakeTransition(held, "stock_seen", { nowMs: 100, delayMs: D }),
+    { status: "held", productId: "p1", stockSeenAt: 100, wakeAt: 100 + D }
+  );
+  // a concurrent sweep already claimed stockSeenAt → abort
+  assert.equal(lib.applyWakeTransition({ ...held, stockSeenAt: 50 }, "stock_seen", { nowMs: 100, delayMs: D }), undefined);
+  // completed/open under us → abort
+  assert.equal(lib.applyWakeTransition({ status: "open" }, "stock_seen", { nowMs: 100, delayMs: D }), undefined);
+});
+
+test("applyWakeTransition activate: flips atomically; aborts if not ready or already flipped", () => {
+  const seenAt = 1_000_000;
+  const c = { status: "held", stockSeenAt: seenAt };
+  const next = lib.applyWakeTransition(c, "activate", { nowMs: seenAt + D, delayMs: D, assignedTo: { uid: "u", name: "N" } });
+  assert.equal(next.status, "open");
+  assert.equal(next.activatedAt, seenAt + D);
+  assert.deepEqual(next.assignedTo, { uid: "u", name: "N" });
+  // not ready yet → abort
+  assert.equal(lib.applyWakeTransition(c, "activate", { nowMs: seenAt + D - 1, delayMs: D }), undefined);
+  // grace cleared under us (re_held raced) → abort
+  assert.equal(lib.applyWakeTransition({ status: "held" }, "activate", { nowMs: seenAt + D, delayMs: D }), undefined);
+  // already open (another sweep won) → abort
+  assert.equal(lib.applyWakeTransition({ status: "open", stockSeenAt: seenAt }, "activate", { nowMs: seenAt + D, delayMs: D }), undefined);
+  // null assignedTo → field explicitly cleared (CodeRabbit: not merely omitted, so a
+  // stale assignedTo on the record can't survive the flip). null write removes it in RTDB.
+  const un = lib.applyWakeTransition(c, "activate", { nowMs: seenAt + D, delayMs: D, assignedTo: null });
+  assert.equal(un.assignedTo, null);
+});
+
+test("applyWakeTransition re_held: clears both fields; aborts if already cleared or moved", () => {
+  const c = { status: "held", stockSeenAt: 555, wakeAt: 555 + D, saleCount: 2 };
+  const next = lib.applyWakeTransition(c, "re_held", { nowMs: 0, delayMs: D });
+  assert.equal("stockSeenAt" in next, false);
+  assert.equal("wakeAt" in next, false);
+  assert.equal(next.saleCount, 2);          // other fields preserved
+  // already cleared → abort (idempotent)
+  assert.equal(lib.applyWakeTransition({ status: "held" }, "re_held", { nowMs: 0, delayMs: D }), undefined);
+  // activated under us → abort
+  assert.equal(lib.applyWakeTransition({ status: "open", stockSeenAt: 555 }, "re_held", { nowMs: 0, delayMs: D }), undefined);
+});
+
+test("applyWakeTransition re_held FENCES on the observed stockSeenAt (Codex P2)", () => {
+  // A delayed no-stock decision observed stockSeenAt=555; by commit time a newer
+  // grace (999) is running. Must NOT cancel it.
+  assert.equal(
+    lib.applyWakeTransition({ status: "held", stockSeenAt: 999 }, "re_held", { nowMs: 0, delayMs: D, clearedStockSeenAt: 555 }),
+    undefined
+  );
+  // Same observed timestamp still present → clears it.
+  const next = lib.applyWakeTransition({ status: "held", stockSeenAt: 555 }, "re_held", { nowMs: 0, delayMs: D, clearedStockSeenAt: 555 });
+  assert.equal("stockSeenAt" in next, false);
 });

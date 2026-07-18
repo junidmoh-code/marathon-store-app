@@ -3104,3 +3104,11 @@ exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 // docs/display-checks-sale-source.md. Deploy scoped:
 //   firebase deploy --only functions:onClothingSale
 exports.onClothingSale = require("./displayChecks/onClothingSale.js").onClothingSale;
+
+// ─── DISPLAY CHECKS — wakeHeldChecks (PR 3: scheduled hold→wake sweep, no UI) ──
+// Every 5 min (Africa/Johannesburg), moves held checks (flat index
+// /displayChecks_held/{store}) through stock_seen → grace → open, RELOCATING a
+// waking check into today's day node (wakes across days). Pure decision in
+// displayChecks/lib.cjs; sweep IO in displayChecks/wakeHeldChecks.js. Deploy:
+//   firebase deploy --only functions:wakeHeldChecks
+exports.wakeHeldChecks = require("./displayChecks/wakeHeldChecks.js").wakeHeldChecks;
