@@ -103,17 +103,43 @@ function dedupeKey(productId, rawSize) {
 //   "no_stock"  → logType "contradiction_detected" (till just proved the item
 //                  existed — sharper than a repeat; owner directive: never
 //                  collapse these two into one)
-function resolveSale(dayNode, key, nowMs) {
-  const checks = dayNode || {};
+// `heldRecord` is the SINGLE flat-index entry for this exact dedupeKey — the
+// result of an O(1) keyed get on `displayChecks_held/{store}/{dedupeKey}`, NOT
+// a scan of every held check (Codex #245: a full-store read per sale grows
+// unbounded as chronic held SKUs accumulate). The held index is keyed by
+// dedupeKey precisely so at most one held record exists per SKU and it's found
+// in one keyed read.
+function resolveSale(dayNode, heldRecord, key, nowMs) {
+  const day = dayNode || {};
+  // 1. OPEN check in today's day node → bump in place (actionable wins).
+  for (const [checkId, c] of Object.entries(day)) {
+    if (c && c.dedupeKey === key && c.status === "open") {
+      return { kind: "bump", location: "day", checkId, logType: "sale_bumped" };
+    }
+  }
+  // 2. HELD check in the flat index (keyed by dedupeKey, so NOT day-scoped) →
+  //    held_resale. This dedupes a resale of a held SKU across DAYS (a check
+  //    held on Monday and resold Wednesday is this exact record). LOUD: the
+  //    till just sold what inventory says is at zero.
+  if (heldRecord && heldRecord.status === "held" && heldRecord.dedupeKey === key) {
+    return { kind: "bump", location: "held", checkId: heldRecord.checkId, logType: "held_resale" };
+  }
+  // 2b. LEGACY FALLBACK — a HELD check still in TODAY's day node, written by the
+  //     pre-flat-index trigger before this deploy and not yet migrated. Bump it
+  //     IN PLACE (location "day") so a resale records held_resale instead of a
+  //     duplicate (Codex #245). New held checks never land here; the one-time
+  //     migration + the reworked sweep drain legacy day-node held records.
+  for (const [checkId, c] of Object.entries(day)) {
+    if (c && c.dedupeKey === key && c.status === "held") {
+      return { kind: "bump", location: "day", checkId, logType: "held_resale" };
+    }
+  }
+  // 3. COMPLETED check today → repeat / contradiction (a NEW check).
   let latestCompleted = null;
-  for (const [checkId, c] of Object.entries(checks)) {
-    if (!c || c.dedupeKey !== key) continue;
-    if (c.status === "open") return { kind: "bump", checkId, logType: "sale_bumped" };
-    if (c.status === "held") return { kind: "bump", checkId, logType: "held_resale" };
-    if (c.status === "completed") {
-      if (!latestCompleted || (c.completedAt || 0) > (latestCompleted.c.completedAt || 0)) {
-        latestCompleted = { checkId, c };
-      }
+  for (const [checkId, c] of Object.entries(day)) {
+    if (!c || c.dedupeKey !== key || c.status !== "completed") continue;
+    if (!latestCompleted || (c.completedAt || 0) > (latestCompleted.c.completedAt || 0)) {
+      latestCompleted = { checkId, c };
     }
   }
   if (latestCompleted) {
@@ -242,10 +268,14 @@ function completedIdsOf(dayNode) {
 // TODO(thumbnails): switch to a resized derivative once the Firebase "Resize
 // Images" extension (or equivalent) produces one; do not build a resizer here.
 function buildNewCheck({
-  productId, product, rawSize, key, movementId, saleId,
+  productId, product, rawSize, key, checkId, movementId, saleId,
   movementTs, qty, status, assignedTo, repeat, nowMs,
 }) {
   const check = {
+    // Stored as a FIELD (not just the RTDB key): a HELD record is keyed by
+    // dedupeKey, so its checkId — the identity used in log events and preserved
+    // when the sweep relocates it into a day node — must live on the record.
+    checkId,
     productId,
     productName: (product && product.name) || "Unknown",
     size: rawSize == null || rawSize === "" ? "_" : String(rawSize),

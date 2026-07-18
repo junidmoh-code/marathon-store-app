@@ -66,14 +66,42 @@ test("dedupeKey: productId + encoded size, no colour dimension", () => {
 const KEY = "p1__M";
 const mkDay = (checks) => Object.fromEntries(checks.map((c, i) => [`c${i}`, c]));
 
-test("open check absorbs the sale (sale_bumped)", () => {
+test("open check in the day node absorbs the sale (sale_bumped, location day)", () => {
   const day = mkDay([{ dedupeKey: KEY, status: "open" }]);
-  assert.deepEqual(lib.resolveSale(day, KEY, 0), { kind: "bump", checkId: "c0", logType: "sale_bumped" });
+  assert.deepEqual(lib.resolveSale(day, null, KEY, 0), { kind: "bump", location: "day", checkId: "c0", logType: "sale_bumped" });
 });
 
-test("held check absorbs the sale LOUDLY (held_resale), never creates", () => {
+test("held record (keyed flat-index get) absorbs the sale LOUDLY (held_resale, location held)", () => {
+  // heldRecord is the SINGLE record from an O(1) keyed get, not a scan.
+  const held = { dedupeKey: KEY, status: "held", checkId: "cHeld" };
+  assert.deepEqual(lib.resolveSale(null, held, KEY, 0), { kind: "bump", location: "held", checkId: "cHeld", logType: "held_resale" });
+});
+
+test("cross-DAY resale: a held record created earlier (flat index) still dedupes today", () => {
+  const held = { dedupeKey: KEY, status: "held", checkId: "hOld", heldAt: 1 };
+  assert.deepEqual(lib.resolveSale({}, held, KEY, 0), { kind: "bump", location: "held", checkId: "hOld", logType: "held_resale" });
+});
+
+test("held record for a DIFFERENT key is ignored (the keyed get can only return this SKU's)", () => {
+  const held = { dedupeKey: "p9__S", status: "held", checkId: "hZ" };
+  assert.deepEqual(lib.resolveSale(null, held, KEY, 0), { kind: "create", repeat: null });
+});
+
+test("open (day) wins over the held record if both somehow exist — actionable first", () => {
+  const day = mkDay([{ dedupeKey: KEY, status: "open" }]);
+  const held = { dedupeKey: KEY, status: "held", checkId: "hX" };
+  assert.equal(lib.resolveSale(day, held, KEY, 0).location, "day");
+});
+
+test("LEGACY held in the day node (pre-deploy) → held_resale in place, not a duplicate (Codex #245)", () => {
   const day = mkDay([{ dedupeKey: KEY, status: "held" }]);
-  assert.deepEqual(lib.resolveSale(day, KEY, 0), { kind: "bump", checkId: "c0", logType: "held_resale" });
+  assert.deepEqual(lib.resolveSale(day, null, KEY, 0), { kind: "bump", location: "day", checkId: "c0", logType: "held_resale" });
+});
+
+test("flat-index held record takes precedence over a legacy day-node held (same SKU)", () => {
+  const day = mkDay([{ dedupeKey: KEY, status: "held" }]);            // legacy day-node
+  const held = { dedupeKey: KEY, status: "held", checkId: "hNew" };   // flat index
+  assert.deepEqual(lib.resolveSale(day, held, KEY, 0), { kind: "bump", location: "held", checkId: "hNew", logType: "held_resale" });
 });
 
 test("active check wins over a completed one — no repeat while a card is live", () => {
@@ -81,12 +109,12 @@ test("active check wins over a completed one — no repeat while a card is live"
     { dedupeKey: KEY, status: "completed", result: "confirmed", completedAt: 100 },
     { dedupeKey: KEY, status: "open" },
   ]);
-  assert.equal(lib.resolveSale(day, KEY, 200).kind, "bump");
+  assert.equal(lib.resolveSale(day, null, KEY, 200).kind, "bump");
 });
 
 test("completed confirmed → repeat_detected with interval + followedResult", () => {
   const day = mkDay([{ dedupeKey: KEY, status: "completed", result: "confirmed", completedAt: 10 * 60000 }]);
-  const r = lib.resolveSale(day, KEY, 22 * 60000);
+  const r = lib.resolveSale(day, null, KEY, 22 * 60000);
   assert.equal(r.kind, "create");
   assert.deepEqual(r.repeat, {
     repeatOf: "c0", followedResult: "confirmed",
@@ -96,7 +124,7 @@ test("completed confirmed → repeat_detected with interval + followedResult", (
 
 test("completed no_stock → CONTRADICTION, not repeat (till proves the item existed)", () => {
   const day = mkDay([{ dedupeKey: KEY, status: "completed", result: "no_stock", completedAt: 0 }]);
-  const r = lib.resolveSale(day, KEY, 5 * 60000);
+  const r = lib.resolveSale(day, null, KEY, 5 * 60000);
   assert.equal(r.repeat.logType, "contradiction_detected");
   assert.equal(r.repeat.followedResult, "no_stock");
   assert.equal(r.repeat.repeatWithinMinutes, 5);
@@ -107,13 +135,14 @@ test("multiple completions: the LATEST result is the one followed", () => {
     { dedupeKey: KEY, status: "completed", result: "confirmed", completedAt: 100 },
     { dedupeKey: KEY, status: "completed", result: "no_stock", completedAt: 200 },
   ]);
-  assert.equal(lib.resolveSale(day, KEY, 300).repeat.logType, "contradiction_detected");
+  assert.equal(lib.resolveSale(day, null, KEY, 300).repeat.logType, "contradiction_detected");
 });
 
-test("different SKU or empty day → plain create; other keys never interfere", () => {
-  assert.deepEqual(lib.resolveSale(null, KEY, 0), { kind: "create", repeat: null });
+test("different SKU or empty nodes → plain create; other keys never interfere", () => {
+  assert.deepEqual(lib.resolveSale(null, null, KEY, 0), { kind: "create", repeat: null });
   const day = mkDay([{ dedupeKey: "p2__L", status: "open" }]);
-  assert.deepEqual(lib.resolveSale(day, KEY, 0), { kind: "create", repeat: null });
+  const held = { hZ: { dedupeKey: "p9__S", status: "held" } };
+  assert.deepEqual(lib.resolveSale(day, held, KEY, 0), { kind: "create", repeat: null });
 });
 
 // ── assignment resolver: cover → LOCKED roster → null ────────────────────────
