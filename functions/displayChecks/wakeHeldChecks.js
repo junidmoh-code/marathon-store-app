@@ -140,8 +140,8 @@ async function runWakeSweep({ db, nowMs }) {
 
     for (const [checkId, check] of held) {
       const sizeKey = check.sizeKey || stockSizeKey(check.size);
-      const qtySnap = await db.ref(`stock/${store}/${check.productId}/${sizeKey}/qty`).once("value");
-      const t = wakeTransition(check, { qty: Number(qtySnap.val()), nowMs: now, delayMs });
+      const stockPath = `stock/${store}/${check.productId}/${sizeKey}/qty`;
+      let t = wakeTransition(check, { qty: Number((await db.ref(stockPath).once("value")).val()), nowMs: now, delayMs });
       if (!t) continue;
 
       // Resolve + freeze assignment only when activating (cover → LOCKED roster
@@ -154,6 +154,24 @@ async function runWakeSweep({ db, nowMs }) {
           db.ref(`displayChecks_settings/${store}/roster`).once("value"),
         ]);
         assignedTo = resolveAssignment({ cover: coverSnap.val(), roster: rosterSnap.val(), saDate });
+
+        // RE-READ stock immediately before committing (Codex P1). qty can't be
+        // checked inside the (single-node) check transaction, and the roster
+        // reads above add latency in which the last unit may sell. Activating a
+        // stock-gone check drops an unfulfillable card into the feed that the
+        // sweep can never re-hold (it only acts on held checks). Re-decide on
+        // the fresh qty: if stock vanished, this becomes re_held (or nothing),
+        // never a spurious activation. Residual window is now just the
+        // transaction round-trip.
+        t = wakeTransition(check, { qty: Number((await db.ref(stockPath).once("value")).val()), nowMs: now, delayMs });
+        if (!t || t.action !== "activate") {
+          if (t && t.action === "re_held") {
+            if (await applyTransition(db, store, saDate, checkId, check, "re_held", {
+              nowMs: now, delayMs, clearedStockSeenAt: t.clearedStockSeenAt,
+            })) reHeld++;
+          }
+          continue;
+        }
       }
 
       const committed = await applyTransition(db, store, saDate, checkId, check, t.action, {

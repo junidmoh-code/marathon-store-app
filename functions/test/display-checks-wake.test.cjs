@@ -37,7 +37,13 @@ function fakeDb(initial, { failUpdates = 0 } = {}) {
 
   const api = { state, transactionAttempts: 0, logKeys: () => Object.keys(get(`displayChecks_log`) || {}) };
   api.ref = (path = "") => ({
-    async once() { return { val: () => structuredClone(get(path) ?? null) }; },
+    async once() {
+      const v = structuredClone(get(path) ?? null); // snapshot BEFORE any hook mutates
+      // One-shot post-read hook keyed to a path: lets a test change stock
+      // BETWEEN the sweep's first qty read and its pre-activation re-read.
+      if (api._afterRead && api._afterRead.path === path) { const h = api._afterRead; api._afterRead = null; h.fn(set, get); }
+      return { val: () => v };
+    },
     push() { return { key: `push_${++pushSeq}` }; },
     async update(patch) {
       if (updateFailsLeft > 0) { updateFailsLeft--; throw new Error("transient RTDB update failure"); }
@@ -204,6 +210,36 @@ test("double-fire stock_seen writes one deterministic log entry, one stockSeenAt
   await runWakeSweep({ db, nowMs: NOW });
   assert.equal(db.state.displayChecks["marathon-pe"][SA].c1.stockSeenAt, seenAfter1);
   assert.equal(eventsOf(db).filter((e) => e.type === "stock_seen").length, 1);
+});
+
+// ── P1: stock revalidated immediately before activation ──────────────────────
+test("stock sells to zero during the roster reads → NOT activated; re-decided as re_held (Codex P1)", async () => {
+  const seenAt = NOW - D - 1;
+  const stockQtyPath = `stock/marathon-pe/p1/M/qty`;
+  const db = fakeDb({
+    displayChecks: dayNode({ c1: heldCheck({ stockSeenAt: seenAt, wakeAt: seenAt + D }) }),
+    stock: { "marathon-pe": withStock(1) },
+  });
+  // After the sweep's FIRST qty read (sees 1 → decides activate), the last unit
+  // sells: the pre-activation re-read must see 0 and abort the activation.
+  db._afterRead = { path: stockQtyPath, fn: (set) => set(stockQtyPath, 0) };
+  const r = await runWakeSweep({ db, nowMs: NOW });
+  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 1 }); // re-decided, not activated
+  const c = db.state.displayChecks["marathon-pe"][SA].c1;
+  assert.equal(c.status, "held");            // never dropped into the actionable feed
+  assert.equal(c.stockSeenAt, undefined);    // grace cleared (re_held)
+  assert.deepEqual(eventsOf(db).map((e) => e.type), ["re_held"]);
+});
+
+test("stock still present at the re-read → activates normally", async () => {
+  const seenAt = NOW - D - 1;
+  const db = fakeDb({
+    displayChecks: dayNode({ c1: heldCheck({ stockSeenAt: seenAt }) }),
+    stock: { "marathon-pe": withStock(2) },
+  });
+  const r = await runWakeSweep({ db, nowMs: NOW });
+  assert.deepEqual(r, { stockSeen: 0, activated: 1, reHeld: 0 });
+  assert.equal(db.state.displayChecks["marathon-pe"][SA].c1.status, "open");
 });
 
 // ── audit-log durability ─────────────────────────────────────────────────────

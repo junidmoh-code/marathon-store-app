@@ -397,3 +397,15 @@ test("applyWakeTransition re_held: clears both fields; aborts if already cleared
   // activated under us → abort
   assert.equal(lib.applyWakeTransition({ status: "open", stockSeenAt: 555 }, "re_held", { nowMs: 0, delayMs: D }), undefined);
 });
+
+test("applyWakeTransition re_held FENCES on the observed stockSeenAt (Codex P2)", () => {
+  // A delayed no-stock decision observed stockSeenAt=555; by commit time a newer
+  // grace (999) is running. Must NOT cancel it.
+  assert.equal(
+    lib.applyWakeTransition({ status: "held", stockSeenAt: 999 }, "re_held", { nowMs: 0, delayMs: D, clearedStockSeenAt: 555 }),
+    undefined
+  );
+  // Same observed timestamp still present → clears it.
+  const next = lib.applyWakeTransition({ status: "held", stockSeenAt: 555 }, "re_held", { nowMs: 0, delayMs: D, clearedStockSeenAt: 555 });
+  assert.equal("stockSeenAt" in next, false);
+});

@@ -364,7 +364,7 @@ function wakeTransition(check, { qty, nowMs, delayMs }) {
 // undefined to abort. (qty is not re-checked here — it can't be read inside a
 // transaction; it was the decision input and the transitions key off status +
 // stockSeenAt + time, all of which ARE re-validated.)
-function applyWakeTransition(check, action, { nowMs, delayMs, assignedTo }) {
+function applyWakeTransition(check, action, { nowMs, delayMs, assignedTo, clearedStockSeenAt }) {
   if (!check || check.status !== "held") return undefined; // moved under us
   if (action === "stock_seen") {
     if (check.stockSeenAt != null) return undefined;       // another run claimed it
@@ -379,6 +379,12 @@ function applyWakeTransition(check, action, { nowMs, delayMs, assignedTo }) {
   }
   if (action === "re_held") {
     if (check.stockSeenAt == null) return undefined;       // already cleared
+    // Fence on the OBSERVED timestamp (Codex P2): a delayed no-stock decision
+    // must not cancel a NEWER grace window. If another sweep cleared the old
+    // stockSeenAt, stock reappeared, and a fresh stockSeenAt was claimed, the
+    // current value won't match the one this sweep saw → abort, leave the new
+    // grace running.
+    if (clearedStockSeenAt != null && check.stockSeenAt !== clearedStockSeenAt) return undefined;
     const next = { ...check };
     delete next.stockSeenAt;
     delete next.wakeAt;
