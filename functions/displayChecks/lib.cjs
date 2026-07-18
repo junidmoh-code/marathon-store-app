@@ -335,8 +335,96 @@ function bumpTxn(check, { qty, movementTs, movementId }) {
   return next;
 }
 
+// ── Wake sweep (PR 3) — pure transition decision ──────────────────────────────
+// A held check (now in the flat index /displayChecks_held/{store}/{dedupeKey})
+// waits for stock (§1.3). The sweep reads the SAME stock cell the trigger reads
+// and moves the check: held → (stock appears) stockSeenAt + a grace window →
+// (grace elapsed, stock still there) open. If stock vanishes during the grace
+// it drops back to held. These functions are the PURE decision; the sweep
+// (wakeHeldChecks.js) does the IO around them, including RELOCATING a waking
+// check out of the flat index into today's day node.
+//
+// Key robustness choice: the activation threshold is derived from
+// `stockSeenAt + delayMs`, NOT a separately-stored `wakeAt`. wakeAt is stored
+// for display only, so a crash between writing stockSeenAt and wakeAt can't
+// wedge a check.
+const WAKE_DEFAULT_DELAY_MINUTES = 20;
+
+// Grace window in ms from the store config (wakeDelayMinutes), default 20.
+// Only a real, non-blank value overrides the default: null / "" / undefined /
+// whitespace / non-numeric types all fall back to 20. Number("") and
+// Number(null) are both 0, so a blank value is rejected BEFORE coercion —
+// otherwise it silently collapses the grace window to instant activation
+// (CodeRabbit + Codex). An explicit numeric 0 is still honoured.
+function wakeDelayMs(config) {
+  let raw = config && config.wakeDelayMinutes;
+  if (typeof raw === "string") raw = raw.trim();
+  if (raw === null || raw === undefined || raw === "" ||
+      (typeof raw !== "number" && typeof raw !== "string")) {
+    return WAKE_DEFAULT_DELAY_MINUTES * 60000;
+  }
+  const m = Number(raw);
+  return (Number.isFinite(m) && m >= 0 ? m : WAKE_DEFAULT_DELAY_MINUTES) * 60000;
+}
+
+// Returns the transition to apply, or null (no-op). Guards on status "held" so
+// a non-held record is a no-op — idempotent against a double-fire.
+//   { action:"re_held", clearedStockSeenAt }  stock gone before wake
+//   { action:"stock_seen" }                   stock appeared, start the grace clock
+//   { action:"activate" }                     grace elapsed, stock still present
+function wakeTransition(check, { qty, nowMs, delayMs }) {
+  if (!check || check.status !== "held") return null;
+  const hasStock = Number(qty) > 0;
+  const seenAt = Number(check.stockSeenAt);
+  const seen = check.stockSeenAt != null && Number.isFinite(seenAt);
+  if (!hasStock) return seen ? { action: "re_held", clearedStockSeenAt: check.stockSeenAt } : null;
+  if (!seen) return { action: "stock_seen" };
+  if (nowMs >= seenAt + delayMs) return { action: "activate" };
+  return null; // still inside the grace window
+}
+
+// Apply a decided transition INSIDE the held-record transaction — the single
+// atomic write for each transition, re-validating the status-based invariants
+// against the AUTHORITATIVE current record, so two overlapping sweeps are safe
+// (the second sees the first's committed state and aborts). For "activate" it
+// flips the record to status "open" IN PLACE (still in the flat index); the
+// sweep then relocates the open record into today's day node and deletes the
+// flat entry. Returns the next record, or undefined to abort. (qty is not
+// re-checked here — it can't be read in a transaction; it was the decision
+// input, and status + stockSeenAt + time ARE re-validated.)
+function applyWakeTransition(check, action, { nowMs, delayMs, assignedTo, clearedStockSeenAt }) {
+  if (!check || check.status !== "held") return undefined; // moved under us
+  if (action === "stock_seen") {
+    if (check.stockSeenAt != null) return undefined;       // another run claimed it
+    return { ...check, stockSeenAt: nowMs, wakeAt: nowMs + delayMs };
+  }
+  if (action === "activate") {
+    const seenAt = Number(check.stockSeenAt);
+    if (!Number.isFinite(seenAt) || nowMs < seenAt + delayMs) return undefined; // not ready / cleared
+    const next = { ...check, status: "open", activatedAt: nowMs };
+    if (assignedTo) next.assignedTo = assignedTo;          // null → omit (unassigned)
+    return next;
+  }
+  if (action === "re_held") {
+    if (check.stockSeenAt == null) return undefined;       // already cleared
+    // Fence on the OBSERVED timestamp (Codex): a delayed no-stock decision must
+    // not cancel a NEWER grace window started by another sweep after the old
+    // one was cleared and stock reappeared.
+    if (clearedStockSeenAt != null && check.stockSeenAt !== clearedStockSeenAt) return undefined;
+    const next = { ...check };
+    delete next.stockSeenAt;
+    delete next.wakeAt;
+    return next;
+  }
+  return undefined;
+}
+
 module.exports = {
   TRIGGER_STORE_FLAGS,
+  WAKE_DEFAULT_DELAY_MINUTES,
+  wakeDelayMs,
+  wakeTransition,
+  applyWakeTransition,
   CREATE_MUTEX_TTL_MS,
   PROCESS_LEASE_MS,
   processedClaimDecision,
