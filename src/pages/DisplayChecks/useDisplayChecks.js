@@ -65,11 +65,34 @@ function useKeyedNode(path, enabled) {
   return { items, ready };
 }
 
+// The current SA calendar day, RE-EVALUATED on a timer so it rolls over at SA
+// midnight even if the tab is left open with no RTDB traffic overnight (a wall
+// display, a forgotten tab). Without this the day-node key is frozen at first
+// render and the Confirmed section would keep showing YESTERDAY's completions
+// past 00:00 SAST until the next event forced a re-render — a day-boundary
+// misattribution in the one module whose whole point is day-boundary
+// correctness (Kimi review, PR 5). `override` pins it for tests/preview. State
+// only updates when the string actually changes, so the listener resubscribes
+// exactly once, at the rollover.
+function useSaDate(override) {
+  const [day, setDay] = useState(() => override || saDateString());
+  useEffect(() => {
+    if (override) { setDay(override); return; }
+    setDay(saDateString());
+    const id = setInterval(() => {
+      const d = saDateString();
+      setDay((prev) => (prev === d ? prev : d));
+    }, 60 * 1000);
+    return () => clearInterval(id);
+  }, [override]);
+  return day;
+}
+
 // The Today feed's two raw sources for one store. `saDate` defaults to the
 // server's SA calendar day (the same key the trigger writes) but is injectable
 // for tests/preview. When `store` is falsy both listeners stand down.
 export function useTodayFeedSources(store, saDate) {
-  const day = saDate || saDateString();
+  const day = useSaDate(saDate);
   const enabled = !!store;
   const active = useKeyedNode(store ? `displayChecks_active/${store}` : null, enabled);
   const completed = useKeyedNode(store ? `displayChecks/${store}/${day}` : null, enabled);
