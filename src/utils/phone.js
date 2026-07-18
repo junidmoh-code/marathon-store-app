@@ -52,3 +52,35 @@ export function saSignificantDigits(raw) {
   else if (d.startsWith("0")) d = d.slice(1);
   return d;
 }
+
+// All key shapes a /customers record for this phone may live under, in probe
+// order: the typed digits first, then the local 0-form, then the international
+// 27-form. The same phone can already live under a different key shape: order
+// phones arrive as "27656996104" while the POS keys staff-created customers as
+// "0656996104" (the 2026-07 POS audit found 31 duplicate pairs, 30 from exactly
+// this 27↔0 split). Reads must probe every shape so an existing record is found
+// and updated in place, never duplicated. Mirrors POS's phoneKeyVariants.
+export function phoneKeyVariants(phone) {
+  const digits = (phone || "").replace(/\D/g, "");
+  if (!digits) return [];
+  let local = digits;
+  if (digits.length === 11 && digits.startsWith("27")) local = "0" + digits.slice(2);
+  else if (digits.length === 9 && !digits.startsWith("0")) local = "0" + digits;
+  const out = [digits];
+  if (!out.includes(local)) out.push(local);
+  if (local.length === 10 && local.startsWith("0")) {
+    const intl = "27" + local.slice(1);
+    if (!out.includes(intl)) out.push(intl);
+  }
+  return out;
+}
+
+// Key a NEW /customers record is minted at: the canonical local 0XXXXXXXXX
+// form — the shape POS staff type at the till — so both apps key the same
+// person to one record. Existing records are found via phoneKeyVariants and
+// keep their current key; only the mint-on-miss key is canonicalised. Best-
+// effort like toLocalSA: a non-SA number keeps its typed digits, and digit-less
+// input falls back to "unknown" (callers treat that as "no phone").
+export function customerWriteKey(phone) {
+  return toLocalSA(phone) || "unknown";
+}

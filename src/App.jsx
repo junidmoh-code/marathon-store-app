@@ -15,7 +15,7 @@ import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
 import { toAuthPassword } from "./utils/auth-utils";
-import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits } from "./utils/phone";
+import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, customerWriteKey } from "./utils/phone";
 import { formatSize } from "./utils/sizeLabel";
 import { SizeTag } from "./components/SizeTag";
 import UserManagement from "./components/UserManagement";
@@ -1358,35 +1358,19 @@ function useReturnsLog() {
 }
 
 // ─── CUSTOMER DATABASE ────────────────────────────────────────────────────────
-// Customers keyed by normalised phone number (digits only).
+// New customer records are keyed by the canonical local phone form
+// ("0XXXXXXXXX", see customerWriteKey in utils/phone) — the same shape the POS
+// mints at the till, so one person = one record across both apps. Records
+// created before this change may still live under the international "27…" key;
+// every read probes all shapes (phoneKeyVariants) and updates in place.
 function phoneToKey(phone) {
   return (phone || "").replace(/\D/g, "") || "unknown";
 }
 
-// The same phone can already live under a different key shape: order phones
-// arrive as "27656996104" while the POS keys staff-created customers as
-// "0656996104". Writing blindly at the typed key mints a duplicate customer
-// (the 2026-07 POS audit found 31 duplicate pairs, 30 from exactly this
-// 27↔0 split). Mirrors POS's phoneKeyVariants — typed digits first, then the
-// local 0-form, then the international 27-form.
-function phoneKeyVariants(phone) {
-  const digits = (phone || "").replace(/\D/g, "");
-  if (!digits) return [];
-  let local = digits;
-  if (digits.length === 11 && digits.startsWith("27")) local = "0" + digits.slice(2);
-  else if (digits.length === 9 && !digits.startsWith("0")) local = "0" + digits;
-  const out = [digits];
-  if (!out.includes(local)) out.push(local);
-  if (local.length === 10 && local.startsWith("0")) {
-    const intl = "27" + local.slice(1);
-    if (!out.includes(intl)) out.push(intl);
-  }
-  return out;
-}
-
 // Resolve the key an existing record for this phone lives under (any variant,
-// typed shape first), or the typed key when none exists yet. Returns
-// { key, existing } so callers keep their single read.
+// typed shape first), or the canonical local 0-form key (customerWriteKey)
+// when none exists yet. Returns { key, existing } so callers keep their single
+// read.
 async function resolveCustomerKey(phone) {
   const variants = phoneKeyVariants(phone);
   if (variants.length === 0) return { key: "unknown", existing: null };
@@ -1395,7 +1379,7 @@ async function resolveCustomerKey(phone) {
     const val = snap.val();
     if (val) return { key, existing: val };
   }
-  return { key: variants[0], existing: null };
+  return { key: customerWriteKey(phone), existing: null };
 }
 
 // Upsert a customer record when an order is placed.
@@ -1696,11 +1680,12 @@ function CustomersView({ onExit }) {
       }
       byPhone[key].orderCount++;
     });
-    // Merge Firebase opt-in status
+    // Merge Firebase opt-in status. Records may live under the local "0…" key
+    // (new canonical form) or the legacy international "27…" key — probe every
+    // shape, same as resolveCustomerKey, so opt-in follows the record.
     return Object.values(byPhone)
       .map(c => {
-        const key = phoneToKey(c.phone);
-        const fb  = customersDb[key] || {};
+        const fb = phoneKeyVariants(c.phone).map(k => customersDb[k]).find(Boolean) || {};
         return { ...c, optedIn: fb.optedIn || false };
       })
       .sort((a, b) => tsMs(b.lastOrderAt) - tsMs(a.lastOrderAt));
