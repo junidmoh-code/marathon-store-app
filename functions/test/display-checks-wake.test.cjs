@@ -29,12 +29,14 @@ function fakeDb(initial) {
     let n = state; for (const k of parts) { if (n[k] == null || typeof n[k] !== "object") n[k] = {}; n = n[k]; }
     if (v === null) delete n[last]; else n[last] = v;
   };
+  const readWithHook = (path) => {
+    const v = structuredClone(get(path) ?? null);
+    if (api._afterRead && api._afterRead.path === path) { const h = api._afterRead; api._afterRead = null; h.fn(set); }
+    return v;
+  };
   api.ref = (path = "") => ({
-    async once() {
-      const v = structuredClone(get(path) ?? null);
-      if (api._afterRead && api._afterRead.path === path) { const h = api._afterRead; api._afterRead = null; h.fn(set); }
-      return { val: () => v };
-    },
+    async once() { return { val: () => readWithHook(path) }; },
+    async get() { const v = readWithHook(path); return { val: () => v, exists: () => v != null }; },
     push() { return { key: `ev_${++pushSeq}` }; },
     async update(patch) { for (const [k, v] of Object.entries(patch)) set(k, v); },
     async transaction(fn) {
@@ -44,6 +46,9 @@ function fakeDb(initial) {
       const final = fn(server);
       if (final === undefined) return { committed: false, snapshot: { val: () => server } };
       set(path, final);
+      // One-shot post-commit hook: simulate a concurrent sale bumping the record
+      // after the activation flip, before the relocate re-reads it.
+      if (api._afterTxn && api._afterTxn.path === path) { const h = api._afterTxn; api._afterTxn = null; h.fn(set, get); }
       return { committed: true, snapshot: { val: () => final } };
     },
   });
@@ -157,6 +162,26 @@ test("SELF-HEAL: an `open` record stuck in the flat index (crashed relocation) i
   assert.equal(heldNode(db), undefined);
   assert.equal(dayCheck(db).status, "open");
   assert.deepEqual(events(db), ["activated"]);
+});
+
+// ── concurrent bump during activation handoff (Codex P1) ─────────────────────
+test("a sale that bumps the flat record AFTER the activation flip is PRESERVED, not lost", async () => {
+  const seenAt = NOW - D - 1;
+  const db = fakeDb({ displayChecks_held: idx(heldRecord({ stockSeenAt: seenAt, saleCount: 1, appliedMovements: { mvA: true } })), stock: stock(2) });
+  // Right after the activation transaction flips held→open, a concurrent
+  // bumpCheck lands on the (now open) flat entry: saleCount 1→3, fence += mvB.
+  db._afterTxn = { path: `displayChecks_held/marathon-pe/${DK}`, fn: (set, get) => {
+    const rec = get(`displayChecks_held/marathon-pe/${DK}`);
+    set(`displayChecks_held/marathon-pe/${DK}/saleCount`, 3);
+    set(`displayChecks_held/marathon-pe/${DK}/appliedMovements/mvB`, true);
+  } };
+  const r = await runWakeSweep({ db, nowMs: NOW });
+  assert.equal(r.activated, 1);
+  const c = dayCheck(db);
+  assert.equal(c.status, "open");
+  assert.equal(c.saleCount, 3);                          // the concurrent bump survived
+  assert.deepEqual(c.appliedMovements, { mvA: true, mvB: true });
+  assert.equal(heldNode(db), undefined);
 });
 
 // ── idempotency ──────────────────────────────────────────────────────────────

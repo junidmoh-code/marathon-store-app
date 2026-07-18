@@ -116,9 +116,18 @@ async function applyInPlace(db, store, saDate, dedupeKey, preRead, action, opts)
 // atomic multi-path update: day-node write (keyed by checkId) + flat delete +
 // the `activated` audit event (deterministic key). Idempotent — safe to re-run
 // on self-heal. The grace fields don't belong on an open day-node check.
-async function relocateToDay(db, store, saDate, dedupeKey, record) {
-  const checkId = record.checkId;
-  const dayRecord = { ...record };
+//
+// CONCURRENT-BUMP SAFETY (Codex): the record is RE-READ fresh here, not taken
+// from the activation transaction's snapshot. A sale that read the record while
+// it was still `held` can have its bumpCheck land on the (now open) flat entry
+// AFTER the flip; relocating a stale snapshot would drop that bump's
+// saleCount/appliedMovements when the flat entry is deleted. Re-reading captures
+// it. (`fallback` covers a self-heal where the entry was already re-read.)
+async function relocateToDay(db, store, saDate, dedupeKey, fallback) {
+  const latest = (await db.ref(heldPath(store, dedupeKey)).get()).val() || fallback;
+  if (!latest || !latest.checkId) return;
+  const checkId = latest.checkId;
+  const dayRecord = { ...latest, status: "open" }; // fold in any post-flip bump; ensure open
   delete dayRecord.stockSeenAt;
   delete dayRecord.wakeAt;
   const updates = {};
@@ -127,7 +136,7 @@ async function relocateToDay(db, store, saDate, dedupeKey, record) {
   }
   updates[heldPath(store, dedupeKey)] = null; // remove the flat entry
   logEvent(updates, db, store, saDate, {
-    checkId, type: "activated", at: record.activatedAt || Date.now(),
+    checkId, type: "activated", at: latest.activatedAt || Date.now(),
     key: `${checkId}_activated`, payload: { via: "wake_sweep", relocatedTo: saDate },
   });
   await writeLogWithRetry(db, updates);
