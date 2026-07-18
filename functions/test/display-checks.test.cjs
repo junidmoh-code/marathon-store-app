@@ -352,9 +352,10 @@ test("applyWakeTransition activate: flips atomically; aborts if not ready or alr
   assert.equal(lib.applyWakeTransition({ status: "held" }, "activate", { nowMs: seenAt + D, delayMs: D }), undefined);
   // already open (another sweep won) → abort
   assert.equal(lib.applyWakeTransition({ status: "open", stockSeenAt: seenAt }, "activate", { nowMs: seenAt + D, delayMs: D }), undefined);
-  // null assignedTo → field omitted, not written as null
+  // null assignedTo → field explicitly cleared (CodeRabbit: not merely omitted, so a
+  // stale assignedTo on the record can't survive the flip). null write removes it in RTDB.
   const un = lib.applyWakeTransition(c, "activate", { nowMs: seenAt + D, delayMs: D, assignedTo: null });
-  assert.equal("assignedTo" in un, false);
+  assert.equal(un.assignedTo, null);
 });
 
 test("applyWakeTransition re_held: clears both fields; aborts if already cleared or moved", () => {
