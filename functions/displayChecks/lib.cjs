@@ -305,8 +305,48 @@ function bumpTxn(check, { qty, movementTs, movementId }) {
   return next;
 }
 
+// ── Wake sweep (PR 3) — pure transition decision ──────────────────────────────
+// A held check waits for stock (§1.3). The sweep reads the SAME stock cell the
+// trigger reads and moves the check through: held → (stock appears) stockSeenAt
+// set + a grace window → (grace elapsed, stock still there) open. If stock
+// vanishes during the grace window it drops back to held. This function is the
+// PURE decision; the sweep does the IO around it (wakeHeldChecks.js).
+//
+// Key robustness choice: the activation threshold is derived from
+// `stockSeenAt + delayMs`, NOT a separately-stored `wakeAt`. The IO writes
+// stockSeenAt (a CAS claim) and wakeAt (a follow-up) in two steps; if it
+// crashes between them, a check with stockSeenAt-but-no-wakeAt must still
+// activate on schedule rather than wedge. wakeAt is stored for display only.
+const WAKE_DEFAULT_DELAY_MINUTES = 20;
+
+// Grace window in ms from the store config (wakeDelayMinutes), default 20.
+function wakeDelayMs(config) {
+  const m = config && Number(config.wakeDelayMinutes);
+  return (Number.isFinite(m) && m >= 0 ? m : WAKE_DEFAULT_DELAY_MINUTES) * 60000;
+}
+
+// Returns the transition to apply, or null (no-op). Guards on status "held" so
+// a non-held check (already activated, or completed) is always a no-op —
+// idempotent against a double-fire.
+//   { action:"re_held", clearedStockSeenAt }  stock gone before wake
+//   { action:"stock_seen" }                   stock appeared, start the grace clock
+//   { action:"activate" }                     grace elapsed, stock still present
+function wakeTransition(check, { qty, nowMs, delayMs }) {
+  if (!check || check.status !== "held") return null;
+  const hasStock = Number(qty) > 0;
+  const seenAt = Number(check.stockSeenAt);
+  const seen = check.stockSeenAt != null && Number.isFinite(seenAt);
+  if (!hasStock) return seen ? { action: "re_held", clearedStockSeenAt: check.stockSeenAt } : null;
+  if (!seen) return { action: "stock_seen" };
+  if (nowMs >= seenAt + delayMs) return { action: "activate" };
+  return null; // still inside the grace window
+}
+
 module.exports = {
   TRIGGER_STORE_FLAGS,
+  WAKE_DEFAULT_DELAY_MINUTES,
+  wakeDelayMs,
+  wakeTransition,
   CREATE_MUTEX_TTL_MS,
   PROCESS_LEASE_MS,
   processedClaimDecision,

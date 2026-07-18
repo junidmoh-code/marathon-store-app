@@ -305,3 +305,44 @@ test("one-size sale: display size falls back to the sentinel, photoUrl carried",
   assert.equal(c.sizeKey, "_");
   assert.equal(c.photoUrl, "https://x/p.jpg");  // full-size — thumbnail TODO in lib.cjs
 });
+
+// ── wake sweep: pure transition decision ─────────────────────────────────────
+const HELD = (over = {}) => ({ status: "held", productId: "p1", size: "M", sizeKey: "M", ...over });
+const D = 20 * 60000; // 20-min grace
+
+test("wakeTransition: non-held check is always a no-op (idempotent guard)", () => {
+  assert.equal(lib.wakeTransition({ status: "open" }, { qty: 5, nowMs: 0, delayMs: D }), null);
+  assert.equal(lib.wakeTransition({ status: "completed" }, { qty: 5, nowMs: 0, delayMs: D }), null);
+  assert.equal(lib.wakeTransition(null, { qty: 5, nowMs: 0, delayMs: D }), null);
+});
+
+test("wakeTransition: held + no stock + not seen → wait (null)", () => {
+  assert.equal(lib.wakeTransition(HELD(), { qty: 0, nowMs: 0, delayMs: D }), null);
+  assert.equal(lib.wakeTransition(HELD(), { qty: NaN, nowMs: 0, delayMs: D }), null);
+});
+
+test("wakeTransition: held + stock appears + not seen → stock_seen", () => {
+  assert.deepEqual(lib.wakeTransition(HELD(), { qty: 3, nowMs: 100, delayMs: D }), { action: "stock_seen" });
+});
+
+test("wakeTransition: seen + stock + inside grace → null; at/after grace → activate", () => {
+  const seenAt = 1_000_000;
+  const c = HELD({ stockSeenAt: seenAt });
+  assert.equal(lib.wakeTransition(c, { qty: 2, nowMs: seenAt + D - 1, delayMs: D }), null);
+  assert.deepEqual(lib.wakeTransition(c, { qty: 2, nowMs: seenAt + D, delayMs: D }), { action: "activate" });
+});
+
+test("wakeTransition: seen + stock GONE → re_held carrying the cleared stockSeenAt", () => {
+  const c = HELD({ stockSeenAt: 555 });
+  assert.deepEqual(lib.wakeTransition(c, { qty: 0, nowMs: 9_999_999, delayMs: D }),
+    { action: "re_held", clearedStockSeenAt: 555 });
+});
+
+test("wakeDelayMs: default 20 when config absent/invalid; honours a valid value incl. 0", () => {
+  assert.equal(lib.wakeDelayMs(null), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({}), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: "x" }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: -5 }), 20 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: 30 }), 30 * 60000);
+  assert.equal(lib.wakeDelayMs({ wakeDelayMinutes: 0 }), 0);
+});
