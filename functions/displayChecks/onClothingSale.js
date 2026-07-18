@@ -103,9 +103,17 @@ function logEvent(updates, db, store, saDate, { checkId, type, at, payload, move
 // there; stockQty is fetched as evidence), open → sale_bumped. On abort the
 // caller decides (re-resolve or orphan): { ok:false, status } tells it why.
 async function bumpCheck(db, { store, saDate, checkId, qty, movementId, movementTs, nowMs }) {
-  const res = await db
-    .ref(`displayChecks/${store}/${saDate}/${checkId}`)
-    .transaction((c) => bumpTxn(c, { qty, movementTs, movementId }));
+  const ref = db.ref(`displayChecks/${store}/${saDate}/${checkId}`);
+  // COLD-CACHE SAFETY (the live undercount fix): in a Cloud Function the
+  // transaction's update fn runs FIRST against a cold local cache (cur === null,
+  // and .get() does NOT warm it), so `bumpTxn(null)` returned undefined and the
+  // SDK aborted BEFORE the server CAS — the 2nd+ sale of a SKU/day was silently
+  // dropped (saleCount stuck at 1). Feeding the pre-read check on the null run
+  // makes bumpTxn return a value, forcing the server round-trip; the real
+  // decision always runs against the authoritative server value on the re-run.
+  // Same idiom as wakeHeldChecks (`cur ?? preRead`).
+  const preRead = (await ref.get()).val();
+  const res = await ref.transaction((c) => bumpTxn(c === null ? preRead : c, { qty, movementTs, movementId }));
   if (!res.committed) {
     const v = res.snapshot && res.snapshot.val();
     return { ok: false, status: (v && v.status) || null };
@@ -147,6 +155,9 @@ async function checkMaterialized(db, path, attempts = 3, delayMs = 400) {
   }
   return false;
 }
+
+// Exported for the cold-cache regression test (test/display-checks-bump-coldsafe).
+exports.bumpCheck = bumpCheck;
 
 exports.onClothingSale = onValueCreated(
   {
