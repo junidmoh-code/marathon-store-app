@@ -1,11 +1,8 @@
-// ─── DISPLAY CHECKS — wake sweep integration tests (node --test) ─────────────
-// Drives runWakeSweep (displayChecks/wakeHeldChecks.js) over the FLAT held index
-// (`displayChecks_held/{store}/{dedupeKey}`), against a fake RTDB that reproduces
-// Cloud-Function COLD-CACHE transaction semantics (update fn called with null
-// FIRST; undefined aborts before the server). Covers stock_seen, activate +
-// RELOCATE into the day node, grace, re_held (+ fence), the pre-activation stock
-// re-read, self-heal of a crashed relocation, double-fire idempotency, disabled
-// store. Run: cd functions && node --test
+// ─── DISPLAY CHECKS — wake sweep integration (node --test) ───────────────────
+// Drives runWakeSweep over the ACTIVE index (/displayChecks_active/{store}/{key})
+// in the never-null model: held checks flip to open IN PLACE (no move), stale
+// completed tombstones are reaped, open checks are left alone. Fake RTDB models
+// Cloud-Function cold-cache transaction semantics. Run: cd functions && node --test
 
 "use strict";
 
@@ -29,14 +26,10 @@ function fakeDb(initial) {
     let n = state; for (const k of parts) { if (n[k] == null || typeof n[k] !== "object") n[k] = {}; n = n[k]; }
     if (v === null) delete n[last]; else n[last] = v;
   };
-  const readWithHook = (path) => {
-    const v = structuredClone(get(path) ?? null);
-    if (api._afterRead && api._afterRead.path === path) { const h = api._afterRead; api._afterRead = null; h.fn(set); }
-    return v;
-  };
+  const read = (p) => { const v = structuredClone(get(p) ?? null); if (api._afterRead && api._afterRead.path === p) { const h = api._afterRead; api._afterRead = null; h.fn(set); } return v; };
   api.ref = (path = "") => ({
-    async once() { return { val: () => readWithHook(path) }; },
-    async get() { const v = readWithHook(path); return { val: () => v, exists: () => v != null }; },
+    async once() { return { val: () => read(path) }; },
+    async get() { const v = read(path); return { val: () => v, exists: () => v != null }; },
     push() { return { key: `ev_${++pushSeq}` }; },
     async update(patch) { for (const [k, v] of Object.entries(patch)) set(k, v); },
     async transaction(fn) {
@@ -46,9 +39,6 @@ function fakeDb(initial) {
       const final = fn(server);
       if (final === undefined) return { committed: false, snapshot: { val: () => server } };
       set(path, final);
-      // One-shot post-commit hook: simulate a concurrent sale bumping the record
-      // after the activation flip, before the relocate re-reads it.
-      if (api._afterTxn && api._afterTxn.path === path) { const h = api._afterTxn; api._afterTxn = null; h.fn(set, get); }
       return { committed: true, snapshot: { val: () => final } };
     },
   });
@@ -61,143 +51,117 @@ const heldRecord = (over = {}) => ({
 });
 const idx = (rec) => ({ "marathon-pe": { [DK]: rec } });
 const stock = (qty) => ({ "marathon-pe": { p1: { M: { qty } } } });
-const heldNode = (db) => db.state.displayChecks_held?.["marathon-pe"]?.[DK];
-const dayCheck = (db) => db.state.displayChecks?.["marathon-pe"]?.[SA]?.c1;
+const node = (db) => db.state.displayChecks_active?.["marathon-pe"]?.[DK];
 const events = (db) => Object.values(db.state.displayChecks_log?.["marathon-pe"]?.["2026-07"] || {}).map((e) => e.type);
 
 // ── stock_seen ───────────────────────────────────────────────────────────────
-test("stock present + not seen → stock_seen set on the flat record (still held)", async () => {
-  const db = fakeDb({ displayChecks_held: idx(heldRecord()), stock: stock(3) });
+test("stock present + not seen → stock_seen on the active record (still held, in place)", async () => {
+  const db = fakeDb({ displayChecks_active: idx(heldRecord()), stock: stock(3) });
   const r = await runWakeSweep({ db, nowMs: NOW });
-  assert.deepEqual(r, { stockSeen: 1, activated: 0, reHeld: 0, relocated: 0 });
-  assert.equal(heldNode(db).status, "held");
-  assert.equal(heldNode(db).stockSeenAt, NOW);
-  assert.equal(heldNode(db).wakeAt, NOW + D);
+  assert.deepEqual(r, { stockSeen: 1, activated: 0, reHeld: 0, reaped: 0 });
+  assert.equal(node(db).status, "held");
+  assert.equal(node(db).stockSeenAt, NOW);
+  assert.equal(node(db).wakeAt, NOW + D);
   assert.deepEqual(events(db), ["stock_seen"]);
 });
 
 test("still no stock → untouched", async () => {
-  const db = fakeDb({ displayChecks_held: idx(heldRecord()), stock: stock(0) });
+  const db = fakeDb({ displayChecks_active: idx(heldRecord()), stock: stock(0) });
   const r = await runWakeSweep({ db, nowMs: NOW });
-  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0, relocated: 0 });
-  assert.equal(heldNode(db).stockSeenAt, undefined);
+  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0, reaped: 0 });
+  assert.equal(node(db).stockSeenAt, undefined);
 });
 
-// ── activate + RELOCATE ──────────────────────────────────────────────────────
-test("grace elapsed + stock → RELOCATED to today's day node as open; flat entry deleted", async () => {
+// ── activate IN PLACE (no move) ──────────────────────────────────────────────
+test("grace elapsed + stock → flips held→open IN PLACE; stays at its dedupeKey; grace stripped; activatedSaDate stamped", async () => {
   const seenAt = NOW - D - 1000;
-  const db = fakeDb({ displayChecks_held: idx(heldRecord({ stockSeenAt: seenAt, wakeAt: seenAt + D })), stock: stock(2) });
+  const db = fakeDb({ displayChecks_active: idx(heldRecord({ stockSeenAt: seenAt, wakeAt: seenAt + D })), stock: stock(2) });
   const r = await runWakeSweep({ db, nowMs: NOW });
-  assert.deepEqual(r, { stockSeen: 0, activated: 1, reHeld: 0, relocated: 0 });
-  assert.equal(heldNode(db), undefined);            // gone from the flat index
-  const c = dayCheck(db);                            // now in today's day node
-  assert.equal(c.status, "open");
+  assert.deepEqual(r, { stockSeen: 0, activated: 1, reHeld: 0, reaped: 0 });
+  const c = node(db);
+  assert.equal(c.status, "open");                 // in place — same key, no move
   assert.equal(c.activatedAt, NOW);
-  assert.equal(c.stockSeenAt, undefined);           // grace fields stripped
+  assert.equal(c.activatedSaDate, SA);            // window #3 anchor
+  assert.equal(c.stockSeenAt, undefined);
   assert.equal(c.wakeAt, undefined);
   assert.equal(c.checkId, "c1");
+  assert.equal(db.state.displayChecks?.["marathon-pe"], undefined); // NOTHING moved to a day node
   assert.deepEqual(events(db), ["activated"]);
 });
 
-test("CROSS-DAY wake: a record held days ago relocates into TODAY's node, not its origin day", async () => {
+test("locked roster assigns the weekday person at the in-place activation", async () => {
   const seenAt = NOW - D - 1;
   const db = fakeDb({
-    displayChecks_held: idx(heldRecord({ heldAt: Date.parse("2026-07-13T09:00:00Z"), stockSeenAt: seenAt })),
-    stock: stock(1),
-  });
-  await runWakeSweep({ db, nowMs: NOW });
-  assert.ok(db.state.displayChecks["marathon-pe"][SA].c1, "landed in today's (2026-07-16) node");
-  assert.equal(heldNode(db), undefined);
-});
-
-test("locked roster assigns the weekday person at activation", async () => {
-  const seenAt = NOW - D - 1;
-  const db = fakeDb({
-    displayChecks_held: idx(heldRecord({ stockSeenAt: seenAt })),
-    stock: stock(1),
+    displayChecks_active: idx(heldRecord({ stockSeenAt: seenAt })), stock: stock(1),
     displayChecks_settings: { "marathon-pe": { roster: { locked: true, days: { thu: { uid: "u-lihle", name: "Lihle" } } } } },
   });
   await runWakeSweep({ db, nowMs: NOW }); // 2026-07-16 is a Thursday
-  assert.deepEqual(dayCheck(db).assignedTo, { uid: "u-lihle", name: "Lihle" });
+  assert.deepEqual(node(db).assignedTo, { uid: "u-lihle", name: "Lihle" });
 });
 
 test("inside grace → no activation", async () => {
-  const seenAt = NOW - 5 * 60000;
-  const db = fakeDb({ displayChecks_held: idx(heldRecord({ stockSeenAt: seenAt })), stock: stock(2) });
+  const db = fakeDb({ displayChecks_active: idx(heldRecord({ stockSeenAt: NOW - 5 * 60000 })), stock: stock(2) });
   const r = await runWakeSweep({ db, nowMs: NOW });
-  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0, relocated: 0 });
-  assert.equal(heldNode(db).status, "held");
+  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0, reaped: 0 });
+  assert.equal(node(db).status, "held");
 });
 
 // ── P1: stock re-read immediately before activation ──────────────────────────
 test("stock sells to zero during the roster reads → NOT activated; re-decided re_held", async () => {
-  const seenAt = NOW - D - 1;
-  const db = fakeDb({ displayChecks_held: idx(heldRecord({ stockSeenAt: seenAt })), stock: stock(1) });
+  const db = fakeDb({ displayChecks_active: idx(heldRecord({ stockSeenAt: NOW - D - 1 })), stock: stock(1) });
   db._afterRead = { path: `stock/marathon-pe/p1/M/qty`, fn: (set) => set(`stock/marathon-pe/p1/M/qty`, 0) };
   const r = await runWakeSweep({ db, nowMs: NOW });
-  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 1, relocated: 0 });
-  assert.equal(heldNode(db).status, "held");        // never left the flat index
-  assert.equal(heldNode(db).stockSeenAt, undefined); // grace cleared
-  assert.equal(dayCheck(db), undefined);            // nothing in the feed
+  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 1, reaped: 0 });
+  assert.equal(node(db).status, "held");
+  assert.equal(node(db).stockSeenAt, undefined);
 });
 
-// ── re_held (+ fence) ────────────────────────────────────────────────────────
-test("seen + stock vanished before wake → stockSeenAt cleared on the flat record", async () => {
-  const db = fakeDb({ displayChecks_held: idx(heldRecord({ stockSeenAt: 555, wakeAt: 555 + D })), stock: stock(0) });
+// ── re_held ──────────────────────────────────────────────────────────────────
+test("seen + stock vanished before wake → stockSeenAt cleared in place", async () => {
+  const db = fakeDb({ displayChecks_active: idx(heldRecord({ stockSeenAt: 555, wakeAt: 555 + D })), stock: stock(0) });
   const r = await runWakeSweep({ db, nowMs: NOW });
-  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 1, relocated: 0 });
-  assert.equal(heldNode(db).stockSeenAt, undefined);
-  assert.equal(heldNode(db).status, "held");
+  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 1, reaped: 0 });
+  assert.equal(node(db).stockSeenAt, undefined);
+  assert.equal(node(db).status, "held");
   assert.deepEqual(events(db), ["re_held"]);
 });
 
-// ── self-heal ────────────────────────────────────────────────────────────────
-test("SELF-HEAL: an `open` record stuck in the flat index (crashed relocation) is relocated", async () => {
-  const db = fakeDb({
-    displayChecks_held: idx(heldRecord({ status: "open", activatedAt: NOW - 60000 })),
-    stock: stock(2),
-  });
-  const r = await runWakeSweep({ db, nowMs: NOW });
-  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0, relocated: 1 });
-  assert.equal(heldNode(db), undefined);
-  assert.equal(dayCheck(db).status, "open");
-  assert.deepEqual(events(db), ["activated"]);
-});
-
-// ── concurrent bump during activation handoff (Codex P1) ─────────────────────
-test("a sale that bumps the flat record AFTER the activation flip is PRESERVED, not lost", async () => {
-  const seenAt = NOW - D - 1;
-  const db = fakeDb({ displayChecks_held: idx(heldRecord({ stockSeenAt: seenAt, saleCount: 1, appliedMovements: { mvA: true } })), stock: stock(2) });
-  // Right after the activation transaction flips held→open, a concurrent
-  // bumpCheck lands on the (now open) flat entry: saleCount 1→3, fence += mvB.
-  db._afterTxn = { path: `displayChecks_held/marathon-pe/${DK}`, fn: (set, get) => {
-    const rec = get(`displayChecks_held/marathon-pe/${DK}`);
-    set(`displayChecks_held/marathon-pe/${DK}/saleCount`, 3);
-    set(`displayChecks_held/marathon-pe/${DK}/appliedMovements/mvB`, true);
-  } };
-  const r = await runWakeSweep({ db, nowMs: NOW });
-  assert.equal(r.activated, 1);
-  const c = dayCheck(db);
-  assert.equal(c.status, "open");
-  assert.equal(c.saleCount, 3);                          // the concurrent bump survived
-  assert.deepEqual(c.appliedMovements, { mvA: true, mvB: true });
-  assert.equal(heldNode(db), undefined);
-});
-
 // ── idempotency ──────────────────────────────────────────────────────────────
-test("double-fire does not double-activate: second run finds it already relocated", async () => {
-  const seenAt = NOW - D - 1;
-  const db = fakeDb({ displayChecks_held: idx(heldRecord({ stockSeenAt: seenAt })), stock: stock(2) });
+test("double-fire does not double-activate: second run sees it already open (in place) and skips", async () => {
+  const db = fakeDb({ displayChecks_active: idx(heldRecord({ stockSeenAt: NOW - D - 1 })), stock: stock(2) });
   const r1 = await runWakeSweep({ db, nowMs: NOW });
   const r2 = await runWakeSweep({ db, nowMs: NOW + 1000 });
   assert.equal(r1.activated, 1);
-  assert.deepEqual(r2, { stockSeen: 0, activated: 0, reHeld: 0, relocated: 0 }); // flat index empty now
+  assert.deepEqual(r2, { stockSeen: 0, activated: 0, reHeld: 0, reaped: 0 }); // open → sweep skips
+  assert.equal(node(db).activatedAt, NOW);
   assert.equal(events(db).filter((e) => e === "activated").length, 1);
+});
+
+// ── WINDOW #2: stale completed tombstone cleanup ─────────────────────────────
+test("a completed tombstone from a PRIOR SA day is REAPED; today's is kept; open is never reaped", async () => {
+  const yesterday = Date.parse("2026-07-15T14:00:00.000Z"); // SA 2026-07-15 < SA 2026-07-16
+  const today = Date.parse("2026-07-16T06:00:00.000Z");
+  const db = fakeDb({
+    displayChecks_active: {
+      "marathon-pe": {
+        "old__M": { checkId: "cOld", dedupeKey: "old__M", status: "completed", completedAt: yesterday },
+        "today__M": { checkId: "cToday", dedupeKey: "today__M", status: "completed", completedAt: today },
+        "openp__M": heldRecord({ status: "open", dedupeKey: "openp__M", checkId: "cOpen" }),
+      },
+    },
+    stock: stock(0),
+  });
+  const r = await runWakeSweep({ db, nowMs: NOW });
+  assert.equal(r.reaped, 1);
+  assert.equal(db.state.displayChecks_active["marathon-pe"]["old__M"], undefined);      // reaped
+  assert.ok(db.state.displayChecks_active["marathon-pe"]["today__M"]);                  // kept (today)
+  assert.ok(db.state.displayChecks_active["marathon-pe"]["openp__M"]);                  // never reaped (open)
+  assert.deepEqual(events(db), ["tombstone_reaped"]);
 });
 
 // ── scope ────────────────────────────────────────────────────────────────────
 test("disabled store (marathon-pine) is never processed", async () => {
-  const db = fakeDb({ displayChecks_held: { "marathon-pine": { [DK]: heldRecord() } }, stock: { "marathon-pine": { p1: { M: { qty: 9 } } } } });
+  const db = fakeDb({ displayChecks_active: { "marathon-pine": { [DK]: heldRecord() } }, stock: { "marathon-pine": { p1: { M: { qty: 9 } } } } });
   const r = await runWakeSweep({ db, nowMs: NOW });
-  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0, relocated: 0 });
+  assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0, reaped: 0 });
 });

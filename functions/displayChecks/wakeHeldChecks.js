@@ -1,45 +1,25 @@
-// ─── DISPLAY CHECKS — wakeHeldChecks SWEEP (PR 3: no UI) ──────────────────────
-// Every 5 minutes, walk the flat held index and move held checks through the
-// hold→wake lifecycle (§1.3):
-//   stock appears (qty>0) + not yet seen  → stockSeenAt = now, start grace clock
-//   grace elapsed + stock still present   → status "open", RELOCATE into today's
-//                                           day node, assignedTo resolved
-//   stock gone again before wake          → clear stockSeenAt, back to held
-// The pure decision is lib.cjs wakeTransition/applyWakeTransition; this file is
-// the IO around it. Pure logic is unchanged from the day-scoped version; what
-// changed is WHERE held checks live and that a waking check is RELOCATED.
+// ─── DISPLAY CHECKS — wakeHeldChecks SWEEP (no UI) ────────────────────────────
+// Every 5 minutes, walk the active index and move held checks through the
+// hold→wake lifecycle (§1.3), all IN PLACE — the never-null model means a check
+// never changes address, so there is no relocation and no relocation race:
+//   stock appears (qty>0) + not seen  → stockSeenAt = now, grace clock started
+//   grace elapsed + stock still there → status flips held → OPEN in place
+//                                       (activatedSaDate stamped, §PR-12)
+//   stock gone again before wake      → clear stockSeenAt, back to held
+// Pure decision in lib.cjs (wakeTransition/applyWakeTransition).
 //
-// FLAT INDEX (PR 2b): held checks live at `displayChecks_held/{store}/{dedupeKey}`
-// — NOT day-scoped — so a check held on Monday and restocked Wednesday still
-// wakes (the cross-day gap Codex flagged on the day-scoped sweep). The sweep
-// reads the whole store index PER RUN (every 5 min; bounded by held SKUs, and
-// reading them all is the sweep's whole job — distinct from the trigger, which
-// does an O(1) keyed lookup per sale).
+// The sweep also REAPS completed tombstones from a PRIOR SA day (window #2), so
+// the active index doesn't grow one dead record per SKU-that-didn't-resell —
+// no new job, folded into the pass that already reads the index. Proven safe by
+// lib.cjs isStaleTombstone: a prior-day tombstone has no in-flight bump, and a
+// late bump aborts anyway (bumpTxn rejects completed + the checkId fence).
 //
-// WAKE = RELOCATE. When a held check goes open it must move into TODAY's day
-// node so PR 5's today-scoped feed shows it: write the open record to
-// `displayChecks/{store}/{saDate}/{checkId}` (its checkId field) and delete the
-// flat entry, in ONE atomic multi-path update. A crash between the status flip
-// (a transaction on the flat record) and the relocate leaves an `open` record
-// in the flat index; the next sweep SELF-HEALS it (relocates it). The relocate
-// is idempotent (day-node write is keyed by checkId; the activated log key is
-// deterministic).
-//
-// IDEMPOTENCY + ATOMICITY: stock_seen / re_held are single whole-record
-// transactions on the flat entry (applyWakeTransition), cold-cache-safe via
-// `cur ?? preRead`. Activation is a transaction (held→open in place) then the
-// atomic relocate. Two overlapping sweeps are safe: the transaction re-validates
-// and the loser aborts. Only audit events are written after a commit (retried
-// on transient failure; deterministic key so a retry can't duplicate).
-//
-// COST: the flat store index + one stock-cell get per held check + config.
-// Never a full-node read of /pos/sales, /orders, /stock_movements.
+// Reads /displayChecks_active/{store} (bounded by active SKUs) + one stock-cell
+// get per held check + config. Never a full-node read of /pos/sales, /orders,
+// /stock_movements.
 //
 // TIMEZONE: schedule declares timeZone "Africa/Johannesburg"; the day key is the
-// shared sa-time.cjs helper (design §0.6). No hand-rolled dates.
-//
-// DEPLOY (Junid only; scoped — NEVER bare --only functions):
-//   firebase deploy --only functions:wakeHeldChecks
+// shared sa-time.cjs helper. Deploy: firebase deploy --only functions:wakeHeldChecks
 
 "use strict";
 
@@ -54,6 +34,7 @@ const {
   wakeDelayMs,
   wakeTransition,
   applyWakeTransition,
+  isStaleTombstone,
   resolveAssignment,
 } = require("./lib.cjs");
 
@@ -63,8 +44,8 @@ if (!admin.apps.length) {
   });
 }
 
-// One audit event, server-written, under the SA month of the day node (§4.2).
-// `key` is deterministic so a double-fire/retry overwrites rather than appends.
+const activePath = (store, key) => `displayChecks_active/${store}/${key}`;
+
 function logEvent(updates, db, store, saDate, { checkId, type, at, key, payload }) {
   const eventId = key || db.ref(`displayChecks_log/${store}`).push().key;
   updates[`displayChecks_log/${store}/${saMonthOfDate(saDate)}/${eventId}`] = {
@@ -76,9 +57,9 @@ function logEvent(updates, db, store, saDate, { checkId, type, at, key, payload 
   };
 }
 
-// Append an audit event, retrying transient RTDB failures. Written AFTER the
-// state commit deliberately (logging before would emit a SPURIOUS event if the
-// transaction then aborts on a race). Deterministic key → idempotent retry.
+// Append an audit event AFTER the state commit (logging before would emit a
+// spurious event if the transaction then aborts on a race), retrying transient
+// failures. Deterministic key → idempotent retry.
 async function writeLogWithRetry(db, updates, attempts = 3) {
   for (let i = 0; ; i++) {
     try { await db.ref().update(updates); return; }
@@ -91,84 +72,69 @@ async function writeLogWithRetry(db, updates, attempts = 3) {
   }
 }
 
-const heldPath = (store, dedupeKey) => `displayChecks_held/${store}/${dedupeKey}`;
-
-// stock_seen / re_held: one whole-record transaction on the flat entry, then the
-// audit event. Returns true iff this run made the transition.
-async function applyInPlace(db, store, saDate, dedupeKey, preRead, action, opts) {
-  const res = await db.ref(heldPath(store, dedupeKey)).transaction((cur) =>
+// Apply one held-record transition IN PLACE (stock_seen | re_held | activate),
+// then the audit event. `preRead` feeds the cold-cache null run. Returns true
+// iff this run committed the transition.
+async function applyInPlace(db, store, saDate, key, preRead, action, opts) {
+  const res = await db.ref(activePath(store, key)).transaction((cur) =>
     applyWakeTransition(cur === null ? preRead : cur, action, opts)
   );
   if (!res.committed) return false;
   const at = opts.nowMs;
-  const logType = action; // "stock_seen" | "re_held" (both match the §4.2 type)
-  const logKey = action === "stock_seen"
-    ? `${preRead.checkId}_stock_seen_${at}`
-    : `${preRead.checkId}_re_held_${opts.clearedStockSeenAt}`;
-  const payload = action === "stock_seen" ? { wakeAt: at + opts.delayMs } : null;
+  const checkId = preRead.checkId;
+  const logType = action === "activate" ? "activated" : action; // stock_seen | re_held | activated
+  const logKey = action === "stock_seen" ? `${checkId}_stock_seen_${at}`
+    : action === "re_held" ? `${checkId}_re_held_${opts.clearedStockSeenAt}`
+    : `${checkId}_activated`;
+  const payload = action === "stock_seen" ? { wakeAt: at + opts.delayMs }
+    : action === "activate" ? { via: "wake_sweep" } : null;
   const updates = {};
-  logEvent(updates, db, store, saDate, { checkId: preRead.checkId, type: logType, at, key: logKey, payload });
+  logEvent(updates, db, store, saDate, { checkId, type: logType, at, key: logKey, payload });
   await writeLogWithRetry(db, updates);
   return true;
 }
 
-// Relocate an OPEN record out of the flat index into TODAY's day node. ONE
-// atomic multi-path update: day-node write (keyed by checkId) + flat delete +
-// the `activated` audit event (deterministic key). Idempotent — safe to re-run
-// on self-heal. The grace fields don't belong on an open day-node check.
-//
-// CONCURRENT-BUMP SAFETY (Codex): the record is RE-READ fresh here, not taken
-// from the activation transaction's snapshot. A sale that read the record while
-// it was still `held` can have its bumpCheck land on the (now open) flat entry
-// AFTER the flip; relocating a stale snapshot would drop that bump's
-// saleCount/appliedMovements when the flat entry is deleted. Re-reading captures
-// it. (`fallback` covers a self-heal where the entry was already re-read.)
-async function relocateToDay(db, store, saDate, dedupeKey, fallback) {
-  const latest = (await db.ref(heldPath(store, dedupeKey)).get()).val() || fallback;
-  if (!latest || !latest.checkId) return;
-  const checkId = latest.checkId;
-  const dayRecord = { ...latest, status: "open" }; // fold in any post-flip bump; ensure open
-  delete dayRecord.stockSeenAt;
-  delete dayRecord.wakeAt;
+// Reap a completed tombstone from a prior SA day (window #2). The transaction
+// re-checks staleness against the authoritative value, so a slot overwritten by
+// a fresh active check since the read is NOT deleted (it's held/open → abort).
+async function reapTombstone(db, store, saDate, key, preRead) {
+  const res = await db.ref(activePath(store, key)).transaction((cur) => {
+    const c = cur === null ? preRead : cur;
+    return isStaleTombstone(c, saDate) ? null : undefined; // null = delete
+  });
+  if (!res.committed) return false;
   const updates = {};
-  for (const [field, value] of Object.entries(dayRecord)) {
-    updates[`displayChecks/${store}/${saDate}/${checkId}/${field}`] = value;
-  }
-  updates[heldPath(store, dedupeKey)] = null; // remove the flat entry
   logEvent(updates, db, store, saDate, {
-    checkId, type: "activated", at: latest.activatedAt || Date.now(),
-    key: `${checkId}_activated`, payload: { via: "wake_sweep", relocatedTo: saDate },
+    checkId: preRead.checkId, type: "tombstone_reaped", at: Date.parse(`${saDate}T00:00:00.000Z`) || 0,
+    key: `${preRead.checkId}_reaped`, payload: { completedAt: preRead.completedAt || null },
   });
   await writeLogWithRetry(db, updates);
+  return true;
 }
 
-// Core sweep — injectable db + nowMs so the test can drive it without
-// firebase-admin (same shape as lib/hold-reveal-sweep.cjs).
+// Core sweep — injectable db + nowMs so the test can drive it without admin.
 async function runWakeSweep({ db, nowMs }) {
   const now = nowMs ?? Date.now();
   const saDate = saDateStringFromMs(now);
   const stores = Object.keys(TRIGGER_STORE_FLAGS).filter(isTriggerStoreEnabled);
-  let stockSeen = 0, activated = 0, reHeld = 0, relocated = 0;
+  let stockSeen = 0, activated = 0, reHeld = 0, reaped = 0;
 
   for (const store of stores) {
-    const index = (await db.ref(`displayChecks_held/${store}`).once("value")).val() || {};
+    const index = (await db.ref(`displayChecks_active/${store}`).once("value")).val() || {};
     const entries = Object.entries(index);
     if (!entries.length) continue;
 
     const config = (await db.ref(`displayChecks_settings/${store}/config`).once("value")).val();
     const delayMs = wakeDelayMs(config);
 
-    for (const [dedupeKey, record] of entries) {
+    for (const [key, record] of entries) {
       if (!record) continue;
 
-      // SELF-HEAL: an `open` record in the flat index is a relocation that
-      // committed the status flip but crashed before the move. Complete it.
-      if (record.status === "open") {
-        await relocateToDay(db, store, saDate, dedupeKey, record);
-        relocated++;
+      if (record.status === "completed") {
+        if (isStaleTombstone(record, saDate) && await reapTombstone(db, store, saDate, key, record)) reaped++;
         continue;
       }
-      if (record.status !== "held") continue;
+      if (record.status !== "held") continue; // open → nothing to do (staff's now)
 
       const sizeKey = record.sizeKey || stockSizeKey(record.size);
       const stockPath = `stock/${store}/${record.productId}/${sizeKey}/qty`;
@@ -178,7 +144,7 @@ async function runWakeSweep({ db, nowMs }) {
       if (t.action === "activate") {
         // Resolve assignment, then RE-READ stock immediately before committing
         // (a sale during the roster reads could empty the shelf; activating a
-        // stock-gone check would drop an unfulfillable card into the feed).
+        // stock-gone check drops an unfulfillable card into the feed).
         const [coverSnap, rosterSnap] = await Promise.all([
           db.ref(`displayChecks_settings/${store}/cover/${saDate}`).once("value"),
           db.ref(`displayChecks_settings/${store}/roster`).once("value"),
@@ -187,30 +153,23 @@ async function runWakeSweep({ db, nowMs }) {
         t = wakeTransition(record, { qty: Number((await db.ref(stockPath).once("value")).val()), nowMs: now, delayMs });
         if (!t || t.action !== "activate") {
           if (t && t.action === "re_held") {
-            if (await applyInPlace(db, store, saDate, dedupeKey, record, "re_held",
+            if (await applyInPlace(db, store, saDate, key, record, "re_held",
               { nowMs: now, delayMs, clearedStockSeenAt: t.clearedStockSeenAt })) reHeld++;
           }
           continue;
         }
-        // Transaction: held → open IN PLACE (single winner), then relocate.
-        const res = await db.ref(heldPath(store, dedupeKey)).transaction((cur) =>
-          applyWakeTransition(cur === null ? record : cur, "activate", { nowMs: now, delayMs, assignedTo })
-        );
-        if (res.committed) {
-          await relocateToDay(db, store, saDate, dedupeKey, res.snapshot.val());
-          activated++;
-        }
+        if (await applyInPlace(db, store, saDate, key, record, "activate",
+          { nowMs: now, delayMs, assignedTo, activatedSaDate: saDate })) activated++;
       } else {
-        // stock_seen | re_held — in place on the flat entry.
-        if (await applyInPlace(db, store, saDate, dedupeKey, record, t.action,
+        if (await applyInPlace(db, store, saDate, key, record, t.action,
           { nowMs: now, delayMs, clearedStockSeenAt: t.clearedStockSeenAt })) {
           if (t.action === "stock_seen") stockSeen++; else reHeld++;
         }
       }
     }
   }
-  console.log(`wakeHeldChecks: stock_seen=${stockSeen} activated=${activated} re_held=${reHeld} self_healed=${relocated}`);
-  return { stockSeen, activated, reHeld, relocated };
+  console.log(`wakeHeldChecks: stock_seen=${stockSeen} activated=${activated} re_held=${reHeld} reaped=${reaped}`);
+  return { stockSeen, activated, reHeld, reaped };
 }
 
 exports.runWakeSweep = runWakeSweep;
