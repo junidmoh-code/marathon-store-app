@@ -30,6 +30,7 @@ function fakeDb(initial) {
   api.ref = (path = "") => ({
     async once() { return { val: () => read(path) }; },
     async get() { const v = read(path); return { val: () => v, exists: () => v != null }; },
+    async set(v) { set(path, structuredClone(v)); },
     push() { return { key: `ev_${++pushSeq}` }; },
     async update(patch) { for (const [k, v] of Object.entries(patch)) set(k, v); },
     async transaction(fn) {
@@ -157,6 +158,24 @@ test("a completed tombstone from a PRIOR SA day is REAPED; today's is kept; open
   assert.ok(db.state.displayChecks_active["marathon-pe"]["today__M"]);                  // kept (today)
   assert.ok(db.state.displayChecks_active["marathon-pe"]["openp__M"]);                  // never reaped (open)
   assert.deepEqual(events(db), ["tombstone_reaped"]);
+});
+
+test("ARCHIVE-BEFORE-REAP: an unarchived stale tombstone is saved to its day node BEFORE it's reaped (no silent loss)", async () => {
+  const yesterday = Date.parse("2026-07-15T14:00:00.000Z");
+  const rec = { checkId: "cGhost", dedupeKey: "g__M", status: "completed", result: "confirmed",
+                completedAt: yesterday, completedSaDate: "2026-07-15", completedBy: { uid: "u1", name: "Nomusa" } };
+  // Simulates a completion that flipped the tombstone but CRASHED before archiving:
+  // the record lives only in the active index, nothing in the day node.
+  const db = fakeDb({ displayChecks_active: { "marathon-pe": { "g__M": rec } }, stock: stock(0) });
+  assert.equal(db.state.displayChecks?.["marathon-pe"]?.["2026-07-15"]?.cGhost, undefined); // not archived yet
+  const r = await runWakeSweep({ db, nowMs: NOW });
+  assert.equal(r.reaped, 1);
+  assert.equal(db.state.displayChecks_active["marathon-pe"]["g__M"], undefined);            // reaped from active
+  // …but PRESERVED in the day node first — the compliance record is not lost.
+  const arch = db.state.displayChecks["marathon-pe"]["2026-07-15"]["cGhost"];
+  assert.ok(arch, "the tombstone was archived to its day node before reaping");
+  assert.equal(arch.result, "confirmed");
+  assert.deepEqual(arch.completedBy, { uid: "u1", name: "Nomusa" });
 });
 
 // ── scope ────────────────────────────────────────────────────────────────────

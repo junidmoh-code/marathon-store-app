@@ -240,10 +240,13 @@ function buildNewCheck({
   if (status === "held") check.heldAt = nowMs;
   else {
     check.activatedAt = nowMs;
-    // The SA day this check went OPEN. The active index is dateless, so a check
-    // that opens on day 1 and is still open past 03:00 rollover carries no other
-    // record of its opening day; PR 12 attributes its mark to THIS day's
-    // assignee. Stamped at open, frozen. (Window #3.)
+    // THE PR-12 MARKS ANCHOR. The SA day this check went OPEN — the active index
+    // is dateless, so a check that opens on day 1 and is still open past 03:00
+    // rollover carries no other record of its opening day; PR 12 attributes its
+    // mark to THIS day's assignee. Stamped at open, frozen, and PRESERVED through
+    // completion (buildCompletedRecord) into the day-node archive. Window #3.
+    // DO NOT add a second `openedSaDate` field — this IS the open-day anchor
+    // (owner decision 2026-07-19); a parallel field would silently diverge.
     check.activatedSaDate = activatedSaDate || null;
     check.assignedTo = assignedTo || null;      // frozen; null = unassigned (§17.3)
   }
@@ -413,6 +416,74 @@ function isStaleTombstone(record, todaySaDate) {
   return saDateStringFromMs(completedAt) < todaySaDate;
 }
 
+// ── Completion (PR 7) — pure decision + record builder ────────────────────────
+// A staff member CLOSES an OPEN check with one of two results: "confirmed" (the
+// display was restocked) or "no_stock" (there was nothing to put out). The
+// decision is pure so the write-once + no-stock-soft-block rules are unit-tested
+// without Firebase; completeCheck.js does the IO (auth, reads, the tombstone
+// transaction, the day-node archive) around it.
+//
+// Rules (owner directives):
+//  • WRITE-ONCE — a check with a completedAt (or already `completed`) can never
+//    be re-completed; the first result stands.
+//  • OPEN-ONLY — only an open check completes. A held check has no stock to
+//    confirm and is not actionable; a missing/mismatched record is rejected.
+//  • NO-STOCK SOFT-BLOCK — if the till/inventory shows stock > 0 for the SKU, a
+//    "no_stock" close is contradicted; it is BLOCKED (needs_override) until the
+//    staff member explicitly overrides, and the override is logged with the qty
+//    as evidence (the system contradicting a person, calmly, with a number).
+// Returns exactly one of:
+//   { kind:"reject", code }                     code ∈ not-found | stale-check |
+//                                               already-completed | not-open | bad-result
+//   { kind:"needs_override", stockQty }          no_stock but stock>0 and no override
+//   { kind:"complete", overridden }              proceed; overridden true iff it was
+//                                               a no_stock close over real stock
+function completionDecision({ record, expectedCheckId, result, override, stockQty }) {
+  if (!record) return { kind: "reject", code: "not-found" };
+  if (expectedCheckId != null && record.checkId !== expectedCheckId) {
+    return { kind: "reject", code: "stale-check" };
+  }
+  // WRITE-ONCE first: an already-completed record (or one carrying completedAt)
+  // is closed forever — report that, not "not-open".
+  if (record.status === "completed" || record.completedAt != null) {
+    return { kind: "reject", code: "already-completed" };
+  }
+  if (record.status !== "open") return { kind: "reject", code: "not-open" };
+  if (result !== "confirmed" && result !== "no_stock") {
+    return { kind: "reject", code: "bad-result" };
+  }
+  const stock = Number(stockQty) || 0;
+  if (result === "no_stock" && stock > 0 && override !== true) {
+    return { kind: "needs_override", stockQty: stock };
+  }
+  return { kind: "complete", overridden: result === "no_stock" && stock > 0 && override === true };
+}
+
+// Build the completed record written to BOTH the day-node archive and the active
+// index (as an in-place `completed` TOMBSTONE — never a deletion; the tombstone
+// is what keeps the cold-cache resurrection class closed). Preserves everything
+// on the open record — crucially `activatedSaDate`, the SA day the check opened,
+// which is the anchor PR-12 attributes the mark to. Grace fields are long gone
+// on an open check; stripped defensively.
+function buildCompletedRecord(record, { result, nowMs, saDate, actor, overridden, stockQty }) {
+  const next = {
+    ...record,
+    status: "completed",
+    result,                            // "confirmed" | "no_stock"
+    completedAt: nowMs,
+    completedSaDate: saDate,           // server SA day of completion (day-node key)
+    completedBy: actor || null,        // { uid, name, email } — the logged-in user, NO PIN
+    resultOverridden: !!overridden,    // a no_stock close over real stock (amber flag)
+  };
+  // For a no-stock close, carry the qty the system saw ON the record — so the
+  // compliance evidence is durable and the archive/log can be reproduced from the
+  // record alone on a reconcile/retry (no need to re-read stock).
+  if (result === "no_stock") next.stockAtClose = Number(stockQty) || 0;
+  delete next.stockSeenAt;
+  delete next.wakeAt;
+  return next;
+}
+
 module.exports = {
   TRIGGER_STORE_FLAGS,
   WAKE_DEFAULT_DELAY_MINUTES,
@@ -435,4 +506,6 @@ module.exports = {
   weekdayOfSaDate,
   resolveAssignment,
   buildNewCheck,
+  completionDecision,
+  buildCompletedRecord,
 };

@@ -97,7 +97,25 @@ async function applyInPlace(db, store, saDate, key, preRead, action, opts) {
 // Reap a completed tombstone from a prior SA day (window #2). The transaction
 // re-checks staleness against the authoritative value, so a slot overwritten by
 // a fresh active check since the read is NOT deleted (it's held/open → abort).
+//
+// ARCHIVE-BEFORE-REAP: a completed check is normally archived to the day node at
+// completion (completeCheck.js). But if that completion committed the tombstone
+// flip and then crashed before its archive, reaping would be the LAST chance to
+// save the compliance record — otherwise it vanishes with no trace. So preserve
+// it (idempotent, keyed by checkId) FIRST, and only reap once it's safely
+// archived; if the archive can't be written, skip the reap and retry next sweep.
 async function reapTombstone(db, store, saDate, key, preRead) {
+  const checkId = preRead.checkId;
+  const arcDate = preRead.completedSaDate
+    || (Number.isFinite(Number(preRead.completedAt)) ? saDateStringFromMs(Number(preRead.completedAt)) : null);
+  if (checkId && arcDate) {
+    try {
+      await db.ref(`displayChecks/${store}/${arcDate}/${checkId}`).set(preRead);
+    } catch (err) {
+      console.error("wakeHeldChecks: archive-before-reap failed, skipping reap this pass:", err && err.message);
+      return false; // don't delete a record we couldn't preserve
+    }
+  }
   const res = await db.ref(activePath(store, key)).transaction((cur) => {
     const c = cur === null ? preRead : cur;
     return isStaleTombstone(c, saDate) ? null : undefined; // null = delete

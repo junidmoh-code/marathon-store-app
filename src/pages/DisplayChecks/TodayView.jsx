@@ -7,14 +7,16 @@
 //   • Outstanding  — open checks, a responsive card grid, the work you act on.
 //   • Waiting on stock (N)  — held checks, collapsed, greyscale, no action.
 //   • Confirmed (N)         — today's completed checks, collapsed, dimmed.
-// Held checks stay OUT of the completion maths (§2). This view WRITES nothing;
-// the confirm action is PR 7 (so cards render with an inert button here).
+// Held checks stay OUT of the completion maths (§2). Tapping an outstanding card
+// opens the confirm sheet (PR 7), which writes the completion server-side; the
+// live listener then moves the card into Completed on its own.
 
 import { useMemo, useState } from "react";
 import { FONT, MONO, BLUE, BLUE_SOFT, AMBER, INK, PANEL, META } from "./tokens";
 import { useTodayFeedSources } from "./useDisplayChecks";
 import { deriveFeed } from "./feedModel";
 import CheckCard from "./CheckCard";
+import CheckSheet from "./CheckSheet";
 
 function StatTile({ label, value, sub }) {
   return (
@@ -79,6 +81,8 @@ function CardGrid({ children }) {
 export default function TodayView({ store }) {
   const { activeItems, completedItems, ready, error } = useTodayFeedSources(store);
   const feed = useMemo(() => deriveFeed(activeItems, completedItems), [activeItems, completedItems]);
+  // The check whose confirm sheet is open (PR 7). Null = no sheet.
+  const [sheetCheck, setSheetCheck] = useState(null);
 
   if (!store) {
     return (
@@ -136,7 +140,7 @@ export default function TodayView({ store }) {
           </div>
           <CardGrid>
             {feed.outstanding.map((c) => (
-              <CheckCard key={c.key} check={c} variant="outstanding" />
+              <CheckCard key={c.key} check={c} variant="outstanding" onOpen={setSheetCheck} />
             ))}
           </CardGrid>
         </div>
@@ -164,6 +168,10 @@ export default function TodayView({ store }) {
             ))}
           </CardGrid>
         </Section>
+      )}
+
+      {sheetCheck && (
+        <CheckSheet store={store} check={sheetCheck} onClose={() => setSheetCheck(null)} />
       )}
     </div>
   );
