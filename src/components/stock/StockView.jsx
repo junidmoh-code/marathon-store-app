@@ -19,13 +19,16 @@ import SetQuantity from "./SetQuantity";
 import CountedStockReview from "./CountedStockReview";
 import StockErrorBoundary from "./StockErrorBoundary";
 import MoveExcess from "./MoveExcess";
+import InTransit from "./InTransit";
 
-// Stock rework: Transfer (assistant-style, one-step) + Locator are primary;
+// Stock rework: Transfer (assistant-style) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
-// form; the standalone Receive + In-Transit screens are retired. Locator is
-// admin-only for now (gated below).
+// form. In Transit returned 2026-07-19 (transit lanes for cross-building sends
+// from Central — see transitLanes.js); same-building transfers stay one-step.
+// Locator is admin-only for now (gated below).
 const BASE_TABS = [
   ["transfer",  "Transfer"],
+  ["intransit", "In Transit"],
   // "Health" moved to its own home-screen module (HealthView) — owner decision.
   ["locate",    "Where is it"],
   ["setqty",    "Set Qty"],
@@ -47,6 +50,7 @@ const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount", "excess"]);
 // header per tool. Tool CONTENTS are unchanged (they render in the main pane).
 const TAB_ICON = {
   transfer: <path d="M20 7h-9M14 17H5M17 3l3 4-3 4M7 21l-3-4 3-4" />,
+  intransit: <><path d="M10 17h4V5H2v12h3" /><path d="M20 17h2v-3.34a4 4 0 0 0-1.17-2.83L19 9h-5v8h1" /><circle cx="7.5" cy="17.5" r="2.5" /><circle cx="17.5" cy="17.5" r="2.5" /></>,
   excess:   <><path d="M12 3v11" /><path d="m8 10 4 4 4-4" /><path d="M4 21h16" /></>,
   locate:   <><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></>,
   setqty:   <path d="M12 5v14M5 12h14" />,
@@ -57,6 +61,7 @@ const TAB_ICON = {
 };
 const TAB_META = {
   transfer: ["Transfer", "Move stock between locations."],
+  intransit: ["In Transit", "Cross-building sends awaiting receive."],
   excess:   ["Move Excess", "Bulk hub 2 → central rebalance (admin)."],
   locate:   ["Where is it", "Find any product across every location."],
   setqty:   ["Set Qty", "Set received / opening on-hand."],
@@ -66,7 +71,7 @@ const TAB_META = {
   recount:  ["Counted", "Review & post counted differences."],
 };
 const TAB_GROUPS = [
-  ["Move & find", ["transfer", "locate", "setqty"]],
+  ["Move & find", ["transfer", "intransit", "locate", "setqty"]],
   ["Audit", ["history", "adjust", "count", "recount", "excess"]],
 ];
 
@@ -98,6 +103,7 @@ export default function StockView({ products = [], onExit }) {
   const content = (
     <>
       {tab === "transfer" && <Transfer {...shared} />}
+      {tab === "intransit" && <InTransit {...shared} />}
       {tab === "excess"   && isAdmin && <MoveExcess {...shared} />}
       {tab === "locate"   && <Locator {...shared} />}
       {tab === "setqty"   && canStock && <SetQuantity {...shared} canStock={canStock} isAdmin={isAdmin} />}

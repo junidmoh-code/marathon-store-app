@@ -35,6 +35,14 @@ export function transferMovementId(transferId, productId, size, dest) {
   return dest ? `${base}:${dest}` : base;
 }
 
+// Deterministic movement id for the RECEIVE leg of a transit-lane transfer
+// (transfer_in from in_transit — see InTransit.jsx). Kept beside its dispatch
+// twin so the two id schemes stay visibly collision-free: the `rcv:` prefix
+// separates it from every dispatch id built above.
+export function receiveMovementId(transferId, productId, size) {
+  return `rcv:${transferId}:${productId}:${stockSizeKey(size)}`;
+}
+
 // Load the persisted draft, or null when there's nothing usable to restore.
 // Guards against a corrupt / stale-schema / empty-cart payload and never throws
 // (private-mode reads, malformed JSON) — a broken draft simply reads as "none".

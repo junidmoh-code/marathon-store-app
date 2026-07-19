@@ -1,8 +1,15 @@
 // ─── TRANSFER (source-first, scan + search into one cart) ─────────────────────
 // Pick the SOURCE first → build a cart by SCANNING barcodes and/or manual search
 // (both feed the SAME cart) → pick a clean DESTINATION → confirm. Each cart line
-// becomes ONE atomic `transfer_out` movement carrying a REAL from + to + size (no
-// in_transit hop). Totals conserve via applyMovement's paired −from/+to.
+// becomes ONE atomic `transfer_out` movement carrying a REAL from + to + size.
+// Totals conserve via applyMovement's paired −from/+to.
+//
+// TRANSIT LANES (2026-07-19): a cross-building send from Central's building
+// (isTransitLane) goes TWO-STEP — each line lands in the `in_transit` holding
+// and a /transfers/{tId} doc records destination + manifest; stock reaches the
+// destination only when the receiver confirms in the In Transit screen
+// (InTransit.jsx). Same-building moves keep the instant one-step write — the
+// `transit` flag below is the only branch.
 //
 // SIZE INTEGRITY: a scanned barcode resolves via /barcodes/{code} → {productId,
 // size?}. Per-size codes (shoes) carry the size; product-level codes (much
@@ -16,11 +23,13 @@
 
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { ref, update, push, child, get } from "firebase/database";
-import { database } from "../../firebase";
+import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { transferMovementId, loadDraft, saveDraft, clearDraft } from "./transferDraft";
 import { useStockCells } from "./useStock";
-import { transferTargets, labelFor } from "./locations";
+import { transferTargets, labelFor, IN_TRANSIT } from "./locations";
+import { isTransitLane } from "./transitLanes";
+import { stockSizeKey } from "../../utils/sizeKey";
 import { Toast, Empty } from "./widgets";
 import { GLASS, GLASS_SOLID, CARD, BLUE_L, GREEN, GRAY, AMBER, BORDER, FONT, input, bGreen, bGhost } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
@@ -339,6 +348,60 @@ export default function Transfer({ products, registry, actorRole }) {
     let tId = transferId;
     if (!tId) { tId = push(child(ref(database), "transfers")).key; setTransferId(tId); }
 
+    // TRANSIT LANE: cross-building from Central's building → stock goes to the
+    // in_transit holding and the /transfers doc is the receiver's work item. The
+    // doc — WITH its full manifest — is created BEFORE the first movement:
+    // in_transit stock without a manifest entry would be invisible to the
+    // receive screen, so writing the manifest up front removes that crash
+    // window entirely (failed lines are pruned after the loop instead). A doc
+    // failure aborts the send — nothing has moved yet, safe to retry.
+    const transit = isTransitLane(from, to);
+    if (transit) {
+      try {
+        let docSnap = await get(child(ref(database), `transfers/${tId}`));
+        // Destination changed after a failed transit attempt: the doc's `to` is
+        // what the receiver acts on, so it must never disagree with the cart.
+        // With nothing sent yet, the stale doc is deleted and a fresh id minted
+        // (the rules make `to` write-once); once lines have physically left,
+        // the destination is locked to the doc.
+        if (docSnap.exists() && docSnap.val()?.to !== to) {
+          const anySent = Object.values(lineResults).some((r) => r?.status === "sent");
+          if (anySent) {
+            setBusy(false);
+            return flash("err", `This cart already sent lines toward ${labelFor(docSnap.val()?.to, registry)} — finish or clear it before changing destination.`);
+          }
+          await update(ref(database), { [`transfers/${tId}`]: null });
+          tId = push(child(ref(database), "transfers")).key;
+          setTransferId(tId);
+          docSnap = null;
+        }
+        if (!docSnap || !docSnap.exists()) {
+          const linesObj = {};
+          for (const ln of lines) {
+            if (!linesObj[ln.productId]) linesObj[ln.productId] = {};
+            linesObj[ln.productId][stockSizeKey(ln.size)] = ln.qty;
+          }
+          await update(ref(database), {
+            [`transfers/${tId}`]: {
+              status: "dispatched", from, to, reason: "manual",
+              createdAt: serverNowIso(), createdBy: auth.currentUser?.uid || null,
+              lines: linesObj,
+            },
+          });
+        } else {
+          // Retry with an existing doc: merge THIS attempt's lines in (per-path
+          // update, never a node set — already-sent lines from earlier attempts
+          // must survive).
+          const mergeLines = {};
+          for (const ln of lines) mergeLines[`transfers/${tId}/lines/${ln.productId}/${stockSizeKey(ln.size)}`] = ln.qty;
+          await update(ref(database), mergeLines);
+        }
+      } catch {
+        setBusy(false);
+        return flash("err", "Couldn't create the transit record — nothing was sent. Check connection and retry.");
+      }
+    }
+
     // Snapshot the lines up front (the loop persists against this fixed basket).
     const snapshot = { ...basket };
     const results = { ...lineResults };
@@ -358,7 +421,7 @@ export default function Transfer({ products, registry, actorRole }) {
         // cell. Mapping it to null would trip missing_product_or_size before encoding.
         res = await applyMovement({
           type: "transfer_out", productId: ln.productId, size: ln.size, qty: ln.qty,
-          from, to, actorRole,
+          from, to: transit ? IN_TRANSIT : to, actorRole,
           movementId: transferMovementId(tId, ln.productId, ln.size), // idempotency key
           link: { transferId: tId, refillId: refillId || null },
         });
@@ -378,9 +441,29 @@ export default function Transfer({ products, registry, actorRole }) {
       saveDraft({ from, to, refillId, transferId: tId, basket: snapshot, lineResults: results });
     }
 
+    // Transit bookkeeping: a failed line never moved stock (applyMovement is
+    // all-or-nothing), so its manifest entry is pruned — the doc lists exactly
+    // what physically left. If nothing has EVER left on this doc, the doc
+    // itself is removed so no ghost card can sit in In Transit / Health.
+    if (transit && failed.length) {
+      const prune = {};
+      for (const f of failed) {
+        const ln = snapshot[f.key];
+        if (ln) prune[`transfers/${tId}/lines/${ln.productId}/${stockSizeKey(ln.size)}`] = null;
+      }
+      await update(ref(database), prune).catch(() => {});
+    }
+    if (transit && !Object.values(results).some((r) => r?.status === "sent")) {
+      await update(ref(database), { [`transfers/${tId}`]: null }).catch(() => {});
+    }
+
     // Only mark the refill fulfilled when EVERY line moved — a partial transfer
-    // must not close the request.
-    if (refillId && failed.length === 0 && sent > 0) {
+    // must not close the request. Transit lanes never stamp here: the stock is
+    // parked in in_transit, not at the requesting location, and closing the
+    // request on dispatch is exactly the zombie-refill shape (#234). The legacy
+    // refillId path predates transit lanes, so a transit send simply leaves the
+    // request open.
+    if (refillId && failed.length === 0 && sent > 0 && !transit) {
       await update(ref(database), {
         [`refill_requests/${refillId}/status`]: "fulfilled",
         [`refill_requests/${refillId}/fulfilledBy`]: { transferId: tId },
@@ -396,7 +479,9 @@ export default function Transfer({ products, registry, actorRole }) {
       // Full success — clear the cart, idempotency context and draft.
       clearBasket();
       setTo("");
-      flash("ok", `Transferred ${sent} line(s) → ${labelFor(to, registry)}`);
+      flash("ok", transit
+        ? `Sent ${sent} line(s) — in transit to ${labelFor(to, registry)} until received there`
+        : `Transferred ${sent} line(s) → ${labelFor(to, registry)}`);
     } else {
       // Partial / total failure — keep ONLY the unsent lines so they can be retried.
       const remaining = {};
@@ -635,7 +720,10 @@ export default function Transfer({ products, registry, actorRole }) {
               </button>
             </div>
             <div style={{ fontSize: 11, color: AMBER, marginTop: 10 }}>
-              Moves immediately (no in-transit confirm step).{overCount ? ` ${overCount} line(s) exceed source stock — those will be blocked at commit.` : ""}
+              {to && isTransitLane(from, to)
+                ? `Cross-building — leaves ${labelFor(from, registry)} now, lands at ${labelFor(to, registry)} when they confirm receipt (In Transit screen).`
+                : "Moves immediately (no in-transit confirm step)."}
+              {overCount ? ` ${overCount} line(s) exceed source stock — those will be blocked at commit.` : ""}
             </div>
           </div>
         </div>
