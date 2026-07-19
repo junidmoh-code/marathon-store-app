@@ -1,4 +1,18 @@
-# Display Checks — cold-cache transaction audit (JOB 1)
+# Display Checks — cold-cache transaction audit
+
+## Headline finding (why the shared primitive exists)
+**Site #4 — the wake sweep's held→open flip — was an unlatched resurrection site, missed by every
+prior PR because it was never in-diff.** Bump (#1) and completion (#6) each got the `firstRun` latch
+when a reviewer happened to be looking at *that* file; the wake flip carried the identical
+`cur === null ? preRead` shape the whole time and no one saw it, because the fix always landed
+somewhere else. That is the precise failure mode this refactor eliminates: with one shared
+`guardedMutate` primitive and one reusable resurrection assertion, the null-handling is correct in
+one place and every present and future two-path write inherits both the guard and the test — there
+is no longer a "sixth site outside the diff" to miss.
+
+---
+
+
 
 Every RTDB `.transaction()` across the four live displayChecks Cloud Functions, its cold-cache
 first-run handling, and whether an **authoritative null** (a genuinely-deleted record reaching a
@@ -77,3 +91,17 @@ unreachable; #5 is a delete; #2, #3 write-on-null by design). **But** two things
 warrant your eyes before centralizing: (A) site #4 is unlatched and is the next-instance-in-waiting,
 and (B) the create/claim sites can't share an abort-on-null primitive. Hence: **stop, show, confirm
 the two-mode split, then build.**
+
+## Resolution (built to the signed-off shape)
+`functions/displayChecks/guardedTransaction.cjs` — `guardedMutate` (cold-cache latch + authoritative-
+null abort) and `guardedCreate` (write-on-null by design). All six sites migrated:
+- **guardedMutate:** #1 bumpCheck, #4 wake flip (now latched — Finding A closed), #5 reap
+  (mutation returns `null` to delete), #6 completion flip.
+- **guardedCreate:** #2 lease claim, #3 create path.
+
+Reusable assertion `assertNoResurrectionOnAuthoritativeNull` (functions/test/helpers/guarded-txn.cjs)
+applied to all four guardedMutate sites with their real mutations
+(functions/test/display-checks-guarded-txn.test.cjs). The split is enforced both directions: a mutate
+wrongly in create-mode fails the resurrection assertion; a create wrongly in mutate-mode fails to
+create. **Behaviour-identical: every pre-existing test passes unchanged** (functions 175/175, +10 new;
+no expected output altered).

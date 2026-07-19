@@ -35,6 +35,7 @@ const {
   completionDecision,
   buildCompletedRecord,
 } = require("./lib.cjs");
+const { guardedMutate } = require("./guardedTransaction.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -137,22 +138,13 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   if (decision.kind === "needs_override") return { kind: "needs_override", stockQty: decision.stockQty };
 
   // ── FLIP the active record to a completed TOMBSTONE (write-once, NEVER null) ──
-  // preRead rescues ONLY the cold-cache FIRST callback: a Cloud Function has no
-  // local RTDB cache, so the first run sees null and returning undefined there
-  // would abort before the server round-trip. Once we've been re-invoked with an
-  // AUTHORITATIVE value, a null means the slot was genuinely DELETED (e.g. a
-  // tombstone reaped after an across-midnight completion) — abort, NEVER
-  // resurrect it from the stale open preRead (that would recreate the record and
-  // overwrite the first closer's archive with a conflicting result → write-once
-  // violation). This is the resurrection class the whole module guards against
-  // (Codex P1). The result is still a record or undefined — never `null`.
-  let firstRun = true;
-  const res = await activeRef.transaction((cur) => {
-    // preRead substitutes ONLY on the cold-cache first run; every later
-    // invocation uses the authoritative `cur` (a null there = deleted → abort).
-    const c = (cur === null && firstRun) ? preRead : cur;
-    firstRun = false;
-    if (!c || c.checkId !== checkId) return undefined;   // gone/overwritten/deleted — abort, don't resurrect
+  // guardedMutate owns the cold-cache latch + authoritative-null abort (a null on
+  // a later callback = the slot was genuinely deleted, e.g. a tombstone reaped
+  // after an across-midnight completion → abort, never resurrect the stale open
+  // preRead). This mutation only ever sees a non-null current, and returns a
+  // completed record or undefined — never null — so it can never delete.
+  const res = await guardedMutate(activeRef, preRead, (c) => {
+    if (c.checkId !== checkId) return undefined;   // overwritten by a fresh check — abort
     if (c.status !== "open" || c.completedAt != null) return undefined; // write-once + concurrent guard
     return buildCompletedRecord(c, { result, nowMs, saDate, actor, overridden: decision.overridden, stockQty });
   });

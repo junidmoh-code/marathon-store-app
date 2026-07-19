@@ -37,6 +37,7 @@ const {
   isStaleTombstone,
   resolveAssignment,
 } = require("./lib.cjs");
+const { guardedMutate } = require("./guardedTransaction.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -76,8 +77,13 @@ async function writeLogWithRetry(db, updates, attempts = 3) {
 // then the audit event. `preRead` feeds the cold-cache null run. Returns true
 // iff this run committed the transition.
 async function applyInPlace(db, store, saDate, key, preRead, action, opts) {
-  const res = await db.ref(activePath(store, key)).transaction((cur) =>
-    applyWakeTransition(cur === null ? preRead : cur, action, opts)
+  // guardedMutate: cold-cache latch + authoritative-null abort. THIS is the site
+  // finding A caught — previously a bare `cur === null ? preRead` with NO latch,
+  // an unlatched resurrection site missed by every prior PR because it was never
+  // in-diff. Routing it here closes it permanently (behaviour identical on every
+  // reachable path — applyWakeTransition only ever sees a held record).
+  const res = await guardedMutate(db.ref(activePath(store, key)), preRead, (c) =>
+    applyWakeTransition(c, action, opts)
   );
   if (!res.committed) return false;
   const at = opts.nowMs;
@@ -116,10 +122,13 @@ async function reapTombstone(db, store, saDate, key, preRead) {
       return false; // don't delete a record we couldn't preserve
     }
   }
-  const res = await db.ref(activePath(store, key)).transaction((cur) => {
-    const c = cur === null ? preRead : cur;
-    return isStaleTombstone(c, saDate) ? null : undefined; // null = delete
-  });
+  // guardedMutate: cold-cache latch + authoritative-null abort. The mutation
+  // returns null to DELETE a stale tombstone (undefined = not stale → abort). A
+  // reap can't resurrect (it never returns a record), but it routes through the
+  // one primitive for a single, provably-guarded null-handling path.
+  const res = await guardedMutate(db.ref(activePath(store, key)), preRead, (c) =>
+    isStaleTombstone(c, saDate) ? null : undefined // null = delete
+  );
   if (!res.committed) return false;
   const updates = {};
   logEvent(updates, db, store, saDate, {
