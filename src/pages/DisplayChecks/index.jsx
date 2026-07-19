@@ -26,32 +26,10 @@ import {
   canManageDisplayChecks,
   isDisplayChecksSuperAdmin,
 } from "../../config/displayChecks";
-
-// ── Marathon Glass tokens ─────────────────────────────────────────────────────
-const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
-const MONO = "'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace";
-const BLUE = "#4A7FFF";
-const BLUE_SOFT = "#6A9FFF";
-const INK = "#f3f6ff";
-const GLASS_BG = "rgba(255,255,255,.03)";
-const GLASS_BORDER = "1px solid rgba(74,127,255,.16)";
-
-const PANEL = {
-  background: GLASS_BG,
-  border: GLASS_BORDER,
-  borderRadius: 16,
-  backdropFilter: "blur(14px)",
-  WebkitBackdropFilter: "blur(14px)",
-};
-
-// Ledger metadata — monospace, uppercase, wide tracking. The cold register.
-const META = {
-  fontFamily: MONO,
-  textTransform: "uppercase",
-  letterSpacing: "0.12em",
-  color: "rgba(233,238,255,.45)",
-  fontSize: 11,
-};
+// Marathon Glass tokens now live in one place so the shell and the feed can't
+// drift apart (they were duplicated inline before the Today feed landed).
+import { FONT, BLUE, BLUE_SOFT, INK, GLASS_BG, GLASS_BORDER, PANEL, META } from "./tokens";
+import TodayView from "./TodayView";
 
 // The four tabs. `manager: true` → only rendered when canManageDisplayChecks.
 const TABS = [
@@ -224,12 +202,16 @@ export default function DisplayChecks({ onExit }) {
           })}
         </div>
 
-        {/* Tab body — empty states only in this build */}
-        <EmptyState title={empty.title} line={empty.line} />
+        {/* Tab body — Today is the live feed (PR 5); the rest are still shells */}
+        {tab === "today"
+          ? <TodayView store={store} />
+          : <EmptyState title={empty.title} line={empty.line} />}
 
-        <div style={{ ...META, marginTop: 22, textAlign: "center", color: "rgba(233,238,255,.28)" }}>
-          RECORDED · SHELL BUILD · NO DATA READ OR WRITTEN
-        </div>
+        {tab !== "today" && (
+          <div style={{ ...META, marginTop: 22, textAlign: "center", color: "rgba(233,238,255,.28)" }}>
+            RECORDED · SHELL BUILD · NO DATA READ OR WRITTEN
+          </div>
+        )}
       </div>
     </div>
   );
