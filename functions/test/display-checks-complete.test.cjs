@@ -23,7 +23,7 @@ const ACTOR2 = { uid: "u-zee", name: "Zee", email: "zee@marathon.internal" };
 // Fake RTDB with Cloud-Function cold-cache transaction semantics + get/set.
 function fakeDb(initial) {
   const state = structuredClone(initial);
-  const api = { state, coldAborts: 0 };
+  const api = { state, coldAborts: 0, failWrites: false }; // failWrites → ref.set() throws (archive/log path)
   const get = (p) => (p === "" ? state : p.split("/").reduce((n, k) => (n == null ? n : n[k]), state));
   const set = (p, v) => {
     const parts = p.split("/"); const last = parts.pop();
@@ -32,7 +32,7 @@ function fakeDb(initial) {
   };
   api.ref = (path = "") => ({
     async get() { const v = structuredClone(get(path) ?? null); return { val: () => v, exists: () => v != null }; },
-    async set(v) { set(path, structuredClone(v)); },
+    async set(v) { if (api.failWrites) throw new Error("write failed"); set(path, structuredClone(v)); },
     async transaction(fn) {
       const cold = fn(null);                       // cold-cache FIRST run
       if (cold === undefined) { api.coldAborts++; return { committed: false, snapshot: { val: () => get(path) ?? null } }; }
@@ -145,6 +145,25 @@ test("no_stock with genuinely zero stock completes normally (no override needed,
   assert.equal(r.kind, "ok");
   assert.equal(active(db).result, "no_stock");
   assert.equal(active(db).resultOverridden, false);
+});
+
+// ── ARCHIVE-FAILURE IS NOT A FALSE OK (Codex P1) ─────────────────────────────
+test("flip commits but the day-node archive fails → NOT reported ok (retryable), and a retry heals + records the durable copy", async () => {
+  const db = dbWith(openCheck());
+  db.failWrites = true;                              // the archive/log writes will throw
+  const r1 = await call(db, { result: "confirmed" });
+  assert.equal(r1.kind, "reject");
+  assert.equal(r1.code, "archive-failed");          // NOT ok — the durable copy didn't land
+  assert.equal(active(db).status, "completed");     // …but the write-once flip DID commit (tombstone)
+  assert.equal(dayNode(db), undefined);             // and there is no archive yet
+  // The client retries once writes recover: write-once still rejects, but the
+  // archive is now healed so the completed check is visible + audited.
+  db.failWrites = false;
+  const r2 = await call(db, { result: "confirmed" });
+  assert.equal(r2.kind, "reject");
+  assert.equal(r2.code, "already-completed");        // write-once: the first result stands
+  assert.ok(dayNode(db), "the retry healed the day-node archive");
+  assert.equal(dayNode(db).result, "confirmed");
 });
 
 // ── SELF-HEALING ARCHIVE (Kimi P1: flip committed but archive lost) ──────────

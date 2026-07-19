@@ -51,6 +51,7 @@ const ERROR_CODE = {
   "already-completed": "failed-precondition",
   "not-open": "failed-precondition",
   "bad-result": "invalid-argument",
+  "archive-failed": "unavailable", // RETRYABLE: flip committed but the durable copy didn't land — retry re-heals
 };
 
 // Idempotent set with a small retry, so a transient write failure doesn't strand
@@ -69,10 +70,13 @@ async function setWithRetry(ref, value, attempts = 3) {
 // so a reconcile/retry re-runs it identically without re-reading stock. This is
 // the write that closes the "flip committed but archive lost" gap: it re-runs on
 // every completion attempt that finds an already-completed tombstone.
+// Returns TRUE only if BOTH the archive and the audit write landed — the caller
+// must NOT report a completion as ok when the durable copy didn't persist
+// (else a "done" check is invisible in the feed and unaudited; Codex P1).
 async function archiveAndLog(db, store, record) {
   const { checkId, completedSaDate: saDate, result } = record;
-  await setWithRetry(db.ref(`displayChecks/${store}/${saDate}/${checkId}`), record);
-  await setWithRetry(db.ref(`displayChecks_log/${store}/${saMonthOfDate(saDate)}/${checkId}_completed`), {
+  const archived = await setWithRetry(db.ref(`displayChecks/${store}/${saDate}/${checkId}`), record);
+  const logged = await setWithRetry(db.ref(`displayChecks_log/${store}/${saMonthOfDate(saDate)}/${checkId}_completed`), {
     checkId,
     type: result === "no_stock" ? "completed_no_stock" : "completed_confirmed",
     at: record.completedAt,
@@ -83,6 +87,7 @@ async function archiveAndLog(db, store, record) {
       ...(result === "no_stock" ? { stockQty: Number(record.stockAtClose) || 0 } : {}),
     },
   });
+  return archived && logged;
 }
 
 // The completion mutation core — injectable `db` so it is unit-testable without
@@ -107,16 +112,25 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
     stockQty = Number((await db.ref(`stock/${store}/${preRead.productId}/${sk}/qty`).get()).val()) || 0;
   }
 
+  // Report ok for THIS completion only if its durable copy (day node + audit)
+  // actually landed; otherwise a RETRYABLE archive-failed — never a false ok
+  // (Codex P1: a "done" check that's invisible in the feed and unaudited). The
+  // tombstone stays committed, so the client's retry re-heals through the
+  // already-completed path below.
+  const okOrRetry = (record) => archiveAndLog(db, store, record).then((ok) =>
+    ok ? { kind: "ok", result: record.result, completedAt: record.completedAt, overridden: !!record.resultOverridden }
+       : { kind: "reject", code: "archive-failed" });
+  // Already completed → WRITE-ONCE: reject (the first result stands). But still
+  // ENSURE the durable copy exists (a prior flip may have committed then failed
+  // to archive); only if that heal can't land do we ask the client to retry.
+  const healThenReject = (record) => archiveAndLog(db, store, record).then((ok) =>
+    ({ kind: "reject", code: ok ? "already-completed" : "archive-failed" }));
+
   const decision = completionDecision({ record: preRead, expectedCheckId: checkId, result, override: override === true, stockQty });
   if (decision.kind === "reject") {
-    // SELF-HEAL on the common retry path: the record is ALREADY a completed
-    // tombstone for this check. A prior completion may have flipped it but
-    // crashed before archiving, so re-run the idempotent archive from the record
-    // itself (it carries its own evidence) — the compliance record can never be
-    // stranded in the active tombstone without a day-node copy.
     if (decision.code === "already-completed" && preRead && preRead.status === "completed"
         && preRead.checkId === checkId && preRead.completedSaDate) {
-      await archiveAndLog(db, store, preRead);
+      return healThenReject(preRead);
     }
     return decision;
   }
@@ -135,26 +149,23 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
 
   if (res.committed) {
     // Archive the COMMITTED tombstone (flip-first, so concurrent closers can't
-    // diverge the two copies). Keyed by checkId under the completion SA day.
-    await archiveAndLog(db, store, res.snapshot.val());
-    return { kind: "ok", result, completedAt: nowMs, overridden: decision.overridden };
+    // diverge the two copies). Only report ok if the durable copy actually landed.
+    return okOrRetry(res.snapshot.val());
   }
 
   // Aborted. Read the authoritative current value to tell the causes apart AND —
   // the important part — SELF-HEAL: if the slot already holds THIS completed
   // check, a prior attempt committed the flip but may have crashed before
-  // archiving; re-run the idempotent archive so a completed record can never be
-  // stranded in the active tombstone without a day-node copy. (Without this the
-  // write-once guard turns every retry into a no-op that never heals the gap.)
+  // archiving; ensure the durable copy exists so a completed record can never be
+  // stranded in the active tombstone without a day-node copy.
   const cur = res.snapshot.val();
   if (!cur) return { kind: "reject", code: "not-found" };
   if (cur.checkId !== checkId) return { kind: "reject", code: "stale-check" };
-  // Heal only a well-formed completed tombstone — same completedSaDate guard as
-  // the decision-reject path, so a record missing the day key can't archive to a
-  // literal `.../undefined/...` node (Kimi P2). buildCompletedRecord always
-  // stamps it; this is belt-and-suspenders against a future/legacy writer.
+  // Heal only a well-formed completed tombstone — the completedSaDate guard keeps
+  // a record missing the day key from archiving to a literal `.../undefined/...`
+  // node (Kimi P2). buildCompletedRecord always stamps it; belt-and-suspenders.
   if (cur.status === "completed" && cur.completedSaDate) {
-    await archiveAndLog(db, store, cur);               // idempotent heal
+    return healThenReject(cur);
   }
   return { kind: "reject", code: "already-completed" };
 }
