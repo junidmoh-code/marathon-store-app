@@ -13,7 +13,7 @@
 // On success the sheet closes; the feed's live listener moves the card out of
 // Outstanding into Completed on its own — nothing to refetch.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT, MONO, BLUE, AMBER, INK, PANEL, META } from "./tokens";
@@ -31,8 +31,11 @@ export default function CheckSheet({ store, check, onClose }) {
   // restore focus to the trigger on unmount — otherwise keyboard users can reach
   // and activate the background feed while the sheet is open (CodeRabbit).
   const sheetRef = useRef(null);
-  const busyRef = useRef(busy); busyRef.current = busy;
-  const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
+  const busyRef = useRef(busy);
+  const onCloseRef = useRef(onClose);
+  // Sync latest values into refs in a layout effect, NOT during render — a render
+  // that React aborts/restarts must not leave the handler reading a stale value.
+  useLayoutEffect(() => { busyRef.current = busy; onCloseRef.current = onClose; });
   useEffect(() => {
     const prev = typeof document !== "undefined" ? document.activeElement : null;
     const el = sheetRef.current;
@@ -48,13 +51,15 @@ export default function CheckSheet({ store, check, onClose }) {
     el && el.addEventListener("keydown", onKey);
     return () => { el && el.removeEventListener("keydown", onKey); prev && prev.focus && prev.focus(); };
   }, []);
-  // Pull focus into the sheet on open and whenever the panel swaps (two buttons
-  // ↔ the override warning), so focus never falls back to the background.
+  // Pull focus into the sheet on open, when the panel swaps (two buttons ↔ the
+  // override warning), AND when it goes busy — mid-submit every button is disabled
+  // (removed from the tab order), so focus falls back to the dialog container
+  // (tabIndex -1) rather than escaping to the background feed.
   useEffect(() => {
     const el = sheetRef.current;
     const target = (el && el.querySelector(FOCUSABLE)) || el;
     target && target.focus && target.focus();
-  }, [override]);
+  }, [override, busy]);
 
   const name = check.productName || "Unknown";
   const size = check.size && check.size !== "_" ? String(check.size) : null;
