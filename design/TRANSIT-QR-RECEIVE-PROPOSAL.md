@@ -1,6 +1,10 @@
 # PROPOSAL — Transit state + QR scan-to-receive for Central→shop/hub transfers
 
-Status: **DESIGN ONLY — nothing built.** Investigated 2026-07-19.
+Status: **T1 IMPLEMENTED** (PR #250, 2026-07-19) — transit state + manual receive
+on the manual Transfer lane, building map confirmed (A: central/studio/base ·
+B: marathon-pe/trophy/hub1/hub2 · C: marathon-pine/hub3), outbound-only
+(A→B, A→C). T2 (QR labels), T3 (scan-to-receive), T4 (widen lanes + engine
+guard) remain proposals below.
 Scope: bulk stock transfers leaving Central. Customer-order dispatch, CR fulfilment,
 clothing refills, and all same-building moves stay exactly as they are (instant).
 

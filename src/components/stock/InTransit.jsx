@@ -22,7 +22,7 @@
 // path — this screen stays as the no-camera fallback.
 
 import React, { useMemo, useState } from "react";
-import { ref, update } from "firebase/database";
+import { ref, update, get, child } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { receiveMovementId } from "./transferDraft";
@@ -115,9 +115,9 @@ export default function InTransit({ products = [], registry: registryProp, actor
       if (settled[r.rowId] != null) continue;            // landed in an earlier pass
       const size = decodeSizeKey(r.sizeKey);             // "_" sentinel passes through untouched
       const want = Math.max(0, Math.min(Number(ed[r.rowId] ?? r.qty), r.qty));
-      if (want < r.qty) short = true;
 
       let ok = true;
+      let landedQty = want;
       if (want > 0) {
         const res = await applyMovement({
           type: "transfer_in", productId: r.pid, size, qty: want,
@@ -126,6 +126,17 @@ export default function InTransit({ products = [], registry: registryProp, actor
           link: { transferId: t.id },
         }).catch(() => ({ ok: false }));
         ok = !!res?.ok;
+        // Retry after a crash between movement and mirror: the deterministic id
+        // makes this pass a no-op, so the LEDGER's quantity — not today's input
+        // box — is what physically landed. Record that, or the doc could claim
+        // 5 received where the original (short) receive moved 3.
+        if (ok && res.idempotent) {
+          try {
+            const snap = await get(child(ref(database), `stock_movements/${res.movementId}`));
+            const q = Number(snap.val()?.qty);
+            if (Number.isFinite(q)) landedQty = q;
+          } catch { ok = false; }
+        }
       }
       if (ok) {
         // Record the receipt on the doc BEFORE moving on — this is the resume
@@ -133,8 +144,9 @@ export default function InTransit({ products = [], registry: registryProp, actor
         // movement) repairs it. The rules make each receipt write-once, so two
         // devices racing the same row can't record different quantities.
         try {
-          await update(ref(database), { [`transfers/${t.id}/received/${r.pid}/${r.sizeKey}`]: want });
-          settled[r.rowId] = want;
+          await update(ref(database), { [`transfers/${t.id}/received/${r.pid}/${r.sizeKey}`]: landedQty });
+          settled[r.rowId] = landedQty;
+          if (landedQty < r.qty) short = true;
         } catch { failed++; }
       } else failed++;
     }
@@ -144,15 +156,22 @@ export default function InTransit({ products = [], registry: registryProp, actor
     const status = allSettled ? (short ? "discrepancy" : "received")
       : anySettled ? "partially_received" : t.status || "dispatched";
 
+    // The stamp failure must NOT be swallowed: with every line settled the
+    // normal Receive button disappears, so a silently-failed stamp would leave
+    // the record stuck "dispatched" forever. On failure the card's finalize
+    // button (rendered whenever settled lines outrun the status) re-runs this
+    // function, which skips the settled lines and just re-stamps.
+    let stampOk = true;
     const stamp = { [`transfers/${t.id}/status`]: status };
     if (allSettled) {
       stamp[`transfers/${t.id}/receivedAt`] = serverNowIso();
       stamp[`transfers/${t.id}/receivedBy`] = auth.currentUser?.uid || null;
     }
-    await update(ref(database), stamp).catch(() => {});
+    await update(ref(database), stamp).catch(() => { stampOk = false; });
 
     setBusyId(null);
     if (failed) flash("err", `${failed} line(s) didn't land — tap Receive again to retry the rest.`);
+    else if (!stampOk) flash("err", "Stock landed but the record didn't update — tap Finalize to complete it.");
     else if (status === "discrepancy") flash("ok", "Received short — the missing units stay In Transit until an admin resolves them.");
     else flash("ok", `Received into ${labelFor(t.to, registry)} ✓`);
   };
@@ -216,6 +235,14 @@ export default function InTransit({ products = [], registry: registryProp, actor
             {!allSettled && (
               <button onClick={() => receive(t)} disabled={busy} style={{ ...bGreen, width: "100%", marginTop: 10, opacity: busy ? 0.5 : 1 }}>
                 {busy ? "Receiving…" : `Receive into ${labelFor(t.to, registry)}`}
+              </button>
+            )}
+            {/* Repair path: every line settled but the status stamp never
+                landed (offline blip / rules race) — without this the card
+                would sit "dispatched" forever with no button at all. */}
+            {allSettled && (t.status === "dispatched" || t.status === "partially_received") && (
+              <button onClick={() => receive(t)} disabled={busy} style={{ ...bGreen, width: "100%", marginTop: 10, opacity: busy ? 0.5 : 1 }}>
+                {busy ? "Finalizing…" : "Finalize record"}
               </button>
             )}
             {allSettled && t.status === "discrepancy" && (
