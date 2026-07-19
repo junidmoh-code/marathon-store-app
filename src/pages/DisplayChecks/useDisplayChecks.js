@@ -39,40 +39,41 @@ function useAuthReady() {
 // exact silent-wrong a compliance feed must not do).
 function useKeyedNode(path, enabled) {
   const authReady = useAuthReady();
-  const [items, setItems] = useState([]);
-  const [ready, setReady] = useState(false);
-  const [error, setError] = useState(null);
+  // State is KEYED BY PATH: it records which path it belongs to. A store switch
+  // (super-admin toggle) or the SA-midnight day-node rollover changes `path`;
+  // the reset runs in a passive effect AFTER render, so without keying we'd
+  // render the PREVIOUS store's checks (or yesterday's completions) for one
+  // commit — a cross-store data bleed in a compliance feed (CodeRabbit). The
+  // synchronous guard below suppresses that stale frame.
+  const [state, setState] = useState({ path: null, items: [], ready: false, error: null });
   useEffect(() => {
-    setReady(false);
-    setItems([]);
-    setError(null);
+    setState({ path, items: [], ready: false, error: null });
     if (!authReady || !enabled || !path) return;
     const node = ref(database, path);
     const unsub = onValue(
       node,
       (snap) => {
         const data = snap.val();
-        setError(null);
-        if (!data || typeof data !== "object") { setItems([]); setReady(true); return; }
-        const arr = Object.entries(data)
-          .filter(([, v]) => v && typeof v === "object")
-          .map(([key, v]) => ({ key, ...v }));
-        setItems(arr);
-        setReady(true);
+        const arr = data && typeof data === "object"
+          ? Object.entries(data).filter(([, v]) => v && typeof v === "object").map(([key, v]) => ({ key, ...v }))
+          : [];
+        setState({ path, items: arr, ready: true, error: null });
       },
       (err) => {
         // A denied/failed read is NOT an empty feed — surface it. (Permission-
         // denied is expected while the displayChecks* paths are pre-rules, but
         // an empty feed and an unreadable feed must look different to staff.)
         console.warn(`Display Checks read error on /${path}:`, err?.code || err);
-        setItems([]);
-        setError(err?.code || "read-error");
-        setReady(true);
+        setState({ path, items: [], ready: true, error: err?.code || "read-error" });
       }
     );
     return () => unsub();
   }, [authReady, enabled, path]);
-  return { items, ready, error };
+  // Synchronous stale-suppression: if the state we hold belongs to a DIFFERENT
+  // path than the one requested this render, we're in the gap between render and
+  // the reset effect — report loading, never the old path's items/error.
+  if (state.path !== path) return { items: [], ready: false, error: null };
+  return { items: state.items, ready: state.ready, error: state.error };
 }
 
 // The current SA calendar day, RE-EVALUATED on a timer so it rolls over at SA
