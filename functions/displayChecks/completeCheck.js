@@ -137,12 +137,22 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   if (decision.kind === "needs_override") return { kind: "needs_override", stockQty: decision.stockQty };
 
   // ── FLIP the active record to a completed TOMBSTONE (write-once, NEVER null) ──
-  // Cold-safe (`cur ?? preRead` forces the server round-trip). The checkId +
-  // open-status guards make it write-once and abort if the slot changed — and it
-  // returns a completed RECORD, so it can never delete (the invariant).
+  // preRead rescues ONLY the cold-cache FIRST callback: a Cloud Function has no
+  // local RTDB cache, so the first run sees null and returning undefined there
+  // would abort before the server round-trip. Once we've been re-invoked with an
+  // AUTHORITATIVE value, a null means the slot was genuinely DELETED (e.g. a
+  // tombstone reaped after an across-midnight completion) — abort, NEVER
+  // resurrect it from the stale open preRead (that would recreate the record and
+  // overwrite the first closer's archive with a conflicting result → write-once
+  // violation). This is the resurrection class the whole module guards against
+  // (Codex P1). The result is still a record or undefined — never `null`.
+  let firstRun = true;
   const res = await activeRef.transaction((cur) => {
-    const c = cur === null ? preRead : cur;
-    if (!c || c.checkId !== checkId) return undefined;   // gone/overwritten — abort, don't resurrect
+    // preRead substitutes ONLY on the cold-cache first run; every later
+    // invocation uses the authoritative `cur` (a null there = deleted → abort).
+    const c = (cur === null && firstRun) ? preRead : cur;
+    firstRun = false;
+    if (!c || c.checkId !== checkId) return undefined;   // gone/overwritten/deleted — abort, don't resurrect
     if (c.status !== "open" || c.completedAt != null) return undefined; // write-once + concurrent guard
     return buildCompletedRecord(c, { result, nowMs, saDate, actor, overridden: decision.overridden, stockQty });
   });

@@ -36,6 +36,9 @@ function fakeDb(initial) {
     async transaction(fn) {
       const cold = fn(null);                       // cold-cache FIRST run
       if (cold === undefined) { api.coldAborts++; return { committed: false, snapshot: { val: () => get(path) ?? null } }; }
+      // Simulate a concurrent delete (e.g. the sweep reaping a tombstone) landing
+      // between the cold run and the authoritative server round-trip.
+      if (api.deleteBeforeServer) { set(path, null); api.deleteBeforeServer = false; }
       const server = get(path) ?? null;
       const final = fn(server);
       if (final === undefined) return { committed: false, snapshot: { val: () => server } };
@@ -145,6 +148,17 @@ test("no_stock with genuinely zero stock completes normally (no override needed,
   assert.equal(r.kind, "ok");
   assert.equal(active(db).result, "no_stock");
   assert.equal(active(db).resultOverridden, false);
+});
+
+// ── RESURRECTION GUARD (Codex P1: authoritative-null must abort, not resurrect) ─
+test("if the active slot is DELETED (reaped) before the txn's server run, completion ABORTS and does NOT recreate it", async () => {
+  const db = dbWith(openCheck());
+  db.deleteBeforeServer = true;                     // a reap lands between preRead and the server round-trip
+  const r = await call(db, { result: "confirmed" });
+  assert.equal(r.kind, "reject");
+  assert.equal(r.code, "not-found");                // authoritative null → abort
+  assert.equal(active(db), undefined);              // NOT resurrected — slot stays deleted
+  assert.equal(dayNode(db), undefined);             // nothing archived, no write-once violation
 });
 
 // ── ARCHIVE-FAILURE IS NOT A FALSE OK (Codex P1) ─────────────────────────────
