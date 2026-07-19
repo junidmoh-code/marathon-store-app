@@ -208,7 +208,7 @@ function RecountChip({ row, actorRole }) {
     <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1px solid ${RED}55`, background: "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
       <span style={{ fontWeight: 800, color: "#fff" }}>{row.size || "One size"}</span>
       <span style={{ fontWeight: 700, color: RED }}>
-        {row.rejections != null ? `${row.rejections}× no` : "both levels"} · {locLabel(row.source)} shows {row.showing}
+        for {locLabel(row.loc)} · {row.rejections != null ? `${row.rejections}× no` : "both levels"} · {locLabel(row.source)} shows {row.showing}
       </span>
       {/* confirmedOut rows (rejections == null) have no streak node to clear —
           their suppression is the 14-day both-levels window, which a recount

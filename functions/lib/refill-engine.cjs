@@ -343,29 +343,20 @@ function computeRefillPlan(snapshot) {
   const streakOf = (d, p, s) => rejectStreak?.[d]?.[p]?.[s] || null;
   const streakOps = [];
   const nowIso = new Date(nowMs).toISOString();
-  // Close-derived ops are ATTACHED to their close (c.streakOp), not pushed to
-  // streakOps: the scan applies them in the SAME multi-path update as that
-  // close's lock removal, so (a) a close that bails its conditional txn never
-  // half-applies its streak op (no phantom inc that would double when the
-  // close recurs), and (b) a lost fulfilment-reset re-emerges with the close
-  // itself instead of being a one-shot event (review round 2). Only the
-  // deficit-loop's self-heal resets — recomputable from live state every scan
-  // — travel via the streakOps array.
-  for (const c of closes) {
-    if (c.reason === "fulfilled") {
-      if (streakOf(c.dest, c.pid, c.sizeKey)) c.streakOp = { op: "reset" };
-      continue;
-    }
-    if (!c.humanReject) continue;
-    const denier = c.denier || routes[c.dest];
-    const denierHas = denier ? avail(cellQty(stock, denier, c.pid, rawSize(c.pid, c.sizeKey))) : 0;
-    const cur = num(streakOf(c.dest, c.pid, c.sizeKey)?.count) || 0;
-    if (denierHas > 0) {
-      c.streakOp = { op: "inc", count: cur + 1, ts: nowIso, by: denier };
-    } else if (cur > 0) {
-      c.streakOp = { op: "reset" };
-    }
-  }
+  // Close-derived ops are ATTACHED to each close (c.streakOp) by the loop
+  // further down (after the arrival-lift/staleness machinery it needs is in
+  // scope). The scan applies them in the SAME multi-path update as that
+  // close's lock removal, so a lost fulfilment-reset re-emerges with the
+  // close itself on the next scan (the lock still exists) instead of being a
+  // one-shot event — the old separate-bulk-write design's real failure mode.
+  // (Withdraw-type closes, the ones whose order txn can bail, never carry a
+  // streakOp — the branches are mutually exclusive — so bailing isn't the
+  // scenario this protects against.) Only the deficit-loop's self-heal resets
+  // — recomputable from live state every scan — travel via the streakOps
+  // array. KNOWN RESIDUAL (accepted, review round 3): an inc's count is an
+  // absolute cur+1 from the snapshot — staff clearing the node in the seconds
+  // between snapshot and write get it recreated for one cycle; tapping clear
+  // again resolves.
 
   // ── deficits (L1/L2/L4) — propose, don't suppress ───────────────────────────
   // Owner philosophy (2026-07-12 v3): the warehouse is the validation layer.
@@ -474,7 +465,10 @@ function computeRefillPlan(snapshot) {
   // no matter what the cells claim: no requests to ANY destination, straight
   // to the Missing Sizes reorder list. When the window lapses, the normal
   // cooldown cycle resumes — one re-ask; two fresh denials re-confirm it out.
-  const confirmedOutMs = (num(config?.confirmedOutDays) || 14) * 86400e3;
+  // Clamped ≥1 day: a 0/negative config value would make EVERY denial and
+  // streak instantly "stale" — silently disabling both confirmed-out and the
+  // reject-streak loop guard (review round 3).
+  const confirmedOutMs = Math.max(1, num(config?.confirmedOutDays) || 14) * 86400e3;
   // Route-derived fallbacks for LEGACY denial records that carry no source of
   // their own: Central (hub2's source) denies hub2 asks; the stores' sources
   // deny store asks. Denials recorded with a `by` use that exact location.
@@ -508,15 +502,48 @@ function computeRefillPlan(snapshot) {
   // so arrival-lift evidence always covers a live streak).
   const streakState = (loc, pid, sizeKey, size, fallbackDenier) => {
     const s = streakOf(loc, pid, sizeKey);
-    if (!s || num(s.count) < streakLimit) return { flagged: false };
+    if (!s) return { flagged: false };
     const ts = Date.parse(s.lastTs || 0) || 0;
+    // Staleness applies to EVERY streak, not only at-limit ones — otherwise
+    // strikes 1–2 could age for months and a fresh single rejection would
+    // flag "3× rejected" on evidence nobody remembers.
+    if (nowMs - ts > confirmedOutMs) return { flagged: false, resetWorthy: true };
+    if (num(s.count) < streakLimit) return { flagged: false };
     const denier = s.by || fallbackDenier;
     const has = denier ? avail(cellQty(stock, denier, pid, size)) : 0;
-    if (nowMs - ts > confirmedOutMs || has <= 0 || arrivedAfter(denier, pid, sizeKey, ts)) {
+    if (has <= 0 || arrivedAfter(denier, pid, sizeKey, ts)) {
       return { flagged: false, resetWorthy: true };
     }
     return { flagged: true, count: num(s.count), denier, has };
   };
+
+  // Attach streak ops to the reconciled closes (see the streakOf block above
+  // for why they ride the close). A fresh strike CONTINUES the persisted
+  // streak only while its prior evidence is still live — a stale streak or
+  // one lifted by a demonstrated arrival restarts the count at 1, so expired
+  // strikes never combine with a fresh "no" into a premature flag.
+  for (const c of closes) {
+    if (c.reason === "fulfilled") {
+      if (streakOf(c.dest, c.pid, c.sizeKey)) c.streakOp = { op: "reset" };
+      continue;
+    }
+    if (!c.humanReject) continue;
+    const cDenier = c.denier || routes[c.dest];
+    const cSize = rawSize(c.pid, c.sizeKey);
+    const cDenierHas = cDenier ? avail(cellQty(stock, cDenier, c.pid, cSize)) : 0;
+    const sPrev = streakOf(c.dest, c.pid, c.sizeKey);
+    if (cDenierHas > 0) {
+      let cur = 0;
+      if (sPrev) {
+        const pts = Date.parse(sPrev.lastTs || 0) || 0;
+        const prevDenier = sPrev.by || cDenier;
+        if (nowMs - pts <= confirmedOutMs && !arrivedAfter(prevDenier, c.pid, c.sizeKey, pts)) cur = num(sPrev.count) || 0;
+      }
+      c.streakOp = { op: "inc", count: cur + 1, ts: nowIso, by: cDenier };
+    } else if (sPrev) {
+      c.streakOp = { op: "reset" };
+    }
+  }
 
   for (const dest of dests) {
     const mode = config?.mode?.[dest] || "off";
@@ -553,7 +580,10 @@ function computeRefillPlan(snapshot) {
           // masks this gate; the streak-staleness window (= confirmedOutMs)
           // bounds any pile-up when the mask lapses.
           const lk = `${pid}|${sizeKey}`;
-          const denialLocs = [rejCentralLevel.get(lk)?.by || centralLevelLoc, rejShopLevel.get(lk)?.by].filter(Boolean);
+          // Legacy shop-level denials carry no `by` — fall back to the route-
+          // derived shop-level locations, exactly as confirmedOut() itself does.
+          const shopBy = rejShopLevel.get(lk)?.by;
+          const denialLocs = [rejCentralLevel.get(lk)?.by || centralLevelLoc, ...(shopBy ? [shopBy] : shopLevelLocs)].filter(Boolean);
           const showingLoc = denialLocs.find((l) => avail(cellQty(stock, l, pid, size)) > 0);
           if (showingLoc) {
             recountNeeded.push({

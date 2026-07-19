@@ -1248,3 +1248,25 @@ test("dormant streak (older than the ledger window) resets instead of flagging a
   assert.ok(plan.streakOps.some((o) => o.op === "reset" && o.dest === "marathon-pe" && o.sizeKey === "M"));
   assert.ok(plan.intents.find((x) => x.dest === "marathon-pe" && x.sizeKey === "M"), "cell resumes normal proposing");
 });
+
+test("sub-limit streaks age out too — old strikes never combine with fresh ones months later", () => {
+  const plan = computeRefillPlan(base({
+    rejectStreak: { "marathon-pe": { p1: { M: { count: 2, lastTs: iso(20 * 24), by: "hub2" } } } }, // 20d > 14d window
+  }));
+  assert.ok(plan.streakOps.some((o) => o.op === "reset" && o.dest === "marathon-pe" && o.sizeKey === "M"),
+    "stale sub-limit streak cleared");
+  assert.equal(plan.exceptions.recountNeeded.count, 0);
+  assert.ok(plan.intents.find((x) => x.dest === "marathon-pe" && x.sizeKey === "M"), "cell proposes normally");
+});
+
+test("fresh rejection over an EXPIRED streak restarts the count at 1 — never combines with dead strikes", () => {
+  const plan = computeRefillPlan(base({
+    rejectStreak: { "marathon-pe": { p1: { M: { count: 3, lastTs: iso(20 * 24), by: "hub2" } } } }, // stale (>14d)
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "o1", orderCreatedAt: iso(2), qty: 2, source: "hub2", createdAt: iso(2) } } } },
+    refillRequests: { r1: { status: "open", requestingLocation: "marathon-pe", productId: "p1", size: "M" } },
+    orders: { o1: { customerName: "Shop Refill", destShop: "marathon-pe", productId: "p1", size: "M", createdAt: iso(2), clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(0.1) } },
+  }));
+  const close = plan.closes.find((c) => c.dest === "marathon-pe" && c.sizeKey === "M");
+  assert.ok(close && close.streakOp && close.streakOp.op === "inc");
+  assert.equal(close.streakOp.count, 1, "expired evidence discarded — fresh strike is #1, not #4");
+});

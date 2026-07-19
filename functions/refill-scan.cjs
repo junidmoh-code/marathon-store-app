@@ -130,17 +130,32 @@ async function runScan() {
         }
         if (!proceed) continue;   // fulfilment won the race — leave rr + lock for the next scan
         if (c.refillId && c.rrStatus) {
-          await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => {
-            // NULL-TOLERANT (the #199 lesson, relearned 2026-07-13 the hard
-            // way): the FIRST pass runs against the cold local cache and sees
-            // null even when the node exists. Returning undefined there ABORTS
-            // permanently — 2,304 statuses silently never wrote. Returning
-            // null probes: a real node fails the compare and the callback
-            // re-runs with true data; a genuinely-missing node no-ops.
-            if (cur === null) return null;
-            if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
-            return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
-          }).catch(() => {});
+          try {
+            const res = await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => {
+              // NULL-TOLERANT (the #199 lesson, relearned 2026-07-13 the hard
+              // way): the FIRST pass runs against the cold local cache and sees
+              // null even when the node exists. Returning undefined there ABORTS
+              // permanently — 2,304 statuses silently never wrote. Returning
+              // null probes: a real node fails the compare and the callback
+              // re-runs with true data; a genuinely-missing node no-ops.
+              if (cur === null) return null;
+              if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
+              return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
+            });
+            // The plan said "human reject", but the LIVE request resolved as
+            // fulfilled in the snapshot gap (contradictory human actions in one
+            // window): the fulfilment wins — never record a strike against a
+            // request that was actually served; reset instead (fulfilment
+            // resets, same as the fulfilled-close path).
+            if (res && !res.committed && res.snapshot?.val()?.status === "fulfilled" && c.streakOp?.op === "inc") {
+              c.streakOp = { op: "reset" };
+            }
+          } catch {
+            // Transaction outcome unknown (network) — drop an inc rather than
+            // risk a false strike; the reject, if real, recurs via the rr
+            // branch on a later scan. Resets stay (benign either way).
+            if (c.streakOp?.op === "inc") delete c.streakOp;
+          }
         }
         // Lock removal + this close's streak op in ONE multi-path update: a
         // bailed close (proceed=false above) applies neither, and a lost
@@ -165,13 +180,18 @@ async function runScan() {
     // Staff can also delete a streak from Health — "Recounted, ask again" —
     // via the delete-only rules carve-out on /refill_engine/rejectStreak.
     if (plan.streakOps && plan.streakOps.length) {
+      // A cell whose close carried a streak op THIS scan must not also take a
+      // snapshot-derived self-heal reset — the close's op (e.g. a fresh inc)
+      // is newer truth and would be clobbered to null.
+      const closedCells = new Set((plan.closes || []).filter((c) => c.streakOp).map((c) => `${c.dest}|${c.pid}|${c.sizeKey}`));
       const upd = {};
       for (const op of plan.streakOps) {
+        if (closedCells.has(`${op.dest}|${op.pid}|${op.sizeKey}`)) continue;
         upd[`refill_engine/rejectStreak/${op.dest}/${op.pid}/${op.sizeKey}`] =
           op.op === "inc" ? { count: op.count, lastTs: op.ts, by: op.by || null } : null;
       }
-      await db.ref().update(upd).catch(() => {});
-      counts.streakOps = plan.streakOps.length;
+      if (Object.keys(upd).length) await db.ref().update(upd).catch(() => {});
+      counts.streakOps = Object.keys(upd).length;
     }
 
     // ── apply resizes (owner approval 2026-07-13) ─────────────────────────────

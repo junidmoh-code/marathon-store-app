@@ -447,7 +447,7 @@
         "$loc": {
           "$pid": {
             "$sizeKey": {
-              ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && !newData.exists() && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|admin)$/)"
+              ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && !newData.exists() && (root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|admin)$/) || auth.token.email === 'gunidmoh@gmail.com')"
             }
           }
         }
