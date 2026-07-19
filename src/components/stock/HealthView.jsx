@@ -210,7 +210,10 @@ function RecountChip({ row, actorRole }) {
       <span style={{ fontWeight: 700, color: RED }}>
         {row.rejections != null ? `${row.rejections}× no` : "both levels"} · {locLabel(row.source)} shows {row.showing}
       </span>
-      {canClear && (
+      {/* confirmedOut rows (rejections == null) have no streak node to clear —
+          their suppression is the 14-day both-levels window, which a recount
+          lifts via the arrival movement it books, not via this button. */}
+      {canClear && row.rejections != null && (
         <button onClick={clear} disabled={state === "busy" || state === "cleared"}
           style={{ border: "1px solid rgba(60,110,255,.35)", background: "rgba(60,110,255,.1)", color: BLUE_L, borderRadius: 7, padding: "2px 8px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
           {state === "busy" ? "…" : state === "cleared" ? "Cleared ✓" : state === "failed" ? "Retry" : "Recounted — ask again"}

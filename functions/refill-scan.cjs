@@ -142,7 +142,16 @@ async function runScan() {
             return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
           }).catch(() => {});
         }
-        await db.ref(`refill_engine/open/${c.dest}/${c.pid}/${c.sizeKey}`).remove().catch(() => {});
+        // Lock removal + this close's streak op in ONE multi-path update: a
+        // bailed close (proceed=false above) applies neither, and a lost
+        // fulfilment-reset re-emerges with the close itself on the next scan
+        // (the lock still exists) instead of being a one-shot event.
+        const closeUpd = { [`refill_engine/open/${c.dest}/${c.pid}/${c.sizeKey}`]: null };
+        if (c.streakOp) {
+          closeUpd[`refill_engine/rejectStreak/${c.dest}/${c.pid}/${c.sizeKey}`] =
+            c.streakOp.op === "inc" ? { count: c.streakOp.count, lastTs: c.streakOp.ts, by: c.streakOp.by || null } : null;
+        }
+        await db.ref().update(closeUpd).catch(() => {});
         applied++;
         if (c.cancelReason) withdrawn++;
       }
@@ -150,10 +159,11 @@ async function runScan() {
       if (withdrawn) counts.withdrawn = withdrawn;
     }
 
-    // ── apply reject-streak ops (loop guard, incident 2026-07-19) ─────────────
-    // One bulk update: incs stamp {count,lastTs,by}; resets delete the node
-    // (staff can also delete it from Health — "Recounted, ask again" — via the
-    // delete-only rules carve-out on /refill_engine/rejectStreak).
+    // ── apply the deficit-loop's self-heal streak resets ──────────────────────
+    // (Close-derived ops ride inside each close's own update above.) These are
+    // recomputed from live state every scan, so a lost write simply reappears.
+    // Staff can also delete a streak from Health — "Recounted, ask again" —
+    // via the delete-only rules carve-out on /refill_engine/rejectStreak.
     if (plan.streakOps && plan.streakOps.length) {
       const upd = {};
       for (const op of plan.streakOps) {

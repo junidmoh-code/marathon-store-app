@@ -1182,10 +1182,10 @@ test("reconciled human rejection increments the streak when the denier still sho
     refillRequests: { r1: { status: "open", requestingLocation: "marathon-pe", productId: "p1", size: "M" } },
     orders: { o1: { customerName: "Shop Refill", destShop: "marathon-pe", productId: "p1", size: "M", createdAt: iso(2), clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(0.1) } },
   }));
-  const inc = plan.streakOps.find((o) => o.op === "inc" && o.dest === "marathon-pe" && o.sizeKey === "M");
-  assert.ok(inc, "streak incremented");
-  assert.equal(inc.count, 1);
-  assert.equal(inc.by, "hub2");
+  const close = plan.closes.find((c) => c.dest === "marathon-pe" && c.sizeKey === "M");
+  assert.ok(close && close.streakOp && close.streakOp.op === "inc", "streak inc attached to its close");
+  assert.equal(close.streakOp.count, 1);
+  assert.equal(close.streakOp.by, "hub2");
 });
 
 test("fulfilment resets an existing streak", () => {
@@ -1195,5 +1195,56 @@ test("fulfilment resets an existing streak", () => {
     refillRequests: { r1: { status: "open", requestingLocation: "marathon-pe", productId: "p1", size: "M" } },
     orders: { o1: { customerName: "Shop Refill", destShop: "marathon-pe", productId: "p1", size: "M", createdAt: iso(2), clothingRefillStatus: "available" } },
   }));
+  const close = plan.closes.find((c) => c.dest === "marathon-pe" && c.sizeKey === "M");
+  assert.ok(close && close.streakOp && close.streakOp.op === "reset", "reset attached to the fulfilled close");
+});
+
+// ── Loop guard round 2 (review blocker): hub2/rr-only rejections + flagged-source labelling ──
+
+test("hub2 queue rejection (rr cancelled, no cancelReason) increments the streak — no uncapped recheck loop", () => {
+  const plan = computeRefillPlan(base({
+    targets: { hub2: { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: { "marathon-pe": {}, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } }, trophy: {} },
+    openIndex: { hub2: { p1: { M: { refillId: "rHub", qty: 2, source: "central", createdAt: iso(2) } } } },
+    refillRequests: { rHub: { status: "cancelled", resolvedAt: iso(0.1), requestingLocation: "hub2", productId: "p1", size: "M", source: "central", rejectedBy: "warehouse" } },
+  }));
+  const close = plan.closes.find((c) => c.dest === "hub2" && c.sizeKey === "M");
+  assert.ok(close && close.streakOp && close.streakOp.op === "inc", "human rr-reject counted on its close");
+  assert.equal(close.streakOp.by, "central");
+});
+
+test("engine self-withdrawal (rr cancelled WITH cancelReason) never increments the streak", () => {
+  const plan = computeRefillPlan(base({
+    targets: { hub2: { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: { "marathon-pe": {}, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } }, trophy: {} },
+    openIndex: { hub2: { p1: { M: { refillId: "rHub", qty: 2, source: "central", createdAt: iso(2) } } } },
+    refillRequests: { rHub: { status: "cancelled", cancelReason: "unfillable", resolvedAt: iso(0.1), requestingLocation: "hub2", productId: "p1", size: "M", source: "central" } },
+  }));
+  assert.equal(plan.streakOps.filter((o) => o.op === "inc").length, 0);
+  assert.ok(plan.closes.every((c) => !c.streakOp || c.streakOp.op !== "inc"), "no inc on any close either");
+});
+
+test("streak-FLAGGED source leg parks the store demand as BLOCKED, not flowing", () => {
+  const plan = computeRefillPlan(base({
+    targets: {
+      "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 } } },
+    },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } }, trophy: {} },
+    rejectStreak: { hub2: { p1: { M: { count: 3, lastTs: iso(1), by: "central" } } } },
+  }));
+  assert.equal(plan.intents.length, 0, "flagged hub2 leg never re-asks");
+  assert.ok(plan.exceptions.recountNeeded.items.some((r) => r.loc === "hub2" && r.source === "central"), "hub2 cell flagged for recount");
+  assert.ok(plan.exceptions.awaitingSupplier.items.some((w) => w.loc === "marathon-pe" && /blocked/.test(w.note)),
+    "store demand labelled blocked while the source leg awaits a recount");
+  assert.equal(plan.exceptions.awaitingUpstream.count, 0, "never mislabelled as flowing");
+});
+
+test("dormant streak (older than the ledger window) resets instead of flagging a forgotten mismatch", () => {
+  const plan = computeRefillPlan(base({
+    rejectStreak: { "marathon-pe": { p1: { M: { count: 3, lastTs: iso(60 * 24), by: "hub2" } } } },
+  }));
+  assert.equal(plan.exceptions.recountNeeded.count, 0);
   assert.ok(plan.streakOps.some((o) => o.op === "reset" && o.dest === "marathon-pe" && o.sizeKey === "M"));
+  assert.ok(plan.intents.find((x) => x.dest === "marathon-pe" && x.sizeKey === "M"), "cell resumes normal proposing");
 });
