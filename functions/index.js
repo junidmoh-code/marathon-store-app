@@ -3105,10 +3105,20 @@ exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 //   firebase deploy --only functions:onClothingSale
 exports.onClothingSale = require("./displayChecks/onClothingSale.js").onClothingSale;
 
-// ─── DISPLAY CHECKS — wakeHeldChecks (PR 3: scheduled hold→wake sweep, no UI) ──
-// Every 5 min (Africa/Johannesburg), moves held checks (flat index
-// /displayChecks_held/{store}) through stock_seen → grace → open, RELOCATING a
-// waking check into today's day node (wakes across days). Pure decision in
-// displayChecks/lib.cjs; sweep IO in displayChecks/wakeHeldChecks.js. Deploy:
+// ─── DISPLAY CHECKS — wakeHeldChecks (scheduled hold→wake sweep, no UI) ────────
+// Every 5 min (Africa/Johannesburg), walks the active index
+// /displayChecks_active/{store} and moves held checks through stock_seen → grace
+// → open IN PLACE (never-null model: a check never changes address, so no
+// relocation race), and reaps completed tombstones from a prior SA day. Pure
+// decision in displayChecks/lib.cjs; sweep IO in displayChecks/wakeHeldChecks.js.
 //   firebase deploy --only functions:wakeHeldChecks
 exports.wakeHeldChecks = require("./displayChecks/wakeHeldChecks.js").wakeHeldChecks;
+
+// ─── DISPLAY CHECKS — completeDisplayCheck (PR 7: staff completion, write path) ─
+// Callable: a signed-in staff member closes an OPEN check with "confirmed" or
+// "no_stock". Server-authoritative write-once + no-stock soft-block; completion
+// COPIES to the day node and flips the active record to a `completed` tombstone
+// IN PLACE — never deletes (the invariant the cold-cache close depends on). Pure
+// decision in displayChecks/lib.cjs; IO in displayChecks/completeCheck.js.
+//   firebase deploy --only functions:completeDisplayCheck
+exports.completeDisplayCheck = require("./displayChecks/completeCheck.js").completeDisplayCheck;
