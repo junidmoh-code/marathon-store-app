@@ -33,7 +33,7 @@ const {
   saDateStringFromMs,
   saMonthOfDate,
   completionDecision,
-  buildCompletedRecord,
+  completionFlipMutation,
 } = require("./lib.cjs");
 const { guardedMutate } = require("./guardedTransaction.cjs");
 
@@ -143,11 +143,8 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   // after an across-midnight completion → abort, never resurrect the stale open
   // preRead). This mutation only ever sees a non-null current, and returns a
   // completed record or undefined — never null — so it can never delete.
-  const res = await guardedMutate(activeRef, preRead, (c) => {
-    if (c.checkId !== checkId) return undefined;   // overwritten by a fresh check — abort
-    if (c.status !== "open" || c.completedAt != null) return undefined; // write-once + concurrent guard
-    return buildCompletedRecord(c, { result, nowMs, saDate, actor, overridden: decision.overridden, stockQty });
-  });
+  const res = await guardedMutate(activeRef, preRead,
+    completionFlipMutation({ expectedCheckId: checkId, result, nowMs, saDate, actor, overridden: decision.overridden, stockQty }));
 
   if (res.committed) {
     // Archive the COMMITTED tombstone (flip-first, so concurrent closers can't

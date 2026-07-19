@@ -10,6 +10,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { runWakeSweep } = require("../displayChecks/wakeHeldChecks.js");
 const { saDateStringFromMs } = require("../displayChecks/lib.cjs");
+const { assertNeverDeletesActiveRecord } = require("./helpers/guarded-txn.cjs");
 
 const NOW = Date.parse("2026-07-16T10:00:00.000Z");
 const SA = saDateStringFromMs(NOW);
@@ -183,4 +184,26 @@ test("disabled store (marathon-pine) is never processed", async () => {
   const db = fakeDb({ displayChecks_active: { "marathon-pine": { [DK]: heldRecord() } }, stock: { "marathon-pine": { p1: { M: { qty: 9 } } } } });
   const r = await runWakeSweep({ db, nowMs: NOW });
   assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0, reaped: 0 });
+});
+
+// ── NEVER-DELETE INVARIANT: the sweep (the module's only deleter) leaves active
+// records intact — reaps ONLY completed tombstones. This is the load-bearing fact
+// that keeps the cold-both-null resurrection unreachable at every guardedMutate
+// site (see docs/display-checks-txn-audit.md → PR-11/12 stop condition).
+test("the wake sweep NEVER deletes an active (held/open) record — only completed tombstones are reaped", async () => {
+  const db = fakeDb({
+    displayChecks_active: { "marathon-pe": {
+      "held__M": heldRecord({ dedupeKey: "held__M", checkId: "cHeld", productId: "ph", status: "held" }),
+      "open__M": heldRecord({ dedupeKey: "open__M", checkId: "cOpen", productId: "po", status: "open" }),
+      "old__M": { checkId: "cOld", dedupeKey: "old__M", status: "completed",
+                  completedAt: Date.parse("2026-07-15T12:00:00.000Z"), completedSaDate: "2026-07-15" },
+    } },
+    stock: { "marathon-pe": { ph: { M: { qty: 0 } }, po: { M: { qty: 0 } } } },
+  });
+  await assertNeverDeletesActiveRecord({
+    db,
+    activePaths: { held: "displayChecks_active/marathon-pe/held__M", open: "displayChecks_active/marathon-pe/open__M" },
+    run: (d) => runWakeSweep({ db: d, nowMs: NOW }),
+  });
+  assert.equal(db.state.displayChecks_active["marathon-pe"]["old__M"], undefined); // the completed tombstone WAS reaped (allowed)
 });

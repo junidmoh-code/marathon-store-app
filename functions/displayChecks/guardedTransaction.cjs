@@ -13,20 +13,36 @@
 // and the sixth is always the one outside the current diff (see
 // docs/display-checks-txn-audit.md, finding A: the wake held→open flip was an
 // unlatched resurrection site missed by every prior PR because it was never
-// in-diff). This file removes the ability to write instance seven: two explicit
-// modes, and a call site is provably in exactly one of them.
+// in-diff). This file removes the copy-paste latch-OMISSION: two explicit modes,
+// a call site provably in exactly one of them.
+//
+// HONEST SCOPE (do not overclaim). The latch closes the RETRY-path resurrection —
+// a null delivered to a LATER callback. It does NOT close the cold-cache
+// SINGLE-round-trip delete race: in a Cloud Function the first callback runs on
+// null and the write is sent with expected-hash = hash(null); if the record was
+// deleted after preRead and the server is ALSO null, the hashes MATCH and the
+// server commits mutate(preRead) on the FIRST callback — no re-invocation, the
+// latch never runs, the record is resurrected. THAT case is closed not by this
+// primitive but by the module's NEVER-DELETE-AN-ACTIVE-RECORD invariant (the sole
+// deleter, prior-day tombstone reaping, can't touch a record a mutation holds).
+// The invariant is the co-requirement, guarded by assertNeverDeletesActiveRecord
+// and the PR-11/12 stop condition in the audit doc — the latch cannot substitute
+// for it.
 
 "use strict";
 
-// ── MODE 1: guardedMutate — mutate an EXISTING record, never resurrect ─────────
+// ── MODE 1: guardedMutate — mutate an EXISTING record, abort on a later null ───
 // For every transaction that reads a current record and writes the next one
 // (bumpCheck, the wake held→open flip, completion's flip, the reap's conditional
 // delete). The wrapper OWNS the null-handling so the caller never sees null and
 // therefore cannot get it wrong:
 //   • cold-cache first run (cur === null on the first callback) → use `preRead`,
 //     forcing the server round-trip instead of a silent abort.
-//   • authoritative null (cur === null on ANY later callback) → abort (undefined),
-//     NEVER substitute preRead → a genuinely-deleted record is never resurrected.
+//   • authoritative null on a LATER callback (cur === null after a non-null
+//     datastale delivery) → abort (undefined), never substitute preRead → no
+//     resurrection via the retry path. (The cold-both-null first-callback commit
+//     is out of the latch's reach — see HONEST SCOPE above; the never-delete
+//     invariant closes it.)
 // The caller supplies `preRead` and `mutate(nonNullCurrent)`, which returns:
 //   • a next value → commit it
 //   • null         → delete the node (conditional-delete callers, e.g. reap)

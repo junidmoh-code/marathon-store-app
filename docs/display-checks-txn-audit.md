@@ -1,14 +1,40 @@
 # Display Checks — cold-cache transaction audit
 
-## Headline finding (why the shared primitive exists)
+## Headline finding (why the shared primitive exists) — and its honest limit
 **Site #4 — the wake sweep's held→open flip — was an unlatched resurrection site, missed by every
 prior PR because it was never in-diff.** Bump (#1) and completion (#6) each got the `firstRun` latch
 when a reviewer happened to be looking at *that* file; the wake flip carried the identical
 `cur === null ? preRead` shape the whole time and no one saw it, because the fix always landed
-somewhere else. That is the precise failure mode this refactor eliminates: with one shared
-`guardedMutate` primitive and one reusable resurrection assertion, the null-handling is correct in
-one place and every present and future two-path write inherits both the guard and the test — there
-is no longer a "sixth site outside the diff" to miss.
+somewhere else. That is the copy-paste latch-**omission** this refactor eliminates: with one shared
+`guardedMutate` primitive, the null-handling is correct in one place and every present and future
+two-path write inherits it — no "sixth site outside the diff" to miss.
+
+**But the primitive is not the whole story, and claiming it is would be the overclaim.** The `firstRun`
+latch closes the **retry-path** resurrection (a null delivered to a *later* callback). It does **not**
+close the **cold-cache single-round-trip delete race**: in a Cloud Function the first callback runs on
+`null`, the write is sent with expected-hash = `hash(null)`, and if the record was deleted after
+`preRead` and the server value is also null, the hashes match and the server **commits `mutate(preRead)`
+on the first callback** — no re-invocation, the latch never runs, the record is resurrected. (Kimi
+review, PR #254.)
+
+**So the honest "why the primitive exists" has three clauses:**
+1. The primitive closes the copy-paste latch-**omission** (every mutate site is provably latched — GUARD 1, `assertLatchAbortsOnAuthoritativeNull`).
+2. The **never-delete-an-active-record invariant** closes the cold-both-null race the latch cannot — the sole deleter (prior-day tombstone reaping) can't touch a record a mutation is actively holding, and sweeps don't overlap. This is the load-bearing fact for the entire class of unreachables.
+3. **The invariant is only safe as long as every future delete is checked against it** — and that is the clause with no guard until now. GUARD 2 (`assertNeverDeletesActiveRecord`) + the stop condition below give it one.
+
+## STOP CONDITION for PR 11 (roster-lock) and PR 12 (marks) — and any PR adding a delete
+The never-delete invariant is now load-bearing for the safety of **every** guardedMutate site. Any PR
+that adds a delete to an active-record path — roster-lock cleanup, marks, retention/TTL, a "cancel
+check" action, a backfill script — **MUST, in its own diff, do one of:**
+- **(a)** route the delete through `reapTombstone`'s completed-only path (never delete a `held`/`open`
+  record), **or**
+- **(b)** if it must delete an active record, re-verify the cold-both-null unreachability at **every**
+  `guardedMutate` site against the new delete, and add the reasoning to this doc.
+
+Either way it **MUST** extend `assertNeverDeletesActiveRecord` to cover the new delete path. A PR that
+adds an active-record delete without doing (a) or (b) **does not merge** — it silently re-opens the
+resurrection at every guardedMutate site, outside its own diff, which is exactly how this class
+recurred six times.
 
 ---
 
@@ -73,17 +99,18 @@ shared primitive has to distinguish two shapes:
 One wrapper, two explicit modes so a caller physically cannot pick the wrong null-handling:
 
 - `guardedMutate({ ref, preRead, mutate })` — `mutate(nonNullCurrent) → next`. Wrapper owns: cold-null
-  → `mutate(preRead)`; later-null → abort; never resurrects. Sites **#1, #4, #6** migrate here
-  (identical behavior on every reachable path; #4 *gains* the latch — a latent-safety hardening on its
-  unreachable auth-null branch, not a change to any tested/​reachable behavior). Site **#5** (reap)
-  fits too with `mutate` returning `null` to delete (auth-null → abort = correct no-op).
+  → `mutate(preRead)`; **later-null → abort** (closes the retry-path resurrection; NOT the cold-both-null
+  case — see the honest-scope note in the headline). Sites **#1, #4, #6** migrate here (identical
+  behavior on every reachable path; #4 *gains* the latch — closing the copy-paste omission). Site **#5**
+  (reap) fits too with `mutate` returning `null` to delete.
 - `guardedCreate({ ref, preRead, decide })` or keep #2/#3 on their own tiny helper — the write-on-null
   shape, kept **separate** from the abort-on-null shape. This is the honest split: they are a
   different, safe-by-design pattern, not the bug this session removes.
 
-The reusable assertion `assertNoResurrectionOnAuthoritativeNull(txn)` applies to the **guardedMutate**
+The reusable assertion `assertLatchAbortsOnAuthoritativeNull(txn)` applies to the **guardedMutate**
 sites (#1, #4, #5, #6). It does **not** apply to the create/claim sites (they *should* write on null),
-which is itself the proof they're a different shape.
+which is itself the proof they're a different shape. It pins the retry-path abort; the never-delete
+invariant (GUARD 2) — not this assertion — covers the cold-both-null case.
 
 ## Verdict for the stop condition
 No transaction is **reachably** exposed today (sites #1, #6 latched; #4 unlatched but its exploit is
@@ -99,9 +126,15 @@ null abort) and `guardedCreate` (write-on-null by design). All six sites migrate
   (mutation returns `null` to delete), #6 completion flip.
 - **guardedCreate:** #2 lease claim, #3 create path.
 
-Reusable assertion `assertNoResurrectionOnAuthoritativeNull` (functions/test/helpers/guarded-txn.cjs)
-applied to all four guardedMutate sites with their real mutations
-(functions/test/display-checks-guarded-txn.test.cjs). The split is enforced both directions: a mutate
-wrongly in create-mode fails the resurrection assertion; a create wrongly in mutate-mode fails to
-create. **Behaviour-identical: every pre-existing test passes unchanged** (functions 175/175, +10 new;
-no expected output altered).
+Two reusable guards (functions/test/helpers/guarded-txn.cjs):
+- **GUARD 1 — `assertLatchAbortsOnAuthoritativeNull`** applied to all four guardedMutate sites with
+  their real mutations (#6 via the exported `completionFlipMutation`, not a copy). Scoped honestly to
+  the retry-path abort; the fake models the RTDB wire (datastale re-invocation), and an explicit
+  LIMITATION test demonstrates the cold-both-null commit the latch cannot stop. The mode split is
+  enforced both directions (mutate-in-create fails GUARD 1; create-in-mutate fails to create).
+- **GUARD 2 — `assertNeverDeletesActiveRecord`** applied to the live deleter (the wake sweep), proving
+  it reaps only completed tombstones and never deletes a held/open record. This is the guard for the
+  load-bearing invariant; see the PR-11/12 stop condition above.
+
+**Behaviour-identical: every pre-existing test passes unchanged** (functions 178/178; no expected
+output altered).
