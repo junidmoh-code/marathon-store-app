@@ -1,0 +1,79 @@
+# Display Checks — cold-cache transaction audit (JOB 1)
+
+Every RTDB `.transaction()` across the four live displayChecks Cloud Functions, its cold-cache
+first-run handling, and whether an **authoritative null** (a genuinely-deleted record reaching a
+*later* transaction callback) can resurrect a record. Audited at `origin/main` = `6561d01`
+(onClothingSale-00005-cug, wakeHeldChecks-00002-fac, completeDisplayCheck-00001-lor — all LIVE).
+
+## The class this audit is hunting
+Six times the same shape shipped or nearly shipped: `cur === null ? fallback : mutate`. In a Cloud
+Function the RTDB client has no local cache, so a transaction's **first** callback runs against
+`null`; returning `undefined` there aborts before the server round-trip (silent write loss), so the
+fix forces the round-trip with `cur === null ? preRead`. The trap: on a **later** callback the server
+value can be authoritatively `null` (the record was genuinely deleted/reaped), and the same branch
+then substitutes the stale `preRead` and **resurrects** it. The correct guard is a `firstRun` latch:
+`preRead` rescues only the *first* callback; any later `null` aborts.
+
+## The full set (6 transactions)
+
+| # | Call site | file:line | Kind | Cold-null handling | Auth-null (later callback) | Verdict |
+|---|-----------|-----------|------|--------------------|----------------------------|---------|
+| 1 | `bumpCheck` flip | onClothingSale.js:98 | mutate-existing | `firstRun` latch → `preRead` on first run only | **aborts** (latch flips) | ✅ CORRECT (latched, PR-A) |
+| 2 | idempotency lease claim | onClothingSale.js:156 | **create/claim-on-absent** | `processedClaimDecision(null)` → returns a claim object (writes the lease) | writes the claim (creates the lease) | ✅ CORRECT — write-on-null *by design*; nothing to resurrect |
+| 3 | create path | onClothingSale.js:218 | **create-on-absent** | `cur===null‖completed ? check` → writes a *fresh* check | writes the fresh check (a create) | ✅ CORRECT — write-on-null *by design*; new checkId, not a resurrection |
+| 4 | `applyInPlace` (held→open flip / stock_seen / re_held) | wakeHeldChecks.js:79 | mutate-existing | `cur === null ? preRead` — **NO latch** | **would resurrect** `preRead` (held) — but see reachability below | ⚠️ **EXPOSED SHAPE** (unlatched); exploit **not currently reachable** |
+| 5 | `reapTombstone` (delete-if-stale) | wakeHeldChecks.js:119 | conditional delete | `cur === null ? preRead`; returns `null`(delete) / `undefined`(abort) | returns `null` → deletes an already-null slot = harmless no-op | ✅ SAFE — a delete txn can't resurrect (never returns a record) |
+| 6 | `completeDisplayCheck` flip | completeCheck.js:150 | mutate-existing | `firstRun` latch → `preRead` on first run only | **aborts** (latch flips) | ✅ CORRECT (latched, Codex fix #249) |
+
+## Two findings that matter
+
+### Finding A — `applyInPlace` (site #4) carries the exposed shape, unlatched
+It is the only mutate-existing transaction still using the bare `cur === null ? preRead` without a
+`firstRun` latch — the exact copy-paste the other two mutate sites (#1, #6) were fixed to remove.
+
+**Reachability: NOT currently reachable.** `applyInPlace` is only ever called for `status === "held"`
+records (wakeHeldChecks.js:155 gates it). A held record's slot can go authoritatively `null` only if
+something *deletes* it — and the module's **only** deleter is `reapTombstone`, which deletes only
+`isStaleTombstone` records (`status === "completed"` + prior SA day). A held record is never
+completed (`completeDisplayCheck` is open-only) → never reaped → never deleted. So the authoritative
+`null` that would trip the resurrection cannot occur today.
+
+**Why it still matters:** it is instance-seven-in-waiting. The exploit is one code change away — the
+day any path deletes a held/open record (a manual cleanup, a "cancel check" feature, a future reaper
+tweak), site #4 becomes a live resurrection bug, and it will be *outside that change's diff* — exactly
+how the previous six recurred. The latch costs nothing and closes it now.
+
+### Finding B — the create/claim sites (#2, #3) cannot use an auth-null-ABORT primitive
+Sites #2 and #3 **must write on an authoritative null** — that null *is* "the slot is empty, create
+the record." They are not resurrection risks (site #2 creates a lease; site #3 writes a *fresh*
+checkId — neither resurrects a prior record). If they were routed through a primitive whose rule is
+"authoritative null → abort," creation would break and behavior would change.
+
+**This changes the JOB 2 plan as written** ("migrate … the create path" onto the same wrapper). The
+shared primitive has to distinguish two shapes:
+- **mutate-existing / guarded** (sites #1, #4, #5, #6): cold-null → `preRead`; later-null → **abort**.
+- **create-on-absent** (sites #2, #3): cold-null → `preRead`-or-nothing; later-null → **write the
+  create value** (never abort).
+
+## Recommended primitive shape (for your sign-off before I build)
+One wrapper, two explicit modes so a caller physically cannot pick the wrong null-handling:
+
+- `guardedMutate({ ref, preRead, mutate })` — `mutate(nonNullCurrent) → next`. Wrapper owns: cold-null
+  → `mutate(preRead)`; later-null → abort; never resurrects. Sites **#1, #4, #6** migrate here
+  (identical behavior on every reachable path; #4 *gains* the latch — a latent-safety hardening on its
+  unreachable auth-null branch, not a change to any tested/​reachable behavior). Site **#5** (reap)
+  fits too with `mutate` returning `null` to delete (auth-null → abort = correct no-op).
+- `guardedCreate({ ref, preRead, decide })` or keep #2/#3 on their own tiny helper — the write-on-null
+  shape, kept **separate** from the abort-on-null shape. This is the honest split: they are a
+  different, safe-by-design pattern, not the bug this session removes.
+
+The reusable assertion `assertNoResurrectionOnAuthoritativeNull(txn)` applies to the **guardedMutate**
+sites (#1, #4, #5, #6). It does **not** apply to the create/claim sites (they *should* write on null),
+which is itself the proof they're a different shape.
+
+## Verdict for the stop condition
+No transaction is **reachably** exposed today (sites #1, #6 latched; #4 unlatched but its exploit is
+unreachable; #5 is a delete; #2, #3 write-on-null by design). **But** two things change the plan and
+warrant your eyes before centralizing: (A) site #4 is unlatched and is the next-instance-in-waiting,
+and (B) the create/claim sites can't share an abort-on-null primitive. Hence: **stop, show, confirm
+the two-mode split, then build.**
