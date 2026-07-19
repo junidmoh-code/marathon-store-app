@@ -15,7 +15,8 @@ import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
 import { toAuthPassword } from "./utils/auth-utils";
-import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, customerWriteKey } from "./utils/phone";
+import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants } from "./utils/phone";
+import { resolveCustomerKey, resolveOrderCustomer } from "./utils/orderCustomer";
 import { formatSize } from "./utils/sizeLabel";
 import { SizeTag } from "./components/SizeTag";
 import UserManagement from "./components/UserManagement";
@@ -1363,44 +1364,10 @@ function useReturnsLog() {
 // mints at the till, so one person = one record across both apps. Records
 // created before this change may still live under the international "27…" key;
 // every read probes all shapes (phoneKeyVariants) and updates in place.
+// resolveCustomerKey + the order-time identity flow (C-number claim, order
+// bookkeeping upsert) live in utils/orderCustomer.js.
 function phoneToKey(phone) {
   return (phone || "").replace(/\D/g, "") || "unknown";
-}
-
-// Resolve the key an existing record for this phone lives under (any variant,
-// typed shape first), or the canonical local 0-form key (customerWriteKey)
-// when none exists yet. Returns { key, existing } so callers keep their single
-// read.
-async function resolveCustomerKey(phone) {
-  const variants = phoneKeyVariants(phone);
-  if (variants.length === 0) return { key: "unknown", existing: null };
-  for (const key of variants) {
-    const snap = await get(ref(database, `customers/${key}`));
-    const val = snap.val();
-    if (val) return { key, existing: val };
-  }
-  return { key: customerWriteKey(phone), existing: null };
-}
-
-// Upsert a customer record when an order is placed.
-// Only sets optedIn: true — never reverts an existing true back to false.
-function upsertCustomer(phone, name, orderedAt, optedIn) {
-  if (phoneToKey(phone) === "unknown") return;
-  resolveCustomerKey(phone).then(({ key, existing: found }) => {
-    const existing = found || {};
-    const patch = {
-      // Keep the phone format the record already has — rewriting a POS
-      // "065…" record's phone to the order's "2765…" would desync the field
-      // from its key for no gain (search matches both shapes canonically).
-      phone: existing.phone || phone,
-      name: name || existing.name || "",
-      firstOrderAt: existing.firstOrderAt || orderedAt,
-      lastOrderAt: orderedAt,
-      orderCount: (existing.orderCount || 0) + 1,
-    };
-    if (optedIn) patch.optedIn = true;
-    update(ref(database, `customers/${key}`), patch);
-  }).catch(err => console.warn("upsertCustomer failed:", err));
 }
 
 function setCustomerOptIn(phone, optedIn) {
@@ -6973,6 +6940,14 @@ function AssistantView({ products, onExit, orders = [] }) {
     try {
       const normalizedPhone = normalizeSAPhone(customerPhone);
       const now = serverNowIso();
+      // Resolve the customer identity ONCE per checkout (all lines share it):
+      // canonical 0… customerId + C-number, claimed race-safely at order time
+      // so the POS loads the customer instead of re-resolving by phone.
+      // NEVER blocks placement — on failure the orders go out with
+      // customerPending: true and the POS falls back to its own phone-key
+      // resolution. (Also replaces the old post-placement upsertCustomer:
+      // the record's order bookkeeping is upserted inside.)
+      const identity = await resolveOrderCustomer(normalizedPhone, customerName, now, marketingOptIn);
       const placed = [];
       // The checkout flow handles every line that needs customer info: sneakers
       // (always) plus clothing tagged "customer" (trial). Clothing "refill"
@@ -7004,6 +6979,12 @@ function AssistantView({ products, onExit, orders = [] }) {
           productType: isClothingCustomer ? "clothing" : (item.product.productType || "sneaker"),
           customerName,
           customerPhone: normalizedPhone,
+          // Customer identity resolved at order time (utils/orderCustomer).
+          // customerPending: true means resolution failed and the POS must
+          // fall back to its own phone-key lookup for this order.
+          customerId: identity?.customerId ?? null,
+          customerCode: identity?.customerCode ?? null,
+          customerPending: identity?.customerPending === true,
           // Phase 14B: hub mirrors placedAtHub (Central pine routing) — Display
           // Partner stays hub1 in Central; Pine always routes to hub3. Clothing
           // customer orders land in the universe's CR hub (hub2/hub3).
@@ -7063,7 +7044,6 @@ function AssistantView({ products, onExit, orders = [] }) {
         sendWhatsAppTemplate(normalizedPhone, "order_placed", [customerName, orderNum, item.product.name, item.size]);
         placed.push(order);
       }
-      if (normalizedPhone) upsertCustomer(normalizedPhone, customerName, now, marketingOptIn);
       setLastOrders(placed);
       // Print the customer order slip(s) — one per order, in a single 80mm print
       // job (thermal via the browser dialog, same as the POS). Fire-and-forget so
