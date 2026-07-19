@@ -240,10 +240,13 @@ function buildNewCheck({
   if (status === "held") check.heldAt = nowMs;
   else {
     check.activatedAt = nowMs;
-    // The SA day this check went OPEN. The active index is dateless, so a check
-    // that opens on day 1 and is still open past 03:00 rollover carries no other
-    // record of its opening day; PR 12 attributes its mark to THIS day's
-    // assignee. Stamped at open, frozen. (Window #3.)
+    // THE PR-12 MARKS ANCHOR. The SA day this check went OPEN — the active index
+    // is dateless, so a check that opens on day 1 and is still open past 03:00
+    // rollover carries no other record of its opening day; PR 12 attributes its
+    // mark to THIS day's assignee. Stamped at open, frozen, and PRESERVED through
+    // completion (buildCompletedRecord) into the day-node archive. Window #3.
+    // DO NOT add a second `openedSaDate` field — this IS the open-day anchor
+    // (owner decision 2026-07-19); a parallel field would silently diverge.
     check.activatedSaDate = activatedSaDate || null;
     check.assignedTo = assignedTo || null;      // frozen; null = unassigned (§17.3)
   }
