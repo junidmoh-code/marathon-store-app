@@ -89,6 +89,7 @@ function computeRefillPlan(snapshot) {
     nowMs, config, targets = {}, stock = {}, products = {},
     openIndex = {}, refillRequests = {}, orders = {}, movements = [],
     targetDecisions = {},   // /stock_targets_decisions — "keep as is" acks from the No Target queue
+    rejectStreak = {},      // /refill_engine/rejectStreak — persisted reject-while-stock-shown counters (loop guard)
   } = snapshot;
 
   const errors = [];
@@ -231,12 +232,25 @@ function computeRefillPlan(snapshot) {
             removeOrderId: orderIsOurs ? entry.orderId : null,
           });
         } else if (rr && rr.status && rr.status !== "open") {
-          closes.push({ dest, pid, sizeKey, refillId: entry.refillId, reason: rr.status });
+          closes.push({
+            dest, pid, sizeKey, refillId: entry.refillId, reason: rr.status,
+            // An rr cancelled OUTSIDE the engine without a cancelReason is a
+            // human "no" (Hub2RefillQueue reject / manual dismiss — engine
+            // self-withdrawals always stamp cancelReason). Without this the
+            // hub2 leg would recheck forever with no strike cap (review
+            // blocker, PR #252 round 1).
+            ...(rr.status === "cancelled" && !rr.cancelReason
+              ? { humanReject: true, denier: entry.source || routes[dest] } : {}),
+          });
         } else if (orderIsOurs && order.clothingRefillStatus != null) {
+          const wasFulfilled = order.clothingRefillStatus === "available";
           closes.push({
             dest, pid, sizeKey, refillId: entry.refillId,
-            reason: order.clothingRefillStatus === "available" ? "fulfilled" : "cancelled",
-            rrStatus: order.clothingRefillStatus === "available" ? "fulfilled" : "cancelled",
+            reason: wasFulfilled ? "fulfilled" : "cancelled",
+            rrStatus: wasFulfilled ? "fulfilled" : "cancelled",
+            // Human rejection (vs the engine's own withdrawals, which carry
+            // cancelReason) — feeds the reject-streak loop guard below.
+            ...(wasFulfilled ? {} : { humanReject: true, denier: entry.source || routes[dest] }),
           });
         } else if (nowMs - Date.parse(entry.createdAt || 0) > staleMs) {
           stuckRefills.push({ dest, pid, sizeKey, refillId: entry.refillId || null, ageHours: Math.round((nowMs - Date.parse(entry.createdAt || 0)) / 3600e3) });
@@ -318,6 +332,32 @@ function computeRefillPlan(snapshot) {
     return sizeKey === "_" ? "" : sizeKey;
   };
 
+  // ── REJECT STREAK — loop-guard state (incident 2026-07-19: wrong shelf) ─────
+  // A human "no" while the denier's counted cell still SHOWS stock is a
+  // count-vs-shelf mismatch signal. Each reconciled human rejection either
+  // increments the cell's persisted streak (stock still claimed — evidence of
+  // mismatch) or resets it (denier genuinely empty — the "no" agrees with the
+  // database, nothing suspicious). Fulfilment resets too. The streak is the
+  // ONLY persisted rejection state — the cooldown map above stays stateless.
+  // The scan applies these ops to /refill_engine/rejectStreak after closes.
+  const streakOf = (d, p, s) => rejectStreak?.[d]?.[p]?.[s] || null;
+  const streakOps = [];
+  const nowIso = new Date(nowMs).toISOString();
+  // Close-derived ops are ATTACHED to each close (c.streakOp) by the loop
+  // further down (after the arrival-lift/staleness machinery it needs is in
+  // scope). The scan applies them in the SAME multi-path update as that
+  // close's lock removal, so a lost fulfilment-reset re-emerges with the
+  // close itself on the next scan (the lock still exists) instead of being a
+  // one-shot event — the old separate-bulk-write design's real failure mode.
+  // (Withdraw-type closes, the ones whose order txn can bail, never carry a
+  // streakOp — the branches are mutually exclusive — so bailing isn't the
+  // scenario this protects against.) Only the deficit-loop's self-heal resets
+  // — recomputable from live state every scan — travel via the streakOps
+  // array. KNOWN RESIDUAL (accepted, review round 3): an inc's count is an
+  // absolute cur+1 from the snapshot — staff clearing the node in the seconds
+  // between snapshot and write get it recreated for one cycle; tapping clear
+  // again resolves.
+
   // ── deficits (L1/L2/L4) — propose, don't suppress ───────────────────────────
   // Owner philosophy (2026-07-12 v3): the warehouse is the validation layer.
   // A deficit ALWAYS becomes a request (system availability is advisory — real
@@ -332,6 +372,7 @@ function computeRefillPlan(snapshot) {
   const waitingForStock = [];   // demand parked behind a rejection — never silently dropped
   const awaitingUpstream = [];  // v9: source empty but the chain is flowing — auto-creates when it lands
   const awaitingSupplier = [];  // v9: whole upstream chain empty — supplier reorder / excess return
+  const recountNeeded = [];     // loop guard: rejected N× while the denier's count claims stock — recount, don't re-ask
   let managedCells = 0;   // cells with a resolvable target > 0 (Health-score denominator)
   const maxUnits = num(config?.maxUnitsPerIntent) || 20;
 
@@ -341,6 +382,16 @@ function computeRefillPlan(snapshot) {
   // legacy data). The arrival lift must watch the location that denied, not
   // whatever the route happens to be today — topology is config and can change.
   const cooldownMs = (num(config?.rejectCooldownHours) || 24) * 3600e3;
+  // RE-CHECK ON REJECT (incident 2026-07-19): when the denier's counted cell
+  // STILL shows stock after a "no", the full cooldown is wrong both ways —
+  // either the count is stale (don't wait a day to find out) or the item is
+  // physically there on another shelf (re-ask soon). Those cells rest a SHORT
+  // recheck window instead; the loop guard below stops the cycle at N strikes.
+  const recheckMs = Math.max(1, num(config?.recheckCooldownMinutes) || 30) * 60e3;   // clamped: 0/negative would spam every scan
+  const streakLimit = Math.max(1, num(config?.rejectStreakLimit) || 3);              // clamped: ≤0 would flag on the first strike
+  // One definition of the evidence-based window — used by the propose gate AND
+  // the srcParked labelling so they can never drift apart.
+  const effWindowMs = (denierHas) => (denierHas > 0 ? recheckMs : cooldownMs);
   const rejectedAt = new Map();
   const setDenial = (map, key, ts, by) => {
     const cur = map.get(key);
@@ -414,7 +465,10 @@ function computeRefillPlan(snapshot) {
   // no matter what the cells claim: no requests to ANY destination, straight
   // to the Missing Sizes reorder list. When the window lapses, the normal
   // cooldown cycle resumes — one re-ask; two fresh denials re-confirm it out.
-  const confirmedOutMs = (num(config?.confirmedOutDays) || 14) * 86400e3;
+  // Clamped ≥1 day: a 0/negative config value would make EVERY denial and
+  // streak instantly "stale" — silently disabling both confirmed-out and the
+  // reject-streak loop guard (review round 3).
+  const confirmedOutMs = Math.max(1, num(config?.confirmedOutDays) || 14) * 86400e3;
   // Route-derived fallbacks for LEGACY denial records that carry no source of
   // their own: Central (hub2's source) denies hub2 asks; the stores' sources
   // deny store asks. Denials recorded with a `by` use that exact location.
@@ -435,6 +489,61 @@ function computeRefillPlan(snapshot) {
 
   const networkQty = (pid, size) =>
     Object.keys(stock).reduce((t, loc) => t + avail(cellQty(stock, loc, pid, size)), 0);
+
+  // ── streak flag evaluation (loop guard) ─────────────────────────────────────
+  // A cell is PARKED by the guard when its streak is at limit AND the denier's
+  // cell still counts stock AND nothing has arrived since the last strike. A
+  // dormant streak older than the ledger window can't be cross-checked against
+  // arrivals (movements read is windowed) — reset it rather than flagging a
+  // months-old mismatch nobody remembers. `resetWorthy` streaks are cleared by
+  // the caller so the cell resumes normal cooldown handling.
+  // Staleness aligned with the confirmed-out window: human "no" evidence
+  // expires at ONE rate everywhere (and stays inside the ledger read window,
+  // so arrival-lift evidence always covers a live streak).
+  const streakState = (loc, pid, sizeKey, size, fallbackDenier) => {
+    const s = streakOf(loc, pid, sizeKey);
+    if (!s) return { flagged: false };
+    const ts = Date.parse(s.lastTs || 0) || 0;
+    // Staleness applies to EVERY streak, not only at-limit ones — otherwise
+    // strikes 1–2 could age for months and a fresh single rejection would
+    // flag "3× rejected" on evidence nobody remembers.
+    if (nowMs - ts > confirmedOutMs) return { flagged: false, resetWorthy: true };
+    if (num(s.count) < streakLimit) return { flagged: false };
+    const denier = s.by || fallbackDenier;
+    const has = denier ? avail(cellQty(stock, denier, pid, size)) : 0;
+    if (has <= 0 || arrivedAfter(denier, pid, sizeKey, ts)) {
+      return { flagged: false, resetWorthy: true };
+    }
+    return { flagged: true, count: num(s.count), denier, has };
+  };
+
+  // Attach streak ops to the reconciled closes (see the streakOf block above
+  // for why they ride the close). A fresh strike CONTINUES the persisted
+  // streak only while its prior evidence is still live — a stale streak or
+  // one lifted by a demonstrated arrival restarts the count at 1, so expired
+  // strikes never combine with a fresh "no" into a premature flag.
+  for (const c of closes) {
+    if (c.reason === "fulfilled") {
+      if (streakOf(c.dest, c.pid, c.sizeKey)) c.streakOp = { op: "reset" };
+      continue;
+    }
+    if (!c.humanReject) continue;
+    const cDenier = c.denier || routes[c.dest];
+    const cSize = rawSize(c.pid, c.sizeKey);
+    const cDenierHas = cDenier ? avail(cellQty(stock, cDenier, c.pid, cSize)) : 0;
+    const sPrev = streakOf(c.dest, c.pid, c.sizeKey);
+    if (cDenierHas > 0) {
+      let cur = 0;
+      if (sPrev) {
+        const pts = Date.parse(sPrev.lastTs || 0) || 0;
+        const prevDenier = sPrev.by || cDenier;
+        if (nowMs - pts <= confirmedOutMs && !arrivedAfter(prevDenier, c.pid, c.sizeKey, pts)) cur = num(sPrev.count) || 0;
+      }
+      c.streakOp = { op: "inc", count: cur + 1, ts: nowIso, by: cDenier };
+    } else if (sPrev) {
+      c.streakOp = { op: "reset" };
+    }
+  }
 
   for (const dest of dests) {
     const mode = config?.mode?.[dest] || "off";
@@ -459,6 +568,30 @@ function computeRefillPlan(snapshot) {
         // looked and said no — the shelves beat the database. Reorder list,
         // no request, regardless of destination.
         if (confirmedOut(pid, sizeKey)) {
+          // Both levels said no, yet a denying location's counted cell still
+          // claims stock → the strongest count-vs-shelf mismatch there is.
+          // The confirmed-out suppression stands (no requests), but the
+          // mismatch is surfaced for a recount instead of going dark. These
+          // rows flag IMMEDIATELY (no N-strike wait — two independent levels
+          // denying is stronger evidence than N same-level strikes) and carry
+          // rejections:null; the Health clear button is hidden for them (no
+          // streak node to clear) — the note states the real remedies.
+          // NOTE: a streak may keep accruing via closes while confirmedOut
+          // masks this gate; the streak-staleness window (= confirmedOutMs)
+          // bounds any pile-up when the mask lapses.
+          const lk = `${pid}|${sizeKey}`;
+          // Legacy shop-level denials carry no `by` — fall back to the route-
+          // derived shop-level locations, exactly as confirmedOut() itself does.
+          const shopBy = rejShopLevel.get(lk)?.by;
+          const denialLocs = [rejCentralLevel.get(lk)?.by || centralLevelLoc, ...(shopBy ? [shopBy] : shopLevelLocs)].filter(Boolean);
+          const showingLoc = denialLocs.find((l) => avail(cellQty(stock, l, pid, size)) > 0);
+          if (showingLoc) {
+            recountNeeded.push({
+              loc: dest, pid, size, deficit, source: showingLoc, rejections: null,
+              showing: avail(cellQty(stock, showingLoc, pid, size)),
+              note: `confirmed out at BOTH levels while ${showingLoc} still counts stock — recount ${showingLoc}: a count correction re-opens asks at once; if the count is right, move the stock manually (Transfer) — this card lifts on arrival or when the window lapses`,
+            });
+          }
           missingSizes.push({ loc: dest, pid, size, wanted: deficit, note: "denied at both Hub 2 and Central — confirmed out, reorder candidate" });
           continue;
         }
@@ -482,10 +615,34 @@ function computeRefillPlan(snapshot) {
         const rej = rejectedAt.get(`${dest}|${pid}|${sizeKey}`);
         const rejTs = rej?.ts || 0;
         const denier = rej?.by || src;   // watch the location that SAID no, not today's route
-        if (nowMs - rejTs < cooldownMs && !arrivedAfter(denier, pid, sizeKey, rejTs)) {
+        const denierHas = avail(cellQty(stock, denier, pid, size));
+        // LOOP GUARD (incident 2026-07-19): N human rejections while the
+        // denier's counted cell claims stock means the COUNT is the problem,
+        // not the demand. Stop re-asking into the void — park the cell in
+        // Recount Needed until the count changes, stock demonstrably arrives,
+        // or staff clear the streak from Health after recounting.
+        const st = streakState(dest, pid, sizeKey, size, denier);
+        if (st.flagged) {
+          recountNeeded.push({
+            loc: dest, pid, size, deficit, source: st.denier,
+            rejections: st.count, showing: st.has,
+            note: `rejected ${st.count}× at ${st.denier} while its count shows ${st.has} — recount, then "Ask again" in Health`,
+          });
+          continue;
+        }
+        // Denier no longer claims stock, stock arrived after the last strike,
+        // or the streak went stale — evidence changed; clear it and resume
+        // normal cooldown handling below.
+        if (st.resetWorthy) streakOps.push({ dest, pid, sizeKey, op: "reset" });
+        // RE-CHECK ON REJECT: denier still counting stock → short recheck
+        // window (the mismatch resolves fast either way); denier counted empty
+        // → the full cooldown, as before. Arrival lift still beats both.
+        if (nowMs - rejTs < effWindowMs(denierHas) && !arrivedAfter(denier, pid, sizeKey, rejTs)) {
           waitingForStock.push({
             loc: dest, pid, size, deficit, source: denier, rejectedAt: new Date(rejTs).toISOString(),
-            note: `rejected at ${denier} — reopens when stock arrives at ${denier} (or after the ${Math.round(cooldownMs / 3600e3)}h cooldown)`,
+            note: denierHas > 0
+              ? `rejected at ${denier} while its count shows ${denierHas} — re-checks in ${Math.round(recheckMs / 60e3)}min`
+              : `rejected at ${denier} — reopens when stock arrives at ${denier} (or after the ${Math.round(cooldownMs / 3600e3)}h cooldown)`,
           });
           continue;
         }
@@ -515,7 +672,19 @@ function computeRefillPlan(snapshot) {
           // is not itself parked behind a rejection cooldown / confirmed-out
           // (Codex P2 — otherwise demand sits mislabelled for the whole window).
           const srcRej = rejectedAt.get(`${src}|${pid}|${sizeKey}`);
-          const srcParked = (srcRej && nowMs - srcRej.ts < cooldownMs && !arrivedAfter(srcRej.by || upstreamOfSrc, pid, sizeKey, srcRej.ts)) || confirmedOut(pid, sizeKey);
+          // Same effective window as the propose gate: a source leg whose
+          // denier still counts stock re-checks fast, so it is only "parked"
+          // inside the SHORT window — the blocked label must not outlive the
+          // gate that causes it.
+          const srcDenier = srcRej?.by || upstreamOfSrc;
+          const srcDenierHas = srcDenier ? avail(cellQty(stock, srcDenier, pid, size)) : 0;
+          // A streak-FLAGGED source leg is parked indefinitely (Recount Needed
+          // awaits a human) — the store demand must say "blocked", not
+          // "flowing", or it starves behind a self-healing label.
+          const srcStreakFlagged = streakState(src, pid, sizeKey, size, upstreamOfSrc).flagged;
+          const srcParked = (srcRej && nowMs - srcRej.ts < effWindowMs(srcDenierHas) && !arrivedAfter(srcDenier, pid, sizeKey, srcRej.ts))
+            || srcStreakFlagged
+            || confirmedOut(pid, sizeKey);
           // "Chain is flowing" additionally requires the source to HAVE a
           // buffer target for this cell — without one the engine will never
           // compute a source deficit, so no upstream leg would EVER create and
@@ -529,7 +698,7 @@ function computeRefillPlan(snapshot) {
           } else {
             awaitingSupplier.push({
               loc: dest, pid, size, deficit, source: src,
-              note: srcParked ? `upstream leg blocked — ${src} recently rejected / confirmed out`
+              note: srcParked ? `upstream leg blocked — ${src} ${srcStreakFlagged ? "awaits a recount (see Recount Needed)" : srcDenierHas > 0 ? "recently rejected — re-checks shortly" : "recently rejected / confirmed out"}`
                 : (upstreamAvail > 0 && !srcCanPull) ? `${src} has no buffer target for this size — set one (or transfer manually); stock waits at ${upstreamOfSrc}`
                 : "upstream chain empty — supplier reorder or excess return needed",
             });
@@ -835,6 +1004,7 @@ function computeRefillPlan(snapshot) {
     closes,
     resizes,
     adopts,
+    streakOps,
     errors,
     stats: { managedCells },
     exceptions: {
@@ -845,6 +1015,7 @@ function computeRefillPlan(snapshot) {
       waitingForStock: cap(waitingForStock),
       awaitingUpstream: cap(awaitingUpstream, 900),
       awaitingSupplier: cap(awaitingSupplier, 900),
+      recountNeeded: cap(recountNeeded),
       stuckRefills: cap(stuckRefills),
       failedRefills: cap(failedRefills),
       onlyInCentral: cap(onlyInCentral),

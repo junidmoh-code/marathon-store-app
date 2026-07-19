@@ -82,13 +82,14 @@ async function runScan() {
     // evidence and a size stays confirmed-out longer than configured.
     const windowDays = Math.max(MOVEMENTS_WINDOW_DAYS, (Number(config.confirmedOutDays) || 14) + 1);
     const windowStart = new Date(nowMs - windowDays * 864e5).toISOString();
-    const [targetDecisions, targets, products, openIndex, refillRequests, orders, movementsSnap, ...stockSnaps] = await Promise.all([
+    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, movementsSnap, ...stockSnaps] = await Promise.all([
       db.ref("stock_targets_decisions").once("value").then((s) => s.val() || {}),
       db.ref("stock_targets").once("value").then((s) => s.val() || {}),
       db.ref("products").once("value").then((s) => s.val() || {}),
       db.ref("refill_engine/open").once("value").then((s) => s.val() || {}),
       db.ref("refill_requests").once("value").then((s) => s.val() || {}),
       db.ref("orders").once("value").then((s) => s.val() || {}),
+      db.ref("refill_engine/rejectStreak").once("value").then((s) => s.val() || {}),
       db.ref("stock_movements").orderByChild("ts").startAt(windowStart).once("value"),
       ...locs.map((l) => db.ref(`stock/${l}`).once("value").then((s) => [l, s.val() || {}])),
     ]);
@@ -96,7 +97,7 @@ async function runScan() {
     const movements = Object.values(movementsSnap.val() || {});
 
     const plan = engine.computeRefillPlan({
-      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions,
+      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak,
     });
     counts.errors.push(...plan.errors);
 
@@ -129,24 +130,68 @@ async function runScan() {
         }
         if (!proceed) continue;   // fulfilment won the race — leave rr + lock for the next scan
         if (c.refillId && c.rrStatus) {
-          await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => {
-            // NULL-TOLERANT (the #199 lesson, relearned 2026-07-13 the hard
-            // way): the FIRST pass runs against the cold local cache and sees
-            // null even when the node exists. Returning undefined there ABORTS
-            // permanently — 2,304 statuses silently never wrote. Returning
-            // null probes: a real node fails the compare and the callback
-            // re-runs with true data; a genuinely-missing node no-ops.
-            if (cur === null) return null;
-            if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
-            return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
-          }).catch(() => {});
+          try {
+            const res = await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => {
+              // NULL-TOLERANT (the #199 lesson, relearned 2026-07-13 the hard
+              // way): the FIRST pass runs against the cold local cache and sees
+              // null even when the node exists. Returning undefined there ABORTS
+              // permanently — 2,304 statuses silently never wrote. Returning
+              // null probes: a real node fails the compare and the callback
+              // re-runs with true data; a genuinely-missing node no-ops.
+              if (cur === null) return null;
+              if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
+              return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
+            });
+            // The plan said "human reject", but the LIVE request resolved as
+            // fulfilled in the snapshot gap (contradictory human actions in one
+            // window): the fulfilment wins — never record a strike against a
+            // request that was actually served; reset instead (fulfilment
+            // resets, same as the fulfilled-close path).
+            if (res && !res.committed && res.snapshot?.val()?.status === "fulfilled" && c.streakOp?.op === "inc") {
+              c.streakOp = { op: "reset" };
+            }
+          } catch {
+            // Transaction outcome unknown (network) — drop an inc rather than
+            // risk a false strike; the reject, if real, recurs via the rr
+            // branch on a later scan. Resets stay (benign either way).
+            if (c.streakOp?.op === "inc") delete c.streakOp;
+          }
         }
-        await db.ref(`refill_engine/open/${c.dest}/${c.pid}/${c.sizeKey}`).remove().catch(() => {});
+        // Lock removal + this close's streak op in ONE multi-path update: a
+        // bailed close (proceed=false above) applies neither, and a lost
+        // fulfilment-reset re-emerges with the close itself on the next scan
+        // (the lock still exists) instead of being a one-shot event.
+        const closeUpd = { [`refill_engine/open/${c.dest}/${c.pid}/${c.sizeKey}`]: null };
+        if (c.streakOp) {
+          closeUpd[`refill_engine/rejectStreak/${c.dest}/${c.pid}/${c.sizeKey}`] =
+            c.streakOp.op === "inc" ? { count: c.streakOp.count, lastTs: c.streakOp.ts, by: c.streakOp.by || null } : null;
+        }
+        await db.ref().update(closeUpd).catch(() => {});
         applied++;
         if (c.cancelReason) withdrawn++;
       }
       counts.closes = applied;
       if (withdrawn) counts.withdrawn = withdrawn;
+    }
+
+    // ── apply the deficit-loop's self-heal streak resets ──────────────────────
+    // (Close-derived ops ride inside each close's own update above.) These are
+    // recomputed from live state every scan, so a lost write simply reappears.
+    // Staff can also delete a streak from Health — "Recounted, ask again" —
+    // via the delete-only rules carve-out on /refill_engine/rejectStreak.
+    if (plan.streakOps && plan.streakOps.length) {
+      // A cell whose close carried a streak op THIS scan must not also take a
+      // snapshot-derived self-heal reset — the close's op (e.g. a fresh inc)
+      // is newer truth and would be clobbered to null.
+      const closedCells = new Set((plan.closes || []).filter((c) => c.streakOp).map((c) => `${c.dest}|${c.pid}|${c.sizeKey}`));
+      const upd = {};
+      for (const op of plan.streakOps) {
+        if (closedCells.has(`${op.dest}|${op.pid}|${op.sizeKey}`)) continue;
+        upd[`refill_engine/rejectStreak/${op.dest}/${op.pid}/${op.sizeKey}`] =
+          op.op === "inc" ? { count: op.count, lastTs: op.ts, by: op.by || null } : null;
+      }
+      if (Object.keys(upd).length) await db.ref().update(upd).catch(() => {});
+      counts.streakOps = Object.keys(upd).length;
     }
 
     // ── apply resizes (owner approval 2026-07-13) ─────────────────────────────
