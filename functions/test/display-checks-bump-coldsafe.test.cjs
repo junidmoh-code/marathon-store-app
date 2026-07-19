@@ -21,7 +21,7 @@ const DK = "p1__M";
 function fakeDb(initial) {
   const state = structuredClone(initial);
   let pushSeq = 0;
-  const api = { state, coldAborts: 0 };
+  const api = { state, coldAborts: 0, deleteBeforeServer: false }; // deleteBeforeServer → slot reaped between preRead and the server run
   const get = (p) => (p === "" ? state : p.split("/").reduce((n, k) => (n == null ? n : n[k]), state));
   const set = (p, v) => {
     const parts = p.split("/"); const last = parts.pop();
@@ -35,6 +35,9 @@ function fakeDb(initial) {
     async transaction(fn) {
       const cold = fn(null);                       // cold-cache FIRST run
       if (cold === undefined) { api.coldAborts++; return { committed: false, snapshot: { val: () => get(path) ?? null } }; }
+      // Simulate a concurrent delete (the sweep reaping a tombstone) landing
+      // between the cold run and the authoritative server round-trip.
+      if (api.deleteBeforeServer) { set(path, null); api.deleteBeforeServer = false; }
       const server = get(path) ?? null;
       const final = fn(server);
       if (final === undefined) return { committed: false, snapshot: { val: () => server } };
@@ -111,4 +114,25 @@ test("checkId fence holds through a HELD slot overwrite too (stale bump vs a fre
   const r = await call(db, { expectedCheckId: "cA", qty: 9, movementId: "mvStale" });
   assert.equal(r.ok, false);
   assert.equal(db.state.displayChecks_active["marathon-pe"][DK].saleCount, 2);
+});
+
+// ── RESURRECTION GUARD (firstRun latch) ──────────────────────────────────────
+// Once completion creates reap-able tombstones, an open/held check's slot CAN go
+// null (completed → reaped). A bump in flight must NOT resurrect it from the
+// stale open preRead on an authoritative server null.
+test("RESURRECTION GUARD: the slot is DELETED (reaped) before the txn's server run → bump ABORTS, does NOT recreate the record", async () => {
+  const db = dbWith(rec({ status: "open", saleCount: 3 }));
+  db.deleteBeforeServer = true;                     // a reap lands between preRead and the server round-trip
+  const r = await call(db, { qty: 5 });
+  assert.equal(r.ok, false, "authoritative null → abort, not a bump");
+  assert.equal(db.state.displayChecks_active["marathon-pe"][DK], undefined, "the slot stays deleted — no ghost resurrected");
+  assert.deepEqual(logTypes(db), [], "no log for an aborted bump");
+});
+
+test("cold-cache rescue still works: cold first run null → preRead bumps against the authoritative open record", async () => {
+  const db = dbWith(rec({ status: "open", saleCount: 1 }));  // deleteBeforeServer stays false
+  const r = await call(db, { qty: 2 });
+  assert.equal(r.ok, true);
+  assert.equal(db.state.displayChecks_active["marathon-pe"][DK].saleCount, 3); // PR-2a cold-safety intact
+  assert.equal(db.coldAborts, 0);
 });

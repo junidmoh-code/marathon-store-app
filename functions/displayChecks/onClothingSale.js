@@ -80,17 +80,26 @@ const dayArchivePath = (store, saDate, checkId) => `displayChecks/${store}/${saD
 
 // Bump the SKU's active record. COLD-CACHE SAFETY (PR 2a): the transaction fn
 // runs first against a cold null cache, so the pre-read forces the server
-// round-trip instead of a silent abort. With the never-null invariant the
-// active record is never deleted while active, so this can't resurrect a ghost;
-// the bumpTxn checkId fence rejects a stale bump that lands on an overwritten
-// slot (→ { ok:false } → the caller re-resolves). On commit the log type comes
-// from the LIVE status (held → held_resale with the stock qty as evidence).
+// round-trip instead of a silent abort. RESURRECTION GUARD (firstRun latch):
+// preRead may rescue ONLY the cold-cache FIRST callback; once we've been
+// re-invoked with an AUTHORITATIVE value, a null means the slot was genuinely
+// DELETED (a completed tombstone reaped by the sweep — a path that now exists
+// once completion ships), and substituting the stale open/held preRead would
+// resurrect a ghost. So a later authoritative null aborts. (Same fix Codex
+// applied to completeDisplayCheck; the "never deleted while active" assumption
+// no longer holds now that completion creates reap-able tombstones.) The bumpTxn
+// checkId fence still rejects a stale bump on an overwritten slot (→ { ok:false }
+// → the caller re-resolves). On commit the log type comes from the LIVE status
+// (held → held_resale with the stock qty as evidence).
 async function bumpCheck(db, { store, saDate, key, expectedCheckId, qty, movementId, movementTs, nowMs }) {
   const ref = db.ref(activePath(store, key));
   const preRead = (await ref.get()).val();
-  const res = await ref.transaction((c) =>
-    bumpTxn(c === null ? preRead : c, { qty, movementTs, movementId, expectedCheckId })
-  );
+  let firstRun = true;
+  const res = await ref.transaction((c) => {
+    const cur = (c === null && firstRun) ? preRead : c; // preRead only on the cold first run
+    firstRun = false;
+    return bumpTxn(cur, { qty, movementTs, movementId, expectedCheckId });
+  });
   if (!res.committed) {
     const v = res.snapshot && res.snapshot.val();
     return { ok: false, status: (v && v.status) || null };
