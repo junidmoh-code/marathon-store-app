@@ -272,19 +272,33 @@ test("NO SILENT STARVATION (v9): a source with no buffer target is a CONFIG bloc
 });
 
 test("BLOCKED UPSTREAM (v9): a rejection-parked source leg is labelled blocked, not flowing", () => {
-  const plan = computeRefillPlan(base({
+  // Central's queue rejected hub2's ask 10 MINUTES ago while central still
+  // counts stock → inside the short recheck window the leg is parked and the
+  // store demand is honestly labelled blocked (2026-07-19 recheck contract).
+  const setup = {
     targets: {
       "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
       hub2: { p1: { M: { target: 3, minQty: 2 } } },
     },
     stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } }, trophy: {} },
-    // Central's queue rejected hub2's ask 2h ago (cooldown active, no arrival since)
+  };
+  const parked = computeRefillPlan(base({
+    ...setup,
+    refillRequests: { rHub: { status: "cancelled", resolvedAt: iso(1 / 6), productId: "p1", size: "M", requestingLocation: "hub2", source: "central", rejectedBy: "warehouse" } },
+  }));
+  assert.equal(parked.intents.length, 0, "hub2 leg rests inside the recheck window");
+  assert.ok(parked.exceptions.awaitingSupplier.items.some((w) => w.loc === "marathon-pe" && /blocked/.test(w.note)),
+    "store demand shows the truth: upstream leg blocked, not flowing");
+  assert.equal(parked.exceptions.awaitingUpstream.count, 0);
+  // 2h after the rejection the recheck window has long passed (central still
+  // counts stock — either the count is wrong or the item is findable): the
+  // hub2 leg re-asks and the store demand is flowing again.
+  const reopened = computeRefillPlan(base({
+    ...setup,
     refillRequests: { rHub: { status: "cancelled", resolvedAt: iso(2), productId: "p1", size: "M", requestingLocation: "hub2", source: "central", rejectedBy: "warehouse" } },
   }));
-  assert.equal(plan.intents.length, 0, "hub2 leg rests on its cooldown");
-  assert.ok(plan.exceptions.awaitingSupplier.items.some((w) => w.loc === "marathon-pe" && /blocked/.test(w.note)),
-    "store demand shows the truth: upstream leg blocked, not flowing");
-  assert.equal(plan.exceptions.awaitingUpstream.count, 0);
+  assert.equal(reopened.intents.filter((x) => x.dest === "hub2" && x.sizeKey === "M").length, 1, "recheck window passed → central→hub2 re-asks");
+  assert.ok(reopened.exceptions.awaitingUpstream.items.some((w) => w.loc === "marathon-pe"), "store demand back to flowing");
 });
 
 test("SOURCE RESERVATION (v9): two stores never get cards for the same physical unit", () => {
@@ -345,18 +359,21 @@ test("zero stock anywhere → NO request at all, straight to the reorder list", 
   assert.ok(plan.exceptions.missingSizes.count >= 1, "surfaced as a reorder candidate instead");
 });
 
-test("rejection cooldown: a rejected size WITH upstream stock rests 24h, then re-asks", () => {
+test("rejection cooldown: denier still counting stock → short recheck; denier empty → full 24h", () => {
+  // 2026-07-19 recheck contract: the 24h rest only applies when the denier's
+  // counted cell agrees with the "no" (empty). While it still claims stock,
+  // the cell re-checks on the short window instead.
   const withStock = { stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} } };
-  const fresh = computeRefillPlan(base({
-    ...withStock,
-    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(2), status: "incoming", createdAt: iso(2) } },
-  }));
-  assert.equal(fresh.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "2h since rejection → resting");
-  const old = computeRefillPlan(base({
-    ...withStock,
-    orders: { "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(30), status: "incoming", createdAt: iso(30) } },
-  }));
-  assert.equal(old.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "cooldown passed + stock exists → ask again");
+  const rejOrder = (agoH) => ({ "R009-1": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(agoH), status: "incoming", createdAt: iso(agoH) } });
+  const fresh = computeRefillPlan(base({ ...withStock, orders: rejOrder(0.25) }));
+  assert.equal(fresh.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "15min since rejection → resting inside the recheck window");
+  const rechecked = computeRefillPlan(base({ ...withStock, orders: rejOrder(2) }));
+  assert.equal(rechecked.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "recheck window passed while hub2 still counts stock → ask again");
+  const emptyDenier = { stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(5) } }, trophy: {} } };
+  const resting = computeRefillPlan(base({ ...emptyDenier, orders: rejOrder(2) }));
+  assert.equal(resting.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "denier counted empty → full 24h cooldown still holds");
+  const after24 = computeRefillPlan(base({ ...withStock, orders: rejOrder(30) }));
+  assert.equal(after24.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "cooldown passed + stock exists → ask again");
 });
 
 test("ARRIVAL LIFT: stock arriving at the source AFTER a rejection reopens the demand at once", () => {
@@ -373,9 +390,14 @@ test("ARRIVAL LIFT: stock arriving at the source AFTER a rejection reopens the d
   assert.equal(arrived.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "arrival after rejection → reopened");
   // The only arrival PREDATES the rejection (they looked and said no AFTER the
   // stock came in) → the cooldown holds, and the parked demand is visible as
-  // waitingForStock instead of vanishing.
+  // waitingForStock instead of vanishing. Denier counted EMPTY here — with the
+  // 2026-07-19 recheck contract, a denier still counting stock re-asks on the
+  // short window, so the 24h-resting cases must use an empty denier cell.
+  // (central holds stock so the zero-upstream branch doesn't fire first —
+  // the 24h cooldown gate is the thing under test)
+  const emptyDenier = { stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(5) } }, trophy: {} } };
   const stale = computeRefillPlan(base({
-    ...withStock, ...rejected5hAgo,
+    ...emptyDenier, ...rejected5hAgo,
     movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 10, ts: iso(9) }],
   }));
   assert.equal(stale.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "arrival predates the rejection → still resting");
@@ -383,7 +405,7 @@ test("ARRIVAL LIFT: stock arriving at the source AFTER a rejection reopens the d
     "parked demand surfaced as Waiting for Stock");
   // An outbound movement (a sale at the source) is NOT an arrival — no lift.
   const soldOnly = computeRefillPlan(base({
-    ...withStock, ...rejected5hAgo,
+    ...emptyDenier, ...rejected5hAgo,
     movements: [{ type: "sold", from: "hub2", productId: "p1", size: "M", qty: 1, ts: iso(1) }],
   }));
   assert.equal(soldOnly.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0, "a sale never lifts a rejection");
@@ -1084,4 +1106,94 @@ test("AUTO-ADOPT: off by default, per-location gate, standard-run sizes only", (
   assert.equal(on.adopts[0].loc, "hub2");
   assert.ok(!on.adopts.find((a) => a.sizeKey === "8"), "numeric size never auto-adopts, even when the matrix is misconfigured");
   assert.ok(!on.adopts.find((a) => a.loc === "marathon-pe"), "unflagged store stays human-decided");
+});
+
+// ── Reject re-check + loop guard (incident 2026-07-19: wrong shelf) ───────────
+// A rejection while the denier's counted cell still shows stock re-checks on a
+// SHORT window (default 30 min) instead of the 24h cooldown; N such rejections
+// (default 3) park the cell in Recount Needed instead of looping forever.
+
+const rejectedOrder = (agoH) => ({
+  o_rej: {
+    customerName: "Shop Refill", clothingRefillStatus: "rejected",
+    destShop: "marathon-pe", productId: "p1", size: "M",
+    clothingOutOfStockAt: iso(agoH), createdAt: iso(agoH), placedAtHub: "hub2",
+  },
+});
+const streakNode = (count, agoH = 1) => ({
+  "marathon-pe": { p1: { M: { count, lastTs: iso(agoH), by: "hub2" } } },
+});
+
+test("reject while denier still counts stock → re-proposes after the SHORT recheck window", () => {
+  const plan = computeRefillPlan(base({ orders: rejectedOrder(0.75) })); // 45 min ago > 30 min recheck
+  const i = plan.intents.find((x) => x.dest === "marathon-pe" && x.sizeKey === "M");
+  assert.ok(i, "re-proposed after recheck window despite 24h cooldown not having elapsed");
+});
+
+test("reject while denier still counts stock → suppressed INSIDE the recheck window, surfaced as waiting", () => {
+  const plan = computeRefillPlan(base({ orders: rejectedOrder(0.25) })); // 15 min ago < 30 min recheck
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0);
+  const w = plan.exceptions.waitingForStock.items.find((x) => x.loc === "marathon-pe");
+  assert.ok(w && /re-checks in/.test(w.note), "waiting entry carries the recheck note");
+});
+
+test("reject while denier counted EMPTY → full 24h cooldown unchanged", () => {
+  const plan = computeRefillPlan(base({
+    orders: rejectedOrder(2),
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(5) } }, trophy: {} },
+  }));
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0);
+  const w = plan.exceptions.waitingForStock.items.find((x) => x.loc === "marathon-pe");
+  assert.ok(w && /reopens when stock arrives/.test(w.note), "empty denier keeps the arrival/24h contract");
+});
+
+test("LOOP GUARD: streak at limit + stock still shown → Recount Needed, no re-ask", () => {
+  const plan = computeRefillPlan(base({ orders: rejectedOrder(2), rejectStreak: streakNode(3) }));
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0);
+  const rn = plan.exceptions.recountNeeded.items.find((x) => x.loc === "marathon-pe");
+  assert.ok(rn, "flagged for recount");
+  assert.equal(rn.rejections, 3);
+  assert.equal(rn.source, "hub2");
+  assert.ok(rn.showing >= 1, "reports what the count claims");
+});
+
+test("LOOP GUARD self-heals: denier no longer shows stock → streak reset, normal cooldown resumes", () => {
+  const plan = computeRefillPlan(base({
+    orders: rejectedOrder(2), rejectStreak: streakNode(3),
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(5) } }, trophy: {} },
+  }));
+  assert.equal(plan.exceptions.recountNeeded.count, 0);
+  assert.ok(plan.streakOps.some((o) => o.op === "reset" && o.dest === "marathon-pe" && o.pid === "p1" && o.sizeKey === "M"));
+});
+
+test("LOOP GUARD self-heals: stock ARRIVES at the denier after the last strike → flag lifts, re-asks", () => {
+  const plan = computeRefillPlan(base({
+    orders: rejectedOrder(1), rejectStreak: streakNode(3, 1),
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 5, ts: iso(0.5), after: { hub2: 15 } }],
+  }));
+  assert.equal(plan.exceptions.recountNeeded.count, 0);
+  assert.ok(plan.streakOps.some((o) => o.op === "reset" && o.dest === "marathon-pe"));
+  assert.ok(plan.intents.find((x) => x.dest === "marathon-pe" && x.sizeKey === "M"), "arrival lift re-proposes");
+});
+
+test("reconciled human rejection increments the streak when the denier still shows stock", () => {
+  const plan = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "o1", orderCreatedAt: iso(2), qty: 2, source: "hub2", createdAt: iso(2) } } } },
+    refillRequests: { r1: { status: "open", requestingLocation: "marathon-pe", productId: "p1", size: "M" } },
+    orders: { o1: { customerName: "Shop Refill", destShop: "marathon-pe", productId: "p1", size: "M", createdAt: iso(2), clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(0.1) } },
+  }));
+  const inc = plan.streakOps.find((o) => o.op === "inc" && o.dest === "marathon-pe" && o.sizeKey === "M");
+  assert.ok(inc, "streak incremented");
+  assert.equal(inc.count, 1);
+  assert.equal(inc.by, "hub2");
+});
+
+test("fulfilment resets an existing streak", () => {
+  const plan = computeRefillPlan(base({
+    rejectStreak: streakNode(2),
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "o1", orderCreatedAt: iso(2), qty: 2, source: "hub2", createdAt: iso(2) } } } },
+    refillRequests: { r1: { status: "open", requestingLocation: "marathon-pe", productId: "p1", size: "M" } },
+    orders: { o1: { customerName: "Shop Refill", destShop: "marathon-pe", productId: "p1", size: "M", createdAt: iso(2), clothingRefillStatus: "available" } },
+  }));
+  assert.ok(plan.streakOps.some((o) => o.op === "reset" && o.dest === "marathon-pe" && o.sizeKey === "M"));
 });

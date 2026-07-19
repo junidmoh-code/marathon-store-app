@@ -82,13 +82,14 @@ async function runScan() {
     // evidence and a size stays confirmed-out longer than configured.
     const windowDays = Math.max(MOVEMENTS_WINDOW_DAYS, (Number(config.confirmedOutDays) || 14) + 1);
     const windowStart = new Date(nowMs - windowDays * 864e5).toISOString();
-    const [targetDecisions, targets, products, openIndex, refillRequests, orders, movementsSnap, ...stockSnaps] = await Promise.all([
+    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, movementsSnap, ...stockSnaps] = await Promise.all([
       db.ref("stock_targets_decisions").once("value").then((s) => s.val() || {}),
       db.ref("stock_targets").once("value").then((s) => s.val() || {}),
       db.ref("products").once("value").then((s) => s.val() || {}),
       db.ref("refill_engine/open").once("value").then((s) => s.val() || {}),
       db.ref("refill_requests").once("value").then((s) => s.val() || {}),
       db.ref("orders").once("value").then((s) => s.val() || {}),
+      db.ref("refill_engine/rejectStreak").once("value").then((s) => s.val() || {}),
       db.ref("stock_movements").orderByChild("ts").startAt(windowStart).once("value"),
       ...locs.map((l) => db.ref(`stock/${l}`).once("value").then((s) => [l, s.val() || {}])),
     ]);
@@ -96,7 +97,7 @@ async function runScan() {
     const movements = Object.values(movementsSnap.val() || {});
 
     const plan = engine.computeRefillPlan({
-      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions,
+      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak,
     });
     counts.errors.push(...plan.errors);
 
@@ -147,6 +148,20 @@ async function runScan() {
       }
       counts.closes = applied;
       if (withdrawn) counts.withdrawn = withdrawn;
+    }
+
+    // ── apply reject-streak ops (loop guard, incident 2026-07-19) ─────────────
+    // One bulk update: incs stamp {count,lastTs,by}; resets delete the node
+    // (staff can also delete it from Health — "Recounted, ask again" — via the
+    // delete-only rules carve-out on /refill_engine/rejectStreak).
+    if (plan.streakOps && plan.streakOps.length) {
+      const upd = {};
+      for (const op of plan.streakOps) {
+        upd[`refill_engine/rejectStreak/${op.dest}/${op.pid}/${op.sizeKey}`] =
+          op.op === "inc" ? { count: op.count, lastTs: op.ts, by: op.by || null } : null;
+      }
+      await db.ref().update(upd).catch(() => {});
+      counts.streakOps = plan.streakOps.length;
     }
 
     // ── apply resizes (owner approval 2026-07-13) ─────────────────────────────

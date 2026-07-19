@@ -17,7 +17,7 @@
 // + healthWidgets.jsx — the existing design language, no new system.
 
 import React, { useMemo, useState } from "react";
-import { ref, update } from "firebase/database";
+import { ref, update, set } from "firebase/database";
 import { database } from "../../firebase";
 import {
   useStockExceptions, useEngineShadow, useEngineOpen, useEngineRuns,
@@ -180,6 +180,40 @@ function NegativeFixChip({ row, actorRole }) {
         <button onClick={fix} disabled={state === "busy"}
           style={{ border: "1px solid rgba(60,110,255,.35)", background: "rgba(60,110,255,.1)", color: BLUE_L, borderRadius: 7, padding: "2px 8px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
           {state === "busy" ? "…" : state === "failed" ? "Retry" : "Fix → 0"}
+        </button>
+      )}
+    </span>
+  );
+}
+
+// ── Recount Needed chip — the reject-streak loop guard's output ───────────────
+// A cell the warehouse rejected N times while its counted stock still claims
+// units: the engine has STOPPED re-asking (recount, don't loop). The clear
+// button is the human side of the loop: after physically recounting (and
+// fixing the count via Adjust/Count if it was wrong), "Ask again" deletes the
+// streak node (/refill_engine/rejectStreak — delete-only rules carve-out for
+// warehouse|admin) and the next scan re-proposes if the deficit still stands.
+function RecountChip({ row, actorRole }) {
+  const [state, setState] = useState(null); // null | "busy" | "failed" | "cleared"
+  const canClear = actorRole === "admin" || actorRole === "warehouse";
+  const clear = async () => {
+    if (state === "busy" || !canClear) return;
+    setState("busy");
+    try {
+      await set(ref(database, `refill_engine/rejectStreak/${row.loc}/${row.pid}/${encodeSizeKey(row.size)}`), null);
+      setState("cleared");   // exception list refreshes on the next scan (≤15 min)
+    } catch { setState("failed"); }
+  };
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1px solid ${RED}55`, background: "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
+      <span style={{ fontWeight: 800, color: "#fff" }}>{row.size || "One size"}</span>
+      <span style={{ fontWeight: 700, color: RED }}>
+        {row.rejections != null ? `${row.rejections}× no` : "both levels"} · {locLabel(row.source)} shows {row.showing}
+      </span>
+      {canClear && (
+        <button onClick={clear} disabled={state === "busy" || state === "cleared"}
+          style={{ border: "1px solid rgba(60,110,255,.35)", background: "rgba(60,110,255,.1)", color: BLUE_L, borderRadius: 7, padding: "2px 8px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
+          {state === "busy" ? "…" : state === "cleared" ? "Cleared ✓" : state === "failed" ? "Retry" : "Recounted — ask again"}
         </button>
       )}
     </span>
@@ -415,6 +449,21 @@ export default function HealthView({ products = [], onExit }) {
             ))}
           </DetailShell>
         );
+      case "recountNeeded":
+        return (
+          <DetailShell title="Recount Needed" sub="Rejected repeatedly while the count claims stock — the count is the suspect. Recount the location, fix it via Count/Adjust, then tap Recounted." count={count("recountNeeded")} onBack={back}>
+            {groupByProduct(items("recountNeeded")).map(([pid, rows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
+                badges={<Badge tone={RED}>COUNT MISMATCH</Badge>}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {rows.map((r) => (
+                    <RecountChip key={`${r.loc}|${r.size}`} row={r} actorRole={actorRole} />
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
       case "noTarget":
         return (
           <DetailShell title="Decision Queue" sub="Genuinely new supplier products · numeric-size quantities · assortment leftovers — real decisions only" count={count("noTarget")} onBack={back}>
@@ -551,6 +600,8 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Stranded upstream — transfer from here" onClick={() => setScreen("missingProducts")} />
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
+              <StatCard label="Recount Needed" value={count("recountNeeded")} tone={count("recountNeeded") ? RED : GREEN}
+                        sub="Rejected repeatedly while the count claims stock" onClick={() => setScreen("recountNeeded")} />
               <StatCard label="Decision Queue" value={count("noTarget")} tone={count("noTarget") ? BLUE_L : GREEN}
                         sub="New supplier products & real decisions only" onClick={() => setScreen("noTarget")} />
               <StatCard label="Introduce Existing" value={migratableLive ?? count("unintroduced")} tone={(migratableLive ?? count("unintroduced")) ? AMBER : GREEN}
