@@ -22,8 +22,10 @@ import { database } from "../../firebase";
 import {
   useStockExceptions, useEngineShadow, useEngineOpen, useEngineRuns,
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
-  useStockTargets,
+  useStockTargets, useTransfers,
 } from "./useStock";
+import InTransit from "./InTransit";
+import { STALE_TRANSIT_HOURS } from "./transitLanes";
 import IntroduceExisting from "./IntroduceExisting";
 import { computeUnintroduced, destsFrom } from "./introduceExistingCore";
 import { usePermissions } from "../PermissionsContext";
@@ -285,6 +287,16 @@ export default function HealthView({ products = [], onExit }) {
     return n;
   }, [shadow, openEngine]);
   const centralQueue = openRequests.filter((r) => r.requestingLocation === "hub2").length;
+  // Transit lanes (2026-07-19): cross-building sends parked in the in_transit
+  // holding. Stale = unreceived past the threshold, or short-received awaiting
+  // an admin resolution — either way someone should chase a physical box.
+  const allTransfers = useTransfers();
+  const transitOpen = useMemo(() => allTransfers.filter((t) => t.status && t.status !== "received"), [allTransfers]);
+  const transitStale = useMemo(() => transitOpen.filter((t) => {
+    if (t.status === "discrepancy") return true;
+    const at = Date.parse(t.createdAt || "");
+    return Number.isFinite(at) && serverNowMs() - at > STALE_TRANSIT_HOURS * 3600e3;
+  }).length, [transitOpen]);
   const missingProducts = count("onlyInCentral") + count("onlyInHub2");
   // ("Needs Review" was removed 2026-07-12 v3 — the confidence signal still
   // feeds /stock_confidence for future use, but every dashboard card must lead
@@ -322,6 +334,12 @@ export default function HealthView({ products = [], onExit }) {
         return (
           <DetailShell title="Excess Rebalance" sub="Above target — one tap auto-splits: network needs → Hub 2, true surplus → Central" count={count("excess")} onBack={back}>
             <MoveExcess products={products} actorRole={actorRole} />
+          </DetailShell>
+        );
+      case "intransit":
+        return (
+          <DetailShell title="In Transit" sub={`Cross-building sends awaiting receive — flagged stale after ${STALE_TRANSIT_HOURS}h`} count={transitOpen.length} onBack={back}>
+            <InTransit products={products} />
           </DetailShell>
         );
       case "missingProducts":
@@ -524,6 +542,9 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Chain flowing — auto-creates when stock lands" onClick={() => setScreen("awaitingUpstream")} />
               <StatCard label="Waiting for Supplier" value={count("awaitingSupplier")} tone={count("awaitingSupplier") ? AMBER : GREEN}
                         sub="Upstream empty — reorder or return excess" onClick={() => setScreen("awaitingSupplier")} />
+              <StatCard label="In Transit" value={transitOpen.length} tone={transitStale ? AMBER : transitOpen.length ? BLUE_L : GREEN}
+                        sub={transitStale ? `${transitStale} stale or short — chase the box` : "Cross-building sends awaiting receive"}
+                        onClick={() => setScreen("intransit")} />
               <StatCard label="Excess Inventory" value={count("excess")} tone={count("excess") ? AMBER : GREEN}
                         sub="Hub 2 + shops above target → rebalance" onClick={() => setScreen("excess")} />
               <StatCard label="Missing Products" value={missingProducts} tone={missingProducts ? AMBER : GREEN}

@@ -3,7 +3,8 @@
     "orders": {
       ".read": "auth != null && (!root.child('users').child(auth.uid).child('destShop').exists() || (query.orderByChild === 'destShop' && query.equalTo === root.child('users').child(auth.uid).child('destShop').val()))",
       ".indexOn": [
-        "destShop"
+        "destShop",
+        "readyNotifyPending"
       ],
       "$id": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
@@ -362,7 +363,7 @@
       "$transferId": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)",
         "status": {
-          ".validate": "newData.val().matches(/^(dispatched|received|discrepancy)$/)"
+          ".validate": "newData.val().matches(/^(dispatched|partially_received|received|discrepancy)$/)"
         }
       }
     },
