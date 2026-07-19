@@ -149,9 +149,12 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   const cur = res.snapshot.val();
   if (!cur) return { kind: "reject", code: "not-found" };
   if (cur.checkId !== checkId) return { kind: "reject", code: "stale-check" };
-  if (cur.status === "completed") {
+  // Heal only a well-formed completed tombstone — same completedSaDate guard as
+  // the decision-reject path, so a record missing the day key can't archive to a
+  // literal `.../undefined/...` node (Kimi P2). buildCompletedRecord always
+  // stamps it; this is belt-and-suspenders against a future/legacy writer.
+  if (cur.status === "completed" && cur.completedSaDate) {
     await archiveAndLog(db, store, cur);               // idempotent heal
-    return { kind: "reject", code: "already-completed" };
   }
   return { kind: "reject", code: "already-completed" };
 }

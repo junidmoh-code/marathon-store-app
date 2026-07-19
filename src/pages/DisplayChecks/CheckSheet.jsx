@@ -39,17 +39,24 @@ export default function CheckSheet({ store, check, onClose }) {
   useEffect(() => {
     const prev = typeof document !== "undefined" ? document.activeElement : null;
     const el = sheetRef.current;
+    // DOCUMENT-level capture, not element-level: if focus ever leaves the sheet
+    // (e.g. a mouse click on the inert backdrop while busy drops it to <body>),
+    // an element listener would never see the next Tab. Here any Tab whose focus
+    // is outside the sheet is pulled back in (Kimi P2).
     function onKey(e) {
+      if (!el) return;
       if (e.key === "Escape") { e.stopPropagation(); if (!busyRef.current) onCloseRef.current(); return; }
-      if (e.key !== "Tab" || !el) return;
+      if (e.key !== "Tab") return;
       const f = Array.from(el.querySelectorAll(FOCUSABLE));
-      if (!f.length) { e.preventDefault(); return; }
       const first = f[0], last = f[f.length - 1];
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      const active = document.activeElement;
+      if (!el.contains(active)) { e.preventDefault(); (first || el).focus(); return; } // focus escaped → reclaim
+      if (!f.length) { e.preventDefault(); el.focus(); return; }
+      if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
     }
-    el && el.addEventListener("keydown", onKey);
-    return () => { el && el.removeEventListener("keydown", onKey); prev && prev.focus && prev.focus(); };
+    document.addEventListener("keydown", onKey, true);
+    return () => { document.removeEventListener("keydown", onKey, true); prev && prev.focus && prev.focus(); };
   }, []);
   // Pull focus into the sheet on open, when the panel swaps (two buttons ↔ the
   // override warning), AND when it goes busy — mid-submit every button is disabled
