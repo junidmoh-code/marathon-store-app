@@ -350,20 +350,51 @@ export default function Transfer({ products, registry, actorRole }) {
 
     // TRANSIT LANE: cross-building from Central's building → stock goes to the
     // in_transit holding and the /transfers doc is the receiver's work item. The
-    // doc is created BEFORE the first movement — in_transit stock without a doc
-    // would be invisible to the receive screen, so a doc failure aborts the send
-    // (nothing has moved yet; safe to retry).
+    // doc — WITH its full manifest — is created BEFORE the first movement:
+    // in_transit stock without a manifest entry would be invisible to the
+    // receive screen, so writing the manifest up front removes that crash
+    // window entirely (failed lines are pruned after the loop instead). A doc
+    // failure aborts the send — nothing has moved yet, safe to retry.
     const transit = isTransitLane(from, to);
     if (transit) {
       try {
-        const docSnap = await get(child(ref(database), `transfers/${tId}`));
-        if (!docSnap.exists()) {
+        let docSnap = await get(child(ref(database), `transfers/${tId}`));
+        // Destination changed after a failed transit attempt: the doc's `to` is
+        // what the receiver acts on, so it must never disagree with the cart.
+        // With nothing sent yet, the stale doc is deleted and a fresh id minted
+        // (the rules make `to` write-once); once lines have physically left,
+        // the destination is locked to the doc.
+        if (docSnap.exists() && docSnap.val()?.to !== to) {
+          const anySent = Object.values(lineResults).some((r) => r?.status === "sent");
+          if (anySent) {
+            setBusy(false);
+            return flash("err", `This cart already sent lines toward ${labelFor(docSnap.val()?.to, registry)} — finish or clear it before changing destination.`);
+          }
+          await update(ref(database), { [`transfers/${tId}`]: null });
+          tId = push(child(ref(database), "transfers")).key;
+          setTransferId(tId);
+          docSnap = null;
+        }
+        if (!docSnap || !docSnap.exists()) {
+          const linesObj = {};
+          for (const ln of lines) {
+            if (!linesObj[ln.productId]) linesObj[ln.productId] = {};
+            linesObj[ln.productId][stockSizeKey(ln.size)] = ln.qty;
+          }
           await update(ref(database), {
             [`transfers/${tId}`]: {
               status: "dispatched", from, to, reason: "manual",
               createdAt: serverNowIso(), createdBy: auth.currentUser?.uid || null,
+              lines: linesObj,
             },
           });
+        } else {
+          // Retry with an existing doc: merge THIS attempt's lines in (per-path
+          // update, never a node set — already-sent lines from earlier attempts
+          // must survive).
+          const mergeLines = {};
+          for (const ln of lines) mergeLines[`transfers/${tId}/lines/${ln.productId}/${stockSizeKey(ln.size)}`] = ln.qty;
+          await update(ref(database), mergeLines);
         }
       } catch {
         setBusy(false);
@@ -394,15 +425,6 @@ export default function Transfer({ products, registry, actorRole }) {
           movementId: transferMovementId(tId, ln.productId, ln.size), // idempotency key
           link: { transferId: tId, refillId: refillId || null },
         });
-        // Transit: the doc's manifest line is what the receiver lands, so a line
-        // only counts as sent once BOTH the movement and its manifest entry
-        // exist. A manifest miss re-queues the line — the movement is idempotent,
-        // so the retry no-ops the stock write and just repairs the manifest.
-        if (res.ok && transit) {
-          await update(ref(database), {
-            [`transfers/${tId}/lines/${ln.productId}__${stockSizeKey(ln.size)}`]: ln.qty,
-          });
-        }
       } catch (e) {
         res = { ok: false, reason: "write_failed", error: String(e?.message || e) };
       }
@@ -419,9 +441,29 @@ export default function Transfer({ products, registry, actorRole }) {
       saveDraft({ from, to, refillId, transferId: tId, basket: snapshot, lineResults: results });
     }
 
+    // Transit bookkeeping: a failed line never moved stock (applyMovement is
+    // all-or-nothing), so its manifest entry is pruned — the doc lists exactly
+    // what physically left. If nothing has EVER left on this doc, the doc
+    // itself is removed so no ghost card can sit in In Transit / Health.
+    if (transit && failed.length) {
+      const prune = {};
+      for (const f of failed) {
+        const ln = snapshot[f.key];
+        if (ln) prune[`transfers/${tId}/lines/${ln.productId}/${stockSizeKey(ln.size)}`] = null;
+      }
+      await update(ref(database), prune).catch(() => {});
+    }
+    if (transit && !Object.values(results).some((r) => r?.status === "sent")) {
+      await update(ref(database), { [`transfers/${tId}`]: null }).catch(() => {});
+    }
+
     // Only mark the refill fulfilled when EVERY line moved — a partial transfer
-    // must not close the request.
-    if (refillId && failed.length === 0 && sent > 0) {
+    // must not close the request. Transit lanes never stamp here: the stock is
+    // parked in in_transit, not at the requesting location, and closing the
+    // request on dispatch is exactly the zombie-refill shape (#234). The legacy
+    // refillId path predates transit lanes, so a transit send simply leaves the
+    // request open.
+    if (refillId && failed.length === 0 && sent > 0 && !transit) {
       await update(ref(database), {
         [`refill_requests/${refillId}/status`]: "fulfilled",
         [`refill_requests/${refillId}/fulfilledBy`]: { transferId: tId },

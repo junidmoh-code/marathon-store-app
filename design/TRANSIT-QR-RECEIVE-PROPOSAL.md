@@ -86,21 +86,31 @@ same building value keeps today's instant one-step move — the gate is a pure
 
 ```
 transfers/{tId}: {
-  status: "dispatched" | "partially_received" | "received",   // rules currently allow
-                                                              // dispatched|received|discrepancy —
-                                                              // enum needs +partially_received
+  status: "dispatched" | "partially_received" | "received" | "discrepancy",
   from: "central", to: "marathon-pe",
-  createdAt, createdBy, receivedAt?,
+  createdAt, createdBy, receivedAt?, receivedBy?, resolvedShort?,
   reason: "manual" | "hub2_auto_refill" | "initial_distribution" | "network_rebalance",
-  lines: { "<pid>|<sizeKey>": qty, ... },          // full manifest
-  packages: {
-    "1": { status: "packed" | "received", receivedAt?, receivedBy?,
-           lines: { "<pid>|<sizeKey>": qty, ... } },   // per-package manifest
-    "2": { ... },
-  },
-  packageCount: N,
+  lines:    { <pid>: { <sizeKey>: qty } },   // manifest — NESTED, never a flat
+                                             // "pid__sizeKey" string (the one-size
+                                             // "_" sentinel makes flat keys unsplittable;
+                                             // found in T1 review)
+  received: { <pid>: { <sizeKey>: qty } },   // receipts, write-once per cell
+  packages: { ... },                         // T2: per-package manifests, same nested
+  packageCount: N,                           //     line shape inside each package
 }
 ```
+
+T1 DECISION (review 2026-07-19): T1 ships root-level `lines`/`received` only;
+`packages` arrives with T2. Compat rule for T2's receive path: a doc with no
+`packages` node is one implicit package. Docs are short-lived (hours), so no
+data migration — just that read-side branch.
+
+ACCEPTED T1 RISK (architect review): the pooled `in_transit` location is shared
+per product/size across concurrent transfers, so when two transfers of the same
+SKU overlap, an uncounted-at-receive real loss in one box can be absorbed by
+the other transfer's stock and never show as a discrepancy. Low concurrent
+volume in T1; T2's per-package manifests plus receiving counts are the real
+fix. Recorded here so it isn't re-discovered.
 
 - Per-package `status` carries partial state; top-level `status` flips to
   `partially_received` on first scan, `received` when every package is in.

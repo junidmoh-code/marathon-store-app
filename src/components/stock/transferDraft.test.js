@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { transferMovementId, loadDraft, saveDraft, clearDraft } from "./transferDraft";
+import { transferMovementId, receiveMovementId, loadDraft, saveDraft, clearDraft } from "./transferDraft";
 
 // Minimal Map-backed localStorage stub — the test runner is the node
 // environment (no jsdom), so the module's `localStorage` reads hit this.
@@ -35,6 +35,23 @@ describe("transferMovementId — deterministic + key-safe", () => {
 
   it("folds a null/one-size to the '_' sentinel", () => {
     expect(transferMovementId("-Otx1", "p1", null)).toBe("-Otx1:p1:_");
+  });
+});
+
+describe("receiveMovementId — the transit receive leg", () => {
+  it("is deterministic and never collides with the dispatch id of the same line", () => {
+    const rcv = receiveMovementId("-Otx1", "p1783", "M");
+    expect(rcv).toBe(receiveMovementId("-Otx1", "p1783", "M"));
+    expect(rcv).toBe("rcv:-Otx1:p1783:M");
+    expect(rcv).not.toBe(transferMovementId("-Otx1", "p1783", "M"));
+  });
+
+  it("keeps the one-size '_' sentinel and half-sizes RTDB-key-safe", () => {
+    // Regression: the one-size sentinel broke the first flat "pid__size" line-key
+    // scheme (pid + "__" + "_" is unsplittable) — ids and doc keys must both
+    // survive "_" and "5.5".
+    expect(receiveMovementId("-Otx1", "p1", "_")).toBe("rcv:-Otx1:p1:_");
+    expect(receiveMovementId("-Otx1", "p1", "5.5")).toBe("rcv:-Otx1:p1:5_5");
   });
 });
 

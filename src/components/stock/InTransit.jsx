@@ -6,11 +6,16 @@
 // retry resumes exactly where it stopped (movement ids are deterministic —
 // re-confirming a landed line no-ops).
 //
+// DOC SHAPE: `lines` and `received` are nested {productId: {sizeKey: qty}} —
+// NEVER a flat "pid__sizeKey" string (the one-size "_" sentinel makes flat keys
+// unparseable). The manifest is complete before any stock moves (Transfer.jsx
+// writes it at doc-create), so everything in in_transit is always explained.
+//
 // SHORT RECEIVE: the qty box per line defaults to the sent amount; receiving
 // less (box came up short) lands what actually arrived and marks the transfer
 // `discrepancy` — the shortfall REMAINS in the in_transit cell as the honest
 // signal, surfaced here and on the Health dashboard until an admin books the
-// resolving adjustment. Nothing is ever silently clamped.
+// resolving adjustment and closes the record. Nothing is ever silently clamped.
 //
 // STATUS FLOW: dispatched → (crash/partial retry: partially_received) →
 // received | discrepancy. QR scan-to-receive (T3) will drive the same receive()
@@ -20,6 +25,7 @@ import React, { useMemo, useState } from "react";
 import { ref, update } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
+import { receiveMovementId } from "./transferDraft";
 import { useTransfers, useLocations } from "./useStock";
 import { labelFor, IN_TRANSIT } from "./locations";
 import { decodeSizeKey } from "../../utils/sizeKey";
@@ -30,17 +36,23 @@ import { Toast, Empty } from "./widgets";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 
 const ONE_SIZE = "_";
+const sizeText = (sizeKey) => {
+  const s = decodeSizeKey(sizeKey);
+  return s === ONE_SIZE || s == null || s === "" ? "One size" : s;
+};
 
-// Doc line keys are `${productId}__${encodedSize}` (Transfer.jsx writes them via
-// stockSizeKey). Split on the LAST "__" so a product id can never shear the size.
-function parseLineKey(lineKey) {
-  const cut = lineKey.lastIndexOf("__");
-  if (cut < 0) return null;
-  const sizeKey = lineKey.slice(cut + 2);
-  return { productId: lineKey.slice(0, cut), sizeKey, size: decodeSizeKey(sizeKey) };
+// Flatten a doc's nested {pid: {sizeKey: qty}} map into renderable rows. The
+// row id (`pid/sizeKey`) is UI-local (edit state keys) — never persisted.
+function flatLines(nested) {
+  const out = [];
+  for (const [pid, bySize] of Object.entries(nested || {})) {
+    for (const [sizeKey, qty] of Object.entries(bySize || {})) {
+      out.push({ rowId: `${pid}/${sizeKey}`, pid, sizeKey, qty: Number(qty) || 0 });
+    }
+  }
+  return out;
 }
-
-const sizeText = (size) => (size === ONE_SIZE || size == null || size === "" ? "One size" : size);
+const receivedQtyOf = (t, row) => t.received?.[row.pid]?.[row.sizeKey];
 
 const STATUS_META = {
   dispatched: { label: "IN TRANSIT", tone: BLUE_L },
@@ -54,16 +66,21 @@ function ageHours(createdAt) {
   return Math.max(0, (serverNowMs() - t) / 3600e3);
 }
 
-export default function InTransit({ products = [] }) {
+// registry/actorRole come as props when the parent already has them
+// (StockView's `shared`); the hooks below are the fallback for bare mounts
+// (HealthView drill-in). Hooks always run — unconditionally — the props just
+// take precedence, so there's exactly one live formula for each.
+export default function InTransit({ products = [], registry: registryProp, actorRole: actorRoleProp }) {
   const transfers = useTransfers();
-  const registry = useLocations();
+  const registryHook = useLocations();
+  const registry = registryProp || registryHook;
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const { permRecord, isSuperAdmin } = usePermissions();
-  const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
+  const actorRole = actorRoleProp || (isSuperAdmin ? "admin" : (permRecord?.stockRole || null));
 
   const [busyId, setBusyId] = useState(null);
   const [toast, setToast] = useState(null);
-  // Pending short-receive edits, keyed per transfer then per line: { tId: { lineKey: qty } }.
+  // Pending short-receive edits, keyed per transfer then per row: { tId: { rowId: qty } }.
   const [edits, setEdits] = useState({});
 
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3500); };
@@ -75,52 +92,54 @@ export default function InTransit({ products = [] }) {
     [transfers],
   );
 
-  const setEdit = (tId, lineKey, val, max) => {
+  const setEdit = (tId, rowId, val, max) => {
     const q = Math.max(0, Math.min(Number(val) || 0, max));
-    setEdits((e) => ({ ...e, [tId]: { ...(e[tId] || {}), [lineKey]: q } }));
+    setEdits((e) => ({ ...e, [tId]: { ...(e[tId] || {}), [rowId]: q } }));
   };
 
   const receive = async (t) => {
-    const lines = Object.entries(t.lines || {});
-    if (!lines.length) return flash("err", "This transfer has no manifest — ask an admin to check it.");
+    const rows = flatLines(t.lines);
+    if (!rows.length) return flash("err", "This transfer has no manifest — ask an admin to check it.");
     setBusyId(t.id);
 
-    const already = t.received || {};
     const ed = edits[t.id] || {};
-    const settled = { ...already };          // lines done (this pass + earlier passes)
+    const settled = {};                                  // rowId -> received qty (all passes)
+    for (const r of rows) {
+      const got = receivedQtyOf(t, r);
+      if (got != null) settled[r.rowId] = Number(got) || 0;
+    }
     let failed = 0;
-    let short = Object.entries(already).some(([k, q]) => Number(q) < Number(t.lines?.[k] ?? 0));
+    let short = rows.some((r) => settled[r.rowId] != null && settled[r.rowId] < r.qty);
 
-    for (const [lineKey, sentQtyRaw] of lines) {
-      if (settled[lineKey] != null) continue;            // landed in an earlier pass
-      const parsed = parseLineKey(lineKey);
-      const sentQty = Number(sentQtyRaw) || 0;
-      if (!parsed || sentQty <= 0) { failed++; continue; }
-      const want = Math.max(0, Math.min(Number(ed[lineKey] ?? sentQty), sentQty));
-      if (want < sentQty) short = true;
+    for (const r of rows) {
+      if (settled[r.rowId] != null) continue;            // landed in an earlier pass
+      const size = decodeSizeKey(r.sizeKey);             // "_" sentinel passes through untouched
+      const want = Math.max(0, Math.min(Number(ed[r.rowId] ?? r.qty), r.qty));
+      if (want < r.qty) short = true;
 
       let ok = true;
       if (want > 0) {
         const res = await applyMovement({
-          type: "transfer_in", productId: parsed.productId, size: parsed.size, qty: want,
+          type: "transfer_in", productId: r.pid, size, qty: want,
           from: IN_TRANSIT, to: t.to, actorRole,
-          movementId: `rcv_${t.id}_${lineKey}`,          // deterministic → re-confirm no-ops
+          movementId: receiveMovementId(t.id, r.pid, size), // deterministic → re-confirm no-ops
           link: { transferId: t.id },
         }).catch(() => ({ ok: false }));
         ok = !!res?.ok;
       }
       if (ok) {
         // Record the receipt on the doc BEFORE moving on — this is the resume
-        // point; if it fails the line stays unsettled and the retry (idempotent
-        // movement) repairs it.
+        // point; if it fails the row stays unsettled and the retry (idempotent
+        // movement) repairs it. The rules make each receipt write-once, so two
+        // devices racing the same row can't record different quantities.
         try {
-          await update(ref(database), { [`transfers/${t.id}/received/${lineKey}`]: want });
-          settled[lineKey] = want;
+          await update(ref(database), { [`transfers/${t.id}/received/${r.pid}/${r.sizeKey}`]: want });
+          settled[r.rowId] = want;
         } catch { failed++; }
       } else failed++;
     }
 
-    const allSettled = lines.every(([k]) => settled[k] != null);
+    const allSettled = rows.every((r) => settled[r.rowId] != null);
     const anySettled = Object.keys(settled).length > 0;
     const status = allSettled ? (short ? "discrepancy" : "received")
       : anySettled ? "partially_received" : t.status || "dispatched";
@@ -145,10 +164,12 @@ export default function InTransit({ products = [] }) {
       {open.map((t) => {
         const meta = STATUS_META[t.status] || STATUS_META.dispatched;
         const age = ageHours(t.createdAt);
-        const stale = t.status === "dispatched" && age != null && age > STALE_TRANSIT_HOURS;
-        const already = t.received || {};
-        const lines = Object.entries(t.lines || {});
-        const allSettled = lines.length > 0 && lines.every(([k]) => already[k] != null);
+        // Stale covers partials too — a half-landed transfer past the threshold
+        // needs chasing just as much as an untouched one.
+        const stale = (t.status === "dispatched" || t.status === "partially_received")
+          && age != null && age > STALE_TRANSIT_HOURS;
+        const rows = flatLines(t.lines);
+        const allSettled = rows.length > 0 && rows.every((r) => receivedQtyOf(t, r) != null);
         const busy = busyId === t.id;
 
         return (
@@ -164,27 +185,26 @@ export default function InTransit({ products = [] }) {
               {stale ? ` · over ${STALE_TRANSIT_HOURS}h in transit — chase it` : ""}
             </div>
 
-            {lines.map(([lineKey, sentQtyRaw]) => {
-              const parsed = parseLineKey(lineKey);
-              const sentQty = Number(sentQtyRaw) || 0;
-              const name = byId.get(parsed?.productId)?.name || parsed?.productId || lineKey;
-              const done = already[lineKey] != null;
-              const gotQty = Number(already[lineKey]) || 0;
+            {rows.map((r) => {
+              const name = byId.get(r.pid)?.name || r.pid;
+              const got = receivedQtyOf(t, r);
+              const done = got != null;
+              const gotQty = Number(got) || 0;
               return (
-                <div key={lineKey} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderTop: "1px solid rgba(255,255,255,.06)" }}>
+                <div key={r.rowId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderTop: "1px solid rgba(255,255,255,.06)" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
-                    <div style={{ fontSize: 11, color: GRAY }}>{sizeText(parsed?.size)} · sent {sentQty}</div>
+                    <div style={{ fontSize: 11, color: GRAY }}>{sizeText(r.sizeKey)} · sent {r.qty}</div>
                   </div>
                   {done ? (
-                    <span style={{ fontSize: 11.5, fontWeight: 700, color: gotQty < sentQty ? RED : GREEN, whiteSpace: "nowrap" }}>
-                      {gotQty < sentQty ? `got ${gotQty} of ${sentQty}` : `received ${gotQty} ✓`}
+                    <span style={{ fontSize: 11.5, fontWeight: 700, color: gotQty < r.qty ? RED : GREEN, whiteSpace: "nowrap" }}>
+                      {gotQty < r.qty ? `got ${gotQty} of ${r.qty}` : `received ${gotQty} ✓`}
                     </span>
                   ) : (
                     <input
-                      type="number" inputMode="numeric" min={0} max={sentQty}
-                      value={edits[t.id]?.[lineKey] ?? sentQty}
-                      onChange={(e) => setEdit(t.id, lineKey, e.target.value, sentQty)}
+                      type="number" inputMode="numeric" min={0} max={r.qty}
+                      value={edits[t.id]?.[r.rowId] ?? r.qty}
+                      onChange={(e) => setEdit(t.id, r.rowId, e.target.value, r.qty)}
                       disabled={busy}
                       style={{ ...input, width: 64, textAlign: "center", padding: "7px 6px" }}
                     />
@@ -200,23 +220,24 @@ export default function InTransit({ products = [] }) {
             )}
             {allSettled && t.status === "discrepancy" && (
               <div style={{ fontSize: 11, color: RED, marginTop: 8 }}>
-                Short-received — the missing units are still in the In Transit holding. An admin resolves them with an adjustment (Stock → Adjust).
+                Short-received — the missing units are still in the In Transit holding. Book the correcting
+                adjustment first (Stock → Adjust, location In Transit); closing the record here does NOT move stock.
                 {actorRole === "admin" && (
                   <button
                     onClick={async () => {
-                      // Closes the card once the shortfall has been dealt with
-                      // (adjustment booked / units found). The doc keeps the
-                      // received map + this marker as the audit trail.
+                      // Deliberately labelled as a claim, not a dismissal: the
+                      // admin asserts the adjustment is booked. The doc keeps
+                      // the received map + this marker as the audit trail.
                       await update(ref(database), {
                         [`transfers/${t.id}/status`]: "received",
                         [`transfers/${t.id}/resolvedShort`]: true,
                         [`transfers/${t.id}/receivedAt`]: serverNowIso(),
                         [`transfers/${t.id}/receivedBy`]: auth.currentUser?.uid || null,
-                      }).catch(() => flash("err", "Couldn't mark resolved — retry."));
+                      }).catch(() => flash("err", "Couldn't close the record — retry."));
                     }}
                     style={{ ...bGreen, display: "block", width: "100%", marginTop: 8, padding: "8px 12px" }}
                   >
-                    Mark resolved (admin)
+                    Adjustment booked — close record (admin)
                   </button>
                 )}
               </div>

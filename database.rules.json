@@ -319,7 +319,7 @@
         "$pid": {
           "$size": {
             ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()",
-            ".validate": "newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && newData.child('mv').val() !== data.child('mv').val() && newData.child('lastType').val().matches(/^(received|opening|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val().matches(/^(sold|return|transfer_out)$/))",
+            ".validate": "newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && newData.child('mv').val() !== data.child('mv').val() && newData.child('lastType').val().matches(/^(received|opening|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val().matches(/^(sold|return|transfer_out|transfer_in)$/))",
             "qty": {
               ".validate": "newData.isNumber()"
             },
@@ -364,6 +364,29 @@
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)",
         "status": {
           ".validate": "newData.val().matches(/^(dispatched|partially_received|received|discrepancy)$/)"
+        },
+        "from": {
+          ".validate": "(!data.exists() || data.val() === newData.val()) && root.child('locations').child(newData.val()).exists()"
+        },
+        "to": {
+          ".validate": "(!data.exists() || data.val() === newData.val()) && root.child('locations').child(newData.val()).exists()"
+        },
+        "createdAt": {
+          ".validate": "!data.exists() || data.val() === newData.val()"
+        },
+        "lines": {
+          "$pid": {
+            "$sizeKey": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            }
+          }
+        },
+        "received": {
+          "$pid": {
+            "$sizeKey": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || data.val() === newData.val())"
+            }
+          }
         }
       }
     },
