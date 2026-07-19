@@ -462,7 +462,7 @@ function completionDecision({ record, expectedCheckId, result, override, stockQt
 // on the open record — crucially `activatedSaDate`, the SA day the check opened,
 // which is the anchor PR-12 attributes the mark to. Grace fields are long gone
 // on an open check; stripped defensively.
-function buildCompletedRecord(record, { result, nowMs, saDate, actor, overridden }) {
+function buildCompletedRecord(record, { result, nowMs, saDate, actor, overridden, stockQty }) {
   const next = {
     ...record,
     status: "completed",
@@ -472,6 +472,10 @@ function buildCompletedRecord(record, { result, nowMs, saDate, actor, overridden
     completedBy: actor || null,        // { uid, name, email } — the logged-in user, NO PIN
     resultOverridden: !!overridden,    // a no_stock close over real stock (amber flag)
   };
+  // For a no-stock close, carry the qty the system saw ON the record — so the
+  // compliance evidence is durable and the archive/log can be reproduced from the
+  // record alone on a reconcile/retry (no need to re-read stock).
+  if (result === "no_stock") next.stockAtClose = Number(stockQty) || 0;
   delete next.stockSeenAt;
   delete next.wakeAt;
   return next;

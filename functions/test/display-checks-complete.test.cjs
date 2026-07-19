@@ -147,6 +147,33 @@ test("no_stock with genuinely zero stock completes normally (no override needed,
   assert.equal(active(db).resultOverridden, false);
 });
 
+// ── SELF-HEALING ARCHIVE (Kimi P1: flip committed but archive lost) ──────────
+test("a retry against an already-completed tombstone RE-ARCHIVES it (heals a completion that flipped but never archived)", async () => {
+  // Simulate a prior completion that flipped the tombstone but crashed before its
+  // archive: the active slot holds a completed record; the day node has nothing.
+  const tomb = { ...openCheck(), status: "completed", result: "confirmed", completedAt: NOW - 5000,
+                 completedSaDate: SA, completedBy: ACTOR };
+  const db = dbWith(tomb);
+  assert.equal(dayNode(db), undefined); // not archived yet
+  const r = await call(db, { result: "confirmed" });
+  assert.equal(r.kind, "reject");
+  assert.equal(r.code, "already-completed");        // write-once: didn't newly complete
+  // …but the archive is now healed — the record is no longer stranded.
+  const arch = dayNode(db);
+  assert.ok(arch, "the stranded tombstone was archived on the retry");
+  assert.equal(arch.result, "confirmed");
+  assert.deepEqual(arch.completedBy, ACTOR);
+});
+
+test("a no_stock completion stores its stock evidence on the record and in the log", async () => {
+  const db = dbWith(openCheck(), 4);
+  await call(db, { result: "no_stock", override: true });
+  assert.equal(active(db).stockAtClose, 4);         // durable evidence on the record
+  assert.equal(dayNode(db).stockAtClose, 4);
+  const log = Object.values(db.state.displayChecks_log[STORE]["2026-07"])[0];
+  assert.equal(log.payload.stockQty, 4);
+});
+
 // ── GUARDS ────────────────────────────────────────────────────────────────────
 test("a held check cannot be completed (not-open)", async () => {
   const db = dbWith(openCheck({ status: "held" }));

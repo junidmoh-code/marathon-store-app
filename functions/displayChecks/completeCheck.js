@@ -53,6 +53,38 @@ const ERROR_CODE = {
   "bad-result": "invalid-argument",
 };
 
+// Idempotent set with a small retry, so a transient write failure doesn't strand
+// the archive/log. Deterministic paths → a retry overwrites the same node.
+async function setWithRetry(ref, value, attempts = 3) {
+  for (let i = 0; ; i++) {
+    try { await ref.set(value); return true; }
+    catch (err) {
+      if (i >= attempts - 1) { console.error("completeDisplayCheck: write failed after retries:", err && err.message); return false; }
+    }
+  }
+}
+
+// Archive a committed completed record to the day node + write the audit log,
+// both idempotent (deterministic keys) and reproducible FROM THE RECORD ALONE —
+// so a reconcile/retry re-runs it identically without re-reading stock. This is
+// the write that closes the "flip committed but archive lost" gap: it re-runs on
+// every completion attempt that finds an already-completed tombstone.
+async function archiveAndLog(db, store, record) {
+  const { checkId, completedSaDate: saDate, result } = record;
+  await setWithRetry(db.ref(`displayChecks/${store}/${saDate}/${checkId}`), record);
+  await setWithRetry(db.ref(`displayChecks_log/${store}/${saMonthOfDate(saDate)}/${checkId}_completed`), {
+    checkId,
+    type: result === "no_stock" ? "completed_no_stock" : "completed_confirmed",
+    at: record.completedAt,
+    actor: record.completedBy || null,
+    payload: {
+      result,
+      overridden: !!record.resultOverridden,
+      ...(result === "no_stock" ? { stockQty: Number(record.stockAtClose) || 0 } : {}),
+    },
+  });
+}
+
 // The completion mutation core — injectable `db` so it is unit-testable without
 // admin (mirrors bumpCheck). Does the stock soft-block read, the write-once
 // tombstone flip, the day-node archive and the audit log. Returns a discriminated
@@ -66,7 +98,9 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   const preRead = (await activeRef.get()).val();
 
   // For a no-stock close, read the live stock cell for the soft-block (the till
-  // proving the item exists is what contradicts the claim). Keyed read.
+  // proving the item exists is what contradicts the claim). Keyed read. NOTE: a
+  // soft-block is advisory — the read is a snapshot, not re-checked inside the
+  // flip; the qty is recorded as evidence of what the system saw, not a lock.
   let stockQty = 0;
   if (result === "no_stock" && preRead && preRead.productId) {
     const sk = preRead.sizeKey || stockSizeKey(preRead.size);
@@ -74,7 +108,18 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   }
 
   const decision = completionDecision({ record: preRead, expectedCheckId: checkId, result, override: override === true, stockQty });
-  if (decision.kind === "reject") return decision;
+  if (decision.kind === "reject") {
+    // SELF-HEAL on the common retry path: the record is ALREADY a completed
+    // tombstone for this check. A prior completion may have flipped it but
+    // crashed before archiving, so re-run the idempotent archive from the record
+    // itself (it carries its own evidence) — the compliance record can never be
+    // stranded in the active tombstone without a day-node copy.
+    if (decision.code === "already-completed" && preRead && preRead.status === "completed"
+        && preRead.checkId === checkId && preRead.completedSaDate) {
+      await archiveAndLog(db, store, preRead);
+    }
+    return decision;
+  }
   if (decision.kind === "needs_override") return { kind: "needs_override", stockQty: decision.stockQty };
 
   // ── FLIP the active record to a completed TOMBSTONE (write-once, NEVER null) ──
@@ -85,33 +130,30 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
     const c = cur === null ? preRead : cur;
     if (!c || c.checkId !== checkId) return undefined;   // gone/overwritten — abort, don't resurrect
     if (c.status !== "open" || c.completedAt != null) return undefined; // write-once + concurrent guard
-    return buildCompletedRecord(c, { result, nowMs, saDate, actor, overridden: decision.overridden });
+    return buildCompletedRecord(c, { result, nowMs, saDate, actor, overridden: decision.overridden, stockQty });
   });
-  if (!res.committed) {
-    // Lost the write-once race (already completed) or the slot moved. No archive
-    // was written yet, so nothing to reconcile.
+
+  if (res.committed) {
+    // Archive the COMMITTED tombstone (flip-first, so concurrent closers can't
+    // diverge the two copies). Keyed by checkId under the completion SA day.
+    await archiveAndLog(db, store, res.snapshot.val());
+    return { kind: "ok", result, completedAt: nowMs, overridden: decision.overridden };
+  }
+
+  // Aborted. Read the authoritative current value to tell the causes apart AND —
+  // the important part — SELF-HEAL: if the slot already holds THIS completed
+  // check, a prior attempt committed the flip but may have crashed before
+  // archiving; re-run the idempotent archive so a completed record can never be
+  // stranded in the active tombstone without a day-node copy. (Without this the
+  // write-once guard turns every retry into a no-op that never heals the gap.)
+  const cur = res.snapshot.val();
+  if (!cur) return { kind: "reject", code: "not-found" };
+  if (cur.checkId !== checkId) return { kind: "reject", code: "stale-check" };
+  if (cur.status === "completed") {
+    await archiveAndLog(db, store, cur);               // idempotent heal
     return { kind: "reject", code: "already-completed" };
   }
-  const committed = res.snapshot.val();
-
-  // ── Archive the COMMITTED tombstone to the day node (idempotent, keyed by
-  // checkId under the completion SA day — where PR 5's Confirmed feed reads). ──
-  await db.ref(`displayChecks/${store}/${committed.completedSaDate}/${checkId}`).set(committed);
-
-  // ── Audit event (deterministic per-check key → idempotent) ──
-  await db.ref(`displayChecks_log/${store}/${saMonthOfDate(saDate)}/${checkId}_completed`).set({
-    checkId,
-    type: result === "no_stock" ? "completed_no_stock" : "completed_confirmed",
-    at: nowMs,
-    actor,
-    payload: {
-      result,
-      overridden: decision.overridden,
-      ...(result === "no_stock" ? { stockQty } : {}),
-    },
-  });
-
-  return { kind: "ok", result, completedAt: nowMs, overridden: decision.overridden };
+  return { kind: "reject", code: "already-completed" };
 }
 
 // Exported for the completion regression tests (write-once, no-stock soft-block,
@@ -146,11 +188,17 @@ exports.completeDisplayCheck = onCall(
     const db = admin.database();
 
     // ── Authorize for THIS store: super-admin, or store-scoped display_checks
-    // (mirrors config/displayChecks.canUseDisplayChecks server-side). email from
-    // the verified token is the only trusted identity signal. ──
+    // (mirrors config/displayChecks.canUseDisplayChecks server-side). ──
+    // The super-admin shortcut trusts the email claim, so it MUST be a VERIFIED
+    // email — otherwise a self-signed-up account claiming gunidmoh@gmail.com with
+    // email_verified:false would inherit super-admin. Google sign-in (the real
+    // super-admin's provider) sets email_verified:true, so this is safe. The
+    // staff path never trusts email — it authorizes by uid-keyed /users perms.
+    const emailVerified = !!(request.auth.token && request.auth.token.email_verified);
     const userRec = (await db.ref(`users/${uid}`).get()).val() || {};
     const perms = Array.isArray(userRec.permissions) ? userRec.permissions : [];
-    const allowed = email === ADMIN_EMAIL
+    const isSuper = email === ADMIN_EMAIL && emailVerified;
+    const allowed = isSuper
       || (perms.includes("display_checks") && userRec.destShop === store);
     if (!allowed) {
       throw new HttpsError("permission-denied", "You can't complete checks for this store.");
