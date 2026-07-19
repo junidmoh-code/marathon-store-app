@@ -102,17 +102,23 @@ const RESOLVE_TIMEOUT_MS = 5000;
 //                                  phone-key lookup
 //   null                         — no usable phone (refill-like; no fields)
 export async function resolveOrderCustomer(phone, name, orderedAt, optedIn) {
+  let timer;
   try {
     return await Promise.race([
       ensureOrderCustomer(phone, name, orderedAt, optedIn),
-      new Promise((resolve) =>
-        setTimeout(() => {
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
           console.warn(`resolveOrderCustomer timed out after ${RESOLVE_TIMEOUT_MS}ms — order proceeds without customer identity`);
           resolve({ customerPending: true });
-        }, RESOLVE_TIMEOUT_MS)),
+        }, RESOLVE_TIMEOUT_MS);
+      }),
     ]);
   } catch (err) {
     console.warn("resolveOrderCustomer failed — order proceeds without customer identity:", err);
     return { customerPending: true };
+  } finally {
+    // Clear the timeout however the race settled — otherwise every successful
+    // checkout logs a spurious "timed out" warning 5s later.
+    clearTimeout(timer);
   }
 }

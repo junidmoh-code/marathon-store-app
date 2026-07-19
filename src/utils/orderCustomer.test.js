@@ -162,6 +162,20 @@ describe("resolveOrderCustomer — the never-blocking wrapper", () => {
     }
   });
 
+  it("a successful resolve does NOT log a spurious timeout warning afterwards", async () => {
+    vi.useFakeTimers();
+    try {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const p = resolveOrderCustomer(PHONE, "A", "t", false);
+      await expect(p).resolves.toEqual({ customerId: KEY, customerCode: "C-1001" });
+      await vi.advanceTimersByTimeAsync(6000); // would fire the timeout if it weren't cleared
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bookkeeping update failure AFTER a committed code claim still returns the claimed identity", async () => {
     updateMock.mockRejectedValueOnce(new Error("network blip"));
     const res = await resolveOrderCustomer(PHONE, "A", "t", false);
