@@ -149,4 +149,25 @@ describe("resolveOrderCustomer — the never-blocking wrapper", () => {
     expect(await resolveOrderCustomer(PHONE, "A", "t", false)).toEqual({ customerId: KEY, customerCode: "C-1001" });
     expect(await resolveOrderCustomer("", "A", "t", false)).toBe(null);
   });
+
+  it("a HANGING resolve (flaky RTDB, never rejects) times out to pending instead of stalling checkout", async () => {
+    vi.useFakeTimers();
+    try {
+      getMock.mockImplementationOnce(() => new Promise(() => {})); // never settles
+      const p = resolveOrderCustomer(PHONE, "A", "t", false);
+      await vi.advanceTimersByTimeAsync(5000);
+      await expect(p).resolves.toEqual({ customerPending: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bookkeeping update failure AFTER a committed code claim still returns the claimed identity", async () => {
+    updateMock.mockRejectedValueOnce(new Error("network blip"));
+    const res = await resolveOrderCustomer(PHONE, "A", "t", false);
+
+    // The code was claimed, so the order carries the real identity — not pending.
+    expect(res).toEqual({ customerId: KEY, customerCode: "C-1001" });
+    expect(db.customers[KEY].code).toBe("C-1001"); // claim landed; bookkeeping can self-heal next order
+  });
 });

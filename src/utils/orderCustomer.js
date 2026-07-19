@@ -79,19 +79,38 @@ export async function ensureOrderCustomer(phone, name, orderedAt, optedIn) {
   };
   // Only ever sets optedIn: true — never reverts an existing true to false.
   if (optedIn) patch.optedIn = true;
-  await update(ref(database, `customers/${key}`), patch);
+  try {
+    await update(ref(database, `customers/${key}`), patch);
+  } catch (err) {
+    // The identity (key + code) is already safely claimed — the order must
+    // still carry it. Bookkeeping is best-effort; the next order re-patches.
+    console.warn("ensureOrderCustomer bookkeeping upsert failed (identity still resolved):", err);
+  }
 
   return { customerId: key, customerCode: code };
 }
 
+// Cap on how long identity resolution may hold up checkout. RTDB transactions
+// retry silently on flaky connections and can hang without ever rejecting —
+// that must not stall order placement, so a hang resolves as "pending".
+const RESOLVE_TIMEOUT_MS = 5000;
+
 // Never-throwing wrapper for placeOrders. Returns:
 //   { customerId, customerCode } — resolved/created, carry onto the order
-//   { customerPending: true }    — resolution failed; order still writes,
-//                                  POS falls back to its own phone-key lookup
+//   { customerPending: true }    — resolution failed or timed out; order
+//                                  still writes, POS falls back to its own
+//                                  phone-key lookup
 //   null                         — no usable phone (refill-like; no fields)
 export async function resolveOrderCustomer(phone, name, orderedAt, optedIn) {
   try {
-    return await ensureOrderCustomer(phone, name, orderedAt, optedIn);
+    return await Promise.race([
+      ensureOrderCustomer(phone, name, orderedAt, optedIn),
+      new Promise((resolve) =>
+        setTimeout(() => {
+          console.warn(`resolveOrderCustomer timed out after ${RESOLVE_TIMEOUT_MS}ms — order proceeds without customer identity`);
+          resolve({ customerPending: true });
+        }, RESOLVE_TIMEOUT_MS)),
+    ]);
   } catch (err) {
     console.warn("resolveOrderCustomer failed — order proceeds without customer identity:", err);
     return { customerPending: true };
