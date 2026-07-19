@@ -13,18 +13,48 @@
 // On success the sheet closes; the feed's live listener moves the card out of
 // Outstanding into Completed on its own — nothing to refetch.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT, MONO, BLUE, AMBER, INK, PANEL, META } from "./tokens";
 import { formatSaTime } from "./feedModel";
 
 const completeDisplayCheck = httpsCallable(functions, "completeDisplayCheck");
+const FOCUSABLE = 'button:not([disabled]),[href],input:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
 export default function CheckSheet({ store, check, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [override, setOverride] = useState(null); // { stockQty } when soft-blocked
+
+  // Real modal semantics (a11y): trap Tab inside the sheet, close on Escape, and
+  // restore focus to the trigger on unmount — otherwise keyboard users can reach
+  // and activate the background feed while the sheet is open (CodeRabbit).
+  const sheetRef = useRef(null);
+  const busyRef = useRef(busy); busyRef.current = busy;
+  const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
+  useEffect(() => {
+    const prev = typeof document !== "undefined" ? document.activeElement : null;
+    const el = sheetRef.current;
+    function onKey(e) {
+      if (e.key === "Escape") { e.stopPropagation(); if (!busyRef.current) onCloseRef.current(); return; }
+      if (e.key !== "Tab" || !el) return;
+      const f = Array.from(el.querySelectorAll(FOCUSABLE));
+      if (!f.length) { e.preventDefault(); return; }
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+    el && el.addEventListener("keydown", onKey);
+    return () => { el && el.removeEventListener("keydown", onKey); prev && prev.focus && prev.focus(); };
+  }, []);
+  // Pull focus into the sheet on open and whenever the panel swaps (two buttons
+  // ↔ the override warning), so focus never falls back to the background.
+  useEffect(() => {
+    const el = sheetRef.current;
+    const target = (el && el.querySelector(FOCUSABLE)) || el;
+    target && target.focus && target.focus();
+  }, [override]);
 
   const name = check.productName || "Unknown";
   const size = check.size && check.size !== "_" ? String(check.size) : null;
@@ -64,10 +94,15 @@ export default function CheckSheet({ store, check, onClose }) {
                backdropFilter: "blur(3px)", WebkitBackdropFilter: "blur(3px)" }}
     >
       <div
+        ref={sheetRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Complete display check: ${name}`}
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         style={{ ...PANEL, background: "rgba(14,16,22,.94)", width: "100%", maxWidth: 520,
                  borderRadius: "20px 20px 0 0", padding: 20, display: "flex",
-                 flexDirection: "column", gap: 16, maxHeight: "88vh", overflowY: "auto" }}
+                 flexDirection: "column", gap: 16, maxHeight: "88vh", overflowY: "auto", outline: "none" }}
       >
         {/* Header: product identity */}
         <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
