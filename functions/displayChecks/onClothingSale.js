@@ -54,6 +54,7 @@ const {
   processedClaimDecision,
   bumpTxn,
 } = require("./lib.cjs");
+const { guardedMutate, guardedCreate } = require("./guardedTransaction.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -78,28 +79,20 @@ function logEvent(updates, db, store, saDate, { checkId, type, at, payload, move
 const activePath = (store, key) => `displayChecks_active/${store}/${key}`;
 const dayArchivePath = (store, saDate, checkId) => `displayChecks/${store}/${saDate}/${checkId}`;
 
-// Bump the SKU's active record. COLD-CACHE SAFETY (PR 2a): the transaction fn
-// runs first against a cold null cache, so the pre-read forces the server
-// round-trip instead of a silent abort. RESURRECTION GUARD (firstRun latch):
-// preRead may rescue ONLY the cold-cache FIRST callback; once we've been
-// re-invoked with an AUTHORITATIVE value, a null means the slot was genuinely
-// DELETED (a completed tombstone reaped by the sweep — a path that now exists
-// once completion ships), and substituting the stale open/held preRead would
-// resurrect a ghost. So a later authoritative null aborts. (Same fix Codex
-// applied to completeDisplayCheck; the "never deleted while active" assumption
-// no longer holds now that completion creates reap-able tombstones.) The bumpTxn
-// checkId fence still rejects a stale bump on an overwritten slot (→ { ok:false }
-// → the caller re-resolves). On commit the log type comes from the LIVE status
-// (held → held_resale with the stock qty as evidence).
+// Bump the SKU's active record. The cold-cache latch + authoritative-null abort
+// (the resurrection guard) live ONCE in guardedMutate (guardedTransaction.cjs) —
+// this call site just supplies preRead + the bumpTxn mutation and never sees the
+// null case. bumpTxn's checkId fence still rejects a stale bump on an overwritten
+// slot (→ { ok:false } → the caller re-resolves). On commit the log type comes
+// from the LIVE status (held → held_resale with the stock qty as evidence).
 async function bumpCheck(db, { store, saDate, key, expectedCheckId, qty, movementId, movementTs, nowMs }) {
   const ref = db.ref(activePath(store, key));
   const preRead = (await ref.get()).val();
-  let firstRun = true;
-  const res = await ref.transaction((c) => {
-    const cur = (c === null && firstRun) ? preRead : c; // preRead only on the cold first run
-    firstRun = false;
-    return bumpTxn(cur, { qty, movementTs, movementId, expectedCheckId });
-  });
+  // guardedMutate owns the cold-cache latch + authoritative-null abort (the
+  // resurrection guard); bumpTxn only ever sees a non-null current record.
+  const res = await guardedMutate(ref, preRead, (c) =>
+    bumpTxn(c, { qty, movementTs, movementId, expectedCheckId })
+  );
   if (!res.committed) {
     const v = res.snapshot && res.snapshot.val();
     return { ok: false, status: (v && v.status) || null };
@@ -153,7 +146,9 @@ exports.onClothingSale = onValueCreated(
 
     // ── Idempotency lease (movement-global; frozen saDate survives midnight) ──
     const processedRef = db.ref(`displayChecks_meta/${store}/processed/${movementId}`);
-    const claim = await processedRef.transaction((cur) =>
+    // guardedCREATE: claiming the lease WRITES on an absent record by design (a
+    // null cur = first claim) — not a resurrection, so it must not abort on null.
+    const claim = await guardedCreate(processedRef, (cur) =>
       processedClaimDecision({ cur, nowMs, saDate: saDateStringFromMs(nowMs) })
     );
     if (!claim.committed) return; // done, or another execution holds a fresh lease
@@ -213,9 +208,10 @@ exports.onClothingSale = onValueCreated(
 
       // The create serialization: create if the slot is EMPTY or a COMPLETED
       // tombstone; abort if an active (held/open) check already exists (a
-      // concurrent sale won → re-resolve → bump). Cold-safe: returns `check` on
-      // the null run to force the server round-trip.
-      const created = await db.ref(activePath(store, key)).transaction((cur) =>
+      // concurrent sale won → re-resolve → bump). guardedCREATE: writes `check`
+      // on the null slot BY DESIGN (a fresh checkId, not a resurrection) — this is
+      // the create shape, deliberately not the abort-on-null guardedMutate shape.
+      const created = await guardedCreate(db.ref(activePath(store, key)), (cur) =>
         cur === null || cur.status === "completed" ? check : undefined
       );
       if (!created.committed) continue; // lost the slot — re-resolve → bump

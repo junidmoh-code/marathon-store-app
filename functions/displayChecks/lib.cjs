@@ -484,6 +484,20 @@ function buildCompletedRecord(record, { result, nowMs, saDate, actor, overridden
   return next;
 }
 
+// The completion FLIP mutation (guardedMutate site #6), extracted as a pure
+// builder so the guarded-transaction test drives the SAME function the call site
+// uses (not a hand-copied closure that could drift from the fence). Given the
+// non-null current active record, returns the completed tombstone, or undefined
+// to abort: a mismatched checkId (slot overwritten by a fresh check) or a
+// write-once violation (already completed / not open).
+function completionFlipMutation({ expectedCheckId, result, nowMs, saDate, actor, overridden, stockQty }) {
+  return (c) => {
+    if (c.checkId !== expectedCheckId) return undefined;
+    if (c.status !== "open" || c.completedAt != null) return undefined;
+    return buildCompletedRecord(c, { result, nowMs, saDate, actor, overridden, stockQty });
+  };
+}
+
 module.exports = {
   TRIGGER_STORE_FLAGS,
   WAKE_DEFAULT_DELAY_MINUTES,
@@ -508,4 +522,5 @@ module.exports = {
   buildNewCheck,
   completionDecision,
   buildCompletedRecord,
+  completionFlipMutation,
 };
