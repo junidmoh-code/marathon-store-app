@@ -2746,7 +2746,7 @@ exports.chatStream = onRequest(
 // (the same module Login.jsx imports its ES-module mirror from).
 
 // Every permission the staff editor can grant. MUST stay a superset of the
-// client catalog in src/components/UserManagement.jsx — createStaffUser rejects
+// client catalog in src/components/permissionCatalog.js — createStaffUser rejects
 // any permission not listed here, so a missing key silently blocks account
 // creation (that is exactly how Warehouse users became un-creatable: their
 // default set includes stock_management/stock_add/barcode, which used to be
@@ -2756,6 +2756,7 @@ const VALID_PERMISSIONS = [
   "store_assistant", "warehouse",     "source",        "place_orders",
   "product_admin",   "insights",      "broadcast",     "customer_data",
   "stock_management","stock_add",     "barcode",       "user_management",
+  "display_checks",  // Display Checks module (clothing) — mirrors permissionCatalog.js
   "display_refills", // legacy no-op — kept for back-compat only
 ];
 const VALID_ROLES = ["admin", "store_assistant", "warehouse"];
