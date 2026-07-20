@@ -26,7 +26,7 @@ import { ref, update, push, child, get } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { transferMovementId, loadDraft, saveDraft, clearDraft } from "./transferDraft";
-import { useStockCells } from "./useStock";
+import { useStockCells, useTransitConfig } from "./useStock";
 import { transferTargets, labelFor, IN_TRANSIT } from "./locations";
 import { isTransitLane } from "./transitLanes";
 import { stockSizeKey } from "../../utils/sizeKey";
@@ -116,6 +116,10 @@ export default function Transfer({ products, registry, actorRole }) {
   // node (and return a different shape). Feed a non-existent id so it resolves to
   // {} until a real source is picked.
   const srcCells = useStockCells(from || "__no_source__"); // { pid: { size: cell } } at the source
+  // Transit kill switch: absent/enabled → cross-building sends go two-step;
+  // an admin flips it OFF (In Transit screen) during rollout and sends fall
+  // back to the instant one-step move. Receiving open transfers is unaffected.
+  const transitOn = useTransitConfig()?.enabled !== false;
 
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3000); };
   const productsById = useMemo(() => {
@@ -355,7 +359,7 @@ export default function Transfer({ products, registry, actorRole }) {
     // receive screen, so writing the manifest up front removes that crash
     // window entirely (failed lines are pruned after the loop instead). A doc
     // failure aborts the send — nothing has moved yet, safe to retry.
-    const transit = isTransitLane(from, to);
+    const transit = transitOn && isTransitLane(from, to);
     if (transit) {
       try {
         let docSnap = await get(child(ref(database), `transfers/${tId}`));
@@ -720,7 +724,7 @@ export default function Transfer({ products, registry, actorRole }) {
               </button>
             </div>
             <div style={{ fontSize: 11, color: AMBER, marginTop: 10 }}>
-              {to && isTransitLane(from, to)
+              {to && transitOn && isTransitLane(from, to)
                 ? `Cross-building — leaves ${labelFor(from, registry)} now, lands at ${labelFor(to, registry)} when they confirm receipt (In Transit screen).`
                 : "Moves immediately (no in-transit confirm step)."}
               {overCount ? ` ${overCount} line(s) exceed source stock — those will be blocked at commit.` : ""}

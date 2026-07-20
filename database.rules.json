@@ -423,6 +423,9 @@
       },
       "refillEngine": {
         ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+      },
+      "transit": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
       }
     },
     "clothing_sold_refills": {

@@ -78,6 +78,15 @@ export function useMovements(productId) {
   return filtered.sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
 }
 
+// /config/transit → { enabled, updatedAt, updatedBy } — the transit-lane kill
+// switch (admin toggle on the In Transit screen). ABSENT node = ON: the flag
+// exists to pause the feature during rollout (printer/training/display-card
+// work), so only an explicit enabled:false switches sends back to instant.
+// Receiving already-dispatched transfers is NEVER gated by this flag.
+export function useTransitConfig() {
+  return usePath("config/transit");
+}
+
 export function useTransfers(status) {
   const val = usePath("transfers");
   const arr = val ? Object.entries(val).map(([id, t]) => ({ id, ...t })) : [];
