@@ -26,7 +26,7 @@ import { ref, update, get, child } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { receiveMovementId } from "./transferDraft";
-import { useTransfers, useLocations } from "./useStock";
+import { useTransfers, useLocations, useTransitConfig } from "./useStock";
 import { labelFor, IN_TRANSIT } from "./locations";
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { STALE_TRANSIT_HOURS } from "./transitLanes";
@@ -176,8 +176,53 @@ export default function InTransit({ products = [], registry: registryProp, actor
     else flash("ok", `Received into ${labelFor(t.to, registry)} ✓`);
   };
 
+  const transitCfg = useTransitConfig();
+  const transitOn = transitCfg?.enabled !== false;
+  const [switching, setSwitching] = useState(false);
+  // Rollout kill switch (owner request 2026-07-20): OFF sends cross-building
+  // moves back to the instant one-step write while printer/training/display-
+  // card work completes. Open transfers below stay receivable either way —
+  // the flag gates NEW sends only, so flipping it can never strand stock.
+  const flipTransit = async () => {
+    if (switching || actorRole !== "admin") return;
+    setSwitching(true);
+    try {
+      await update(ref(database), {
+        "config/transit": { enabled: !transitOn, updatedAt: serverNowIso(), updatedBy: auth.currentUser?.uid || null },
+      });
+      flash("ok", !transitOn ? "Transit ON — cross-building sends now travel in transit" : "Transit OFF — sends move instantly again; open transfers below still need receiving");
+    } catch { flash("err", "Couldn't flip the switch — admin only. Retry."); }
+    setSwitching(false);
+  };
+
   return (
     <div style={{ fontFamily: FONT }}>
+      {actorRole === "admin" && (
+        <div style={{ ...GLASS, padding: "13px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 12 }}>
+          <button
+            onClick={flipTransit} disabled={switching} aria-label="Toggle transit lanes"
+            style={{
+              width: 46, height: 26, borderRadius: 999, border: "none", cursor: "pointer", flexShrink: 0,
+              background: transitOn ? GREEN : "rgba(255,255,255,.18)", position: "relative",
+              transition: "background 180ms ease", opacity: switching ? 0.6 : 1,
+            }}>
+            <span style={{
+              position: "absolute", top: 3, left: transitOn ? 23 : 3, width: 20, height: 20,
+              borderRadius: "50%", background: "#fff", transition: "left 180ms ease",
+            }} />
+          </button>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>
+              Transit lanes {transitOn ? "ON" : "OFF"}
+            </div>
+            <div style={{ fontSize: 11, color: GRAY }}>
+              {transitOn
+                ? "Cross-building sends from Central travel in transit until received."
+                : "Paused — cross-building sends move instantly (old behaviour). Anything already in transit below still needs receiving."}
+            </div>
+          </div>
+        </div>
+      )}
       {open.length === 0 && <Empty>Nothing in transit — cross-building sends from Central appear here until received.</Empty>}
 
       {open.map((t) => {
