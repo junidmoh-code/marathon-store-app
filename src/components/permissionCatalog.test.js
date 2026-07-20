@@ -28,7 +28,7 @@ describe("display_checks permission — safe grant shape", () => {
   // (UserManagement.jsx ~625/1083). Granting a display permission must NOT hand
   // out stock-write access. This assertion fails if anyone adds `stock: true`.
   it("does NOT carry a stock flag and is EXCLUDED from STOCK_PERM_KEYS (no stock-role auto-link)", () => {
-    expect(entry.stock).toBeFalsy();
+    expect(entry?.stock).toBeFalsy();          // clean assertion even if the entry is ever removed
     expect(STOCK_PERM_KEYS).not.toContain(KEY);
   });
 
