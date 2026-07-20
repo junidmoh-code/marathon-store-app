@@ -45,7 +45,7 @@ import { ADMIN_EMAIL } from "../components/PermissionsContext";
 
 // MASTER kill switch. Default OFF — nothing renders (no card, no route) until
 // Junid flips this to true. Every visibility path is AND-ed with this.
-export const DISPLAY_CHECKS_MASTER_ENABLED = false;
+export const DISPLAY_CHECKS_MASTER_ENABLED = true;
 
 // Per-store enable flags. Phase 1 goes live at PE + Trophy; Pine is built but
 // dark (flip to true, no code change). Keyed by the physical shop id used by
