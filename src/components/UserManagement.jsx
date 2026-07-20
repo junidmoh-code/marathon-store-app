@@ -41,6 +41,7 @@ import { ref, onValue, update } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../firebase";
 import { SHOP_IDS, SHOP_LABELS } from "../utils/stores";
+import { PERMISSION_GROUPS, ALL_PERMISSIONS, STOCK_PERM_KEYS, ROLE_DEFAULT_PERMS } from "./permissionCatalog";
 
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 
@@ -57,35 +58,10 @@ const RED        = "#FF453A";
 const TEXT_2     = "#8e8e93";
 const TEXT_3     = "#3a3a3c";
 
-// ─── Permission catalog ──────────────────────────────────────────────────────
-// Grouped by intent. EVERY key here gates something real in App.jsx / the RTDB
-// rules — no decorative toggles. Keys with `stock:true` auto-link a stockRole
-// (see stockRoleForRole). If you add a key, also add it to VALID_PERMISSIONS in
-// functions/index.js or createStaffUser will reject accounts that carry it.
-const PERMISSION_GROUPS = [
-  { title: "Ordering", perms: [
-    { key: "store_assistant", label: "Place Orders",  desc: "Take customer orders (Store Assistant screen)" },
-    { key: "place_orders",    label: "Returns",       desc: "Log returned items" },
-    { key: "warehouse",       label: "Order Queue",   desc: "Work the warehouse order queue" },
-    { key: "source",          label: "Source / Restock", desc: "Raise restock requests" },
-  ] },
-  { title: "Products & Displays", perms: [
-    { key: "product_admin",   label: "Products & Displays", desc: "Manage products, TV display & customer view" },
-  ] },
-  { title: "Stock", perms: [
-    { key: "stock_management", label: "Stock",          desc: "Transfers, locator & history", stock: true },
-    { key: "stock_add",        label: "Set / Add Stock", desc: "Adjust on-hand counts", stock: true },
-    { key: "barcode",          label: "Barcodes",        desc: "Create & print product barcodes", stock: true },
-  ] },
-  { title: "Business", perms: [
-    { key: "insights",      label: "Insights",          desc: "Business analytics" },
-    { key: "broadcast",     label: "Group Broadcast",   desc: "Send WhatsApp broadcasts", sensitive: true },
-    { key: "customer_data", label: "Customer Database", desc: "View customer records", sensitive: true },
-  ] },
-];
-const ALL_PERMISSIONS = PERMISSION_GROUPS.flatMap((g) => g.perms);
-// Stock permissions that need a stockRole to actually write.
-const STOCK_PERM_KEYS = ALL_PERMISSIONS.filter((p) => p.stock).map((p) => p.key);
+// Permission catalog + derivations (PERMISSION_GROUPS / ALL_PERMISSIONS /
+// STOCK_PERM_KEYS) and ROLE_DEFAULT_PERMS live in ./permissionCatalog — pure data
+// so the grant-shape invariants are unit-testable without this component's
+// firebase deps (see permissionCatalog.test.js).
 
 const ROLES = [
   { key: "admin",           label: "Admin" },
@@ -117,15 +93,7 @@ const STOCK_WORK = [
   { key: "admin",     label: "Full",      desc: "Everything, incl. count fixes" },
 ];
 
-// ─── Role presets ─────────────────────────────────────────────────────────────
-// Applied when a role is tapped in the editor and used as Add-Staff defaults.
-// Admin = every operational permission EXCEPT staff management (that stays
-// super-admin only). Mirrors scripts/seedUsers.cjs intent.
-const ROLE_DEFAULT_PERMS = {
-  admin:           ["store_assistant", "place_orders", "warehouse", "source", "product_admin", "stock_management", "stock_add", "barcode", "insights", "broadcast", "customer_data"],
-  store_assistant: ["store_assistant", "place_orders"],
-  warehouse:       ["warehouse", "source", "stock_management", "stock_add", "barcode"],
-};
+// ROLE_DEFAULT_PERMS (role presets / Add-Staff defaults) lives in ./permissionCatalog.
 // stockRole applied alongside each role preset ("" = none).
 const ROLE_STOCK_ROLE = {
   admin:           "admin",
