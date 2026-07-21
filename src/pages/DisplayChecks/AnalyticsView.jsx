@@ -10,7 +10,6 @@
 
 import { useMemo } from "react";
 import { FONT, MONO, BLUE, BLUE_SOFT, AMBER, INK, GLASS_BG, GLASS_BORDER, PANEL, META } from "./tokens";
-import { useTodayFeedSources } from "./useDisplayChecks";
 import { deriveFeed } from "./feedModel";
 import { SHOP_LABELS } from "../../utils/stores";
 
@@ -45,8 +44,9 @@ function Section({ title, children }) {
   );
 }
 
-export default function AnalyticsView({ store, wide }) {
-  const { activeItems, completedItems, ready } = useTodayFeedSources(store);
+// Feed arrives as props from the module shell's ONE lifted listener (shared with
+// Today) — no own subscription, so Today↔Analytics never doubles or churns it.
+export default function AnalyticsView({ store, wide, activeItems, completedItems, ready }) {
   const feed = useMemo(() => deriveFeed(activeItems || [], completedItems || []), [activeItems, completedItems]);
   const { stats, waiting, completed } = feed;
 

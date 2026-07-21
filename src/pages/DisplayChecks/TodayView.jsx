@@ -11,9 +11,8 @@
 // opens the confirm sheet (PR 7), which writes the completion server-side; the
 // live listener then moves the card into Completed on its own.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FONT, MONO, BLUE, BLUE_SOFT, AMBER, INK, PANEL, META } from "./tokens";
-import { useTodayFeedSources } from "./useDisplayChecks";
 import { deriveFeed } from "./feedModel";
 import CheckCard from "./CheckCard";
 import CheckSheet from "./CheckSheet";
@@ -78,11 +77,16 @@ function CardGrid({ children }) {
   );
 }
 
-export default function TodayView({ store }) {
-  const { activeItems, completedItems, ready, error } = useTodayFeedSources(store);
+// Feed arrives as props from the module shell's ONE lifted listener — this view
+// no longer opens its own subscription, so switching tabs never churns it.
+export default function TodayView({ store, active, activeItems, completedItems, ready, error }) {
   const feed = useMemo(() => deriveFeed(activeItems, completedItems), [activeItems, completedItems]);
   // The check whose confirm sheet is open (PR 7). Null = no sheet.
   const [sheetCheck, setSheetCheck] = useState(null);
+  // This view stays mounted-but-hidden when another tab is active. Close any open
+  // confirm sheet on leaving Today, so its document-level focus trap can't hijack
+  // Tab/Escape on the visible tab (Kimi P2).
+  useEffect(() => { if (active === false) setSheetCheck(null); }, [active]);
 
   if (!store) {
     return (
