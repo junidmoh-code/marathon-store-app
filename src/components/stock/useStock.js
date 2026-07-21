@@ -154,6 +154,12 @@ export function useTargetDecisions() {
   return usePath("stock_targets_decisions");
 }
 
+// /refill_engine/retryState → { dest: { pid: { sizeKey: {retryCount,lastRejectedAt,nextRetryAt,lastRejectionReason,source} } } }
+// Rejected refill requests the engine will retry automatically every 24h.
+export function useRetryState() {
+  return usePath("refill_engine/retryState");
+}
+
 // /receiving_session → { active, openedAt, closedAt } — while active the
 // engine is fully paused (no requests, no balancing, no exception recompute)
 // so supplier receiving at Central is never interrupted by automation.

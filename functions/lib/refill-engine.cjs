@@ -67,18 +67,41 @@ function isClothing(product) {
   return (product.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s)));
 }
 
-// ── target resolution — EXPLICIT TARGETS ONLY (owner decision 2026-07-12 v5) ──
-// The engine makes NO policy assumptions: a cell is managed if and only if a
-// human-approved target exists for it. Three states, never conflated:
-//   target > 0  → maintain it (refills below, excess above)
-//   target = 0  → deliberately excluded from this location (all stock = excess)
-//   no target   → NOT managed; surfaced as "No Target Configured" for humans
-// (The old default-run + recent-sale auto-activation was removed — it was the
-// engine deciding policy. New products get targets when a human approves them.)
-function resolveTarget({ targets }, dest, pid, size) {
+// Store carries a product if the stock node exists (regardless of qty).
+// Zero-qty cells persist indefinitely (applyMovement never deletes cells), so
+// node presence is a reliable assortment indicator even after sellouts.
+function storeCarries(stock, loc, pid) {
+  return !!stock?.[loc]?.[pid] && Object.keys(stock[loc][pid]).length > 0;
+}
+
+// Product catalog sizes — the source of truth for what a product comes in.
+function productSizes(products, pid) {
+  return (products?.[pid]?.sizes || []).map(String);
+}
+
+// ── target resolution — EXPLICIT OVERRIDE, THEN GLOBAL CLOTHING RULE ─────────
+// Priority order (owner decision 2026-07-21):
+//   1. explicit manual override (/stock_targets) — always wins
+//   2. global clothing rule (config.defaultRunByStore + catalog sizes)
+//   3. null (non-clothing, store does not carry, or deliberately excluded)
+// Explicit target 0 continues to mean "deliberately excluded".
+function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
     return { target: num(explicit.target), minQty: num(explicit.minQty), source: "explicit" };
+  }
+  // Global clothing rule: apply the location's standard run to every catalog
+  // size, but only where the store actually carries the product.
+  const p = products?.[pid];
+  if (isClothing(p) && storeCarries(stock, dest, pid)) {
+    const sizes = productSizes(products, pid);
+    if (sizes.includes(size)) {
+      const run = config?.defaultRunByStore?.[dest] || {};
+      const t = run[size];
+      if (typeof t === "number" && t > 0) {
+        return { target: t, minQty: Math.max(1, t - 1), source: "default" };
+      }
+    }
   }
   return null;
 }
@@ -90,6 +113,7 @@ function computeRefillPlan(snapshot) {
     openIndex = {}, refillRequests = {}, orders = {}, movements = [],
     targetDecisions = {},   // /stock_targets_decisions — "keep as is" acks from the No Target queue
     rejectStreak = {},      // /refill_engine/rejectStreak — persisted reject-while-stock-shown counters (loop guard)
+    retryState = {},        // /refill_engine/retryState — persisted rejected-request retry state
   } = snapshot;
 
   const errors = [];
@@ -102,7 +126,7 @@ function computeRefillPlan(snapshot) {
     return a.localeCompare(b);
   });
 
-  const ctx = { targets };
+  const ctx = { targets, config, products, stock };
 
   // ── inbound & reservations from EXISTING open intents ──────────────────────
   // inbound[dest|pid|size] = qty already on its way. Manual (human-placed) Shop
@@ -323,9 +347,21 @@ function computeRefillPlan(snapshot) {
     }
   }
 
-  // ── managed universe per dest: EXPLICIT targets only (v5, no policy layer) ──
-  const managedPids = (dest) => new Set(Object.keys(targets?.[dest] || {}));
-  const sizesFor = (dest, pid) => new Set(Object.keys(targets?.[dest]?.[pid] || {}));
+  // ── managed universe per dest: explicit targets + clothing products the store carries ──
+  const managedPids = (dest) => {
+    const out = new Set(Object.keys(targets?.[dest] || {}));
+    for (const [pid, p] of Object.entries(products || {})) {
+      if (isClothing(p) && storeCarries(stock, dest, pid)) out.add(pid);
+    }
+    return out;
+  };
+  const sizesFor = (dest, pid) => {
+    const out = new Set(Object.keys(targets?.[dest]?.[pid] || {}));
+    if (isClothing(products?.[pid]) && storeCarries(stock, dest, pid)) {
+      for (const s of productSizes(products, pid)) out.add(encodeSizeKey(s));
+    }
+    return out;
+  };
   // Encoded key → raw size (clothing letters are identity; keep a map anyway).
   const rawSize = (pid, sizeKey) => {
     for (const s of products?.[pid]?.sizes || []) if (encodeSizeKey(s) === sizeKey) return String(s);
@@ -342,7 +378,9 @@ function computeRefillPlan(snapshot) {
   // The scan applies these ops to /refill_engine/rejectStreak after closes.
   const streakOf = (d, p, s) => rejectStreak?.[d]?.[p]?.[s] || null;
   const streakOps = [];
+  const retryOps = [];   // retryState + retryHistory writes for the 24h auto-retry
   const nowIso = new Date(nowMs).toISOString();
+  const retryOf = (d, p, s) => retryState?.[d]?.[p]?.[s] || null;
   // Close-derived ops are ATTACHED to each close (c.streakOp) by the loop
   // further down (after the arrival-lift/staleness machinery it needs is in
   // scope). The scan applies them in the SAME multi-path update as that
@@ -525,6 +563,8 @@ function computeRefillPlan(snapshot) {
   for (const c of closes) {
     if (c.reason === "fulfilled") {
       if (streakOf(c.dest, c.pid, c.sizeKey)) c.streakOp = { op: "reset" };
+      // Fulfilment clears the retry state too — the cell is satisfied.
+      if (retryOf(c.dest, c.pid, c.sizeKey)) retryOps.push({ dest: c.dest, pid: c.pid, sizeKey: c.sizeKey, op: "reset" });
       continue;
     }
     if (!c.humanReject) continue;
@@ -543,6 +583,25 @@ function computeRefillPlan(snapshot) {
     } else if (sPrev) {
       c.streakOp = { op: "reset" };
     }
+    // 24h auto-retry tracking: record the rejection and schedule the next retry.
+    const rPrev = retryOf(c.dest, c.pid, c.sizeKey);
+    const retryCount = (rPrev?.retryCount || 0) + 1;
+    retryOps.push({
+      dest: c.dest, pid: c.pid, sizeKey: c.sizeKey, op: "reject",
+      retryCount,
+      firstRejectedAt: rPrev?.firstRejectedAt || nowIso,
+      lastRejectedAt: nowIso,
+      nextRetryAt: new Date(nowMs + cooldownMs).toISOString(),
+      lastRejectionReason: c.cancelReason || c.reason || "rejected",
+      source: cDenier,
+    });
+    retryOps.push({
+      dest: c.dest, pid: c.pid, sizeKey: c.sizeKey, op: "history",
+      type: "rejection", timestamp: nowIso,
+      rejectionReason: c.cancelReason || c.reason || "rejected",
+      retryAttempt: retryCount, source: cDenier, destination: c.dest,
+      qty: num(c.qty) || 1,
+    });
   }
 
   for (const dest of dests) {
@@ -616,24 +675,29 @@ function computeRefillPlan(snapshot) {
         const rejTs = rej?.ts || 0;
         const denier = rej?.by || src;   // watch the location that SAID no, not today's route
         const denierHas = avail(cellQty(stock, denier, pid, size));
-        // LOOP GUARD (incident 2026-07-19): N human rejections while the
-        // denier's counted cell claims stock means the COUNT is the problem,
-        // not the demand. Stop re-asking into the void — park the cell in
-        // Recount Needed until the count changes, stock demonstrably arrives,
-        // or staff clear the streak from Health after recounting.
+        // Streak tracking stays advisory: it still surfaces Recount Needed when
+        // a count-vs-shelf mismatch persists, but it no longer blocks re-asks.
         const st = streakState(dest, pid, sizeKey, size, denier);
+        if (st.resetWorthy) streakOps.push({ dest, pid, sizeKey, op: "reset" });
         if (st.flagged) {
           recountNeeded.push({
             loc: dest, pid, size, deficit, source: st.denier,
             rejections: st.count, showing: st.has,
-            note: `rejected ${st.count}× at ${st.denier} while its count shows ${st.has} — recount, then "Ask again" in Health`,
+            note: `rejected ${st.count}× at ${st.denier} while its count shows ${st.has} — recount advised, retry continues`,
+          });
+        }
+        // 24h auto-retry (owner rule 2026-07-21): a rejected cell retries
+        // indefinitely every 24h while the destination still needs stock and
+        // the source still has inventory. No permanent parking — the only
+        // stops are manual exclusion, an active open request, or no source stock.
+        const rt = retryOf(dest, pid, sizeKey);
+        if (rt && rt.nextRetryAt && Date.parse(rt.nextRetryAt) > nowMs) {
+          waitingForStock.push({
+            loc: dest, pid, size, deficit, source: denier, rejectedAt: rt.lastRejectedAt,
+            note: `retry ${rt.retryCount || 0} scheduled for ${rt.nextRetryAt} — last rejected at ${rt.lastRejectedAt}`,
           });
           continue;
         }
-        // Denier no longer claims stock, stock arrived after the last strike,
-        // or the streak went stale — evidence changed; clear it and resume
-        // normal cooldown handling below.
-        if (st.resetWorthy) streakOps.push({ dest, pid, sizeKey, op: "reset" });
         // RE-CHECK ON REJECT: denier still counting stock → short recheck
         // window (the mismatch resolves fast either way); denier counted empty
         // → the full cooldown, as before. Arrival lift still beats both.
@@ -678,12 +742,9 @@ function computeRefillPlan(snapshot) {
           // gate that causes it.
           const srcDenier = srcRej?.by || upstreamOfSrc;
           const srcDenierHas = srcDenier ? avail(cellQty(stock, srcDenier, pid, size)) : 0;
-          // A streak-FLAGGED source leg is parked indefinitely (Recount Needed
-          // awaits a human) — the store demand must say "blocked", not
-          // "flowing", or it starves behind a self-healing label.
-          const srcStreakFlagged = streakState(src, pid, sizeKey, size, upstreamOfSrc).flagged;
+          // A streak on the source leg is advisory only — it no longer blocks
+          // re-asks, so it must not mislabel the store demand as blocked.
           const srcParked = (srcRej && nowMs - srcRej.ts < effWindowMs(srcDenierHas) && !arrivedAfter(srcDenier, pid, sizeKey, srcRej.ts))
-            || srcStreakFlagged
             || confirmedOut(pid, sizeKey);
           // "Chain is flowing" additionally requires the source to HAVE a
           // buffer target for this cell — without one the engine will never
@@ -698,7 +759,7 @@ function computeRefillPlan(snapshot) {
           } else {
             awaitingSupplier.push({
               loc: dest, pid, size, deficit, source: src,
-              note: srcParked ? `upstream leg blocked — ${src} ${srcStreakFlagged ? "awaits a recount (see Recount Needed)" : srcDenierHas > 0 ? "recently rejected — re-checks shortly" : "recently rejected / confirmed out"}`
+              note: srcParked ? `upstream leg blocked — ${src} ${srcDenierHas > 0 ? "recently rejected — re-checks shortly" : "recently rejected / confirmed out"}`
                 : (upstreamAvail > 0 && !srcCanPull) ? `${src} has no buffer target for this size — set one (or transfer manually); stock waits at ${upstreamOfSrc}`
                 : "upstream chain empty — supplier reorder or excess return needed",
             });
@@ -712,6 +773,24 @@ function computeRefillPlan(snapshot) {
           dest, source: src, productId: pid, size, sizeKey,
           qty, priority: have < t.minQty ? "high" : "normal", mode,
         });
+        // Record the retry in history and update the retry state.
+        if (rt && rt.retryCount > 0) {
+          retryOps.push({
+            dest, pid, sizeKey, op: "retry",
+            retryCount: rt.retryCount,
+            lastRetryAt: nowIso,
+            nextRetryAt: new Date(nowMs + cooldownMs).toISOString(),
+            lastRejectionReason: rt.lastRejectionReason,
+            source: src,
+          });
+          retryOps.push({
+            dest, pid, sizeKey, op: "history",
+            type: "retry", timestamp: nowIso,
+            rejectionReason: rt.lastRejectionReason,
+            retryAttempt: rt.retryCount, source: src, destination: dest,
+            qty,
+          });
+        }
       }
     }
   }
@@ -964,47 +1043,13 @@ function computeRefillPlan(snapshot) {
     }
   }
 
-  // ── AUTO-ADOPT (owner policy 2026-07-17) ────────────────────────────────────
-  // For locations listed in config.autoAdoptTargets, the owner has declared the
-  // standard run (config.defaultRunByStore[loc]) to BE the policy: any stocked
-  // clothing size there with no explicit target gets one automatically, stamped
-  // source "auto_adopt". Closes the manual-transfer blind spot permanently —
-  // stock used to arrive via plain Transfer with no target, leaving the engine
-  // blind (found live 2026-07-17: 468 unmanaged hub2 cells; the Decision Queue
-  // backstop had 4 approvals ever). Human decisions still outrank the engine:
-  // explicit targets (including 0 = deliberate exclusion) and active Decision
-  // Queue records are never overridden, and only sizes in the standard run
-  // qualify (numeric sizes never auto-adopt). Locations NOT in the config key
-  // keep the v5 human-only rule — enabling one is a single config write.
-  const adopts = [];
-  for (const loc of dests) {
-    if (!config?.autoAdoptTargets?.[loc]) continue;
-    const matrix = config?.defaultRunByStore?.[loc] || {};
-    for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
-      if (!isClothing(products?.[pid])) continue;
-      if (decisionActive(loc, pid)) continue;
-      for (const [sk, c] of Object.entries(bySize || {})) {
-        if (avail(num(c?.qty)) <= 0) continue;                       // availability-gated
-        // Letter sizes only, enforced HERE — a misconfigured numeric entry in
-        // defaultRunByStore must never make the engine adopt a numeric size
-        // (the policy is standard-run sizes only, config can't widen it).
-        if (!STANDARD_SIZE_RE.test(sk)) continue;
-        const std = num(matrix[sk]);
-        if (std <= 0) continue;                                      // size outside the standard run
-        const existing = targets?.[loc]?.[pid]?.[sk];
-        if (existing && typeof existing.target === "number") continue; // human/explicit wins (incl. 0)
-        adopts.push({ loc, pid, sizeKey: sk, target: std, minQty: Math.max(1, std - 1) });
-      }
-    }
-  }
-
   const cap = (arr, n = 300) => ({ count: arr.length, items: arr.slice(0, n) });
   return {
     intents: plannedIntents,
     closes,
     resizes,
-    adopts,
     streakOps,
+    retryOps,
     errors,
     stats: { managedCells },
     exceptions: {

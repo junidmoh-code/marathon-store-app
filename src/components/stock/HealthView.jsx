@@ -22,7 +22,7 @@ import { database } from "../../firebase";
 import {
   useStockExceptions, useEngineShadow, useEngineOpen, useEngineRuns,
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
-  useStockTargets, useTransfers,
+  useStockTargets, useTransfers, useRetryState,
 } from "./useStock";
 import InTransit from "./InTransit";
 import { STALE_TRANSIT_HOURS } from "./transitLanes";
@@ -328,6 +328,7 @@ export default function HealthView({ products = [], onExit }) {
   // holding. Stale = unreceived past the threshold, or short-received awaiting
   // an admin resolution — either way someone should chase a physical box.
   const allTransfers = useTransfers();
+  const retryState = useRetryState();
   const transitOpen = useMemo(() => allTransfers.filter((t) => t.status && t.status !== "received"), [allTransfers]);
   const transitStale = useMemo(() => transitOpen.filter((t) => {
     if (t.status === "discrepancy") return true;
@@ -415,6 +416,34 @@ export default function HealthView({ products = [], onExit }) {
             ))}
           </DetailShell>
         );
+      case "retryQueue": {
+        const rows = [];
+        for (const [dest, byPid] of Object.entries(retryState || {})) {
+          for (const [pid, bySize] of Object.entries(byPid || {})) {
+            for (const [sizeKey, r] of Object.entries(bySize || {})) {
+              rows.push({ dest, pid, sizeKey, ...r });
+            }
+          }
+        }
+        const grouped = groupByProduct(rows);
+        return (
+          <DetailShell title="Rejected / Waiting Retry" sub="Refill requests rejected by the warehouse — the engine retries automatically every 24h while stock exists upstream" count={rows.length} onBack={back}>
+            {grouped.map(([pid, prows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
+                badges={<Badge tone={AMBER}>RETRY</Badge>}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {prows.map((r) => (
+                    <SizeFactChip key={`${r.dest}|${r.sizeKey}`}
+                      size={decodeSizeKey(r.sizeKey)}
+                      value={`${r.retryCount || 0}× · next ${fmtTs(r.nextRetryAt)} · ${locLabel(r.dest)} ← ${locLabel(r.source)}`}
+                      tone={AMBER} />
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
       // Migration, deliberately NOT a decision (owner v8): existing products
       // that never entered engine management get the approved standard run in
       // one tap; the engine takes over on the next scan.
@@ -588,6 +617,8 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Hub 2 restock · in Source → Hub 2 Refill" onClick={() => setScreen("central")} />
               <StatCard label="Rejected / Failed" value={count("failedRefills")} tone={count("failedRefills") ? RED : GREEN}
                         sub="Declined by warehouse (48h)" onClick={() => setScreen("autorefills")} />
+              <StatCard label="Retry Queue" value={Object.values(retryState || {}).reduce((t, byPid) => t + Object.values(byPid || {}).reduce((t2, bySize) => t2 + Object.keys(bySize || {}).length, 0), 0)} tone={Object.keys(retryState || {}).length ? AMBER : GREEN}
+                        sub="Rejected — auto-retry every 24h" onClick={() => setScreen("retryQueue")} />
               <StatCard label="Waiting for Stock" value={count("waitingForStock")} tone={count("waitingForStock") ? AMBER : GREEN}
                         sub="Rejected demand — auto-reopens on arrival" onClick={() => setScreen("waitingForStock")} />
               <StatCard label="Awaiting Transfer" value={count("awaitingUpstream")} tone={count("awaitingUpstream") ? BLUE_L : GREEN}
