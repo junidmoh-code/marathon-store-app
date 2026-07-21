@@ -82,7 +82,7 @@ async function runScan() {
     // evidence and a size stays confirmed-out longer than configured.
     const windowDays = Math.max(MOVEMENTS_WINDOW_DAYS, (Number(config.confirmedOutDays) || 14) + 1);
     const windowStart = new Date(nowMs - windowDays * 864e5).toISOString();
-    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, movementsSnap, ...stockSnaps] = await Promise.all([
+    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, movementsSnap, ...stockSnaps] = await Promise.all([
       db.ref("stock_targets_decisions").once("value").then((s) => s.val() || {}),
       db.ref("stock_targets").once("value").then((s) => s.val() || {}),
       db.ref("products").once("value").then((s) => s.val() || {}),
@@ -90,6 +90,7 @@ async function runScan() {
       db.ref("refill_requests").once("value").then((s) => s.val() || {}),
       db.ref("orders").once("value").then((s) => s.val() || {}),
       db.ref("refill_engine/rejectStreak").once("value").then((s) => s.val() || {}),
+      db.ref("refill_engine/retryState").once("value").then((s) => s.val() || {}),
       db.ref("stock_movements").orderByChild("ts").startAt(windowStart).once("value"),
       ...locs.map((l) => db.ref(`stock/${l}`).once("value").then((s) => [l, s.val() || {}])),
     ]);
@@ -97,7 +98,7 @@ async function runScan() {
     const movements = Object.values(movementsSnap.val() || {});
 
     const plan = engine.computeRefillPlan({
-      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak,
+      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState,
     });
     counts.errors.push(...plan.errors);
 
@@ -236,33 +237,49 @@ async function runScan() {
       if (resized) counts.resized = resized;
     }
 
-    // ── apply auto-adopts (owner policy 2026-07-17) ───────────────────────────
-    // Create-if-absent per cell: the plan's snapshot may be a minute old, and a
-    // human target written in the gap must win. The null-probe transaction (the
-    // #199 null-tolerance pattern) commits only when the node truly doesn't
-    // exist — an existing node fails the compare, the re-run sees real data and
-    // aborts by returning undefined.
-    if (plan.adopts && plan.adopts.length) {
-      // Per-scan cap: a huge first enablement must never eat the function
-      // deadline before intent processing. Deferred adopts simply re-emit
-      // from the next scan's plan (stateless) — no bookkeeping needed beyond
-      // the deferred count in the run record.
-      const ADOPT_CAP_PER_SCAN = 200;
-      const batch = plan.adopts.slice(0, ADOPT_CAP_PER_SCAN);
-      let adopted = 0;
-      for (const a of batch) {
-        const res = await db.ref(`stock_targets/${a.loc}/${a.pid}/${a.sizeKey}`).transaction((cur) => {
-          if (cur !== null) return;                      // exists — never override a human
-          return {
-            target: a.target, minQty: a.minQty,
-            source: "auto_adopt", approvedBy: "engine-auto-adopt",
-            approvedAt: startedAt, runId, batchId: runId,
+    // ── apply retry ops (24h auto-retry) ──────────────────────────────────────
+    // Retry state and history are recomputed from live state every scan, so a
+    // lost write simply reappears on the next pass.
+    if (plan.retryOps && plan.retryOps.length) {
+      const upd = {};
+      for (const op of plan.retryOps) {
+        if (op.op === "reset") {
+          upd[`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`] = null;
+        } else if (op.op === "reject") {
+          upd[`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`] = {
+            retryCount: op.retryCount,
+            firstRejectedAt: op.firstRejectedAt,
+            lastRejectedAt: op.lastRejectedAt,
+            lastRetryAt: op.lastRetryAt || null,
+            nextRetryAt: op.nextRetryAt,
+            lastRejectionReason: op.lastRejectionReason,
+            source: op.source || null,
           };
-        }).catch(() => ({ committed: false }));
-        if (res.committed) adopted++;
+        } else if (op.op === "retry") {
+          upd[`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`] = {
+            retryCount: op.retryCount,
+            firstRejectedAt: op.firstRejectedAt,
+            lastRejectedAt: op.lastRejectedAt,
+            lastRetryAt: op.lastRetryAt,
+            nextRetryAt: op.nextRetryAt,
+            lastRejectionReason: op.lastRejectionReason,
+            source: op.source || null,
+          };
+        } else if (op.op === "history") {
+          const histKey = `${op.dest}|${op.pid}|${op.sizeKey}|${op.timestamp}`;
+          upd[`refill_engine/retryHistory/${histKey}`] = {
+            type: op.type,
+            timestamp: op.timestamp,
+            rejectionReason: op.rejectionReason,
+            retryAttempt: op.retryAttempt,
+            source: op.source,
+            destination: op.destination,
+            qty: op.qty,
+          };
+        }
       }
-      if (adopted) counts.adopts = adopted;
-      if (plan.adopts.length > batch.length) counts.adoptsDeferred = plan.adopts.length - batch.length;
+      if (Object.keys(upd).length) await db.ref().update(upd).catch(() => {});
+      counts.retryOps = plan.retryOps.length;
     }
 
     // ── act on intents, by destination mode ──────────────────────────────────
