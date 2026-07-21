@@ -30,6 +30,9 @@ import {
 // drift apart (they were duplicated inline before the Today feed landed).
 import { FONT, BLUE, BLUE_SOFT, INK, GLASS_BG, GLASS_BORDER, PANEL, META } from "./tokens";
 import TodayView from "./TodayView";
+import AvailabilityView from "./AvailabilityView";
+import AnalyticsView from "./AnalyticsView";
+import SettingsView from "./SettingsView";
 
 // The four tabs. `manager: true` → only rendered when canManageDisplayChecks.
 const TABS = [
@@ -72,6 +75,33 @@ function OnDutyStrip({ name }) {
   );
 }
 
+// Desktop (≥1024px) gets an AI-Studio-style sidebar shell; the phone keeps the
+// single-column floor layout untouched. matchMedia so it reacts to resize/rotate.
+function useIsWide(px = 1024) {
+  const [wide, setWide] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(`(min-width:${px}px)`).matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(`(min-width:${px}px)`);
+    const on = (e) => setWide(e.matches);
+    mq.addEventListener ? mq.addEventListener("change", on) : mq.addListener(on);
+    return () => (mq.removeEventListener ? mq.removeEventListener("change", on) : mq.removeListener(on));
+  }, [px]);
+  return wide;
+}
+
+// The on-duty fact as a compact line for the sidebar profile card (desktop). The
+// clock ticks to the second — ledger precision (§8.4). Presentational only.
+function OnDutyLine() {
+  const now = useTick();
+  return (
+    <span style={{ display: "block", ...META, fontSize: 9.5, color: "rgba(233,238,255,.45)",
+                   marginTop: 1, fontVariantNumeric: "tabular-nums" }}>
+      ON DUTY · {now.toLocaleTimeString("en-GB", { hour12: false })}
+    </span>
+  );
+}
+
 // ── Empty-state panel — same frosted card for every dark tab ──────────────────
 function EmptyState({ title, line }) {
   return (
@@ -105,7 +135,7 @@ const TAB_EMPTY = {
   },
 };
 
-export default function DisplayChecks({ onExit }) {
+export default function DisplayChecks({ onExit, products }) {
   const { user, permRecord } = usePermissions();
 
   // Build the plain gate-user once: auth email (trusted identity) + the
@@ -138,6 +168,104 @@ export default function DisplayChecks({ onExit }) {
   const displayName = permRecord?.displayName || permRecord?.username
     || user?.email?.split("@")[0] || "Staff";
   const empty = TAB_EMPTY[tab] || TAB_EMPTY.today;
+  const wide = useIsWide(1024);
+  const tabBody =
+    tab === "today" ? <TodayView store={store} />
+    : tab === "availability" ? <AvailabilityView store={store} products={products} wide={wide} />
+    : tab === "analytics" ? <AnalyticsView store={store} wide={wide} />
+    : tab === "settings" ? <SettingsView store={store} wide={wide} />
+    : <EmptyState title={empty.title} line={empty.line} />;
+  const shellFooter = null; // all four tabs are wired now — no shell placeholder
+
+  // ── DESKTOP (≥1024px): AI-Studio-style sidebar shell — back · title · store
+  //    toggle · vertical tabs · on-duty profile pinned bottom-left — beside a wide
+  //    content pane. The phone keeps the single-column floor layout (below). ──
+  if (wide) {
+    const activeLabel = visibleTabs.find((t) => t.key === tab)?.label || "Today";
+    return (
+      <div style={{ minHeight: "100vh", background: "#000", color: INK, fontFamily: FONT,
+                    position: "relative", overflowX: "hidden", display: "flex" }}>
+        <div style={{ position: "absolute", inset: 0, pointerEvents: "none",
+                      background: "radial-gradient(1100px 520px at 82% -14%, rgba(74,127,255,.12), transparent 58%)" }} />
+
+        {/* SIDEBAR */}
+        <aside style={{ zIndex: 1, width: 246, flexShrink: 0, boxSizing: "border-box",
+                        position: "sticky", top: 0, alignSelf: "flex-start", height: "100vh",
+                        display: "flex", flexDirection: "column", padding: "22px 14px 16px",
+                        background: "rgba(255,255,255,.02)", borderRight: GLASS_BORDER, overflow: "auto" }}>
+          <button type="button" onClick={onExit}
+                  style={{ ...META, background: "none", border: "none", cursor: "pointer",
+                           color: "rgba(233,238,255,.45)", padding: "2px 10px", textAlign: "left",
+                           alignSelf: "flex-start" }}>
+            ‹ BACK
+          </button>
+          <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.01em", padding: "12px 10px 14px" }}>Display Checks</div>
+
+          {isSuper && ENABLED_STORES.length > 1 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0 6px 14px" }}>
+              {ENABLED_STORES.map((s) => {
+                const on = s.id === store;
+                return (
+                  <button key={s.id} type="button" onClick={() => setSuperStore(s.id)}
+                          style={{ ...META, letterSpacing: "0.08em", cursor: "pointer", padding: "6px 11px", borderRadius: 999,
+                                   background: on ? "rgba(74,127,255,.18)" : GLASS_BG,
+                                   border: on ? `1px solid ${BLUE}` : GLASS_BORDER,
+                                   color: on ? BLUE_SOFT : "rgba(233,238,255,.5)" }}>
+                    {s.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {visibleTabs.map((t) => {
+              const on = t.key === tab;
+              return (
+                <button key={t.key} type="button" onClick={() => setTab(t.key)}
+                        style={{ display: "flex", alignItems: "center", width: "100%", textAlign: "left", boxSizing: "border-box",
+                                 fontFamily: FONT, fontSize: 14, fontWeight: 650, cursor: "pointer",
+                                 background: on ? "rgba(74,127,255,.12)" : "transparent",
+                                 border: "1px solid " + (on ? BLUE : "transparent"),
+                                 color: on ? BLUE_SOFT : "rgba(233,238,255,.55)",
+                                 borderRadius: 10, padding: "10px 13px" }}>
+                  {t.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          <div style={{ flex: 1, minHeight: 14 }} />
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 12px",
+                        background: "rgba(255,255,255,.04)", border: GLASS_BORDER, borderRadius: 13 }}>
+            <span style={{ width: 32, height: 32, flexShrink: 0, borderRadius: "50%",
+                           background: "rgba(74,127,255,.2)", border: `1px solid ${BLUE}`, color: BLUE_SOFT,
+                           fontSize: 13, fontWeight: 800, display: "grid", placeItems: "center" }}>
+              {(displayName[0] || "?").toUpperCase()}
+            </span>
+            <span style={{ minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 12.5, fontWeight: 750, color: INK,
+                             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</span>
+              <OnDutyLine />
+            </span>
+          </div>
+        </aside>
+
+        {/* CONTENT */}
+        <div style={{ flex: 1, minWidth: 0, position: "relative" }}>
+          <div style={{ maxWidth: 1080, margin: "0 auto", padding: "28px 34px 52px" }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginBottom: 22 }}>
+              <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.01em" }}>{activeLabel}</div>
+              <div style={{ ...META, color: "rgba(233,238,255,.5)" }}>{storeLabel.toUpperCase()}</div>
+            </div>
+            {tabBody}
+            {shellFooter}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: "100vh", background: "#000", color: INK, fontFamily: FONT,
@@ -203,15 +331,9 @@ export default function DisplayChecks({ onExit }) {
         </div>
 
         {/* Tab body — Today is the live feed (PR 5); the rest are still shells */}
-        {tab === "today"
-          ? <TodayView store={store} />
-          : <EmptyState title={empty.title} line={empty.line} />}
+        {tabBody}
 
-        {tab !== "today" && (
-          <div style={{ ...META, marginTop: 22, textAlign: "center", color: "rgba(233,238,255,.28)" }}>
-            RECORDED · SHELL BUILD · NO DATA READ OR WRITTEN
-          </div>
-        )}
+        {shellFooter}
       </div>
     </div>
   );

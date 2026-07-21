@@ -15820,7 +15820,7 @@ function AppInner() {
   // Display Checks — route-guarded on the module gate (master flag + super-admin
   // or store-scoped grant); a viewer who no longer qualifies gets null and the
   // reset effect drops them home. Shell only — reads no data.
-  else if (role === ROLES.DISPLAY_CHECKS) view = displayChecksRouteOpen ? <DisplayChecks onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.DISPLAY_CHECKS) view = displayChecksRouteOpen ? <DisplayChecks onExit={() => setRole(null)} products={products} /> : null;
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
@@ -15839,7 +15839,7 @@ function AppInner() {
   // Studio) carry their own top-bar / Home nav, so the global pill is suppressed
   // there to avoid a stray floating sign-out.
   const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
-    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === ROLES.WAREHOUSE || role === ROLES.LABEL_PRINT || role === ROLES.CUSTOMER || role === ROLES.CUSTOMERS_DB || role === null))
+    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === ROLES.WAREHOUSE || role === ROLES.LABEL_PRINT || role === ROLES.CUSTOMER || role === ROLES.CUSTOMERS_DB || role === ROLES.DISPLAY_CHECKS || role === null))
     && !(!isNarrowApp && wantUserMgmt);   // desktop User Management carries its own rail Exit
 
   // "This device's clock is wrong" — gated on ROLE, not on tree position. Being a

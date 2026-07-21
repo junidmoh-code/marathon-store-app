@@ -22,10 +22,23 @@ import { formatSaTime } from "./feedModel";
 const completeDisplayCheck = httpsCallable(functions, "completeDisplayCheck");
 const FOCUSABLE = 'button:not([disabled]),[href],input:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
+// Desktop centres the dialog; phone keeps the thumb-reachable bottom sheet.
+function useIsWide(px = 1024) {
+  const [w, setW] = useState(() => typeof window !== "undefined" && window.matchMedia(`(min-width:${px}px)`).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(`(min-width:${px}px)`);
+    const on = (e) => setW(e.matches);
+    mq.addEventListener ? mq.addEventListener("change", on) : mq.addListener(on);
+    return () => (mq.removeEventListener ? mq.removeEventListener("change", on) : mq.removeListener(on));
+  }, [px]);
+  return w;
+}
+
 export default function CheckSheet({ store, check, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [override, setOverride] = useState(null); // { stockQty } when soft-blocked
+  const wide = useIsWide();
 
   // Real modal semantics (a11y): trap Tab inside the sheet, close on Escape, and
   // restore focus to the trigger on unmount — otherwise keyboard users can reach
@@ -102,7 +115,8 @@ export default function CheckSheet({ store, check, onClose }) {
     <div
       onClick={busy ? undefined : onClose}
       style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(0,0,0,.6)",
-               display: "flex", alignItems: "flex-end", justifyContent: "center",
+               display: "flex", alignItems: wide ? "center" : "flex-end", justifyContent: "center",
+               padding: wide ? 20 : 0, boxSizing: "border-box",
                backdropFilter: "blur(3px)", WebkitBackdropFilter: "blur(3px)" }}
     >
       <div
@@ -113,7 +127,7 @@ export default function CheckSheet({ store, check, onClose }) {
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         style={{ ...PANEL, background: "rgba(14,16,22,.94)", width: "100%", maxWidth: 520,
-                 borderRadius: "20px 20px 0 0", padding: 20, display: "flex",
+                 borderRadius: wide ? 20 : "20px 20px 0 0", padding: 20, display: "flex",
                  flexDirection: "column", gap: 16, maxHeight: "88vh", overflowY: "auto", outline: "none" }}
       >
         {/* Header: product identity */}
