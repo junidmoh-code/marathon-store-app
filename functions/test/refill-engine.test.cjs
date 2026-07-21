@@ -117,7 +117,7 @@ test("AWAITING SUPPLIER (v9): whole upstream chain empty → passive category, n
   }));
   assert.equal(plan.intents.length, 0, "no impossible work");
   assert.ok(plan.exceptions.awaitingSupplier.items.some((w) => w.loc === "marathon-pe"), "parked under Awaiting Supplier");
-  assert.ok(!plan.exceptions.missingSizes.items.some((m) => m.pid === "p1"), "not on the reorder list — stock exists, just stranded");
+  assert.ok(!plan.exceptions.missingSizes.items.some((m) => m.pid === "p1" && m.size === "M"), "M not on the reorder list — stock exists, just stranded");
 });
 
 test("AUTO-RESIZE: open requests continuously track reality — shrink, grow, cap, and in-flight skip", () => {
@@ -951,13 +951,15 @@ test("NEW PRODUCT at Central (no targets anywhere) enters the Decision Queue", (
   assert.ok(!introduced.exceptions.noTarget.items.some((n) => n.pid === "pNew" && n.loc === "central"));
 });
 
-test("engine is driven by explicit targets only — no default-run auto-activation", () => {
+test("engine computes default clothing targets from global rule when store carries the product", () => {
   const plan = computeRefillPlan(base({
     targets: {},
     stock: { "marathon-pe": { p1: { L: cell(0) } }, hub2: { p1: { L: cell(9) } }, central: {}, trophy: {} },
     movements: [{ type: "sold", from: "marathon-pe", productId: "p1", size: "L", qty: 1, ts: iso(5) }],
   }));
-  assert.equal(plan.intents.length, 0, "no targets → no requests, regardless of sales");
+  assert.equal(plan.intents.length, 1, "default rule creates a request for the stocked size");
+  assert.equal(plan.intents[0].dest, "marathon-pe");
+  assert.equal(plan.intents[0].sizeKey, "L");
 });
 
 test("circuit breaker caps intents and reports an error", () => {
@@ -1060,52 +1062,46 @@ test("ZOMBIE guard: a matching, unresolved order is NOT order_lost (normal recon
   assert.ok(!plan.closes.find((x) => x.cancelReason === "order_lost"), "live matching leg untouched");
 });
 
-test("AUTO-ADOPT: stocked untargeted standard size at a flagged loc gets the standard target", () => {
+test("DEFAULT RULE: stocked catalog size at a carrying store gets the standard target", () => {
   const plan = computeRefillPlan(base({
-    config: { ...CONFIG, autoAdoptTargets: { hub2: true }, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 } } },
-    stock: { "marathon-pe": {}, trophy: {}, central: {}, hub2: { p1: { L: cell(2), XXXL: cell(1), M: cell(0) } } },
+    config: { ...CONFIG, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 } } },
+    stock: { "marathon-pe": {}, trophy: {}, central: { p1: { L: cell(9), M: cell(9), XL: cell(9), XXXL: cell(9) } }, hub2: { p1: { L: cell(2), XXXL: cell(1), M: cell(0) } } },
     targets: {},
   }));
-  const l = plan.adopts.find((a) => a.loc === "hub2" && a.pid === "p1" && a.sizeKey === "L");
-  assert.ok(l, "L adopted");
-  assert.equal(l.target, 3);
-  assert.equal(l.minQty, 2);                    // max(1, 3−1)
-  const xxxl = plan.adopts.find((a) => a.sizeKey === "XXXL");
-  assert.equal(xxxl.target, 1);
-  assert.equal(xxxl.minQty, 1);                 // max(1, 1−1) floors at 1
-  assert.ok(!plan.adopts.find((a) => a.sizeKey === "M"), "zero-qty cell never adopts");
+  const l = plan.intents.find((a) => a.dest === "hub2" && a.productId === "p1" && a.sizeKey === "L");
+  assert.ok(l, "L default target computed");
+  assert.equal(l.qty, 1);                       // target 3 − have 2
+  const xxxl = plan.intents.find((a) => a.sizeKey === "XXXL");
+  assert.ok(!xxxl, "XXXL at target — no intent");
+  const m = plan.intents.find((a) => a.sizeKey === "M");
+  assert.equal(m.qty, 3);                       // target 3 − have 0
 });
 
-test("AUTO-ADOPT: explicit targets (incl. 0 exclusions) and Decision Queue records are never overridden", () => {
+test("DEFAULT RULE: explicit targets (incl. 0 exclusions) always win over the rule", () => {
   const over = {
-    config: { ...CONFIG, autoAdoptTargets: { hub2: true }, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { L: 3, M: 3 } } },
-    stock: { "marathon-pe": {}, trophy: {}, central: {}, hub2: { p1: { L: cell(2), M: cell(2) } } },
+    config: { ...CONFIG, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { L: 3, M: 3 } } },
+    stock: { "marathon-pe": {}, trophy: {}, central: { p1: { M: cell(9), L: cell(9) } }, hub2: { p1: { L: cell(2), M: cell(2) } } },
     targets: { hub2: { p1: { L: { target: 0 } } } },   // explicit exclusion
   };
   const plan = computeRefillPlan(base(over));
-  assert.ok(!plan.adopts.find((a) => a.sizeKey === "L"), "explicit 0 wins over adopt");
-  assert.ok(plan.adopts.find((a) => a.sizeKey === "M"), "sibling size still adopts");
-  const parked = computeRefillPlan(base({
-    ...over,
-    targetDecisions: { hub2: { p1: { decision: "keep" } } },
-  }));
-  assert.equal(parked.adopts.length, 0, "decision-parked product never adopts");
+  assert.ok(!plan.intents.find((a) => a.sizeKey === "L"), "explicit 0 wins over default");
+  assert.ok(plan.intents.find((a) => a.sizeKey === "M"), "sibling size still gets default");
 });
 
-test("AUTO-ADOPT: off by default, per-location gate, standard-run sizes only", () => {
-  const stockOver = { "marathon-pe": { p1: { M: cell(2) } }, trophy: {}, central: {}, hub2: { p1: { M: cell(2), 8: cell(4) } } };
-  const off = computeRefillPlan(base({ stock: stockOver, targets: {} }));
-  assert.ok(!off.adopts || off.adopts.length === 0, "no flag → no adopts");
-  const on = computeRefillPlan(base({
-    // "8": 3 is a MISCONFIGURED matrix entry — the numeric-size exclusion must
-    // hold even when the config would hand out a number for it.
-    config: { ...CONFIG, autoAdoptTargets: { hub2: true }, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { M: 3, 8: 3 } } },
+test("DEFAULT RULE: non-carrying store and non-clothing products get no default", () => {
+  const stockOver = { "marathon-pe": {}, trophy: {}, central: {}, hub2: { p1: { M: cell(2), 8: cell(4) } } };
+  const plan = computeRefillPlan(base({
     stock: stockOver, targets: {},
+    products: { p1: { name: "Tee", productType: "clothing", sizes: ["M", "8"] } },
   }));
-  assert.equal(on.adopts.length, 1, "hub2 M only");
-  assert.equal(on.adopts[0].loc, "hub2");
-  assert.ok(!on.adopts.find((a) => a.sizeKey === "8"), "numeric size never auto-adopts, even when the matrix is misconfigured");
-  assert.ok(!on.adopts.find((a) => a.loc === "marathon-pe"), "unflagged store stays human-decided");
+  assert.equal(plan.intents.filter((a) => a.dest === "marathon-pe").length, 0, "store without stock node never gets default");
+  assert.ok(!plan.intents.find((a) => a.sizeKey === "8"), "numeric size never gets default");
+  const snk = computeRefillPlan(base({
+    stock: { "marathon-pe": { pSnk: { "8": cell(0) } }, hub2: { pSnk: { "8": cell(9) } }, central: {}, trophy: {} },
+    targets: {},
+    products: { pSnk: { name: "Shoe", productType: "sneaker", sizes: ["8"] } },
+  }));
+  assert.equal(snk.intents.length, 0, "sneaker never gets default");
 });
 
 // ── Reject re-check + loop guard (incident 2026-07-19: wrong shelf) ───────────
@@ -1147,17 +1143,14 @@ test("reject while denier counted EMPTY → full 24h cooldown unchanged", () => 
   assert.ok(w && /reopens when stock arrives/.test(w.note), "empty denier keeps the arrival/24h contract");
 });
 
-test("LOOP GUARD: streak at limit + stock still shown → Recount Needed, no re-ask", () => {
-  const plan = computeRefillPlan(base({ orders: rejectedOrder(2), rejectStreak: streakNode(3) }));
-  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0);
-  const rn = plan.exceptions.recountNeeded.items.find((x) => x.loc === "marathon-pe");
-  assert.ok(rn, "flagged for recount");
-  assert.equal(rn.rejections, 3);
-  assert.equal(rn.source, "hub2");
-  assert.ok(rn.showing >= 1, "reports what the count claims");
+test("RETRY: streak at limit + stock still shown → retries after 24h, no permanent park", () => {
+  const plan = computeRefillPlan(base({ orders: rejectedOrder(30), rejectStreak: streakNode(3) }));
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "30h later, engine retries instead of parking");
+  const w = plan.exceptions.waitingForStock.items.find((x) => x.loc === "marathon-pe");
+  assert.ok(!w, "not parked as waiting — the retry is actionable");
 });
 
-test("LOOP GUARD self-heals: denier no longer shows stock → streak reset, normal cooldown resumes", () => {
+test("RETRY: denier no longer shows stock → streak reset, normal cooldown resumes", () => {
   const plan = computeRefillPlan(base({
     orders: rejectedOrder(2), rejectStreak: streakNode(3),
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(5) } }, trophy: {} },
@@ -1166,7 +1159,7 @@ test("LOOP GUARD self-heals: denier no longer shows stock → streak reset, norm
   assert.ok(plan.streakOps.some((o) => o.op === "reset" && o.dest === "marathon-pe" && o.pid === "p1" && o.sizeKey === "M"));
 });
 
-test("LOOP GUARD self-heals: stock ARRIVES at the denier after the last strike → flag lifts, re-asks", () => {
+test("RETRY: stock ARRIVES at the denier after the last strike → re-asks immediately", () => {
   const plan = computeRefillPlan(base({
     orders: rejectedOrder(1), rejectStreak: streakNode(3, 1),
     movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 5, ts: iso(0.5), after: { hub2: 15 } }],
@@ -1224,20 +1217,18 @@ test("engine self-withdrawal (rr cancelled WITH cancelReason) never increments t
   assert.ok(plan.closes.every((c) => !c.streakOp || c.streakOp.op !== "inc"), "no inc on any close either");
 });
 
-test("streak-FLAGGED source leg parks the store demand as BLOCKED, not flowing", () => {
+test("streak source leg retries after 24h — store demand flows again", () => {
   const plan = computeRefillPlan(base({
     targets: {
       "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
       hub2: { p1: { M: { target: 3, minQty: 2 } } },
     },
     stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } }, trophy: {} },
-    rejectStreak: { hub2: { p1: { M: { count: 3, lastTs: iso(1), by: "central" } } } },
+    rejectStreak: { hub2: { p1: { M: { count: 3, lastTs: iso(30), by: "central" } } } },
   }));
-  assert.equal(plan.intents.length, 0, "flagged hub2 leg never re-asks");
-  assert.ok(plan.exceptions.recountNeeded.items.some((r) => r.loc === "hub2" && r.source === "central"), "hub2 cell flagged for recount");
-  assert.ok(plan.exceptions.awaitingSupplier.items.some((w) => w.loc === "marathon-pe" && /blocked/.test(w.note)),
-    "store demand labelled blocked while the source leg awaits a recount");
-  assert.equal(plan.exceptions.awaitingUpstream.count, 0, "never mislabelled as flowing");
+  assert.equal(plan.intents.filter((x) => x.dest === "hub2").length, 1, "30h later, hub2 leg retries");
+  assert.ok(plan.exceptions.awaitingUpstream.items.some((w) => w.loc === "marathon-pe"), "store demand flows again");
+  assert.equal(plan.exceptions.awaitingSupplier.count, 0, "not blocked — retry is flowing");
 });
 
 test("dormant streak (older than the ledger window) resets instead of flagging a forgotten mismatch", () => {
@@ -1269,4 +1260,89 @@ test("fresh rejection over an EXPIRED streak restarts the count at 1 — never c
   const close = plan.closes.find((c) => c.dest === "marathon-pe" && c.sizeKey === "M");
   assert.ok(close && close.streakOp && close.streakOp.op === "inc");
   assert.equal(close.streakOp.count, 1, "expired evidence discarded — fresh strike is #1, not #4");
+});
+
+// ── Rule-based target engine + 24h auto-retry (owner 2026-07-21) ─────────────
+
+test("DEFAULT RULE: every catalog size at a carrying store gets the global rule target", () => {
+  const plan = computeRefillPlan(base({
+    targets: {},
+    stock: { "marathon-pe": { p1: { L: cell(0) } }, hub2: { p1: { L: cell(9), M: cell(9), XL: cell(9) } }, central: {}, trophy: {} },
+  }));
+  const sizes = plan.intents.map((i) => i.sizeKey).sort();
+  assert.deepEqual(sizes, ["L", "M", "XL"], "all catalog sizes proposed");
+});
+
+test("DEFAULT RULE: store that does not carry the product gets no target", () => {
+  const plan = computeRefillPlan(base({
+    targets: {},
+    stock: { "marathon-pe": {}, trophy: { p1: { L: cell(1) } }, hub2: { p1: { L: cell(9), M: cell(9), XL: cell(9) } }, central: {} },
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe").length, 0, "marathon-pe never carried p1");
+  assert.ok(plan.intents.filter((i) => i.dest === "trophy").length >= 1, "trophy carries p1");
+});
+
+test("DEFAULT RULE: zero-qty stock node still counts as carrying", () => {
+  const plan = computeRefillPlan(base({
+    targets: {},
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(9) } }, central: {}, trophy: {} },
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 1, "zero-qty node still carries");
+});
+
+test("RETRY: rejection writes retryState + retryHistory; retry after 24h", () => {
+  const rejected = {
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "o1", orderCreatedAt: iso(2), qty: 2, source: "hub2", createdAt: iso(2) } } } },
+    refillRequests: { r1: { status: "open", requestingLocation: "marathon-pe", productId: "p1", size: "M" } },
+    orders: { o1: { customerName: "Shop Refill", destShop: "marathon-pe", productId: "p1", size: "M", createdAt: iso(2), clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(0.1) } },
+  };
+  const plan = computeRefillPlan(base(rejected));
+  const rejOp = plan.retryOps.find((o) => o.op === "reject" && o.dest === "marathon-pe");
+  assert.ok(rejOp, "reject op emitted");
+  assert.equal(rejOp.retryCount, 1);
+  const hist = plan.retryOps.find((o) => o.op === "history" && o.type === "rejection");
+  assert.ok(hist, "history entry emitted");
+  // 24h later, the cell retries automatically
+  const retryPlan = computeRefillPlan(base({
+    ...rejected,
+    orders: { o1: { ...rejected.orders.o1, clothingOutOfStockAt: iso(26), createdAt: iso(26) } },
+    retryState: { "marathon-pe": { p1: { M: { retryCount: 1, firstRejectedAt: iso(26), lastRejectedAt: iso(26), nextRetryAt: iso(1) } } } },
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
+  }));
+  assert.equal(retryPlan.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 1, "retry intent created after 24h");
+  const retryOp = retryPlan.retryOps.find((o) => o.op === "retry");
+  assert.ok(retryOp, "retry op emitted");
+  const retryHist = retryPlan.retryOps.find((o) => o.op === "history" && o.type === "retry");
+  assert.ok(retryHist, "retry history entry emitted");
+});
+
+test("RETRY: open lock prevents duplicate retry", () => {
+  const plan = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", qty: 2, source: "hub2", createdAt: iso(1) } } } },
+    retryState: { "marathon-pe": { p1: { M: { retryCount: 1, firstRejectedAt: iso(26), lastRejectedAt: iso(26), nextRetryAt: iso(1) } } } },
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 0, "open lock suppresses duplicate");
+});
+
+test("RETRY: manual exclusion stops retrying", () => {
+  const plan = computeRefillPlan(base({
+    targets: { "marathon-pe": { p1: { M: { target: 0 } } } },
+    retryState: { "marathon-pe": { p1: { M: { retryCount: 1, firstRejectedAt: iso(26), lastRejectedAt: iso(26), nextRetryAt: iso(1) } } } },
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: {}, trophy: {} },
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 0, "explicit 0 stops retry");
+});
+
+test("RETRY: no source stock pauses retry, resumes when stock arrives", () => {
+  const dry = computeRefillPlan(base({
+    retryState: { "marathon-pe": { p1: { M: { retryCount: 1, firstRejectedAt: iso(26), lastRejectedAt: iso(26), nextRetryAt: iso(1) } } } },
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: {}, central: {}, trophy: {} },
+  }));
+  assert.equal(dry.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 0, "no source stock → no retry");
+  const wet = computeRefillPlan(base({
+    retryState: { "marathon-pe": { p1: { M: { retryCount: 1, firstRejectedAt: iso(26), lastRejectedAt: iso(26), nextRetryAt: iso(1) } } } },
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(5) } }, central: {}, trophy: {} },
+  }));
+  assert.equal(wet.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 1, "source stock arrives → retry resumes");
 });
