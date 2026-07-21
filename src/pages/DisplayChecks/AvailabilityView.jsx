@@ -261,11 +261,15 @@ export default function AvailabilityView({ store, products, wide, active }) {
   // barcode lookup (debounced). Anything with letters is a name search (results
   // below), which needs no auto-fire. A too-short digit string waits.
   useEffect(() => {
-    if (looksBarcode && trimmed.length >= 8) {
+    // Gated by `active` too: the view stays mounted-but-hidden, and query is
+    // rehydrated from dcSession — without this, returning to the module with a
+    // persisted barcode-like search would fire a get() on a hidden tab and show a
+    // stale "NO MATCH" the next time Availability opens (CodeRabbit).
+    if (active && looksBarcode && trimmed.length >= 8) {
       const t = setTimeout(() => resolveCode(trimmed), 250);
       return () => clearTimeout(t);
     }
-  }, [trimmed, looksBarcode, resolveCode]);
+  }, [active, trimmed, looksBarcode, resolveCode]);
 
   // Hardware wedge (handheld gun) — only while THIS tab is active (the view stays
   // mounted when hidden, so an ungated listener would hijack scans elsewhere). A
