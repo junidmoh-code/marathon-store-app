@@ -36,7 +36,7 @@ import AvailabilityView from "./AvailabilityView";
 import AnalyticsView from "./AnalyticsView";
 import SettingsView from "./SettingsView";
 import { useTodayFeedSources } from "./useDisplayChecks";
-import { dcSession, resetDcSession } from "./session";
+import { dcSession, bindDcSession } from "./session";
 
 const TABS = [
   { key: "today", label: "Today", manager: false },
@@ -112,14 +112,12 @@ export default function DisplayChecks({ onExit, products }) {
   const displayName = permRecord?.displayName || permRecord?.username || user?.email?.split("@")[0] || "Staff";
   const wide = useIsWide(1024);
 
-  // Wipe the session singleton when the signed-in user changes (logout→login on
-  // the same device), so one user's tab/search/selection/feed-cache never leaks
-  // to the next. Runs before the tab state below reads dcSession on that mount.
-  const lastUserRef = useRef(user?.uid || null);
-  if (lastUserRef.current !== (user?.uid || null)) {
-    lastUserRef.current = user?.uid || null;
-    resetDcSession();
-  }
+  // Bind the session to the current user BEFORE the state below reads it. Guarded
+  // + idempotent (no-op when the uid is unchanged), keyed on the singleton's own
+  // marker — so a logout that UNMOUNTS the module still clears on the next user's
+  // mount. This is the reset-derived-state-on-change render idiom: it mutates only
+  // the plain singleton (no React state, no external system), so a re-run is safe.
+  bindDcSession(user?.uid);
 
   // Active tab — seeded from and written back to the session singleton so it
   // survives every remount (tab switch is display-only, but rotation/leave-return

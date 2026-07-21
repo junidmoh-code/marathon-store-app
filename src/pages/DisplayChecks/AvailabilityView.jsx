@@ -293,10 +293,12 @@ export default function AvailabilityView({ store, products, wide, active }) {
           onChange={(e) => { setQuery(e.target.value); setNotFound(null); }}
           onKeyDown={(e) => {
             if (e.key !== "Enter" || !trimmed) return;
-            // Enter = act on what's typed: a name with results picks the top match;
-            // otherwise (a barcode, or a name with no matches) try a code lookup.
-            if (!looksBarcode && results.length > 0) pick(results[0]);
-            else resolveCode(trimmed);
+            // Enter = act on what's typed. A name with results picks the top match.
+            // A code lookup fires only when the text looks like a code (digits, or a
+            // scanner-style alnum string) — never on a plain name with no matches,
+            // which would waste a /barcodes read on a word.
+            if (results.length > 0) pick(results[0]);
+            else if (looksBarcode || /^[0-9A-Za-z][0-9A-Za-z-]{5,}$/.test(trimmed)) resolveCode(trimmed);
           }}
           placeholder="Search a name, or scan / key a barcode…"
           style={{ fontFamily: looksBarcode ? MONO : FONT, fontSize: 15, letterSpacing: looksBarcode ? ".04em" : "normal",
