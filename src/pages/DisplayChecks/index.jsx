@@ -22,7 +22,7 @@
 //
 // STYLING: Marathon Glass — pitch-black ground, frosted panels, electric blue.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePermissions } from "../../components/PermissionsContext";
 import { SHOP_LABELS } from "../../utils/stores";
 import {
@@ -36,7 +36,7 @@ import AvailabilityView from "./AvailabilityView";
 import AnalyticsView from "./AnalyticsView";
 import SettingsView from "./SettingsView";
 import { useTodayFeedSources } from "./useDisplayChecks";
-import { dcSession } from "./session";
+import { dcSession, resetDcSession } from "./session";
 
 const TABS = [
   { key: "today", label: "Today", manager: false },
@@ -112,6 +112,15 @@ export default function DisplayChecks({ onExit, products }) {
   const displayName = permRecord?.displayName || permRecord?.username || user?.email?.split("@")[0] || "Staff";
   const wide = useIsWide(1024);
 
+  // Wipe the session singleton when the signed-in user changes (logout→login on
+  // the same device), so one user's tab/search/selection/feed-cache never leaks
+  // to the next. Runs before the tab state below reads dcSession on that mount.
+  const lastUserRef = useRef(user?.uid || null);
+  if (lastUserRef.current !== (user?.uid || null)) {
+    lastUserRef.current = user?.uid || null;
+    resetDcSession();
+  }
+
   // Active tab — seeded from and written back to the session singleton so it
   // survives every remount (tab switch is display-only, but rotation/leave-return
   // remount the module).
@@ -137,9 +146,12 @@ export default function DisplayChecks({ onExit, products }) {
     }
   }, [store, live.ready, live.error, live.activeItems, live.completedItems, live.saDate]);
   const cached = store ? dcSession.feedByStore[store] : null;
+  // Only paint the cache when it's for TODAY — a snapshot taken before SA midnight
+  // must not show yesterday's completions as today's (day-boundary correctness).
+  const cacheFresh = cached && cached.saDate === live.saDate;
   const feed = live.ready
     ? { activeItems: live.activeItems, completedItems: live.completedItems, ready: true, error: live.error }
-    : cached
+    : cacheFresh
       ? { activeItems: cached.activeItems, completedItems: cached.completedItems, ready: true, error: null }
       : { activeItems: [], completedItems: [], ready: false, error: null };
 
@@ -153,6 +165,12 @@ export default function DisplayChecks({ onExit, products }) {
   useLayoutEffect(() => {
     window.scrollTo(0, dcSession.scroll[tab] || 0);
   }, [tab]);
+  // Save the active tab's scroll on UNMOUNT too, so leaving the module (not just an
+  // in-app tab switch) preserves position for the return. Ref-free: read the latest
+  // tab via a ref so the cleanup isn't stale.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  useEffect(() => () => { dcSession.scroll[tabRef.current] = window.scrollY; }, []);
 
   const activeLabel = visibleTabs.find((t) => t.key === tab)?.label || "Today";
 
@@ -177,7 +195,7 @@ export default function DisplayChecks({ onExit, products }) {
   const bodies = (
     <>
       <div style={{ display: tab === "today" ? "block" : "none" }}>
-        <TodayView store={store} activeItems={feed.activeItems} completedItems={feed.completedItems} ready={feed.ready} error={feed.error} />
+        <TodayView store={store} active={tab === "today"} activeItems={feed.activeItems} completedItems={feed.completedItems} ready={feed.ready} error={feed.error} />
       </div>
       <div style={{ display: tab === "availability" ? "block" : "none" }}>
         <AvailabilityView store={store} products={products} wide={wide} active={tab === "availability"} />
@@ -189,14 +207,14 @@ export default function DisplayChecks({ onExit, products }) {
       )}
       {canManage && (
         <div style={{ display: tab === "settings" ? "block" : "none" }}>
-          <SettingsView store={store} wide={wide} />
+          <SettingsView store={store} wide={wide} active={tab === "settings"} />
         </div>
       )}
     </>
   );
 
   return (
-    <div style={{ minHeight: "100vh", background: "#000", color: INK, fontFamily: FONT, position: "relative", overflowX: "hidden", display: "flex" }}>
+    <div style={{ minHeight: "100vh", background: "#000", color: INK, fontFamily: FONT, position: "relative", overflowX: "clip", display: "flex" }}>
       <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "radial-gradient(1100px 520px at 82% -14%, rgba(74,127,255,.12), transparent 58%)" }} />
 
       {/* SIDEBAR — desktop chrome. display:none when narrow keeps the content

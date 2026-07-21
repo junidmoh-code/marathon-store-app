@@ -268,14 +268,16 @@ export default function AvailabilityView({ store, products, wide, active }) {
   }, [trimmed, looksBarcode, resolveCode]);
 
   // Hardware wedge (handheld gun) — only while THIS tab is active (the view stays
-  // mounted when hidden, so an ungated listener would hijack scans elsewhere). The
-  // wedge drops digits into the bar; auto-detect owns the single resolve.
+  // mounted when hidden, so an ungated listener would hijack scans elsewhere). A
+  // scan resolves DIRECTLY (a gun code may be alphanumeric Code-39/128, which the
+  // digits-only auto-detect wouldn't treat as a barcode) — no setQuery, so exactly
+  // one lookup fires.
   useEffect(() => {
     if (!active) return;
     installBarcodeListener();
-    const off = subscribeBarcode((raw) => setQuery(String(raw || "").trim()));
+    const off = subscribeBarcode((raw) => resolveCode(String(raw || "").trim()));
     return off;
-  }, [active, setQuery]);
+  }, [active, resolveCode]);
 
   // Camera scan resolves directly (a scanned code may be shorter/alphanumeric than
   // the auto-detect threshold); no setQuery, so it never double-fires.
@@ -287,7 +289,15 @@ export default function AvailabilityView({ store, products, wide, active }) {
       <div style={{ position: "relative" }}>
         <input
           value={query}
+          inputMode={looksBarcode ? "numeric" : "text"}
           onChange={(e) => { setQuery(e.target.value); setNotFound(null); }}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" || !trimmed) return;
+            // Enter = act on what's typed: a name with results picks the top match;
+            // otherwise (a barcode, or a name with no matches) try a code lookup.
+            if (!looksBarcode && results.length > 0) pick(results[0]);
+            else resolveCode(trimmed);
+          }}
           placeholder="Search a name, or scan / key a barcode…"
           style={{ fontFamily: looksBarcode ? MONO : FONT, fontSize: 15, letterSpacing: looksBarcode ? ".04em" : "normal",
                    color: INK, background: GLASS_BG, border: GLASS_BORDER, borderRadius: 12,
@@ -333,7 +343,7 @@ export default function AvailabilityView({ store, products, wide, active }) {
     <div style={{ ...PANEL, padding: "40px 24px", textAlign: "center" }}>
       <div style={{ ...META, color: ZERO_RED }}>NO MATCH</div>
       <div style={{ fontFamily: FONT, fontSize: 15, color: INK, marginTop: 10 }}>Nothing matched <b>{notFound}</b>.</div>
-      <div style={{ fontFamily: FONT, fontSize: 13, color: "rgba(233,238,255,.5)", marginTop: 6 }}>Try the Name search, or check the code.</div>
+      <div style={{ fontFamily: FONT, fontSize: 13, color: "rgba(233,238,255,.5)", marginTop: 6 }}>Check the code, or type the product name instead.</div>
     </div>
   ) : selected ? (
     <ResultCard product={selected} storeId={store} big={wide} />

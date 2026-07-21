@@ -37,7 +37,7 @@ const selectStyle = {
   borderRadius: 9, padding: "8px 8px", outline: "none", width: "100%", boxSizing: "border-box", cursor: "pointer",
 };
 
-export default function SettingsView({ store, wide }) {
+export default function SettingsView({ store, wide, active }) {
   const [cfg, setCfg] = useState(DEFAULTS);
   const [roster, setRoster] = useState({ locked: false, days: {} });
   const [staff, setStaff] = useState([]);
@@ -49,7 +49,10 @@ export default function SettingsView({ store, wide }) {
   const [rosterMsg, setRosterMsg] = useState(null);
 
   useEffect(() => {
-    if (!store) return;
+    // The view stays mounted-but-hidden in the module; only read when it's the
+    // active tab, so managers don't pay 3 reads (incl. the whole /users node) on
+    // every module open they never visit Settings.
+    if (!store || active === false) return;
     let alive = true;
     setLoaded(false);
     Promise.all([
@@ -71,7 +74,7 @@ export default function SettingsView({ store, wide }) {
       setLoaded(true);
     });
     return () => { alive = false; };
-  }, [store]);
+  }, [store, active]);
 
   const saveConfig = async () => {
     setSaving(true); setMsg(null);

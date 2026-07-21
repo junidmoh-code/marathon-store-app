@@ -20,3 +20,14 @@ export const dcSession = {
   scroll: {},              // { tabKey: scrollTop } — per-tab scroll position
   feedByStore: {},         // { storeId: { activeItems, completedItems, saDate } } — last good snapshot
 };
+
+// Clear everything on a user change (logout→login on the same device). Without
+// this the previous user's tab/search/selection/feed-cache would persist for the
+// next user until a full reload.
+export function resetDcSession() {
+  dcSession.activeTab = "today";
+  dcSession.search = "";
+  dcSession.selectedId = null;
+  dcSession.scroll = {};
+  dcSession.feedByStore = {};
+}
