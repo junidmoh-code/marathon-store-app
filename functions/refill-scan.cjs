@@ -239,47 +239,53 @@ async function runScan() {
 
     // ── apply retry ops (24h auto-retry) ──────────────────────────────────────
     // Retry state and history are recomputed from live state every scan, so a
-    // lost write simply reappears on the next pass.
+    // lost write simply reappears on the next pass. Wrapped so a single bad op
+    // can never abort the scan (C1 review finding).
     if (plan.retryOps && plan.retryOps.length) {
-      const upd = {};
+      let applied = 0;
       for (const op of plan.retryOps) {
-        if (op.op === "reset") {
-          upd[`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`] = null;
-        } else if (op.op === "reject") {
-          upd[`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`] = {
-            retryCount: op.retryCount,
-            firstRejectedAt: op.firstRejectedAt,
-            lastRejectedAt: op.lastRejectedAt,
-            lastRetryAt: op.lastRetryAt || null,
-            nextRetryAt: op.nextRetryAt,
-            lastRejectionReason: op.lastRejectionReason,
-            source: op.source || null,
-          };
-        } else if (op.op === "retry") {
-          upd[`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`] = {
-            retryCount: op.retryCount,
-            firstRejectedAt: op.firstRejectedAt,
-            lastRejectedAt: op.lastRejectedAt,
-            lastRetryAt: op.lastRetryAt,
-            nextRetryAt: op.nextRetryAt,
-            lastRejectionReason: op.lastRejectionReason,
-            source: op.source || null,
-          };
-        } else if (op.op === "history") {
-          const histKey = `${op.dest}|${op.pid}|${op.sizeKey}|${op.timestamp}`;
-          upd[`refill_engine/retryHistory/${histKey}`] = {
-            type: op.type,
-            timestamp: op.timestamp,
-            rejectionReason: op.rejectionReason,
-            retryAttempt: op.retryAttempt,
-            source: op.source,
-            destination: op.destination,
-            qty: op.qty,
-          };
+        try {
+          if (op.op === "reset") {
+            await db.ref(`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`).set(null);
+          } else if (op.op === "reject") {
+            await db.ref(`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`).set({
+              retryCount: op.retryCount,
+              firstRejectedAt: op.firstRejectedAt || null,
+              lastRejectedAt: op.lastRejectedAt || null,
+              lastRetryAt: op.lastRetryAt || null,
+              nextRetryAt: op.nextRetryAt,
+              lastRejectionReason: op.lastRejectionReason,
+              source: op.source || null,
+            });
+          } else if (op.op === "retry") {
+            await db.ref(`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`).set({
+              retryCount: op.retryCount,
+              firstRejectedAt: op.firstRejectedAt || null,
+              lastRejectedAt: op.lastRejectedAt || null,
+              lastRetryAt: op.lastRetryAt,
+              nextRetryAt: op.nextRetryAt,
+              lastRejectionReason: op.lastRejectionReason,
+              source: op.source || null,
+            });
+          } else if (op.op === "history") {
+            // Sanitize: RTDB keys can't contain . # $ / [ ] — use a push key.
+            const histRef = db.ref(`refill_engine/retryHistory/${op.dest}/${op.pid}/${op.sizeKey}`).push();
+            await histRef.set({
+              type: op.type,
+              timestamp: op.timestamp,
+              rejectionReason: op.rejectionReason,
+              retryAttempt: op.retryAttempt,
+              source: op.source,
+              destination: op.destination,
+              qty: op.qty,
+            });
+          }
+          applied++;
+        } catch (e) {
+          console.error(`retryOp ${op.op} failed for ${op.dest}/${op.pid}/${op.sizeKey}:`, e);
         }
       }
-      if (Object.keys(upd).length) await db.ref().update(upd).catch(() => {});
-      counts.retryOps = plan.retryOps.length;
+      counts.retryOps = applied;
     }
 
     // ── act on intents, by destination mode ──────────────────────────────────
