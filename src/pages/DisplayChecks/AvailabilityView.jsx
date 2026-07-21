@@ -126,11 +126,14 @@ function SizeTable({ product, sizes }) {
   // still shows up.
   const keys = useMemo(() => {
     const declared = (product.sizes || []).map(String).filter((s) => s && s !== "_");
-    const set = new Set([...declared, ...Object.keys(sizes || {})]);
+    const stockKeys = (sizes && typeof sizes === "object") ? Object.keys(sizes) : [];
+    const set = new Set([...declared, ...stockKeys]);
     return [...set].sort(sortSizes);
   }, [product, sizes]);
 
   if (sizes === "loading") return <div style={{ ...META, color: "rgba(233,238,255,.4)", padding: "10px 0" }}>READING STOCK…</div>;
+  // A failed read must NOT masquerade as all-zeros — say so plainly (Kimi P1).
+  if (sizes === "error") return <div style={{ ...META, color: ZERO_RED, padding: "10px 0" }}>COULDN'T READ STOCK — TRY AGAIN</div>;
   if (!keys.length) return <div style={{ ...META, color: "rgba(233,238,255,.4)", padding: "10px 0" }}>NO SIZES ON RECORD</div>;
 
   return (
@@ -161,13 +164,13 @@ function ResultCard({ product, storeId, big }) {
     setOthers(null);
     readStoreSizes(product.id, storeId)
       .then((m) => { if (alive) setSizes(m); })
-      .catch(() => { if (alive) setSizes({}); });
+      .catch(() => { if (alive) setSizes("error"); });
     return () => { alive = false; };
   }, [product.id, storeId]);
 
   const loadOthers = useCallback(() => {
     setOthers("loading");
-    Promise.all(otherStoreIds.map((s) => readStoreSizes(product.id, s).then((m) => [s, m]).catch(() => [s, {}])))
+    Promise.all(otherStoreIds.map((s) => readStoreSizes(product.id, s).then((m) => [s, m]).catch(() => [s, "error"])))
       .then((pairs) => setOthers(Object.fromEntries(pairs)));
   }, [product.id, otherStoreIds]);
 
@@ -263,19 +266,21 @@ export default function AvailabilityView({ store, products, wide }) {
     else { setSelected(null); setNotFound(c); }
   }, [products, pick]);
 
-  // Auto-lookup a keyed barcode once it's plausibly complete (≥8 digits).
+  // Auto-lookup a keyed/scanned barcode once it's plausibly complete (≥8 chars,
+  // alphanumeric so Code-128/39 also fire). Debounced so mid-typing doesn't spam.
   useEffect(() => {
     if (mode !== "barcode") return;
-    if (code.replace(/\D/g, "").length >= 8) { const t = setTimeout(() => resolveCode(code), 250); return () => clearTimeout(t); }
+    if (code.trim().length >= 8) { const t = setTimeout(() => resolveCode(code), 250); return () => clearTimeout(t); }
   }, [code, mode, resolveCode]);
 
-  // Hardware wedge (handheld gun) — a fast keystroke burst ending in Enter fires
-  // a lookup from anywhere on the tab, no mode switch needed. Free on desktop.
+  // Hardware wedge (handheld gun) — a fast keystroke burst drops the code into the
+  // barcode field; the auto-lookup effect above owns the single resolve (no direct
+  // call here, so a wedge scan fires exactly one /barcodes read, not two).
   useEffect(() => {
     installBarcodeListener();
-    const off = subscribeBarcode((raw) => { setMode("barcode"); setCode(raw); resolveCode(raw); });
+    const off = subscribeBarcode((raw) => { setMode("barcode"); setCode(String(raw || "").trim()); });
     return off;
-  }, [resolveCode]);
+  }, []);
 
   const onScanDetected = useCallback((text) => { setScanning(false); resolveCode(text); }, [resolveCode]);
 

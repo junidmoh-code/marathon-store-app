@@ -41,6 +41,7 @@ export default function SettingsView({ store, wide }) {
   const [cfg, setCfg] = useState(DEFAULTS);
   const [roster, setRoster] = useState({ locked: false, days: {} });
   const [staff, setStaff] = useState([]);
+  const [staffError, setStaffError] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingRoster, setSavingRoster] = useState(false);
@@ -54,17 +55,19 @@ export default function SettingsView({ store, wide }) {
     Promise.all([
       get(ref(database, `displayChecks_settings/${store}/config`)).then((s) => s.val()).catch(() => null),
       get(ref(database, `displayChecks_settings/${store}/roster`)).then((s) => s.val()).catch(() => null),
-      get(ref(database, "users")).then((s) => s.val()).catch(() => null),
-    ]).then(([c, r, users]) => {
+      get(ref(database, "users")).then((s) => ({ ok: true, val: s.val() })).catch(() => ({ ok: false, val: null })),
+    ]).then(([c, r, usersRes]) => {
       if (!alive) return;
       setCfg({ ...DEFAULTS, ...(c || {}) });
       setRoster({ locked: !!r?.locked, days: r?.days || {} });
       // The store's own people — destShop === store — are the assignable staff.
-      const list = Object.entries(users || {})
-        .filter(([, u]) => u && u.destShop === store)
-        .map(([uid, u]) => ({ uid, name: u.displayName || u.username || uid }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      setStaff(list);
+      if (usersRes.ok) {
+        const list = Object.entries(usersRes.val || {})
+          .filter(([, u]) => u && u.destShop === store)
+          .map(([uid, u]) => ({ uid, name: u.displayName || u.username || uid }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        setStaff(list); setStaffError(false);
+      } else { setStaff([]); setStaffError(true); }
       setLoaded(true);
     });
     return () => { alive = false; };
@@ -142,7 +145,11 @@ export default function SettingsView({ store, wide }) {
           </label>
         </div>
 
-        {staff.length === 0 ? (
+        {staffError ? (
+          <div style={{ fontFamily: FONT, fontSize: 12.5, color: "rgba(255,140,140,.95)", padding: "6px 0 14px" }}>
+            Couldn't load the staff list — reopen Settings to retry.
+          </div>
+        ) : staff.length === 0 ? (
           <div style={{ fontFamily: FONT, fontSize: 12.5, color: "rgba(255,180,120,.9)", padding: "6px 0 14px" }}>
             No staff are scoped to this store (destShop = {store}) yet, so there's no one to assign. Set their store in User Management first.
           </div>
