@@ -1429,3 +1429,40 @@ test("M3: reject history carries lock qty; retry attempt is retry number", () =>
   const retryHist = retryPlan.retryOps.find((o) => o.op === "history" && o.type === "retry");
   assert.equal(retryHist.retryAttempt, 4, "retry attempt is the retry number, not the rejection count");
 });
+
+// ── Opus review findings: future nextRetryAt + apply layer ────────────────────
+
+test("H1: future nextRetryAt + arrival after rejection → re-ask immediately", () => {
+  const plan = computeRefillPlan(base({
+    retryState: { "marathon-pe": { p1: { M: { retryCount: 1, firstRejectedAt: iso(2), lastRejectedAt: iso(2), nextRetryAt: iso(-22) } } } },
+    orders: { o1: { customerName: "Shop Refill", destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(2), createdAt: iso(2) } },
+    movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 10, ts: iso(1) }],
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 1, "arrival lift beats the 24h schedule");
+});
+
+test("H1: future nextRetryAt + no arrival → parks until the 24h window", () => {
+  const plan = computeRefillPlan(base({
+    retryState: { "marathon-pe": { p1: { M: { retryCount: 1, firstRejectedAt: iso(2), lastRejectedAt: iso(2), nextRetryAt: iso(-22) } } } },
+    orders: { o1: { customerName: "Shop Refill", destShop: "marathon-pe", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(2), createdAt: iso(2) } },
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 0, "24h schedule parks the cell");
+  const w = plan.exceptions.waitingForStock.items.find((x) => x.loc === "marathon-pe");
+  assert.ok(w && /retry 1 scheduled/.test(w.note), "waiting entry carries the retry schedule");
+});
+
+test("NEW: srcParked considers retry schedule on the upstream leg", () => {
+  const plan = computeRefillPlan(base({
+    targets: {
+      "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
+      hub2: { p1: { M: { target: 3, minQty: 2 } } },
+    },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } }, trophy: {} },
+    retryState: { hub2: { p1: { M: { retryCount: 1, firstRejectedAt: iso(2), lastRejectedAt: iso(2), nextRetryAt: iso(-22) } } } },
+    orders: { oHub: { customerName: "Shop Refill", destShop: "hub2", productId: "p1", size: "M", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(2), createdAt: iso(2) } },
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "hub2").length, 0, "hub2 leg parked on retry schedule");
+  assert.ok(plan.exceptions.awaitingSupplier.items.some((w) => w.loc === "marathon-pe" && /blocked/.test(w.note)),
+    "store demand labelled blocked while the source leg awaits retry");
+  assert.equal(plan.exceptions.awaitingUpstream.count, 0, "never mislabelled as flowing");
+});

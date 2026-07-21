@@ -273,9 +273,9 @@ async function runScan() {
             await histRef.set({
               type: op.type,
               timestamp: op.timestamp,
-              rejectionReason: op.rejectionReason,
+              rejectionReason: op.rejectionReason || null,
               retryAttempt: op.retryAttempt,
-              source: op.source,
+              source: op.source || null,
               destination: op.destination,
               qty: op.qty,
             });

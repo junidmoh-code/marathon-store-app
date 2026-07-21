@@ -694,12 +694,14 @@ function computeRefillPlan(snapshot) {
         // indefinitely every 24h while the destination still needs stock and
         // the source still has inventory. No permanent parking — the only
         // stops are manual exclusion, an active open request, or no source stock.
-        // Arrival lift and the 30-min recheck contract still apply: fresh
-        // physical evidence beats the schedule.
+        // The 24h schedule SUPERSEDES the 30-min recheck contract: once a
+        // rejection is recorded, the cell rests until the next retry window.
+        // Arrival lift still beats the schedule: fresh physical evidence at
+        // the denier reopens the demand immediately.
         const rt = retryOf(dest, pid, sizeKey);
         if (rt && rt.nextRetryAt && Date.parse(rt.nextRetryAt) > nowMs) {
           const lastRejTs = Date.parse(rt.lastRejectedAt || 0) || rejTs;
-          if (!arrivedAfter(denier, pid, sizeKey, lastRejTs) && nowMs - lastRejTs >= effWindowMs(denierHas)) {
+          if (!arrivedAfter(denier, pid, sizeKey, lastRejTs)) {
             waitingForStock.push({
               loc: dest, pid, size, deficit, source: denier, rejectedAt: rt.lastRejectedAt,
               note: `retry ${rt.retryCount || 0} scheduled for ${rt.nextRetryAt} — last rejected at ${rt.lastRejectedAt}`,
@@ -707,9 +709,9 @@ function computeRefillPlan(snapshot) {
             continue;
           }
         }
-        // RE-CHECK ON REJECT: denier still counting stock → short recheck
-        // window (the mismatch resolves fast either way); denier counted empty
-        // → the full cooldown, as before. Arrival lift still beats both.
+        // RE-CHECK ON REJECT (pre-retryState cells only): denier still counting
+        // stock → short recheck window; denier counted empty → the full cooldown.
+        // Once retryState exists, the 24h schedule above owns the timing.
         if (nowMs - rejTs < effWindowMs(denierHas) && !arrivedAfter(denier, pid, sizeKey, rejTs)) {
           waitingForStock.push({
             loc: dest, pid, size, deficit, source: denier, rejectedAt: new Date(rejTs).toISOString(),
@@ -753,7 +755,14 @@ function computeRefillPlan(snapshot) {
           const srcDenierHas = srcDenier ? avail(cellQty(stock, srcDenier, pid, size)) : 0;
           // A streak on the source leg is advisory only — it no longer blocks
           // re-asks, so it must not mislabel the store demand as blocked.
+          // The 24h retry schedule also parks the source leg: a future
+          // nextRetryAt with no arrival since the rejection means the source
+          // cannot fulfil yet (§6 Opus finding).
+          const srcRt = retryOf(src, pid, sizeKey);
+          const srcRetryParked = !!(srcRt && srcRt.nextRetryAt && Date.parse(srcRt.nextRetryAt) > nowMs
+            && !arrivedAfter(srcDenier, pid, sizeKey, Date.parse(srcRt.lastRejectedAt || 0) || 0));
           const srcParked = (srcRej && nowMs - srcRej.ts < effWindowMs(srcDenierHas) && !arrivedAfter(srcDenier, pid, sizeKey, srcRej.ts))
+            || srcRetryParked
             || confirmedOut(pid, sizeKey);
           // "Chain is flowing" additionally requires the source to HAVE a
           // buffer target for this cell — without one the engine will never
