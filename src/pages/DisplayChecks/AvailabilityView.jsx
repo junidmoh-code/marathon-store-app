@@ -21,6 +21,7 @@ import { decodeSizeKey } from "../../utils/sizeKey";
 import { SHOP_IDS, SHOP_LABELS } from "../../utils/stores";
 import { installBarcodeListener, subscribeBarcode } from "../../components/stock/barcodeListener";
 import { FONT, MONO, BLUE, BLUE_SOFT, INK, GLASS_BG, GLASS_BORDER, PANEL, META } from "./tokens";
+import { dcSession } from "./session";
 
 const ZERO_RED = "rgba(255,120,120,.85)"; // a zero is an answer too (§6) — muted red, never hidden
 const CLOTHING_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "2XL", "XXXL", "3XL", "4XL", "5XL"];
@@ -209,48 +210,38 @@ function ResultCard({ product, storeId, big }) {
 }
 
 // ── Segmented control ─────────────────────────────────────────────────────────
-function Segmented({ value, onChange }) {
-  const opts = [["name", "Name"], ["barcode", "Barcode"], ["scan", "Scan"]];
-  return (
-    <div style={{ display: "inline-flex", background: GLASS_BG, border: GLASS_BORDER, borderRadius: 12, padding: 3, gap: 2 }}>
-      {opts.map(([k, label]) => {
-        const on = value === k;
-        return (
-          <button key={k} onClick={() => onChange(k)} style={{ fontFamily: FONT, fontSize: 13, fontWeight: 700, cursor: "pointer", border: "none", borderRadius: 9, padding: "8px 16px", background: on ? "rgba(74,127,255,.22)" : "transparent", color: on ? "#cfe0ff" : "rgba(233,238,255,.5)" }}>{label}</button>
-        );
-      })}
-    </div>
-  );
-}
-
-export default function AvailabilityView({ store, products, wide }) {
+export default function AvailabilityView({ store, products, wide, active }) {
   const clothing = useMemo(() => (products || []).filter((p) => isClothing(p) && p.name), [products]);
-  const [mode, setMode] = useState("name");
-  const [query, setQuery] = useState("");
-  const [code, setCode] = useState("");
-  const [selected, setSelected] = useState(null);
+  // Search text + selection live in the session singleton so they survive a tab
+  // switch, a rotation, and leaving/re-entering the module (Bug 1).
+  const [query, setQueryState] = useState(() => dcSession.search);
+  const setQuery = useCallback((v) => { dcSession.search = v; setQueryState(v); }, []);
+  const [selectedId, setSelectedIdState] = useState(() => dcSession.selectedId);
+  const setSelectedId = useCallback((id) => { dcSession.selectedId = id; setSelectedIdState(id); }, []);
   const [scanning, setScanning] = useState(false);
   const [notFound, setNotFound] = useState(null);
   const [recent, setRecent] = useState([]);
 
-  // Name search — client-side, all query tokens must appear in the name.
+  const selected = useMemo(() => (products || []).find((p) => p.id === selectedId) || null, [products, selectedId]);
+  const trimmed = query.trim();
+  const looksBarcode = /^\d+$/.test(trimmed); // all-digits → barcode; any letter → name
+
+  // Name search — only when the text ISN'T a bare barcode. All tokens must match.
   const results = useMemo(() => {
-    const toks = nameTokens(query);
-    if (!toks.length) return [];
-    return clothing
-      .filter((p) => { const n = p.name.toLowerCase(); return toks.every((t) => n.includes(t)); })
-      .slice(0, 24);
-  }, [query, clothing]);
+    if (!trimmed || /^\d+$/.test(trimmed)) return [];
+    const toks = nameTokens(trimmed);
+    return clothing.filter((p) => { const n = p.name.toLowerCase(); return toks.every((t) => n.includes(t)); }).slice(0, 24);
+  }, [trimmed, clothing]);
 
   const pick = useCallback((p) => {
     if (!p) return;
-    setSelected(p);
+    setSelectedId(p.id);
     setNotFound(null);
     setRecent((r) => [p, ...r.filter((x) => x.id !== p.id)].slice(0, 6));
-  }, []);
+  }, [setSelectedId]);
 
-  // Barcode / scan resolution: product-level match first (client, free), then
-  // the /barcodes/{code} reverse index (one read) for per-size codes.
+  // Barcode / scan resolution: product-level match first (client, free), then the
+  // /barcodes/{code} reverse index (one read) for per-size codes.
   const resolveCode = useCallback(async (raw) => {
     const c = String(raw || "").trim();
     if (!c) return;
@@ -263,54 +254,56 @@ export default function AvailabilityView({ store, products, wide }) {
       } catch { /* index miss — fall through to not-found */ }
     }
     if (p) pick(p);
-    else { setSelected(null); setNotFound(c); }
-  }, [products, pick]);
+    else { setSelectedId(null); setNotFound(c); }
+  }, [products, pick, setSelectedId]);
 
-  // Auto-lookup a keyed/scanned barcode once it's plausibly complete (≥8 chars,
-  // alphanumeric so Code-128/39 also fire). Debounced so mid-typing doesn't spam.
+  // AUTO-DETECT: an all-digit string long enough to be a real barcode auto-fires a
+  // barcode lookup (debounced). Anything with letters is a name search (results
+  // below), which needs no auto-fire. A too-short digit string waits.
   useEffect(() => {
-    if (mode !== "barcode") return;
-    if (code.trim().length >= 8) { const t = setTimeout(() => resolveCode(code), 250); return () => clearTimeout(t); }
-  }, [code, mode, resolveCode]);
+    if (looksBarcode && trimmed.length >= 8) {
+      const t = setTimeout(() => resolveCode(trimmed), 250);
+      return () => clearTimeout(t);
+    }
+  }, [trimmed, looksBarcode, resolveCode]);
 
-  // Hardware wedge (handheld gun) — a fast keystroke burst drops the code into the
-  // barcode field; the auto-lookup effect above owns the single resolve (no direct
-  // call here, so a wedge scan fires exactly one /barcodes read, not two).
+  // Hardware wedge (handheld gun) — only while THIS tab is active (the view stays
+  // mounted when hidden, so an ungated listener would hijack scans elsewhere). The
+  // wedge drops digits into the bar; auto-detect owns the single resolve.
   useEffect(() => {
+    if (!active) return;
     installBarcodeListener();
-    const off = subscribeBarcode((raw) => { setMode("barcode"); setCode(String(raw || "").trim()); });
+    const off = subscribeBarcode((raw) => setQuery(String(raw || "").trim()));
     return off;
-  }, []);
+  }, [active, setQuery]);
 
+  // Camera scan resolves directly (a scanned code may be shorter/alphanumeric than
+  // the auto-detect threshold); no setQuery, so it never double-fires.
   const onScanDetected = useCallback((text) => { setScanning(false); resolveCode(text); }, [resolveCode]);
 
-  // ── Input panel (shared by both layouts) ──
+  // ── ONE unified search bar: type a name OR a barcode; camera icon to scan ──
   const inputPanel = (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Segmented value={mode} onChange={(m) => { setMode(m); setNotFound(null); }} />
-
-      {mode === "name" && (
-        <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search clothing by name or colour…"
-               style={{ fontFamily: FONT, fontSize: 15, color: INK, background: GLASS_BG, border: GLASS_BORDER, borderRadius: 12, padding: "13px 15px", outline: "none" }} />
-      )}
-      {mode === "barcode" && (
-        <input autoFocus inputMode="numeric" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Key or scan the barcode…"
-               onKeyDown={(e) => { if (e.key === "Enter") resolveCode(code); }}
-               style={{ fontFamily: MONO, fontSize: 20, letterSpacing: ".06em", color: INK, background: GLASS_BG, border: GLASS_BORDER, borderRadius: 12, padding: "14px 16px", outline: "none" }} />
-      )}
-      {mode === "scan" && (
-        <button onClick={() => setScanning(true)}
-                style={{ fontFamily: FONT, fontSize: 14, fontWeight: 700, cursor: "pointer", color: "#cfe0ff", background: "rgba(74,127,255,.16)", border: `1px solid ${BLUE}`, borderRadius: 12, padding: "16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></svg>
-          Open camera to scan
+      <div style={{ position: "relative" }}>
+        <input
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setNotFound(null); }}
+          placeholder="Search a name, or scan / key a barcode…"
+          style={{ fontFamily: looksBarcode ? MONO : FONT, fontSize: 15, letterSpacing: looksBarcode ? ".04em" : "normal",
+                   color: INK, background: GLASS_BG, border: GLASS_BORDER, borderRadius: 12,
+                   padding: "13px 48px 13px 15px", outline: "none", width: "100%", boxSizing: "border-box" }}
+        />
+        <button type="button" onClick={() => setScanning(true)} title="Scan barcode" aria-label="Scan barcode"
+                style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", cursor: "pointer", color: BLUE_SOFT, display: "grid", placeItems: "center", padding: 5 }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></svg>
         </button>
-      )}
+      </div>
 
-      {mode === "name" && results.length > 0 && (
+      {results.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: wide ? 520 : 320, overflow: "auto" }}>
           {results.map((p) => (
             <button key={p.id} onClick={() => pick(p)}
-                    style={{ display: "flex", alignItems: "center", gap: 11, textAlign: "left", cursor: "pointer", background: selected?.id === p.id ? "rgba(74,127,255,.12)" : "transparent", border: "1px solid " + (selected?.id === p.id ? BLUE : "transparent"), borderRadius: 11, padding: "9px 10px", fontFamily: FONT }}>
+                    style={{ display: "flex", alignItems: "center", gap: 11, textAlign: "left", cursor: "pointer", background: selectedId === p.id ? "rgba(74,127,255,.12)" : "transparent", border: "1px solid " + (selectedId === p.id ? BLUE : "transparent"), borderRadius: 11, padding: "9px 10px", fontFamily: FONT }}>
               <span style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 9, overflow: "hidden", background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {(p.photoUrl || p.photo) ? <img src={p.photoUrl || p.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : null}
               </span>
@@ -319,8 +312,8 @@ export default function AvailabilityView({ store, products, wide }) {
           ))}
         </div>
       )}
-      {mode === "name" && query && results.length === 0 && (
-        <div style={{ ...META, color: "rgba(233,238,255,.4)" }}>NO CLOTHING MATCHES "{query.toUpperCase()}"</div>
+      {trimmed && !looksBarcode && results.length === 0 && (
+        <div style={{ ...META, color: "rgba(233,238,255,.4)" }}>NO CLOTHING MATCHES "{trimmed.toUpperCase()}"</div>
       )}
 
       {recent.length > 0 && (
