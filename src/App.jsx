@@ -3798,6 +3798,222 @@ function AdminReviewCategoriesTab({ products = [] }) {
   );
 }
 
+function MissingPricesTab({ products = [] }) {
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("newest"); // "newest" | "oldest"
+  const [filter, setFilter] = useState("all"); // "all" | "clothing" | "shoes" | "accessories" | "perfumes"
+  const [page, setPage] = useState(1);
+  const [editProduct, setEditProduct] = useState(null); // product being priced
+  const [priceDraft, setPriceDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const PAGE_SIZE = 50;
+
+  const CATEGORY_FILTERS = [
+    ["all", "All"],
+    ["clothing", "Clothing"],
+    ["shoes", "Shoes"],
+    ["accessories", "Accessories"],
+    ["perfumes", "Perfumes"],
+  ];
+
+  const typeOf = (p) => {
+    if (p.productType === "clothing") return "clothing";
+    if (p.productType === "sneaker") return "shoes";
+    const cat = (p.category || "").toLowerCase();
+    if (/accessor|belt|watch|glass|necklace|bracelet/.test(cat)) return "accessories";
+    if (/perfume|fragrance|cologne/.test(cat)) return "perfumes";
+    return "other";
+  };
+
+  const createdAt = (p) => {
+    const m = /^p(\d+)$/.exec(p.id || "");
+    return m ? Number(m[1]) : 0;
+  };
+
+  const updatedAt = (p) => p.photoUpdatedAt || createdAt(p);
+
+  const list = useMemo(() => {
+    let items = (products || []).filter(p => p && p.id && (p.retailPrice == null || p.retailPrice === "" || p.retailPrice === 0));
+    if (filter !== "all") items = items.filter(p => typeOf(p) === filter);
+    const q = search.trim().toLowerCase();
+    if (q) {
+      items = items.filter(p =>
+        (p.name || "").toLowerCase().includes(q) ||
+        (p.sku || "").toLowerCase().includes(q) ||
+        (p.barcode || "").toLowerCase().includes(q)
+      );
+    }
+    items.sort((a, b) => sort === "newest" ? createdAt(b) - createdAt(a) : createdAt(a) - createdAt(b));
+    return items;
+  }, [products, filter, search, sort]);
+
+  const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const pageItems = list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Category summary counts (across ALL missing-price products, before filter)
+  const summary = useMemo(() => {
+    const items = (products || []).filter(p => p && p.id && (p.retailPrice == null || p.retailPrice === "" || p.retailPrice === 0));
+    const counts = { all: items.length };
+    for (const [k] of CATEGORY_FILTERS.slice(1)) counts[k] = items.filter(p => typeOf(p) === k).length;
+    return counts;
+  }, [products]);
+
+  const fmtDate = (ts) => {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    return d.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+  };
+
+  const openEdit = (p) => {
+    setEditProduct(p);
+    setPriceDraft("");
+  };
+
+  const savePrice = async () => {
+    const trimmed = String(priceDraft).trim();
+    const num = Number(trimmed);
+    if (!trimmed || !Number.isFinite(num) || num <= 0) {
+      alert("Enter a valid price greater than 0.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await update(ref(database, `products/${editProduct.id}`), { retailPrice: num });
+      // Open the next missing-price product for continuous entry.
+      const idx = list.findIndex(p => p.id === editProduct.id);
+      const next = list[idx + 1] || null;
+      setEditProduct(next);
+      setPriceDraft("");
+      if (!next && page < totalPages) setPage(p => p + 1);
+    } catch (e) {
+      alert("Save failed: " + (e?.message || e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: "0 14px 30px" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0 12px" }}>
+        <span style={{ fontSize: 18, fontWeight: 700, color: "#fff" }}>Missing Prices</span>
+        <span style={{ background: "rgba(251,191,36,.15)", border: "1px solid rgba(251,191,36,.35)", color: "#FBBF24", fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 12 }}>{list.length}</span>
+      </div>
+      <div style={{ fontSize: 12, color: "rgba(255,255,255,.45)", marginBottom: 12 }}>
+        Products without a selling price. Assign prices immediately — saving opens the next one automatically.
+      </div>
+
+      {/* Category summary */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+        {CATEGORY_FILTERS.map(([k, l]) => (
+          <button key={k} onClick={() => { setFilter(k); setPage(1); }}
+            style={{ background: filter === k ? "rgba(74,127,255,.2)" : "rgba(255,255,255,.04)", border: filter === k ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.1)", borderRadius: 8, color: filter === k ? "#9DBCFF" : "rgba(255,255,255,.6)", padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+            {l} <span style={{ color: filter === k ? "#fff" : "#FBBF24", fontWeight: 800 }}>{summary[k] ?? 0}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+        <select value={sort} onChange={e => { setSort(e.target.value); setPage(1); }}
+          style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "8px 10px", fontSize: 12, cursor: "pointer" }}>
+          <option value="newest">Newest First</option>
+          <option value="oldest">Oldest First</option>
+        </select>
+        <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search name, SKU, barcode…"
+          style={{ flex: 1, minWidth: 140, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "8px 10px", fontSize: 12 }} />
+      </div>
+
+      {/* Empty state */}
+      {list.length === 0 && (
+        <div style={{ textAlign: "center", padding: "60px 20px", color: "#4ACA7A", fontSize: 15, fontWeight: 600 }}>
+          ✅ All products have prices.
+        </div>
+      )}
+
+      {/* Table */}
+      {list.length > 0 && (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {pageItems.map(p => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.07)" }}>
+                <img src={p.photoUrl || ""} alt="" loading="lazy"
+                  style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)", marginTop: 2 }}>
+                    {p.brand ? `${p.brand} · ` : ""}{p.category || "—"} · SKU {p.sku || "—"}
+                  </div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,.3)", marginTop: 2 }}>
+                    Created {fmtDate(createdAt(p))} · Updated {fmtDate(updatedAt(p))}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div style={{ fontSize: 12, color: "#FBBF24", fontWeight: 700, marginBottom: 4 }}>No Price</div>
+                  <button onClick={() => openEdit(p)}
+                    style={{ background: "#4A7FFF", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    Edit Price
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 16 }}>
+              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                style={{ background: page === 1 ? "rgba(255,255,255,.03)" : "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: page === 1 ? "rgba(255,255,255,.3)" : "#fff", padding: "7px 12px", fontSize: 12, cursor: page === 1 ? "default" : "pointer" }}>
+                ← Prev
+              </button>
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,.5)" }}>Page {page} of {totalPages} · {list.length} products</span>
+              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                style={{ background: page === totalPages ? "rgba(255,255,255,.03)" : "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: page === totalPages ? "rgba(255,255,255,.3)" : "#fff", padding: "7px 12px", fontSize: 12, cursor: page === totalPages ? "default" : "pointer" }}>
+                Next →
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Quick price-edit modal */}
+      {editProduct && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}
+          onClick={() => setEditProduct(null)}>
+          <div style={{ background: "#111", border: "1px solid rgba(255,255,255,.15)", borderRadius: 14, padding: 20, maxWidth: 380, width: "100%" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <img src={editProduct.photoUrl || ""} alt="" style={{ width: 48, height: 48, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)" }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{editProduct.name}</div>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)" }}>{editProduct.brand ? `${editProduct.brand} · ` : ""}{editProduct.category || "—"}</div>
+              </div>
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,.45)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Retail Price (ZAR)</div>
+              <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={priceDraft}
+                onChange={e => setPriceDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") savePrice(); }}
+                autoFocus
+                style={{ width: "100%", background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "10px 12px", fontSize: 16, fontWeight: 600, boxSizing: "border-box" }} />
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={savePrice} disabled={saving}
+                style={{ flex: 1, background: "#4A7FFF", color: "#fff", border: "none", borderRadius: 8, padding: "10px", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.6 : 1 }}>
+                {saving ? "Saving…" : "Save & Next"}
+              </button>
+              <button onClick={() => setEditProduct(null)}
+                style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "rgba(255,255,255,.6)", padding: "10px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminReviewNamesTab({ products }) {
   const proposals = useNameProposals();
   const [edits, setEdits]   = useState({});     // id → edited name (overrides the suggestion)
@@ -4246,6 +4462,7 @@ function AdminView({ products, orders, onExit }) {
     if (adminSection === "review-names" || adminSection === "review-photos") setAdminSection("products");
   }, [adminSection]);
   const pendingCategoryCount = useMemo(() => (products || []).filter(p => p && p.subcategory === UNCATEGORIZED).length, [products]);
+  const missingPriceCount = useMemo(() => (products || []).filter(p => p && (p.retailPrice == null || p.retailPrice === "" || p.retailPrice === 0)).length, [products]);
   // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
   //    browser back clears it. Listener stays mounted for the whole view. ──
   const [detailId, setDetailId] = useState(() => parseProductHash());
@@ -4559,17 +4776,17 @@ function AdminView({ products, orders, onExit }) {
     );
   }
 
-  // Section toggle (Products ↔ Categories) — the AI tabs live in AI Studio now.
+  // Section toggle (Products ↔ Categories ↔ Missing Prices) — the AI tabs live in AI Studio now.
   const sectionToggle = (
     <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["review-categories","Categories"]]
+      {[["products","Products"],["review-categories","Categories"],["missing-prices","Missing Prices"]]
         .map(([val, label]) => {
         const on = adminSection === val;
-        const badge = val === "review-categories" ? pendingCategoryCount : 0;
+        const badge = val === "review-categories" ? pendingCategoryCount : val === "missing-prices" ? missingPriceCount : 0;
         return (
           <button key={val} onClick={() => setAdminSection(val)}
             style={{ flex:"1 1 88px", minWidth:88, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 6px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-            {label}{badge > 0 && <span style={{ background:"#4ACA7A", color:"#063", fontSize:11, fontWeight:800, borderRadius:9, padding:"0 7px" }}>{badge}</span>}
+            {label}{badge > 0 && <span style={{ background: val === "missing-prices" ? "#FBBF24" : "#4ACA7A", color: val === "missing-prices" ? "#6b4e00" : "#063", fontSize:11, fontWeight:800, borderRadius:9, padding:"0 7px" }}>{badge}</span>}
           </button>
         );
       })}
@@ -4816,7 +5033,7 @@ function AdminView({ products, orders, onExit }) {
   // ── DESKTOP WORKSPACE (>=1024px) — rail of sections + titled main pane.
   //    Handles both admin sections; mobile keeps the single column below. ──
   if (isWide) {
-    const NAV = [["products", "Products", products.length], ["review-categories", "Categories", pendingCategoryCount]];
+    const NAV = [["products", "Products", products.length], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount]];
     const navItem = ([key, label, count]) => {
       const on = adminSection === key;
       return (
@@ -4827,18 +5044,22 @@ function AdminView({ products, orders, onExit }) {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:.9 }}>
             {key === "products"
               ? <><path d="M20 7h-9M20 12h-9M20 17h-9" /><circle cx="4" cy="7" r="1.6" /><circle cx="4" cy="12" r="1.6" /><circle cx="4" cy="17" r="1.6" /></>
-              : <><path d="M3 7h4l2 3h9a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></>}
+              : key === "review-categories"
+              ? <><path d="M3 7h4l2 3h9a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></>
+              : <><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></>}
           </svg>
           <span style={{ flex:1 }}>{label}</span>
           {count > 0 && (
-            <span style={{ background: on ? "rgba(74,127,255,.3)" : "rgba(255,255,255,.06)", color: on ? "#fff" : "rgba(233,238,255,.5)", fontSize:11, fontWeight:800, minWidth:20, textAlign:"center", borderRadius:999, padding:"1px 6px", fontVariantNumeric:"tabular-nums" }}>{count}</span>
+            <span style={{ background: on ? "rgba(74,127,255,.3)" : key === "missing-prices" ? "rgba(251,191,36,.15)" : "rgba(255,255,255,.06)", color: on ? "#fff" : key === "missing-prices" ? "#FBBF24" : "rgba(233,238,255,.5)", fontSize:11, fontWeight:800, minWidth:20, textAlign:"center", borderRadius:999, padding:"1px 6px", fontVariantNumeric:"tabular-nums" }}>{count}</span>
           )}
         </button>
       );
     };
-    const title = adminSection === "review-categories" ? "Categories" : "Products";
+    const title = adminSection === "review-categories" ? "Categories" : adminSection === "missing-prices" ? "Missing Prices" : "Products";
     const subtitle = adminSection === "review-categories"
       ? "Sort uncategorised products into the browse tree."
+      : adminSection === "missing-prices"
+      ? "Products without a selling price — assign prices immediately."
       : "Add products, set sizes & pricing, and manage the catalogue.";
     return (
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
@@ -4876,7 +5097,7 @@ function AdminView({ products, orders, onExit }) {
           </div>
           <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
             <div style={{ maxWidth:1160, margin:"0 auto" }}>
-              {adminSection === "review-categories" ? <AdminReviewCategoriesTab products={products} /> : productsBody}
+              {adminSection === "review-categories" ? <AdminReviewCategoriesTab products={products} /> : adminSection === "missing-prices" ? <MissingPricesTab products={products} /> : productsBody}
             </div>
           </div>
         </div>
@@ -4885,6 +5106,7 @@ function AdminView({ products, orders, onExit }) {
   }
 
   if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
+  if (adminSection === "missing-prices") return reviewShell(<MissingPricesTab products={products} />);
 
   return (
     <div style={ADMIN_WRAP}>
