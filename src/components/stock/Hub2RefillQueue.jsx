@@ -22,7 +22,7 @@
 //   product+size is also rejected at the shop level, the engine confirms it
 //   out — no more requests, straight to the Missing Sizes reorder list).
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ref, update, get } from "firebase/database";
 import { database } from "../../firebase";
 import { useRefillRequests, useStockCells, useStockExceptions } from "./useStock";
@@ -30,18 +30,63 @@ import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bRed } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
-import { serverNowIso } from "../../utils/serverTime";
+import { serverNowIso, serverNowMs } from "../../utils/serverTime";
+import { formatDuration, refillAgeTone } from "../../utils/duration";
 
 const SOURCE_LOC = "central";
 const DEST_LOC = "hub2";
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
 const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
 
+// Age tone → colour. serverNowMs() (not Date.now) drives every elapsed value so a
+// wrong till/device clock never mis-ages a request.
+const TONE_COLOR = { normal: GRAY, amber: AMBER, red: RED };
+const parseMs = (iso) => Date.parse(iso || ""); // NaN when unparseable
+// Raised timestamp as SA-local "21 Jul 14:03" (Intl pins the zone; no offset math).
+const fmtSaDateTime = (iso) => {
+  const t = parseMs(iso);
+  if (!Number.isFinite(t)) return "—";
+  return new Date(t).toLocaleString("en-GB", { timeZone: "Africa/Johannesburg", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+};
+
+// A live-ticking "now" (server-corrected), re-evaluated each minute so the elapsed
+// counter counts up on its own. One interval for the whole queue.
+function useNowMinute() {
+  const [now, setNow] = useState(() => serverNowMs());
+  useEffect(() => {
+    const id = setInterval(() => setNow(serverNowMs()), 60000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+// The age pill shown on a card / history row. `elapsedMs` is live for open
+// requests (now − raised) or fixed for fulfilled (resolved − raised).
+function AgePill({ elapsedMs, raisedIso, prefix }) {
+  const tone = refillAgeTone(elapsedMs);
+  const color = TONE_COLOR[tone];
+  return (
+    <span title={raisedIso ? `raised ${fmtSaDateTime(raisedIso)}` : undefined}
+          style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700,
+                   color, border: `1px solid ${color}55`, background: `${color}14`, borderRadius: 999, padding: "3px 9px",
+                   fontVariantNumeric: "tabular-nums" }}>
+      {tone === "red" && <span aria-hidden>●</span>}
+      {prefix} {formatDuration(elapsedMs)}
+    </span>
+  );
+}
+
 export default function Hub2RefillQueue({ products = [] }) {
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
-  const openRequests = useRefillRequests("open");
+  // ONE subscription for the whole node; partition open vs fulfilled in memory so
+  // the new history view adds NO listener (useRefillRequests already reads all of
+  // /refill_requests and filters client-side).
+  const allRequests = useRefillRequests();
+  const openRequests = useMemo(() => allRequests.filter((r) => r.status === "open"), [allRequests]);
   const centralCells = useStockCells(SOURCE_LOC);
+  const now = useNowMinute();
+  const [view, setView] = useState("open"); // "open" | "history"
   // v9 actionable-only: every card below IS ready to fulfil (the engine only
   // creates a request when Central physically has the stock, and withdraws it
   // if Central sells out). The passive demand — waiting on supplier/upstream —
@@ -79,14 +124,39 @@ export default function Hub2RefillQueue({ products = [] }) {
     }
     return [...byPid.entries()].map(([pid, reqs]) => {
       reqs.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+      // A card's wait = its OLDEST request (smallest createdAt) — that's the
+      // longest-waiting size in it and what we age + sort on.
+      const raisedMsList = reqs.map((r) => parseMs(r.createdAt)).filter(Number.isFinite);
+      const raisedMs = raisedMsList.length ? Math.min(...raisedMsList) : NaN;
       return {
-        pid, reqs,
+        pid, reqs, raisedMs,
+        raisedIso: reqs.find((r) => parseMs(r.createdAt) === raisedMs)?.createdAt || null,
         auto: reqs.some((r) => r.createdFrom?.engine),
         // Shadow previews are read-only — Live Mode creates the real thing.
         shadow: reqs.every((r) => r.shadow),
       };
-    }).sort((a, b) => (a.shadow === b.shadow ? b.reqs.length - a.reqs.length : a.shadow ? 1 : -1));
+    }).sort((a, b) => {
+      // Shadows (previews) sink to the bottom; among real cards, LONGEST-WAITING
+      // FIRST — the oldest open request belongs at the top of the screen.
+      if (a.shadow !== b.shadow) return a.shadow ? 1 : -1;
+      const am = Number.isFinite(a.raisedMs) ? a.raisedMs : Infinity;
+      const bm = Number.isFinite(b.raisedMs) ? b.raisedMs : Infinity;
+      return am - bm; // ascending createdAt = oldest (longest waiting) first
+    });
   }, [openRequests, byId]);
+
+  // Fulfilled history for Hub 2 — total delay (raised → fulfilled), most-recently
+  // fulfilled first, capped so the list can't render thousands. Derived from the
+  // same subscription; no extra read.
+  const HISTORY_CAP = 100;
+  const history = useMemo(() => {
+    return allRequests
+      .filter((r) => r.requestingLocation === DEST_LOC && r.status === "fulfilled" && r.createdAt && r.resolvedAt)
+      .map((r) => ({ ...r, raisedMs: parseMs(r.createdAt), resolvedMs: parseMs(r.resolvedAt) }))
+      .filter((r) => Number.isFinite(r.raisedMs) && Number.isFinite(r.resolvedMs) && r.resolvedMs >= r.raisedMs)
+      .sort((a, b) => b.resolvedMs - a.resolvedMs)
+      .slice(0, HISTORY_CAP);
+  }, [allRequests]);
 
   const availOf = (pid, size) => Math.max(Number(centralCells?.[pid]?.[String(size)]?.qty) || 0, 0);
   // A size with counted Central stock is capped by it; a size showing ZERO can
@@ -161,10 +231,10 @@ export default function Hub2RefillQueue({ products = [] }) {
     let rejected = 0;
     if (denied.length) {
       const upd = {};
-      const now = serverNowIso();
+      const nowIso = serverNowIso();
       for (const r of denied) {
         upd[`refill_requests/${r.id}/status`] = "cancelled";
-        upd[`refill_requests/${r.id}/resolvedAt`] = now;
+        upd[`refill_requests/${r.id}/resolvedAt`] = nowIso;
         upd[`refill_requests/${r.id}/rejectedBy`] = actorRole || "unknown";
         // Deliberately NO cancelReason — that field marks engine self-withdrawals.
       }
@@ -179,21 +249,77 @@ export default function Hub2RefillQueue({ products = [] }) {
     setBusyCard(null);
   };
 
+  // Open queue ⇄ Fulfilled history toggle — both views come from the one
+  // subscription above.
+  const toggle = (
+    <div style={{ display: "inline-flex", gap: 2, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: 3, margin: "6px 2px 12px" }}>
+      {[["open", `Open queue${cards.length ? ` · ${cards.length}` : ""}`], ["history", "Fulfilled history"]].map(([k, label]) => {
+        const on = view === k;
+        return (
+          <button key={k} type="button" onClick={() => setView(k)}
+                  style={{ border: "none", cursor: "pointer", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700,
+                           background: on ? "rgba(74,127,255,.22)" : "transparent", color: on ? "#cfe0ff" : GRAY }}>
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  if (view === "history") {
+    return (
+      <div style={{ paddingBottom: 30 }}>
+        {toggle}
+        {history.length === 0 ? (
+          <div style={{ ...GLASS, padding: 16, color: GRAY, fontSize: 13 }}>No fulfilled Hub 2 refills yet.</div>
+        ) : (
+          <>
+            <div style={{ color: GRAY, fontSize: 11.5, margin: "0 2px 10px" }}>
+              Last {history.length} fulfilled — total time from raised to fulfilled. Longest delays flag red (≥24h).
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {history.map((r) => {
+                const p = byId.get(r.productId);
+                const delay = r.resolvedMs - r.raisedMs;
+                return (
+                  <div key={r.id} style={{ ...GLASS, display: "flex", alignItems: "center", gap: 11, padding: "9px 12px" }}>
+                    {p?.photoUrl
+                      ? <img src={p.photoUrl} alt="" style={{ width: 34, height: 34, borderRadius: 7, objectFit: "cover", flexShrink: 0 }} />
+                      : <span style={{ width: 34, height: 34, borderRadius: 7, background: "rgba(255,255,255,.05)", flexShrink: 0 }} />}
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p?.name || r.productId}</span>
+                      <span style={{ display: "block", fontSize: 11, color: GRAY }}>size {String(r.size)} · raised {fmtSaDateTime(r.createdAt)} → fulfilled {fmtSaDateTime(r.resolvedAt)}</span>
+                    </span>
+                    <AgePill elapsedMs={delay} raisedIso={r.createdAt} prefix="took" />
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
   if (!cards.length) {
     return (
-      <div style={{ ...GLASS, padding: 16, margin: "8px 0", color: GRAY, fontSize: 13 }}>
-        No refill requests Central can act on right now. When Hub 2 drops below its
-        approved targets AND Central has the stock, requests appear here automatically.
-        {passiveLine(" In the background: ")}
+      <div style={{ paddingBottom: 30 }}>
+        {toggle}
+        <div style={{ ...GLASS, padding: 16, margin: "8px 0", color: GRAY, fontSize: 13 }}>
+          No refill requests Central can act on right now. When Hub 2 drops below its
+          approved targets AND Central has the stock, requests appear here automatically.
+          {passiveLine(" In the background: ")}
+        </div>
       </div>
     );
   }
 
   return (
     <div style={{ paddingBottom: 30 }}>
+      {toggle}
       <div style={{ color: GRAY, fontSize: 11.5, margin: "6px 2px 10px" }}>
         <b style={{ color: GREEN }}>{cards.length} ready to fulfil</b> — created against live Central stock; if a size
-        sold out since, the card withdraws itself on the next scan (≤15 min).
+        sold out since, the card withdraws itself on the next scan (≤15 min). Longest-waiting first.
         {" "}{passiveLine("Not shown: ")}
         {!canTransfer && <span style={{ color: AMBER }}> You need a stock role to transfer — viewing only.</span>}
       </div>
@@ -206,8 +332,11 @@ export default function Hub2RefillQueue({ products = [] }) {
             badges={<>
               <Badge tone={AMBER}>{card.shadow ? "HUB 2 REFILL · AUTO (SHADOW)" : "HUB 2 REFILL"}</Badge>
               {card.auto && !card.shadow && <Badge tone={BLUE_L}>AUTO</Badge>}
+              {!card.shadow && Number.isFinite(card.raisedMs) && (
+                <AgePill elapsedMs={now - card.raisedMs} raisedIso={card.raisedIso} prefix="waiting" />
+              )}
             </>}
-            sub={`${card.reqs.length} size${card.reqs.length === 1 ? "" : "s"} requested · from Central`}
+            sub={`${card.reqs.length} size${card.reqs.length === 1 ? "" : "s"} requested · from Central${!card.shadow && card.raisedIso ? ` · raised ${fmtSaDateTime(card.raisedIso)}` : ""}`}
           >
             {card.shadow ? (
               <>
