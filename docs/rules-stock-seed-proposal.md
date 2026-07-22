@@ -34,8 +34,10 @@ Machine-verified: the only path that differs from live is `rules/stock/$loc/$pid
 ".validate": "(<<the BEFORE expression, verbatim>>) || (!data.exists() && newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() === 0 && newData.child('v').isNumber() && newData.child('v').val() === 0) || (data.exists() && newData.child('qty').val() === data.child('qty').val() && newData.child('v').val() === data.child('v').val() && newData.child('mv').val() === data.child('mv').val() && newData.child('lastType').val() === data.child('lastType').val())"
 ```
 
-- **SEED branch:** `!data.exists()` (new cell only) AND `qty === 0` AND `v === 0`. Creates an empty carriage cell. **Cannot create non-zero stock.**
-- **METADATA branch:** `data.exists()` (existing cell only) AND `qty`, `v`, `mv`, `lastType` **all unchanged**. Permits a state/updatedAt/updatedBy write without a movement. **Cannot change quantity, version, or the movement identity.**
+- **SEED branch:** `!data.exists()` (new cell only) AND `qty === 0` AND `v === 0` AND `lastType === 'count'` AND `mv === 'seed'` — pinned to exactly what `setCellState` writes. Creates an empty carriage cell. **Cannot create non-zero stock, and cannot forge a movement-looking `lastType`/`mv`.**
+- **METADATA branch:** `data.exists()` (existing cell only) AND `qty`, `v`, `mv`, `lastType` **all unchanged** AND a **valid `state`** present (`untracked|counting|live`). Permits a state/updatedAt/updatedBy write without a movement. **Cannot change quantity, version, or the movement identity, and cannot delete `state`.**
+
+*(Both branches tightened from the first draft per Kimi's review: SEED was pinning only qty/v — now also `lastType`/`mv`; METADATA now requires a valid `state`, closing the "delete state / arbitrary marker" gap so the widening matches the stated scope exactly.)*
 
 `.write` is unchanged (still `stockRole` required). Per-child `.validate`s (qty isNumber, `state` regex, `$other` requires qty) are unchanged and still apply. The full before/after blocks are in `rules-proposed-stock-seed-20260722.json` vs `rules-backup-live-before-stock-seed-20260722.json`.
 
