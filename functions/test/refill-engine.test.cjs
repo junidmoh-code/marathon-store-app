@@ -1,7 +1,34 @@
 // Tests for the pure refill-engine core. Run: cd functions && node --test
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { computeRefillPlan, computeConfidence, encodeSizeKey, saTodayKey } = require("../lib/refill-engine.cjs");
+const { computeRefillPlan, computeConfidence, encodeSizeKey, saTodayKey, retryHistoryKey } = require("../lib/refill-engine.cjs");
+
+// ── retryHistoryKey — RTDB keys may NOT contain . # $ [ ] / ────────────────────
+// Regression pin for the 2026-07-22 outage: an ISO timestamp in the key (its ".")
+// crashed every scan synchronously on .update(). This fails if anyone reintroduces
+// an ISO timestamp (or any forbidden char) into the key.
+test("retryHistoryKey contains no RTDB-forbidden characters", () => {
+  const FORBIDDEN = /[.#$/\[\]]/;
+  const isoStamps = [
+    "2026-07-22T13:50:20.076Z", // the exact outage timestamp (has a ".")
+    "2026-01-01T00:00:00.000Z",
+    new Date().toISOString(),
+  ];
+  for (const ts of isoStamps) {
+    const key = retryHistoryKey("trophy", "p1780488485902", "XXL", ts);
+    assert.ok(!FORBIDDEN.test(key), `key must not contain . # $ [ ] / — got: ${key}`);
+    // and it must NOT embed the raw ISO string (which carries the ".")
+    assert.ok(!key.includes(ts), `key must not embed the ISO timestamp — got: ${key}`);
+  }
+});
+
+test("retryHistoryKey uses epoch-ms and stays unique/parseable", () => {
+  const key = retryHistoryKey("marathon-pe", "p123", "M", "2026-07-22T13:50:20.076Z");
+  assert.strictEqual(key, "marathon-pe|p123|M|" + Date.parse("2026-07-22T13:50:20.076Z"));
+  // malformed timestamp degrades safely to 0, still a valid key
+  const bad = retryHistoryKey("trophy", "p1", "S", "not-a-date");
+  assert.strictEqual(bad, "trophy|p1|S|0");
+});
 
 const NOW = Date.parse("2026-07-12T10:00:00.000Z");
 const iso = (msAgoH = 0) => new Date(NOW - msAgoH * 3600e3).toISOString();

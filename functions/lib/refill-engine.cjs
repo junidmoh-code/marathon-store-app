@@ -29,6 +29,16 @@ function encodeSizeKey(size) {
   return s.replace(/[.#$/\[\]\s]/g, "_");
 }
 
+// RTDB keys may NOT contain . # $ [ ] / — so a timestamp used inside a key must be
+// an integer epoch-ms, never an ISO string (which contains a "."). Building the
+// retryHistory key with an ISO timestamp threw synchronously on .update() and
+// crashed every engine run (2026-07-22 outage). The ISO string is still stored as
+// a FIELD (a value, where dots are fine); only the KEY uses epoch-ms.
+function retryHistoryKey(dest, pid, sizeKey, tsIso) {
+  const ms = Date.parse(tsIso);
+  return `${dest}|${pid}|${sizeKey}|${Number.isFinite(ms) ? ms : 0}`;
+}
+
 // Device-local SA date key, matching App.jsx getTodayKey() EXACTLY (including
 // the 0-based month!). The refill counter's daily reset compares this string —
 // the server must produce the same value the shop tablets (UTC+2) produce, or
@@ -1123,4 +1133,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, encodeSizeKey, saTodayKey, isClothing, stockFingerprint };
+module.exports = { computeRefillPlan, computeConfidence, resolveTarget, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint };
