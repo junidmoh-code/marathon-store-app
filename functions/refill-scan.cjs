@@ -266,7 +266,9 @@ async function runScan() {
             source: op.source || null,
           };
         } else if (op.op === "history") {
-          const histKey = `${op.dest}|${op.pid}|${op.sizeKey}|${op.timestamp}`;
+          // epoch-ms in the key (NOT op.timestamp's ISO string — its "." is an
+          // RTDB-forbidden key char that crashed every scan, 2026-07-22).
+          const histKey = engine.retryHistoryKey(op.dest, op.pid, op.sizeKey, op.timestamp);
           upd[`refill_engine/retryHistory/${histKey}`] = {
             type: op.type,
             timestamp: op.timestamp,
