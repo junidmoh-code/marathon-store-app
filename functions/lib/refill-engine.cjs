@@ -558,6 +558,10 @@ function computeRefillPlan(snapshot) {
     return { flagged: true, count: num(s.count), denier, has };
   };
 
+  // Track cells rejected in THIS scan so the deficit loop's retry branch
+  // never overwrites the fresher rejection with a stale retry (CodeRabbit
+  // Major, PR #263).
+  const rejectedThisScan = new Set();
   // Attach streak ops to the reconciled closes (see the streakOf block above
   // for why they ride the close). A fresh strike CONTINUES the persisted
   // streak only while its prior evidence is still live — a stale streak or
@@ -571,6 +575,7 @@ function computeRefillPlan(snapshot) {
       continue;
     }
     if (!c.humanReject) continue;
+    rejectedThisScan.add(`${c.dest}|${c.pid}|${c.sizeKey}`);
     const cDenier = c.denier || routes[c.dest];
     const cSize = rawSize(c.pid, c.sizeKey);
     const cDenierHas = cDenier ? avail(cellQty(stock, cDenier, c.pid, cSize)) : 0;
@@ -792,7 +797,9 @@ function computeRefillPlan(snapshot) {
           qty, priority: have < t.minQty ? "high" : "normal", mode,
         });
         // Record the retry in history and update the retry state.
-        if (rt && rt.retryCount > 0) {
+        // Skip cells rejected in THIS scan — the fresher rejection owns the
+        // retry state; a same-scan retry write would clobber it (CodeRabbit).
+        if (rt && rt.retryCount > 0 && !rejectedThisScan.has(`${dest}|${pid}|${sizeKey}`)) {
           retryOps.push({
             dest, pid, sizeKey, op: "retry",
             retryCount: rt.retryCount,
