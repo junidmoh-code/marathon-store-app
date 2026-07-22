@@ -3798,7 +3798,7 @@ function AdminReviewCategoriesTab({ products = [] }) {
   );
 }
 
-import { needsCost, needsRetail, needsAny, typeOf, createdAt, updatedAt, buildUpdates, validatePrices } from "../utils/missingPrices";
+import { needsCost, needsRetail, needsAny, typeOf, createdAt, updatedAt, buildUpdates, validatePrices } from "./utils/missingPrices";
 
 function MissingPricesTab({ products = [] }) {
   const [search, setSearch] = useState("");
@@ -3877,9 +3877,13 @@ function MissingPricesTab({ products = [] }) {
       // Use openEdit so drafts are derived from the next product (preserves
       // the retail<cost confirmation for single-missing-price products).
       const idx = list.findIndex(p => p.id === editProduct.id);
-      let next = list[idx + 1] || null;
+      let next = idx >= 0 ? list[idx + 1] || null : null;
       // Skip products that no longer need any price (stale snapshot).
-      while (next && !needsAny(next)) next = list[list.indexOf(next) + 1] || null;
+      let nextIdx = idx + 1;
+      while (next && !needsAny(next)) {
+        nextIdx++;
+        next = list[nextIdx] || null;
+      }
       if (next) {
         openEdit(next);
       } else {

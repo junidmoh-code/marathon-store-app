@@ -20,12 +20,18 @@ export const createdAt = (p) => {
 
 export const updatedAt = (p) => p.photoUpdatedAt || createdAt(p);
 
-export function buildUpdates(editProduct, costDraft, retailDraft) {
-  const updates = {};
+function parseDrafts(costDraft, retailDraft) {
   const costTrim = String(costDraft).trim();
   const retailTrim = String(retailDraft).trim();
-  const costNum = costTrim ? Number(costTrim) : null;
-  const retailNum = retailTrim ? Number(retailTrim) : null;
+  return {
+    costNum: costTrim ? Number(costTrim) : null,
+    retailNum: retailTrim ? Number(retailTrim) : null,
+  };
+}
+
+export function buildUpdates(editProduct, costDraft, retailDraft) {
+  const updates = {};
+  const { costNum, retailNum } = parseDrafts(costDraft, retailDraft);
 
   if (needsCost(editProduct) && costNum != null && Number.isFinite(costNum) && costNum > 0) {
     updates.stockPrice = costNum;
@@ -37,10 +43,7 @@ export function buildUpdates(editProduct, costDraft, retailDraft) {
 }
 
 export function validatePrices(editProduct, costDraft, retailDraft) {
-  const costTrim = String(costDraft).trim();
-  const retailTrim = String(retailDraft).trim();
-  const costNum = costTrim ? Number(costTrim) : null;
-  const retailNum = retailTrim ? Number(retailTrim) : null;
+  const { costNum, retailNum } = parseDrafts(costDraft, retailDraft);
 
   if (needsCost(editProduct) && (costNum == null || !Number.isFinite(costNum) || costNum <= 0)) {
     return { ok: false, error: "Enter a valid Cost Price greater than 0." };
