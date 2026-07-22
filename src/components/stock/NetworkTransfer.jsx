@@ -157,6 +157,10 @@ export default function NetworkTransfer({ products = [] }) {
       if (Object.keys(updates).length) await update(ref(database), updates);
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, store, sizes, msg: okMsg } }));
     } catch (e) {
+      // Nothing was written (atomic). Collapse the panel and surface the error on
+      // the row so its Solve button reads "Solve" again — one click re-opens the
+      // confirm (which clears this) for a clean retry.
+      setSolvePid((cur) => (cur === card.pid ? null : cur));
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes, msg: `Couldn't seed — nothing changed, retry. (${e?.message || "error"})` } }));
     }
     setSolveBusy(null);
@@ -222,7 +226,7 @@ export default function NetworkTransfer({ products = [] }) {
             </>}
             right={
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); }} disabled={!canAct || !solvable}
+                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!canAct || !solvable}
                         title={!solvable ? "No standard sizes for this product — use Move manually" : undefined}
                         style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: (canAct && solvable) ? "pointer" : "default", opacity: (canAct && solvable) ? 1 : 0.4, fontFamily: FONT }}>
                   {sOpen ? "Close" : "Solve"}
