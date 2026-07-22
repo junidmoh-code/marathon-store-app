@@ -1,11 +1,31 @@
 import { describe, it, expect } from "vitest";
-import { seedLocations, standardUnits, solvePlan } from "./solvePlan";
+import { seedLocations, standardUnits, solvePlan, qualifyingSizes } from "./solvePlan";
 
 const STD = {
   hub2: { L: 3, M: 3, S: 2, XL: 2, XXL: 2, XXXL: 1 },
   trophy: { L: 2, M: 2, S: 2, XL: 1, XXL: 1, XXXL: 1 },
   "marathon-pe": { L: 2, M: 2, S: 2, XL: 1, XXL: 1, XXXL: 1 },
 };
+
+describe("qualifyingSizes — only sizes the engine has a standard for (Codex fix a)", () => {
+  it("hub2-stranded: keeps sizes with a store standard, drops the rest", () => {
+    // "34" (a waist/numeric size) has no standard → excluded; letters kept.
+    expect(qualifyingSizes(["S", "M", "34", "L"], "hub2", "trophy", STD)).toEqual(["S", "M", "L"]);
+  });
+  it("central-stranded: a size must have a standard at BOTH hub2 AND the store", () => {
+    // Contrive a size present at store but not hub2 → excluded for a central solve.
+    const std = { hub2: { M: 3 }, trophy: { M: 2, L: 2 } };
+    expect(qualifyingSizes(["M", "L"], "central", "trophy", std)).toEqual(["M"]); // L lacks a hub2 standard
+    expect(qualifyingSizes(["M", "L"], "hub2", "trophy", std)).toEqual(["M", "L"]); // hub2-stranded only needs the store
+  });
+  it("no qualifying sizes → empty (product is not solvable)", () => {
+    expect(qualifyingSizes(["28", "30", "32"], "hub2", "trophy", STD)).toEqual([]);
+    expect(qualifyingSizes([], "hub2", "trophy", STD)).toEqual([]);
+  });
+  it("case-insensitive", () => {
+    expect(qualifyingSizes(["m", "l"], "hub2", "trophy", STD)).toEqual(["m", "l"]);
+  });
+});
 
 describe("seedLocations — the load-bearing rule", () => {
   it("central-stranded seeds Hub 2 AND the store (first leg needs Hub 2 carried)", () => {

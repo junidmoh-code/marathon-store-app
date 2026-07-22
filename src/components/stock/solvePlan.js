@@ -21,6 +21,17 @@ export function standardUnits(run, sizes) {
   return (sizes || []).reduce((t, sz) => t + (Number((run || {})[String(sz).toUpperCase()]) || 0), 0);
 }
 
+// The sizes it's safe to seed: those with a POSITIVE standard at EVERY location the
+// seed touches (store for hub2-stranded; Hub 2 AND store for central-stranded). A
+// size with no standard would seed a cell the engine never refills, then vanish
+// from the list with a false "solved" — so it's excluded. If this returns empty,
+// the product is not solvable and Solve must be disabled.
+export function qualifyingSizes(sizes, source, store, std) {
+  const locs = seedLocations(source, store);
+  return (sizes || []).filter((sz) =>
+    locs.every((loc) => Number((std?.[loc] || {})[String(sz).toUpperCase()]) > 0));
+}
+
 // The confirm estimate for one product/store.
 //   std      — { loc: { SIZE: target } } (defaultRunByStore)
 //   sizes    — catalog sizes to seed
