@@ -3858,6 +3858,7 @@ function MissingPricesTab({ products = [] }) {
   };
 
   const savePrice = async () => {
+    if (saving) return;
     const validation = validatePrices(editProduct, costDraft, retailDraft);
     if (!validation.ok) {
       if (validation.needsConfirm) {
@@ -3873,12 +3874,20 @@ function MissingPricesTab({ products = [] }) {
       const updates = buildUpdates(editProduct, costDraft, retailDraft);
       await update(ref(database, `products/${editProduct.id}`), updates);
       // Open the next missing-price product for continuous entry.
+      // Use openEdit so drafts are derived from the next product (preserves
+      // the retail<cost confirmation for single-missing-price products).
       const idx = list.findIndex(p => p.id === editProduct.id);
-      const next = list[idx + 1] || null;
-      setEditProduct(next);
-      setCostDraft("");
-      setRetailDraft("");
-      if (!next && page < totalPages) setPage(p => p + 1);
+      let next = list[idx + 1] || null;
+      // Skip products that no longer need any price (stale snapshot).
+      while (next && !needsAny(next)) next = list[list.indexOf(next) + 1] || null;
+      if (next) {
+        openEdit(next);
+      } else {
+        setEditProduct(null);
+        setCostDraft("");
+        setRetailDraft("");
+        setPage(p => Math.min(p, totalPages));
+      }
     } catch (e) {
       alert("Save failed: " + (e?.message || e));
     } finally {
@@ -3991,6 +4000,7 @@ function MissingPricesTab({ products = [] }) {
                 <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={costDraft}
                   onChange={e => setCostDraft(e.target.value)}
                   onKeyDown={e => { if (e.key === "Enter") savePrice(); }}
+                  autoFocus={needsCost(editProduct)}
                   style={{ width: "100%", background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "10px 12px", fontSize: 16, fontWeight: 600, boxSizing: "border-box" }} />
               </div>
             )}

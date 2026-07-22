@@ -90,3 +90,31 @@ test("validatePrices: retail >= cost passes", () => {
   const v = validatePrices(p({ stockPrice: null, retailPrice: null }), "100", "150");
   assert.equal(v.ok, true);
 });
+
+test("validatePrices: skips margin check when one draft is empty (precondition)", () => {
+  // This documents the precondition the HIGH bug exploited: when one draft is
+  // empty, the retail<cost check is skipped. The Save & Next flow must prefill
+  // drafts via openEdit so the check runs.
+  const v = validatePrices(p({ stockPrice: 100, retailPrice: null }), "", "50");
+  assert.equal(v.ok, true, "empty cost draft skips the margin check");
+  const v2 = validatePrices(p({ stockPrice: null, retailPrice: 150 }), "200", "");
+  assert.equal(v2.ok, true, "empty retail draft skips the margin check");
+});
+
+test("buildUpdates: invalid input silently produces empty/partial updates", () => {
+  assert.deepEqual(buildUpdates(p({ stockPrice: null, retailPrice: null }), "0", "-5"), {});
+  assert.deepEqual(buildUpdates(p({ stockPrice: null, retailPrice: null }), "abc", "xyz"), {});
+  assert.deepEqual(buildUpdates(p({ stockPrice: null, retailPrice: null }), "", ""), {});
+});
+
+test("buildUpdates: whitespace-only drafts treated as empty", () => {
+  assert.deepEqual(buildUpdates(p({ stockPrice: null, retailPrice: null }), "   ", "  "), {});
+});
+
+test("needsCost/needsRetail: negative, NaN, and string prices count as present", () => {
+  assert.equal(needsCost(p({ stockPrice: -5 })), false, "negative counts as present (tight predicate would flag it)");
+  assert.equal(needsCost(p({ stockPrice: NaN })), false, "NaN counts as present");
+  assert.equal(needsCost(p({ stockPrice: "0" })), false, "string '0' counts as present");
+  assert.equal(needsRetail(p({ retailPrice: -5 })), false);
+  assert.equal(needsRetail(p({ retailPrice: NaN })), false);
+});
