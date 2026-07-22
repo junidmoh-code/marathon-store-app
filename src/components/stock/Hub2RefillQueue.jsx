@@ -41,7 +41,7 @@ const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase());
 // Age tone → colour. serverNowMs() (not Date.now) drives every elapsed value so a
 // wrong till/device clock never mis-ages a request.
 const TONE_COLOR = { normal: GRAY, amber: AMBER, red: RED };
-const parseMs = (iso) => { const t = Date.parse(iso || ""); return Number.isFinite(t) ? t : NaN; };
+const parseMs = (iso) => Date.parse(iso || ""); // NaN when unparseable
 // Raised timestamp as SA-local "21 Jul 14:03" (Intl pins the zone; no offset math).
 const fmtSaDateTime = (iso) => {
   const t = parseMs(iso);
@@ -231,10 +231,10 @@ export default function Hub2RefillQueue({ products = [] }) {
     let rejected = 0;
     if (denied.length) {
       const upd = {};
-      const now = serverNowIso();
+      const nowIso = serverNowIso();
       for (const r of denied) {
         upd[`refill_requests/${r.id}/status`] = "cancelled";
-        upd[`refill_requests/${r.id}/resolvedAt`] = now;
+        upd[`refill_requests/${r.id}/resolvedAt`] = nowIso;
         upd[`refill_requests/${r.id}/rejectedBy`] = actorRole || "unknown";
         // Deliberately NO cancelReason — that field marks engine self-withdrawals.
       }
