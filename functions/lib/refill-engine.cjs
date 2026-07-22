@@ -92,10 +92,13 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
   }
   // Global clothing rule: apply the location's standard run to every catalog
   // size, but only where the store actually carries the product.
+  // Letter sizes only — a misconfigured numeric entry in defaultRunByStore
+  // must never create a numeric-size target (M2 review finding).
+  const STANDARD_SIZE_RE = /^(S|M|L|XL|XXL|XXXL)$/i;
   const p = products?.[pid];
   if (isClothing(p) && storeCarries(stock, dest, pid)) {
     const sizes = productSizes(products, pid);
-    if (sizes.includes(size)) {
+    if (sizes.includes(size) && STANDARD_SIZE_RE.test(size)) {
       const run = config?.defaultRunByStore?.[dest] || {};
       const t = run[size];
       if (typeof t === "number" && t > 0) {
@@ -555,6 +558,10 @@ function computeRefillPlan(snapshot) {
     return { flagged: true, count: num(s.count), denier, has };
   };
 
+  // Track cells rejected in THIS scan so the deficit loop's retry branch
+  // never overwrites the fresher rejection with a stale retry (CodeRabbit
+  // Major, PR #263).
+  const rejectedThisScan = new Set();
   // Attach streak ops to the reconciled closes (see the streakOf block above
   // for why they ride the close). A fresh strike CONTINUES the persisted
   // streak only while its prior evidence is still live — a stale streak or
@@ -568,6 +575,7 @@ function computeRefillPlan(snapshot) {
       continue;
     }
     if (!c.humanReject) continue;
+    rejectedThisScan.add(`${c.dest}|${c.pid}|${c.sizeKey}`);
     const cDenier = c.denier || routes[c.dest];
     const cSize = rawSize(c.pid, c.sizeKey);
     const cDenierHas = cDenier ? avail(cellQty(stock, cDenier, c.pid, cSize)) : 0;
@@ -586,6 +594,7 @@ function computeRefillPlan(snapshot) {
     // 24h auto-retry tracking: record the rejection and schedule the next retry.
     const rPrev = retryOf(c.dest, c.pid, c.sizeKey);
     const retryCount = (rPrev?.retryCount || 0) + 1;
+    const lockQty = openIndex[c.dest]?.[c.pid]?.[c.sizeKey]?.qty;
     retryOps.push({
       dest: c.dest, pid: c.pid, sizeKey: c.sizeKey, op: "reject",
       retryCount,
@@ -600,7 +609,7 @@ function computeRefillPlan(snapshot) {
       type: "rejection", timestamp: nowIso,
       rejectionReason: c.cancelReason || c.reason || "rejected",
       retryAttempt: retryCount, source: cDenier, destination: c.dest,
-      qty: num(c.qty) || 1,
+      qty: num(lockQty) || 1,
     });
   }
 
@@ -690,17 +699,24 @@ function computeRefillPlan(snapshot) {
         // indefinitely every 24h while the destination still needs stock and
         // the source still has inventory. No permanent parking — the only
         // stops are manual exclusion, an active open request, or no source stock.
+        // The 24h schedule SUPERSEDES the 30-min recheck contract: once a
+        // rejection is recorded, the cell rests until the next retry window.
+        // Arrival lift still beats the schedule: fresh physical evidence at
+        // the denier reopens the demand immediately.
         const rt = retryOf(dest, pid, sizeKey);
         if (rt && rt.nextRetryAt && Date.parse(rt.nextRetryAt) > nowMs) {
-          waitingForStock.push({
-            loc: dest, pid, size, deficit, source: denier, rejectedAt: rt.lastRejectedAt,
-            note: `retry ${rt.retryCount || 0} scheduled for ${rt.nextRetryAt} — last rejected at ${rt.lastRejectedAt}`,
-          });
-          continue;
+          const lastRejTs = Date.parse(rt.lastRejectedAt || 0) || rejTs;
+          if (!arrivedAfter(denier, pid, sizeKey, lastRejTs)) {
+            waitingForStock.push({
+              loc: dest, pid, size, deficit, source: denier, rejectedAt: rt.lastRejectedAt,
+              note: `retry ${rt.retryCount || 0} scheduled for ${rt.nextRetryAt} — last rejected at ${rt.lastRejectedAt}`,
+            });
+            continue;
+          }
         }
-        // RE-CHECK ON REJECT: denier still counting stock → short recheck
-        // window (the mismatch resolves fast either way); denier counted empty
-        // → the full cooldown, as before. Arrival lift still beats both.
+        // RE-CHECK ON REJECT (pre-retryState cells only): denier still counting
+        // stock → short recheck window; denier counted empty → the full cooldown.
+        // Once retryState exists, the 24h schedule above owns the timing.
         if (nowMs - rejTs < effWindowMs(denierHas) && !arrivedAfter(denier, pid, sizeKey, rejTs)) {
           waitingForStock.push({
             loc: dest, pid, size, deficit, source: denier, rejectedAt: new Date(rejTs).toISOString(),
@@ -744,7 +760,14 @@ function computeRefillPlan(snapshot) {
           const srcDenierHas = srcDenier ? avail(cellQty(stock, srcDenier, pid, size)) : 0;
           // A streak on the source leg is advisory only — it no longer blocks
           // re-asks, so it must not mislabel the store demand as blocked.
+          // The 24h retry schedule also parks the source leg: a future
+          // nextRetryAt with no arrival since the rejection means the source
+          // cannot fulfil yet (§6 Opus finding).
+          const srcRt = retryOf(src, pid, sizeKey);
+          const srcRetryParked = !!(srcRt && srcRt.nextRetryAt && Date.parse(srcRt.nextRetryAt) > nowMs
+            && !arrivedAfter(srcDenier, pid, sizeKey, Date.parse(srcRt.lastRejectedAt || 0) || 0));
           const srcParked = (srcRej && nowMs - srcRej.ts < effWindowMs(srcDenierHas) && !arrivedAfter(srcDenier, pid, sizeKey, srcRej.ts))
+            || srcRetryParked
             || confirmedOut(pid, sizeKey);
           // "Chain is flowing" additionally requires the source to HAVE a
           // buffer target for this cell — without one the engine will never
@@ -774,10 +797,14 @@ function computeRefillPlan(snapshot) {
           qty, priority: have < t.minQty ? "high" : "normal", mode,
         });
         // Record the retry in history and update the retry state.
-        if (rt && rt.retryCount > 0) {
+        // Skip cells rejected in THIS scan — the fresher rejection owns the
+        // retry state; a same-scan retry write would clobber it (CodeRabbit).
+        if (rt && rt.retryCount > 0 && !rejectedThisScan.has(`${dest}|${pid}|${sizeKey}`)) {
           retryOps.push({
             dest, pid, sizeKey, op: "retry",
             retryCount: rt.retryCount,
+            firstRejectedAt: rt.firstRejectedAt || null,
+            lastRejectedAt: rt.lastRejectedAt || null,
             lastRetryAt: nowIso,
             nextRetryAt: new Date(nowMs + cooldownMs).toISOString(),
             lastRejectionReason: rt.lastRejectionReason,
@@ -787,7 +814,7 @@ function computeRefillPlan(snapshot) {
             dest, pid, sizeKey, op: "history",
             type: "retry", timestamp: nowIso,
             rejectionReason: rt.lastRejectionReason,
-            retryAttempt: rt.retryCount, source: src, destination: dest,
+            retryAttempt: (rt.retryCount || 0) + 1, source: src, destination: dest,
             qty,
           });
         }
@@ -852,12 +879,13 @@ function computeRefillPlan(snapshot) {
     if (h2 > 0 && pe === 0 && tr === 0) onlyInHub2.push({ pid, units: h2 });
     for (const loc of dests) {
       for (const [sizeKey, cell] of Object.entries(stock?.[loc]?.[pid] || {})) {
-        const t = targets?.[loc]?.[pid]?.[sizeKey];
+        const size = rawSize(pid, sizeKey);
+        const t = resolveTarget(ctx, loc, pid, size);
         // THREE distinct states (owner decision 2026-07-12 v5) — never conflated:
         //   configured target  → excess = qty − target (hub2 strict ≥1, stores ≥2)
         //   explicit target 0  → deliberately excluded here: EVERY unit is excess
         //   no target          → NOT excess; surfaced as noTarget below instead
-        if (!t || typeof t.target !== "number") continue;
+        if (!t) continue;
         const raw = num(cell?.qty) - t.target;
         // TWO-LEG MOVE EXCESS (owner directive 2026-07-13, supersedes the
         // net-only display of the Cortez fix while KEEPING its protection):
