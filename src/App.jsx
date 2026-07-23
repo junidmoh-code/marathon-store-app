@@ -113,7 +113,9 @@ function compressImageFile(file, maxDim, maxBytes) {
 async function uploadBoxPhoto(productId, file) {
   const blob = await compressImageFile(file, 1200, 400 * 1024);
   const sRef = storageRef(storage, `products/${productId}/source_box.jpg`);
-  await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" });
+  // Bounded cache (NOT immutable): this path is reused when the box photo is
+  // replaced, so cap staleness at 7 days rather than risk a year-stale copy.
+  await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
   const url = await getDownloadURL(sRef);
   await update(ref(database, `products/${productId}`), { photoBoxUrl: url, boxPhotoUpdatedAt: serverNowMs() });
   return url;
@@ -4568,7 +4570,9 @@ function AdminView({ products, orders, onExit }) {
       if (form.photoBlob) {
         // Upload compressed image to Firebase Storage; store only the HTTPS URL in RTDB.
         const sRef = storageRef(storage, `products/${id}/photo.jpg`);
-        await uploadBytes(sRef, form.photoBlob, { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" });
+        // Bounded cache (NOT immutable): products/{id}/photo.jpg is overwritten
+        // in place when the photo is re-shot, so cap staleness at 7 days.
+        await uploadBytes(sRef, form.photoBlob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
         photoUrl = await getDownloadURL(sRef);
       }
 
@@ -5275,7 +5279,9 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           }
           const blob = dataURLToBlob(dataUrl);
           const sRef = storageRef(storage, `products/${product.id}/photo.jpg`);
-          await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" });
+          // Bounded cache (NOT immutable): photo.jpg is overwritten in place on
+          // a re-shoot, so cap staleness at 7 days instead of a year.
+          await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
           const url = await getDownloadURL(sRef);
           // photoUpdatedAt: upload-time stamp for the AI Photo Studio "Recent"
           // view. Only human uploads stamp it — an approved AI re-shoot isn't
