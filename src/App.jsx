@@ -3777,6 +3777,19 @@ function AdminReviewCategoriesTab({ products = [] }) {
     // a fresh "organised N of M" rather than inheriting the previous run's total.
     setBaseline(b => (remaining > 0 ? (b == null ? remaining : Math.max(b, remaining)) : null));
   }, [remaining]);
+
+  // Prune ids that have left the backlog (e.g. sorted by another admin via live
+  // RTDB) so sel only ever holds in-backlog products — keeps every selection
+  // indicator (toolbar visibility, Clear count) consistent with what will be
+  // assigned. Returns the same Set when nothing changed to avoid a render loop.
+  useEffect(() => {
+    const valid = new Set(allUncat.map(p => p.id));
+    setSel(s => {
+      let changed = false; const n = new Set();
+      for (const id of s) { if (valid.has(id)) n.add(id); else changed = true; }
+      return changed ? n : s;
+    });
+  }, [allUncat]);
   const organised = baseline == null ? 0 : Math.max(0, baseline - remaining);
   const pct = baseline ? Math.round((organised / baseline) * 100) : 0;
 
