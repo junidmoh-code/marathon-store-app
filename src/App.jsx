@@ -3773,7 +3773,9 @@ function AdminReviewCategoriesTab({ products = [] }) {
   // denominator stays stable as the list empties. Bump it up if the backlog ever
   // grows past the baseline (new imports) so "organised" can't go negative.
   useEffect(() => {
-    if (remaining > 0) setBaseline(b => (b == null ? remaining : Math.max(b, remaining)));
+    // Re-baseline to null once the backlog fully clears, so a later import starts
+    // a fresh "organised N of M" rather than inheriting the previous run's total.
+    setBaseline(b => (remaining > 0 ? (b == null ? remaining : Math.max(b, remaining)) : null));
   }, [remaining]);
   const organised = baseline == null ? 0 : Math.max(0, baseline - remaining);
   const pct = baseline ? Math.round((organised / baseline) * 100) : 0;
@@ -3795,13 +3797,17 @@ function AdminReviewCategoriesTab({ products = [] }) {
     return n;
   });
   const clearSel = () => setSel(new Set());
-  const selectedList = useMemo(() => list.filter(p => sel.has(p.id)), [list, sel]);
+  // Derive from the FULL backlog (not the search-filtered list) so the selection —
+  // and what actually gets written — never diverges from the toolbar count when
+  // the search box is changed after selecting. Products that leave the backlog
+  // (already sorted elsewhere) simply drop out, which is correct.
+  const selectedList = useMemo(() => allUncat.filter(p => sel.has(p.id)), [allUncat, sel]);
 
   // Write subcategory + category for a set of products in ONE multi-path update,
   // recording prior values so the action can be undone.
   const applyAssign = async (items, sub) => {
     const top = subToTop[sub];
-    if (!sub || sub === UNCATEGORIZED || !top) return;
+    if (!items.length || !sub || sub === UNCATEGORIZED || !top) return;
     const updates = {};
     const undoItems = [];
     for (const p of items) {
@@ -3813,8 +3819,10 @@ function AdminReviewCategoriesTab({ products = [] }) {
     try {
       await update(ref(database), updates);
       setUndo({ items: undoItems, sub });
-      setSel(new Set());
-      setBulkSub("");
+      // Deselect only what we just assigned — so a per-row quick assign doesn't
+      // wipe an in-progress multi-selection (bulk assigns everything selected, so
+      // this empties the set for that path anyway).
+      setSel(s => { const n = new Set(s); for (const it of undoItems) n.delete(it.id); return n; });
       setConfirmOpen(false);
     } catch (e) { alert("Save failed: " + (e?.message || e)); }
     finally { setBusy(false); }
@@ -3887,13 +3895,13 @@ function AdminReviewCategoriesTab({ products = [] }) {
       {/* Bulk assign toolbar — visible once something is selected */}
       {sel.size > 0 && (
         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, padding:"10px 12px", borderRadius:10, background:"rgba(74,127,255,.08)", border:"1px solid rgba(74,127,255,.3)", flexWrap:"wrap" }}>
-          <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>{sel.size} selected →</span>
+          <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>{selectedList.length} selected →</span>
           <select value={bulkSub} onChange={e => setBulkSub(e.target.value)}
                   style={{ background:"rgba(255,255,255,.08)", border:"1px solid rgba(255,255,255,.2)", color:"#fff", borderRadius:8, padding:"7px 8px", fontSize:12, flex:"1 1 160px", minWidth:140 }}>
             <option value="" disabled>Assign to category…</option>
             {catOptions}
           </select>
-          <button disabled={!bulkSub || busy} onClick={() => setConfirmOpen(true)}
+          <button disabled={!bulkSub || busy || selectedList.length === 0} onClick={() => setConfirmOpen(true)}
                   style={{ background: bulkSub ? "#4A7FFF" : "rgba(255,255,255,.08)", color:"#fff", border:"none", borderRadius:8, padding:"8px 14px", fontSize:12, fontWeight:700, cursor: bulkSub && !busy ? "pointer" : "default", opacity: bulkSub && !busy ? 1 : .5 }}>
             Review &amp; assign
           </button>
