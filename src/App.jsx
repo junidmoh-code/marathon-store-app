@@ -3790,12 +3790,6 @@ function AdminReviewCategoriesTab({ products = [] }) {
       return changed ? n : s;
     });
   }, [allUncat]);
-
-  // If a live update empties the selection while the confirm dialog is open, close
-  // it — there is nothing left to assign.
-  useEffect(() => {
-    if (confirmOpen && selectedList.length === 0) setConfirmOpen(false);
-  }, [confirmOpen, selectedList.length]);
   const organised = baseline == null ? 0 : Math.max(0, baseline - remaining);
   const pct = baseline ? Math.round((organised / baseline) * 100) : 0;
 
@@ -3821,6 +3815,13 @@ function AdminReviewCategoriesTab({ products = [] }) {
   // the search box is changed after selecting. Products that leave the backlog
   // (already sorted elsewhere) simply drop out, which is correct.
   const selectedList = useMemo(() => allUncat.filter(p => sel.has(p.id)), [allUncat, sel]);
+
+  // If a live update empties the selection while the confirm dialog is open, close
+  // it — there is nothing left to assign. (Declared AFTER selectedList to avoid a
+  // temporal-dead-zone reference.)
+  useEffect(() => {
+    if (confirmOpen && selectedList.length === 0) setConfirmOpen(false);
+  }, [confirmOpen, selectedList.length]);
 
   // Write subcategory + category for a set of products in ONE multi-path update,
   // recording prior values so the action can be undone.
