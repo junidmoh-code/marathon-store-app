@@ -46,13 +46,13 @@ export function validatePrices(editProduct, costDraft, retailDraft) {
   const { costNum, retailNum } = parseDrafts(costDraft, retailDraft);
 
   if (needsCost(editProduct) && (costNum == null || !Number.isFinite(costNum) || costNum <= 0)) {
-    return { ok: false, error: "Enter a valid Cost Price greater than 0." };
+    return { ok: false, error: "Enter a valid Stock Price greater than 0." };
   }
   if (needsRetail(editProduct) && (retailNum == null || !Number.isFinite(retailNum) || retailNum <= 0)) {
     return { ok: false, error: "Enter a valid Retail Price greater than 0." };
   }
   if (retailNum != null && costNum != null && retailNum < costNum) {
-    return { ok: false, needsConfirm: true, error: `Retail Price (R${retailNum}) is lower than Cost Price (R${costNum}). Continue?` };
+    return { ok: false, needsConfirm: true, error: `Retail Price (R${retailNum}) is lower than Stock Price (R${costNum}). Continue?` };
   }
   return { ok: true };
 }

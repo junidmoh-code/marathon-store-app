@@ -3998,26 +3998,33 @@ function MissingPricesTab({ products = [] }) {
                 <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)" }}>{editProduct.brand ? `${editProduct.brand} · ` : ""}{editProduct.category || "—"}</div>
               </div>
             </div>
-            {needsCost(editProduct) && (
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 11, color: "rgba(255,255,255,.45)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Cost Price (ZAR)</div>
-                <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={costDraft}
-                  onChange={e => setCostDraft(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter") savePrice(); }}
-                  autoFocus={needsCost(editProduct)}
-                  style={{ width: "100%", background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "10px 12px", fontSize: 16, fontWeight: 600, boxSizing: "border-box" }} />
-              </div>
-            )}
-            {needsRetail(editProduct) && (
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 11, color: "rgba(255,255,255,.45)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Retail Price (ZAR)</div>
-                <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={retailDraft}
-                  onChange={e => setRetailDraft(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter") savePrice(); }}
-                  autoFocus={!needsCost(editProduct)}
-                  style={{ width: "100%", background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "10px 12px", fontSize: 16, fontWeight: 600, boxSizing: "border-box" }} />
-              </div>
-            )}
+            {/* Pricing section — mirrors the product editor's "Pricing (ZAR)"
+                block ("Stock Price" / "Retail Price" labels) but shows only the
+                field(s) this product is actually missing, so Save & Next stays
+                a fast single-field entry when only one price is absent. */}
+            <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,.5)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Pricing (ZAR)</div>
+            <div style={{ display: "flex", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.07)", borderRadius: 10, overflow: "hidden", marginBottom: 14 }}>
+              {needsCost(editProduct) && (
+                <div style={{ flex: 1, padding: "12px 14px", borderRight: needsRetail(editProduct) ? "1px solid rgba(255,255,255,.06)" : "none" }}>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,.45)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Stock Price</div>
+                  <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={costDraft}
+                    onChange={e => setCostDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") savePrice(); }}
+                    autoFocus={needsCost(editProduct)}
+                    style={{ width: "100%", background: "transparent", border: "none", outline: "none", color: "#fff", padding: 0, fontSize: 17, fontWeight: 500, fontFamily: "inherit", boxSizing: "border-box" }} />
+                </div>
+              )}
+              {needsRetail(editProduct) && (
+                <div style={{ flex: 1, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,.45)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Retail Price</div>
+                  <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={retailDraft}
+                    onChange={e => setRetailDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") savePrice(); }}
+                    autoFocus={!needsCost(editProduct)}
+                    style={{ width: "100%", background: "transparent", border: "none", outline: "none", color: "#fff", padding: 0, fontSize: 17, fontWeight: 500, fontFamily: "inherit", boxSizing: "border-box" }} />
+                </div>
+              )}
+            </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button onClick={savePrice} disabled={saving}
                 style={{ flex: 1, background: "#4A7FFF", color: "#fff", border: "none", borderRadius: 8, padding: "10px", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.6 : 1 }}>
