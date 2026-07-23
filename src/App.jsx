@@ -3809,6 +3809,10 @@ function MissingPricesTab({ products = [] }) {
   const [costDraft, setCostDraft] = useState("");
   const [retailDraft, setRetailDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  // Photo expand toggle — holds { url, name } of the product photo being viewed
+  // large, or null. Tapping the small photo opens it; tapping the large photo
+  // (or ✕ / backdrop) closes it again.
+  const [photoView, setPhotoView] = useState(null);
   const PAGE_SIZE = 50;
 
   const CATEGORY_FILTERS = [
@@ -3992,7 +3996,11 @@ function MissingPricesTab({ products = [] }) {
           <div style={{ background: "#111", border: "1px solid rgba(255,255,255,.15)", borderRadius: 14, padding: 20, maxWidth: 380, width: "100%" }}
             onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-              <img src={editProduct.photoUrl || ""} alt="" style={{ width: 48, height: 48, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)" }} />
+              {/* Tap the photo to expand it; tap the expanded photo again to close. */}
+              <img src={editProduct.photoUrl || ""} alt=""
+                onClick={() => editProduct.photoUrl && setPhotoView({ url: editProduct.photoUrl, name: editProduct.name })}
+                title={editProduct.photoUrl ? "Tap to expand" : ""}
+                style={{ width: 48, height: 48, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", cursor: editProduct.photoUrl ? "zoom-in" : "default", flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{editProduct.name}</div>
                 <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)" }}>{editProduct.brand ? `${editProduct.brand} · ` : ""}{editProduct.category || "—"}</div>
@@ -4036,6 +4044,23 @@ function MissingPricesTab({ products = [] }) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Expanded photo overlay — opened by tapping the small photo in the Edit
+          Price card. Tapping the expanded photo (or the backdrop / ✕) closes it,
+          so the same photo tap toggles it back. Above the modal (zIndex 1100). */}
+      {photoView && (
+        <div onClick={() => setPhotoView(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.9)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 1100, padding: 20 }}>
+          <button onClick={() => setPhotoView(null)} aria-label="Close"
+            style={{ position: "absolute", top: 16, right: 16, width: 40, height: 40, borderRadius: 20, background: "rgba(255,255,255,.12)", border: "1px solid rgba(255,255,255,.2)", color: "#fff", fontSize: 20, lineHeight: 1, cursor: "pointer" }}>×</button>
+          <img src={photoView.url} alt={photoView.name || ""}
+            title="Tap to close"
+            style={{ maxWidth: "100%", maxHeight: "82vh", objectFit: "contain", borderRadius: 10, boxShadow: "0 20px 60px -20px rgba(0,0,0,.9)", cursor: "zoom-out" }} />
+          {photoView.name && (
+            <div style={{ marginTop: 14, color: "#fff", fontSize: 14, fontWeight: 600, textAlign: "center", maxWidth: 520 }}>{photoView.name}</div>
+          )}
         </div>
       )}
     </div>
