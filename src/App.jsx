@@ -113,7 +113,7 @@ function compressImageFile(file, maxDim, maxBytes) {
 async function uploadBoxPhoto(productId, file) {
   const blob = await compressImageFile(file, 1200, 400 * 1024);
   const sRef = storageRef(storage, `products/${productId}/source_box.jpg`);
-  await uploadBytes(sRef, blob, { contentType: "image/jpeg" });
+  await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" });
   const url = await getDownloadURL(sRef);
   await update(ref(database, `products/${productId}`), { photoBoxUrl: url, boxPhotoUpdatedAt: serverNowMs() });
   return url;
@@ -3531,7 +3531,7 @@ function StyleKitPanel() {
         const refId = `r${serverNowMs()}_${Math.random().toString(36).slice(2, 7)}`;
         const path = `aiStudio/styleKit/${template}/${refId}.jpg`;
         const sRef = storageRef(storage, path);
-        await uploadBytes(sRef, blob, { contentType: "image/jpeg" });
+        await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" });
         const url = await getDownloadURL(sRef);
         await set(ref(database, `aiAssistant/styleKit/${template}/refs/${refId}`), {
           url, path, enabled: true, addedAt: serverNowMs(), by: user?.email || "",
@@ -4568,7 +4568,7 @@ function AdminView({ products, orders, onExit }) {
       if (form.photoBlob) {
         // Upload compressed image to Firebase Storage; store only the HTTPS URL in RTDB.
         const sRef = storageRef(storage, `products/${id}/photo.jpg`);
-        await uploadBytes(sRef, form.photoBlob, { contentType: "image/jpeg" });
+        await uploadBytes(sRef, form.photoBlob, { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" });
         photoUrl = await getDownloadURL(sRef);
       }
 
@@ -5275,7 +5275,7 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
           }
           const blob = dataURLToBlob(dataUrl);
           const sRef = storageRef(storage, `products/${product.id}/photo.jpg`);
-          await uploadBytes(sRef, blob, { contentType: "image/jpeg" });
+          await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" });
           const url = await getDownloadURL(sRef);
           // photoUpdatedAt: upload-time stamp for the AI Photo Studio "Recent"
           // view. Only human uploads stamp it — an approved AI re-shoot isn't

@@ -2267,7 +2267,10 @@ async function uploadProposalImage(id, buffer, mime = "image/jpeg") {
   await admin.storage().bucket(STORAGE_BUCKET).file(path).save(buffer, {
     resumable: false,
     contentType: mime,
-    metadata: { metadata: { firebaseStorageDownloadTokens: token } },
+    // Long-cache so the browser reuses the image instead of re-downloading it on
+    // every admin re-mount (cuts Storage egress; stops the photo "reload"). Safe:
+    // each generation writes a unique path, so cached copies never go stale.
+    metadata: { cacheControl: "public, max-age=31536000, immutable", metadata: { firebaseStorageDownloadTokens: token } },
   });
   return `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
 }
