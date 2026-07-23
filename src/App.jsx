@@ -3790,6 +3790,12 @@ function AdminReviewCategoriesTab({ products = [] }) {
       return changed ? n : s;
     });
   }, [allUncat]);
+
+  // If a live update empties the selection while the confirm dialog is open, close
+  // it — there is nothing left to assign.
+  useEffect(() => {
+    if (confirmOpen && selectedList.length === 0) setConfirmOpen(false);
+  }, [confirmOpen, selectedList.length]);
   const organised = baseline == null ? 0 : Math.max(0, baseline - remaining);
   const pct = baseline ? Math.round((organised / baseline) * 100) : 0;
 
@@ -4000,8 +4006,8 @@ function AdminReviewCategoriesTab({ products = [] }) {
             </div>
 
             <div style={{ display:"flex", gap:8 }}>
-              <button disabled={busy} onClick={() => applyAssign(selectedList, bulkSub)}
-                      style={{ flex:1, background:"#4A7FFF", color:"#fff", border:"none", borderRadius:8, padding:"10px", fontSize:13, fontWeight:700, cursor: busy?"default":"pointer", opacity: busy?.6:1 }}>
+              <button disabled={busy || selectedList.length === 0} onClick={() => applyAssign(selectedList, bulkSub)}
+                      style={{ flex:1, background:"#4A7FFF", color:"#fff", border:"none", borderRadius:8, padding:"10px", fontSize:13, fontWeight:700, cursor: (busy||!selectedList.length)?"default":"pointer", opacity: (busy||!selectedList.length)?.6:1 }}>
                 {busy ? "Assigning…" : `Assign ${selectedList.length}`}
               </button>
               <button disabled={busy} onClick={() => setConfirmOpen(false)}
