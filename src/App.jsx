@@ -3798,13 +3798,16 @@ function AdminReviewCategoriesTab({ products = [] }) {
   );
 }
 
+import { needsCost, needsRetail, needsAny, typeOf, createdAt, updatedAt, buildUpdates, validatePrices } from "./utils/missingPrices";
+
 function MissingPricesTab({ products = [] }) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("newest"); // "newest" | "oldest"
   const [filter, setFilter] = useState("all"); // "all" | "clothing" | "shoes" | "accessories" | "perfumes"
   const [page, setPage] = useState(1);
   const [editProduct, setEditProduct] = useState(null); // product being priced
-  const [priceDraft, setPriceDraft] = useState("");
+  const [costDraft, setCostDraft] = useState("");
+  const [retailDraft, setRetailDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const PAGE_SIZE = 50;
 
@@ -3816,24 +3819,8 @@ function MissingPricesTab({ products = [] }) {
     ["perfumes", "Perfumes"],
   ];
 
-  const typeOf = (p) => {
-    if (p.productType === "clothing") return "clothing";
-    if (p.productType === "sneaker") return "shoes";
-    const cat = (p.category || "").toLowerCase();
-    if (/accessor|belt|watch|glass|necklace|bracelet/.test(cat)) return "accessories";
-    if (/perfume|fragrance|cologne/.test(cat)) return "perfumes";
-    return "other";
-  };
-
-  const createdAt = (p) => {
-    const m = /^p(\d+)$/.exec(p.id || "");
-    return m ? Number(m[1]) : 0;
-  };
-
-  const updatedAt = (p) => p.photoUpdatedAt || createdAt(p);
-
   const list = useMemo(() => {
-    let items = (products || []).filter(p => p && p.id && (p.retailPrice == null || p.retailPrice === "" || p.retailPrice === 0));
+    let items = (products || []).filter(p => p && p.id && needsAny(p));
     if (filter !== "all") items = items.filter(p => typeOf(p) === filter);
     const q = search.trim().toLowerCase();
     if (q) {
@@ -3852,7 +3839,7 @@ function MissingPricesTab({ products = [] }) {
 
   // Category summary counts (across ALL missing-price products, before filter)
   const summary = useMemo(() => {
-    const items = (products || []).filter(p => p && p.id && (p.retailPrice == null || p.retailPrice === "" || p.retailPrice === 0));
+    const items = (products || []).filter(p => p && p.id && needsAny(p));
     const counts = { all: items.length };
     for (const [k] of CATEGORY_FILTERS.slice(1)) counts[k] = items.filter(p => typeOf(p) === k).length;
     return counts;
@@ -3866,25 +3853,45 @@ function MissingPricesTab({ products = [] }) {
 
   const openEdit = (p) => {
     setEditProduct(p);
-    setPriceDraft("");
+    setCostDraft(needsCost(p) ? "" : String(p.stockPrice));
+    setRetailDraft(needsRetail(p) ? "" : String(p.retailPrice));
   };
 
   const savePrice = async () => {
-    const trimmed = String(priceDraft).trim();
-    const num = Number(trimmed);
-    if (!trimmed || !Number.isFinite(num) || num <= 0) {
-      alert("Enter a valid price greater than 0.");
-      return;
+    if (saving) return;
+    const validation = validatePrices(editProduct, costDraft, retailDraft);
+    if (!validation.ok) {
+      if (validation.needsConfirm) {
+        if (!window.confirm(validation.error)) return;
+      } else {
+        alert(validation.error);
+        return;
+      }
     }
+
     setSaving(true);
     try {
-      await update(ref(database, `products/${editProduct.id}`), { retailPrice: num });
+      const updates = buildUpdates(editProduct, costDraft, retailDraft);
+      await update(ref(database, `products/${editProduct.id}`), updates);
       // Open the next missing-price product for continuous entry.
+      // Use openEdit so drafts are derived from the next product (preserves
+      // the retail<cost confirmation for single-missing-price products).
       const idx = list.findIndex(p => p.id === editProduct.id);
-      const next = list[idx + 1] || null;
-      setEditProduct(next);
-      setPriceDraft("");
-      if (!next && page < totalPages) setPage(p => p + 1);
+      let next = idx >= 0 ? list[idx + 1] || null : null;
+      // Skip products that no longer need any price (stale snapshot).
+      let nextIdx = idx + 1;
+      while (next && !needsAny(next)) {
+        nextIdx++;
+        next = list[nextIdx] || null;
+      }
+      if (next) {
+        openEdit(next);
+      } else {
+        setEditProduct(null);
+        setCostDraft("");
+        setRetailDraft("");
+        setPage(p => Math.min(p, totalPages));
+      }
     } catch (e) {
       alert("Save failed: " + (e?.message || e));
     } finally {
@@ -3949,7 +3956,9 @@ function MissingPricesTab({ products = [] }) {
                   </div>
                 </div>
                 <div style={{ textAlign: "right", flexShrink: 0 }}>
-                  <div style={{ fontSize: 12, color: "#FBBF24", fontWeight: 700, marginBottom: 4 }}>No Price</div>
+                  <div style={{ fontSize: 12, color: "#FBBF24", fontWeight: 700, marginBottom: 4 }}>
+                    {needsCost(p) && needsRetail(p) ? "No Cost/Retail" : needsCost(p) ? "No Cost" : "No Retail"}
+                  </div>
                   <button onClick={() => openEdit(p)}
                     style={{ background: "#4A7FFF", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                     Edit Price
@@ -3989,13 +3998,32 @@ function MissingPricesTab({ products = [] }) {
                 <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)" }}>{editProduct.brand ? `${editProduct.brand} · ` : ""}{editProduct.category || "—"}</div>
               </div>
             </div>
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 11, color: "rgba(255,255,255,.45)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Retail Price (ZAR)</div>
-              <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={priceDraft}
-                onChange={e => setPriceDraft(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") savePrice(); }}
-                autoFocus
-                style={{ width: "100%", background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "10px 12px", fontSize: 16, fontWeight: 600, boxSizing: "border-box" }} />
+            {/* Pricing section — mirrors the product editor's "Pricing (ZAR)"
+                block ("Stock Price" / "Retail Price" labels) but shows only the
+                field(s) this product is actually missing, so Save & Next stays
+                a fast single-field entry when only one price is absent. */}
+            <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,.5)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Pricing (ZAR)</div>
+            <div style={{ display: "flex", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.07)", borderRadius: 10, overflow: "hidden", marginBottom: 14 }}>
+              {needsCost(editProduct) && (
+                <div style={{ flex: 1, padding: "12px 14px", borderRight: needsRetail(editProduct) ? "1px solid rgba(255,255,255,.06)" : "none" }}>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,.45)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Stock Price</div>
+                  <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={costDraft}
+                    onChange={e => setCostDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") savePrice(); }}
+                    autoFocus={needsCost(editProduct)}
+                    style={{ width: "100%", background: "transparent", border: "none", outline: "none", color: "#fff", padding: 0, fontSize: 17, fontWeight: 500, fontFamily: "inherit", boxSizing: "border-box" }} />
+                </div>
+              )}
+              {needsRetail(editProduct) && (
+                <div style={{ flex: 1, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,.45)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Retail Price</div>
+                  <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" value={retailDraft}
+                    onChange={e => setRetailDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") savePrice(); }}
+                    autoFocus={!needsCost(editProduct)}
+                    style={{ width: "100%", background: "transparent", border: "none", outline: "none", color: "#fff", padding: 0, fontSize: 17, fontWeight: 500, fontFamily: "inherit", boxSizing: "border-box" }} />
+                </div>
+              )}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button onClick={savePrice} disabled={saving}
