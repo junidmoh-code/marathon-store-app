@@ -3736,66 +3736,261 @@ const confColor = (c) => (c >= NAME_HIGH_CONFIDENCE ? "#4ACA7A" : c >= 0.6 ? "#F
 // ── REVIEW UNCATEGORIZED ───────────────────────────────────────────────────────
 // Admin screen to sort the "Clothing — Uncategorized" stragglers the classifier
 // couldn't type (unbranded supplier codes / branded items with no type word). Each
-// row has a grouped subcategory dropdown; picking one writes products/{id}.
-// {subcategory, category} and the row drops off the live list. Sort at your pace.
+// ── ORGANISER: bulk-sort the catalog into real categories ──────────────────────
+// Work-queue for products the auto-classifier left as UNCATEGORIZED. Enhancements
+// over the old one-at-a-time picker: multi-select + select-all-matching, one-shot
+// BULK assign gated behind a before/after confirm table (never mass-write
+// silently), single-action UNDO, and a progress bar. Writes ONLY subcategory +
+// category (top-level) — NEVER productType, which is the behaviour cliff (refill /
+// display-checks key off productType, so leaving it untouched keeps every product's
+// refill + display-check behaviour exactly as it was). Reuses the existing
+// `products` prop — no new RTDB listeners.
 function AdminReviewCategoriesTab({ products = [] }) {
   const [q, setQ] = useState("");
-  const [savingId, setSavingId] = useState(null);
-  // subcategory → top-level (so a pick sets BOTH the category and subcategory).
+  const [sel, setSel] = useState(() => new Set()); // selected product ids
+  const [bulkSub, setBulkSub] = useState("");       // chosen target subcategory for the bulk assign
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [savingId, setSavingId] = useState(null);   // per-row single assign
+  const [undo, setUndo] = useState(null);           // { items:[{id,prevSub,prevCat}], sub } — last action, reversible
+  const [baseline, setBaseline] = useState(null);   // initial backlog size for the progress bar
+
+  const SELECT_CAP = 2000; // safety cap on select-all (backlog is a few hundred; never mass-select the whole catalog)
+
   const subToTop = useMemo(() => {
     const m = {};
     for (const [top, subs] of Object.entries(CATEGORY_TREE)) for (const s of subs) m[s] = top;
     return m;
   }, []);
-  const list = useMemo(() => {
-    const items = (products || []).filter(p => p && p.id && p.subcategory === UNCATEGORIZED);
-    const query = q.trim().toLowerCase();
-    const filtered = query ? items.filter(p => (p.name || "").toLowerCase().includes(query)) : items;
-    return filtered.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  }, [products, q]);
 
-  const assign = async (p, sub) => {
-    if (!sub || sub === UNCATEGORIZED) return;
-    setSavingId(p.id);
+  // Full backlog (unfiltered) — drives progress + the confirm counts.
+  const allUncat = useMemo(
+    () => (products || []).filter(p => p && p.id && p.subcategory === UNCATEGORIZED),
+    [products]);
+  const remaining = allUncat.length;
+
+  // Capture the starting backlog once (first time data is present) so the progress
+  // denominator stays stable as the list empties. Bump it up if the backlog ever
+  // grows past the baseline (new imports) so "organised" can't go negative.
+  useEffect(() => {
+    if (remaining > 0) setBaseline(b => (b == null ? remaining : Math.max(b, remaining)));
+  }, [remaining]);
+  const organised = baseline == null ? 0 : Math.max(0, baseline - remaining);
+  const pct = baseline ? Math.round((organised / baseline) * 100) : 0;
+
+  // Search-filtered, name-sorted view.
+  const list = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    const filtered = query ? allUncat.filter(p => (p.name || "").toLowerCase().includes(query)) : allUncat;
+    return [...filtered].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [allUncat, q]);
+
+  // Count of products currently sitting in a given subcategory (for before/after).
+  const subCount = (sub) => (products || []).filter(p => p && p.subcategory === sub).length;
+
+  const toggle = (id) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const selectAllMatching = () => setSel(s => {
+    const n = new Set(s);
+    for (const p of list) { if (n.size >= SELECT_CAP) break; n.add(p.id); }
+    return n;
+  });
+  const clearSel = () => setSel(new Set());
+  const selectedList = useMemo(() => list.filter(p => sel.has(p.id)), [list, sel]);
+
+  // Write subcategory + category for a set of products in ONE multi-path update,
+  // recording prior values so the action can be undone.
+  const applyAssign = async (items, sub) => {
+    const top = subToTop[sub];
+    if (!sub || sub === UNCATEGORIZED || !top) return;
+    const updates = {};
+    const undoItems = [];
+    for (const p of items) {
+      updates[`products/${p.id}/subcategory`] = sub;
+      updates[`products/${p.id}/category`] = top;
+      undoItems.push({ id: p.id, prevSub: p.subcategory ?? null, prevCat: p.category ?? null });
+    }
+    setBusy(true);
     try {
-      await update(ref(database, `products/${p.id}`), { subcategory: sub, category: subToTop[sub] || p.category });
+      await update(ref(database), updates);
+      setUndo({ items: undoItems, sub });
+      setSel(new Set());
+      setBulkSub("");
+      setConfirmOpen(false);
     } catch (e) { alert("Save failed: " + (e?.message || e)); }
+    finally { setBusy(false); }
+  };
+
+  // Per-row single assign (instant, still reversible via undo).
+  const assignOne = async (p, sub) => {
+    if (!sub) return;
+    setSavingId(p.id);
+    try { await applyAssign([p], sub); }
     finally { setSavingId(null); }
   };
 
+  const doUndo = async () => {
+    if (!undo) return;
+    const updates = {};
+    for (const it of undo.items) {
+      updates[`products/${it.id}/subcategory`] = it.prevSub;
+      updates[`products/${it.id}/category`] = it.prevCat;
+    }
+    setBusy(true);
+    try { await update(ref(database), updates); setUndo(null); }
+    catch (e) { alert("Undo failed: " + (e?.message || e)); }
+    finally { setBusy(false); }
+  };
+
+  const catOptions = Object.entries(CATEGORY_TREE).map(([top, subs]) => (
+    <optgroup key={top} label={top}>
+      {subs.filter(s => s !== UNCATEGORIZED).map(s => <option key={s} value={s}>{s}</option>)}
+    </optgroup>
+  ));
+
   return (
     <div style={{ padding:"0 14px 30px" }}>
-      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0 12px" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0 8px" }}>
         <span style={{ fontSize:18, fontWeight:700, color:"#fff" }}>Sort Uncategorized</span>
-        <span style={{ background:"rgba(245,158,11,.15)", border:"1px solid rgba(245,158,11,.35)", color:"#F59E0B", fontSize:12, fontWeight:700, padding:"3px 10px", borderRadius:12 }}>{list.length} to sort</span>
+        <span style={{ background:"rgba(245,158,11,.15)", border:"1px solid rgba(245,158,11,.35)", color:"#F59E0B", fontSize:12, fontWeight:700, padding:"3px 10px", borderRadius:12 }}>{remaining} to sort</span>
       </div>
+
+      {/* Progress — organised N of the starting backlog */}
+      {baseline > 0 && (
+        <div style={{ marginBottom:12 }}>
+          <div style={{ fontSize:12, color:"rgba(255,255,255,.6)", marginBottom:4 }}>Organised <b style={{ color:"#4ACA7A" }}>{organised}</b> of {baseline}</div>
+          <div style={{ height:6, borderRadius:4, background:"rgba(255,255,255,.08)", overflow:"hidden" }}>
+            <div style={{ width:`${pct}%`, height:"100%", background:"#4ACA7A", transition:"width .3s" }}/>
+          </div>
+        </div>
+      )}
+
       <div style={{ fontSize:12, color:"rgba(255,255,255,.45)", marginBottom:10 }}>
-        Items the auto-classifier couldn’t type. Pick a category for each — it saves instantly and the row drops off.
+        Items the auto-classifier couldn’t type. Tick several (or “Select all matching”), pick one category, and assign in a single confirmed step. Only the category label changes — product type is untouched, so refill and display checks are unaffected.
       </div>
-      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search these items…"
-             style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:9, color:"#fff", padding:"9px 12px", fontSize:13, marginBottom:12 }}/>
-      {list.length === 0 && <div style={{ color:"#4ACA7A", fontSize:13, padding:"18px 4px", textAlign:"center" }}>All sorted 🎉</div>}
+
+      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search these items… (e.g. “bag”)"
+             style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:9, color:"#fff", padding:"9px 12px", fontSize:13, marginBottom:10 }}/>
+
+      {/* Select-all-matching row */}
+      {list.length > 0 && (
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10, flexWrap:"wrap" }}>
+          <button onClick={selectAllMatching}
+                  style={{ background:"rgba(74,127,255,.15)", border:"1px solid rgba(74,127,255,.45)", color:"#9DBCFF", borderRadius:8, padding:"6px 10px", fontSize:12, fontWeight:700, cursor:"pointer" }}>
+            Select all matching ({Math.min(list.length, SELECT_CAP)})
+          </button>
+          {sel.size > 0 && (
+            <button onClick={clearSel} style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", color:"rgba(255,255,255,.65)", borderRadius:8, padding:"6px 10px", fontSize:12, cursor:"pointer" }}>Clear ({sel.size})</button>
+          )}
+        </div>
+      )}
+
+      {/* Bulk assign toolbar — visible once something is selected */}
+      {sel.size > 0 && (
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, padding:"10px 12px", borderRadius:10, background:"rgba(74,127,255,.08)", border:"1px solid rgba(74,127,255,.3)", flexWrap:"wrap" }}>
+          <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>{sel.size} selected →</span>
+          <select value={bulkSub} onChange={e => setBulkSub(e.target.value)}
+                  style={{ background:"rgba(255,255,255,.08)", border:"1px solid rgba(255,255,255,.2)", color:"#fff", borderRadius:8, padding:"7px 8px", fontSize:12, flex:"1 1 160px", minWidth:140 }}>
+            <option value="" disabled>Assign to category…</option>
+            {catOptions}
+          </select>
+          <button disabled={!bulkSub || busy} onClick={() => setConfirmOpen(true)}
+                  style={{ background: bulkSub ? "#4A7FFF" : "rgba(255,255,255,.08)", color:"#fff", border:"none", borderRadius:8, padding:"8px 14px", fontSize:12, fontWeight:700, cursor: bulkSub && !busy ? "pointer" : "default", opacity: bulkSub && !busy ? 1 : .5 }}>
+            Review &amp; assign
+          </button>
+        </div>
+      )}
+
+      {/* Undo banner — last action reversible */}
+      {undo && (
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, marginBottom:12, padding:"9px 12px", borderRadius:10, background:"rgba(74,202,122,.1)", border:"1px solid rgba(74,202,122,.3)" }}>
+          <span style={{ fontSize:12.5, color:"#B7F0CD" }}>Moved {undo.items.length} to <b>{undo.sub}</b>.</span>
+          <div style={{ display:"flex", gap:8 }}>
+            <button disabled={busy} onClick={doUndo} style={{ background:"rgba(255,255,255,.1)", border:"1px solid rgba(255,255,255,.2)", color:"#fff", borderRadius:7, padding:"5px 12px", fontSize:12, fontWeight:700, cursor: busy ? "default":"pointer" }}>Undo</button>
+            <button onClick={() => setUndo(null)} style={{ background:"transparent", border:"none", color:"rgba(255,255,255,.5)", fontSize:16, cursor:"pointer", lineHeight:1 }}>×</button>
+          </div>
+        </div>
+      )}
+
+      {list.length === 0 && <div style={{ color:"#4ACA7A", fontSize:13, padding:"18px 4px", textAlign:"center" }}>{q ? "No matches." : "All sorted 🎉"}</div>}
+
       <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-        {list.map(p => (
-          <div key={p.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 10px", borderRadius:10, background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.07)" }}>
+        {list.map(p => {
+          const checked = sel.has(p.id);
+          return (
+          <div key={p.id} onClick={() => toggle(p.id)}
+               style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 10px", borderRadius:10, cursor:"pointer",
+                        background: checked ? "rgba(74,127,255,.12)" : "rgba(255,255,255,.03)",
+                        border: checked ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.07)" }}>
+            <input type="checkbox" checked={checked} readOnly
+                   style={{ width:17, height:17, accentColor:"#4A7FFF", flexShrink:0, cursor:"pointer" }}/>
             <img src={p.photoUrl || ""} alt="" loading="lazy"
                  style={{ width:40, height:40, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
               <div style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>{p.brand ? p.brand + " · " : ""}{Array.isArray(p.sizes) ? p.sizes.slice(0,6).join("/") : ""}</div>
             </div>
-            <select disabled={savingId === p.id} value="" onChange={e => assign(p, e.target.value)}
-                    style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 8px", fontSize:12, maxWidth:140, opacity: savingId === p.id ? .5 : 1 }}>
+            {/* Per-row quick single assign (instant, still undoable) */}
+            <select disabled={savingId === p.id} value="" onClick={e => e.stopPropagation()} onChange={e => assignOne(p, e.target.value)}
+                    style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", color:"#fff", padding:"7px 8px", fontSize:12, borderRadius:8, maxWidth:132, opacity: savingId === p.id ? .5 : 1 }}>
               <option value="" disabled>Move to…</option>
-              {Object.entries(CATEGORY_TREE).map(([top, subs]) => (
-                <optgroup key={top} label={top}>
-                  {subs.filter(s => s !== UNCATEGORIZED).map(s => <option key={s} value={s}>{s}</option>)}
-                </optgroup>
-              ))}
+              {catOptions}
             </select>
           </div>
-        ))}
+          );
+        })}
       </div>
+
+      {/* Before/after confirm — mandatory before any bulk write */}
+      {confirmOpen && bulkSub && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.75)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:16 }}
+             onClick={() => !busy && setConfirmOpen(false)}>
+          <div onClick={e => e.stopPropagation()}
+               style={{ background:"#111", border:"1px solid rgba(255,255,255,.15)", borderRadius:14, padding:20, maxWidth:440, width:"100%", maxHeight:"85vh", overflow:"auto" }}>
+            <div style={{ fontSize:16, fontWeight:700, color:"#fff", marginBottom:4 }}>Confirm bulk assign</div>
+            <div style={{ fontSize:13, color:"rgba(255,255,255,.6)", marginBottom:14 }}>
+              Move <b style={{ color:"#fff" }}>{selectedList.length}</b> product{selectedList.length===1?"":"s"} to <b style={{ color:"#9DBCFF" }}>{bulkSub}</b> <span style={{ color:"rgba(255,255,255,.4)" }}>(under {subToTop[bulkSub]})</span>.
+            </div>
+
+            {/* Before / after counts */}
+            <div style={{ border:"1px solid rgba(255,255,255,.1)", borderRadius:10, overflow:"hidden", marginBottom:14 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr auto auto", fontSize:12, fontWeight:700, color:"rgba(255,255,255,.5)", padding:"8px 12px", borderBottom:"1px solid rgba(255,255,255,.08)" }}>
+                <span>Category</span><span style={{ textAlign:"right", width:64 }}>Before</span><span style={{ textAlign:"right", width:64 }}>After</span>
+              </div>
+              {[
+                ["Uncategorized", remaining, remaining - selectedList.length],
+                [bulkSub, subCount(bulkSub), subCount(bulkSub) + selectedList.length],
+              ].map(([label, before, after]) => (
+                <div key={label} style={{ display:"grid", gridTemplateColumns:"1fr auto auto", fontSize:13, color:"#fff", padding:"8px 12px" }}>
+                  <span>{label}</span>
+                  <span style={{ textAlign:"right", width:64, color:"rgba(255,255,255,.6)" }}>{before}</span>
+                  <span style={{ textAlign:"right", width:64, fontWeight:700, color:"#4ACA7A" }}>{after}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Side-effect statement (per governance) */}
+            <div style={{ fontSize:11.5, color:"rgba(255,255,255,.45)", background:"rgba(255,255,255,.03)", borderRadius:8, padding:"8px 10px", marginBottom:14 }}>
+              Product <b>type</b> is unchanged — auto-refill and display checks follow product type, so they are <b>unaffected</b>. Only the category label changes. Reversible with Undo.
+            </div>
+
+            {/* Sample of what moves */}
+            <div style={{ fontSize:11, color:"rgba(255,255,255,.5)", marginBottom:14 }}>
+              {selectedList.slice(0,6).map(p => p.name).join(" · ")}{selectedList.length > 6 ? ` · +${selectedList.length - 6} more` : ""}
+            </div>
+
+            <div style={{ display:"flex", gap:8 }}>
+              <button disabled={busy} onClick={() => applyAssign(selectedList, bulkSub)}
+                      style={{ flex:1, background:"#4A7FFF", color:"#fff", border:"none", borderRadius:8, padding:"10px", fontSize:13, fontWeight:700, cursor: busy?"default":"pointer", opacity: busy?.6:1 }}>
+                {busy ? "Assigning…" : `Assign ${selectedList.length}`}
+              </button>
+              <button disabled={busy} onClick={() => setConfirmOpen(false)}
+                      style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", color:"rgba(255,255,255,.6)", borderRadius:8, padding:"10px 14px", fontSize:13, fontWeight:600, cursor:"pointer" }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
