@@ -331,7 +331,7 @@ export default function AvailabilityView({ store, products, wide, active }) {
         </div>
       )}
       {trimmed && !looksBarcode && results.length === 0 && (
-        <div style={{ ...META, color: "rgba(233,238,255,.4)" }}>NO CLOTHING MATCHES "{trimmed.toUpperCase()}"</div>
+        <div style={{ ...META, color: "rgba(233,238,255,.4)" }}>NO MATCHES "{trimmed.toUpperCase()}"</div>
       )}
 
       {recent.length > 0 && (

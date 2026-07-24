@@ -52,10 +52,15 @@ test("classifier: perfume generates a check via category; non-perfume/non-clothi
   assert.equal(lib.isClothingSale({ productType: "perfume" }, "_"), false); // not a real value; category is the key
   // Other one-size / non-clothing types still do NOT generate a check:
   assert.equal(lib.isClothingSale({ category: "Accessories" }, "_"), false);
-  assert.equal(lib.isClothingSale({ category: "Footwear", productType: "sneaker" }, "9"), false);
+  assert.equal(lib.isClothingSale({ category: "Footwear", productType: "sneaker" }, "9"), false); // a GENUINE sneaker
   assert.equal(lib.isClothingSale({ category: "Footwear" }, "9"), false);
   // Existing clothing behaviour unchanged:
   assert.equal(lib.isClothingSale({ productType: "clothing", category: "Clothing" }, "M"), true);
+  // INTENTIONAL: category "Perfume" WINS over a contradictory productType. A real
+  // perfume mis-tagged productType:"sneaker" (live: "Catwalk") is still a perfume and
+  // must generate a check — genuine sneakers are category:"Footwear" (above), so this
+  // does not admit any real sneaker. Category is deliberately the authoritative signal.
+  assert.equal(lib.isClothingSale({ category: "Perfume", productType: "sneaker" }, "3"), true);
 });
 
 // ── SA anchors ───────────────────────────────────────────────────────────────
