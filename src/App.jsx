@@ -10,7 +10,7 @@ import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
-import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED } from "./utils/productCategory";
+import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -3763,9 +3763,12 @@ function AdminReviewCategoriesTab({ products = [] }) {
     return m;
   }, []);
 
-  // Full backlog (unfiltered) — drives progress + the confirm counts.
+  // Full backlog (unfiltered) — drives progress + the confirm counts. Catches
+  // both the "Clothing — Uncategorized" subcategory AND products with no real
+  // top-level category at all, so a category-less product can actually be sorted
+  // here rather than silently never appearing.
   const allUncat = useMemo(
-    () => (products || []).filter(p => p && p.id && p.subcategory === UNCATEGORIZED),
+    () => (products || []).filter(p => p && p.id && (p.subcategory === UNCATEGORIZED || topCategory(p) === UNCATEGORIZED_TOP)),
     [products]);
   const remaining = allUncat.length;
 
@@ -4025,10 +4028,20 @@ function AdminReviewCategoriesTab({ products = [] }) {
 
 import { needsCost, needsRetail, needsAny, typeOf, createdAt, updatedAt, buildUpdates, validatePrices } from "./utils/missingPrices";
 
+// Missing-Prices category chips: All + the real top-levels (so a new category
+// appears automatically) + an Uncategorized catch-all. Keys match typeOf()
+// outputs. Module-scope (pure, derived from constants) so it has a stable
+// identity across renders and can't become a stale-closure trap.
+const MISSING_PRICE_FILTERS = [
+  ["all", "All"],
+  ...TOP_CATEGORIES.map((c) => [c, c]),
+  [UNCATEGORIZED_TOP, "Uncategorized"],
+];
+
 function MissingPricesTab({ products = [] }) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("newest"); // "newest" | "oldest"
-  const [filter, setFilter] = useState("all"); // "all" | "clothing" | "shoes" | "accessories" | "perfumes"
+  const [filter, setFilter] = useState("all"); // "all" | a TOP_CATEGORIES value | "Uncategorized"
   const [page, setPage] = useState(1);
   const [editProduct, setEditProduct] = useState(null); // product being priced
   const [costDraft, setCostDraft] = useState("");
@@ -4040,13 +4053,7 @@ function MissingPricesTab({ products = [] }) {
   const [photoView, setPhotoView] = useState(null);
   const PAGE_SIZE = 50;
 
-  const CATEGORY_FILTERS = [
-    ["all", "All"],
-    ["clothing", "Clothing"],
-    ["shoes", "Shoes"],
-    ["accessories", "Accessories"],
-    ["perfumes", "Perfumes"],
-  ];
+  const CATEGORY_FILTERS = MISSING_PRICE_FILTERS;
 
   const list = useMemo(() => {
     let items = (products || []).filter(p => p && p.id && needsAny(p));
@@ -4724,9 +4731,12 @@ function AdminView({ products, orders, onExit }) {
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
   const [productSearch, setProductSearch] = useState("");
-  // Admin product list is split by product type so sneakers and clothing are
-  // managed separately. Defaults to sneakers (the bulk of the catalogue).
-  const [typeFilter, setTypeFilter] = useState("sneaker"); // "sneaker" | "clothing"
+  // Admin product list is split by top-level CATEGORY so every real category
+  // (Footwear / Clothing / Accessories / Perfume, plus an Uncategorized catch-all)
+  // is reachable — not just sneakers/clothing. Driven off topCategory (the real
+  // `category` field), so a future 5th category surfaces automatically. Defaults
+  // to Footwear.
+  const [typeFilter, setTypeFilter] = useState("Footwear");
   // Admin section: the product list vs the AI name-cleanup review screen.
   // Persist the active admin tab so a refresh keeps you on the same page (role is
   // already persisted via localStorage; this keeps the section too).
@@ -4739,7 +4749,7 @@ function AdminView({ products, orders, onExit }) {
   useEffect(() => {
     if (adminSection === "review-names" || adminSection === "review-photos") setAdminSection("products");
   }, [adminSection]);
-  const pendingCategoryCount = useMemo(() => (products || []).filter(p => p && p.subcategory === UNCATEGORIZED).length, [products]);
+  const pendingCategoryCount = useMemo(() => (products || []).filter(p => p && (p.subcategory === UNCATEGORIZED || topCategory(p) === UNCATEGORIZED_TOP)).length, [products]);
   const missingPriceCount = useMemo(() => (products || []).filter(p => p && (p.retailPrice == null || p.retailPrice === "" || p.retailPrice === 0)).length, [products]);
   // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
   //    browser back clears it. Listener stays mounted for the whole view. ──
@@ -4978,18 +4988,34 @@ function AdminView({ products, orders, onExit }) {
     setForm(f => ({ ...f, hasShoeBoxOption: !f.hasShoeBoxOption }));
   };
 
-  // Products filtered by the active type tab (Sneakers / Clothing) + the search
-  // bar (substring, case-insensitive). Products without productType are treated
-  // as sneakers.
+  // Products filtered by the active category tab + the search bar (substring,
+  // case-insensitive). Bucketed by topCategory (the real `category` field), so
+  // perfumes and accessories land in their own tabs instead of hiding under
+  // Sneakers/Clothing; products with no category fall into "Uncategorized".
   const filteredProducts = useMemo(() => {
     const q = productSearch.trim();
     return products.filter(p => {
-      if ((p.productType || "sneaker") !== typeFilter) return false;
+      if (topCategory(p) !== typeFilter) return false;
       // Forgiving search: fuzzy name + barcode/sku/per-size codes (see productSearch.js).
       if (q && !productMatchesQuery(p, q)) return false;
       return true;
     });
   }, [products, productSearch, typeFilter]);
+
+  // Category tabs above the list: the four real top-levels (from TOP_CATEGORIES,
+  // so a future category appears automatically), plus an "Uncategorized" tab that
+  // shows only when something actually needs it — or while it's the active tab, so
+  // the selection never becomes invalid mid-organise. Each entry carries its own
+  // count so nothing recomputes per-tab in the render.
+  const categoryTabs = useMemo(() => {
+    const counts = {};
+    for (const p of products) { const c = topCategory(p); counts[c] = (counts[c] || 0) + 1; }
+    const tabs = TOP_CATEGORIES.map(c => [c, c, counts[c] || 0]);
+    if ((counts[UNCATEGORIZED_TOP] || 0) > 0 || typeFilter === UNCATEGORIZED_TOP) {
+      tabs.push([UNCATEGORIZED_TOP, "Uncategorized", counts[UNCATEGORIZED_TOP] || 0]);
+    }
+    return tabs;
+  }, [products, typeFilter]);
 
   const handleImageUpload = e => {
     const file = e.target.files[0];
@@ -5246,14 +5272,15 @@ function AdminView({ products, orders, onExit }) {
         </div>
       )}
 
-      {/* TYPE TABS — manage Sneakers and Clothing separately. */}
-      <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2, marginBottom:14 }}>
-        {[["sneaker","Sneakers"],["clothing","Clothing"]].map(([val, label]) => {
+      {/* CATEGORY TABS — one per real top-level category (+ Uncategorized when
+          needed). Wraps to a second row on narrow screens so longer labels
+          ("Accessories") stay readable. */}
+      <div style={{ display:"flex", flexWrap:"wrap", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2, marginBottom:14 }}>
+        {categoryTabs.map(([val, label, count]) => {
           const on = typeFilter === val;
-          const count = products.filter(p => (p.productType || "sneaker") === val).length;
           return (
             <button key={val} onClick={() => setTypeFilter(val)}
-              style={{ flex:1, padding:"8px 6px", borderRadius:9, border:"none", cursor:"pointer", fontSize:13, fontWeight:700,
+              style={{ flex:"1 1 78px", minWidth:78, padding:"8px 6px", borderRadius:9, border:"none", cursor:"pointer", fontSize:13, fontWeight:700,
                        background: on ? "rgba(60,110,255,.25)" : "transparent",
                        color: on ? "#fff" : "rgba(255,255,255,.5)",
                        boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>
@@ -5279,7 +5306,7 @@ function AdminView({ products, orders, onExit }) {
       <div>
         {filteredProducts.length === 0 && (
           <div style={{ textAlign:"center", color:"#555", padding:"2.5rem 1rem", fontSize:"0.9rem" }}>
-            {productSearch.trim() ? "No products match your search." : `No ${typeFilter === "clothing" ? "clothing" : "sneaker"} products yet. Add one above.`}
+            {productSearch.trim() ? "No products match your search." : `No ${typeFilter} products yet. Add one above.`}
           </div>
         )}
         <div style={isWide ? { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10, alignItems:"start" } : undefined}>

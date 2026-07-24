@@ -16,6 +16,7 @@ import { applyMovement } from "./applyMovement";
 import { useStockCells } from "./useStock";
 import { labelFor, transferTargets } from "./locations";
 import { barcodeSizeKey } from "./barcode";
+import { TOP_CATEGORIES, UNCATEGORIZED_TOP, topCategory } from "../../utils/productCategory";
 import { Toast, Empty, LocationPicker } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, RED, BLUE_L, AMBER, BORDER, bGreen, bGhost, input } from "./ui";
 import { productMatchesQuery } from "../../utils/productSearch";
@@ -35,7 +36,14 @@ export default function CountedStockReview({ products = [], registry, actorRole 
   const cells = useStockCells();          // { loc: { pid: { size: cell } } } — ALL locations
   // Filters persist across refresh so you return to the same view.
   const [locFilter, setLocFilterRaw] = useState(() => localStorage.getItem("countedLoc") || DEFAULT_LOCATION);
-  const [typeFilter, setTypeFilterRaw] = useState(() => localStorage.getItem("countedType") || "all");
+  // Chip values are "all" | a real category | "Uncategorized". Reject any stale
+  // persisted "sneaker"/"clothing" (the old chip set) so a returning user doesn't
+  // land on a filter that matches nothing.
+  const TYPE_CHIPS = ["all", ...TOP_CATEGORIES, UNCATEGORIZED_TOP];
+  const [typeFilter, setTypeFilterRaw] = useState(() => {
+    const saved = localStorage.getItem("countedType");
+    return saved && TYPE_CHIPS.includes(saved) ? saved : "all";
+  });
   const setLocFilter = (v) => { try { localStorage.setItem("countedLoc", v); } catch { /* ignore */ } setLocFilterRaw(v); };
   const setTypeFilter = (v) => { try { localStorage.setItem("countedType", v); } catch { /* ignore */ } setTypeFilterRaw(v); };
   const [q, setQ] = useState("");
@@ -89,7 +97,10 @@ export default function CountedStockReview({ products = [], registry, actorRole 
         const sizes = allSizes.map(size => ({ size, qty: qtyOf(size), barcode: barcodeFor(p, size) }))
           .sort((a, b) => String(a.size).localeCompare(String(b.size), undefined, { numeric: true }));
         arr.push({ loc, pid, name: p?.name || pid, photoUrl: p?.photoUrl || null, product: p,
-                   type: (p?.productType === "clothing" ? "clothing" : "sneaker"), sizes });
+                   // `type` feeds the append-only movement audit — left untouched.
+                   // `displayCat` is DISPLAY ONLY (the chip filter below).
+                   type: (p?.productType === "clothing" ? "clothing" : "sneaker"),
+                   displayCat: topCategory(p), sizes });
       }
     }
     return arr.sort((a, b) => a.loc.localeCompare(b.loc) || a.name.localeCompare(b.name));
@@ -106,7 +117,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
     const term = q.trim();
     return groups.filter(g =>
       (locFilter === "all" || g.loc === locFilter) &&
-      (typeFilter === "all" || g.type === typeFilter) &&
+      (typeFilter === "all" || g.displayCat === typeFilter) &&
       (!term || productMatchesQuery({ name: g.name, barcodes: g.sizes.map(s => s.barcode).filter(Boolean) }, term)));
   }, [groups, locFilter, typeFilter, q]);
 
@@ -245,9 +256,10 @@ export default function CountedStockReview({ products = [], registry, actorRole 
       <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search product or barcode…"
         style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 8 }} />
 
-      {/* Sneakers vs Clothing */}
+      {/* Category chips — display filter only (one per real top-level category,
+          + All / Uncategorized). Does NOT change the audited movement `type`. */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-        {[["all", "All"], ["sneaker", "Sneakers"], ["clothing", "Clothing"]].map(([val, lbl]) => {
+        {TYPE_CHIPS.map((val) => [val, val === "all" ? "All" : val]).map(([val, lbl]) => {
           const on = typeFilter === val;
           return (
             <button key={val} onClick={() => { setTypeFilter(val); cancelEdit(); }}
