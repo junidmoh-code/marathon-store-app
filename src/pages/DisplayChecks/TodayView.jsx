@@ -131,7 +131,7 @@ export default function TodayView({ store, active, activeItems, completedItems, 
                       display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ ...META, color: BLUE_SOFT }}>NOTHING OUTSTANDING</div>
           <div style={{ fontFamily: FONT, fontSize: 14, color: "rgba(233,238,255,.5)" }}>
-            No clothing has sold today, or every display has been checked. New checks appear here the moment an item sells.
+            No clothing or perfume has sold today, or every display has been checked. New checks appear here the moment an item sells.
           </div>
         </div>
       )}

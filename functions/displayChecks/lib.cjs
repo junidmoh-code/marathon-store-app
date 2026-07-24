@@ -54,6 +54,12 @@ function stockSizeKey(size) {
 // size outside S..XXXL (e.g. "4XL", "Free Size") classifies sneaker → skipped.
 // Explicit productType covers current catalog entries.
 function isClothingSale(product, rawSize) {
+  // Perfume also generates a display check: the shop holds 1 on display, so a
+  // perfume sale means the display needs replacing from backstock. Perfume is
+  // identified by CATEGORY ("Perfume"), NOT productType — productType is only ever
+  // "clothing" or "sneaker", so a productType check would never match a perfume.
+  // (Only widens the gate — no downstream transaction logic changes.)
+  if (product && product.category === "Perfume") return true;
   const pt = product && product.productType;
   if (pt) return pt === "clothing";
   return typeof rawSize === "string" && /^(S|M|L|XL|XXL|XXXL)$/i.test(rawSize);

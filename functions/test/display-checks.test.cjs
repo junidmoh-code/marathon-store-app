@@ -42,6 +42,22 @@ test("classifier: explicit productType wins; size heuristic covers legacy", () =
   assert.equal(lib.isClothingSale({ productType: "clothing" }, "4XL"), true);
 });
 
+// ── perfume admission (category, not productType) ────────────────────────────
+test("classifier: perfume generates a check via category; non-perfume/non-clothing does not", () => {
+  // Perfume is one-size ("_") with no clothing productType — admitted by category.
+  assert.equal(lib.isClothingSale({ category: "Perfume" }, "_"), true);
+  assert.equal(lib.isClothingSale({ category: "Perfume", productType: undefined }, "_"), true);
+  assert.equal(lib.isClothingSale({ category: "Perfume", subcategory: "Perfume" }, null), true);
+  // A productType check would NEVER admit perfume (no "perfume" productType exists):
+  assert.equal(lib.isClothingSale({ productType: "perfume" }, "_"), false); // not a real value; category is the key
+  // Other one-size / non-clothing types still do NOT generate a check:
+  assert.equal(lib.isClothingSale({ category: "Accessories" }, "_"), false);
+  assert.equal(lib.isClothingSale({ category: "Footwear", productType: "sneaker" }, "9"), false);
+  assert.equal(lib.isClothingSale({ category: "Footwear" }, "9"), false);
+  // Existing clothing behaviour unchanged:
+  assert.equal(lib.isClothingSale({ productType: "clothing", category: "Clothing" }, "M"), true);
+});
+
 // ── SA anchors ───────────────────────────────────────────────────────────────
 test("saDateStringFromMs: UTC+2 day slice (mirror of functions/index.js:562)", () => {
   // 2026-07-15T22:00Z is midnight SA on the 16th
