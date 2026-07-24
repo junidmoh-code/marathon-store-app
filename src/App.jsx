@@ -4028,6 +4028,16 @@ function AdminReviewCategoriesTab({ products = [] }) {
 
 import { needsCost, needsRetail, needsAny, typeOf, createdAt, updatedAt, buildUpdates, validatePrices } from "./utils/missingPrices";
 
+// Missing-Prices category chips: All + the real top-levels (so a new category
+// appears automatically) + an Uncategorized catch-all. Keys match typeOf()
+// outputs. Module-scope (pure, derived from constants) so it has a stable
+// identity across renders and can't become a stale-closure trap.
+const MISSING_PRICE_FILTERS = [
+  ["all", "All"],
+  ...TOP_CATEGORIES.map((c) => [c, c]),
+  [UNCATEGORIZED_TOP, "Uncategorized"],
+];
+
 function MissingPricesTab({ products = [] }) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("newest"); // "newest" | "oldest"
@@ -4043,13 +4053,7 @@ function MissingPricesTab({ products = [] }) {
   const [photoView, setPhotoView] = useState(null);
   const PAGE_SIZE = 50;
 
-  // Chips driven off the real category list (+ All / Uncategorized), so a new
-  // top-level category appears here automatically. Keys match typeOf() outputs.
-  const CATEGORY_FILTERS = [
-    ["all", "All"],
-    ...TOP_CATEGORIES.map((c) => [c, c]),
-    [UNCATEGORIZED_TOP, "Uncategorized"],
-  ];
+  const CATEGORY_FILTERS = MISSING_PRICE_FILTERS;
 
   const list = useMemo(() => {
     let items = (products || []).filter(p => p && p.id && needsAny(p));
