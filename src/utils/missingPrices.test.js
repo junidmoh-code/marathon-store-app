@@ -24,12 +24,21 @@ test("needsAny: either missing counts", () => {
   assert.equal(needsAny(p({ stockPrice: 100, retailPrice: 100 })), false);
 });
 
-test("typeOf: productType takes precedence, then category fallback", () => {
-  assert.equal(typeOf(p({ productType: "clothing" })), "clothing");
-  assert.equal(typeOf(p({ productType: "sneaker" })), "shoes");
-  assert.equal(typeOf(p({ category: "Accessories" })), "accessories");
-  assert.equal(typeOf(p({ category: "Perfumes" })), "perfumes");
-  assert.equal(typeOf(p({ category: "Other" })), "other");
+test("typeOf: category drives the bucket, not the unreliable productType", () => {
+  // The real `category` field is the signal — one of the four top-levels.
+  assert.equal(typeOf(p({ category: "Footwear" })), "Footwear");
+  assert.equal(typeOf(p({ category: "Clothing" })), "Clothing");
+  assert.equal(typeOf(p({ category: "Accessories" })), "Accessories");
+  assert.equal(typeOf(p({ category: "Perfume" })), "Perfume");
+  // The two live mis-bucketings this fixes: 329 accessories carry productType
+  // "clothing" and perfumes carry productType "sneaker" — category must win so
+  // they stop hiding under Clothing / Shoes.
+  assert.equal(typeOf(p({ category: "Accessories", productType: "clothing" })), "Accessories");
+  assert.equal(typeOf(p({ category: "Perfume", productType: "sneaker" })), "Perfume");
+  // No / unknown category → the Uncategorized catch-all (never silently dropped).
+  assert.equal(typeOf(p({ productType: "clothing" })), "Uncategorized");
+  assert.equal(typeOf(p({ category: "Other" })), "Uncategorized");
+  assert.equal(typeOf(p({})), "Uncategorized");
 });
 
 test("createdAt: parses p-timestamp id", () => {

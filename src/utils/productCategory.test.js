@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { categorize, sizeClass, brandOf, CATEGORY_TREE, UNCATEGORIZED } from "./productCategory.js";
+import { categorize, sizeClass, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./productCategory.js";
 
 const SHOE = ["6", "7", "8", "9", "10", "11"];
 const CLOTHES = ["S", "M", "L", "XL", "XXL"];
@@ -112,5 +112,24 @@ describe("tree", () => {
     for (const sub of ["Sneakers", "Soccer Boots", "T-Shirts", "Bags", "Belts", "Perfume", UNCATEGORIZED]) {
       expect(all.has(sub)).toBe(true);
     }
+  });
+});
+
+describe("topCategory (display-only bucket)", () => {
+  it("returns the real top-level category verbatim", () => {
+    for (const c of TOP_CATEGORIES) expect(topCategory({ category: c })).toBe(c);
+  });
+  it("ignores productType — the field that mis-labels the data", () => {
+    // Live reality: accessories carry productType "clothing", perfumes "sneaker".
+    expect(topCategory({ category: "Accessories", productType: "clothing" })).toBe("Accessories");
+    expect(topCategory({ category: "Perfume", productType: "sneaker" })).toBe("Perfume");
+    expect(topCategory({ category: "Footwear", productType: undefined })).toBe("Footwear");
+  });
+  it("no / unknown / empty category → Uncategorized (never dropped)", () => {
+    expect(topCategory({ productType: "sneaker" })).toBe(UNCATEGORIZED_TOP);
+    expect(topCategory({ category: "" })).toBe(UNCATEGORIZED_TOP);
+    expect(topCategory({ category: "Nonsense" })).toBe(UNCATEGORIZED_TOP);
+    expect(topCategory({})).toBe(UNCATEGORIZED_TOP);
+    expect(topCategory(null)).toBe(UNCATEGORIZED_TOP);
   });
 });

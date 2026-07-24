@@ -29,6 +29,23 @@ export const CATEGORY_TREE = {
 export const TOP_CATEGORIES = Object.keys(CATEGORY_TREE);
 export const UNCATEGORIZED = "Clothing — Uncategorized";
 
+// ── DISPLAY-ONLY top-level category ────────────────────────────────────────────
+// The bucket a product shows under in list/filter surfaces (admin Products tabs,
+// Missing-Prices chips, Counted-Stock chips, the organiser backlog). Driven off
+// the near-universal `category` field — NOT `productType`, which is unreliable
+// (empty on ~24% of records, and mislabels accessories as "clothing" / perfume as
+// "sneaker"). Anything with no/unknown category falls into an explicit
+// "Uncategorized" bucket so a product is never silently dropped from a list.
+//
+// DISPLAY ONLY. Never gate behaviour on this — hubs, refill targeting, size grids,
+// dispatch routing and the display-check trigger read productType/category on
+// their own terms and must not be widened through here.
+export const UNCATEGORIZED_TOP = "Uncategorized";
+export function topCategory(product) {
+  const c = product && product.category;
+  return TOP_CATEGORIES.includes(c) ? c : UNCATEGORIZED_TOP;
+}
+
 // ── Size class (mirrors the POS src/shared/sizeClass.js contract) ──────────────
 const CLOTHING_LETTER_RE = /^(XS|S|M|L|X+L|[2-9]X+L)$/;
 const WAIST_MIN = 28; // numeric ≥ 28 is a pants waist (clothing); below is a shoe.
