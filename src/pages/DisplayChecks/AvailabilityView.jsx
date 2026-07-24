@@ -42,7 +42,9 @@ function sortSizes(a, b) {
   return 0;
 }
 
-const isClothing = (p) => p && (p.category === "Clothing" || p.productType === "clothing");
+// Includes Perfume so a perfume display check is searchable here too (name kept
+// as-is — a rename across the module is deliberately deferred; see PR notes).
+const isClothing = (p) => p && (p.category === "Clothing" || p.category === "Perfume" || p.productType === "clothing");
 const nameTokens = (s) => String(s || "").toLowerCase().split(/\s+/).filter(Boolean);
 
 // One store's live per-size counts — a single get(), size-decoded.
@@ -329,7 +331,7 @@ export default function AvailabilityView({ store, products, wide, active }) {
         </div>
       )}
       {trimmed && !looksBarcode && results.length === 0 && (
-        <div style={{ ...META, color: "rgba(233,238,255,.4)" }}>NO CLOTHING MATCHES "{trimmed.toUpperCase()}"</div>
+        <div style={{ ...META, color: "rgba(233,238,255,.4)" }}>NO MATCHES "{trimmed.toUpperCase()}"</div>
       )}
 
       {recent.length > 0 && (
