@@ -191,6 +191,7 @@ test("retry retryOps carry the rejection stamps (2026-07-24 outage pin)", () => 
       routes: { trophy: "hub2" },
       mode: { trophy: "live" },
       defaultRunByStore: { trophy: { M: 2 } },
+      ruleBasedTargets: true,          // the cell exists only via the rule
       rejectCooldownHours: 24,
     },
     products: { p1: { productType: "clothing", sizes: ["M"] } },
@@ -232,6 +233,11 @@ const CONFIG = {
   staleIntentHours: 48,
   maxUnitsPerIntent: 20,
   maxIntentsPerRun: 200,
+  // Production configuration: rule-based clothing targets ON at every dest.
+  // The suite exercises the shipped state; the kill-switch tests below override
+  // this per-case. NOTE the engine default when the key is ABSENT is OFF
+  // (fail-safe) — pinned in "kill switch: absent key means OFF".
+  ruleBasedTargets: true,
 };
 
 const PRODUCTS = { p1: { name: "Tee", productType: "clothing", sizes: ["M", "L", "XL"] } };
@@ -1062,8 +1068,13 @@ test("decision types: keep (permanent), snooze (expires), until_change (fingerpr
     targetDecisions: { hub2: { pUnset: { decision: "until_change", fingerprint: fp } } } })).exceptions.noTarget.count, 1, "inventory change resurfaces the card");
 });
 
-test("v8 split: circulating = unintroduced (migration) · central-only = NEW · numeric = decision · leftover = decision", () => {
+// This is the EXPLICIT-ONLY (v5/v8) decision taxonomy, so it runs with the kill
+// switch OFF. With rule-based targets ON the "leftover" class is absorbed by the
+// rule rather than asked about — that is the feature working, pinned in the
+// companion test directly below.
+test("v8 split (rule OFF): circulating = unintroduced (migration) · central-only = NEW · numeric = decision · leftover = decision", () => {
   const plan = computeRefillPlan(base({
+    config: { ...CONFIG, ruleBasedTargets: false },
     products: {
       p1: PRODUCTS.p1,                                          // targeted at PE
       pCirc: { productType: "clothing", sizes: ["M", "L"] },    // circulating, no targets → MIGRATION
@@ -1092,6 +1103,35 @@ test("v8 split: circulating = unintroduced (migration) · central-only = NEW · 
   // Exactly one card per product — no duplicates across lists.
   const all = [...nt.map((c) => c.pid), ...plan.exceptions.unintroduced.items.map((u) => u.pid)];
   assert.equal(new Set(all).size, all.length, "one card per product, no dup across NEW/migration/decision");
+});
+
+// Companion to the above: the SAME "leftover" cell, with the switch ON. The rule
+// includes it automatically, so the human decision disappears and the cell is
+// refilled instead. This is the intended behaviour change of #259 — recorded
+// here explicitly so nobody later reads the OFF-taxonomy test as a regression.
+test("v8 leftover (rule ON): auto-included by the rule instead of asking a human", () => {
+  const shared = {
+    products: { p1: PRODUCTS.p1 },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: {
+      "marathon-pe": { p1: { M: cell(3) } },
+      hub2: { p1: { M: cell(10) } },
+      central: {},
+      // Leftover: targets at PE, none at Trophy. Must hold real units — a
+      // qty-0 cell raises no decision card under either setting.
+      trophy: { p1: { M: cell(1) } },
+    },
+  };
+  const off = computeRefillPlan(base({ ...shared, config: { ...CONFIG, ruleBasedTargets: false } }));
+  assert.ok(off.exceptions.noTarget.items.some((c) => c.pid === "p1" && c.loc === "trophy")
+    || off.exceptions.unintroduced.items.some((u) => u.pid === "p1"),
+    "switch OFF → still a human decision");
+
+  const on = computeRefillPlan(base({ ...shared, config: { ...CONFIG, ruleBasedTargets: true } }));
+  assert.ok(!on.exceptions.noTarget.items.some((c) => c.pid === "p1" && c.loc === "trophy"),
+    "switch ON → no decision card; the rule already covers it");
+  assert.ok(on.intents.some((i) => i.dest === "trophy" && i.productId === "p1" && i.sizeKey === "M"),
+    "and it is actively refilled to the trophy standard run");
 });
 
 test("numeric-only product at TWO locations gets a decision card per location (dedup is migration-only)", () => {
@@ -1357,11 +1397,50 @@ test("reject while denier counted EMPTY → full 24h cooldown unchanged", () => 
   assert.ok(w && /reopens when stock arrives/.test(w.note), "empty denier keeps the arrival/24h contract");
 });
 
-test("RETRY: streak at limit + stock still shown → retries after 24h, no permanent park", () => {
-  const plan = computeRefillPlan(base({ orders: rejectedOrder(30), rejectStreak: streakNode(3) }));
-  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1, "30h later, engine retries instead of parking");
-  const w = plan.exceptions.waitingForStock.items.find((x) => x.loc === "marathon-pe");
-  assert.ok(!w, "not parked as waiting — the retry is actionable");
+// ── LOOP GUARD RESTORED (2026-07-25) — supersedes #259's "no permanent park" ──
+// This test previously asserted the OPPOSITE: that a streak at the limit keeps
+// retrying every 24h. That was #259 silently reversing the 2026-07-19 incident
+// fix, whose entire purpose was to STOP re-asking into a wrong count. The owner
+// restored the guard; the assertion is inverted to match, and the precedence
+// (park BEATS retry) is pinned explicitly below.
+test("streak at limit + stock still shown → PARKED in Recount Needed, not re-asked", () => {
+  const plan = computeRefillPlan(base({ orders: rejectedOrder(30), rejectStreak: streakNode(4) }));
+  assert.equal(
+    plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0,
+    "30h later the guard still holds — a bad count must not be re-asked forever",
+  );
+  const r = plan.exceptions.recountNeeded.items.find((x) => x.loc === "marathon-pe" && x.size === "M");
+  assert.ok(r, "surfaced for a human recount");
+  assert.equal(r.rejections, 4);
+  assert.match(r.note, /Ask again/, "note tells staff how to release it");
+});
+
+test("streak park BEATS the 24h auto-retry (precedence is load-bearing)", () => {
+  // A cell that is BOTH streak-flagged AND has an elapsed retry window. If the
+  // retry were evaluated first it would re-ask and the guard would be decorative
+  // — which is exactly the regression #259 introduced.
+  const plan = computeRefillPlan(base({
+    orders: rejectedOrder(30),
+    rejectStreak: streakNode(4),
+    retryState: { "marathon-pe": { p1: { M: {
+      retryCount: 2,
+      firstRejectedAt: iso(72), lastRejectedAt: iso(30),
+      nextRetryAt: iso(6),           // due 6h ago — retry WOULD fire
+      lastRejectionReason: "cancelled",
+    } } } },
+  }));
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0,
+    "park wins: no intent, even though the retry window elapsed");
+  assert.ok(plan.exceptions.recountNeeded.items.some((x) => x.loc === "marathon-pe"), "still parked for recount");
+  assert.ok(!(plan.retryOps || []).some((o) => o.op === "retry" && o.dest === "marathon-pe"),
+    "a parked cell must not emit a retry op either");
+});
+
+test("below the streak limit, the 24h auto-retry still works (guard is not a blanket stop)", () => {
+  const plan = computeRefillPlan(base({ orders: rejectedOrder(30), rejectStreak: streakNode(1) }));
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 1,
+    "ordinary rejection: re-asks after the cooldown as designed");
+  assert.equal(plan.exceptions.recountNeeded.count, 0);
 });
 
 test("RETRY: denier no longer shows stock → streak reset, normal cooldown resumes", () => {
@@ -1431,18 +1510,187 @@ test("engine self-withdrawal (rr cancelled WITH cancelReason) never increments t
   assert.ok(plan.closes.every((c) => !c.streakOp || c.streakOp.op !== "inc"), "no inc on any close either");
 });
 
-test("streak source leg retries after 24h — store demand flows again", () => {
+// ── SOURCE-LEG GUARD RESTORED (2026-07-25) — inverted from #259 ───────────────
+// Previously asserted the store demand "flows again" while its supplying leg was
+// parked awaiting a recount. That is the starvation case the 07-19 fix named
+// explicitly: demand sitting under a reassuring label behind a leg nobody is
+// working. A parked source leg must report the store as BLOCKED.
+test("streak-flagged source leg parks, and the store behind it reports BLOCKED", () => {
   const plan = computeRefillPlan(base({
     targets: {
       "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } },
       hub2: { p1: { M: { target: 3, minQty: 2 } } },
     },
     stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } }, trophy: {} },
-    rejectStreak: { hub2: { p1: { M: { count: 3, lastTs: iso(30), by: "central" } } } },
+    rejectStreak: { hub2: { p1: { M: { count: 4, lastTs: iso(30), by: "central" } } } },
   }));
-  assert.equal(plan.intents.filter((x) => x.dest === "hub2").length, 1, "30h later, hub2 leg retries");
-  assert.ok(plan.exceptions.awaitingUpstream.items.some((w) => w.loc === "marathon-pe"), "store demand flows again");
-  assert.equal(plan.exceptions.awaitingSupplier.count, 0, "not blocked — retry is flowing");
+  assert.equal(plan.intents.filter((x) => x.dest === "hub2").length, 0, "the flagged hub2 leg stays parked");
+  assert.ok(plan.exceptions.recountNeeded.items.some((x) => x.loc === "hub2"), "hub2 leg surfaced for recount");
+  assert.ok(!plan.exceptions.awaitingUpstream.items.some((w) => w.loc === "marathon-pe"),
+    "store must NOT be labelled 'flowing' behind a parked leg");
+  const b = plan.exceptions.awaitingSupplier.items.find((w) => w.loc === "marathon-pe");
+  assert.ok(b, "store demand is reported as blocked");
+  assert.match(b.note, /awaits a recount/, "and the note names the real remedy");
+});
+
+// ═══ KILL SWITCH — /config/refillEngine/ruleBasedTargets ═════════════════════
+// The emergency control. These pin that it works instantly, in both directions,
+// with no half-state, and that ABSENT means OFF (fail-safe).
+const carried = (over = {}) => base({
+  // pRule is carried at trophy (stock node present) with NO explicit target —
+  // it exists ONLY by virtue of the rule, so it is the perfect switch probe.
+  products: { ...PRODUCTS, pRule: { productType: "clothing", sizes: ["M", "L"] } },
+  targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+  stock: {
+    "marathon-pe": { p1: { M: cell(1) } },
+    hub2: { p1: { M: cell(10) }, pRule: { M: cell(10), L: cell(10) } },
+    central: { p1: { M: cell(5) } },
+    trophy: { pRule: { M: cell(0), L: cell(0) } },
+  },
+  ...over,
+});
+// hub2 needs its own standard run for the rule to resolve there — production
+// has one (S2 M3 L3 XL2 XXL2 XXXL1); the shared CONFIG above only defines the
+// two stores, so the switch probes supply it explicitly.
+const RULE_CONFIG = { ...CONFIG, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub2: { S: 2, M: 3, L: 3, XL: 2, XXL: 2, XXXL: 1 } } };
+const rulePlan = (ruleBasedTargets) =>
+  computeRefillPlan(carried({ config: { ...RULE_CONFIG, ruleBasedTargets } }));
+
+test("kill switch ON: rule-based targets manage a carried product with no explicit target", () => {
+  const plan = rulePlan(true);
+  const mine = plan.intents.filter((i) => i.productId === "pRule" && i.dest === "trophy");
+  assert.equal(mine.length, 2, "M and L both refilled by the rule");
+  assert.ok(plan.stats.managedCells > 0);
+  assert.deepEqual(plan.policy.ruleBasedTargets, { "marathon-pe": true, trophy: true, hub2: true });
+});
+
+test("kill switch OFF: engine reverts to explicit-targets-only, no crash, no half-state", () => {
+  const plan = rulePlan(false);
+  assert.equal(plan.intents.filter((i) => i.productId === "pRule").length, 0,
+    "no rule-based intents at all");
+  // explicit targets keep working exactly as before
+  assert.ok(plan.intents.some((i) => i.productId === "p1" && i.dest === "marathon-pe"),
+    "explicit-target refills are untouched by the switch");
+  assert.equal(plan.errors.filter((e) => /undefined|cannot|TypeError/i.test(e)).length, 0, "clean run");
+  assert.deepEqual(plan.policy.ruleBasedTargets, { "marathon-pe": false, trophy: false, hub2: false });
+});
+
+test("kill switch: absent key means OFF (fail-safe)", () => {
+  const { ruleBasedTargets, ...noKey } = CONFIG;
+  const plan = computeRefillPlan(carried({ config: noKey }));
+  assert.equal(plan.intents.filter((i) => i.productId === "pRule").length, 0,
+    "a missing/garbled config node must never silently switch thousands of cells ON");
+});
+
+test("kill switch: per-destination map", () => {
+  const plan = rulePlan({ trophy: true, hub2: false, "marathon-pe": false });
+  assert.ok(plan.intents.some((i) => i.productId === "pRule" && i.dest === "trophy"), "trophy on");
+  assert.ok(!plan.intents.some((i) => i.productId === "pRule" && i.dest === "hub2"), "hub2 off");
+  assert.deepEqual(plan.policy.ruleBasedTargets, { "marathon-pe": false, trophy: true, hub2: false });
+});
+
+test("kill switch: flipping OFF then ON is fully reversible on the next scan", () => {
+  const on1 = rulePlan(true).intents.filter((i) => i.productId === "pRule").length;
+  const off = rulePlan(false).intents.filter((i) => i.productId === "pRule").length;
+  const on2 = rulePlan(true).intents.filter((i) => i.productId === "pRule").length;
+  assert.ok(on1 > 0 && off === 0 && on2 === on1,
+    `expected on→off→on to be symmetric, got ${on1}/${off}/${on2}`);
+});
+
+// ═══ THROTTLE — /config/refillEngine/maxIntentsPerRun ═════════════════════════
+test("throttle caps intents per scan and reports it in policy", () => {
+  const plan = computeRefillPlan(carried({ config: { ...RULE_CONFIG, ruleBasedTargets: true, maxIntentsPerRun: 1 } }));
+  // Guard the fixture itself: with only one intent computed, a cap of 1 would
+  // "pass" without ever exercising the throttle. (CodeRabbit, PR #277.)
+  assert.ok(plan.policy.intentsComputed > 1, `fixture must compute >1 intent, got ${plan.policy.intentsComputed}`);
+  assert.equal(plan.intents.length, 1, "hard cap honoured");
+  assert.equal(plan.policy.maxIntentsPerRun, 1);
+  assert.ok(plan.policy.throttled, "policy records that this run was throttled");
+  assert.ok(plan.policy.intentsComputed > plan.policy.intentsPlanned, "and how much was deferred");
+});
+
+// ═══ P1 — PHANTOM DECISION QUEUES ════════════════════════════════════════════
+// #259 changed what the planner manages but not what these queues ask, so
+// rule-managed products kept demanding a human decision (382 noTarget + 211
+// unintroduced phantoms live on 2026-07-25).
+test("a rule-managed product does NOT appear in noTarget/unintroduced", () => {
+  const plan = rulePlan(true);
+  assert.ok(!plan.exceptions.noTarget.items.some((x) => x.pid === "pRule"),
+    "engine is actively refilling it — it is not an open decision");
+  assert.ok(!plan.exceptions.unintroduced.items.some((x) => x.pid === "pRule"),
+    "nor is it awaiting migration");
+});
+
+test("with the switch OFF the same product DOES surface as a decision again", () => {
+  const plan = rulePlan(false);
+  const surfaced = plan.exceptions.noTarget.items.some((x) => x.pid === "pRule")
+    || plan.exceptions.unintroduced.items.some((x) => x.pid === "pRule");
+  assert.ok(surfaced, "queues follow the switch — v5 behaviour returns intact");
+});
+
+// Kimi, PR #277: the excess loop asked the explicit row, so a rule-managed cell
+// that was massively overstocked appeared in NO queue — not excess (no explicit
+// row) and not noTarget (managedHere skips rule-managed products).
+test("rule-managed overstock still surfaces as excess", () => {
+  const plan = computeRefillPlan(carried({
+    config: { ...RULE_CONFIG, ruleBasedTargets: true },
+    products: { ...PRODUCTS, pOver: { productType: "clothing", sizes: ["M"] } },
+    targets: {},                                    // NO explicit rows anywhere
+    stock: {
+      "marathon-pe": {}, hub2: {}, central: {},
+      trophy: { pOver: { M: cell(14) } },           // rule target for trophy M is 2
+    },
+  }));
+  const ex = plan.exceptions.excess.items.find((e) => e.pid === "pOver" && e.loc === "trophy");
+  assert.ok(ex, "overstock against a RULE target must be visible in Move Excess");
+  assert.equal(ex.target, 2, "measured against the rule target");
+  assert.equal(ex.excess, 12);
+});
+
+test("throttle: a negative maxIntentsPerRun cannot silently stop the engine", () => {
+  // Unclamped, -5 is truthy → breaker trips → deal loop exits → zero intents,
+  // every scan, while the run record claims it merely throttled.
+  const plan = computeRefillPlan(carried({ config: { ...RULE_CONFIG, ruleBasedTargets: true, maxIntentsPerRun: -5 } }));
+  assert.ok(plan.intents.length >= 1, "clamped to at least 1 — never a silent total stop");
+  const zero = computeRefillPlan(carried({ config: { ...RULE_CONFIG, ruleBasedTargets: true, maxIntentsPerRun: 0 } }));
+  assert.ok(zero.intents.length >= 1, "0 falls back to the default, not to a stop");
+});
+
+// CodeRabbit, PR #277: the blind-spot guard iterated `targets[loc]` — explicit
+// rows only. A RULE-managed product has no explicit row, so a numeric size it
+// holds was skipped by the decision queues (managedHere → continue) AND never
+// visited by the guard: no target, no request, surfaced nowhere. Silent miss.
+test("rule-managed product: a numeric size still surfaces as a blind spot", () => {
+  const plan = computeRefillPlan(carried({
+    config: { ...RULE_CONFIG, ruleBasedTargets: true },
+    // pMixed is covered by the rule on M/L, and also holds jeans size 32 which
+    // the standard run does NOT cover. It has NO explicit target row anywhere.
+    products: { ...PRODUCTS, pMixed: { productType: "clothing", sizes: ["M", "L", "32"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: {
+      "marathon-pe": { p1: { M: cell(1) } },
+      hub2: { p1: { M: cell(10) } },
+      central: {},
+      trophy: { pMixed: { M: cell(1), 32: cell(4) } },
+    },
+  }));
+  // The rule manages it, so it must NOT be an unintroduced/assortment card…
+  assert.ok(!plan.exceptions.unintroduced.items.some((u) => u.pid === "pMixed"),
+    "rule-managed → not awaiting migration");
+  // …but the untargetable numeric size MUST still be visible to a human.
+  const card = plan.exceptions.noTarget.items.find((c) => c.pid === "pMixed" && c.loc === "trophy" && c.noStandard);
+  assert.ok(card, "numeric size under a rule-managed product must not go silently unmanaged");
+  assert.equal(card.units, 4, "only the untargetable size's units are counted, not the rule-covered M");
+});
+
+test("explicit target 0 is a DECISION, never a blind spot (three-state rule holds)", () => {
+  const plan = computeRefillPlan(carried({
+    config: { ...CONFIG, ruleBasedTargets: false },
+    targets: { hub2: { pRule: { M: { target: 0, minQty: 0 } } } },
+    stock: { "marathon-pe": {}, hub2: { pRule: { M: cell(5) } }, central: {}, trophy: {} },
+  }));
+  assert.ok(!plan.exceptions.noTarget.items.some((x) => x.pid === "pRule" && x.noStandard),
+    "a deliberate exclusion must not be re-surfaced as an unmanaged size");
 });
 
 test("dormant streak (older than the ledger window) resets instead of flagging a forgotten mismatch", () => {

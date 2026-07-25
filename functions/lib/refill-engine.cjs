@@ -184,10 +184,41 @@ function productSizes(products, pid) {
   return (products?.[pid]?.sizes || []).map(String);
 }
 
+// ═══ KILL SWITCH — /config/refillEngine/ruleBasedTargets ═════════════════════
+// THE one key that turns rule-based clothing targets off, live, with no code
+// change and no deploy. Set it and the very next scan (≤15 min) obeys.
+//
+//   ruleBasedTargets: true              → ON at every destination
+//   ruleBasedTargets: false             → OFF — engine reverts to the v5
+//                                         explicit-targets-only behaviour
+//   ruleBasedTargets: { trophy: true, hub2: false, "marathon-pe": true }
+//                                       → per-destination; a location that is
+//                                         absent from the map is OFF
+//   key ABSENT / any other type         → OFF  (fail-safe, see below)
+//
+// FAIL-SAFE BY DESIGN: absent means OFF, so deleting the key is a valid
+// emergency kill, and a config read that returns a partial/garbled node can
+// never silently switch 6,000+ cells ON. Explicit-only under-orders; the rule
+// over-orders — when in doubt the engine must take the conservative side.
+// (This is why the dead `autoAdoptTargets` key was NOT revived: its stale live
+// value {hub2:true} would have meant "hub2 only", silently changing behaviour
+// the moment this shipped. It is inert and should be deleted from config.)
+//
+// Turning it off NEVER half-states anything: rule-based targets are computed in
+// memory per scan and never persisted, so there is nothing to unwind. Explicit
+// /stock_targets rows are untouched and keep working either way.
+function ruleTargetsEnabled(config, dest) {
+  const v = config?.ruleBasedTargets;
+  if (v === true) return true;
+  if (v && typeof v === "object" && !Array.isArray(v)) return v[dest] === true;
+  return false;   // false, undefined, null, or anything unexpected → OFF
+}
+
 // ── target resolution — EXPLICIT OVERRIDE, THEN GLOBAL CLOTHING RULE ─────────
-// Priority order (owner decision 2026-07-21):
+// Priority order (owner decision 2026-07-21, re-landed under review 2026-07-25):
 //   1. explicit manual override (/stock_targets) — always wins
-//   2. global clothing rule (config.defaultRunByStore + catalog sizes)
+//   2. global clothing rule (config.defaultRunByStore + catalog sizes),
+//      ONLY where ruleBasedTargets is enabled for this destination
 //   3. null (non-clothing, store does not carry, or deliberately excluded)
 // Explicit target 0 continues to mean "deliberately excluded".
 function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
@@ -195,6 +226,7 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
   if (explicit && typeof explicit.target === "number") {
     return { target: num(explicit.target), minQty: num(explicit.minQty), source: "explicit" };
   }
+  if (!ruleTargetsEnabled(config, dest)) return null;   // ← kill switch
   // Global clothing rule: apply the location's standard run to every catalog
   // size, but only where the store actually carries the product.
   const p = products?.[pid];
@@ -453,8 +485,13 @@ function computeRefillPlan(snapshot) {
   }
 
   // ── managed universe per dest: explicit targets + clothing products the store carries ──
+  // Both honour the kill switch: with rule-based targets off, the universe
+  // collapses back to exactly the explicit-target keys (v5 behaviour), so the
+  // engine does not even walk the ~6,000 rule-only cells. resolveTarget would
+  // return null for them anyway — this keeps the scan cheap as well as correct.
   const managedPids = (dest) => {
     const out = new Set(Object.keys(targets?.[dest] || {}));
+    if (!ruleTargetsEnabled(config, dest)) return out;
     for (const [pid, p] of Object.entries(products || {})) {
       if (isClothing(p) && storeCarries(stock, dest, pid)) out.add(pid);
     }
@@ -462,6 +499,7 @@ function computeRefillPlan(snapshot) {
   };
   const sizesFor = (dest, pid) => {
     const out = new Set(Object.keys(targets?.[dest]?.[pid] || {}));
+    if (!ruleTargetsEnabled(config, dest)) return out;
     if (isClothing(products?.[pid]) && storeCarries(stock, dest, pid)) {
       for (const s of productSizes(products, pid)) out.add(encodeSizeKey(s));
     }
@@ -780,21 +818,35 @@ function computeRefillPlan(snapshot) {
         const rejTs = rej?.ts || 0;
         const denier = rej?.by || src;   // watch the location that SAID no, not today's route
         const denierHas = avail(cellQty(stock, denier, pid, size));
-        // Streak tracking stays advisory: it still surfaces Recount Needed when
-        // a count-vs-shelf mismatch persists, but it no longer blocks re-asks.
+        // ── LOOP GUARD (incident 2026-07-19) — RESTORED 2026-07-25 ────────────
+        // N human rejections while the denier's counted cell claims stock means
+        // the COUNT is the problem, not the demand. Stop re-asking into the void
+        // — park the cell in Recount Needed until the count changes, stock
+        // demonstrably arrives, or staff clear the streak from Health.
+        //
+        // PRECEDENCE IS LOAD-BEARING: this check MUST come before the 24h
+        // auto-retry below. #259 removed the `continue` and let the retry own
+        // the cell, which silently reduced the guard to a notification — a
+        // flagged cell was re-asked every 24h forever, exactly the loop the
+        // 07-19 incident fix existed to stop. Park beats retry. Pinned in tests
+        // ("streak park beats the 24h auto-retry").
         const st = streakState(dest, pid, sizeKey, size, denier);
-        if (st.resetWorthy) streakOps.push({ dest, pid, sizeKey, op: "reset" });
         if (st.flagged) {
           recountNeeded.push({
             loc: dest, pid, size, deficit, source: st.denier,
             rejections: st.count, showing: st.has,
-            note: `rejected ${st.count}× at ${st.denier} while its count shows ${st.has} — recount advised, retry continues`,
+            note: `rejected ${st.count}× at ${st.denier} while its count shows ${st.has} — recount, then "Ask again" in Health`,
           });
+          continue;
         }
+        // Denier no longer claims stock, stock arrived after the last strike,
+        // or the streak went stale — evidence changed; clear it and resume
+        // normal cooldown handling below.
+        if (st.resetWorthy) streakOps.push({ dest, pid, sizeKey, op: "reset" });
         // 24h auto-retry (owner rule 2026-07-21): a rejected cell retries
-        // indefinitely every 24h while the destination still needs stock and
-        // the source still has inventory. No permanent parking — the only
-        // stops are manual exclusion, an active open request, or no source stock.
+        // every 24h while the destination still needs stock and the source
+        // still has inventory. It is the cooldown policy for ORDINARY
+        // rejections — the streak guard above still parks pathological ones.
         const rt = retryOf(dest, pid, sizeKey);
         if (rt && rt.nextRetryAt && Date.parse(rt.nextRetryAt) > nowMs) {
           waitingForStock.push({
@@ -847,9 +899,16 @@ function computeRefillPlan(snapshot) {
           // gate that causes it.
           const srcDenier = srcRej?.by || upstreamOfSrc;
           const srcDenierHas = srcDenier ? avail(cellQty(stock, srcDenier, pid, size)) : 0;
-          // A streak on the source leg is advisory only — it no longer blocks
-          // re-asks, so it must not mislabel the store demand as blocked.
+          // A streak-FLAGGED source leg is parked indefinitely (Recount Needed
+          // awaits a human) — the store demand must say "blocked", not
+          // "flowing", or it starves behind a self-healing label. RESTORED
+          // 2026-07-25 with the guard above; it matters MORE under rule-based
+          // targets, because srcCanPull is now almost always true for carried
+          // clothing, so this is the main remaining signal that an upstream leg
+          // is genuinely stuck rather than merely waiting.
+          const srcStreakFlagged = streakState(src, pid, sizeKey, size, upstreamOfSrc).flagged;
           const srcParked = (srcRej && nowMs - srcRej.ts < effWindowMs(srcDenierHas) && !arrivedAfter(srcDenier, pid, sizeKey, srcRej.ts))
+            || srcStreakFlagged
             || confirmedOut(pid, sizeKey);
           // "Chain is flowing" additionally requires the source to HAVE a
           // buffer target for this cell — without one the engine will never
@@ -864,7 +923,7 @@ function computeRefillPlan(snapshot) {
           } else {
             awaitingSupplier.push({
               loc: dest, pid, size, deficit, source: src,
-              note: srcParked ? `upstream leg blocked — ${src} ${srcDenierHas > 0 ? "recently rejected — re-checks shortly" : "recently rejected / confirmed out"}`
+              note: srcParked ? `upstream leg blocked — ${src} ${srcStreakFlagged ? "awaits a recount (see Recount Needed)" : srcDenierHas > 0 ? "recently rejected — re-checks shortly" : "recently rejected / confirmed out"}`
                 : (upstreamAvail > 0 && !srcCanPull) ? `${src} has no buffer target for this size — set one (or transfer manually); stock waits at ${upstreamOfSrc}`
                 : "upstream chain empty — supplier reorder or excess return needed",
             });
@@ -918,7 +977,21 @@ function computeRefillPlan(snapshot) {
   // can fill the cap, so Trophy and hub2 never surface). Round-robin across
   // destinations instead: each dest's list is priority-sorted, then slots are
   // dealt one per dest until the cap is reached.
-  const maxIntents = num(config?.maxIntentsPerRun) || 200;
+  // THROTTLE — /config/refillEngine/maxIntentsPerRun (live, no deploy).
+  // The number of NEW intents any single scan may create, dealt fairly across
+  // destinations, high-priority first. This is the "slow it down without
+  // switching it off" control: set it to e.g. 50 and the queue grows by at most
+  // 50 cards per 15-minute scan instead of the full computed backlog. Anything
+  // not dealt this run is simply re-proposed next run — the engine is stateless,
+  // so throttling delays work, it never loses it. Default 200 if unset.
+  // CLAMPED, like every other numeric knob in this file (recheckMs, streakLimit,
+  // confirmedOutMs). Unclamped, a NEGATIVE value is truthy, so maxIntents = -5
+  // trips the breaker every scan and the deal loop exits immediately → ZERO
+  // intents, indefinitely, while the run record reports throttled:true. That is
+  // a silent total stop on the key whose whole job is live incident control.
+  // (Kimi review, PR #277.) 0 is likewise not a valid throttle — use the kill
+  // switch to stop the engine, not a zero cap.
+  const maxIntents = Math.max(1, num(config?.maxIntentsPerRun) || 200);
   let plannedIntents = intents;
   if (intents.length > maxIntents) {
     errors.push(`circuit breaker: ${intents.length} intents computed, capped to ${maxIntents} (fair per destination, high-priority first)`);
@@ -970,11 +1043,20 @@ function computeRefillPlan(snapshot) {
     if (h2 > 0 && pe === 0 && tr === 0) onlyInHub2.push({ pid, units: h2 });
     for (const loc of dests) {
       for (const [sizeKey, cell] of Object.entries(stock?.[loc]?.[pid] || {})) {
-        const t = targets?.[loc]?.[pid]?.[sizeKey];
+        // Excess must be measured against the target that ACTUALLY applies —
+        // resolveTarget, not the explicit row. Asking `targets[loc][pid][size]`
+        // made every rule-managed cell invisible to Move Excess, and the
+        // "surfaced as noTarget below instead" safety net no longer catches
+        // them either (managedHere skips rule-managed products). Concrete miss:
+        // trophy holds 14 × M against a rule target of 4 — the 10-unit overage
+        // appeared in NO queue at all. (Kimi review, PR #277.)
         // THREE distinct states (owner decision 2026-07-12 v5) — never conflated:
         //   configured target  → excess = qty − target (hub2 strict ≥1, stores ≥2)
         //   explicit target 0  → deliberately excluded here: EVERY unit is excess
-        //   no target          → NOT excess; surfaced as noTarget below instead
+        //   no target at all   → NOT excess; surfaced by the blind-spot guard
+        // resolveTarget preserves all three: explicit 0 still returns target 0,
+        // and "nothing resolves" still returns null.
+        const t = resolveTarget(ctx, loc, pid, rawSize(pid, sizeKey));
         if (!t || typeof t.target !== "number") continue;
         const raw = num(cell?.qty) - t.target;
         // TWO-LEG MOVE EXCESS (owner directive 2026-07-13, supersedes the
@@ -1043,6 +1125,39 @@ function computeRefillPlan(snapshot) {
   //                  (any receive/sale/transfer resurfaces the card)
   const noTarget = [];
   const unintroduced = [];
+  // ── "MANAGED" MUST MEAN THE SAME THING HERE AS IN THE PLANNER ───────────────
+  // These queues used to ask `targets?.[loc]?.[pid]` — explicit rows only. That
+  // was correct under v5, where explicit WAS the whole policy. #259 changed what
+  // the planner manages but not what these queues ask, so every rule-managed
+  // product still demanded a human decision it did not need: 382 noTarget + 211
+  // unintroduced phantom entries live on 2026-07-25, on products the engine was
+  // actively refilling. Both now ask the SINGLE question the planner asks —
+  // "does a target RESOLVE for this cell?" — so the two can never drift again,
+  // and they automatically follow the kill switch: turn rule-based targets off
+  // and these queues repopulate exactly as they did under v5.
+  const targetResolves = (loc, pid, size) => {
+    const t = resolveTarget(ctx, loc, pid, size);
+    return !!(t && t.target > 0);
+  };
+  // For the BLIND-SPOT guard the question is subtly different: "has this size
+  // been DECIDED?", not "does it have a positive target". An explicit target of
+  // 0 means deliberately excluded — a human already ruled on it, so it is not a
+  // blind spot even though no target resolves. Collapsing those two states was
+  // the v5 three-state rule's whole point ("no target" ≠ "target 0"), and the
+  // suite caught it: using targetResolves here re-flagged every excluded cell.
+  const sizeDecided = (loc, pid, sizeKey) => {
+    const explicit = targets?.[loc]?.[pid]?.[sizeKey];
+    if (explicit && typeof explicit.target === "number") return true;   // incl. 0
+    return targetResolves(loc, pid, rawSize(pid, sizeKey));
+  };
+  // Explicit rows (INCLUDING an explicit 0 = "deliberately excluded here") count
+  // as managed — a human already decided. Otherwise fall back to the rule.
+  const managedHere = (loc, pid) => {
+    if (targets?.[loc]?.[pid]) return true;
+    if (!ruleTargetsEnabled(config, loc)) return false;
+    for (const s of productSizes(products, pid)) if (targetResolves(loc, pid, s)) return true;
+    return false;
+  };
   const decisionActive = (loc, pid) => {
     const d = targetDecisions?.[loc]?.[pid];
     if (!d) return false;
@@ -1078,7 +1193,7 @@ function computeRefillPlan(snapshot) {
   const circulates = (pid) => dests.some((d) => stock?.[d]?.[pid] && Object.keys(stock[d][pid]).length > 0);
   for (const [pid, bySize] of Object.entries(stock?.central || {})) {
     if (!isClothing(products?.[pid])) continue;
-    if (dests.some((d) => targets?.[d]?.[pid])) continue;   // introduced somewhere
+    if (dests.some((d) => managedHere(d, pid))) continue;   // managed somewhere (explicit OR rule)
     if (circulates(pid)) continue;                          // circulating → unintroduced, NOT new
     if (decisionActive("central", pid)) continue;
     const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
@@ -1088,10 +1203,10 @@ function computeRefillPlan(snapshot) {
   for (const loc of dests) {
     for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
       if (!isClothing(products?.[pid])) continue;
-      if (targets?.[loc]?.[pid]) continue;             // some target here → managed
+      if (managedHere(loc, pid)) continue;             // target resolves here → managed
       if (!Object.keys(bySize || {}).length) continue;
       const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
-      if (!dests.some((d) => targets?.[d]?.[pid])) {
+      if (!dests.some((d) => managedHere(d, pid))) {
         // Zero targets anywhere + has circulated = awaiting migration, one
         // entry per product (never per location — no duplicate cards). A
         // sold-to-zero product still migrates: its demand is proven and the
@@ -1128,21 +1243,35 @@ function computeRefillPlan(snapshot) {
   // target under a managed product surfaces as a decision. Hub 2 additionally
   // checks sizes stocked at ITS SOURCE (central) — a brand-new size arriving
   // upstream must surface at the buffer before it can flow anywhere.
+  // The universe here must be MANAGED products, not explicitly-targeted ones.
+  // Iterating `targets[loc]` was right under v5 (explicit WAS managed), but a
+  // rule-managed product has no explicit row — so a numeric size it holds
+  // (jeans 32 under a product the rule covers on M/L) would be skipped by the
+  // queues above (managedHere → continue) AND never visited here: no target, no
+  // request, surfaced nowhere. That is precisely the silent-miss class this
+  // guard exists to catch. (CodeRabbit, PR #277.) With the kill switch OFF,
+  // managedHere collapses to explicit rows and this is identical to v5.
   for (const loc of dests) {
-    for (const [pid, byTarget] of Object.entries(targets?.[loc] || {})) {
+    const guardPids = new Set([...Object.keys(targets?.[loc] || {}), ...Object.keys(stock?.[loc] || {})]);
+    for (const pid of guardPids) {
       if (!isClothing(products?.[pid])) continue;
+      if (!managedHere(loc, pid)) continue;   // unmanaged → already handled by the queues above
       if (decisionActive(loc, pid)) continue;
       let units = 0;
       const seenSk = new Set();
+      // A size is only a blind spot if it has not been DECIDED — no explicit row
+      // (including an explicit 0 = deliberately excluded) and no rule target.
+      // Under rule-based targeting the standard sizes resolve automatically;
+      // numeric / non-standard sizes still surface here, which is the purpose.
       for (const [sk, c] of Object.entries(stock?.[loc]?.[pid] || {})) {
         const q = avail(num(c?.qty));
-        if (q > 0 && !byTarget[sk]) { units += q; seenSk.add(sk); }
+        if (q > 0 && !sizeDecided(loc, pid, sk)) { units += q; seenSk.add(sk); }
       }
       if (loc === "hub2") {
         const up = routes[loc];   // central — new sizes land there first
         for (const [sk, c] of Object.entries(stock?.[up]?.[pid] || {})) {
-          if (seenSk.has(sk) || byTarget[sk]) continue;
-          if (avail(num(c?.qty)) > 0 && !dests.some((d) => targets?.[d]?.[pid]?.[sk])) units += avail(num(c?.qty));
+          if (seenSk.has(sk) || sizeDecided(loc, pid, sk)) continue;
+          if (avail(num(c?.qty)) > 0 && !dests.some((d) => sizeDecided(d, pid, sk))) units += avail(num(c?.qty));
         }
       }
       if (units > 0) noTarget.push({ loc, pid, units, noStandard: true });
@@ -1169,6 +1298,16 @@ function computeRefillPlan(snapshot) {
     streakOps,
     retryOps,
     errors,
+    // policy: the switch/throttle state THIS scan actually ran under, echoed
+    // into /refill_engine/runs. During an incident nobody should have to guess
+    // whether rule-based targeting was on — the run record states it.
+    policy: {
+      ruleBasedTargets: Object.fromEntries(dests.map((d) => [d, ruleTargetsEnabled(config, d)])),
+      maxIntentsPerRun: maxIntents,
+      intentsComputed: intents.length,
+      intentsPlanned: plannedIntents.length,
+      throttled: intents.length > maxIntents,
+    },
     stats: { managedCells },
     exceptions: {
       noTarget: cap(noTarget),

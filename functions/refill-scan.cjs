@@ -532,10 +532,11 @@ async function runScan() {
     }
 
     // ── run record + prune old runs (keys are time-sortable) ─────────────────
-    await db.ref(`refill_engine/runs/${runId}`).set({
+    await safeSet(db, `refill_engine/runs/${runId}`, {
       startedAt, finishedAt: new Date().toISOString(),
       mode: config.mode || {}, counts: { ...counts, errors: counts.errors.length ? counts.errors : null },
-    });
+      policy: plan.policy || null,   // which switch/throttle state this run used
+    }, "run record");
     const cutoffKey = new Date(nowMs - RUNS_KEEP_DAYS * 864e5).toISOString().slice(0, 16).replace(/:/g, "-");
     const oldRuns = await db.ref("refill_engine/runs").orderByKey().endAt(cutoffKey).limitToFirst(200).once("value");
     if (oldRuns.exists()) {
