@@ -31,6 +31,38 @@ const RUNS_KEEP_DAYS = 7;
 // Universe → placedStore string the app writes on refill orders.
 const UNIVERSE_BY_SHOP = { "marathon-pe": "central", trophy: "central", "marathon-pine": "pine" };
 
+// ── the ONE way this file writes a multi-path update ──────────────────────────
+// Every `db.ref().update(...)` goes through here. Two live outages (2026-07-22
+// #269, 2026-07-24) came from malformed payloads reaching .update(), which
+// validates its argument SYNCHRONOUSLY and throws — so the old
+// `.update(x).catch(() => {})` never caught them (the catch is never attached)
+// while silently swallowing every genuine write failure. Both problems, one fix:
+//   • sanitizeUpdate() strips undefined values / forbidden keys BEFORE the call
+//   • anything stripped, or any real write failure, is LOGGED not swallowed
+//   • the scan CONTINUES (these writes are recomputed from live state every run,
+//     so a lost one reappears next pass — that resilience is deliberate and is
+//     why this returns false instead of rethrowing)
+// opts.strict — for ALL-OR-NOTHING writes (the intent-creation update, where a
+// half-written request/order/lock is worse than none). In strict mode anything
+// stripped aborts the whole write instead of persisting a partial record.
+// Returns true if the write went through cleanly.
+async function safeUpdate(db, upd, label, opts = {}) {
+  const { safe, problems } = engine.sanitizeUpdate(upd);
+  if (problems.length) {
+    // A bug at the write site. Loud, but never fatal — see the block comment.
+    console.error(`[refill-scan] ${label}: ${opts.strict ? "ABORTED write —" : "dropped"} ${problems.length} malformed entr${problems.length === 1 ? "y" : "ies"}:`, problems.slice(0, 20));
+    if (opts.strict) return false;
+  }
+  if (!Object.keys(safe).length) return !problems.length;
+  try {
+    await db.ref().update(safe);
+    return !problems.length;
+  } catch (e) {
+    console.error(`[refill-scan] ${label}: update failed:`, e && e.message ? e.message : e);
+    return false;
+  }
+}
+
 async function drawRefillNumber(db, nowMs) {
   // EXACT mirror of App.jsx getNextRefillNumber(): daily reset keyed by the
   // device-local SA date string (0-based month), 001–999 wrap, "R" prefix.
@@ -167,7 +199,7 @@ async function runScan() {
           closeUpd[`refill_engine/rejectStreak/${c.dest}/${c.pid}/${c.sizeKey}`] =
             c.streakOp.op === "inc" ? { count: c.streakOp.count, lastTs: c.streakOp.ts, by: c.streakOp.by || null } : null;
         }
-        await db.ref().update(closeUpd).catch(() => {});
+        await safeUpdate(db, closeUpd, `close ${c.dest}/${c.pid}/${c.sizeKey}`);
         applied++;
         if (c.cancelReason) withdrawn++;
       }
@@ -191,7 +223,7 @@ async function runScan() {
         upd[`refill_engine/rejectStreak/${op.dest}/${op.pid}/${op.sizeKey}`] =
           op.op === "inc" ? { count: op.count, lastTs: op.ts, by: op.by || null } : null;
       }
-      if (Object.keys(upd).length) await db.ref().update(upd).catch(() => {});
+      if (Object.keys(upd).length) await safeUpdate(db, upd, "streakOps");
       counts.streakOps = Object.keys(upd).length;
     }
 
@@ -231,7 +263,8 @@ async function runScan() {
           } catch { ok = false; }
           if (!ok) continue;
         }
-        await db.ref(`refill_engine/open/${rz.dest}/${rz.pid}/${rz.sizeKey}/qty`).set(rz.to).catch(() => {});
+        await db.ref(`refill_engine/open/${rz.dest}/${rz.pid}/${rz.sizeKey}/qty`).set(rz.to)
+          .catch((e) => console.error(`[refill-scan] resize ${rz.dest}/${rz.pid}/${rz.sizeKey}: lock qty set failed:`, e && e.message ? e.message : e));
         resized++;
       }
       if (resized) counts.resized = resized;
@@ -245,42 +278,37 @@ async function runScan() {
       for (const op of plan.retryOps) {
         if (op.op === "reset") {
           upd[`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`] = null;
-        } else if (op.op === "reject") {
+        } else if (op.op === "reject" || op.op === "retry") {
+          // ONE shape for both ops — they write the SAME node, so drifting field
+          // lists is exactly how the 2026-07-24 outage happened (the "retry"
+          // branch omitted two fields the "reject" branch set). `?? null` keeps
+          // every field defined even if a future op forgets one: RTDB accepts
+          // null, and rejects undefined by throwing synchronously.
           upd[`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`] = {
-            retryCount: op.retryCount,
-            firstRejectedAt: op.firstRejectedAt,
-            lastRejectedAt: op.lastRejectedAt,
-            lastRetryAt: op.lastRetryAt || null,
-            nextRetryAt: op.nextRetryAt,
-            lastRejectionReason: op.lastRejectionReason,
-            source: op.source || null,
-          };
-        } else if (op.op === "retry") {
-          upd[`refill_engine/retryState/${op.dest}/${op.pid}/${op.sizeKey}`] = {
-            retryCount: op.retryCount,
-            firstRejectedAt: op.firstRejectedAt,
-            lastRejectedAt: op.lastRejectedAt,
-            lastRetryAt: op.lastRetryAt,
-            nextRetryAt: op.nextRetryAt,
-            lastRejectionReason: op.lastRejectionReason,
-            source: op.source || null,
+            retryCount: op.retryCount ?? 0,
+            firstRejectedAt: op.firstRejectedAt ?? null,
+            lastRejectedAt: op.lastRejectedAt ?? null,
+            lastRetryAt: op.lastRetryAt ?? null,
+            nextRetryAt: op.nextRetryAt ?? null,
+            lastRejectionReason: op.lastRejectionReason ?? null,
+            source: op.source ?? null,
           };
         } else if (op.op === "history") {
           // epoch-ms in the key (NOT op.timestamp's ISO string — its "." is an
           // RTDB-forbidden key char that crashed every scan, 2026-07-22).
           const histKey = engine.retryHistoryKey(op.dest, op.pid, op.sizeKey, op.timestamp);
           upd[`refill_engine/retryHistory/${histKey}`] = {
-            type: op.type,
-            timestamp: op.timestamp,
-            rejectionReason: op.rejectionReason,
-            retryAttempt: op.retryAttempt,
-            source: op.source,
-            destination: op.destination,
-            qty: op.qty,
+            type: op.type ?? null,
+            timestamp: op.timestamp ?? null,
+            rejectionReason: op.rejectionReason ?? null,
+            retryAttempt: op.retryAttempt ?? null,
+            source: op.source ?? null,
+            destination: op.destination ?? null,
+            qty: op.qty ?? null,
           };
         }
       }
-      if (Object.keys(upd).length) await db.ref().update(upd).catch(() => {});
+      if (Object.keys(upd).length) await safeUpdate(db, upd, "retryOps");
       counts.retryOps = plan.retryOps.length;
     }
 
@@ -365,7 +393,7 @@ async function runScan() {
       for (const key of Object.keys(refillRequests)) {
         if (key.startsWith("SHDWrr-") && !wantRrs.has(key)) upd[`refill_requests/${key}`] = null;
       }
-      if (Object.keys(upd).length) await db.ref().update(upd);
+      if (Object.keys(upd).length) await safeUpdate(db, upd, "shadow sweep");
     }
 
     // TIME-BOXED apply (review 2026-07-13): creating intents is serial RTDB
@@ -453,8 +481,13 @@ async function runScan() {
           upd[`orders/${orderId}`] = order;
           upd[`insights_log/${db.ref("insights_log").push().key}`] = insight;
         }
-        await db.ref().update(upd);
-        counts.intents++;
+        // strict: a malformed payload must NOT half-create an intent. Failing
+        // here leaves the claimed lock pending-without-refillId, which the
+        // engine's orphaned-pending self-heal reclaims after an hour, and the
+        // deficit simply re-proposes — the stateless design absorbs it.
+        if (await safeUpdate(db, upd, `intent ${intent.dest}/${intent.productId}/${intent.sizeKey}`, { strict: true })) {
+          counts.intents++;
+        }
       }
     }
 

@@ -1,7 +1,7 @@
 // Tests for the pure refill-engine core. Run: cd functions && node --test
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { computeRefillPlan, computeConfidence, encodeSizeKey, saTodayKey, retryHistoryKey } = require("../lib/refill-engine.cjs");
+const { computeRefillPlan, computeConfidence, encodeSizeKey, saTodayKey, retryHistoryKey, sanitizeUpdate } = require("../lib/refill-engine.cjs");
 
 // ── retryHistoryKey — RTDB keys may NOT contain . # $ [ ] / ────────────────────
 // Regression pin for the 2026-07-22 outage: an ISO timestamp in the key (its ".")
@@ -28,6 +28,100 @@ test("retryHistoryKey uses epoch-ms and stays unique/parseable", () => {
   // malformed timestamp degrades safely to 0, still a valid key
   const bad = retryHistoryKey("trophy", "p1", "S", "not-a-date");
   assert.strictEqual(bad, "trophy|p1|S|0");
+});
+
+// ── sanitizeUpdate — backstop for BOTH RTDB argument-validation outages ────────
+// 2026-07-22 (#269): a "." in a KEY. 2026-07-24: an `undefined` VALUE.
+// Both throw SYNCHRONOUSLY out of .update(), so `.catch()` never fires and the
+// whole scan dies. These pin that a malformed payload is stripped and REPORTED
+// rather than reaching the driver.
+test("sanitizeUpdate strips undefined values and reports them", () => {
+  // The exact 2026-07-24 outage payload shape.
+  const { safe, problems } = sanitizeUpdate({
+    "refill_engine/retryState/marathon-pe/p1780344640383/XL": {
+      retryCount: 1,
+      firstRejectedAt: undefined,      // ← the field that took the engine down 26h
+      lastRejectedAt: undefined,
+      nextRetryAt: "2026-07-26T09:06:00.083Z",
+      source: "hub2",
+    },
+  });
+  const node = safe["refill_engine/retryState/marathon-pe/p1780344640383/XL"];
+  assert.ok(!("firstRejectedAt" in node), "undefined field must be stripped");
+  assert.ok(!("lastRejectedAt" in node), "undefined field must be stripped");
+  assert.strictEqual(node.retryCount, 1, "defined fields survive");
+  assert.strictEqual(node.source, "hub2");
+  assert.strictEqual(problems.length, 2, "both undefined fields reported");
+  assert.ok(problems.every((p) => p.startsWith("undefined value at")), problems.join("; "));
+});
+
+test("sanitizeUpdate preserves null (a deliberate RTDB delete)", () => {
+  const { safe, problems } = sanitizeUpdate({ "refill_engine/open/trophy/p1/M": null });
+  assert.strictEqual(safe["refill_engine/open/trophy/p1/M"], null, "null must NOT be stripped — it deletes the node");
+  assert.strictEqual(problems.length, 0);
+});
+
+test("sanitizeUpdate rejects forbidden chars in a path segment (the #269 class)", () => {
+  // The exact 2026-07-22 outage key: an ISO timestamp's "." inside the segment.
+  const badPath = "refill_engine/retryHistory/marathon-pe|p1783086715022|M|2026-07-21T13:20:04.885Z";
+  const { safe, problems } = sanitizeUpdate({ [badPath]: { type: "retry" }, "refill_engine/ok/a": { v: 1 } });
+  assert.ok(!(badPath in safe), "path with a forbidden char must be dropped");
+  assert.deepStrictEqual(safe["refill_engine/ok/a"], { v: 1 }, "clean sibling paths still written");
+  assert.strictEqual(problems.length, 1);
+  assert.ok(problems[0].startsWith("forbidden path"), problems[0]);
+});
+
+test("sanitizeUpdate rejects forbidden chars in NESTED keys", () => {
+  const { safe, problems } = sanitizeUpdate({ "a/b": { "ok": 1, "bad.key": 2, "sl/ash": 3 } });
+  assert.deepStrictEqual(safe["a/b"], { ok: 1 });
+  assert.strictEqual(problems.length, 2);
+});
+
+test("sanitizeUpdate leaves a clean payload byte-identical", () => {
+  const clean = {
+    "refill_requests/-Oabc": { qty: 2, source: "hub2", status: "open", note: null },
+    "refill_engine/open/trophy/p1/M": { qty: 2, refillId: "-Oabc" },
+  };
+  const { safe, problems } = sanitizeUpdate(clean);
+  assert.deepStrictEqual(safe, clean);
+  assert.strictEqual(problems.length, 0);
+});
+
+// ── the engine-side half of the 2026-07-24 fix ────────────────────────────────
+// The "retry" op REPLACES the whole retryState node, so it must emit every field
+// the "reject" op does. This pins the omission that caused the outage.
+test("retry retryOps carry the rejection stamps (2026-07-24 outage pin)", () => {
+  const now = Date.parse("2026-07-25T09:00:00.000Z");
+  const plan = computeRefillPlan({
+    nowMs: now,
+    config: {
+      routes: { trophy: "hub2" },
+      mode: { trophy: "live" },
+      defaultRunByStore: { trophy: { M: 2 } },
+      rejectCooldownHours: 24,
+    },
+    products: { p1: { productType: "clothing", sizes: ["M"] } },
+    stock: { trophy: { p1: { M: { qty: 0 } } }, hub2: { p1: { M: { qty: 5 } } } },
+    // A rejection whose 24h retry window has already elapsed → emits an op:"retry".
+    retryState: {
+      trophy: { p1: { M: {
+        retryCount: 1,
+        firstRejectedAt: "2026-07-23T08:00:00.000Z",
+        lastRejectedAt: "2026-07-23T08:00:00.000Z",
+        nextRetryAt: "2026-07-24T08:00:00.000Z",
+        lastRejectionReason: "cancelled",
+      } } },
+    },
+  });
+  const retryOp = (plan.retryOps || []).find((o) => o.op === "retry");
+  assert.ok(retryOp, "a due retry must emit an op:retry");
+  for (const f of ["retryCount", "firstRejectedAt", "lastRejectedAt", "lastRetryAt", "nextRetryAt"]) {
+    assert.notStrictEqual(retryOp[f], undefined, `op:retry must define ${f} — undefined here crashed every scan on 2026-07-24`);
+  }
+  assert.strictEqual(retryOp.firstRejectedAt, "2026-07-23T08:00:00.000Z", "first rejection stamp is carried forward, not reset");
+  // And the whole op must survive sanitizeUpdate untouched.
+  const { problems } = sanitizeUpdate({ "refill_engine/retryState/trophy/p1/M": retryOp });
+  assert.strictEqual(problems.length, 0, `op:retry payload must be clean — got: ${problems.join("; ")}`);
 });
 
 const NOW = Date.parse("2026-07-12T10:00:00.000Z");

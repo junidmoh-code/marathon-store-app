@@ -39,6 +39,67 @@ function retryHistoryKey(dest, pid, sizeKey, tsIso) {
   return `${dest}|${pid}|${sizeKey}|${Number.isFinite(ms) ? ms : 0}`;
 }
 
+// ─── RTDB WRITE HARDENING (outages 2026-07-22 and 2026-07-24) ────────────────
+// firebase-admin validates .update() / .set() arguments SYNCHRONOUSLY and THROWS
+// before it ever returns a promise. That means `.update(x).catch(...)` does NOT
+// catch these — the catch is never attached, the exception escapes the await,
+// and the whole scan dies mid-apply. Two classes have now each caused a live
+// outage in this exact code path:
+//   • forbidden char (. # $ [ ] /) inside a KEY  → #269, 2026-07-22
+//   • an `undefined` VALUE anywhere in the payload → 2026-07-24, engine down 26h
+//     (retryState "retry" op omitted firstRejectedAt/lastRejectedAt)
+// sanitizeUpdate() strips both classes BEFORE the call and RETURNS what it
+// dropped so the caller can log it. A single malformed record then degrades to
+// one skipped field instead of stopping every refill in the business.
+//
+// This is a BACKSTOP, NOT A LICENCE. Anything it reports is a real bug at the
+// write site and must be fixed there — the guard only stops it being an outage.
+const FORBIDDEN_KEY_CHARS = /[.#$\[\]]/;   // "/" excluded: legal as a PATH separator
+
+// Multi-path update keys are paths ("a/b/c"); each SEGMENT must be a valid key.
+function badPathSegments(path) {
+  const segs = String(path).split("/");
+  return segs.some((s) => s.length === 0 || FORBIDDEN_KEY_CHARS.test(s));
+}
+
+// Recursively drop `undefined` leaves and forbidden nested keys. Returns the
+// cleaned value, or the UNDEF sentinel when the whole value must be dropped.
+const UNDEF = Symbol("drop");
+function cleanValue(val, trail, problems) {
+  if (val === undefined) {
+    problems.push(`undefined value at ${trail}`);
+    return UNDEF;
+  }
+  // null is LEGAL (it deletes the node) — never strip it.
+  if (val === null || typeof val !== "object" || Array.isArray(val)) return val;
+  const out = {};
+  for (const [k, v] of Object.entries(val)) {
+    if (k.length === 0 || FORBIDDEN_KEY_CHARS.test(k) || k.includes("/")) {
+      problems.push(`forbidden key "${k}" at ${trail}`);
+      continue;
+    }
+    const c = cleanValue(v, `${trail}/${k}`, problems);
+    if (c !== UNDEF) out[k] = c;
+  }
+  return out;
+}
+
+// upd: the multi-path update object. Returns { safe, problems }.
+function sanitizeUpdate(upd) {
+  const problems = [];
+  const safe = {};
+  for (const [path, val] of Object.entries(upd || {})) {
+    if (badPathSegments(path)) {
+      problems.push(`forbidden path "${path}"`);
+      continue;
+    }
+    const c = cleanValue(val, path, problems);
+    if (c === UNDEF) continue;
+    safe[path] = c;
+  }
+  return { safe, problems };
+}
+
 // Device-local SA date key, matching App.jsx getTodayKey() EXACTLY (including
 // the 0-based month!). The refill counter's daily reset compares this string —
 // the server must produce the same value the shop tablets (UTC+2) produce, or
@@ -784,10 +845,18 @@ function computeRefillPlan(snapshot) {
           qty, priority: have < t.minQty ? "high" : "normal", mode,
         });
         // Record the retry in history and update the retry state.
+        // The "retry" op REPLACES the whole retryState node (the scan writes an
+        // object, not a merge), so it must carry EVERY field that node holds —
+        // including the two rejection stamps it does not itself change. Omitting
+        // firstRejectedAt/lastRejectedAt made them `undefined` at write time and
+        // crashed every scan for 26h (outage 2026-07-24; same class as #269).
+        // Carry them forward from the previous state, never leave them absent.
         if (rt && rt.retryCount > 0) {
           retryOps.push({
             dest, pid, sizeKey, op: "retry",
             retryCount: rt.retryCount,
+            firstRejectedAt: rt.firstRejectedAt || rt.lastRejectedAt || nowIso,
+            lastRejectedAt: rt.lastRejectedAt || rt.firstRejectedAt || nowIso,
             lastRetryAt: nowIso,
             nextRetryAt: new Date(nowMs + cooldownMs).toISOString(),
             lastRejectionReason: rt.lastRejectionReason,
@@ -1133,4 +1202,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint };
+module.exports = { computeRefillPlan, computeConfidence, resolveTarget, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate };
