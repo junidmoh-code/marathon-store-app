@@ -45,18 +45,24 @@ const UNIVERSE_BY_SHOP = { "marathon-pe": "central", trophy: "central", "maratho
 // opts.strict — for ALL-OR-NOTHING writes (the intent-creation update, where a
 // half-written request/order/lock is worse than none). In strict mode anything
 // stripped aborts the whole write instead of persisting a partial record.
-// Returns true if the write went through cleanly.
+//
+// RETURN VALUE = "did this write LAND?", not "was it clean?". Callers use it for
+// the run-record counts, so a degraded-but-persisted write must report TRUE:
+// returning false for it made counts.closes / streakOps / retryOps UNDER-report
+// writes that actually happened — the exact opposite of the audit-trail intent.
+// Sanitizer problems are surfaced by the log line above, never by this boolean.
+// (CodeRabbit, PR #276.)
 async function safeUpdate(db, upd, label, opts = {}) {
   const { safe, problems } = engine.sanitizeUpdate(upd);
   if (problems.length) {
     // A bug at the write site. Loud, but never fatal — see the block comment.
     console.error(`[refill-scan] ${label}: ${opts.strict ? "ABORTED write —" : "dropped"} ${problems.length} malformed entr${problems.length === 1 ? "y" : "ies"}:`, problems.slice(0, 20));
-    if (opts.strict) return false;
+    if (opts.strict) return false;   // strict: nothing written, so nothing landed
   }
-  if (!Object.keys(safe).length) return !problems.length;
+  if (!Object.keys(safe).length) return false;   // nothing left to write
   try {
     await db.ref().update(safe);
-    return !problems.length;
+    return true;                                 // it landed (possibly degraded)
   } catch (e) {
     console.error(`[refill-scan] ${label}: update failed:`, e && e.message ? e.message : e);
     return false;
@@ -77,7 +83,7 @@ async function safeSet(db, path, value, label) {
   if (!(path in safe)) return false;
   try {
     await db.ref(path).set(safe[path]);
-    return !problems.length;
+    return true;                                 // landed — see safeUpdate's note
   } catch (e) {
     console.error(`[refill-scan] ${label}: set failed:`, e && e.message ? e.message : e);
     return false;

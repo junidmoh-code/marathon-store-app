@@ -90,7 +90,22 @@ function cleanValue(val, trail, problems) {
   // abort intent creation on EVERY scan forever — a permanent stall caused by
   // the safety net. Pass sentinels through untouched. (Kimi review, PR #276.)
   const keys = Object.keys(val);
-  if (keys.length === 1 && keys[0] === ".sv") return val;
+  if (keys.length === 1 && keys[0] === ".sv") {
+    const sv = val[".sv"];
+    if (typeof sv === "string") return val;                       // {".sv":"timestamp"}
+    if (sv && typeof sv === "object" && !Array.isArray(sv)) {
+      // {".sv":{increment:n}} — the BODY still has to be validated, or an
+      // `undefined` inside it rides straight through the guard to the driver
+      // and throws exactly as before. A sentinel is ATOMIC: if any part of its
+      // body is malformed the whole sentinel is meaningless, so drop it rather
+      // than persist a corrupted one. (CodeRabbit, PR #276.)
+      const before = problems.length;
+      const body = cleanValue(sv, `${trail}/.sv`, problems);
+      if (body !== UNDEF && problems.length === before) return { ".sv": body };
+    }
+    problems.push(`malformed ServerValue sentinel at ${trail}`);
+    return UNDEF;
+  }
   const out = {};
   for (const [k, v] of Object.entries(val)) {
     if (k.length === 0 || FORBIDDEN_KEY_CHARS.test(k) || k.includes("/")) {
@@ -878,7 +893,12 @@ function computeRefillPlan(snapshot) {
             lastRejectedAt: rt.lastRejectedAt || rt.firstRejectedAt || nowIso,
             lastRetryAt: nowIso,
             nextRetryAt: new Date(nowMs + cooldownMs).toISOString(),
-            lastRejectionReason: rt.lastRejectionReason,
+            // `|| null`: a legacy/partial retryState node without this field
+            // would otherwise put `undefined` in the payload — the same omission
+            // class as the outage. It currently survives only because the scan
+            // normalises with `?? null`; the engine-level contract must hold on
+            // its own, so both layers default it. (CodeRabbit, PR #276.)
+            lastRejectionReason: rt.lastRejectionReason || null,
             source: src,
           });
           retryOps.push({

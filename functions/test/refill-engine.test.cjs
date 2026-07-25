@@ -116,6 +116,18 @@ test("sanitizeUpdate passes ServerValue sentinels through untouched", () => {
   assert.strictEqual(problems.length, 0, `sentinels are legal — got: ${problems.join("; ")}`);
 });
 
+// CodeRabbit, PR #276: the sentinel carve-out returned the value unvalidated, so
+// an undefined INSIDE the sentinel body rode through the guard and threw anyway.
+test("sanitizeUpdate validates the ServerValue BODY, not just the .sv key", () => {
+  const { safe, problems } = sanitizeUpdate({
+    "a/b": { good: { ".sv": { increment: 2 } }, bad: { ".sv": { increment: undefined } } },
+  });
+  assert.deepStrictEqual(safe["a/b"].good, { ".sv": { increment: 2 } }, "valid sentinel survives intact");
+  assert.ok(!("bad" in safe["a/b"]), "a sentinel with a malformed body is dropped whole, not half-written");
+  assert.ok(problems.some((p) => /malformed ServerValue sentinel/.test(p)), problems.join("; "));
+  assert.ok(!JSON.stringify(safe).includes("undefined"));
+});
+
 test("sanitizeUpdate still rejects a dotted key that is NOT a ServerValue", () => {
   // The pass-through is narrow: sole key, exactly ".sv". Anything else is a bug.
   const { safe, problems } = sanitizeUpdate({ "a/b": { ".sv": "timestamp", other: 1 } });
@@ -161,7 +173,7 @@ test("retry retryOps carry the rejection stamps (2026-07-24 outage pin)", () => 
   });
   const retryOp = (plan.retryOps || []).find((o) => o.op === "retry");
   assert.ok(retryOp, "a due retry must emit an op:retry");
-  for (const f of ["retryCount", "firstRejectedAt", "lastRejectedAt", "lastRetryAt", "nextRetryAt"]) {
+  for (const f of ["retryCount", "firstRejectedAt", "lastRejectedAt", "lastRetryAt", "nextRetryAt", "lastRejectionReason"]) {
     assert.notStrictEqual(retryOp[f], undefined, `op:retry must define ${f} — undefined here crashed every scan on 2026-07-24`);
   }
   assert.strictEqual(retryOp.firstRejectedAt, "2026-07-23T08:00:00.000Z", "first rejection stamp is carried forward, not reset");
