@@ -148,6 +148,41 @@ test("sanitizeUpdate leaves a clean payload byte-identical", () => {
 // ── the engine-side half of the 2026-07-24 fix ────────────────────────────────
 // The "retry" op REPLACES the whole retryState node, so it must emit every field
 // the "reject" op does. This pins the omission that caused the outage.
+// CodeRabbit, PR #276: the contract fixture below SETS lastRejectionReason, so
+// it proves the field is carried but never exercises the `|| null` fallback.
+// This case uses a LEGACY node that omits it — the only shape that can put
+// `undefined` in the payload, i.e. the actual outage class.
+test("retry retryOps: legacy node without lastRejectionReason emits null, not undefined", () => {
+  const now = Date.parse("2026-07-25T09:00:00.000Z");
+  const plan = computeRefillPlan({
+    nowMs: now,
+    config: {
+      routes: { trophy: "hub2" },
+      mode: { trophy: "live" },
+      defaultRunByStore: { trophy: { M: 2 } },
+      ruleBasedTargets: true,
+      rejectCooldownHours: 24,
+    },
+    products: { p1: { productType: "clothing", sizes: ["M"] } },
+    stock: { trophy: { p1: { M: { qty: 0 } } }, hub2: { p1: { M: { qty: 5 } } } },
+    retryState: {
+      trophy: { p1: { M: {
+        retryCount: 1,
+        firstRejectedAt: "2026-07-23T08:00:00.000Z",
+        lastRejectedAt: "2026-07-23T08:00:00.000Z",
+        nextRetryAt: "2026-07-24T08:00:00.000Z",
+        // lastRejectionReason DELIBERATELY ABSENT — the legacy/partial shape
+      } } },
+    },
+  });
+  const retryOp = (plan.retryOps || []).find((o) => o.op === "retry");
+  assert.ok(retryOp, "a due retry must still emit an op:retry");
+  assert.strictEqual(retryOp.lastRejectionReason, null,
+    "missing field must default to null — undefined here is what crashed every scan");
+  const { problems } = sanitizeUpdate({ "refill_engine/retryState/trophy/p1/M": retryOp });
+  assert.strictEqual(problems.length, 0, `payload must be clean — got: ${problems.join("; ")}`);
+});
+
 test("retry retryOps carry the rejection stamps (2026-07-24 outage pin)", () => {
   const now = Date.parse("2026-07-25T09:00:00.000Z");
   const plan = computeRefillPlan({
