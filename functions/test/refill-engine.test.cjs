@@ -1599,7 +1599,10 @@ test("kill switch: flipping OFF then ON is fully reversible on the next scan", (
 
 // ═══ THROTTLE — /config/refillEngine/maxIntentsPerRun ═════════════════════════
 test("throttle caps intents per scan and reports it in policy", () => {
-  const plan = computeRefillPlan(carried({ config: { ...CONFIG, maxIntentsPerRun: 1 } }));
+  const plan = computeRefillPlan(carried({ config: { ...RULE_CONFIG, ruleBasedTargets: true, maxIntentsPerRun: 1 } }));
+  // Guard the fixture itself: with only one intent computed, a cap of 1 would
+  // "pass" without ever exercising the throttle. (CodeRabbit, PR #277.)
+  assert.ok(plan.policy.intentsComputed > 1, `fixture must compute >1 intent, got ${plan.policy.intentsComputed}`);
   assert.equal(plan.intents.length, 1, "hard cap honoured");
   assert.equal(plan.policy.maxIntentsPerRun, 1);
   assert.ok(plan.policy.throttled, "policy records that this run was throttled");
@@ -1623,6 +1626,33 @@ test("with the switch OFF the same product DOES surface as a decision again", ()
   const surfaced = plan.exceptions.noTarget.items.some((x) => x.pid === "pRule")
     || plan.exceptions.unintroduced.items.some((x) => x.pid === "pRule");
   assert.ok(surfaced, "queues follow the switch — v5 behaviour returns intact");
+});
+
+// CodeRabbit, PR #277: the blind-spot guard iterated `targets[loc]` — explicit
+// rows only. A RULE-managed product has no explicit row, so a numeric size it
+// holds was skipped by the decision queues (managedHere → continue) AND never
+// visited by the guard: no target, no request, surfaced nowhere. Silent miss.
+test("rule-managed product: a numeric size still surfaces as a blind spot", () => {
+  const plan = computeRefillPlan(carried({
+    config: { ...RULE_CONFIG, ruleBasedTargets: true },
+    // pMixed is covered by the rule on M/L, and also holds jeans size 32 which
+    // the standard run does NOT cover. It has NO explicit target row anywhere.
+    products: { ...PRODUCTS, pMixed: { productType: "clothing", sizes: ["M", "L", "32"] } },
+    targets: { "marathon-pe": { p1: { M: { target: 3, minQty: 2 } } } },
+    stock: {
+      "marathon-pe": { p1: { M: cell(1) } },
+      hub2: { p1: { M: cell(10) } },
+      central: {},
+      trophy: { pMixed: { M: cell(1), 32: cell(4) } },
+    },
+  }));
+  // The rule manages it, so it must NOT be an unintroduced/assortment card…
+  assert.ok(!plan.exceptions.unintroduced.items.some((u) => u.pid === "pMixed"),
+    "rule-managed → not awaiting migration");
+  // …but the untargetable numeric size MUST still be visible to a human.
+  const card = plan.exceptions.noTarget.items.find((c) => c.pid === "pMixed" && c.loc === "trophy" && c.noStandard);
+  assert.ok(card, "numeric size under a rule-managed product must not go silently unmanaged");
+  assert.equal(card.units, 4, "only the untargetable size's units are counted, not the rule-covered M");
 });
 
 test("explicit target 0 is a DECISION, never a blind spot (three-state rule holds)", () => {

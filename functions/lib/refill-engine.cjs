@@ -1227,17 +1227,26 @@ function computeRefillPlan(snapshot) {
   // target under a managed product surfaces as a decision. Hub 2 additionally
   // checks sizes stocked at ITS SOURCE (central) — a brand-new size arriving
   // upstream must surface at the buffer before it can flow anywhere.
+  // The universe here must be MANAGED products, not explicitly-targeted ones.
+  // Iterating `targets[loc]` was right under v5 (explicit WAS managed), but a
+  // rule-managed product has no explicit row — so a numeric size it holds
+  // (jeans 32 under a product the rule covers on M/L) would be skipped by the
+  // queues above (managedHere → continue) AND never visited here: no target, no
+  // request, surfaced nowhere. That is precisely the silent-miss class this
+  // guard exists to catch. (CodeRabbit, PR #277.) With the kill switch OFF,
+  // managedHere collapses to explicit rows and this is identical to v5.
   for (const loc of dests) {
-    for (const [pid, byTarget] of Object.entries(targets?.[loc] || {})) {
+    const guardPids = new Set([...Object.keys(targets?.[loc] || {}), ...Object.keys(stock?.[loc] || {})]);
+    for (const pid of guardPids) {
       if (!isClothing(products?.[pid])) continue;
+      if (!managedHere(loc, pid)) continue;   // unmanaged → already handled by the queues above
       if (decisionActive(loc, pid)) continue;
       let units = 0;
       const seenSk = new Set();
-      // A size is only a blind spot if NO target resolves for it. Under
-      // rule-based targeting the standard sizes resolve automatically, so this
-      // must ask targetResolves — asking `!byTarget[sk]` (explicit rows only)
-      // flagged every rule-covered size as an unmanaged blind spot. Numeric /
-      // non-standard sizes still surface here, which is the real purpose.
+      // A size is only a blind spot if it has not been DECIDED — no explicit row
+      // (including an explicit 0 = deliberately excluded) and no rule target.
+      // Under rule-based targeting the standard sizes resolve automatically;
+      // numeric / non-standard sizes still surface here, which is the purpose.
       for (const [sk, c] of Object.entries(stock?.[loc]?.[pid] || {})) {
         const q = avail(num(c?.qty));
         if (q > 0 && !sizeDecided(loc, pid, sk)) { units += q; seenSk.add(sk); }
