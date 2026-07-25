@@ -220,7 +220,9 @@ async function runScan() {
           closeUpd[`refill_engine/rejectStreak/${c.dest}/${c.pid}/${c.sizeKey}`] =
             c.streakOp.op === "inc" ? { count: c.streakOp.count, lastTs: c.streakOp.ts, by: c.streakOp.by || null } : null;
         }
-        await safeUpdate(db, closeUpd, `close ${c.dest}/${c.pid}/${c.sizeKey}`);
+        // Count what ACTUALLY landed. The run record is the audit trail read
+        // during an incident — it must not assert closes that never happened.
+        if (!(await safeUpdate(db, closeUpd, `close ${c.dest}/${c.pid}/${c.sizeKey}`))) continue;
         applied++;
         if (c.cancelReason) withdrawn++;
       }
@@ -244,8 +246,9 @@ async function runScan() {
         upd[`refill_engine/rejectStreak/${op.dest}/${op.pid}/${op.sizeKey}`] =
           op.op === "inc" ? { count: op.count, lastTs: op.ts, by: op.by || null } : null;
       }
-      if (Object.keys(upd).length) await safeUpdate(db, upd, "streakOps");
-      counts.streakOps = Object.keys(upd).length;
+      // Reported only when the write actually landed (see the close loop).
+      const ok = Object.keys(upd).length ? await safeUpdate(db, upd, "streakOps") : true;
+      counts.streakOps = ok ? Object.keys(upd).length : 0;
     }
 
     // ── apply resizes (owner approval 2026-07-13) ─────────────────────────────
@@ -284,9 +287,11 @@ async function runScan() {
           } catch { ok = false; }
           if (!ok) continue;
         }
-        await db.ref(`refill_engine/open/${rz.dest}/${rz.pid}/${rz.sizeKey}/qty`).set(rz.to)
-          .catch((e) => console.error(`[refill-scan] resize ${rz.dest}/${rz.pid}/${rz.sizeKey}: lock qty set failed:`, e && e.message ? e.message : e));
-        resized++;
+        // Through safeSet like every other write: `.set()` AND `db.ref(path)`
+        // both validate synchronously, so a bare `.set(x).catch()` here is the
+        // exact anti-pattern this PR exists to remove — the last write in the
+        // file whose path components are data-derived. (Kimi review, PR #276.)
+        if (await safeSet(db, `refill_engine/open/${rz.dest}/${rz.pid}/${rz.sizeKey}/qty`, rz.to, `resize ${rz.dest}/${rz.pid}/${rz.sizeKey}`)) resized++;
       }
       if (resized) counts.resized = resized;
     }
@@ -329,8 +334,8 @@ async function runScan() {
           };
         }
       }
-      if (Object.keys(upd).length) await safeUpdate(db, upd, "retryOps");
-      counts.retryOps = plan.retryOps.length;
+      const ok = Object.keys(upd).length ? await safeUpdate(db, upd, "retryOps") : true;
+      counts.retryOps = ok ? plan.retryOps.length : 0;
     }
 
     // ── act on intents, by destination mode ──────────────────────────────────

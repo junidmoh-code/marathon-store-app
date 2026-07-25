@@ -100,6 +100,29 @@ test("sanitizeUpdate recurses into arrays (undefined element cannot escape)", ()
   assert.ok(!JSON.stringify(rows).includes("undefined"));
 });
 
+// Kimi review, PR #276: ServerValue sentinels are { ".sv": ... } — that key
+// starts with a "." and was being stripped as "forbidden". RTDB accepts them
+// happily, so this was the guard corrupting legal data; under strict mode it
+// would have aborted intent creation on every scan, forever.
+test("sanitizeUpdate passes ServerValue sentinels through untouched", () => {
+  const TIMESTAMP = { ".sv": "timestamp" };
+  const INCREMENT = { ".sv": { increment: 1 } };
+  const { safe, problems } = sanitizeUpdate({
+    "orders/R001": { createdAt: TIMESTAMP, hits: INCREMENT, name: "Shop Refill" },
+  });
+  assert.deepStrictEqual(safe["orders/R001"].createdAt, TIMESTAMP, "TIMESTAMP sentinel must survive");
+  assert.deepStrictEqual(safe["orders/R001"].hits, INCREMENT, "increment sentinel must survive");
+  assert.strictEqual(safe["orders/R001"].name, "Shop Refill");
+  assert.strictEqual(problems.length, 0, `sentinels are legal — got: ${problems.join("; ")}`);
+});
+
+test("sanitizeUpdate still rejects a dotted key that is NOT a ServerValue", () => {
+  // The pass-through is narrow: sole key, exactly ".sv". Anything else is a bug.
+  const { safe, problems } = sanitizeUpdate({ "a/b": { ".sv": "timestamp", other: 1 } });
+  assert.ok(!(".sv" in safe["a/b"]), "a .sv mixed with siblings is not a sentinel — strip it");
+  assert.strictEqual(problems.length, 1);
+});
+
 test("sanitizeUpdate leaves a clean payload byte-identical", () => {
   const clean = {
     "refill_requests/-Oabc": { qty: 2, source: "hub2", status: "open", note: null },

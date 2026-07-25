@@ -83,6 +83,14 @@ function cleanValue(val, trail, problems) {
       return c === UNDEF ? null : c;
     });
   }
+  // SERVER VALUE SENTINEL — admin.database.ServerValue.TIMESTAMP is literally
+  // { ".sv": "timestamp" } (increment is { ".sv": { increment: n } }). That key
+  // starts with a "." and would be stripped as "forbidden", which is the guard
+  // corrupting a payload RTDB accepts happily. Worse, under strict mode it would
+  // abort intent creation on EVERY scan forever — a permanent stall caused by
+  // the safety net. Pass sentinels through untouched. (Kimi review, PR #276.)
+  const keys = Object.keys(val);
+  if (keys.length === 1 && keys[0] === ".sv") return val;
   const out = {};
   for (const [k, v] of Object.entries(val)) {
     if (k.length === 0 || FORBIDDEN_KEY_CHARS.test(k) || k.includes("/")) {
