@@ -77,6 +77,29 @@ test("sanitizeUpdate rejects forbidden chars in NESTED keys", () => {
   assert.strictEqual(problems.length, 2);
 });
 
+// CodeRabbit, PR #276: arrays were returned unrecursed, so an undefined element
+// slipped straight through the guard to the driver. exceptions payloads ARE
+// arrays of freeform objects, so this was a live hole in the backstop.
+test("sanitizeUpdate recurses into arrays (undefined element cannot escape)", () => {
+  const { safe, problems } = sanitizeUpdate({
+    "stock_exceptions/latest": {
+      missingSizes: [
+        { loc: "trophy", pid: "p1", size: "XL", wanted: 1 },
+        { loc: "trophy", pid: "p2", size: undefined },   // ← would have thrown
+        undefined,                                        // ← whole element
+      ],
+    },
+  });
+  const rows = safe["stock_exceptions/latest"].missingSizes;
+  assert.strictEqual(rows.length, 3, "array length/indices must be preserved");
+  assert.ok(!("size" in rows[1]), "undefined field inside an array element is stripped");
+  assert.strictEqual(rows[1].pid, "p2", "sibling fields survive");
+  assert.strictEqual(rows[2], null, "undefined element becomes null, never spliced out");
+  assert.strictEqual(problems.length, 2);
+  // and the result must contain no undefined anywhere
+  assert.ok(!JSON.stringify(rows).includes("undefined"));
+});
+
 test("sanitizeUpdate leaves a clean payload byte-identical", () => {
   const clean = {
     "refill_requests/-Oabc": { qty: 2, source: "hub2", status: "open", note: null },

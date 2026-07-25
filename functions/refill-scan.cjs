@@ -63,6 +63,27 @@ async function safeUpdate(db, upd, label, opts = {}) {
   }
 }
 
+// Same protection for single-node .set() writes. `.set()` validates its argument
+// exactly like `.update()` does, so the snapshot writes below (stock_exceptions,
+// stock_confidence, shadow) are the same outage class — and the riskiest of the
+// lot, since plan.exceptions is a dozen freeform record arrays assembled across
+// many branches: one future field without a default would take the scan down
+// again on a code path the update-guard never sees. (CodeRabbit, PR #276.)
+async function safeSet(db, path, value, label) {
+  const { safe, problems } = engine.sanitizeUpdate({ [path]: value });
+  if (problems.length) {
+    console.error(`[refill-scan] ${label}: dropped ${problems.length} malformed entr${problems.length === 1 ? "y" : "ies"}:`, problems.slice(0, 20));
+  }
+  if (!(path in safe)) return false;
+  try {
+    await db.ref(path).set(safe[path]);
+    return !problems.length;
+  } catch (e) {
+    console.error(`[refill-scan] ${label}: set failed:`, e && e.message ? e.message : e);
+    return false;
+  }
+}
+
 async function drawRefillNumber(db, nowMs) {
   // EXACT mirror of App.jsx getNextRefillNumber(): daily reset keyed by the
   // device-local SA date string (0-based month), 001–999 wrap, "R" prefix.
@@ -328,7 +349,7 @@ async function runScan() {
       }
     }
     // Shadow is a full replace each run, so satisfied plans disappear on their own.
-    await db.ref("refill_engine/shadow").set(Object.keys(shadowNode).length ? shadowNode : null);
+    await safeSet(db, "refill_engine/shadow", Object.keys(shadowNode).length ? shadowNode : null, "shadow");
 
     // ── SHADOW COPIES in the REAL queues (owner decision 2026-07-12 v4) ───────
     // While a destination runs in shadow, its planned requests appear in the
@@ -493,10 +514,10 @@ async function runScan() {
 
     // ── exceptions snapshot + hourly confidence ──────────────────────────────
     counts.exceptions = Object.values(plan.exceptions).reduce((t, e) => t + e.count, 0);
-    await db.ref("stock_exceptions/latest").set({ computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions });
+    await safeSet(db, "stock_exceptions/latest", { computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions }, "exceptions snapshot");
     if (new Date(nowMs).getUTCMinutes() < 15) {
       const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex, products });
-      await db.ref("stock_confidence").set({ computedAt: startedAt, byLocation: confidence });
+      await safeSet(db, "stock_confidence", { computedAt: startedAt, byLocation: confidence }, "confidence");
     }
 
     // ── run record + prune old runs (keys are time-sortable) ─────────────────

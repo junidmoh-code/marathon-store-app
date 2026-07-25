@@ -71,7 +71,18 @@ function cleanValue(val, trail, problems) {
     return UNDEF;
   }
   // null is LEGAL (it deletes the node) — never strip it.
-  if (val === null || typeof val !== "object" || Array.isArray(val)) return val;
+  if (val === null || typeof val !== "object") return val;
+  // Arrays MUST be recursed: RTDB stores them as numeric-keyed objects and
+  // throws on an undefined element exactly like it does on an object field.
+  // An undefined element becomes null rather than being spliced out — dropping
+  // it would shift every later index and silently corrupt the record.
+  // (exceptions payloads are arrays of freeform objects, so this path is real.)
+  if (Array.isArray(val)) {
+    return val.map((v, i) => {
+      const c = cleanValue(v, `${trail}[${i}]`, problems);
+      return c === UNDEF ? null : c;
+    });
+  }
   const out = {};
   for (const [k, v] of Object.entries(val)) {
     if (k.length === 0 || FORBIDDEN_KEY_CHARS.test(k) || k.includes("/")) {
