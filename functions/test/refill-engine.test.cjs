@@ -1628,6 +1628,34 @@ test("with the switch OFF the same product DOES surface as a decision again", ()
   assert.ok(surfaced, "queues follow the switch — v5 behaviour returns intact");
 });
 
+// Kimi, PR #277: the excess loop asked the explicit row, so a rule-managed cell
+// that was massively overstocked appeared in NO queue — not excess (no explicit
+// row) and not noTarget (managedHere skips rule-managed products).
+test("rule-managed overstock still surfaces as excess", () => {
+  const plan = computeRefillPlan(carried({
+    config: { ...RULE_CONFIG, ruleBasedTargets: true },
+    products: { ...PRODUCTS, pOver: { productType: "clothing", sizes: ["M"] } },
+    targets: {},                                    // NO explicit rows anywhere
+    stock: {
+      "marathon-pe": {}, hub2: {}, central: {},
+      trophy: { pOver: { M: cell(14) } },           // rule target for trophy M is 2
+    },
+  }));
+  const ex = plan.exceptions.excess.items.find((e) => e.pid === "pOver" && e.loc === "trophy");
+  assert.ok(ex, "overstock against a RULE target must be visible in Move Excess");
+  assert.equal(ex.target, 2, "measured against the rule target");
+  assert.equal(ex.excess, 12);
+});
+
+test("throttle: a negative maxIntentsPerRun cannot silently stop the engine", () => {
+  // Unclamped, -5 is truthy → breaker trips → deal loop exits → zero intents,
+  // every scan, while the run record claims it merely throttled.
+  const plan = computeRefillPlan(carried({ config: { ...RULE_CONFIG, ruleBasedTargets: true, maxIntentsPerRun: -5 } }));
+  assert.ok(plan.intents.length >= 1, "clamped to at least 1 — never a silent total stop");
+  const zero = computeRefillPlan(carried({ config: { ...RULE_CONFIG, ruleBasedTargets: true, maxIntentsPerRun: 0 } }));
+  assert.ok(zero.intents.length >= 1, "0 falls back to the default, not to a stop");
+});
+
 // CodeRabbit, PR #277: the blind-spot guard iterated `targets[loc]` — explicit
 // rows only. A RULE-managed product has no explicit row, so a numeric size it
 // holds was skipped by the decision queues (managedHere → continue) AND never

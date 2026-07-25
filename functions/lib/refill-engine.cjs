@@ -984,7 +984,14 @@ function computeRefillPlan(snapshot) {
   // 50 cards per 15-minute scan instead of the full computed backlog. Anything
   // not dealt this run is simply re-proposed next run — the engine is stateless,
   // so throttling delays work, it never loses it. Default 200 if unset.
-  const maxIntents = num(config?.maxIntentsPerRun) || 200;
+  // CLAMPED, like every other numeric knob in this file (recheckMs, streakLimit,
+  // confirmedOutMs). Unclamped, a NEGATIVE value is truthy, so maxIntents = -5
+  // trips the breaker every scan and the deal loop exits immediately → ZERO
+  // intents, indefinitely, while the run record reports throttled:true. That is
+  // a silent total stop on the key whose whole job is live incident control.
+  // (Kimi review, PR #277.) 0 is likewise not a valid throttle — use the kill
+  // switch to stop the engine, not a zero cap.
+  const maxIntents = Math.max(1, num(config?.maxIntentsPerRun) || 200);
   let plannedIntents = intents;
   if (intents.length > maxIntents) {
     errors.push(`circuit breaker: ${intents.length} intents computed, capped to ${maxIntents} (fair per destination, high-priority first)`);
@@ -1036,11 +1043,20 @@ function computeRefillPlan(snapshot) {
     if (h2 > 0 && pe === 0 && tr === 0) onlyInHub2.push({ pid, units: h2 });
     for (const loc of dests) {
       for (const [sizeKey, cell] of Object.entries(stock?.[loc]?.[pid] || {})) {
-        const t = targets?.[loc]?.[pid]?.[sizeKey];
+        // Excess must be measured against the target that ACTUALLY applies —
+        // resolveTarget, not the explicit row. Asking `targets[loc][pid][size]`
+        // made every rule-managed cell invisible to Move Excess, and the
+        // "surfaced as noTarget below instead" safety net no longer catches
+        // them either (managedHere skips rule-managed products). Concrete miss:
+        // trophy holds 14 × M against a rule target of 4 — the 10-unit overage
+        // appeared in NO queue at all. (Kimi review, PR #277.)
         // THREE distinct states (owner decision 2026-07-12 v5) — never conflated:
         //   configured target  → excess = qty − target (hub2 strict ≥1, stores ≥2)
         //   explicit target 0  → deliberately excluded here: EVERY unit is excess
-        //   no target          → NOT excess; surfaced as noTarget below instead
+        //   no target at all   → NOT excess; surfaced by the blind-spot guard
+        // resolveTarget preserves all three: explicit 0 still returns target 0,
+        // and "nothing resolves" still returns null.
+        const t = resolveTarget(ctx, loc, pid, rawSize(pid, sizeKey));
         if (!t || typeof t.target !== "number") continue;
         const raw = num(cell?.qty) - t.target;
         // TWO-LEG MOVE EXCESS (owner directive 2026-07-13, supersedes the
