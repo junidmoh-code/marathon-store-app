@@ -9,15 +9,27 @@
 // source of truth; useLocations() reads /locations live. Kept here so the seed and
 // the labels share one definition.
 
-// The physical location set. Receiving warehouses (Studio/Central/Base) take
-// inbound stock; hubs (1–3) are storage; shops are sellable. Each location holds
-// its own per-size count under /stock/{id}/{productId}/{size} — independent numbers
-// for the same product+size across locations. `in_transit` is kept for transfer
-// backward-compat (excluded from the entry/transfer-target pickers).
+// The physical location set. Central is the receiving warehouse for inbound stock;
+// hubs (1–3) are storage; shops are sellable. Each location holds its own per-size
+// count under /stock/{id}/{productId}/{size} — independent numbers for the same
+// product+size across locations. `in_transit` is kept for transfer backward-compat
+// (excluded from the entry/transfer-target pickers).
+//
+// MERGED LOCATIONS (2026-07-26) — `studio` and `base` are DEACTIVATED, not removed.
+// They were separate stock buckets inside Central's own building (building "A" in
+// transitLanes.js), so they were consolidated into `central`: 1,347 ledger
+// transfers moved 5,480 units across, leaving both drained to 0.
+//
+// They MUST stay in this list and in /locations. The live stock_movements rule
+// validates from/to with root.child('locations').child(X).exists() — EXISTENCE, not
+// `active` — so keeping them registered is what lets historical movements remain
+// valid and a rollback remain possible. Deleting them would invalidate every
+// movement that references them. `active: false` is enough to remove them from
+// every picker, since all pickers funnel through activeLocations() below.
 export const DEFAULT_LOCATIONS = [
-  { id: "studio",        label: "Studio",         kind: "warehouse", sellable: false, active: true },
+  { id: "studio",        label: "Studio",         kind: "warehouse", sellable: false, active: false },
   { id: "central",       label: "Central",        kind: "warehouse", sellable: false, active: true },
-  { id: "base",          label: "Base",           kind: "warehouse", sellable: false, active: true },
+  { id: "base",          label: "Base",           kind: "warehouse", sellable: false, active: false },
   { id: "hub1",          label: "Hub 1",          kind: "warehouse", sellable: false, active: true },
   { id: "hub2",          label: "Hub 2",          kind: "warehouse", sellable: false, active: true },
   { id: "hub3",          label: "Hub 3",          kind: "warehouse", sellable: false, active: true },
