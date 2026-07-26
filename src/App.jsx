@@ -665,6 +665,21 @@ function useOrders(scopeShop = null) {
 
 // Write a brand-new order. Used by AssistantView.
 function writeOrder(order) {
+  // Firebase set() THROWS synchronously on any undefined value (an argument-
+  // validation error, e.g. a photoless perfume left productPhoto undefined —
+  // #perfume-order). Upstream then reports it as a generic "connection issue",
+  // masking the real cause. Catch it here first and throw a precise, logged
+  // error naming the offending field(s), so a future missing-field on any
+  // product category is instantly findable instead of looking like bad wifi.
+  const undefinedFields = Object.keys(order).filter((k) => order[k] === undefined);
+  if (undefinedFields.length) {
+    const err = new Error(
+      `Order ${order.id} not written — missing field(s): ${undefinedFields.join(", ")}. ` +
+      `Likely a product record without these fields.`
+    );
+    console.error("writeOrder rejected:", err.message, { order });
+    throw err;
+  }
   return set(ref(database, `orders/${order.id}`), order).catch((err) => {
     console.warn("Firebase writeOrder failed:", err);
   });
@@ -7501,7 +7516,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           id: orderNum,
           productId: item.product.id,
           productName: item.product.name,
-          productPhoto: item.product.photo,
+          productPhoto: item.product.photo ?? null,
           productPhotoUrl: item.product.photoUrl ?? null,
           size: item.size,
           sentSize: null,
@@ -7590,7 +7605,13 @@ function AssistantView({ products, onExit, orders = [] }) {
       closeCheckout();
     } catch (e) {
       console.error("Failed to place orders:", e);
-      alert("Could not place order. Check your connection and try again.");
+      // Surface the REAL reason instead of always blaming the connection — a
+      // write rejected for a data problem (e.g. a missing product field) is not
+      // a network fault, and mislabelling it as one hid this bug for weeks.
+      alert(
+        `Couldn't place the order.\n\nReason: ${e?.message || "unknown error"}\n\n` +
+        `If this keeps happening it may not be your internet — tell a manager and mention this message.`
+      );
     } finally {
       setSubmitting(false);
     }
@@ -7630,7 +7651,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           id: orderNum,
           productId: item.product.id,
           productName: item.product.name,
-          productPhoto: item.product.photo,
+          productPhoto: item.product.photo ?? null,
           productPhotoUrl: item.product.photoUrl ?? null,
           size: item.size,
           sentSize: null,
@@ -7700,7 +7721,12 @@ function AssistantView({ products, onExit, orders = [] }) {
       setCart(prev => prev.filter(it => !(it.productType === "clothing" && it.intent !== "customer")));
     } catch (e) {
       console.error("Failed to place refill requests:", e);
-      alert("Could not place refill request. Check your connection and try again.");
+      // Same as placeOrders: report the real reason, don't default to blaming
+      // the connection for what is often a data-shaped write rejection.
+      alert(
+        `Couldn't place the refill request.\n\nReason: ${e?.message || "unknown error"}\n\n` +
+        `If this keeps happening it may not be your internet — tell a manager and mention this message.`
+      );
     } finally {
       setSubmitting(false);
     }
