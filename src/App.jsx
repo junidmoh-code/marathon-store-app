@@ -7597,6 +7597,13 @@ function AssistantView({ products, onExit, orders = [] }) {
         });
         sendWhatsAppTemplate(normalizedPhone, "order_placed", [customerName, orderNum, item.product.name, item.size]);
         placed.push(order);
+        // Drop THIS line from the cart the instant it's written. writeOrder now
+        // rethrows async failures, so if a LATER line in the batch throws the
+        // catch preserves the (remaining) cart — pruning per-line here means a
+        // retry re-places only the unplaced remainder instead of duplicating
+        // already-written lines with fresh order numbers. Object identity (not a
+        // productId/size key) so qty>1 duplicate lines prune individually.
+        setCart(prev => prev.filter(it => it !== item));
       }
       setLastOrders(placed);
       // Print the customer order slip(s) — one per order, in a single 80mm print
@@ -7722,6 +7729,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           destShop: effectiveShop,
         });
         placed.push(order);
+        // Per-line prune — same rationale as placeOrders: a later throw must not
+        // let a retry duplicate the refill lines already written.
+        setCart(prev => prev.filter(it => it !== item));
       }
       setLastOrders(placed);
       // Drop the placed refill lines; leave sneakers and any clothing-customer
