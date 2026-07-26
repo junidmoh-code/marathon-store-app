@@ -677,7 +677,9 @@ function writeOrder(order) {
       `Order ${order.id} not written — missing field(s): ${undefinedFields.join(", ")}. ` +
       `Likely a product record without these fields.`
     );
-    console.error("writeOrder rejected:", err.message, { order });
+    // Log only the id + offending fields — never the whole order (it carries
+    // customer PII: name, phone, identity).
+    console.error("writeOrder rejected:", err.message, { orderId: order.id ?? null, undefinedFields });
     throw err;
   }
   return set(ref(database, `orders/${order.id}`), order).catch((err) => {
