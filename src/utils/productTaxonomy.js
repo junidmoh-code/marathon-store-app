@@ -58,9 +58,15 @@ export const SIZES_ONE = [ONE_SIZE_SENTINEL];
 // Empty behaviour-flag slots. Cloned onto every seeded category. UNUSED.
 const EMPTY_FLAGS = { refillManaged: null, displayChecks: null, oneSize: null };
 
-// ── The two top-level groups (the dropdown's optgroups) ──────────────────────
+// ── The top-level groups (the dropdown's optgroups) ──────────────────────────
+// FOOTWEAR is its own group (owner call 2026-07-26): Sneakers, Boots, Soccer
+// Boots, Slides, Loafers, Running Shoes and Kids Shoes are shoes, and a picker
+// that files them under a heading reading "CLOTHING" contradicts the whole point
+// of this rebuild. Grouping is PRESENTATION ONLY — `top` never reaches a product
+// record, and no predicate or derivation reads it (see groupedCategories, and
+// the "grouping is display-only" tests).
 export const TAXONOMY_TOPS = {
-  sneakers: { key: "sneakers", label: "Sneakers", order: 1 },
+  footwear: { key: "footwear", label: "Footwear", order: 1 },
   clothing: { key: "clothing", label: "Clothing", order: 2 },
 };
 
@@ -72,15 +78,15 @@ export const TAXONOMY_TOPS = {
 // queue it does not belong in.
 const SEED_ROWS = [
   // ── Footwear-sized ─────────────────────────────────────────────────────────
-  ["sneakers",          "Sneakers",           "sneakers", SIZES_FOOTWEAR,   "Footwear",    "Sneakers",              "sneaker"],
-  ["running-shoes",     "Running Shoes",      "clothing", SIZES_FOOTWEAR,   "Footwear",    "Sneakers",              "sneaker"],
-  ["boots",             "Boots",              "clothing", SIZES_FOOTWEAR,   "Footwear",    "Boots",                 "sneaker"],
-  ["soccer-boots",      "Soccer Boots",       "clothing", SIZES_FOOTWEAR,   "Footwear",    "Soccer Boots",          "sneaker"],
-  ["slides",            "Slides",             "clothing", SIZES_FOOTWEAR,   "Footwear",    "Sandals & Slides",      "sneaker"],
-  ["loafers",           "Loafers",            "clothing", SIZES_FOOTWEAR,   "Footwear",    null,                    "sneaker"],
+  ["sneakers",          "Sneakers",           "footwear", SIZES_FOOTWEAR,   "Footwear",    "Sneakers",              "sneaker"],
+  ["running-shoes",     "Running Shoes",      "footwear", SIZES_FOOTWEAR,   "Footwear",    "Sneakers",              "sneaker"],
+  ["boots",             "Boots",              "footwear", SIZES_FOOTWEAR,   "Footwear",    "Boots",                 "sneaker"],
+  ["soccer-boots",      "Soccer Boots",       "footwear", SIZES_FOOTWEAR,   "Footwear",    "Soccer Boots",          "sneaker"],
+  ["slides",            "Slides",             "footwear", SIZES_FOOTWEAR,   "Footwear",    "Sandals & Slides",      "sneaker"],
+  ["loafers",           "Loafers",            "footwear", SIZES_FOOTWEAR,   "Footwear",    null,                    "sneaker"],
   // Kids shoe sizes 26–33 read as pants WAISTS to the shared size classifier,
   // so Footwear is pinned here exactly as the old form's kids override did.
-  ["kids-shoes",        "Kids Shoes",         "clothing", SIZES_KIDS,       "Footwear",    "Sneakers",              "sneaker"],
+  ["kids-shoes",        "Kids Shoes",         "footwear", SIZES_KIDS,       "Footwear",    "Sneakers",              "sneaker"],
 
   // ── Apparel (S..XXXL) ──────────────────────────────────────────────────────
   ["t-shirts",          "T-Shirts",           "clothing", SIZES_APPAREL,    "Clothing",    "T-Shirts",              "clothing"],
@@ -195,17 +201,34 @@ export function legacyFor(registry, key) {
  * The dropdown model: [{ top, label, options:[cat, …] }, …], groups in `order`,
  * options in `order` then label. Inactive categories are hidden (so a category
  * can be retired by data edit without breaking products already using it).
+ *
+ * GROUPING IS PRESENTATION ONLY. `top` decides which optgroup a category is
+ * listed under and nothing else — it is never written to a product and no
+ * predicate or derivation reads it. Regrouping is a safe data edit.
+ *
+ * NEVER SILENTLY DROPS A CATEGORY: an active category whose `top` matches no
+ * known group is collected into a trailing "Other" group rather than vanishing
+ * from the picker. A typo'd `top` in the console must be visible, not invisible
+ * — a category you cannot see is a category you cannot assign.
  */
+export const UNGROUPED_TOP = "__ungrouped__";
+
 export function groupedCategories(registry) {
   const cats = Object.values((registry && registry.cats) || {})
     .filter((c) => c && typeof c === "object" && c.key && c.active !== false);
-  const tops = (registry && registry.tops) || TAXONOMY_TOPS;
+  const rawTops = (registry && registry.tops) || TAXONOMY_TOPS;
+  const tops = Object.values(rawTops).filter((t) => t && typeof t === "object" && t.key);
   const byOrder = (a, b) => (a.order ?? 999) - (b.order ?? 999) || String(a.label).localeCompare(String(b.label));
-  return Object.values(tops)
-    .filter(Boolean)
+
+  const known = new Set(tops.map((t) => t.key));
+  const groups = tops
     .sort(byOrder)
-    .map((t) => ({ top: t.key, label: t.label, options: cats.filter((c) => c.top === t.key).sort(byOrder) }))
+    .map((t) => ({ top: t.key, label: String(t.label ?? t.key), options: cats.filter((c) => c.top === t.key).sort(byOrder) }))
     .filter((g) => g.options.length > 0);
+
+  const orphans = cats.filter((c) => !known.has(c.top)).sort(byOrder);
+  if (orphans.length) groups.push({ top: UNGROUPED_TOP, label: "Other", options: orphans });
+  return groups;
 }
 
 /** Flat lookup of every active category, in dropdown order. */

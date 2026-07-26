@@ -205,11 +205,31 @@ describe("derivation ↔ live automation contracts", () => {
 });
 
 describe("groupedCategories", () => {
-  it("groups into Sneakers then Clothing", () => {
+  it("groups into Footwear then Clothing", () => {
     const g = groupedCategories(REG);
-    expect(g.map((x) => x.top)).toEqual(["sneakers", "clothing"]);
-    expect(g[0].options.map((c) => c.key)).toEqual(["sneakers"]);
-    expect(g[1].options).toHaveLength(30);
+    expect(g.map((x) => x.top)).toEqual(["footwear", "clothing"]);
+    expect(g.map((x) => x.label)).toEqual(["Footwear", "Clothing"]);
+  });
+
+  it("every shoe category sits under Footwear, not Clothing", () => {
+    const g = groupedCategories(REG);
+    expect(g[0].options.map((c) => c.key)).toEqual([
+      "sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes",
+    ]);
+    expect(g[1].options).toHaveLength(24);
+    // The heading a shoe appears under must never read "Clothing".
+    for (const c of g[1].options) expect(c.legacy.category).not.toBe("Footwear");
+  });
+
+  it("shows an unknown top as \"Other\" instead of dropping the category", () => {
+    const reg = { ...REG, cats: { ...REG.cats, belts: { ...REG.cats.belts, top: "typo-group" } } };
+    const g = groupedCategories(reg);
+    const other = g.find((x) => x.label === "Other");
+    expect(other).toBeTruthy();
+    expect(other.options.map((c) => c.key)).toEqual(["belts"]);
+    // Still reachable, still fully derivable — nothing silently disappears.
+    expect(allCategories(reg)).toHaveLength(31);
+    expect(legacyFor(reg, "belts").subcategory).toBe("Belts");
   });
 
   it("hides inactive categories without breaking the rest", () => {
@@ -222,6 +242,36 @@ describe("groupedCategories", () => {
     expect(groupedCategories(null)).toEqual([]);
     expect(groupedCategories({})).toEqual([]);
     expect(groupedCategories({ cats: { junk: "not an object" } })).toEqual([]);
+  });
+
+  // Regrouping is a data edit. Proven by REGROUPING EVERYTHING and asserting
+  // that every behaviour-carrying output is byte-identical.
+  it("grouping is DISPLAY-ONLY — no predicate or derivation depends on `top`", () => {
+    const scrambled = {
+      ...REG,
+      tops: { everything: { key: "everything", label: "Everything", order: 1 } },
+      cats: Object.fromEntries(Object.entries(REG.cats).map(([k, c]) => [k, { ...c, top: "everything" }])),
+    };
+    for (const key of Object.keys(REG.cats)) {
+      // The derivation — what actually reaches a product record.
+      expect(legacyFor(scrambled, key)).toEqual(legacyFor(REG, key));
+      // Sizes and the one-size branch.
+      expect(sizesOf(catByKey(scrambled, key))).toEqual(sizesOf(catByKey(REG, key)));
+      expect(isOneSize(catByKey(scrambled, key))).toBe(isOneSize(catByKey(REG, key)));
+    }
+    // Same 31 categories reachable, only the headings differ.
+    expect(allCategories(scrambled).map((c) => c.key).sort())
+      .toEqual(allCategories(REG).map((c) => c.key).sort());
+    expect(groupedCategories(scrambled).map((g) => g.label)).toEqual(["Everything"]);
+  });
+
+  it("queue predicates read legacy fields and categoryKey, never `top`", () => {
+    // isLegacySneaker keys off the LEGACY category/subcategory pair, so moving
+    // Sneakers between dropdown groups cannot change who enters the queue.
+    const sneaker = { id: "p1", category: "Footwear", subcategory: "Sneakers" };
+    expect(isLegacySneaker(sneaker)).toBe(true);
+    expect(needsAssignment(sneaker)).toBe(false);
+    expect(effectiveCategoryKey(sneaker)).toBe("sneakers");
   });
 
   it("a category added by pure DATA appears with no code change", () => {
