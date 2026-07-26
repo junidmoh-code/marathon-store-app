@@ -118,6 +118,12 @@ const SEED_ROWS = [
   ["underwear",         "Underwear",          "clothing", SIZES_APPAREL,    "Clothing",    "Underwear & Socks",     "clothing"],
 
   // ── Own size sets ──────────────────────────────────────────────────────────
+  // Fitted Caps carry productType "clothing", so the engine MANAGES them — but
+  // sizes 55–63 match no key in config.defaultRunByStore (S..XXXL only), so a
+  // rule-based target can never resolve for them at any store. They depend
+  // entirely on explicit /stock_targets rows and otherwise sit in the No-Target
+  // queue. Same accepted shape as Gloves and the one-size accessories below;
+  // stated here so nobody assumes caps get automatic replenishment.
   ["fitted-caps",       "Fitted Caps",        "clothing", SIZES_FITTED_CAP, "Clothing",    "Caps & Hats",           "clothing"],
   // Gloves are M/L — REAL standard-run sizes, so the engine resolves targets for
   // them wherever a store already carries them. Verified 2026-07-26 as the
@@ -180,15 +186,35 @@ export function catByKey(registry, key) {
 export function isOneSize(cat) {
   if (!cat) return false;
   if (cat.sizeMode === "one") return true;
-  const s = sizesOf(cat);
-  return s.length === 1 && s[0] === ONE_SIZE_SENTINEL;
+  const raw = rawSizes(cat);
+  return raw.length === 1 && raw[0] === ONE_SIZE_SENTINEL;
 }
 
-/** The category's size list, normalised to an array of non-empty strings. */
-export function sizesOf(cat) {
+function rawSizes(cat) {
   const raw = cat && cat.sizes;
   const arr = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? Object.values(raw) : []);
   return arr.map((s) => String(s).trim()).filter(Boolean);
+}
+
+/**
+ * The category's size list — THE one source of truth for both the quantity grid
+ * and the product's saved `sizes`.
+ *
+ * A one-size category is FORCED to the "_" sentinel regardless of what its
+ * registry record literally says. Without this, the sentinel had two
+ * uncoordinated sources: the one-size quantity box always writes to "_" (it has
+ * no size to key on), while the save read `cat.sizes` verbatim. A console-added
+ * category with sizeMode "one" but sizes ["one-size"] — a plausible typo, and
+ * console additions are the advertised workflow — would render the one-size box,
+ * store the entered quantity under "_", then look it up under "one-size", find
+ * nothing, and receive ZERO stock while the operator watched a number they typed
+ * sit on screen. No error, no movement. Normalising here makes that
+ * unrepresentable.
+ */
+export function sizesOf(cat) {
+  if (!cat) return [];
+  if (isOneSize(cat)) return [ONE_SIZE_SENTINEL];
+  return rawSizes(cat);
 }
 
 // ── Legal legacy values ──────────────────────────────────────────────────────

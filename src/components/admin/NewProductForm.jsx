@@ -89,13 +89,25 @@ export default function NewProductForm({
     }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
         <span style={{ fontSize: 19, fontWeight: 800, color: "#fff", letterSpacing: "-0.02em" }}>New Product</span>
-        {taxonomySource === "fallback" && (
-          <span style={{ fontSize: 11, fontWeight: 700, color: "#FBBF24", background: "rgba(251,191,36,.1)",
-                         border: "1px solid rgba(251,191,36,.3)", borderRadius: 8, padding: "3px 9px" }}>
-            offline category list
-          </span>
-        )}
       </div>
+
+      {/* The live registry could not be read, so the category list is the one
+          baked into this build. It can disagree with the console — a category
+          added or edited there since this bundle shipped will be missing or
+          stale. Saving still works and still produces a self-consistent product,
+          so this warns loudly rather than blocking the shop floor over a
+          transient blip; but it must be impossible to miss, not a small chip. */}
+      {taxonomySource === "fallback" && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "rgba(251,191,36,.09)",
+                      border: "1px solid rgba(251,191,36,.38)", borderRadius: 12, padding: "12px 14px" }}>
+          <span style={{ fontSize: 15, lineHeight: 1.2 }}>⚠️</span>
+          <div style={{ fontSize: 12.5, color: "#FBBF24", lineHeight: 1.5 }}>
+            <b>Using the built-in category list</b> — the live registry could not be read.
+            Any category added or changed in the console recently may be missing or out of date here.
+            Reload before adding products if you are not sure.
+          </div>
+        </div>
+      )}
 
       {/* ── NAME ──────────────────────────────────────────────────────────── */}
       <div>

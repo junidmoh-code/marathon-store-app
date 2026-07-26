@@ -93,6 +93,26 @@ describe("one-size categories", () => {
     for (const k of ONE) expect(sizesOf(catByKey(REG, k))).toEqual([ONE_SIZE_SENTINEL]);
   });
 
+  // REGRESSION GUARD. The one-size quantity box has no size to key on, so it
+  // always writes to "_". If sizesOf returned something else for a one-size
+  // category, the save would look the entered quantity up under a key nobody
+  // wrote, find nothing, and receive ZERO stock — silently, with the number the
+  // operator typed still on screen. Console-added categories are the advertised
+  // workflow, so this typo is reachable. Normalisation makes it unrepresentable.
+  it('forces the "_" sentinel for any one-size category, whatever its record says', () => {
+    const typo = { key: "scarves", label: "Scarves", top: "clothing", sizeMode: "one",
+                   sizes: ["one-size"], legacy: { category: "Accessories", productType: "clothing" } };
+    expect(isOneSize(typo)).toBe(true);
+    expect(sizesOf(typo)).toEqual([ONE_SIZE_SENTINEL]);
+
+    // Also when sizeMode is missing entirely but the sizes say one-size.
+    expect(sizesOf({ key: "x", sizes: ["_"] })).toEqual([ONE_SIZE_SENTINEL]);
+
+    // And the built product agrees with the grid.
+    const reg = { ...REG, cats: { ...REG.cats, scarves: { ...typo, active: true, order: 99 } } };
+    expect(sizesOf(catByKey(reg, "scarves"))).toEqual([ONE_SIZE_SENTINEL]);
+  });
+
   it("sized categories are never one-size", () => {
     expect(isOneSize(catByKey(REG, "t-shirts"))).toBe(false);
     expect(isOneSize(catByKey(REG, "sneakers"))).toBe(false);

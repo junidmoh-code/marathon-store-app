@@ -11,16 +11,24 @@
 // touches /products, /stock, /stock_targets or /config.
 //
 //   node scripts/seed-product-taxonomy.mjs --dry-run   # print the diff, write nothing
-//   node scripts/seed-product-taxonomy.mjs             # MERGE (default)
-//   node scripts/seed-product-taxonomy.mjs --replace   # destructive, prunes extras
+//   node scripts/seed-product-taxonomy.mjs             # ADD MISSING ONLY (default)
+//   node scripts/seed-product-taxonomy.mjs --refresh   # also overwrite the seeded 31
+//   node scripts/seed-product-taxonomy.mjs --replace   # --refresh + prune extras
 //
-// MERGE IS THE DEFAULT, AND THAT MATTERS. The whole design promise is that a
-// category can be added in the Firebase console with no code change — so a
-// re-run of this script must not delete the categories someone added that way.
-// A blind set() would: it would drop "Scarves" and leave every product carrying
-// categoryKey:"scarves" pointing at nothing. Merge refreshes the seeded 31 and
-// leaves anything else alone. --replace prunes, and says exactly what it will
-// destroy first.
+// THE DEFAULT IS DELIBERATELY THE TIMID ONE, because this feature's whole
+// promise is that the registry is edited in the Firebase console with no code
+// change — and a script that silently undoes those edits would break that
+// promise every time someone re-ran it "just to be safe".
+//
+// Two distinct ways a re-run could destroy console work:
+//   1. Deleting a category added in the console ("Scarves"), leaving every
+//      product carrying categoryKey:"scarves" pointing at nothing. Only
+//      --replace does this, and it refuses outright when it would.
+//   2. Reverting an EDIT to one of the seeded 31 — retiring Loafers with
+//      active:false, or correcting a legacy value — because the seed hardcodes
+//      active:true and the original triple. Only --refresh does this, and the
+//      default reports exactly which categories differ so the choice is
+//      informed rather than accidental.
 
 import { createRequire } from "module";
 import { fileURLToPath } from "url";
@@ -34,6 +42,7 @@ const { TAXONOMY_SEED } = await import(path.join(HERE, "..", "src", "utils", "pr
 
 const DRY = process.argv.includes("--dry-run");
 const REPLACE = process.argv.includes("--replace");
+const REFRESH = process.argv.includes("--refresh") || REPLACE;   // --replace implies --refresh
 const NODE = "settings/productTaxonomy";
 
 // Uses Application Default Credentials — a local run needs either
@@ -48,18 +57,42 @@ const seedKeys = Object.keys(TAXONOMY_SEED.cats).sort();
 const liveKeys = Object.keys((existing && existing.cats) || {}).sort();
 const foreign = liveKeys.filter((k) => !seedKeys.includes(k));   // console-added categories
 
+// Seeded categories whose LIVE value has drifted from the checked-in seed —
+// i.e. someone edited them in the console. These are what --refresh overwrites.
+const drifted = seedKeys.filter((k) => {
+  const live = existing && existing.cats && existing.cats[k];
+  return live && JSON.stringify(canonical(live)) !== JSON.stringify(canonical(TAXONOMY_SEED.cats[k]));
+});
+
+// Compare what RTDB can actually STORE, not what the seed object literally
+// contains. RTDB deletes null children, so the seed's deliberate nulls
+// (loafers/dresses have no legacy subcategory, perfumes no productType) are
+// absent in the live node. Comparing raw would flag those three as
+// "edited in the console" on every single run — a false alarm that would train
+// the operator to ignore the one warning that matters.
+function canonical(o) {
+  if (Array.isArray(o)) return o.map(canonical);
+  if (o === null || typeof o !== "object") return o;
+  return Object.fromEntries(
+    Object.keys(o).sort().filter((k) => o[k] !== null).map((k) => [k, canonical(o[k])]),
+  );
+}
+
+const added = seedKeys.filter((k) => !liveKeys.includes(k));
+
 console.log(`node:        /${NODE}`);
 console.log(`live:        ${existing ? `${liveKeys.length} categories (version ${existing.version})` : "ABSENT — first seed"}`);
 console.log(`seed:        ${seedKeys.length} categories (version ${TAXONOMY_SEED.version})`);
-console.log(`mode:        ${REPLACE ? "REPLACE (prunes anything not in the seed)" : "merge (leaves console-added categories alone)"}`);
+console.log(`mode:        ${REPLACE ? "REPLACE (overwrite seeded + prune extras)" : REFRESH ? "REFRESH (overwrite the seeded 31)" : "add-missing-only (default — console edits preserved)"}`);
 
 if (existing) {
-  const added = seedKeys.filter((k) => !liveKeys.includes(k));
-  if (added.length) console.log(`  + ${added.join(", ")}`);
-  if (foreign.length) {
-    console.log(`  ${REPLACE ? "-" : "="} ${foreign.join(", ")}   ← console-added, ${REPLACE ? "WILL BE DELETED" : "kept"}`);
+  if (added.length) console.log(`  + ${added.join(", ")}   ← will be created`);
+  if (foreign.length) console.log(`  ${REPLACE ? "-" : "="} ${foreign.join(", ")}   ← console-added, ${REPLACE ? "WILL BE DELETED" : "kept"}`);
+  if (drifted.length) {
+    console.log(`  ${REFRESH ? "!" : "="} ${drifted.join(", ")}   ← edited in the console, ${REFRESH ? "WILL BE OVERWRITTEN with the seed values" : "kept as-is"}`);
+    if (!REFRESH) console.log("      (re-run with --refresh to force these back to the checked-in seed)");
   }
-  if (!added.length && !foreign.length) console.log("  (same category set — seeded values refreshed)");
+  if (!added.length && !foreign.length && !drifted.length) console.log("  (live registry already matches the seed — nothing to do)");
 }
 
 // Sanity: refuse to seed anything that would half-type a product.
@@ -83,18 +116,26 @@ if (DRY) {
   process.exit(0);
 }
 
-// MERGE: write each seeded category individually plus the tops/version, so any
-// console-added sibling under /cats is untouched. serverTimestamp, not a client
-// clock — the 2026-07-17 order-counter incident is the standing reminder that
-// till and laptop clocks lie.
+// Per-key writes (never a whole-node set), so a console-added sibling under
+// /cats is untouched. serverTimestamp, not a client clock — the 2026-07-17
+// order-counter incident is the standing reminder that till and laptop clocks
+// lie.
 const updates = {
   [`${NODE}/version`]: TAXONOMY_SEED.version,
   [`${NODE}/tops`]: TAXONOMY_SEED.tops,
   [`${NODE}/updatedAt`]: admin.database.ServerValue.TIMESTAMP,
   [`${NODE}/updatedBy`]: "seed-product-taxonomy",
 };
-for (const [k, c] of Object.entries(TAXONOMY_SEED.cats)) updates[`${NODE}/cats/${k}`] = c;
+// Default writes ONLY categories that are absent live. --refresh also rewrites
+// the ones that exist, discarding any console edit to them.
+const toWrite = REFRESH ? seedKeys : added;
+for (const k of toWrite) updates[`${NODE}/cats/${k}`] = TAXONOMY_SEED.cats[k];
 if (REPLACE) for (const k of foreign) updates[`${NODE}/cats/${k}`] = null;
+
+if (!toWrite.length && !REPLACE) {
+  console.log("\nnothing to write — every seeded category already exists. (--refresh to force.)");
+  process.exit(0);
+}
 
 await db.ref().update(updates);
 const back = await db.ref(NODE).once("value").then((s) => s.val());

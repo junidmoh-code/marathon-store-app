@@ -250,9 +250,19 @@ export default function AssignCategoriesTab({ products = [], registry }) {
     width: "100%", boxSizing: "border-box", minHeight: 46,
   };
   const pickerStyle = { ...field, appearance: "auto", WebkitAppearance: "menulist", cursor: "pointer", fontSize: 16 };
+  // A misconfigured category is shown DISABLED rather than hidden — hiding it
+  // would read as "deleted" to someone hunting for it, and letting it be picked
+  // would dead-end a batch of 500 at the confirm step.
   const catOptions = groups.map((g) => (
     <optgroup key={g.top} label={g.label.toUpperCase()}>
-      {g.options.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+      {g.options.map((c) => {
+        const ok = isAssignable(registry, c.key);
+        return (
+          <option key={c.key} value={c.key} disabled={!ok}>
+            {ok ? c.label : `${c.label} — misconfigured`}
+          </option>
+        );
+      })}
     </optgroup>
   ));
 

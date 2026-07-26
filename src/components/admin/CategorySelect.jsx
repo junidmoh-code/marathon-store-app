@@ -11,7 +11,7 @@
 // closed state is ours and the open list is the platform's.
 
 import { useMemo, useRef, useState } from "react";
-import { groupedCategories, catByKey } from "../../utils/productTaxonomy.js";
+import { groupedCategories, catByKey, isAssignable } from "../../utils/productTaxonomy.js";
 
 const BLUE = "#4A7FFF";
 
@@ -88,9 +88,20 @@ export default function CategorySelect({
         {orphan && <option value={value}>{value} (retired)</option>}
         {groups.map((g) => (
           <optgroup key={g.top} label={g.label.toUpperCase()}>
-            {g.options.map((c) => (
-              <option key={c.key} value={c.key}>{c.label}</option>
-            ))}
+            {g.options.map((c) => {
+              // A category whose registry entry is misconfigured (illegal
+              // legacy category/productType) cannot be assigned — the save
+              // would be refused. Show it DISABLED and say why, rather than
+              // either hiding it (an operator hunting for "Belts" would think
+              // it was deleted) or letting them fill in a whole form and hit a
+              // dead end at the end.
+              const ok = isAssignable(registry, c.key);
+              return (
+                <option key={c.key} value={c.key} disabled={!ok}>
+                  {ok ? c.label : `${c.label} — misconfigured, fix in console`}
+                </option>
+              );
+            })}
           </optgroup>
         ))}
       </select>
