@@ -11,6 +11,12 @@
 //   Building B:             marathon-pe, trophy, hub1, hub2
 //   Building C:             marathon-pine, hub3
 //
+// `studio` and `base` were merged into `central` and DEACTIVATED on 2026-07-26
+// (see locations.js). They are deliberately LEFT IN this map: all three were
+// building A, so their presence changes no lane decision (A→A is never transit),
+// and a historical movement re-examined later still resolves to the right
+// building. Nothing to remove.
+//
 // T1 SCOPE — OUTBOUND ONLY (deliberate, not an oversight): transit applies to
 // A→B and A→C. Reverse cross-building moves (B→A excess returns, order-return
 // reversals) keep their existing instant flows for now; widening to "any
