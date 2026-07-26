@@ -56,6 +56,12 @@ export default function AssignCategoriesTab({ products = [], registry }) {
   const [undo, setUndo] = useState(null);                 // { items:[{id, prev}] }
   const [baseline, setBaseline] = useState(null);
   const [msg, setMsg] = useState("");
+  // Photo viewer. A 52px thumbnail is not enough to tell a hoodie from a
+  // sweater or a slide from a loafer, which is exactly the call this page asks
+  // you to make — so the photo opens full-size, with the picker alongside it so
+  // the decision can be made and applied without closing and hunting for the row
+  // again.
+  const [photoView, setPhotoView] = useState(null);       // the product being viewed
 
   const cats = useMemo(() => allCategories(registry), [registry]);
   const groups = useMemo(() => groupedCategories(registry), [registry]);
@@ -137,6 +143,28 @@ export default function AssignCategoriesTab({ products = [], registry }) {
   }, [queue]);
 
   const selectedList = useMemo(() => queue.filter((p) => sel.has(p.id)), [queue, sel]);
+
+  // Esc closes the photo viewer, and the confirm dialog when no photo is open.
+  useEffect(() => {
+    if (!photoView && !confirm) return;
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (photoView) setPhotoView(null);
+      else if (!busy) setConfirm(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [photoView, confirm, busy]);
+
+  // Keep the open photo in sync with live data, and drop it once the product
+  // leaves the queue — otherwise assigning it on another device would leave a
+  // stale card open offering to assign something already done.
+  useEffect(() => {
+    if (!photoView) return;
+    const fresh = queue.find((p) => p.id === photoView.id);
+    if (!fresh) setPhotoView(null);
+    else if (fresh !== photoView) setPhotoView(fresh);
+  }, [queue, photoView]);
 
   useEffect(() => {
     if (confirm?.kind === "bulk" && selectedList.length === 0) setConfirm(null);
@@ -408,13 +436,26 @@ export default function AssignCategoriesTab({ products = [], registry }) {
                 <input type="checkbox" checked={on} onChange={() => toggle(p.id)} aria-label={`Select ${p.name || p.id}`}
                   style={{ width: 20, height: 20, accentColor: BLUE, cursor: "pointer", flexShrink: 0 }} />
 
-                <div style={{ width: 52, height: 52, borderRadius: 10, overflow: "hidden", flexShrink: 0,
-                              background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.07)",
-                              display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {p.photoUrl
-                    ? <img src={p.photoUrl} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    : <span style={{ fontSize: 17, opacity: .3 }}>▦</span>}
-                </div>
+                {p.photoUrl ? (
+                  <button type="button" onClick={() => setPhotoView(p)}
+                    title="Open photo"
+                    aria-label={`Open photo of ${p.name || p.id}`}
+                    style={{ position: "relative", width: 52, height: 52, borderRadius: 10, overflow: "hidden",
+                             flexShrink: 0, padding: 0, cursor: "zoom-in", background: "rgba(255,255,255,.04)",
+                             border: "1px solid rgba(255,255,255,.07)" }}>
+                    <img src={p.photoUrl} alt="" loading="lazy"
+                         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                    <span style={{ position: "absolute", right: 2, bottom: 2, width: 15, height: 15, borderRadius: 4,
+                                   background: "rgba(0,0,0,.62)", color: "#fff", fontSize: 9, lineHeight: "15px",
+                                   textAlign: "center" }}>⤢</span>
+                  </button>
+                ) : (
+                  <div style={{ width: 52, height: 52, borderRadius: 10, flexShrink: 0,
+                                background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.07)",
+                                display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <span style={{ fontSize: 17, opacity: .3 }}>▦</span>
+                  </div>
+                )}
 
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -447,6 +488,60 @@ export default function AssignCategoriesTab({ products = [], registry }) {
               Showing {list.length.toLocaleString()} — “Select all” stops at {SELECT_CAP.toLocaleString()}.
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── PHOTO VIEWER ──────────────────────────────────────────────────── */}
+      {photoView && (
+        <div
+          onClick={() => setPhotoView(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.88)", backdropFilter: "blur(6px)",
+                   display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 70 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 620, width: "100%",
+                     maxHeight: "100%", overflow: "auto" }}>
+            {/* Contain, not cover — a cropped product photo is the opposite of
+                useful when the crop is what you are trying to judge. */}
+            <img src={photoView.photoUrl} alt={photoView.name || "product photo"}
+                 style={{ width: "100%", maxHeight: "62vh", objectFit: "contain", borderRadius: 14,
+                          background: "rgba(255,255,255,.03)" }} />
+
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", lineHeight: 1.3 }}>
+                {photoView.name || photoView.id}
+              </div>
+              <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.45)", marginTop: 4 }}>
+                {photoView.brand ? <b style={{ color: "rgba(233,238,255,.65)" }}>{photoView.brand}</b> : "no brand"}
+                {" · now: "}{photoView.category || "—"}{photoView.subcategory ? ` / ${photoView.subcategory}` : ""}
+                {" · "}{photoView.productType || "no type"}
+                {photoView.sizes?.length ? ` · ${photoView.sizes.join(", ")}` : ""}
+              </div>
+            </div>
+
+            {/* Assign straight from here — the photo is what the decision is
+                based on, so closing first to find the row again is pure friction. */}
+            <select
+              value=""
+              disabled={busy || savingId === photoView.id}
+              onChange={(e) => {
+                if (!e.target.value) return;
+                const target = photoView;
+                setPhotoView(null);
+                assignOne(target, e.target.value);
+              }}
+              aria-label={`Assign a category to ${photoView.name || photoView.id}`}
+              style={{ ...pickerStyle, minHeight: 50 }}>
+              <option value="">{savingId === photoView.id ? "Saving…" : "Pick category…"}</option>
+              {catOptions}
+            </select>
+
+            <button type="button" onClick={() => setPhotoView(null)}
+              style={{ background: "rgba(255,255,255,.07)", border: "1px solid rgba(255,255,255,.16)",
+                       color: "rgba(233,238,255,.75)", borderRadius: 11, padding: "12px 18px",
+                       fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}>
+              Close
+            </button>
+          </div>
         </div>
       )}
 
