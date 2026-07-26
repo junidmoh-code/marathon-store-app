@@ -681,7 +681,13 @@ function writeOrder(order) {
     throw err;
   }
   return set(ref(database, `orders/${order.id}`), order).catch((err) => {
-    console.warn("Firebase writeOrder failed:", err);
+    // Propagate (don't swallow) so placeOrders / placeRefillRequests surface the
+    // real reason AND don't false-clear the cart. Both callers await this inside
+    // a try/catch and writeOrder has no other callers. Previously an async
+    // rejection here (permission-denied, offline, server error) resolved as
+    // success — a failed write reported as placed, i.e. silent order loss.
+    console.error("Firebase writeOrder failed:", err);
+    throw err;
   });
 }
 
