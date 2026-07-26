@@ -10,7 +10,7 @@ import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
-import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./utils/productCategory";
+import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -49,6 +49,17 @@ import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
 import { printOrderSlips } from "./print/orderSlip";
+// ── New product taxonomy (31 categories, RTDB-backed registry) ───────────────
+// The registry lives at /settings/productTaxonomy and is read LIVE, so adding a
+// category later is a data edit — no code change, no deploy. `legacyFor` is the
+// derivation that keeps newly-created products inside every existing automation.
+import { catByKey, sizesOf, isOneSize, legacyFor, needsAssignment } from "./utils/productTaxonomy";
+import { buildNewProduct } from "./utils/newProductRecord";
+import { useTaxonomy } from "./components/admin/useTaxonomy";
+import CategorySelect from "./components/admin/CategorySelect";
+import { receiveEntries } from "./components/admin/SizeQtyBoxes";
+import NewProductForm from "./components/admin/NewProductForm";
+import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -4695,29 +4706,37 @@ function AdminView({ products, orders, onExit }) {
   // view is pure product management now (products + category sorting).
   // ── Add Product form state (collapsible at top of list) ─────────────────
   const [showAdd, setShowAdd] = useState(false);
-  // Phase 12A: productType (sneaker default | clothing). Both types use a
-  // shared `sizes` array — sneakers store "3".."11", clothing stores
-  // "S".."XXXL". Phase 14A: `hubs` is a multi-select (Hub 1 / Hub 2 / Hub 3);
-  // clothing cannot include Hub 1.
-  // POS Phase 2: stockPrice / retailPrice / hasShoeBoxOption added. Prices
-  // are raw <input type="number"> strings here and parsed on save — that way
-  // an empty field round-trips to "not set" instead of 0. `shoeboxTouched`
-  // tracks whether the user has manually toggled the shoebox checkbox; once
-  // true we stop auto-syncing it from category/productType.
+  // ── TAXONOMY REBUILD (2026-07-26) ───────────────────────────────────────
+  // `categoryKey` is now the ONE product-type control: it replaced both the
+  // dead "Category…" text dropdown and the four-chip Product Type row, which
+  // were two spellings of the same concept. It selects a registry entry, and
+  // that entry supplies BOTH the size breakdown to render AND — via legacyFor()
+  // — the legacy category / subcategory / productType written on save, so a
+  // product created here is indistinguishable to the refill sweep, Display
+  // Checks and POS from one created by the old form. NOTHING is selected by
+  // default and a save without one is refused.
+  //
+  // `sizes` is no longer picked by hand: it IS the set of sizes with a quantity
+  // box, i.e. the whole size list of the chosen category. Opening stock is a
+  // required, always-visible section now, so "which sizes does it come in" and
+  // "how many of each did we receive" are one question, not two.
+  //
+  // POS Phase 2: stockPrice / retailPrice / hasShoeBoxOption. Prices are raw
+  // <input type="number"> strings here and parsed on save — an empty field
+  // round-trips to "not set" instead of 0. `shoeboxTouched` tracks a manual
+  // toggle; once true we stop auto-syncing it from the category.
   // sku + barcode are NOT in form state — they auto-generate at save time via
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
-  // sizeStyle picks the size breakdown shown: "shoe" (sneaker), "letters" (clothing
-  // tops S–4XL), or "waist" (bottoms 28–40). Bottoms still save as productType
-  // "clothing"; sizeStyle only drives which size buttons appear.
-  const [form, setForm] = useState({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", sizeStyle:"shoe", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+  const [form, setForm] = useState({ name:"", categoryKey:"", photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
-  // Optional opening-stock receiving (Stock rework). Collapsed by default — when
-  // collapsed the form behaves EXACTLY as before. Quantities are NEVER required;
-  // entered amounts write as `received` movements into the default receiving
-  // warehouse on save (the Stock → Set Qty screen can receive at any location).
-  const [recvOpen, setRecvOpen] = useState(false);
+  // Opening stock — REQUIRED and always visible (no longer collapsible). An
+  // explicit 0 per size is allowed so nothing forces a fake number, but the
+  // section cannot be skipped: a destination must be picked before saving.
   const [recvQtys, setRecvQtys] = useState({}); // { size: "n" }
   const [recvLoc, setRecvLoc] = useState(""); // destination — NO default; admin must pick each save
+  // Set true by a blocked save attempt so required fields paint their error
+  // state only AFTER the operator has tried, never on an untouched form.
+  const [saveAttempted, setSaveAttempted] = useState(false);
   const [saving, setSaving] = useState(false);
   // After a save with opening stock, surface the inline Print-barcodes sheet for the
   // sizes just received (count defaults to units added). Lives at the view level so
@@ -4751,6 +4770,9 @@ function AdminView({ products, orders, onExit }) {
   }, [adminSection]);
   const pendingCategoryCount = useMemo(() => (products || []).filter(p => p && (p.subcategory === UNCATEGORIZED || topCategory(p) === UNCATEGORIZED_TOP)).length, [products]);
   const missingPriceCount = useMemo(() => (products || []).filter(p => p && (p.retailPrice == null || p.retailPrice === "" || p.retailPrice === 0)).length, [products]);
+  // New-taxonomy backlog: products with no categoryKey, excluding legacy sneakers
+  // (auto-assigned by predicate). Badges the Assign Categories tab.
+  const assignCategoryCount = useMemo(() => (products || []).filter(needsAssignment).length, [products]);
   // ── Detail routing (hash-driven) — #product/{id} opens the detail page,
   //    browser back clears it. Listener stays mounted for the whole view. ──
   const [detailId, setDetailId] = useState(() => parseProductHash());
@@ -4766,35 +4788,35 @@ function AdminView({ products, orders, onExit }) {
   // Desktop workspace gate (≥1024px). Mobile keeps the single column.
   const isWide = !useIsNarrow(1024);
 
-  // Saved product categories — a shared, growable list backed by RTDB so the
-  // category field is a dropdown (no free-text typos) that persists across
-  // devices. Seeded from the canonical TOP_CATEGORIES + whatever the catalogue
-  // already uses, then merged with any admin-added customs.
-  const [savedCategories, setSavedCategories] = useState([]);
-  useEffect(() => {
-    const u = onValue(ref(database, "product_categories"),
-      snap => { const v = snap.val(); setSavedCategories(v ? Object.values(v).map(String) : []); },
-      () => setSavedCategories([]));
-    return () => u();
-  }, []);
-  const categoryOptions = useMemo(() => {
-    const set = new Set(TOP_CATEGORIES);
-    (products || []).forEach(p => { if (p?.category) set.add(String(p.category)); });
-    savedCategories.forEach(c => c && set.add(String(c)));
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [products, savedCategories]);
-  const addCategory = async () => {
-    const name = (window.prompt("New category name") || "").trim();
-    if (!name) return;
-    try { await push(ref(database, "product_categories"), name); } catch { /* falls back to local selection */ }
-    setCategory(name);
-  };
+  // ── The category registry (LIVE from /settings/productTaxonomy) ───────────
+  // Replaces the old `product_categories` node, which never worked: it has no
+  // entry in the live RTDB rules, so every "＋ Add new category…" push was
+  // silently denied and the node is empty to this day. The registry read is
+  // live, so a category added in the console appears here without a deploy.
+  const { registry: taxonomy, source: taxonomySource } = useTaxonomy();
+  // The chosen category's registry record — drives the size grid, the one-size
+  // branch, the hub rules and the legacy derivation on save.
+  const selectedCat = useMemo(() => catByKey(taxonomy, form.categoryKey), [taxonomy, form.categoryKey]);
+  const formSizes = useMemo(() => (selectedCat ? sizesOf(selectedCat) : []), [selectedCat]);
+  const formOneSize = !!selectedCat && isOneSize(selectedCat);
+  // Legacy values this category will write. Derived here (not at save time) so
+  // the form can apply the SAME hub / shoebox rules the old productType chips
+  // applied, from the same single source of truth.
+  const formLegacy = useMemo(() => legacyFor(taxonomy, form.categoryKey), [taxonomy, form.categoryKey]);
+  const formIsClothing = formLegacy?.productType === "clothing";
 
   const addProduct = async () => {
-    if (!form.name || form.sizes.length === 0) return;
-    // Opening stock requires an explicitly-picked destination — no default location.
-    const hasOpeningQty = (form.sizes || []).some(s => { const n = parseInt(recvQtys[s], 10); return Number.isFinite(n) && n > 0; });
-    if (hasOpeningQty && !recvLoc) { alert("Pick a location for the opening stock (or clear the quantities) before saving."); return; }
+    setSaveAttempted(true);
+    // Category is REQUIRED — and it must resolve to a real registry entry with a
+    // legacy derivation. Without it we cannot write the legacy fields, and a
+    // product missing those would fall out of the refill sweep, Display Checks
+    // and POS browse. Refuse rather than half-type it.
+    if (!form.name.trim() || !form.categoryKey || !selectedCat || !formLegacy) return;
+    if (!formSizes.length) return;
+    // Opening stock is required as a SECTION: the destination must be picked.
+    // The quantities themselves are not — an explicit 0 everywhere is a valid
+    // answer ("received nothing yet"), it just writes no movements.
+    if (!recvLoc) { alert("Pick the location this stock is being received into before saving."); return; }
     setSaving(true);
     try {
       const id = "p" + serverNowMs();
@@ -4809,56 +4831,27 @@ function AdminView({ products, orders, onExit }) {
         photoUrl = await getDownloadURL(sRef);
       }
 
-      const isClothing = form.productType === "clothing";
-      // Phase 14A: clothing cannot be in Hub 1. Strip defensively and fall
-      // back to a sensible default if everything got unchecked.
-      const cleanedHubs = (isClothing ? form.hubs.filter(h => h !== "hub1") : form.hubs)
-        .filter(h => h === "hub1" || h === "hub2" || h === "hub3");
-      const finalHubs = cleanedHubs.length ? cleanedHubs : (isClothing ? ["hub2"] : ["hub1"]);
-      // AUTO-ASSIGN category/subcategory/brand from name + sizes (shared classifier
-      // — same logic as the backfill + bulk scripts). A manually-typed category is
-      // respected as the top level; subcategory + brand are always auto-derived.
-      const auto = categorize(form.name, form.sizes);
-      // Kids sneaker sizes (26–35) read as pants-waists to the shared size-based
-      // classifier, mislabelling a kids shoe as Clothing. Force Footwear for the
-      // kids size style; drop the wrong Clothing subcategory to the review queue.
-      if (form.sizeStyle === "kids" && (form.productType || "sneaker") !== "clothing") {
-        auto.category = "Footwear";
-        auto.subcategory = null;
-      }
-      const manualCat = (form.category || "").trim();
-      // Respect a manual category when it's a known/saved category (picked from the
-      // dropdown); otherwise the auto value wins so free-text junk can't land in
-      // the browse-able field. Saved customs are honoured alongside the top-levels.
-      const useManual = TOP_CATEGORIES.includes(manualCat) || savedCategories.includes(manualCat) || categoryOptions.includes(manualCat);
-      const newProduct = {
-        name: form.name,
-        category: useManual ? manualCat : auto.category,
-        subcategory: auto.subcategory,
-        brand: auto.brand,
-        photo: form.photo,
-        photoUrl: photoUrl ?? null,
-        hubs: finalHubs,
-        productType: form.productType,
-        sizes: form.sizes,
+      // ── THE RECORD — legacy derivation lives in buildNewProduct (pure, and
+      //    tested against the signed-off table in newProductRecord.test.js).
+      //    The chosen category supplies category / subcategory / productType so
+      //    the refill sweep, Display Checks and POS treat this product exactly
+      //    as they treat one made by the old form. Brand stays auto-parsed from
+      //    the name by the shared classifier, as before.
+      const newProduct = buildNewProduct(taxonomy, form, {
         id,
-      };
-      // A real photo was uploaded with the product — stamp the upload time
-      // (drives the AI Photo Studio picker's "Recent" view; legacy products
-      // fall back to the id-encoded creation time).
-      if (form.photoBlob) newProduct.photoUpdatedAt = serverNowMs();
-      // POS Phase 2: parse the price strings. Empty / non-finite / non-positive
-      // → omit the field entirely. We never want to write `0` and have the POS
-      // treat the product as free.
-      const stockNum  = Number(form.stockPrice);
-      const retailNum = Number(form.retailPrice);
-      if (Number.isFinite(stockNum)  && stockNum  > 0) newProduct.stockPrice  = stockNum;
-      if (Number.isFinite(retailNum) && retailNum > 0) newProduct.retailPrice = retailNum;
-      // Persist the shoebox flag explicitly so POS has a defined value for
-      // newly-created products. Legacy products without it are treated as
-      // false per the reader contract in SCHEMA.md. Clothing NEVER has a
-      // shoebox — force false regardless of the form state.
-      newProduct.hasShoeBoxOption = isClothing ? false : !!form.hasShoeBoxOption;
+        photoUrl: photoUrl ?? null,
+        brand: brandOf(form.name),
+        // A real photo uploaded with the product stamps the upload time (drives
+        // the AI Photo Studio "Recent" view; legacy products fall back to the
+        // id-encoded creation time).
+        photoUploaded: !!form.photoBlob,
+        photoUpdatedAt: form.photoBlob ? serverNowMs() : null,
+      });
+      // Category vanished mid-save (retired in the console between opening the
+      // form and pressing save) — refuse rather than write a product with no
+      // legacy fields, which would silently drop out of every automation.
+      if (!newProduct) throw new Error("That category is no longer available. Pick a category again.");
+      const sizes = newProduct.sizes;
       // POS Phase 2: reserve the next sequential sku + barcode atomically
       // BEFORE the product write so two concurrent adds can't collide. If
       // reservation fails (counter exhausted or RTDB error), surface the
@@ -4872,17 +4865,16 @@ function AdminView({ products, orders, onExit }) {
       // has gaps (a sizeless/one-size product mints the "_" slot). Best-effort —
       // a creator without stockRole still saves the product; the index heals on
       // the next mint and the backfill covers anything missed.
-      ensureBarcodes(id, (form.sizes && form.sizes.length) ? form.sizes : [null]).catch(() => {});
+      ensureBarcodes(id, sizes.length ? sizes : [null]).catch(() => {});
 
-      // Optional opening stock: if quantities were entered, write them as
-      // `received` movements into the default receiving warehouse via
-      // applyMovement — ledger-paired, never raw. The product is already saved,
-      // so this NEVER blocks the save; a denied/failed movement (e.g. the user
-      // lacks stockRole) only soft-warns and can be entered later.
+      // Opening stock: the entered quantities become `received` movements at the
+      // chosen location via applyMovement — ledger-paired, never raw. A size left
+      // blank or explicitly 0 writes NO movement (there is nothing to receive);
+      // the product still saves. The product write already succeeded, so this
+      // NEVER blocks the save; a denied movement (e.g. no stockRole) soft-warns
+      // and can be entered later from Stock.
       try {
-        const recvEntries = (form.sizes || [])
-          .map(s => [s, parseInt(recvQtys[s], 10)])
-          .filter(([, n]) => Number.isFinite(n) && n > 0);
+        const recvEntries = receiveEntries(sizes, recvQtys);
         if (recvEntries.length) {
           const locLabel = labelFor(recvLoc, recvRegistry);
           let recOk = 0, recFail = 0; const savedItems = [];
@@ -4908,17 +4900,20 @@ function AdminView({ products, orders, onExit }) {
         console.warn("opening-stock receive failed:", recErr);
       }
 
-      setForm({ name:"", category:"", photo:"", photoUrl:null, photoBlob:null, sizes:[], hubs:["hub1"], productType:"sneaker", sizeStyle:"shoe", stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+      setForm({ name:"", categoryKey:"", photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
       setShoeboxTouched(false);
       setRecvQtys({});
-      setRecvOpen(false);
+      setSaveAttempted(false);
+      // Keep the receiving location — an admin loading a delivery adds several
+      // products into the SAME location in a row; re-picking it each time was
+      // pure friction and a mis-pick risk.
       setShowAdd(false);
     } catch (err) {
       console.error("addProduct failed:", err);
       // Surface counter-exhaustion + reservation errors with their actual
       // message so the admin knows what's wrong; everything else gets the
       // generic prompt.
-      const msg = /counter exhausted|reservation/i.test(String(err?.message || ""))
+      const msg = /counter exhausted|reservation|no longer available/i.test(String(err?.message || ""))
         ? `Failed to save product:\n${err.message}`
         : "Failed to save product. Please try again.";
       alert(msg);
@@ -4931,58 +4926,35 @@ function AdminView({ products, orders, onExit }) {
   // here as inline-editor flows in the list. They've been moved into
   // AdminProductDetail — list rows are now navigation targets only.
 
-  const toggleSize = s => setForm(f => ({ ...f, sizes: f.sizes.includes(s) ? f.sizes.filter(x=>x!==s) : [...f.sizes, s] }));
   const toggleHub  = h => setForm(f => ({ ...f, hubs:  f.hubs.includes(h)  ? f.hubs.filter(x=>x!==h)  : [...f.hubs,  h] }));
-  // Switching to Clothing strips Hub 1 (and falls back to Hub 2 if everything
-  // would go empty). Switching back to Sneaker leaves hubs alone. POS Phase 2:
-  // also auto-sync the shoebox checkbox when productType changes — clothing
-  // never has a shoebox, sneakers default to true — unless the user has
-  // manually toggled it (shoeboxTouched).
-  const setProductType = (nextType) => setForm(f => {
-    if (nextType === "clothing") {
-      // Clothing can't be in Hub 1 and never has a shoebox — force both,
-      // overriding any manual shoebox toggle.
-      const stripped = f.hubs.filter(h => h !== "hub1");
-      return { ...f, productType: "clothing", hubs: stripped.length ? stripped : ["hub2"], hasShoeBoxOption: false };
-    }
-    // Switching to Sneaker defaults the shoebox on (matches prior behavior),
-    // unless the user already toggled it manually.
-    const shoeboxPatch = shoeboxTouched ? {} : { hasShoeBoxOption: true };
-    return { ...f, productType: nextType, ...shoeboxPatch };
-  });
-  // The three selectable size breakdowns. "Bottoms" is a CLOTHING product (same
-  // routing/hubs/no-shoebox) that uses the waist size set instead of letters — so it
-  // maps to productType "clothing" with sizeStyle "waist".
-  const SIZE_TYPE_OPTIONS = [
-    { key: "shoe",    label: "Sneaker",  productType: "sneaker"  },
-    { key: "kids",    label: "Kids",     productType: "sneaker"  },
-    { key: "letters", label: "Clothing", productType: "clothing" },
-    { key: "waist",   label: "Bottoms",  productType: "clothing" },
-  ];
-  const selectSizeType = (opt) => {
-    if (opt.key === form.sizeStyle) return;       // already active
-    setProductType(opt.productType);              // applies clothing hub/shoebox rules
-    // A different size family invalidates the currently-selected sizes + their qtys.
-    setForm(f => ({ ...f, sizeStyle: opt.key, sizes: [] }));
+  // ── Picking a category is the ONE decision that reshapes the form ─────────
+  // It swaps the size grid, and it applies the two rules the removed Product
+  // Type chips used to apply, driven off the DERIVED productType so behaviour is
+  // identical:
+  //   • clothing cannot be stocked at Hub 1 (stripped, falling back to Hub 2);
+  //   • clothing never has a shoebox (forced off), footwear defaults it on —
+  //     unless the operator has manually toggled it (shoeboxTouched).
+  // Changing category also clears the entered quantities: the size set is
+  // different, so keeping numbers keyed to the old sizes would silently receive
+  // stock against sizes the product does not have.
+  const selectCategory = (nextKey) => {
+    if (nextKey === form.categoryKey) return;
+    const legacy = legacyFor(taxonomy, nextKey);
+    const clothing = legacy?.productType === "clothing";
+    setForm(f => {
+      const hubs = clothing ? f.hubs.filter(h => h !== "hub1") : f.hubs;
+      return {
+        ...f,
+        categoryKey: nextKey,
+        hubs: hubs.length ? hubs : (clothing ? ["hub2"] : ["hub1"]),
+        // Clothing forces the shoebox off even against a manual toggle (it is a
+        // shoebox — clothing does not have one). Footwear only auto-sets it
+        // while the operator has not taken manual control.
+        ...(clothing ? { hasShoeBoxOption: false } : (shoeboxTouched ? {} : { hasShoeBoxOption: true })),
+      };
+    });
     setRecvQtys({});
   };
-  // Size buttons for the form, driven by the chosen breakdown. The Kids (26–35)
-  // breakdown only appears once "Kids" is the selected size type.
-  const formSizeChoices = form.sizeStyle === "shoe" ? SNEAKER_SIZES
-    : form.sizeStyle === "kids" ? KIDS_SIZES
-    : form.sizeStyle === "waist" ? BOTTOMS_SIZES : CLOTHING_SIZES;
-  // POS Phase 2: category onChange handler. Auto-sets the shoebox flag based
-  // on category text (footwear / shoe / sneaker → true; everything else →
-  // false), unless the user has manually toggled it. Clothing always stays
-  // shoebox-off regardless of category text.
-  const setCategory = (nextCategory) => setForm(f => {
-    const patch = { category: nextCategory };
-    if (!shoeboxTouched) {
-      patch.hasShoeBoxOption = f.productType !== "clothing" &&
-        (/foot|shoe/i.test(nextCategory) || f.productType === "sneaker");
-    }
-    return { ...f, ...patch };
-  });
   const toggleShoebox = () => {
     setShoeboxTouched(true);
     setForm(f => ({ ...f, hasShoeBoxOption: !f.hasShoeBoxOption }));
@@ -5085,10 +5057,12 @@ function AdminView({ products, orders, onExit }) {
   // Section toggle (Products ↔ Categories ↔ Missing Prices) — the AI tabs live in AI Studio now.
   const sectionToggle = (
     <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["review-categories","Categories"],["missing-prices","Missing Prices"]]
+      {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"]]
         .map(([val, label]) => {
         const on = adminSection === val;
-        const badge = val === "review-categories" ? pendingCategoryCount : val === "missing-prices" ? missingPriceCount : 0;
+        const badge = val === "review-categories" ? pendingCategoryCount
+          : val === "assign-categories" ? assignCategoryCount
+          : val === "missing-prices" ? missingPriceCount : 0;
         return (
           <button key={val} onClick={() => setAdminSection(val)}
             style={{ flex:"1 1 88px", minWidth:88, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 6px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
@@ -5146,130 +5120,17 @@ function AdminView({ products, orders, onExit }) {
         <div style={{ padding:"0 14px" }}>
 
       {showAdd && (
-        <div style={{ background:CARD, border:BORDER, borderRadius:RADIUS, padding:"1.5rem", marginBottom:"1.5rem", boxShadow:GLOW }}>
-          <div style={{ fontWeight:"700", fontSize:"0.95rem", marginBottom:"1rem", color:"#ccc" }}>New Product</div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))", gap:"1rem", marginBottom:"1rem" }}>
-            <input placeholder="Product name" value={form.name} onChange={e => setForm(f=>({...f,name:e.target.value}))} style={inputStyle} />
-            <select value={categoryOptions.includes(form.category) ? form.category : ""}
-              onChange={e => { if (e.target.value === "__add__") addCategory(); else setCategory(e.target.value); }}
-              style={{ ...inputStyle, appearance:"auto", WebkitAppearance:"menulist", cursor:"pointer", color: form.category ? "#fff" : "rgba(255,255,255,.45)" }}>
-              <option value="" style={{ color:"#000" }}>Category…</option>
-              {categoryOptions.map(c => <option key={c} value={c} style={{ color:"#000" }}>{c}</option>)}
-              <option value="__add__" style={{ color:"#000" }}>＋ Add new category…</option>
-            </select>
-            <div style={{ gridColumn:"1 / -1" }}>
-              <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Product Photo</div>
-              <div>
-                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} style={{ display:"none" }} />
-                <button onClick={() => fileInputRef.current.click()} style={{ background:"rgba(60,110,255,.05)", border:"2px dashed rgba(60,110,255,.25)", borderRadius:"10px", padding:"0.75rem 1.25rem", color:"#888", cursor:"pointer", fontSize:"0.85rem", width:"100%", textAlign:"center" }}>
-                  {form.photoUrl ? "Photo uploaded — click to change" : "Click to upload photo"}
-                </button>
-                {form.photoUrl && <img src={form.photoUrl} alt="preview" style={{ marginTop:"0.5rem", width:"64px", height:"64px", objectFit:"cover", borderRadius:RADIUS, border:BORDER }} />}
-              </div>
-            </div>
-          </div>
-          {/* Product type toggle (Phase 12A) */}
-          <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Product Type</div>
-          <div style={{ display:"flex", flexWrap:"wrap", gap:"0.5rem", marginBottom:"1.25rem" }}>
-            {SIZE_TYPE_OPTIONS.map(opt => {
-              const on = form.sizeStyle === opt.key;
-              return (
-                <button key={opt.key} onClick={() => selectSizeType(opt)}
-                  style={{ padding:"6px 20px", borderRadius:"8px", border:"2px solid", borderColor: on?BLUE:"rgba(60,110,255,.15)", background: on?"rgba(60,110,255,.12)":"transparent", color: on?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.9rem" }}>
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Size toggles — same toggle UX for every breakdown, different option lists. */}
-          <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Available Sizes</div>
-          <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
-            {formSizeChoices.map(s => (
-              <button key={s} onClick={() => toggleSize(s)}
-                style={{ padding:"6px 14px", borderRadius:"8px", border:"2px solid", borderColor: form.sizes.includes(s)?BLUE:"rgba(60,110,255,.15)", background: form.sizes.includes(s)?"rgba(60,110,255,.12)":"transparent", color: form.sizes.includes(s)?BLUE_L:"#666", cursor:"pointer", fontWeight:"600" }}>
-                <SizeTag size={s} />
-              </button>
-            ))}
-          </div>
-
-          {/* Opening stock (Stock rework) — OPTIONAL, collapsed by default. When
-              collapsed the form is unchanged. Expanded: a qty box arrow-linked
-              under each selected size. Quantities are never required. */}
-          <div style={{ marginBottom:"1.25rem" }}>
-            <button type="button" onClick={() => setRecvOpen(o => !o)}
-              style={{ display:"flex", alignItems:"center", gap:8, width:"100%", textAlign:"left", background:"rgba(60,110,255,.06)", border:"1px solid rgba(60,110,255,.2)", borderRadius:"10px", padding:"9px 12px", color:"#bbb", cursor:"pointer", fontSize:"0.85rem", fontWeight:600 }}>
-              <span style={{ color:BLUE_L, transform: recvOpen ? "rotate(90deg)" : "none", transition:"transform .15s", display:"inline-block" }}>▸</span>
-              Opening stock <span style={{ color:"#555", fontWeight:500, fontStyle:"italic" }}>· optional — leave blank if not counted yet</span>
-            </button>
-            {recvOpen && (
-              <div style={{ marginTop:"0.75rem", background:"rgba(12,16,30,.55)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:"1px solid rgba(120,150,255,.16)", borderRadius:RADIUS, padding:"1rem", boxShadow:"inset 0 1px 0 rgba(255,255,255,.05)" }}>
-                {/* Destination — required, no default. */}
-                <div style={{ marginBottom:"0.85rem" }}>
-                  <div style={{ fontSize:"0.7rem", color:"#888", textTransform:"uppercase", letterSpacing:".04em", marginBottom:4 }}>Receive into <span style={{ color:"#F87171" }}>*required</span></div>
-                  <LocationPicker registry={recvRegistry} value={recvLoc} onChange={setRecvLoc} filter={transferTargets} />
-                </div>
-                {form.sizes.length === 0 ? (
-                  <div style={{ color:"#666", fontSize:"0.82rem", textAlign:"center", padding:"0.5rem" }}>Select sizes above, then enter how many of each you're receiving.</div>
-                ) : (
-                  <SizeQtyGrid sizes={formSizeChoices.filter(s => form.sizes.includes(s))} values={recvQtys} onChange={(s, v) => setRecvQtys(q => ({ ...q, [s]: v }))} />
-                )}
-                <div style={{ fontSize:"0.75rem", color:"#666", marginTop:"0.75rem" }}>
-                  Entered amounts are received into <span style={{ color:"#4ADE80" }}>{labelFor(recvLoc, recvRegistry)}</span> as ledger movements on save. Saving with no quantities works exactly as before.
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Hubs (select at least one)</div>
-          <div style={{ display:"flex", gap:"0.5rem", marginBottom:"0.5rem", flexWrap:"wrap" }}>
-            {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3"]].map(([val, label]) => {
-              const disabled = form.productType === "clothing" && val === "hub1";
-              const checked  = form.hubs.includes(val) && !disabled;
-              return (
-                <button key={val} disabled={disabled} onClick={() => toggleHub(val)}
-                  style={{ padding:"6px 20px", borderRadius:"8px", border:"2px solid", borderColor: checked?BLUE:"rgba(60,110,255,.15)", background: checked?"rgba(60,110,255,.12)":"transparent", color: disabled?"#333":(checked?BLUE_L:"#666"), cursor: disabled?"not-allowed":"pointer", fontWeight:"600", fontSize:"0.9rem", opacity: disabled?0.5:1 }}>
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-          {form.productType === "clothing"
-            ? <div style={{ fontSize:"0.78rem", color:"#555", marginBottom:"1.25rem", fontStyle:"italic" }}>Clothing cannot be stocked at Hub 1.</div>
-            : <div style={{ marginBottom:"0.75rem" }}/>}
-
-          {/* POS Phase 2: pricing block. Two optional price inputs (ZAR) plus
-              a shoebox checkbox. The shoebox checkbox auto-syncs from category
-              / productType until the user manually toggles it. */}
-          <div style={{ color:"#888", fontSize:"0.8rem", marginBottom:"0.5rem" }}>Pricing (ZAR, optional)</div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))", gap:"1rem", marginBottom:"1rem" }}>
-            <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="Stock Price (R)" value={form.stockPrice}  onChange={e => setForm(f=>({...f, stockPrice:  e.target.value}))} style={inputStyle} />
-            <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="Retail Price (R)" value={form.retailPrice} onChange={e => setForm(f=>({...f, retailPrice: e.target.value}))} style={inputStyle} />
-          </div>
-          {/* Shoebox option — sneakers only. Clothing never ships with a
-              shoebox, so the toggle is hidden and the flag forced false. */}
-          {form.productType !== "clothing" && (
-          <label style={{ display:"flex", alignItems:"center", gap:10, marginBottom:"1.25rem", cursor:"pointer", color:"#ccc", fontSize:"0.9rem" }}>
-            <input type="checkbox" checked={!!form.hasShoeBoxOption} onChange={toggleShoebox} style={{ width:18, height:18, accentColor:BLUE, cursor:"pointer" }} />
-            Shoebox option
-            <span style={{ color:"#555", fontSize:"0.78rem", fontStyle:"italic", marginLeft:4 }}>(auto-checked for footwear)</span>
-          </label>
-          )}
-
-          {/* POS Phase 2 (scanner workflow): SKU + barcode are auto-assigned
-              sequentially at save time via reserveNextSkuAndBarcode(). No
-              manual entry — the values appear read-only in the product
-              detail screen after creation. */}
-          <div style={{ color:"#555", fontSize:"0.78rem", marginBottom:"1.25rem", fontStyle:"italic" }}>
-            SKU + barcode will be auto-assigned on save.
-          </div>
-
-          <button onClick={addProduct}
-                  disabled={saving || !form.name || form.sizes.length === 0 || form.hubs.length === 0}
-                  style={{ ...bBlue, padding:"0.6rem 1.5rem", opacity: (!saving && form.name && form.sizes.length > 0 && form.hubs.length > 0) ? 1 : 0.4 }}>
-            {saving ? "Uploading…" : "Save Product"}
-          </button>
-        </div>
+        <NewProductForm
+          form={form} setForm={setForm}
+          taxonomy={taxonomy} taxonomySource={taxonomySource}
+          selectedCat={selectedCat} formSizes={formSizes} formOneSize={formOneSize}
+          formIsClothing={formIsClothing}
+          selectCategory={selectCategory} toggleHub={toggleHub} toggleShoebox={toggleShoebox}
+          recvQtys={recvQtys} setRecvQtys={setRecvQtys}
+          recvLoc={recvLoc} setRecvLoc={setRecvLoc} recvRegistry={recvRegistry}
+          fileInputRef={fileInputRef} handleImageUpload={handleImageUpload}
+          saving={saving} saveAttempted={saveAttempted} onSave={addProduct}
+        />
       )}
 
       {/* CATEGORY TABS — one per real top-level category (+ Uncategorized when
@@ -5340,7 +5201,7 @@ function AdminView({ products, orders, onExit }) {
   // ── DESKTOP WORKSPACE (>=1024px) — rail of sections + titled main pane.
   //    Handles both admin sections; mobile keeps the single column below. ──
   if (isWide) {
-    const NAV = [["products", "Products", products.length], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount]];
+    const NAV = [["products", "Products", products.length], ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount]];
     const navItem = ([key, label, count]) => {
       const on = adminSection === key;
       return (
@@ -5351,6 +5212,8 @@ function AdminView({ products, orders, onExit }) {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, opacity:.9 }}>
             {key === "products"
               ? <><path d="M20 7h-9M20 12h-9M20 17h-9" /><circle cx="4" cy="7" r="1.6" /><circle cx="4" cy="12" r="1.6" /><circle cx="4" cy="17" r="1.6" /></>
+              : key === "assign-categories"
+              ? <><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></>
               : key === "review-categories"
               ? <><path d="M3 7h4l2 3h9a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></>
               : <><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></>}
@@ -5362,8 +5225,12 @@ function AdminView({ products, orders, onExit }) {
         </button>
       );
     };
-    const title = adminSection === "review-categories" ? "Categories" : adminSection === "missing-prices" ? "Missing Prices" : "Products";
-    const subtitle = adminSection === "review-categories"
+    const title = adminSection === "assign-categories" ? "Assign Categories"
+      : adminSection === "review-categories" ? "Categories"
+      : adminSection === "missing-prices" ? "Missing Prices" : "Products";
+    const subtitle = adminSection === "assign-categories"
+      ? "Give every product its real category. Nothing else changes."
+      : adminSection === "review-categories"
       ? "Sort uncategorised products into the browse tree."
       : adminSection === "missing-prices"
       ? "Products without a selling price — assign prices immediately."
@@ -5404,7 +5271,10 @@ function AdminView({ products, orders, onExit }) {
           </div>
           <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
             <div style={{ maxWidth:1160, margin:"0 auto" }}>
-              {adminSection === "review-categories" ? <AdminReviewCategoriesTab products={products} /> : adminSection === "missing-prices" ? <MissingPricesTab products={products} /> : productsBody}
+              {adminSection === "assign-categories" ? <AssignCategoriesTab products={products} registry={taxonomy} />
+                : adminSection === "review-categories" ? <AdminReviewCategoriesTab products={products} />
+                : adminSection === "missing-prices" ? <MissingPricesTab products={products} />
+                : productsBody}
             </div>
           </div>
         </div>
@@ -5412,6 +5282,7 @@ function AdminView({ products, orders, onExit }) {
     );
   }
 
+  if (adminSection === "assign-categories") return reviewShell(<AssignCategoriesTab products={products} registry={taxonomy} />);
   if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
   if (adminSection === "missing-prices") return reviewShell(<MissingPricesTab products={products} />);
 
