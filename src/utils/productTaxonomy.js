@@ -33,6 +33,11 @@
 // (refill-managed / display-checks / one-size overrides). Nothing reads them in
 // this build; they exist so the follow-up work is a data edit too.
 
+// The legal top-level categories are the LIVE browse tree's, imported rather
+// than re-listed — POS filters on this field, so a second copy that drifts would
+// silently hide products from the shop floor.
+import { TOP_CATEGORIES } from "./productCategory.js";
+
 // ── Size sets ────────────────────────────────────────────────────────────────
 // APPAREL: S..XXXL, matching the refill engine's standard run EXACTLY
 // (config.defaultRunByStore covers S,M,L,XL,XXL,XXXL). XS was specced but the
@@ -56,7 +61,14 @@ export const ONE_SIZE_SENTINEL = "_";
 export const SIZES_ONE = [ONE_SIZE_SENTINEL];
 
 // Empty behaviour-flag slots. Cloned onto every seeded category. UNUSED.
-const EMPTY_FLAGS = { refillManaged: null, displayChecks: null, oneSize: null };
+//
+// The value is the string "unset", NOT null: RTDB deletes null children, so a
+// null-valued slot would vanish on write and the console would show no `flags`
+// node at all — the opposite of the "empty slots you can fill in later" this is
+// meant to be. "unset" survives the write, so the three slots are visible and
+// fillable in the console without a code change, which is the whole point.
+export const FLAG_UNSET = "unset";
+const EMPTY_FLAGS = { refillManaged: FLAG_UNSET, displayChecks: FLAG_UNSET, oneSize: FLAG_UNSET };
 
 // ── The top-level groups (the dropdown's optgroups) ──────────────────────────
 // FOOTWEAR is its own group (owner call 2026-07-26): Sneakers, Boots, Soccer
@@ -179,22 +191,59 @@ export function sizesOf(cat) {
   return arr.map((s) => String(s).trim()).filter(Boolean);
 }
 
+// ── Legal legacy values ──────────────────────────────────────────────────────
+// The registry is CONSOLE-EDITABLE, and its `legacy` block decides which live
+// automations a new product lands in. So it is untrusted input, and these two
+// fields are validated before they can reach a product record.
+//
+// `productType` is the sharp edge: the refill engine reads
+//   if (product.productType) return product.productType === "clothing";
+// so a typo like "apparel" is not ignored — it is an explicit NON-clothing
+// answer that SUPPRESSES the letter-size fallback. An S–XXXL product would then
+// drop out of refill AND Display Checks silently, with nothing on screen to say
+// so. Rejecting the category outright (→ the save is refused with a visible
+// message) is far better than creating an invisible orphan.
+//
+// `category` is validated against the live browse tree because POS filters on it.
+// `subcategory` is deliberately NOT restricted: it only drives which chip a
+// product appears under in POS browse, so an unknown leaf is cosmetic, and
+// letting new leaves be added by data edit is the point of the registry.
+export const VALID_LEGACY_PRODUCT_TYPES = ["clothing", "sneaker"];
+
+export function isLegalLegacy(legacy) {
+  if (!legacy || typeof legacy !== "object") return false;
+  if (!TOP_CATEGORIES.includes(legacy.category)) return false;
+  if (legacy.productType != null && !VALID_LEGACY_PRODUCT_TYPES.includes(legacy.productType)) return false;
+  return true;
+}
+
 /**
  * THE DERIVATION. categoryKey → the legacy fields to write alongside it.
  * Returns { category, subcategory, productType } where a null means "omit this
- * field entirely" (never write the string "null"). Returns null for an unknown
- * key so callers can refuse to save rather than write a half-typed product.
+ * field entirely" (never write the string "null").
+ *
+ * Returns null — so the caller REFUSES the save rather than writing a
+ * half-typed product — when the key is unknown, the category is retired, or the
+ * legacy block is not legal per isLegalLegacy above.
  */
 export function legacyFor(registry, key) {
   const cat = catByKey(registry, key);
   if (!cat || !cat.legacy) return null;
-  const { category, subcategory, productType } = cat.legacy;
-  if (!category) return null;
-  return {
-    category: String(category),
-    subcategory: subcategory == null || subcategory === "" ? null : String(subcategory),
-    productType: productType == null || productType === "" ? null : String(productType),
+  // A retired category must not be assignable to NEW products. It stays
+  // resolvable for products that already carry it (catByKey still returns it),
+  // so retiring never orphans history — it only closes the intake path.
+  if (cat.active === false) return null;
+  const legacy = {
+    category: cat.legacy.category == null ? null : String(cat.legacy.category),
+    subcategory: cat.legacy.subcategory == null || cat.legacy.subcategory === "" ? null : String(cat.legacy.subcategory),
+    productType: cat.legacy.productType == null || cat.legacy.productType === "" ? null : String(cat.legacy.productType),
   };
+  return isLegalLegacy(legacy) ? legacy : null;
+}
+
+/** True when this category may be assigned to a product right now. */
+export function isAssignable(registry, key) {
+  return legacyFor(registry, key) != null;
 }
 
 /**

@@ -44,6 +44,11 @@ export function cleanHubs(hubs, isClothing) {
  */
 export function buildNewProduct(registry, form, extras = {}) {
   const cat = catByKey(registry, form && form.categoryKey);
+  // legacyFor returns null for an unknown key, a RETIRED category, or a legacy
+  // block whose category/productType are not legal values — see isLegalLegacy.
+  // Refusing here is the guard that stops a console typo (productType
+  // "apparel") from creating a product that silently sits outside the refill
+  // sweep and Display Checks with nothing on screen to say so.
   const legacy = legacyFor(registry, form && form.categoryKey);
   if (!cat || !legacy) return null;
 

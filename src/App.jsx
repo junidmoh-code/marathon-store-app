@@ -4877,14 +4877,24 @@ function AdminView({ products, orders, onExit }) {
         const recvEntries = receiveEntries(sizes, recvQtys);
         if (recvEntries.length) {
           const locLabel = labelFor(recvLoc, recvRegistry);
-          let recOk = 0, recFail = 0; const savedItems = [];
+          let recOk = 0; const savedItems = []; const failed = [];
           for (const [size, n] of recvEntries) {
             const res = await applyMovement({ type: "received", productId: id, size, qty: n, to: recvLoc });
             if (res.ok) { recOk++; savedItems.push({ size, added: n }); }
-            else recFail++;
+            else failed.push(`${size}×${n}`);
           }
-          if (recFail) {
-            alert(`Product saved. ${recOk} size(s) received into ${locLabel}; ${recFail} could not be received — you may not have stock permission (stockRole). You can add these quantities later from Stock.`);
+          if (failed.length) {
+            // Receiving is per-size and NOT atomic (inherited behaviour — one
+            // ledger movement per size). A partial failure must therefore name
+            // the exact sizes that did NOT land, or the operator has no way to
+            // know what to re-enter, and re-entering everything would
+            // double-receive the sizes that succeeded.
+            alert(
+              `Product saved, and ${recOk} size(s) received into ${locLabel}.\n\n` +
+              `NOT received: ${failed.join(", ")}\n\n` +
+              `You may not have stock permission (stockRole). Add exactly these sizes from Stock → Set Quantity — ` +
+              `do not re-enter the whole delivery or the sizes above will be counted twice.`
+            );
           }
           // Surface the inline Print-barcodes sheet for the sizes that saved.
           if (savedItems.length) {

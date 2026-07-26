@@ -23,7 +23,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase.js";
 import {
-  groupedCategories, allCategories, labelForKey, catByKey,
+  groupedCategories, allCategories, labelForKey, isAssignable,
   needsAssignment, isLegacySneaker, isAssigned,
 } from "../../utils/productTaxonomy.js";
 
@@ -150,28 +150,55 @@ export default function AssignCategoriesTab({ products = [], registry }) {
   });
 
   // ── THE WRITE. categoryKey only, chunked, with the prior value recorded.
+  //
+  // LAST-WRITE-WINS IS NOT ACCEPTABLE HERE. A batch can be confirmed over a
+  // thousand rows and pressed seconds later, while a second admin is working the
+  // same queue. So the batch is re-filtered against the CURRENT live data at
+  // write time (`stillUnassigned`), not against the snapshot taken when the
+  // dialog opened: a product someone else categorised in the meantime is skipped
+  // rather than silently overwritten. The count reported back is what was
+  // actually written, and any skips are stated.
   const applyAssign = async (items, key, label) => {
-    if (!items.length || !key || !catByKey(registry, key)) return;
+    if (!items.length || !key || !isAssignable(registry, key)) {
+      setMsg("That category is no longer available — pick another.");
+      setConfirm(null);
+      return;
+    }
+    // Re-read from the live products list, not the captured items. Anything
+    // assigned since the dialog opened is another admin's decision — skip it.
+    const live = new Map((products || []).filter((p) => p && p.id).map((p) => [p.id, p]));
+    const writable = items.map((p) => live.get(p.id)).filter((p) => p && !isAssigned(p));
+    const skipped = items.length - writable.length;
+
+    if (!writable.length) {
+      setConfirm(null);
+      setSel(new Set());
+      setMsg(`Nothing to write — all ${items.length} were categorised by someone else first.`);
+      return;
+    }
+
     setBusy(true);
     setMsg("");
-    const undoItems = items.map((p) => ({ id: p.id, prev: p.categoryKey ?? null }));
+    const undoItems = writable.map((p) => ({ id: p.id, prev: p.categoryKey ?? null, wrote: key }));
     let written = 0;
     try {
-      for (const part of chunk(items, WRITE_CHUNK)) {
+      for (const part of chunk(writable, WRITE_CHUNK)) {
         const updates = {};
         for (const p of part) updates[`products/${p.id}/categoryKey`] = key;
         await update(ref(database), updates);
         written += part.length;
       }
-      setUndo({ items: undoItems });
+      setUndo({ items: undoItems.slice(0, written) });
       setSel((s) => { const n = new Set(s); for (const it of undoItems) n.delete(it.id); return n; });
       setConfirm(null);
-      setMsg(`Assigned ${written} product${written === 1 ? "" : "s"} to ${label || labelForKey(registry, key)}.`);
+      setMsg(`Assigned ${written} product${written === 1 ? "" : "s"} to ${label || labelForKey(registry, key)}.`
+        + (skipped ? ` ${skipped} skipped — already categorised by someone else.` : ""));
     } catch (e) {
       // Chunked writes mean a mid-run failure leaves earlier chunks applied —
       // say so plainly rather than implying the whole batch rolled back.
       setUndo(written ? { items: undoItems.slice(0, written) } : null);
-      setMsg(`Save failed after ${written} of ${items.length}: ${e?.message || e}. The ${written} already written can be undone.`);
+      setMsg(`Save failed after ${written} of ${writable.length}: ${e?.message || e}.`
+        + (written ? ` The ${written} already written can be undone.` : ""));
     } finally {
       setBusy(false);
     }
@@ -183,17 +210,35 @@ export default function AssignCategoriesTab({ products = [], registry }) {
     finally { setSavingId(null); }
   };
 
+  // Undo reverts ONLY the rows that still hold exactly what this action wrote.
+  // If someone re-categorised a product afterwards, undoing here would quietly
+  // destroy THEIR decision — so those rows are left alone and reported.
   const doUndo = async () => {
     if (!undo) return;
+    const live = new Map((products || []).filter((p) => p && p.id).map((p) => [p.id, p]));
+    const revertable = undo.items.filter((it) => {
+      const p = live.get(it.id);
+      return p && (p.categoryKey ?? null) === it.wrote;
+    });
+    const held = undo.items.length - revertable.length;
+
+    if (!revertable.length) {
+      setUndo(null);
+      setMsg(`Nothing to undo — all ${undo.items.length} have been changed again since.`);
+      return;
+    }
+
     setBusy(true);
     try {
-      for (const part of chunk(undo.items, WRITE_CHUNK)) {
+      for (const part of chunk(revertable, WRITE_CHUNK)) {
         const updates = {};
+        // `null` DELETES the key, correctly restoring "never assigned" rather
+        // than storing a literal null.
         for (const it of part) updates[`products/${it.id}/categoryKey`] = it.prev;
         await update(ref(database), updates);
       }
       setUndo(null);
-      setMsg("Undone.");
+      setMsg(`Undone ${revertable.length}.` + (held ? ` ${held} left alone — changed again since.` : ""));
     } catch (e) { setMsg("Undo failed: " + (e?.message || e)); }
     finally { setBusy(false); }
   };

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   TAXONOMY_SEED, SIZES_APPAREL, SIZES_FOOTWEAR, SIZES_KIDS, SIZES_GLOVES, ONE_SIZE_SENTINEL,
   catByKey, isOneSize, sizesOf, legacyFor, groupedCategories, allCategories, labelForKey,
-  isAssigned, isLegacySneaker, needsAssignment, effectiveCategoryKey,
+  isAssigned, isLegacySneaker, needsAssignment, effectiveCategoryKey, isAssignable,
 } from "./productTaxonomy.js";
 import { CATEGORY_TREE } from "./productCategory.js";
 
@@ -25,9 +25,13 @@ describe("registry shape", () => {
     }
   });
 
-  it("ships the behaviour flags as EMPTY, unused slots", () => {
+  it("ships the behaviour flags as EMPTY, unused slots that SURVIVE an RTDB write", () => {
     for (const c of Object.values(REG.cats)) {
-      expect(c.flags).toEqual({ refillManaged: null, displayChecks: null, oneSize: null });
+      expect(c.flags).toEqual({ refillManaged: "unset", displayChecks: "unset", oneSize: "unset" });
+      // RTDB deletes null children, so a null-valued slot would vanish on write
+      // and the console would show no flags node at all — the opposite of an
+      // "empty slot you can fill in later".
+      for (const v of Object.values(c.flags)) expect(v).not.toBeNull();
     }
   });
 
@@ -153,6 +157,52 @@ describe("legacyFor — the signed-off derivation table", () => {
     expect(legacyFor(REG, "not-a-category")).toBeNull();
     expect(legacyFor(REG, "")).toBeNull();
     expect(legacyFor(null, "t-shirts")).toBeNull();
+  });
+});
+
+// ── REGISTRY IS UNTRUSTED INPUT ──────────────────────────────────────────────
+// It is console-editable, and its `legacy` block decides which live automations
+// a product lands in. A bad value must REFUSE the save, never produce a product
+// that silently sits outside refill and Display Checks.
+describe("legacyFor rejects an illegal registry entry", () => {
+  const withLegacy = (legacy) => ({ ...REG, cats: { ...REG.cats, "t-shirts": { ...REG.cats["t-shirts"], legacy } } });
+
+  it('rejects a typo\'d productType — "apparel" would SUPPRESS the letter-size fallback', () => {
+    // refill-engine: `if (product.productType) return product.productType === "clothing"`.
+    // "apparel" is not ignored — it is an explicit NON-clothing answer.
+    expect(legacyFor(withLegacy({ category: "Clothing", subcategory: "T-Shirts", productType: "apparel" }), "t-shirts")).toBeNull();
+  });
+
+  it("rejects an unknown top-level category (POS browse filters on it)", () => {
+    expect(legacyFor(withLegacy({ category: "Garments", subcategory: "T-Shirts", productType: "clothing" }), "t-shirts")).toBeNull();
+  });
+
+  it("rejects a missing category", () => {
+    expect(legacyFor(withLegacy({ subcategory: "T-Shirts", productType: "clothing" }), "t-shirts")).toBeNull();
+  });
+
+  it("accepts the two legal productTypes and the deliberate perfume omission", () => {
+    expect(legacyFor(withLegacy({ category: "Clothing", productType: "clothing" }), "t-shirts").productType).toBe("clothing");
+    expect(legacyFor(withLegacy({ category: "Footwear", productType: "sneaker" }), "t-shirts").productType).toBe("sneaker");
+    expect(legacyFor(withLegacy({ category: "Perfume", productType: null }), "t-shirts").productType).toBeNull();
+  });
+
+  it("allows an UNKNOWN subcategory — it only drives a POS browse chip", () => {
+    const r = legacyFor(withLegacy({ category: "Clothing", subcategory: "Ponchos", productType: "clothing" }), "t-shirts");
+    expect(r.subcategory).toBe("Ponchos");
+  });
+
+  it("refuses a RETIRED category for new use, but keeps it resolvable for history", () => {
+    const reg = { ...REG, cats: { ...REG.cats, belts: { ...REG.cats.belts, active: false } } };
+    expect(legacyFor(reg, "belts")).toBeNull();
+    expect(isAssignable(reg, "belts")).toBe(false);
+    // Still resolvable, so a product already carrying "belts" is never orphaned.
+    expect(catByKey(reg, "belts").label).toBe("Belts");
+    expect(labelForKey(reg, "belts")).toBe("Belts");
+  });
+
+  it("every seeded category is assignable", () => {
+    for (const k of Object.keys(REG.cats)) expect(isAssignable(REG, k)).toBe(true);
   });
 });
 
