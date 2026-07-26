@@ -20,7 +20,18 @@ import { ONE_SIZE_SENTINEL } from "../../utils/productTaxonomy.js";
 
 const BLUE = "#4A7FFF";
 
-function QtyBox({ label, value, onChange, autoFocus, wide }) {
+// Number-input spinners cannot be removed from an inline style: Chromium and
+// Safari need a ::-webkit-*-spin-button pseudo-element rule, which the style
+// prop cannot express (`appearance: textfield` alone only covers Firefox). The
+// arrows eat roughly a third of the tap target on a narrow box, so the rule is
+// injected once, scoped to this component's class.
+const SPINNER_CSS = `
+.mq-qty::-webkit-outer-spin-button,
+.mq-qty::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.mq-qty { -moz-appearance: textfield; appearance: textfield; }
+`;
+
+function QtyBox({ label, ariaLabel, value, onChange, autoFocus, wide }) {
   const [focus, setFocus] = useState(false);
   const filled = value !== "" && value != null;
   const n = Number(value);
@@ -35,6 +46,7 @@ function QtyBox({ label, value, onChange, autoFocus, wide }) {
         {label}
       </span>
       <input
+        className="mq-qty"
         type="number"
         inputMode="numeric"
         min="0"
@@ -45,7 +57,7 @@ function QtyBox({ label, value, onChange, autoFocus, wide }) {
         onFocus={() => setFocus(true)}
         onBlur={() => setFocus(false)}
         onChange={(e) => onChange(e.target.value)}
-        aria-label={`Quantity received, size ${label}`}
+        aria-label={ariaLabel || `Quantity received, size ${label}`}
         style={{
           width: "100%", height: 56, minWidth: wide ? 120 : 0, boxSizing: "border-box",
           background: "#08090C",
@@ -60,8 +72,7 @@ function QtyBox({ label, value, onChange, autoFocus, wide }) {
             ? "0 0 0 4px rgba(74,127,255,.16), 0 0 18px rgba(74,127,255,.22)"
             : positive ? "inset 0 1px 0 rgba(255,255,255,.05), 0 0 10px rgba(74,127,255,.10)" : "inset 0 1px 0 rgba(255,255,255,.04)",
           transition: "border-color .14s, box-shadow .14s, color .14s",
-          // Kill the spinner arrows — they shrink the usable tap area to nothing.
-          appearance: "textfield", MozAppearance: "textfield",
+          // Spinner removal lives in SPINNER_CSS above — it needs pseudo-elements.
         }}
       />
     </label>
@@ -69,33 +80,42 @@ function QtyBox({ label, value, onChange, autoFocus, wide }) {
 }
 
 export default function SizeQtyBoxes({ sizes, oneSize, values, onChange }) {
-  // One-size: a single, wider Quantity field keyed on the "_" sentinel.
+  // One-size: a single, wider Quantity field keyed on the "_" sentinel. The
+  // aria-label is given explicitly — the default would read "Quantity received,
+  // size Quantity", since there is no size to announce.
   if (oneSize) {
     return (
-      <div style={{ maxWidth: 240 }}>
-        <QtyBox
-          label="Quantity"
-          wide
-          value={values[ONE_SIZE_SENTINEL] ?? ""}
-          onChange={(v) => onChange(ONE_SIZE_SENTINEL, v)}
-        />
-        <div style={{ marginTop: 9, fontSize: 12, color: "rgba(233,238,255,.42)", lineHeight: 1.45 }}>
-          One-size product — a single stock line, no size breakdown.
+      <>
+        <style>{SPINNER_CSS}</style>
+        <div style={{ maxWidth: 240 }}>
+          <QtyBox
+            label="Quantity"
+            ariaLabel="Quantity received"
+            wide
+            value={values[ONE_SIZE_SENTINEL] ?? ""}
+            onChange={(v) => onChange(ONE_SIZE_SENTINEL, v)}
+          />
+          <div style={{ marginTop: 9, fontSize: 12, color: "rgba(233,238,255,.42)", lineHeight: 1.45 }}>
+            One-size product — a single stock line, no size breakdown.
+          </div>
         </div>
-      </div>
+      </>
     );
   }
 
   return (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "repeat(auto-fill, minmax(76px, 1fr))",
-      gap: 12,
-    }}>
-      {sizes.map((s) => (
-        <QtyBox key={s} label={s} value={values[s] ?? ""} onChange={(v) => onChange(s, v)} />
-      ))}
-    </div>
+    <>
+      <style>{SPINNER_CSS}</style>
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(76px, 1fr))",
+        gap: 12,
+      }}>
+        {sizes.map((s) => (
+          <QtyBox key={s} label={s} value={values[s] ?? ""} onChange={(v) => onChange(s, v)} />
+        ))}
+      </div>
+    </>
   );
 }
 

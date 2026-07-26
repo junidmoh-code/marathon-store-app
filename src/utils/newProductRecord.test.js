@@ -61,6 +61,16 @@ describe("buildNewProduct — core shape", () => {
     expect(build({ categoryKey: "not-real" })).toBeNull();
     expect(build({ categoryKey: "" })).toBeNull();
   });
+
+  it("refuses a category with no sizes — the shape a console edit can produce", () => {
+    const reg = { ...REG, cats: { ...REG.cats, empty: {
+      key: "empty", label: "Empty", top: "footwear", order: 99, sizeMode: "list", sizes: [],
+      legacy: { category: "Footwear", subcategory: "Sneakers", productType: "sneaker" }, active: true,
+    } } };
+    // No sizes means no stock cells and no barcodes — a product that can never
+    // hold inventory. Refuse rather than create it.
+    expect(buildNewProduct(reg, { ...base, categoryKey: "empty" }, { id: "p1" })).toBeNull();
+  });
 });
 
 describe("buildNewProduct — prices", () => {

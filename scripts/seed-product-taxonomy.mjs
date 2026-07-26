@@ -36,6 +36,10 @@ const DRY = process.argv.includes("--dry-run");
 const REPLACE = process.argv.includes("--replace");
 const NODE = "settings/productTaxonomy";
 
+// Uses Application Default Credentials — a local run needs either
+// GOOGLE_APPLICATION_CREDENTIALS pointing at a service-account key, or
+// `gcloud auth application-default login`. Same setup every other script in
+// this repo expects.
 admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 const db = admin.database();
 

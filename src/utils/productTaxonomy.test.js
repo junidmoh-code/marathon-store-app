@@ -371,6 +371,27 @@ describe("assignment-queue predicates", () => {
     expect(effectiveCategoryKey({ ...sneaker, categoryKey: "running-shoes" })).toBe("running-shoes");
   });
 
+  // ── A KNOWN, ACCEPTED LIMIT OF THE AUTO-ASSIGN RULE ────────────────────────
+  // Running Shoes and Kids Shoes derive to the SAME legacy triple as Sneakers
+  // (Footwear / Sneakers / sneaker), because the old tree had no leaf for them.
+  // So an EXISTING running shoe or kids shoe is indistinguishable from a plain
+  // sneaker in the legacy data, gets the "sneakers" default, and never appears
+  // in the queue to be corrected. New products are unaffected — the form records
+  // the real category at creation. Re-classifying the existing ~1,166 would need
+  // a separate pass (by name, or by hand); it is deliberately not attempted here.
+  it("an existing running/kids shoe is indistinguishable from a sneaker in legacy data", () => {
+    const runningShoe = { id: "p9", category: "Footwear", subcategory: "Sneakers", name: "Nike Pegasus 41" };
+    const kidsShoe = { id: "p10", category: "Footwear", subcategory: "Sneakers", name: "Nike Air Max Kids" };
+    for (const p of [runningShoe, kidsShoe]) {
+      expect(isLegacySneaker(p)).toBe(true);
+      expect(needsAssignment(p)).toBe(false);        // never queued
+      expect(effectiveCategoryKey(p)).toBe("sneakers"); // defaults to Sneakers
+    }
+    // An explicit assignment still wins, so any of them CAN be corrected — it
+    // just has to be found deliberately rather than surfaced by the queue.
+    expect(effectiveCategoryKey({ ...runningShoe, categoryKey: "running-shoes" })).toBe("running-shoes");
+  });
+
   it("blank / whitespace categoryKey does not count as assigned", () => {
     expect(isAssigned({ id: "p5", categoryKey: "  " })).toBe(false);
     expect(needsAssignment({ id: "p5", categoryKey: "  " })).toBe(true);
