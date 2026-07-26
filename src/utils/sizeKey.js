@@ -39,8 +39,16 @@ export function decodeSizeKey(key) {
 // encodeSizeKey(size)`), so a one-size item's POS sale and the store-app Set Qty
 // hit the SAME cell. Empty string is also folded to "_" (an empty RTDB key is
 // invalid). Everything else is dot-free-encoded.
+//
+// "Free Size" is the SYNTHETIC display label the assistant order screen shows for
+// a one-size product (sizesOf maps the "_"/blank catalogue size to "Free Size" so
+// there's a tappable chip). It must NOT create its own stock cell: without this
+// fold, a perfume order moved stock in a phantom "Free_Size" cell (the space →
+// "_" via encodeSizeKey) while real stock, POS sales and receiving all live in
+// "_" — the two never met, leaving hub negatives + orphaned shop stock. Folding
+// it here keeps deduct, credit AND any later reversal on the one true "_" cell.
 export function stockSizeKey(size) {
-  if (size == null || size === "") return "_";
+  if (size == null || size === "" || size === "Free Size") return "_";
   return encodeSizeKey(size);
 }
 
