@@ -31,10 +31,26 @@ or one reflexive `y` destroys them.
 
 ### Measured 2026-07-27 — exactly what is at risk
 
-25 functions live in `marathon-club`. The runtime is a clean discriminator:
-**17 × nodejs22 = this repo. 8 × nodejs20 = marathon-pos-app.**
+25 functions live in `marathon-club`. On that date the Node runtime happened to
+split them cleanly: **17 × nodejs22 = this repo, 8 × nodejs20 = marathon-pos-app.**
 
-A bare `--only functions` from this repo would offer to delete all 8:
+> ⚠️ **That split is a DATED SANITY CHECK, not a durable property, and not a
+> safety boundary.** It is a coincidence of the two repos currently sitting on
+> different Node versions. The moment *either* repo changes runtime — a routine
+> upgrade in either codebase, by someone who never reads this file — the check
+> silently stops distinguishing ownership, while a bare `--only functions` stays
+> exactly as destructive as it is today. A check that expires quietly is worse
+> than no check, because it invites trust it no longer earns.
+>
+> **Naming the function is the only real safety boundary.** Never reason from
+> runtime counts to "this deploy looks safe".
+>
+> The durable alternative is an explicit repo-owned function allowlist, checked
+> against `firebase functions:list` before any deploy. **Not built** — until it
+> exists, the rule above is the whole protection.
+
+A bare `--only functions` from this repo would offer to delete all 8 (as measured
+on 2026-07-27 — re-measure before relying on this list):
 
 | Function | Trigger | Why it hurts |
 |---|---|---|
@@ -51,8 +67,14 @@ one.
 ### How to check before deploying
 
 ```bash
-firebase functions:list          # anything nodejs20 belongs to the POS repo — do not touch
+firebase functions:list
 ```
+
+Cross-check what comes back against the functions this repo actually exports
+(`grep -oE "^exports\.[a-zA-Z0-9_]+" functions/index.js`). **Anything live that
+this repo does not export belongs to another repo — do not touch it.** That
+comparison stays true regardless of runtime; the nodejs20/nodejs22 split above is
+only a same-day shortcut and may already be stale when you read this.
 
 If a change touches shared library code, deploy each affected function by name in
 one scoped command rather than reaching for the bare form:
@@ -114,9 +136,43 @@ cell sits in its point..target band, which is the policy's normal resting state.
 is pulled back; nothing is lost and no shop runs dry. Do not treat it as an
 incident — but do not let it be mistaken for a Move-Excess bug either.
 
-**Why perfume is exempt:** the excess / `onlyInCentral` / `onlyInHub2` loop is
-gated by `if (!isClothing(products[pid])) continue`. Perfume produces **zero**
-excess cards, so there is no routing decision to get wrong. Verified.
+**Why perfume is exempt — and the limit of that exemption.** The excess /
+`onlyInCentral` / `onlyInHub2` loop is gated by
+`if (!isClothing(products[pid])) continue`. A perfume record reaches that gate
+via `isClothing()`, which reads `productType` FIRST — so the exemption belongs to
+**clean** perfume records, not to the category. Measured on the same fixture,
+varying only `productType`:
+
+| perfume `productType` | excess cards |
+|---|---|
+| absent (the clean shape) | **0** |
+| `"sneaker"` | **0** |
+| `"clothing"` | **1** — `trophy excess8 toHub5 toCentral3` |
+
+So a perfume carrying a stray `productType: "clothing"` **does** reach the excess
+loop and Tripwire 1 applies to it in full.
+
+⚠️ **This is a data state, not a structural guarantee.** It holds only because
+all 56 perfume records were cleaned on 2026-07-27 (see *"The stray-`productType`
+perfume class is CLOSED"* below — Creed carried exactly this value, and it is the
+reason the class was swept). **The Add Product form root cause is still open**:
+the live form always writes a `productType`, so a new violating record can appear
+at any time, from an ordinary product add, with no warning. Re-check the class
+before relying on this exemption:
+
+```bash
+# Any perfume carrying a productType at all → the exemption no longer holds for it.
+# Expect "clean: 0 perfumes carry productType".
+node -e '
+const admin=require("./functions/node_modules/firebase-admin");
+admin.initializeApp({databaseURL:"https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app"});
+admin.database().ref("products").once("value").then(s=>{
+  const bad=Object.entries(s.val()||{}).filter(([,p])=>p&&p.category==="Perfume"&&p.productType);
+  console.log(bad.length?`DIRTY: ${bad.length} — `+bad.map(([i,p])=>`${i}:${p.name}=${p.productType}`).join(", ")
+                        :"clean: 0 perfumes carry productType");
+  process.exit(0);
+});'
+```
 
 **If you need clothing rows armed:** make gated deficits visible to
 `deficitBySize` (track them in a parallel list, or push to `belowTarget` with a
