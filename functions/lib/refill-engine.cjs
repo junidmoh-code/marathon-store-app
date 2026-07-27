@@ -221,10 +221,39 @@ function ruleTargetsEnabled(config, dest) {
 //      ONLY where ruleBasedTargets is enabled for this destination
 //   3. null (non-clothing, store does not carry, or deliberately excluded)
 // Explicit target 0 continues to mean "deliberately excluded".
+//
+// ── reorderPoint (2026-07-27) ────────────────────────────────────────────────
+// OPTIONAL per-row field, explicit targets only. Absent → null → the deficit
+// loop's gate is inert and the cell behaves EXACTLY as it always has (propose
+// as soon as on-hand falls below target). That is what makes this change a
+// no-op on all 8,419 existing clothing cells and opt-in one row at a time.
+//
+// It is deliberately NOT minQty. minQty keeps its one and only job — card
+// priority at :938 — because minQty is already populated on every existing row
+// (ceil(target/2) or target-1), so reusing it would have silently changed the
+// trigger for the entire live catalogue in a single deploy.
+//
+// VALIDATION IS FAIL-SAFE IN THE OVER-ORDERING DIRECTION. Only a finite number
+// >= 0 arms the gate; absent, null, negative, NaN or a non-number all fall back
+// to today's eager behaviour. A negative is the case that matters: `have > -1`
+// is true for every non-negative on-hand, so honouring it would silently STOP
+// replenishing that cell forever. Under-ordering starves a shop silently while
+// over-ordering is merely visible noise — so garbage resolves to "no gate",
+// matching the file's standing rule that the engine takes the conservative side
+// (see the kill switch's fail-safe note above).
 function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
-    return { target: num(explicit.target), minQty: num(explicit.minQty), source: "explicit" };
+    const rp = explicit.reorderPoint;
+    return {
+      target: num(explicit.target),
+      minQty: num(explicit.minQty),
+      // NOT `num()` and NOT a truthiness check: num() maps garbage to 0, which
+      // would arm the gate at "only when empty" — the silent-starvation case.
+      // 0 itself IS valid and must survive (propose only at zero on-hand).
+      reorderPoint: typeof rp === "number" && Number.isFinite(rp) && rp >= 0 ? rp : null,
+      source: "explicit",
+    };
   }
   if (!ruleTargetsEnabled(config, dest)) return null;   // ← kill switch
   // Global clothing rule: apply the location's standard run to every catalog
@@ -236,7 +265,10 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
       const run = config?.defaultRunByStore?.[dest] || {};
       const t = run[size];
       if (typeof t === "number" && t > 0) {
-        return { target: t, minQty: Math.max(1, t - 1), source: "default" };
+        // Rule-based targets carry NO reorder point — the standard run is a
+        // top-up policy, and inventing one here would change clothing behaviour
+        // network-wide from a code default rather than from an approved row.
+        return { target: t, minQty: Math.max(1, t - 1), reorderPoint: null, source: "default" };
       }
     }
   }
@@ -762,6 +794,30 @@ function computeRefillPlan(snapshot) {
         const inb = inbound.get(`${dest}|${pid}|${sizeKey}`) || 0;
         const deficit = t.target - have - inb;
         if (deficit <= 0) continue;
+
+        // ── REORDER-POINT GATE (owner policy 2026-07-27) ─────────────────────
+        // With a reorderPoint set, the cell is a MIN/MAX row, not a top-up row:
+        // it stays quiet while on-hand sits above the point, then asks for the
+        // whole gap at once. Without one (every clothing row today) this is a
+        // no-op and the cell tops up continuously exactly as before.
+        //
+        // Why this position is load-bearing — the gate sits AFTER the deficit
+        // check but BEFORE every push below, so an above-point cell is treated
+        // as "no deficit": silent, and identical to a cell that has met target.
+        // Placing it lower would leak the cell into belowTarget and then into
+        // missingSizes / awaitingSupplier, surfacing a perfectly healthy shelf
+        // as a supplier reorder candidate.
+        //
+        // The test is on `have`, NOT `have + inb`: the policy is written about
+        // physical on-hand ("reorders when on-hand drops to 3"). Inbound is
+        // already fully accounted for by `deficit` above, so a cell with stock
+        // on the way has a deficit of 0 and never reaches this line — there is
+        // no double-count and no re-ask while a delivery is in flight.
+        //
+        // `!= null` is deliberate: reorderPoint 0 is a legitimate row meaning
+        // "ask only when the shelf is empty", and a truthiness test would treat
+        // it as absent and silently restore eager top-up.
+        if (t.reorderPoint != null && have > t.reorderPoint) continue;
 
         belowTarget.push({ loc: dest, pid, size, have: q, target: t.target, inbound: inb, deficit });
 
