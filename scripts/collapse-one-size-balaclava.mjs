@@ -210,9 +210,27 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   chk(`0b no open refill locks at ANY of the ${LOCS.length} locations`, lockHits.length === 0,
       lockHits.length ? lockHits.join(", ") : `none across ${LOCS.join(", ")}`);
 
-  const dcActive = (await g("displayChecks_active/marathon-pe")) || {};
-  const dcHits = Object.keys(dcActive).filter((k) => k.startsWith(PID));
-  chk("0c no ACTIVE size-keyed Display Check", dcHits.length === 0, dcHits.length ? dcHits.join(", ") : "none");
+  // TWO defects fixed here (CodeRabbit, PR #284 — the second was raised on the
+  // FIRST review and went unaddressed through three rounds):
+  //
+  // 1. SEPARATOR. `startsWith(PID)` matches any product whose id merely begins
+  //    with this one's, so an unrelated product could abort the migration. The
+  //    documented key shape is {pid}__{sizeKey}; match the separator.
+  //
+  // 2. SCOPE. This read a single hardcoded location while every other pre-flight
+  //    check was widened — the same single-location assumption the LOCS fix
+  //    exists to kill. And LOCS is the WRONG scope to widen to: display checks
+  //    live at TRIGGER STORES, not stock locations. Live counts today are
+  //    marathon-pe 412 and trophy 288 — trophy is not in LOCS, so scanning LOCS
+  //    would still have missed it. Walk whatever locations the node actually
+  //    has: location-agnostic cannot miss one.
+  const dcAll = (await g("displayChecks_active")) || {};
+  const dcHits = [];
+  for (const [loc, byKey] of Object.entries(dcAll)) {
+    for (const k of Object.keys(byKey || {})) if (k.startsWith(`${PID}__`)) dcHits.push(`${loc}/${k}`);
+  }
+  chk(`0c no ACTIVE size-keyed Display Check at ANY location (${Object.keys(dcAll).length} scanned)`,
+      dcHits.length === 0, dcHits.length ? dcHits.join(", ") : `none across ${Object.keys(dcAll).join(", ") || "(no active checks)"}`);
 
   chk("product still declares the expected size", JSON.stringify(product.sizes) === JSON.stringify([FROM_SIZE]),
       `sizes = ${JSON.stringify(product.sizes)}`);
