@@ -257,16 +257,30 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   chk(`every location holding ${FROM_SIZE} units is inside the movement plan`, holdersOutsideScope.length === 0,
       holdersOutsideScope.length ? `ORPHANS WOULD BE LEFT AT ${holdersOutsideScope.join(", ")}` : `scope covers ${LOCS.join(", ")}`);
 
-  // And the mirror: a location in scope holding units must actually appear in the
-  // Step 1 plan (a zero cell is skipped, which is correct; a nonzero one is not).
+  // The plan-completeness mirror. It compares the plan (built from the per-location
+  // `stock` reads) against the INDEPENDENT whole-tree read above — never against
+  // `total`, which comes from the same object the plan does and would make this
+  // tautological: `planned` is by construction the nonzero subset of LOCS, so
+  // plannedTotal === total always. Only a second, independent read can fail.
+  // (CodeRabbit, PR #284 — the same defect it caught in the exclusion mirror.)
   const planned = LOCS.filter((l) => Math.max(stock[l]?.[FROM_SIZE]?.qty || 0, 0) > 0);
   const plannedTotal = planned.reduce((t, l) => t + stock[l][FROM_SIZE].qty, 0);
-  chk("Step 1 plan moves every unit counted in the total", plannedTotal === total,
-      `${plannedTotal} of ${total} units, from ${planned.join(", ") || "(none)"}`);
+  const freshNetworkTotal = Object.values(allStock)
+    .reduce((t, byPid) => t + Math.max(byPid?.[PID]?.[FROM_SIZE]?.qty || 0, 0), 0);
+  chk("Step 1 plan moves every unit the database currently holds", plannedTotal === freshNetworkTotal,
+      `plan ${plannedTotal} vs live ${freshNetworkTotal} units, from ${planned.join(", ") || "(none)"}`);
 
-  // Mirror of the orphan guard: every non-"_" target key present must be in the
-  // exclusion set, or a row survives pointing at a size the product has dropped.
-  const liveKeys = [...new Set(Object.values(targetsNow).flatMap((b) => Object.keys(b || {})).filter((k) => k !== "_"))].sort();
+  // Mirror of the orphan guard, and it must MIRROR IT PROPERLY: go back to the
+  // database and ask. Deriving liveKeys from the same in-memory `targetsNow` that
+  // produced EXCLUDE_SIZES made this tautological — identical transform, same
+  // object, nothing re-read in between, so `unhandled` could never be non-empty.
+  // It gave false assurance and could not catch a row added at a policy location
+  // between snapshot capture and this check, nor a bug in the shared derivation.
+  // The orphan guard above is the standard: it re-reads /stock in full.
+  // (CodeRabbit, PR #284.)
+  const targetsFresh = {};
+  for (const loc of Object.keys(POLICY)) targetsFresh[loc] = (await g(`stock_targets/${loc}/${PID}`)) || null;
+  const liveKeys = [...new Set(Object.values(targetsFresh).flatMap((b) => Object.keys(b || {})).filter((k) => k !== "_"))].sort();
   const unhandled = liveKeys.filter((k) => !EXCLUDE_SIZES.includes(k));
   chk("every non-\"_\" target key is covered by the exclusions", unhandled.length === 0,
       liveKeys.length ? `covering ${EXCLUDE_SIZES.join(",")}${unhandled.length ? ` — UNHANDLED: ${unhandled.join(",")}` : ""}` : "no legacy size rows exist");
