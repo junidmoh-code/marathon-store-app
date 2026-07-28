@@ -125,13 +125,20 @@ function fakeDb(nodes, opts = {}) {
           const cur = path in nodes ? nodes[path] : null;
           const out = fn(cur);
           if (out === undefined) return { committed: false, snapshot: snap(cur) };
-          // `raceQty` models a CONCURRENT WRITER winning: the transaction commits,
-          // but the value that lands is not the one we asked for.
-          const landed = opts.raceQty != null && /^refill_requests\//.test(path)
-            ? { ...out, qty: opts.raceQty }
-            : out;
-          nodes[path] = landed;
-          return { committed: true, snapshot: snap(landed) };
+          // CONCURRENT WRITE = RETRY, not a divergent commit. RTDB re-invokes the
+          // handler against the new value and commits THAT result — it can never
+          // commit a value the handler did not return. `raceOnce` models exactly
+          // that: one interfering write, then the handler runs again and wins.
+          if (opts.raceOnce && opts.raceOnce.test(path) && !opts._raced) {
+            opts._raced = true;
+            nodes[path] = { ...(cur || {}), ...opts.raceOnce_value };
+            const retried = fn(nodes[path]);
+            if (retried === undefined) return { committed: false, snapshot: snap(nodes[path]) };
+            nodes[path] = retried;
+            return { committed: true, snapshot: snap(retried) };
+          }
+          nodes[path] = out;
+          return { committed: true, snapshot: snap(out) };
         },
       };
     },
@@ -250,17 +257,20 @@ test("apply: request node vanished → request_vanished, lock not written", asyn
   assert.equal(lockWrites, 0);
 });
 
-test("apply: a concurrent writer wins the request → request_qty_mismatch, lock not written", async () => {
-  // Committed and present, but the stored qty is 3 while we asked for 2. The lock
-  // must NOT be set to 2 — that would claim units the request no longer asks for.
+test("apply: a concurrent write RETRIES the handler and the resize still lands", () => {
+  // RTDB re-invokes the transaction handler against the new value rather than
+  // committing a divergent one, so `request_qty_mismatch` is DEFENSIVE ONLY —
+  // unreachable through the real API. This pins the behaviour that actually
+  // occurs: someone else writes, the handler runs again, our value wins, and no
+  // drop is recorded. (CodeRabbit, PR #286 — the earlier version of this test
+  // synthesised a committed-but-divergent snapshot, which the API cannot produce.)
   const nodes = { "orders/R001-1": { qty: 1, autoRefill: true }, "refill_requests/rr1": { qty: 1, status: "open" } };
-  let lockWrites = 0;
-  const r = await applyResizes({
-    db: fakeDb(nodes, { raceQty: 3 }), resizes: [RZ], startedAt: START,
-    setFn: async () => { lockWrites++; return true; },
+  const opts = { raceOnce: /^refill_requests\//, raceOnce_value: { qty: 3 } };
+  return applyResizes({ db: fakeDb(nodes, opts), resizes: [RZ], startedAt: START, setFn: OK_SET }).then((r) => {
+    assert.equal(r.resized, 1, "the retry commits our value, so the resize lands");
+    assert.deepEqual(r.resizeDrops, {}, "a retry is not a drop");
+    assert.equal(nodes["refill_requests/rr1"].qty, 2, "our qty wins after the retry");
+    assert.equal(nodes["refill_requests/rr1"].resizedFrom, 3,
+      "resizedFrom comes from the AUTHORITATIVE in-transaction value (3), not the planning snapshot (1)");
   });
-  assert.equal(r.resized, 0);
-  assert.deepEqual(r.resizeDrops, { request_qty_mismatch: 1 });
-  assert.equal(lockWrites, 0, "lock must not follow a qty we did not write");
-  assert.equal(nodes["refill_requests/rr1"].qty, 3, "the concurrent value stands");
 });

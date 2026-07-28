@@ -114,8 +114,13 @@ async function drawRefillNumber(db, nowMs) {
 //   request_txn_error    — the request transaction threw
 //   request_not_open     — callback returned undefined: status !== "open"
 //   request_vanished     — committed against a null node
-//   request_qty_mismatch — committed, but the stored qty is not what we asked for
-//                          (a concurrent writer won)
+//   request_qty_mismatch — DEFENSIVE ONLY, unreachable through the real API: RTDB
+//                          RETRIES the handler against a concurrent write rather
+//                          than committing a divergent value, so a committed
+//                          snapshot always holds what the callback returned. Kept
+//                          because the lock must never follow a qty we did not
+//                          write, and a future SDK change must fail loudly rather
+//                          than silently. (CodeRabbit, PR #286.)
 //   lock_write_failed    — request+order moved but the lock write was rejected;
 //                          the one drop that leaves state INCONSISTENT for a scan
 function resizeDropReason(stage, { threw = false, committed = false, exists = false, qty, want } = {}) {
