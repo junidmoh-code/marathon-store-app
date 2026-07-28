@@ -267,8 +267,18 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   // THE decisive probe — see header. Identical value in, re-read out.
   let probeOk = true; const probeDetail = [];
   for (const code of Object.values(codes)) {
-    const before = idx[code]?.size;
+    // FRESH read immediately before the set — never the `idx` snapshot taken
+    // earlier. Using the stale value made this probe capable of CLOBBERING a
+    // concurrent barcode-size change with old data and then reporting "ok",
+    // because the read-back compared against the same stale value it wrote. The
+    // entire safety argument for this probe is "identical value in, zero content
+    // change", and that only holds if the value is current. (CodeRabbit, PR #284.)
     try {
+      const before = await g(`barcodes/${code}/size`);
+      if (before == null) {
+        probeOk = false; probeDetail.push(`${code} MISSING-SIZE`);
+        continue;                                  // nothing safe to write back
+      }
       await db.ref(`barcodes/${code}/size`).set(before);
       const after = await g(`barcodes/${code}/size`);
       if (after !== before) { probeOk = false; probeDetail.push(`${code} CHANGED(${before}→${after})`); }
