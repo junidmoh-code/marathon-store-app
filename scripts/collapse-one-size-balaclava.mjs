@@ -1,0 +1,244 @@
+// ─── ONE-SIZE COLLAPSE — Nike Pro Hyperwarm Balaclava Black ──────────────────
+//
+// ⚠️  THE APPLY PATH IS UNWIRED BY DESIGN. ⚠️
+//
+// This build can ONLY dry-run. It reads live data, runs every pre-flight
+// assertion, prints the complete write plan and captures a rollback snapshot —
+// and then stops. Passing --apply reaches a deliberate dead end; it does NOT
+// write. Wiring the apply path is a separate, conscious edit to be made close to
+// a scheduled run, reviewed, and not left sitting on disk between runs.
+//
+// The one exception, and it is intentional: the pre-flight WRITE-BACK PROBE
+// writes each barcode index record's EXISTING size value back verbatim. That is
+// a real write with zero content change, and it is the assertion the whole
+// operation depends on — see PERMISSIONS below. It re-reads to confirm the value
+// is unchanged and fails loudly if it is not.
+//
+// ── WHAT THIS DOES (runbook steps 0d → 3) ────────────────────────────────────
+// A product that is physically one-size but was created before the app offered a
+// free-size option carries a multi-size run. Its stock sits in ONE size cell, its
+// barcodes are minted per size, and collapsing `sizes` to ["_"] naively would
+// orphan the stock AND make every physical label unscannable. This migrates it
+// properly:
+//
+//   Step 1  move all units from the holding size cell → the "_" cell, per
+//           location, as PAIRED adjustments (out-then-in), so the ledger never
+//           shows the stock existing twice.
+//   Step 2  ONE atomic multi-path update: products/{pid}/sizes → ["_"], the
+//           barcodes map → a single "_" slot, and EVERY barcode index record's
+//           `size` → "_".
+//   Step 3  target rows: the new one-size policy, plus target 0 ("excluded") on
+//           the now-dead size rows.
+//
+// ── WHY STEP 2 MUST BE ONE ATOMIC UPDATE ─────────────────────────────────────
+// Both orderings break scanning if done as two writes:
+//   • sizes first    → realSizes() is [], index still says "L" → sizeOk =
+//                      ("L" == null) → every code fails size_unavailable.
+//   • barcodes first → index says "_" → size = null, but realSizes() is still
+//                      ["L"] → ["L"].includes(null) → every code fails.
+// Only landing them together avoids a window where the product cannot be sold.
+// (POS: marathon-pos-app src/scanner/resolveScan.js + src/products/oneSize.js.)
+//
+// ── PERMISSIONS ──────────────────────────────────────────────────────────────
+// The live rule at /barcodes/$code is CREATE-ONLY:
+//     ".write": "... && !data.exists()"
+// It cascades to writes at barcodes/{code}/size, because `data` in that rule's
+// context is the $code record, which exists. So Step 2 is IMPOSSIBLE under client
+// auth and, since multi-path updates are all-or-nothing, would fail entirely
+// rather than partially land.
+//
+// This script therefore runs on the ADMIN SDK (Application Default Credentials),
+// which bypasses rules. NO RULES CHANGE IS NEEDED OR WANTED — the create-only
+// rule stops a till or an admin browser from silently repointing a barcode, and
+// relaxing it for a one-off migration would weaken a live protection forever.
+// The write-back probe proves the credential can do it BEFORE any stock moves.
+//
+// ── OPERATOR STEPS THIS SCRIPT DOES NOT PERFORM ──────────────────────────────
+// 0a pause the engine   — set /receiving_session/active = true (refill-scan.cjs
+//                         stands the engine down completely while it is true;
+//                         refillHealthScan runs every 15 min regardless of shop
+//                         hours, so a trading-hours freeze alone does NOT cover
+//                         this). ASSERTED here, not set — pausing stays a
+//                         conscious act.
+// 0b drain in-flight    — resolve/cancel any open refill order for the product.
+// 0c clear Display Check— the ACTIVE check is keyed {pid}__{size}; after the
+//                         collapse new sales key {pid}___ and the old one can
+//                         never be matched or completed again.
+// 4  verify             — SCAN EVERY PHYSICAL LABEL at the till. The read-side
+//                         checks are necessary but not sufficient; the scan is
+//                         the only thing that proves the index repair worked.
+// 5  resume             — /receiving_session/active = false.
+//
+// ── NEXT TARGET ──────────────────────────────────────────────────────────────
+// p1780602531099 "Nike Pro Therma-FIT Hyperwarm Hood Grey Camo" — 201 units all
+// in "M" on a six-size run. Same shape: change PID / NAME / FROM_SIZE / KEEP_CODE
+// and re-derive the policy. Run the balaclava first; it is smaller and its result
+// validates the procedure.
+//
+// Usage:  node scripts/collapse-one-size-balaclava.mjs
+//         SNAPSHOT_PATH=/somewhere/rollback.json node scripts/collapse-one-size-balaclava.mjs
+//
+// The rollback snapshot is written OUTSIDE the repo by default (os.tmpdir()) and
+// is regenerated on every run — it is a point-in-time artifact, never committed.
+
+import { createRequire } from "module";
+import { writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+
+const require = createRequire(new URL("../functions/package.json", import.meta.url));
+const admin = require("firebase-admin");
+admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
+const db = admin.database();
+
+// ── target product + policy ──────────────────────────────────────────────────
+const PID   = "p1780602630945";
+const NAME  = "Nike Pro Hyperwarm Balaclava Black";
+const FROM_SIZE = "L";                 // the size cell holding all the stock
+const KEEP_CODE = "00008511";          // the L code owns the "_" slot: every physical label in the field is L,
+                                       // so reprints reproduce the code already on the stock
+const LOCS  = ["central", "hub2", "marathon-pine"];
+const POLICY = { "marathon-pe": { target: 25, reorderPoint: 5 }, hub2: { target: 20, reorderPoint: 5 } };
+const EXCLUDE_SIZES = ["S", "M", "L"];
+const EXPECTED_TOTAL = 188;            // asserted — a changed quantity must fail, not silently migrate
+
+const APPLY = process.argv.includes("--apply");
+const SNAP  = process.env.SNAPSHOT_PATH || join(tmpdir(), `rollback-${PID}-${Date.now()}.json`);
+const NOW = new Date().toISOString();
+const g = (p) => db.ref(p).once("value").then((s) => s.val());
+
+const asserts = [];
+const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return ok; };
+
+(async () => {
+  console.log(`\n${"═".repeat(78)}\n  ONE-SIZE COLLAPSE — ${NAME}\n  mode: ${APPLY ? "APPLY REQUESTED (apply path is UNWIRED — will not write)" : "DRY RUN"}\n${"═".repeat(78)}`);
+
+  const product = await g(`products/${PID}`);
+  if (!product) { console.error(`ABORT: products/${PID} not found`); process.exit(1); }
+  const codes = { ...(product.barcodes || {}) };
+  const stock = {};
+  for (const loc of [...LOCS, "marathon-pe"]) stock[loc] = (await g(`stock/${loc}/${PID}`)) || {};
+
+  // ── rollback snapshot (captured BEFORE any assertion writes) ───────────────
+  const idx = {};
+  for (const code of Object.values(codes)) idx[code] = await g(`barcodes/${code}`);
+  const targetsNow = {};
+  for (const loc of Object.keys(POLICY)) targetsNow[loc] = (await g(`stock_targets/${loc}/${PID}`)) || null;
+  const snapshot = {
+    capturedAt: NOW, productId: PID, name: NAME,
+    product: { sizes: product.sizes ?? null, barcodes: product.barcodes ?? null },
+    barcodeIndex: idx, stockCells: stock, stockTargets: targetsNow,
+  };
+
+  // ── PRE-FLIGHT (step 0d) ───────────────────────────────────────────────────
+  console.log("\n── PRE-FLIGHT ─────────────────────────────────────────────────────────────");
+  const cred = admin.app().options.credential;
+  chk("credential is Admin SDK (rules bypassed)", !!cred, cred ? cred.constructor.name : "none");
+
+  const session = await g("receiving_session");
+  chk("0a engine paused (receiving_session.active === true)", session?.active === true,
+      `receiving_session.active = ${JSON.stringify(session?.active)}`);
+
+  const openPe  = (await g(`refill_engine/open/marathon-pe/${PID}`)) || {};
+  const openHub = (await g(`refill_engine/open/hub2/${PID}`)) || {};
+  const nOpen = Object.keys(openPe).length + Object.keys(openHub).length;
+  chk("0b no open refill locks for this product", nOpen === 0,
+      nOpen ? `pe=${JSON.stringify(Object.keys(openPe))} hub2=${JSON.stringify(Object.keys(openHub))}` : "none");
+
+  const dcActive = (await g("displayChecks_active/marathon-pe")) || {};
+  const dcHits = Object.keys(dcActive).filter((k) => k.startsWith(PID));
+  chk("0c no ACTIVE size-keyed Display Check", dcHits.length === 0, dcHits.length ? dcHits.join(", ") : "none");
+
+  chk("product still declares the expected size", JSON.stringify(product.sizes) === JSON.stringify([FROM_SIZE]),
+      `sizes = ${JSON.stringify(product.sizes)}`);
+  chk("all six barcode slots present", Object.keys(codes).length === 6, Object.keys(codes).sort().join(","));
+  chk("KEEP_CODE is one of this product's codes", Object.values(codes).includes(KEEP_CODE), KEEP_CODE);
+
+  const idxOk = Object.values(codes).every((code) => idx[code] && idx[code].productId === PID);
+  chk("every index record exists and points at this product", idxOk,
+      Object.entries(codes).map(([s, c]) => `${s}:${c}→${idx[c]?.size ?? "(none)"}`).join("  "));
+
+  // THE decisive probe — see header. Identical value in, re-read out.
+  let probeOk = true; const probeDetail = [];
+  for (const code of Object.values(codes)) {
+    const before = idx[code]?.size;
+    try {
+      await db.ref(`barcodes/${code}/size`).set(before);
+      const after = await g(`barcodes/${code}/size`);
+      if (after !== before) { probeOk = false; probeDetail.push(`${code} CHANGED(${before}→${after})`); }
+      else probeDetail.push(`${code}:ok`);
+    } catch (e) { probeOk = false; probeDetail.push(`${code} DENIED(${e.code || e.message})`); }
+  }
+  chk("barcode index is WRITABLE (write-back probe, all codes)", probeOk, probeDetail.join(" "));
+
+  const total = LOCS.reduce((t, l) => t + Math.max(stock[l]?.[FROM_SIZE]?.qty || 0, 0), 0);
+  chk(`network total in size ${FROM_SIZE} = ${EXPECTED_TOTAL}`, total === EXPECTED_TOTAL,
+      `${total} units across ${LOCS.join(", ")}`);
+
+  const transfers = (await g("transfers")) || {};
+  const tHits = Object.entries(transfers).filter(([, x]) => x && x.status !== "received" && JSON.stringify(x).includes(PID));
+  chk("no OPEN transfer references this product", tHits.length === 0, tHits.map(([i]) => i).join(",") || "none");
+
+  for (const a of asserts) console.log(`  ${a.ok ? "PASS" : "FAIL"}  ${a.name.padEnd(52)} ${a.detail}`);
+  const blocked = asserts.filter((a) => !a.ok);
+
+  // ── WRITE PLAN ─────────────────────────────────────────────────────────────
+  console.log(`\n── STEP 1 · migrate ${FROM_SIZE} → "_" (paired adjustments) ────────────────`);
+  const step1 = [];
+  for (const loc of LOCS) {
+    const n = Math.max(stock[loc]?.[FROM_SIZE]?.qty || 0, 0);
+    if (!n) { console.log(`  ${loc}: 0 units — skipped`); continue; }
+    const haveUs = Math.max(stock[loc]?._?.qty || 0, 0);
+    const base = { productId: PID, actor: "system:one-size-collapse", actorRole: "admin", ts: NOW, appliedAt: NOW };
+    step1.push(
+      { id: `onesize_${PID}_${loc}_out_${FROM_SIZE}`, mv: { ...base, type: "adjustment", size: FROM_SIZE, qty: n,
+          from: loc, before: { [loc]: n }, after: { [loc]: 0 },
+          reason: `Collapse to one-size: move size ${FROM_SIZE} → _` } },
+      { id: `onesize_${PID}_${loc}_in_us`, mv: { ...base, type: "adjustment", size: "_", qty: n,
+          to: loc, before: { [loc]: haveUs }, after: { [loc]: haveUs + n },
+          reason: `Collapse to one-size: receive from size ${FROM_SIZE}` } },
+    );
+    console.log(`  ${loc.padEnd(14)} ${FROM_SIZE}: ${n} → 0   |   _: ${haveUs} → ${haveUs + n}`);
+  }
+  console.log(`  → ${step1.length} movements (${step1.length / 2} paired), ${total} units`);
+  console.log("  ids (deterministic — a re-run is a no-op via applyMovement idempotency):");
+  step1.forEach((m) => console.log(`     ${m.id}`));
+
+  console.log("\n── STEP 2 · ONE atomic update (sizes + barcode index) ─────────────────────");
+  const step2 = { [`products/${PID}/sizes`]: ["_"], [`products/${PID}/barcodes`]: { _: KEEP_CODE } };
+  for (const code of Object.values(codes)) step2[`barcodes/${code}/size`] = "_";
+  for (const [p, v] of Object.entries(step2)) console.log(`  ${p.padEnd(46)} = ${JSON.stringify(v)}`);
+  console.log(`  → ${Object.keys(step2).length} paths, all-or-nothing`);
+
+  console.log("\n── STEP 3 · target rows ───────────────────────────────────────────────────");
+  const stamp = { source: "onesize_collapse_policy_v1", batchId: `collapse-${PID}`, approvedBy: "owner", approvedAt: NOW };
+  const step3 = {};
+  for (const [loc, pol] of Object.entries(POLICY)) {
+    step3[`stock_targets/${loc}/${PID}/_`] = { target: pol.target, minQty: Math.ceil(pol.target / 2), reorderPoint: pol.reorderPoint, ...stamp };
+    for (const s of EXCLUDE_SIZES) step3[`stock_targets/${loc}/${PID}/${s}`] = { target: 0, minQty: 0, ...stamp, source: "excluded" };
+  }
+  for (const [p, v] of Object.entries(step3)) console.log(`  ${p.padEnd(46)} = ${JSON.stringify(v)}`);
+
+  // ── snapshot ───────────────────────────────────────────────────────────────
+  writeFileSync(SNAP, JSON.stringify(snapshot, null, 2));
+  console.log(`\n── ROLLBACK SNAPSHOT ──────────────────────────────────────────────────────`);
+  console.log(`  written to ${SNAP}`);
+  console.log(`  captures: sizes, barcodes map, ${Object.keys(idx).length} index records, ${Object.keys(stock).length} stock cell groups, target rows`);
+
+  console.log(`\n${"═".repeat(78)}`);
+  console.log(`  TOTAL WRITES PLANNED: ${step1.length} movements + ${step1.length} cell-updates + ${Object.keys(step2).length} paths + ${Object.keys(step3).length} target rows`);
+  if (blocked.length) {
+    console.log(`  ${blocked.length} PRE-FLIGHT ASSERTION(S) FAILED — would ABORT before any write:`);
+    blocked.forEach((b) => console.log(`     - ${b.name} — ${b.detail}`));
+  } else {
+    console.log("  all pre-flight assertions pass");
+  }
+  if (APPLY) {
+    console.log("\n  APPLY PATH IS UNWIRED BY DESIGN — nothing was written.");
+    console.log("  Wire it deliberately before a scheduled run (see the header), then re-run");
+    console.log("  this dry run first and confirm the plan is identical.");
+  } else {
+    console.log("  DRY RUN — nothing written.");
+  }
+  process.exit(blocked.length ? 1 : 0);
+})().catch((e) => { console.error(e); process.exit(1); });
