@@ -599,6 +599,10 @@ async function runScan() {
 
     // ── exceptions snapshot + hourly confidence ──────────────────────────────
     counts.exceptions = Object.values(plan.exceptions).reduce((t, e) => t + e.count, 0);
+    // Plan-side resize suppression (engine stats) — surfaced through the SAME
+    // counts object as resizeDropped so both halves of the resize pipeline are
+    // visible on one run record, present only when non-zero.
+    if (plan.stats?.resizeSuppressed) counts.resizeSuppressed = plan.stats.resizeSuppressed;
     await safeSet(db, "stock_exceptions/latest", { computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions }, "exceptions snapshot");
     if (new Date(nowMs).getUTCMinutes() < 15) {
       const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex, products });
