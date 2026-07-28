@@ -8,6 +8,7 @@ import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
+import { getDeviceId } from "./device/deviceId";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./utils/productCategory";
@@ -4882,6 +4883,22 @@ function AdminView({ products, orders, onExit }) {
       // false per the reader contract in SCHEMA.md. Clothing NEVER has a
       // shoebox — force false regardless of the form state.
       newProduct.hasShoeBoxOption = isClothing ? false : !!form.hasShoeBoxOption;
+      // ATTRIBUTION (createdBy): who + which device saved this product. Store the
+      // OPAQUE uid only — NOT the email: /products is readable by every signed-in
+      // staff member, so an email on every record would broadcast staff identity
+      // and duplicate PII catalogue-wide. The uid resolves to a name via the
+      // admin-gated /users/{uid} record at display time. deviceId is a persistent
+      // per-browser id (the store-app has no server device identity), so the same
+      // tablet is recognizable even under a shared PIN login. Purely additive,
+      // written once at creation; NEVER gates the save (every field tolerates
+      // null: signed-out/anon → null uid, private-mode browser → null deviceId).
+      // Products created before this ship carry no createdBy — readers treat it
+      // as unknown.
+      newProduct.createdBy = {
+        uid: auth.currentUser?.uid ?? null,
+        deviceId: getDeviceId(),
+        at: serverNowMs(),
+      };
       // POS Phase 2: reserve the next sequential sku + barcode atomically
       // BEFORE the product write so two concurrent adds can't collide. If
       // reservation fails (counter exhausted or RTDB error), surface the
