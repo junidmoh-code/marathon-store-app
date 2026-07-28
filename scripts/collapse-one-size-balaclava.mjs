@@ -88,7 +88,15 @@ import { join } from "path";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
-admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
+// Pass Application Default Credentials EXPLICITLY. app.options.credential only
+// reflects options actually handed to initializeApp, so relying on implicit ADC
+// left the pre-flight assertion below reading a field that was never populated —
+// it passed by coincidence, not because anything had been verified.
+// (CodeRabbit, PR #284.)
+admin.initializeApp({
+  credential: admin.credential.applicationDefault(),
+  databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app",
+});
 const db = admin.database();
 
 // ── target product + policy ──────────────────────────────────────────────────
@@ -107,13 +115,30 @@ const KEEP_CODE = "00008511";          // the L code owns the "_" slot: every ph
 // (CodeRabbit, PR #284.)
 const LOCS  = ["central", "hub2", "marathon-pe", "marathon-pine"];
 const POLICY = { "marathon-pe": { target: 25, reorderPoint: 5 }, hub2: { target: 20, reorderPoint: 5 } };
-const EXCLUDE_SIZES = ["S", "M", "L"];
+// EXCLUDE_SIZES is DERIVED from the captured target rows at run time, never
+// hardcoded — the same lesson as LOCS: the data is the source of truth, not a
+// list in this file. A hardcoded S/M/L would silently leave any other legacy
+// size key (XL, 4XL, a typo'd key) alive in /stock_targets, pointing at a size
+// the product no longer declares. Assigned in main() once targetsNow is read.
+// (CodeRabbit, PR #284.)
+let EXCLUDE_SIZES = [];
 const EXPECTED_TOTAL = 188;            // asserted — a changed quantity must fail, not silently migrate
 
 const APPLY = process.argv.includes("--apply");
 const SNAP  = process.env.SNAPSHOT_PATH || join(tmpdir(), `rollback-${PID}-${Date.now()}.json`);
 const NOW = new Date().toISOString();
 const g = (p) => db.ref(p).once("value").then((s) => s.val());
+
+// A privileged (Admin SDK) credential is one that can mint its own access
+// tokens — that is precisely what lets it bypass the /barcodes create-only rule.
+// Exported shape kept trivial so it can be exercised against a stub app: a
+// client-auth or credential-less app has no such object and this returns false.
+// The WRITE-BACK PROBE further down remains the empirical proof; this assertion
+// exists to fail EARLY and legibly when the script is run under the wrong auth.
+export function hasPrivilegedCredential(app) {
+  const c = app && app.options && app.options.credential;
+  return !!c && typeof c.getAccessToken === "function";
+}
 
 const asserts = [];
 const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return ok; };
@@ -132,6 +157,11 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   for (const code of Object.values(codes)) idx[code] = await g(`barcodes/${code}`);
   const targetsNow = {};
   for (const loc of Object.keys(POLICY)) targetsNow[loc] = (await g(`stock_targets/${loc}/${PID}`)) || null;
+  // Every non-"_" size key that actually exists under either policy location.
+  EXCLUDE_SIZES = [...new Set(Object.values(targetsNow)
+    .flatMap((bySize) => Object.keys(bySize || {}))
+    .filter((k) => k !== "_"))].sort();
+
   const snapshot = {
     capturedAt: NOW, productId: PID, name: NAME,
     product: { sizes: product.sizes ?? null, barcodes: product.barcodes ?? null },
@@ -160,8 +190,10 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   // ── PRE-FLIGHT (step 0d) ───────────────────────────────────────────────────
   console.log("\n── PRE-FLIGHT ─────────────────────────────────────────────────────────────");
   chk("rollback snapshot on disk and read back BEFORE any write", snapOk, snapDetail);
+  const credOk = hasPrivilegedCredential(admin.app());
   const cred = admin.app().options.credential;
-  chk("credential is Admin SDK (rules bypassed)", !!cred, cred ? cred.constructor.name : "none");
+  chk("credential is a privileged Admin SDK credential (rules bypassed)", credOk,
+      credOk ? `${cred.constructor.name} (getAccessToken present)` : "NO privileged credential — running under client auth?");
 
   const session = await g("receiving_session");
   chk("0a engine paused (receiving_session.active === true)", session?.active === true,
@@ -185,7 +217,11 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   chk("product still declares the expected size", JSON.stringify(product.sizes) === JSON.stringify([FROM_SIZE]),
       `sizes = ${JSON.stringify(product.sizes)}`);
   chk("all six barcode slots present", Object.keys(codes).length === 6, Object.keys(codes).sort().join(","));
-  chk("KEEP_CODE is one of this product's codes", Object.values(codes).includes(KEEP_CODE), KEEP_CODE);
+  // Not "one of the codes" — it must be the code minted for the SIZE THAT HOLDS
+  // THE STOCK, because every physical label in the field carries that one. Put a
+  // different code in the "_" slot and reprints stop matching the stock.
+  chk(`KEEP_CODE is the ${FROM_SIZE}-size barcode`, codes[FROM_SIZE] === KEEP_CODE,
+      `codes.${FROM_SIZE}=${codes[FROM_SIZE]} vs KEEP_CODE=${KEEP_CODE}`);
 
   const idxOk = Object.values(codes).every((code) => idx[code] && idx[code].productId === PID);
   chk("every index record exists and points at this product", idxOk,
@@ -227,6 +263,13 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   const plannedTotal = planned.reduce((t, l) => t + stock[l][FROM_SIZE].qty, 0);
   chk("Step 1 plan moves every unit counted in the total", plannedTotal === total,
       `${plannedTotal} of ${total} units, from ${planned.join(", ") || "(none)"}`);
+
+  // Mirror of the orphan guard: every non-"_" target key present must be in the
+  // exclusion set, or a row survives pointing at a size the product has dropped.
+  const liveKeys = [...new Set(Object.values(targetsNow).flatMap((b) => Object.keys(b || {})).filter((k) => k !== "_"))].sort();
+  const unhandled = liveKeys.filter((k) => !EXCLUDE_SIZES.includes(k));
+  chk("every non-\"_\" target key is covered by the exclusions", unhandled.length === 0,
+      liveKeys.length ? `covering ${EXCLUDE_SIZES.join(",")}${unhandled.length ? ` — UNHANDLED: ${unhandled.join(",")}` : ""}` : "no legacy size rows exist");
 
   const transfers = (await g("transfers")) || {};
   const tHits = Object.entries(transfers).filter(([, x]) => x && x.status !== "received" && JSON.stringify(x).includes(PID));
@@ -290,7 +333,14 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
     console.log("  Wire it deliberately before a scheduled run (see the header), then re-run");
     console.log("  this dry run first and confirm the plan is identical.");
   } else {
-    console.log("  DRY RUN — nothing written.");
+    // NOT "nothing written": the rollback snapshot was written to disk, and the
+    // write-back probe performed six real (no-op, identical-value) writes to the
+    // barcode index. Saying otherwise would be the kind of comfortable-but-false
+    // claim this whole script exists to avoid. (CodeRabbit, PR #284.)
+    console.log("  DRY RUN — no MIGRATION write performed.");
+    console.log(`     what WAS written: the rollback snapshot (${SNAP}),`);
+    console.log("     and the write-back probe re-wrote each barcode index size to its EXISTING");
+    console.log("     value (verified unchanged). No stock, target, product or index CHANGE.");
   }
   process.exit(blocked.length ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
