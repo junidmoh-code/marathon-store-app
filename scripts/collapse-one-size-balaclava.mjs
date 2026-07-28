@@ -155,8 +155,20 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   // ── rollback snapshot (captured BEFORE any assertion writes) ───────────────
   const idx = {};
   for (const code of Object.values(codes)) idx[code] = await g(`barcodes/${code}`);
+  // WHOLE-TREE sweep, not Object.keys(POLICY). Target rows can exist at any
+  // location with a targets tree — today that is hub2, marathon-pe AND trophy,
+  // and trophy is in neither POLICY nor LOCS. A legacy S/M/L row there would be
+  // invisible to EXCLUDE_SIZES, unflagged by the mirror, and left un-cleaned by
+  // Step 3 — the third instance of the orphan class this file already fixed for
+  // /stock and for Display Checks. Sweep the tree and let the data say where the
+  // rows are. (CodeRabbit, PR #284.)
+  const allTargets = (await g("stock_targets")) || {};
   const targetsNow = {};
-  for (const loc of Object.keys(POLICY)) targetsNow[loc] = (await g(`stock_targets/${loc}/${PID}`)) || null;
+  for (const loc of Object.keys(allTargets)) {
+    const rows = allTargets[loc]?.[PID];
+    if (rows) targetsNow[loc] = rows;
+  }
+  for (const loc of Object.keys(POLICY)) if (!(loc in targetsNow)) targetsNow[loc] = null;
   // Every non-"_" size key that actually exists under either policy location.
   EXCLUDE_SIZES = [...new Set(Object.values(targetsNow)
     .flatMap((bySize) => Object.keys(bySize || {}))
@@ -296,12 +308,25 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   // between snapshot capture and this check, nor a bug in the shared derivation.
   // The orphan guard above is the standard: it re-reads /stock in full.
   // (CodeRabbit, PR #284.)
+  const allTargetsFresh = (await g("stock_targets")) || {};
   const targetsFresh = {};
-  for (const loc of Object.keys(POLICY)) targetsFresh[loc] = (await g(`stock_targets/${loc}/${PID}`)) || null;
+  for (const loc of Object.keys(allTargetsFresh)) {
+    const rows = allTargetsFresh[loc]?.[PID];
+    if (rows) targetsFresh[loc] = rows;
+  }
   const liveKeys = [...new Set(Object.values(targetsFresh).flatMap((b) => Object.keys(b || {})).filter((k) => k !== "_"))].sort();
   const unhandled = liveKeys.filter((k) => !EXCLUDE_SIZES.includes(k));
   chk("every non-\"_\" target key is covered by the exclusions", unhandled.length === 0,
       liveKeys.length ? `covering ${EXCLUDE_SIZES.join(",")}${unhandled.length ? ` — UNHANDLED: ${unhandled.join(",")}` : ""}` : "no legacy size rows exist");
+
+  // Step 3 only WRITES at POLICY locations, so a legacy row anywhere else would
+  // survive the migration pointing at a size the product no longer declares.
+  // Same shape as the /stock orphan guard: sweep, then fail loudly.
+  const targetOrphans = Object.entries(targetsFresh)
+    .filter(([loc, rows]) => !Object.keys(POLICY).includes(loc) && Object.keys(rows || {}).some((k) => k !== "_"))
+    .map(([loc, rows]) => `${loc}[${Object.keys(rows).filter((k) => k !== "_").join(",")}]`);
+  chk("no target rows outside the locations Step 3 cleans", targetOrphans.length === 0,
+      targetOrphans.length ? `UNCLEANED AT ${targetOrphans.join(" ")}` : `rows exist only at ${Object.keys(targetsFresh).join(", ") || "(none)"}`);
 
   const transfers = (await g("transfers")) || {};
   const tHits = Object.entries(transfers).filter(([, x]) => x && x.status !== "received" && JSON.stringify(x).includes(PID));
