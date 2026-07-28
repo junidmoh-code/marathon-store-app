@@ -327,6 +327,15 @@ function computeRefillPlan(snapshot) {
   // ── reconcile: close locks whose intent finished; flag stale ones (L6) ─────
   const closes = [];
   const resizes = [];   // owner approval 2026-07-13: open requests track reality, not history
+  // PLAN-SIDE OBSERVABILITY (2026-07-28). PR #286 instrumented the APPLY drops,
+  // but this suppression happens during PLANNING and reported nothing at all —
+  // the plan simply came back empty. That gap cost a full day of investigation
+  // aimed at the wrong half of the pipeline: the apply path was working
+  // correctly throughout while the planner silently discarded every store-leg
+  // resize. Same reason discipline as counts.resizeDropped, so both halves of
+  // the pipeline are legible from the run record.
+  const resizeSuppressed = {};
+  const noteSuppressed = (why) => { resizeSuppressed[why] = (resizeSuppressed[why] || 0) + 1; };
   const stuckRefills = [];
   // Orders with PHYSICAL fulfilment evidence in the ledger (a movement linked
   // to them) — their status write may still be in flight, so the PLAN skips
@@ -334,8 +343,57 @@ function computeRefillPlan(snapshot) {
   // safety boundary is the conditional transaction in refill-scan.cjs that
   // re-reads the order live at write time. Never relax that guard because
   // this set exists (it is built from the same stale snapshot).
-  const physicallyTouched = new Set();
-  for (const m of movements) if (m?.link?.orderId) physicallyTouched.add(m.link.orderId);
+  // ── LEDGER-LINK IDENTITY (fixed 2026-07-28) ────────────────────────────────
+  // This was a bare `Set` of movement link.orderId values, asked `.has(orderId)`,
+  // and treated a match as proof that a pick had physically happened. That broke
+  // the invariant stated at the top of this file (line 17): "R-numbers are
+  // daily-recycled and are never identity." An order id is a LABEL the system
+  // reissues every single day — R001..R999 — so across the 45-day movement
+  // window the same string names dozens of unrelated orders.
+  //
+  // Measured on live data the day this was fixed: 6,160 movements in the window
+  // carried a link.orderId, and ZERO of them were a genuine in-flight signal for
+  // any open lock. "R026-1" alone appeared on 9 movements spanning 10 days,
+  // every one a different product. 69 of 180 open store-leg locks (38%) were
+  // flagged in-flight by a stranger's movement and could not be resized.
+  //
+  // That is also why the failure GREW: on 2026-07-13 the window held a few days
+  // of movements and 161 resizes landed; every day after added ~1,000 more
+  // movements minting more label collisions, until store-leg resizes stopped
+  // almost entirely. No commit caused it — the window filled up.
+  //
+  // The fix is the identity check this file already uses elsewhere. orderIsOurs
+  // (below) matches product + size + createdAt precisely because a label is not
+  // an identity; this index now applies the same rule, plus an AGE BOUND: a
+  // movement cannot belong to an order that did not exist when it was written.
+  // The anchor is entry.orderCreatedAt — the value stored on the LOCK, which
+  // orderIsOurs already trusts — never order.createdAt, which may belong to a
+  // recycled node.
+  const touchedByOrder = new Map();
+  for (const m of movements) {
+    const oid = m?.link?.orderId;
+    if (!oid) continue;
+    const arr = touchedByOrder.get(oid) || [];
+    arr.push({ pid: m.productId, sizeKey: encodeSizeKey(m.size), ts: m.ts || m.appliedAt || "" });
+    touchedByOrder.set(oid, arr);
+  }
+  // True only when a movement plausibly belongs to THIS lock's order: same
+  // product, same size, and written at or after the order existed.
+  //
+  // NO ANCHOR → NOT TOUCHED, and that branch is unreachable in the resize path
+  // by construction: a lock carrying an orderId whose orderCreatedAt does not
+  // match its order node fails orderIsOurs, which makes orderLost true, which
+  // closes the lock and `continue`s well before inFlight is consulted (the
+  // zombie-leg rule, #234). So whenever this is reached with an orderId, the
+  // anchor is present and already verified against the order node. Returning
+  // false is the honest answer for the impossible case rather than a silent
+  // fallback that would quietly reintroduce label-only matching.
+  const ledgerTouched = (entry, pid, sizeKey) => {
+    if (!entry?.orderId || !entry.orderCreatedAt) return false;   // hub legs carry no order — never touched
+    const hits = touchedByOrder.get(entry.orderId);
+    if (!hits) return false;
+    return hits.some((h) => h.pid === pid && h.sizeKey === sizeKey && h.ts && h.ts >= entry.orderCreatedAt);
+  };
   const staleMs = (num(config?.staleIntentHours) || 48) * 3600e3;
   // Total on-hand for a (pid,size) across every location the scan can see.
   const networkQtyOf = (pid, size) =>
@@ -411,8 +469,9 @@ function computeRefillPlan(snapshot) {
         // pick physically happened (status write may lag). Either one parks
         // the withdraw. (clothingRefillGen deliberately NOT used — it only
         // counts UNDOs, not in-progress picks.)
-        const inFlight = (orderIsOurs && order.clothingPlanGen != null) ||
-          (entry.orderId && physicallyTouched.has(entry.orderId));
+        const inFlightPlanGen = orderIsOurs && order.clothingPlanGen != null;
+        const inFlightLedger = ledgerTouched(entry, pid, sizeKey);
+        const inFlight = inFlightPlanGen || inFlightLedger;
         const sourceLoc = entry.source || routes[dest];
         const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
@@ -457,6 +516,12 @@ function computeRefillPlan(snapshot) {
         // zero cases; the one residue (source stocked but fully reserved by a
         // sibling request) deliberately keeps its quantity until the sibling
         // resolves — deterministic, no claim-stealing between open requests.
+        // Count a resize the in-flight guard alone suppressed: everything else
+        // that blocks here (needGone / unfillable / sourceEmpty) already emits a
+        // visible close, so silence was unique to this branch.
+        if (unresolvedOurs && inFlight && !needGone && !unfillable && !sourceEmpty) {
+          noteSuppressed(inFlightPlanGen ? "in_flight_plan_gen" : "in_flight_ledger_link");
+        }
         if (unresolvedOurs && !inFlight && !needGone && !unfillable && !sourceEmpty) {
           const srcLoc2 = entry.source || routes[dest];
           const srcHave2 = srcLoc2 ? avail(cellQty(stock, srcLoc2, pid, size)) : 0;
@@ -1364,7 +1429,7 @@ function computeRefillPlan(snapshot) {
       intentsPlanned: plannedIntents.length,
       throttled: intents.length > maxIntents,
     },
-    stats: { managedCells },
+    stats: { managedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
     exceptions: {
       noTarget: cap(noTarget),
       unintroduced: cap(unintroduced, 900),
