@@ -70,11 +70,28 @@ one.
 firebase functions:list
 ```
 
-Cross-check what comes back against the functions this repo actually exports
-(`grep -oE "^exports\.[a-zA-Z0-9_]+" functions/index.js`). **Anything live that
-this repo does not export belongs to another repo — do not touch it.** That
-comparison stays true regardless of runtime; the nodejs20/nodejs22 split above is
-only a same-day shortcut and may already be stale when you read this.
+Cross-check what comes back against the functions this repo actually exports:
+
+```bash
+grep -oE "^exports\.[a-zA-Z0-9_]+" functions/index.js | sed 's/exports\.//' | sort
+```
+
+**Treat that as an INVENTORY CHECK, not a proof of ownership.** It establishes
+only one thing: *this repo does not export it*. That is NOT the same as *another
+repo owns it* — a live function absent from this source could equally be one
+deleted from source and never cleaned up, or one this grep failed to see (the
+pattern only matches top-level `exports.foo =` at line start, so any other export
+form is invisible to it).
+
+So the rule is: **anything live that this repo does not export is UNRESOLVED and
+must not be deleted.** Confirm what it is — check the other repo's source, or ask
+— before excluding it from this repo's scope. Never let "not in my grep" become
+"safe to remove".
+
+The durable fix is the explicit repo-owned allowlist named above (**not built**).
+Until it exists, the only real safety boundary is naming the function in the
+deploy command. The nodejs20/nodejs22 split is a same-day shortcut and may
+already be stale when you read this.
 
 If a change touches shared library code, deploy each affected function by name in
 one scoped command rather than reaching for the bare form:
@@ -130,7 +147,7 @@ Measured, same product and stock, only the row armed:
 The unit goes store → Central, then Central → hub2 when hub2 later drops to its
 point — instead of store → hub2 directly. This bypasses the Cortez protection
 ("deficit-covering units go to Hub 2, never Central") for exactly as long as the
-cell sits in its point..target band, which is the policy's normal resting state.
+cell sits in its point-to-target band, which is the policy's normal resting state.
 
 **Severity: physical churn, never starvation.** Stock consolidates at Central and
 is pulled back; nothing is lost and no shop runs dry. Do not treat it as an
