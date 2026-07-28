@@ -82,7 +82,7 @@
 // is regenerated on every run — it is a point-in-time artifact, never committed.
 
 import { createRequire } from "module";
-import { writeFileSync } from "fs";
+import { writeFileSync, readFileSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -97,7 +97,15 @@ const NAME  = "Nike Pro Hyperwarm Balaclava Black";
 const FROM_SIZE = "L";                 // the size cell holding all the stock
 const KEEP_CODE = "00008511";          // the L code owns the "_" slot: every physical label in the field is L,
                                        // so reprints reproduce the code already on the stock
-const LOCS  = ["central", "hub2", "marathon-pine"];
+// ONE AUTHORITATIVE SCOPE. Every location whose stock or locks are read must be
+// in here, and every one of them is walked by the Step 1 movement plan and the
+// pre-flight lock check. The first version read marathon-pe into `stock` but
+// left it OUT of LOCS, so its units were excluded from the total and from the
+// movement plan — nonzero stock there would have been silently orphaned the
+// moment `sizes` became ["_"]. Its L cell happens to be 0 today; that is luck,
+// not a guarantee, and the assertion below now makes the guarantee explicit.
+// (CodeRabbit, PR #284.)
+const LOCS  = ["central", "hub2", "marathon-pe", "marathon-pine"];
 const POLICY = { "marathon-pe": { target: 25, reorderPoint: 5 }, hub2: { target: 20, reorderPoint: 5 } };
 const EXCLUDE_SIZES = ["S", "M", "L"];
 const EXPECTED_TOTAL = 188;            // asserted — a changed quantity must fail, not silently migrate
@@ -117,7 +125,7 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   if (!product) { console.error(`ABORT: products/${PID} not found`); process.exit(1); }
   const codes = { ...(product.barcodes || {}) };
   const stock = {};
-  for (const loc of [...LOCS, "marathon-pe"]) stock[loc] = (await g(`stock/${loc}/${PID}`)) || {};
+  for (const loc of LOCS) stock[loc] = (await g(`stock/${loc}/${PID}`)) || {};
 
   // ── rollback snapshot (captured BEFORE any assertion writes) ───────────────
   const idx = {};
@@ -130,8 +138,28 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
     barcodeIndex: idx, stockCells: stock, stockTargets: targetsNow,
   };
 
+  // ── SNAPSHOT TO DISK *BEFORE* ANY WRITE ────────────────────────────────────
+  // The pre-flight write-back probe below performs REAL .set() calls. The first
+  // version kept the snapshot in memory until the end, so a probe failure, a
+  // crash, or an unwritable SNAPSHOT_PATH left NO rollback artifact even though
+  // writes had already happened. Nothing may be written anywhere until the
+  // rollback record exists on disk AND has been read back. (CodeRabbit, PR #284.)
+  writeFileSync(SNAP, JSON.stringify(snapshot, null, 2));
+  let snapOk = false, snapDetail = "";
+  try {
+    const back = JSON.parse(readFileSync(SNAP, "utf8"));
+    snapOk = back.productId === PID && !!back.barcodeIndex && !!back.stockCells;
+    snapDetail = `${SNAP} (${statSync(SNAP).size} bytes, ${Object.keys(back.barcodeIndex || {}).length} index records)`;
+  } catch (e) { snapDetail = `UNREADABLE: ${e.message}`; }
+  if (!snapOk) {
+    console.error(`\nABORT: rollback snapshot not on disk / not readable — ${snapDetail}`);
+    console.error("No write of any kind has occurred. Fix SNAPSHOT_PATH and re-run.");
+    process.exit(1);
+  }
+
   // ── PRE-FLIGHT (step 0d) ───────────────────────────────────────────────────
   console.log("\n── PRE-FLIGHT ─────────────────────────────────────────────────────────────");
+  chk("rollback snapshot on disk and read back BEFORE any write", snapOk, snapDetail);
   const cred = admin.app().options.credential;
   chk("credential is Admin SDK (rules bypassed)", !!cred, cred ? cred.constructor.name : "none");
 
@@ -139,11 +167,16 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   chk("0a engine paused (receiving_session.active === true)", session?.active === true,
       `receiving_session.active = ${JSON.stringify(session?.active)}`);
 
-  const openPe  = (await g(`refill_engine/open/marathon-pe/${PID}`)) || {};
-  const openHub = (await g(`refill_engine/open/hub2/${PID}`)) || {};
-  const nOpen = Object.keys(openPe).length + Object.keys(openHub).length;
-  chk("0b no open refill locks for this product", nOpen === 0,
-      nOpen ? `pe=${JSON.stringify(Object.keys(openPe))} hub2=${JSON.stringify(Object.keys(openHub))}` : "none");
+  // Locks are keyed by DESTINATION/product/size, so every location in scope must
+  // be checked — not just the two the policy happens to target. A lock anywhere
+  // means a pick may be in flight against a cell this migration is about to move.
+  const lockHits = [];
+  for (const loc of LOCS) {
+    const l = (await g(`refill_engine/open/${loc}/${PID}`)) || {};
+    for (const sk of Object.keys(l)) lockHits.push(`${loc}/${sk}`);
+  }
+  chk(`0b no open refill locks at ANY of the ${LOCS.length} locations`, lockHits.length === 0,
+      lockHits.length ? lockHits.join(", ") : `none across ${LOCS.join(", ")}`);
 
   const dcActive = (await g("displayChecks_active/marathon-pe")) || {};
   const dcHits = Object.keys(dcActive).filter((k) => k.startsWith(PID));
@@ -174,6 +207,26 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   const total = LOCS.reduce((t, l) => t + Math.max(stock[l]?.[FROM_SIZE]?.qty || 0, 0), 0);
   chk(`network total in size ${FROM_SIZE} = ${EXPECTED_TOTAL}`, total === EXPECTED_TOTAL,
       `${total} units across ${LOCS.join(", ")}`);
+
+  // ORPHAN GUARD. The migration only moves cells the Step 1 plan walks, and the
+  // plan only walks LOCS. Sweep the WHOLE /stock tree for this product+size and
+  // fail loudly if any location holding units is outside that scope — otherwise
+  // those units keep sitting in a size the product no longer declares, invisible
+  // to the app and to the engine. This is the assertion that turns "we happened
+  // to list the right locations" into a guarantee. (CodeRabbit, PR #284.)
+  const allStock = (await g("stock")) || {};
+  const holdersOutsideScope = Object.entries(allStock)
+    .filter(([loc, byPid]) => !LOCS.includes(loc) && Math.max(byPid?.[PID]?.[FROM_SIZE]?.qty || 0, 0) > 0)
+    .map(([loc, byPid]) => `${loc}:${byPid[PID][FROM_SIZE].qty}`);
+  chk(`every location holding ${FROM_SIZE} units is inside the movement plan`, holdersOutsideScope.length === 0,
+      holdersOutsideScope.length ? `ORPHANS WOULD BE LEFT AT ${holdersOutsideScope.join(", ")}` : `scope covers ${LOCS.join(", ")}`);
+
+  // And the mirror: a location in scope holding units must actually appear in the
+  // Step 1 plan (a zero cell is skipped, which is correct; a nonzero one is not).
+  const planned = LOCS.filter((l) => Math.max(stock[l]?.[FROM_SIZE]?.qty || 0, 0) > 0);
+  const plannedTotal = planned.reduce((t, l) => t + stock[l][FROM_SIZE].qty, 0);
+  chk("Step 1 plan moves every unit counted in the total", plannedTotal === total,
+      `${plannedTotal} of ${total} units, from ${planned.join(", ") || "(none)"}`);
 
   const transfers = (await g("transfers")) || {};
   const tHits = Object.entries(transfers).filter(([, x]) => x && x.status !== "received" && JSON.stringify(x).includes(PID));
@@ -219,10 +272,9 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   }
   for (const [p, v] of Object.entries(step3)) console.log(`  ${p.padEnd(46)} = ${JSON.stringify(v)}`);
 
-  // ── snapshot ───────────────────────────────────────────────────────────────
-  writeFileSync(SNAP, JSON.stringify(snapshot, null, 2));
+  // ── snapshot (already on disk — written before the pre-flight probe) ───────
   console.log(`\n── ROLLBACK SNAPSHOT ──────────────────────────────────────────────────────`);
-  console.log(`  written to ${SNAP}`);
+  console.log(`  written BEFORE any write, verified readable: ${SNAP}`);
   console.log(`  captures: sizes, barcodes map, ${Object.keys(idx).length} index records, ${Object.keys(stock).length} stock cell groups, target rows`);
 
   console.log(`\n${"═".repeat(78)}`);
