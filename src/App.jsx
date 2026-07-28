@@ -8,6 +8,7 @@ import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
+import { getDeviceId } from "./device/deviceId";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { categorize, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./utils/productCategory";
@@ -4882,6 +4883,19 @@ function AdminView({ products, orders, onExit }) {
       // false per the reader contract in SCHEMA.md. Clothing NEVER has a
       // shoebox — force false regardless of the form state.
       newProduct.hasShoeBoxOption = isClothing ? false : !!form.hasShoeBoxOption;
+      // ATTRIBUTION (createdBy): who + which device saved this product. The
+      // store-app has no server-issued device identity, so uid/email come from
+      // the signed-in account and deviceId is a persistent per-browser id
+      // (localStorage). Purely additive metadata written once at creation — it
+      // NEVER gates the save (every field tolerates null: signed-out/anon → null
+      // uid, private-mode browser → null deviceId). Product records created
+      // before this ship carry no createdBy and readers must treat it as unknown.
+      newProduct.createdBy = {
+        uid: auth.currentUser?.uid ?? null,
+        email: auth.currentUser?.email ?? null,
+        deviceId: getDeviceId(),
+        at: serverNowMs(),
+      };
       // POS Phase 2: reserve the next sequential sku + barcode atomically
       // BEFORE the product write so two concurrent adds can't collide. If
       // reservation fails (counter exhausted or RTDB error), surface the
