@@ -4883,16 +4883,19 @@ function AdminView({ products, orders, onExit }) {
       // false per the reader contract in SCHEMA.md. Clothing NEVER has a
       // shoebox — force false regardless of the form state.
       newProduct.hasShoeBoxOption = isClothing ? false : !!form.hasShoeBoxOption;
-      // ATTRIBUTION (createdBy): who + which device saved this product. The
-      // store-app has no server-issued device identity, so uid/email come from
-      // the signed-in account and deviceId is a persistent per-browser id
-      // (localStorage). Purely additive metadata written once at creation — it
-      // NEVER gates the save (every field tolerates null: signed-out/anon → null
-      // uid, private-mode browser → null deviceId). Product records created
-      // before this ship carry no createdBy and readers must treat it as unknown.
+      // ATTRIBUTION (createdBy): who + which device saved this product. Store the
+      // OPAQUE uid only — NOT the email: /products is readable by every signed-in
+      // staff member, so an email on every record would broadcast staff identity
+      // and duplicate PII catalogue-wide. The uid resolves to a name via the
+      // admin-gated /users/{uid} record at display time. deviceId is a persistent
+      // per-browser id (the store-app has no server device identity), so the same
+      // tablet is recognizable even under a shared PIN login. Purely additive,
+      // written once at creation; NEVER gates the save (every field tolerates
+      // null: signed-out/anon → null uid, private-mode browser → null deviceId).
+      // Products created before this ship carry no createdBy — readers treat it
+      // as unknown.
       newProduct.createdBy = {
         uid: auth.currentUser?.uid ?? null,
-        email: auth.currentUser?.email ?? null,
         deviceId: getDeviceId(),
         at: serverNowMs(),
       };
