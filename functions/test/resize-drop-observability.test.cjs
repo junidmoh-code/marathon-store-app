@@ -125,8 +125,13 @@ function fakeDb(nodes, opts = {}) {
           const cur = path in nodes ? nodes[path] : null;
           const out = fn(cur);
           if (out === undefined) return { committed: false, snapshot: snap(cur) };
-          nodes[path] = out;
-          return { committed: true, snapshot: snap(out) };
+          // `raceQty` models a CONCURRENT WRITER winning: the transaction commits,
+          // but the value that lands is not the one we asked for.
+          const landed = opts.raceQty != null && /^refill_requests\//.test(path)
+            ? { ...out, qty: opts.raceQty }
+            : out;
+          nodes[path] = landed;
+          return { committed: true, snapshot: snap(landed) };
         },
       };
     },
@@ -221,4 +226,41 @@ test("apply: a clean run yields an EMPTY drops object, so counts stays quiet", a
   const r = await applyResizes({ db: fakeDb(nodes), resizes: [RZ], startedAt: START, setFn: OK_SET });
   assert.equal(Object.keys(r.resizeDrops).length, 0,
     "runScan only sets counts.resizeDropped when non-empty — an empty object here is what keeps a clean run silent");
+});
+
+// ── request-side drops through the APPLY path ────────────────────────────────
+// These three were classifier-only until CodeRabbit flagged it on PR #286: the
+// reason string was pinned but the extraction of it from a real transaction
+// result was not, so a wrong field read (`r2.snapshot.val().qty` vs `r2.val()`)
+// would have gone undetected.
+
+test("apply: request transaction throws → request_txn_error, order already moved", async () => {
+  const nodes = { "orders/R001-1": { qty: 1, autoRefill: true }, "refill_requests/rr1": { qty: 1, status: "open" } };
+  const r = await applyResizes({ db: fakeDb(nodes, { throwOn: /^refill_requests\// }), resizes: [RZ], startedAt: START, setFn: OK_SET });
+  assert.equal(r.resized, 0);
+  assert.deepEqual(r.resizeDrops, { request_txn_error: 1 });
+  assert.equal(nodes["orders/R001-1"].qty, 2, "the order moved before the request threw — same inconsistency class as lock_write_failed");
+});
+
+test("apply: request node vanished → request_vanished, lock not written", async () => {
+  const nodes = { "orders/R001-1": { qty: 1, autoRefill: true } };   // no request node
+  let lockWrites = 0;
+  const r = await applyResizes({ db: fakeDb(nodes), resizes: [RZ], startedAt: START, setFn: async () => { lockWrites++; return true; } });
+  assert.deepEqual(r.resizeDrops, { request_vanished: 1 });
+  assert.equal(lockWrites, 0);
+});
+
+test("apply: a concurrent writer wins the request → request_qty_mismatch, lock not written", async () => {
+  // Committed and present, but the stored qty is 3 while we asked for 2. The lock
+  // must NOT be set to 2 — that would claim units the request no longer asks for.
+  const nodes = { "orders/R001-1": { qty: 1, autoRefill: true }, "refill_requests/rr1": { qty: 1, status: "open" } };
+  let lockWrites = 0;
+  const r = await applyResizes({
+    db: fakeDb(nodes, { raceQty: 3 }), resizes: [RZ], startedAt: START,
+    setFn: async () => { lockWrites++; return true; },
+  });
+  assert.equal(r.resized, 0);
+  assert.deepEqual(r.resizeDrops, { request_qty_mismatch: 1 });
+  assert.equal(lockWrites, 0, "lock must not follow a qty we did not write");
+  assert.equal(nodes["refill_requests/rr1"].qty, 3, "the concurrent value stands");
 });
