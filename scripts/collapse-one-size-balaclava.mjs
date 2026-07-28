@@ -214,13 +214,20 @@ const chk = (name, ok, detail) => { asserts.push({ name, ok, detail }); return o
   // Locks are keyed by DESTINATION/product/size, so every location in scope must
   // be checked — not just the two the policy happens to target. A lock anywhere
   // means a pick may be in flight against a cell this migration is about to move.
+  // LOCATION-AGNOSTIC, like every other tree in this file. LOCS is the wrong
+  // scope here for the same reason it was wrong for Display Checks: locks are
+  // keyed by refill DESTINATION, and trophy is a destination that appears in
+  // neither POLICY nor LOCS. This assertion is the guard against migrating stock
+  // out from under an in-flight pick — a lock it cannot see defeats its whole
+  // purpose. Sweep the node and let the data say where the locks are.
+  // (CodeRabbit, PR #284 — fourth and last tree to get this treatment.)
+  const openLocks = (await g("refill_engine/open")) || {};
   const lockHits = [];
-  for (const loc of LOCS) {
-    const l = (await g(`refill_engine/open/${loc}/${PID}`)) || {};
-    for (const sk of Object.keys(l)) lockHits.push(`${loc}/${sk}`);
+  for (const [loc, byPid] of Object.entries(openLocks)) {
+    for (const sk of Object.keys(byPid?.[PID] || {})) lockHits.push(`${loc}/${sk}`);
   }
-  chk(`0b no open refill locks at ANY of the ${LOCS.length} locations`, lockHits.length === 0,
-      lockHits.length ? lockHits.join(", ") : `none across ${LOCS.join(", ")}`);
+  chk(`0b no open refill locks at ANY location (${Object.keys(openLocks).length} scanned)`, lockHits.length === 0,
+      lockHits.length ? lockHits.join(", ") : `none across ${Object.keys(openLocks).join(", ") || "(no locks anywhere)"}`);
 
   // TWO defects fixed here (CodeRabbit, PR #284 — the second was raised on the
   // FIRST review and went unaddressed through three rounds):
