@@ -101,3 +101,124 @@ test("defaults are safe: no outcome info still yields a named reason, never unde
   assert.equal(typeof reason("order"), "string");
   assert.equal(typeof reason("request"), "string");
 });
+
+// ═══ APPLY-PATH ACCOUNTING ═══════════════════════════════════════════════════
+// The classifier tests above prove the reason VOCABULARY. These prove the
+// accounting actually happens: that a dropped resize increments the counter and
+// names its reason, and that a success does not. Without these, `dropResize`,
+// the `counts.resizeDropped` shape and the lock-write branch are unpinned — a
+// refactor could stop counting entirely and every test above would still pass.
+// (CodeRabbit, PR #286.)
+const { _applyResizes: applyResizes } = require("../refill-scan.cjs");
+
+const snap = (val) => ({ exists: () => val !== null && val !== undefined, val: () => val });
+
+// Fake db modelling the RTDB transaction wire closely enough for this path:
+// the callback runs against the CURRENT server value; returning undefined aborts
+// (committed:false), anything else commits.
+function fakeDb(nodes, opts = {}) {
+  return {
+    ref(path) {
+      return {
+        async transaction(fn) {
+          if (opts.throwOn && opts.throwOn.test(path)) throw new Error("simulated network failure");
+          const cur = path in nodes ? nodes[path] : null;
+          const out = fn(cur);
+          if (out === undefined) return { committed: false, snapshot: snap(cur) };
+          nodes[path] = out;
+          return { committed: true, snapshot: snap(out) };
+        },
+      };
+    },
+  };
+}
+
+const RZ = { dest: "marathon-pe", pid: "p1", sizeKey: "L", orderId: "R001-1", refillId: "rr1", from: 1, to: 2 };
+const OK_SET = async () => true;
+const START = "2026-07-28T00:00:00.000Z";
+
+test("apply: a clean resize increments `resized` and records NO drop", () => {
+  const nodes = { "orders/R001-1": { qty: 1, autoRefill: true }, "refill_requests/rr1": { qty: 1, status: "open" } };
+  return applyResizes({ db: fakeDb(nodes), resizes: [RZ], startedAt: START, setFn: OK_SET }).then((r) => {
+    assert.equal(r.resized, 1);
+    assert.deepEqual(r.resizeDrops, {}, "a success must not record a drop");
+    assert.equal(nodes["orders/R001-1"].qty, 2, "order qty written");
+    assert.equal(nodes["refill_requests/rr1"].qty, 2, "request qty written");
+    assert.equal(nodes["refill_requests/rr1"].resizedFrom, 1, "resizedFrom from the in-transaction value");
+  });
+});
+
+test("apply: order guard bails → counter increments and NAMES order_guard_bailed", async () => {
+  // clothingPlanGen set = a fulfil attempt locked its split.
+  const nodes = { "orders/R001-1": { qty: 1, autoRefill: true, clothingPlanGen: 3 }, "refill_requests/rr1": { qty: 1, status: "open" } };
+  const r = await applyResizes({ db: fakeDb(nodes), resizes: [RZ], startedAt: START, setFn: OK_SET });
+  assert.equal(r.resized, 0);
+  assert.deepEqual(r.resizeDrops, { order_guard_bailed: 1 });
+  assert.equal(nodes["refill_requests/rr1"].qty, 1, "request untouched once the order bailed");
+});
+
+test("apply: order vanished → order_vanished, request never attempted", async () => {
+  const nodes = { "refill_requests/rr1": { qty: 1, status: "open" } };   // no order node
+  const r = await applyResizes({ db: fakeDb(nodes), resizes: [RZ], startedAt: START, setFn: OK_SET });
+  assert.deepEqual(r.resizeDrops, { order_vanished: 1 });
+  assert.equal(nodes["refill_requests/rr1"].qty, 1);
+});
+
+test("apply: order transaction throws → order_txn_error", async () => {
+  const nodes = { "orders/R001-1": { qty: 1, autoRefill: true }, "refill_requests/rr1": { qty: 1, status: "open" } };
+  const r = await applyResizes({ db: fakeDb(nodes, { throwOn: /^orders\// }), resizes: [RZ], startedAt: START, setFn: OK_SET });
+  assert.deepEqual(r.resizeDrops, { order_txn_error: 1 });
+});
+
+test("apply: request not open → request_not_open, and the LOCK is not written", async () => {
+  const nodes = { "orders/R001-1": { qty: 1, autoRefill: true }, "refill_requests/rr1": { qty: 1, status: "fulfilled" } };
+  let lockWrites = 0;
+  const r = await applyResizes({ db: fakeDb(nodes), resizes: [RZ], startedAt: START, setFn: async () => { lockWrites++; return true; } });
+  assert.deepEqual(r.resizeDrops, { request_not_open: 1 });
+  assert.equal(lockWrites, 0, "lock must not move when the request bailed");
+});
+
+test("apply: lock write fails → lock_write_failed (order+request MOVED, lock did not)", async () => {
+  const nodes = { "orders/R001-1": { qty: 1, autoRefill: true }, "refill_requests/rr1": { qty: 1, status: "open" } };
+  const r = await applyResizes({ db: fakeDb(nodes), resizes: [RZ], startedAt: START, setFn: async () => false });
+  assert.equal(r.resized, 0, "a failed lock write must not count as a success");
+  assert.deepEqual(r.resizeDrops, { lock_write_failed: 1 });
+  // This is the inconsistent-state drop the reason exists to surface.
+  assert.equal(nodes["orders/R001-1"].qty, 2, "order already moved");
+  assert.equal(nodes["refill_requests/rr1"].qty, 2, "request already moved");
+});
+
+test("apply: hub legs (no orderId) skip the order transaction entirely", async () => {
+  // The structural difference behind the live store-vs-hub split.
+  const hubRz = { ...RZ, dest: "hub2", orderId: null };
+  const nodes = { "refill_requests/rr1": { qty: 1, status: "open" } };   // no order node at all
+  const r = await applyResizes({ db: fakeDb(nodes), resizes: [hubRz], startedAt: START, setFn: OK_SET });
+  assert.equal(r.resized, 1, "a hub leg lands without any order node");
+  assert.deepEqual(r.resizeDrops, {});
+});
+
+test("apply: reasons TALLY across several resizes in one run", async () => {
+  const nodes = {
+    "orders/A": { qty: 1, autoRefill: true, clothingPlanGen: 1 },        // guard bail
+    "orders/B": { qty: 1, autoRefill: true, clothingRefillStatus: "x" }, // guard bail
+    "orders/C": { qty: 1, autoRefill: true },                            // clean
+    "refill_requests/ra": { qty: 1, status: "open" },
+    "refill_requests/rb": { qty: 1, status: "open" },
+    "refill_requests/rc": { qty: 1, status: "open" },
+  };
+  const rzs = [
+    { ...RZ, orderId: "A", refillId: "ra" },
+    { ...RZ, orderId: "B", refillId: "rb" },
+    { ...RZ, orderId: "C", refillId: "rc" },
+  ];
+  const r = await applyResizes({ db: fakeDb(nodes), resizes: rzs, startedAt: START, setFn: OK_SET });
+  assert.equal(r.resized, 1);
+  assert.deepEqual(r.resizeDrops, { order_guard_bailed: 2 }, "same reason accumulates, not overwrites");
+});
+
+test("apply: a clean run yields an EMPTY drops object, so counts stays quiet", async () => {
+  const nodes = { "orders/R001-1": { qty: 1, autoRefill: true }, "refill_requests/rr1": { qty: 1, status: "open" } };
+  const r = await applyResizes({ db: fakeDb(nodes), resizes: [RZ], startedAt: START, setFn: OK_SET });
+  assert.equal(Object.keys(r.resizeDrops).length, 0,
+    "runScan only sets counts.resizeDropped when non-empty — an empty object here is what keeps a clean run silent");
+});
