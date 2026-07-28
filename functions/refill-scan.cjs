@@ -101,6 +101,111 @@ async function drawRefillNumber(db, nowMs) {
   return "R" + String(res.snapshot.val()?.counter ?? 1).padStart(3, "0");
 }
 
+// ─── resize drop classification (pure) ───────────────────────────────────────
+// Turns a transaction outcome into a stable reason string for counts.resizeDropped.
+// Pure and exported so the reasons are unit-testable without Firebase — the whole
+// point is that a drop is nameable, and a name nobody can assert on drifts.
+//
+//   order_txn_error      — the order transaction threw (network / rules)
+//   order_guard_bailed   — callback returned undefined: in-flight (clothingPlanGen),
+//                          already actioned (clothingRefillStatus), or not autoRefill
+//   order_vanished       — committed against a null node: the order is gone, so the
+//                          close path owns this cell, not the resize path
+//   request_txn_error    — the request transaction threw
+//   request_not_open     — callback returned undefined: status !== "open"
+//   request_vanished     — committed against a null node
+//   request_qty_mismatch — DEFENSIVE ONLY, unreachable through the real API: RTDB
+//                          RETRIES the handler against a concurrent write rather
+//                          than committing a divergent value, so a committed
+//                          snapshot always holds what the callback returned. Kept
+//                          because the lock must never follow a qty we did not
+//                          write, and a future SDK change must fail loudly rather
+//                          than silently. (CodeRabbit, PR #286.)
+//   lock_write_failed    — request+order moved but the lock write was rejected;
+//                          the one drop that leaves state INCONSISTENT for a scan
+function resizeDropReason(stage, { threw = false, committed = false, exists = false, qty, want } = {}) {
+  if (threw) return `${stage}_txn_error`;
+  if (!committed) return stage === "order" ? "order_guard_bailed" : "request_not_open";
+  if (!exists) return `${stage}_vanished`;
+  if (stage === "request" && qty !== want) return "request_qty_mismatch";
+  return `${stage}_unknown`;
+}
+
+// ─── apply resizes (owner approval 2026-07-13) ───────────────────────────────
+// Same identity, history preserved: the warehouse ORDER transaction decides
+// (bails on any touched/in-flight card — exactly the withdraw guard), then the
+// request and the lock follow. A bailed resize retries next scan.
+//
+// DROP ACCOUNTING (2026-07-28): all three `continue`/else paths below discard a
+// resize the plan asked for. Until now they did it silently — no counter, no
+// log, no exception row — so a planned resize that never landed was invisible in
+// the run record. Live evidence of the cost: STORE legs (which have an order, so
+// they run the order transaction) landed 186 resizes on 2026-07-13 and then fell
+// to ~1/day, while HUB legs (no orderId, so that transaction is skipped
+// entirely) kept flowing — 150 landed, most recently the same day this was
+// written. Two weeks of one-directional under-delivery nobody could see, because
+// `resized` only ever counts successes.
+//
+// This does NOT change behaviour: every drop still drops. It only names why.
+//
+// EXTRACTED FROM runScan so the accounting is testable: `db` and the safeSet
+// writer are injected, so a fake ref can drive every branch without Firebase.
+// (CodeRabbit, PR #286 — the first version tested only the classifier, which
+// left `dropResize`, `counts.resizeDropped` and the lock-write branch unpinned.)
+async function applyResizes({ db, resizes, startedAt, setFn }) {
+  let resized = 0;
+  const resizeDrops = {};
+  const dropResize = (reason) => { resizeDrops[reason] = (resizeDrops[reason] || 0) + 1; };
+
+  for (const rz of resizes) {
+    let proceed = true;
+    let dropReason = null;
+    if (rz.orderId) {
+      try {
+        const r = await db.ref(`orders/${rz.orderId}`).transaction((cur) => {
+          if (cur === null) return null;                                 // cold-cache probe (null-tolerant)
+          if (cur.clothingRefillStatus != null || cur.clothingPlanGen != null || !cur.autoRefill) return; // in-flight/touched
+          return { ...cur, qty: rz.to, updatedAt: startedAt };
+        });
+        proceed = r.committed && r.snapshot.exists();                    // vanished order → let the close path own it
+        if (!proceed) dropReason = resizeDropReason("order", { committed: r.committed, exists: r.snapshot.exists() });
+      } catch { proceed = false; dropReason = resizeDropReason("order", { threw: true }); }
+    }
+    if (!proceed) { dropResize(dropReason || "order_unknown"); continue; }
+
+    // The rr transaction is the decider for its own node (review 2026-07-13): if
+    // it bails — resolved concurrently, e.g. Hub 2 legs fulfilled between plan
+    // and apply — the lock is NOT touched and the resize does NOT count.
+    // resizedFrom comes from the authoritative in-transaction value, never the
+    // planning snapshot.
+    if (rz.refillId) {
+      let ok = false;
+      let rrDrop = null;
+      try {
+        const r2 = await db.ref(`refill_requests/${rz.refillId}`).transaction((cur) => {
+          if (cur === null) return null;                                 // probe
+          if (cur.status !== "open") return;
+          return { ...cur, qty: rz.to, resizedAt: startedAt, resizedFrom: cur.qty ?? rz.from };
+        });
+        ok = r2.committed && r2.snapshot.exists() && r2.snapshot.val()?.qty === rz.to;
+        if (!ok) rrDrop = resizeDropReason("request", {
+          committed: r2.committed, exists: r2.snapshot.exists(),
+          qty: r2.snapshot.val()?.qty, want: rz.to,
+        });
+      } catch { ok = false; rrDrop = resizeDropReason("request", { threw: true }); }
+      if (!ok) { dropResize(rrDrop || "request_unknown"); continue; }
+    }
+
+    // Through safeSet like every other write: `.set()` AND `db.ref(path)` both
+    // validate synchronously, so a bare `.set(x).catch()` here is the exact
+    // anti-pattern PR #276 removed — the last write in the file whose path
+    // components are data-derived.
+    if (await setFn(db, `refill_engine/open/${rz.dest}/${rz.pid}/${rz.sizeKey}/qty`, rz.to, `resize ${rz.dest}/${rz.pid}/${rz.sizeKey}`)) resized++;
+    else dropResize("lock_write_failed");   // order+request MOVED but the lock did not — inconsistent for one scan
+  }
+  return { resized, resizeDrops };
+}
+
 async function runScan() {
   const db = admin.database();
   const nowMs = Date.now();
@@ -262,44 +367,13 @@ async function runScan() {
     // (bails on any touched/in-flight card — exactly the withdraw guard), then
     // the request and the lock follow. A bailed resize retries next scan.
     if (plan.resizes && plan.resizes.length) {
-      let resized = 0;
-      for (const rz of plan.resizes) {
-        let proceed = true;
-        if (rz.orderId) {
-          try {
-            const r = await db.ref(`orders/${rz.orderId}`).transaction((cur) => {
-              if (cur === null) return null;                                 // cold-cache probe (null-tolerant)
-              if (cur.clothingRefillStatus != null || cur.clothingPlanGen != null || !cur.autoRefill) return; // in-flight/touched
-              return { ...cur, qty: rz.to, updatedAt: startedAt };
-            });
-            proceed = r.committed && r.snapshot.exists();                    // vanished order → let the close path own it
-          } catch { proceed = false; }
-        }
-        if (!proceed) continue;
-        // The rr transaction is the decider for its own node (review
-        // 2026-07-13): if it bails — resolved concurrently, e.g. Hub 2 legs
-        // fulfilled between plan and apply — the lock is NOT touched and the
-        // resize does NOT count. resizedFrom comes from the authoritative
-        // in-transaction value, never the planning snapshot.
-        if (rz.refillId) {
-          let ok = false;
-          try {
-            const r2 = await db.ref(`refill_requests/${rz.refillId}`).transaction((cur) => {
-              if (cur === null) return null;                                 // probe
-              if (cur.status !== "open") return;
-              return { ...cur, qty: rz.to, resizedAt: startedAt, resizedFrom: cur.qty ?? rz.from };
-            });
-            ok = r2.committed && r2.snapshot.exists() && r2.snapshot.val()?.qty === rz.to;
-          } catch { ok = false; }
-          if (!ok) continue;
-        }
-        // Through safeSet like every other write: `.set()` AND `db.ref(path)`
-        // both validate synchronously, so a bare `.set(x).catch()` here is the
-        // exact anti-pattern this PR exists to remove — the last write in the
-        // file whose path components are data-derived. (Kimi review, PR #276.)
-        if (await safeSet(db, `refill_engine/open/${rz.dest}/${rz.pid}/${rz.sizeKey}/qty`, rz.to, `resize ${rz.dest}/${rz.pid}/${rz.sizeKey}`)) resized++;
-      }
+      const { resized, resizeDrops } = await applyResizes({
+        db, resizes: plan.resizes, startedAt, setFn: safeSet,
+      });
       if (resized) counts.resized = resized;
+      // Same shape as `withdrawn` / `resized`: present only when non-zero, so a
+      // clean run stays quiet and any value at all is a signal worth reading.
+      if (Object.keys(resizeDrops).length) counts.resizeDropped = resizeDrops;
     }
 
     // ── apply retry ops (24h auto-retry) ──────────────────────────────────────
@@ -560,3 +634,5 @@ exports.refillHealthScan = onSchedule(
   runScan
 );
 exports._runScan = runScan; // exported for one-off manual invocation in tests/smoke
+exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/resize-drop-observability.test.cjs
+exports._applyResizes = applyResizes;         // db + writer injected — apply-path accounting is testable with a fake ref
