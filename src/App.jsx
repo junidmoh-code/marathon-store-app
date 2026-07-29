@@ -55,6 +55,9 @@ import { printOrderSlips } from "./print/orderSlip";
 // derivation that keeps newly-created products inside every existing automation.
 import { catByKey, sizesOf, isOneSize, legacyFor, needsAssignment } from "./utils/productTaxonomy";
 import { buildNewProduct } from "./utils/newProductRecord";
+// The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
+// if the two ever disagree, stock is deducted in one app and never credited in the other.
+import { isFootwearLine } from "./utils/footwearLine";
 import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries } from "./components/admin/SizeQtyBoxes";
@@ -8649,9 +8652,14 @@ function WarehouseView({ products = [], orders, onExit }) {
     // a stop, not a silent negative. Sneakers keep the A1 always-move
     // behavior below: their parcels physically leave regardless.)
     if (transfer.blockSend) return transfer;
+    // `skipped` is a DELIBERATE no-move (footwear now sells from the hub), not a
+    // failure — it must not stamp transferFailed, which drives the "route via
+    // Lightspeed" warnings and the reconciliation reports.
     updateStatus(order, STATUS.READY, {
       ...extraPatch,
-      ...(transfer.moved ? { transferFailed: null } : { transferFailed: transfer.reason || "unknown" }),
+      ...(transfer.moved || transfer.skipped
+        ? { transferFailed: null }
+        : { transferFailed: transfer.reason || "unknown" }),
     });
     return transfer;
   };
@@ -8659,7 +8667,9 @@ function WarehouseView({ products = [], orders, onExit }) {
   const markSentAndPrint = async (order, extraPatch = {}) => {
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
     const transfer = await markSentWithTransfer(order, extraPatch);
-    if (!transfer.moved) return;  // recordDispatchTransfer already raised the explaining toast
+    // A skipped footwear transfer still gets its label — the parcel physically
+    // travels to the shop exactly as before; only the ledger move is gone.
+    if (!transfer.moved && !transfer.skipped) return;  // recordDispatchTransfer already raised the explaining toast
     printDispatchLabel({ ...order, sentSize })
       .then((res) => {
         const diag = res?.diag ? ` [${res.diag}]` : "";
@@ -8705,6 +8715,24 @@ function WarehouseView({ products = [], orders, onExit }) {
   // idempotent re-send); returns false — with a non-blocking toast telling the picker
   // to route via Lightspeed — when the move isn't recordable or the hub is short.
   const recordDispatchTransfer = async (order, sentSize) => {
+    // ── SNEAKERS NO LONGER MOVE ON SEND (2026-07-29) ─────────────────────────
+    // Footwear stock stays booked at its hub. The parcel still physically travels
+    // and the order still flows exactly as before — but no ledger transfer is
+    // written, because the POS now deducts the sale at the hub instead.
+    //
+    // This is the half of the change that must NEVER run alone. If the transfer
+    // stops while the POS still deducts at the shop, every sneaker sale hits a
+    // shop cell holding zero and goes negative — precisely the 361-cell hole at
+    // Marathon PE that this work exists to remove. Deploy both apps together.
+    //
+    // Why this is safe for everything else: the gate needs the CATALOGUE and the
+    // SIZE to positively agree (see utils/footwearLine.js). Clothing, perfume,
+    // bags, an unknown product, a missing size — all fall through and keep
+    // writing the transfer exactly as they do today.
+    const orderProduct = products.find((p) => p && p.id === order.productId) || null;
+    if (isFootwearLine(orderProduct, sentSize ?? order.size)) {
+      return { moved: false, reason: "footwear_sells_from_hub", skipped: true };
+    }
     // New orders carry destShop; legacy pine orders infer marathon-pine; legacy
     // central orders can't be disambiguated (Marathon PE vs Trophy) → not recordable.
     const toShop = order.destShop || (order.placedStore === "pine" ? "marathon-pine" : null);
@@ -12854,8 +12882,20 @@ function ReturnsView({ orders, products = [], onExit }) {
           // there is nothing to reverse in the hub ledger. Processed successfully.
           ledgered = true;
           ledgerNote = `no_transfer_needed:${dest.reason}`;
+        } else if (isFootwearLine(prod, order.sentSize ?? order.size)) {
+          // ── FOOTWEAR NOW SELLS FROM THE HUB (2026-07-29) ───────────────────
+          // Send writes no transfer, so a return has NOTHING to reverse — the
+          // stock never left the hub's books. This is the normal, expected path
+          // for a shoe that came back, not an error: the pair physically goes
+          // to the shelf and the ledger was already correct.
+          //
+          // This branch REPLACES the old "no dispatch to reverse — restock by
+          // hand via Lightspeed" warning, which would now fire on every single
+          // returned sneaker and train staff to ignore it.
+          ledgered = true;
+          ledgerNote = "footwear_no_transfer_to_reverse";
         } else {
-          // Footwear with no disp_ record — do NOT fire a phantom hub credit
+          // Non-footwear with no disp_ record — do NOT fire a phantom hub credit
           // (would hide a shortage). Surface it for manual routing; the recon pass
           // restocks the backlog honestly.
           ledgerNote = "no_dispatch_transfer";
