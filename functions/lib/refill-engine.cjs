@@ -221,10 +221,39 @@ function ruleTargetsEnabled(config, dest) {
 //      ONLY where ruleBasedTargets is enabled for this destination
 //   3. null (non-clothing, store does not carry, or deliberately excluded)
 // Explicit target 0 continues to mean "deliberately excluded".
+//
+// ── reorderPoint (2026-07-27) ────────────────────────────────────────────────
+// OPTIONAL per-row field, explicit targets only. Absent → null → the deficit
+// loop's gate is inert and the cell behaves EXACTLY as it always has (propose
+// as soon as on-hand falls below target). That is what makes this change a
+// no-op on all 8,419 existing clothing cells and opt-in one row at a time.
+//
+// It is deliberately NOT minQty. minQty keeps its one and only job — card
+// priority at :938 — because minQty is already populated on every existing row
+// (ceil(target/2) or target-1), so reusing it would have silently changed the
+// trigger for the entire live catalogue in a single deploy.
+//
+// VALIDATION IS FAIL-SAFE IN THE OVER-ORDERING DIRECTION. Only a finite number
+// >= 0 arms the gate; absent, null, negative, NaN or a non-number all fall back
+// to today's eager behaviour. A negative is the case that matters: `have > -1`
+// is true for every non-negative on-hand, so honouring it would silently STOP
+// replenishing that cell forever. Under-ordering starves a shop silently while
+// over-ordering is merely visible noise — so garbage resolves to "no gate",
+// matching the file's standing rule that the engine takes the conservative side
+// (see the kill switch's fail-safe note above).
 function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
-    return { target: num(explicit.target), minQty: num(explicit.minQty), source: "explicit" };
+    const rp = explicit.reorderPoint;
+    return {
+      target: num(explicit.target),
+      minQty: num(explicit.minQty),
+      // NOT `num()` and NOT a truthiness check: num() maps garbage to 0, which
+      // would arm the gate at "only when empty" — the silent-starvation case.
+      // 0 itself IS valid and must survive (propose only at zero on-hand).
+      reorderPoint: typeof rp === "number" && Number.isFinite(rp) && rp >= 0 ? rp : null,
+      source: "explicit",
+    };
   }
   if (!ruleTargetsEnabled(config, dest)) return null;   // ← kill switch
   // Global clothing rule: apply the location's standard run to every catalog
@@ -236,7 +265,10 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
       const run = config?.defaultRunByStore?.[dest] || {};
       const t = run[size];
       if (typeof t === "number" && t > 0) {
-        return { target: t, minQty: Math.max(1, t - 1), source: "default" };
+        // Rule-based targets carry NO reorder point — the standard run is a
+        // top-up policy, and inventing one here would change clothing behaviour
+        // network-wide from a code default rather than from an approved row.
+        return { target: t, minQty: Math.max(1, t - 1), reorderPoint: null, source: "default" };
       }
     }
   }
@@ -295,6 +327,15 @@ function computeRefillPlan(snapshot) {
   // ── reconcile: close locks whose intent finished; flag stale ones (L6) ─────
   const closes = [];
   const resizes = [];   // owner approval 2026-07-13: open requests track reality, not history
+  // PLAN-SIDE OBSERVABILITY (2026-07-28). PR #286 instrumented the APPLY drops,
+  // but this suppression happens during PLANNING and reported nothing at all —
+  // the plan simply came back empty. That gap cost a full day of investigation
+  // aimed at the wrong half of the pipeline: the apply path was working
+  // correctly throughout while the planner silently discarded every store-leg
+  // resize. Same reason discipline as counts.resizeDropped, so both halves of
+  // the pipeline are legible from the run record.
+  const resizeSuppressed = {};
+  const noteSuppressed = (why) => { resizeSuppressed[why] = (resizeSuppressed[why] || 0) + 1; };
   const stuckRefills = [];
   // Orders with PHYSICAL fulfilment evidence in the ledger (a movement linked
   // to them) — their status write may still be in flight, so the PLAN skips
@@ -302,8 +343,57 @@ function computeRefillPlan(snapshot) {
   // safety boundary is the conditional transaction in refill-scan.cjs that
   // re-reads the order live at write time. Never relax that guard because
   // this set exists (it is built from the same stale snapshot).
-  const physicallyTouched = new Set();
-  for (const m of movements) if (m?.link?.orderId) physicallyTouched.add(m.link.orderId);
+  // ── LEDGER-LINK IDENTITY (fixed 2026-07-28) ────────────────────────────────
+  // This was a bare `Set` of movement link.orderId values, asked `.has(orderId)`,
+  // and treated a match as proof that a pick had physically happened. That broke
+  // the invariant stated at the top of this file (line 17): "R-numbers are
+  // daily-recycled and are never identity." An order id is a LABEL the system
+  // reissues every single day — R001..R999 — so across the 45-day movement
+  // window the same string names dozens of unrelated orders.
+  //
+  // Measured on live data the day this was fixed: 6,160 movements in the window
+  // carried a link.orderId, and ZERO of them were a genuine in-flight signal for
+  // any open lock. "R026-1" alone appeared on 9 movements spanning 10 days,
+  // every one a different product. 69 of 180 open store-leg locks (38%) were
+  // flagged in-flight by a stranger's movement and could not be resized.
+  //
+  // That is also why the failure GREW: on 2026-07-13 the window held a few days
+  // of movements and 161 resizes landed; every day after added ~1,000 more
+  // movements minting more label collisions, until store-leg resizes stopped
+  // almost entirely. No commit caused it — the window filled up.
+  //
+  // The fix is the identity check this file already uses elsewhere. orderIsOurs
+  // (below) matches product + size + createdAt precisely because a label is not
+  // an identity; this index now applies the same rule, plus an AGE BOUND: a
+  // movement cannot belong to an order that did not exist when it was written.
+  // The anchor is entry.orderCreatedAt — the value stored on the LOCK, which
+  // orderIsOurs already trusts — never order.createdAt, which may belong to a
+  // recycled node.
+  const touchedByOrder = new Map();
+  for (const m of movements) {
+    const oid = m?.link?.orderId;
+    if (!oid) continue;
+    const arr = touchedByOrder.get(oid) || [];
+    arr.push({ pid: m.productId, sizeKey: encodeSizeKey(m.size), ts: m.ts || m.appliedAt || "" });
+    touchedByOrder.set(oid, arr);
+  }
+  // True only when a movement plausibly belongs to THIS lock's order: same
+  // product, same size, and written at or after the order existed.
+  //
+  // NO ANCHOR → NOT TOUCHED, and that branch is unreachable in the resize path
+  // by construction: a lock carrying an orderId whose orderCreatedAt does not
+  // match its order node fails orderIsOurs, which makes orderLost true, which
+  // closes the lock and `continue`s well before inFlight is consulted (the
+  // zombie-leg rule, #234). So whenever this is reached with an orderId, the
+  // anchor is present and already verified against the order node. Returning
+  // false is the honest answer for the impossible case rather than a silent
+  // fallback that would quietly reintroduce label-only matching.
+  const ledgerTouched = (entry, pid, sizeKey) => {
+    if (!entry?.orderId || !entry.orderCreatedAt) return false;   // hub legs carry no order — never touched
+    const hits = touchedByOrder.get(entry.orderId);
+    if (!hits) return false;
+    return hits.some((h) => h.pid === pid && h.sizeKey === sizeKey && h.ts && h.ts >= entry.orderCreatedAt);
+  };
   const staleMs = (num(config?.staleIntentHours) || 48) * 3600e3;
   // Total on-hand for a (pid,size) across every location the scan can see.
   const networkQtyOf = (pid, size) =>
@@ -379,8 +469,9 @@ function computeRefillPlan(snapshot) {
         // pick physically happened (status write may lag). Either one parks
         // the withdraw. (clothingRefillGen deliberately NOT used — it only
         // counts UNDOs, not in-progress picks.)
-        const inFlight = (orderIsOurs && order.clothingPlanGen != null) ||
-          (entry.orderId && physicallyTouched.has(entry.orderId));
+        const inFlightPlanGen = orderIsOurs && order.clothingPlanGen != null;
+        const inFlightLedger = ledgerTouched(entry, pid, sizeKey);
+        const inFlight = inFlightPlanGen || inFlightLedger;
         const sourceLoc = entry.source || routes[dest];
         const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
@@ -425,6 +516,12 @@ function computeRefillPlan(snapshot) {
         // zero cases; the one residue (source stocked but fully reserved by a
         // sibling request) deliberately keeps its quantity until the sibling
         // resolves — deterministic, no claim-stealing between open requests.
+        // Count a resize the in-flight guard alone suppressed: everything else
+        // that blocks here (needGone / unfillable / sourceEmpty) already emits a
+        // visible close, so silence was unique to this branch.
+        if (unresolvedOurs && inFlight && !needGone && !unfillable && !sourceEmpty) {
+          noteSuppressed(inFlightPlanGen ? "in_flight_plan_gen" : "in_flight_ledger_link");
+        }
         if (unresolvedOurs && !inFlight && !needGone && !unfillable && !sourceEmpty) {
           const srcLoc2 = entry.source || routes[dest];
           const srcHave2 = srcLoc2 ? avail(cellQty(stock, srcLoc2, pid, size)) : 0;
@@ -762,6 +859,30 @@ function computeRefillPlan(snapshot) {
         const inb = inbound.get(`${dest}|${pid}|${sizeKey}`) || 0;
         const deficit = t.target - have - inb;
         if (deficit <= 0) continue;
+
+        // ── REORDER-POINT GATE (owner policy 2026-07-27) ─────────────────────
+        // With a reorderPoint set, the cell is a MIN/MAX row, not a top-up row:
+        // it stays quiet while on-hand sits above the point, then asks for the
+        // whole gap at once. Without one (every clothing row today) this is a
+        // no-op and the cell tops up continuously exactly as before.
+        //
+        // Why this position is load-bearing — the gate sits AFTER the deficit
+        // check but BEFORE every push below, so an above-point cell is treated
+        // as "no deficit": silent, and identical to a cell that has met target.
+        // Placing it lower would leak the cell into belowTarget and then into
+        // missingSizes / awaitingSupplier, surfacing a perfectly healthy shelf
+        // as a supplier reorder candidate.
+        //
+        // The test is on `have`, NOT `have + inb`: the policy is written about
+        // physical on-hand ("reorders when on-hand drops to 3"). Inbound is
+        // already fully accounted for by `deficit` above, so a cell with stock
+        // on the way has a deficit of 0 and never reaches this line — there is
+        // no double-count and no re-ask while a delivery is in flight.
+        //
+        // `!= null` is deliberate: reorderPoint 0 is a legitimate row meaning
+        // "ask only when the shelf is empty", and a truthiness test would treat
+        // it as absent and silently restore eager top-up.
+        if (t.reorderPoint != null && have > t.reorderPoint) continue;
 
         belowTarget.push({ loc: dest, pid, size, have: q, target: t.target, inbound: inb, deficit });
 
@@ -1308,7 +1429,7 @@ function computeRefillPlan(snapshot) {
       intentsPlanned: plannedIntents.length,
       throttled: intents.length > maxIntents,
     },
-    stats: { managedCells },
+    stats: { managedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
     exceptions: {
       noTarget: cap(noTarget),
       unintroduced: cap(unintroduced, 900),

@@ -8,6 +8,7 @@ import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
+import { getDeviceId } from "./device/deviceId";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./utils/productCategory";
@@ -680,8 +681,31 @@ function useOrders(scopeShop = null) {
 
 // Write a brand-new order. Used by AssistantView.
 function writeOrder(order) {
+  // Firebase set() THROWS synchronously on any undefined value (an argument-
+  // validation error, e.g. a photoless perfume left productPhoto undefined —
+  // #perfume-order). Upstream then reports it as a generic "connection issue",
+  // masking the real cause. Catch it here first and throw a precise, logged
+  // error naming the offending field(s), so a future missing-field on any
+  // product category is instantly findable instead of looking like bad wifi.
+  const undefinedFields = Object.keys(order).filter((k) => order[k] === undefined);
+  if (undefinedFields.length) {
+    const err = new Error(
+      `Order ${order.id} not written — missing field(s): ${undefinedFields.join(", ")}. ` +
+      `Likely a product record without these fields.`
+    );
+    // Log only the id + offending fields — never the whole order (it carries
+    // customer PII: name, phone, identity).
+    console.error("writeOrder rejected:", err.message, { orderId: order.id ?? null, undefinedFields });
+    throw err;
+  }
   return set(ref(database, `orders/${order.id}`), order).catch((err) => {
-    console.warn("Firebase writeOrder failed:", err);
+    // Propagate (don't swallow) so placeOrders / placeRefillRequests surface the
+    // real reason AND don't false-clear the cart. Both callers await this inside
+    // a try/catch and writeOrder has no other callers. Previously an async
+    // rejection here (permission-denied, offline, server error) resolved as
+    // success — a failed write reported as placed, i.e. silent order loss.
+    console.error("Firebase writeOrder failed:", err);
+    throw err;
   });
 }
 
@@ -4867,6 +4891,27 @@ function AdminView({ products, orders, onExit }) {
       // legacy fields, which would silently drop out of every automation.
       if (!newProduct) throw new Error("That category is no longer available. Pick a category again.");
       const sizes = newProduct.sizes;
+      // MERGE NOTE (2026-07-30): prices and the shoebox flag moved INTO
+      // buildNewProduct during the form rewrite — main's inline copies of those
+      // are intentionally not carried over here, they would be duplicates. The
+      // createdBy stamp below is genuinely new and is preserved verbatim.
+      //
+      // ATTRIBUTION (createdBy, #283): who + which device saved this product. Store
+      // the OPAQUE uid only — NOT the email: /products is readable by every signed-in
+      // staff member, so an email on every record would broadcast staff identity
+      // and duplicate PII catalogue-wide. The uid resolves to a name via the
+      // admin-gated /users/{uid} record at display time. deviceId is a persistent
+      // per-browser id (the store-app has no server device identity), so the same
+      // tablet is recognizable even under a shared PIN login. Purely additive,
+      // written once at creation; NEVER gates the save (every field tolerates
+      // null: signed-out/anon → null uid, private-mode browser → null deviceId).
+      // Products created before this ship carry no createdBy — readers treat it
+      // as unknown.
+      newProduct.createdBy = {
+        uid: auth.currentUser?.uid ?? null,
+        deviceId: getDeviceId(),
+        at: serverNowMs(),
+      };
       // POS Phase 2: reserve the next sequential sku + barcode atomically
       // BEFORE the product write so two concurrent adds can't collide. If
       // reservation fails (counter exhausted or RTDB error), surface the
@@ -7397,7 +7442,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           id: orderNum,
           productId: item.product.id,
           productName: item.product.name,
-          productPhoto: item.product.photo,
+          productPhoto: item.product.photo ?? null,
           productPhotoUrl: item.product.photoUrl ?? null,
           size: item.size,
           sentSize: null,
@@ -7470,6 +7515,13 @@ function AssistantView({ products, onExit, orders = [] }) {
         });
         sendWhatsAppTemplate(normalizedPhone, "order_placed", [customerName, orderNum, item.product.name, item.size]);
         placed.push(order);
+        // Drop THIS line from the cart the instant it's written. writeOrder now
+        // rethrows async failures, so if a LATER line in the batch throws the
+        // catch preserves the (remaining) cart — pruning per-line here means a
+        // retry re-places only the unplaced remainder instead of duplicating
+        // already-written lines with fresh order numbers. Object identity (not a
+        // productId/size key) so qty>1 duplicate lines prune individually.
+        setCart(prev => prev.filter(it => it !== item));
       }
       setLastOrders(placed);
       // Print the customer order slip(s) — one per order, in a single 80mm print
@@ -7486,7 +7538,13 @@ function AssistantView({ products, onExit, orders = [] }) {
       closeCheckout();
     } catch (e) {
       console.error("Failed to place orders:", e);
-      alert("Could not place order. Check your connection and try again.");
+      // Surface the REAL reason instead of always blaming the connection — a
+      // write rejected for a data problem (e.g. a missing product field) is not
+      // a network fault, and mislabelling it as one hid this bug for weeks.
+      alert(
+        `Couldn't place the order.\n\nReason: ${e?.message || "unknown error"}\n\n` +
+        `If this keeps happening it may not be your internet — tell a manager and mention this message.`
+      );
     } finally {
       setSubmitting(false);
     }
@@ -7526,7 +7584,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           id: orderNum,
           productId: item.product.id,
           productName: item.product.name,
-          productPhoto: item.product.photo,
+          productPhoto: item.product.photo ?? null,
           productPhotoUrl: item.product.photoUrl ?? null,
           size: item.size,
           sentSize: null,
@@ -7589,6 +7647,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           destShop: effectiveShop,
         });
         placed.push(order);
+        // Per-line prune — same rationale as placeOrders: a later throw must not
+        // let a retry duplicate the refill lines already written.
+        setCart(prev => prev.filter(it => it !== item));
       }
       setLastOrders(placed);
       // Drop the placed refill lines; leave sneakers and any clothing-customer
@@ -7596,7 +7657,12 @@ function AssistantView({ products, onExit, orders = [] }) {
       setCart(prev => prev.filter(it => !(it.productType === "clothing" && it.intent !== "customer")));
     } catch (e) {
       console.error("Failed to place refill requests:", e);
-      alert("Could not place refill request. Check your connection and try again.");
+      // Same as placeOrders: report the real reason, don't default to blaming
+      // the connection for what is often a data-shaped write rejection.
+      alert(
+        `Couldn't place the refill request.\n\nReason: ${e?.message || "unknown error"}\n\n` +
+        `If this keeps happening it may not be your internet — tell a manager and mention this message.`
+      );
     } finally {
       setSubmitting(false);
     }

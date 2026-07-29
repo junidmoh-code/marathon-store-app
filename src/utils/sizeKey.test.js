@@ -68,6 +68,14 @@ describe("stockSizeKey — one-size / null / empty → '_' (cross-app sentinel)"
     expect(stockSizeKey("5.5")).toBe("5_5");
     expect(stockSizeKey(5.5)).toBe("5_5");
   });
+  it("folds the synthetic 'Free Size' display label to '_' — NOT a 'Free_Size' cell", () => {
+    // Regression: a perfume order carried the display label "Free Size" as its
+    // size; without this fold it encoded to "Free_Size" (space → "_"), a phantom
+    // cell divorced from the real "_" stock. Deduct/credit/reversal must all land
+    // on "_", the same cell real perfume stock + POS sales use.
+    expect(stockSizeKey("Free Size")).toBe("_");
+    expect(stockCellPath("hub2", "p1784882828665", "Free Size")).toBe("stock/hub2/p1784882828665/_");
+  });
 });
 
 describe("stockCellPath — half-size /stock key is dot-free", () => {
