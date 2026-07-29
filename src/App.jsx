@@ -905,6 +905,13 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
 // Every OOS event is permanently logged. Never deleted.
 // Returns a Promise — callers await this before updating UI so the log write
 // completes before the order status changes.
+// RETAINED, NOT WIRED (2026-07-30). Nothing in this app calls it any more: the
+// POS is the only restock trigger, writing restock_log itself for order
+// collections and walk-ins. Kept as the reference for the entry shape both apps
+// must agree on — Source reads this node and does not care which app wrote a
+// row, so the shape is a cross-app contract even though only one side writes it
+// today. If a store-app-side restock ever returns, it writes through here.
+// eslint-disable-next-line no-unused-vars
 async function logRestock(entry) {
   return push(ref(database, `restock_log/${entry.date}`), entry);
 }
@@ -8609,22 +8616,19 @@ function WarehouseView({ products = [], orders, onExit }) {
   // sentSize, by design.
   const updateStatus = async (order, status, extraPatch = {}) => {
     const now = serverNowIso();
-    // When an item is COLLECTED (sold/given to customer), log a refill request so
-    // Source knows what needs restocking. OOS items are NOT logged — they're
-    // completely unavailable and can't be refilled.
-    if (status === STATUS.COLLECTED) {
-      await logRestock({
-        timestamp: now,
-        date: getSADateString(),
-        productName: order.productName,
-        photoUrl: order.productPhotoUrl || null,
-        photo: order.productPhoto || "",
-        size: order.size,
-        orderNumber: order.id,
-        hub: order.hub || selectedHub,
-        placedAtHub: order.placedAtHub || order.hub || selectedHub,
-      }).catch(err => console.warn("logRestock failed:", err));
-    }
+    // ── THE POS IS THE ONLY RESTOCK TRIGGER (2026-07-30, owner) ──────────────
+    // This used to write a restock_log entry on COLLECTED. Source is now fed by
+    // the SALE — the POS writes restock_log itself, for order collections
+    // (logOrderCollection.js) and walk-ins (logFootwearSold.js) — and the POS is
+    // also what marks an order collected in the first place (markOrderCollected.js
+    // writes status directly to /orders). So this branch could only ever fire if
+    // someone marked an order collected from THIS app, and every time it did it
+    // would add a SECOND restock entry for a sale the POS had already logged:
+    // Source would be told to restock one pair twice.
+    //
+    // Removed rather than guarded, because a "collected" that did not come from a
+    // till is not a sale, and inventing a restock request for it is exactly the
+    // phantom-request behaviour this whole change removes.
     const patch = { status, updatedAt: now, ...extraPatch };
     if (status === STATUS.READY)           patch.readyAt = now;
     if (status === STATUS.OUT_OF_STOCK)    patch.outOfStockAt = now;
