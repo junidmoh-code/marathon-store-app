@@ -2439,17 +2439,15 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
-  // Source badge = today's restock requests + on-hold (Tomorrow), excluding OOS.
-  // Today's request = orders marked READY/COLLECTED today (sold/sent items),
-  // minus any of those orders that have been returned today (physically back
-  // in the warehouse, no restock needed). On hold = COMING_TOMORROW.
-  const returnedToday = returnedOrderIdsOnSADate(returnsLog, today);
-  const sourceTodayCount = orders ? orders.filter(o =>
-    o.status !== STATUS.OUT_OF_STOCK &&
-    (o.status === STATUS.READY || o.status === STATUS.COLLECTED) &&
-    orderSaleDate(o) === today &&
-    !returnedToday.has(o.id)
-  ).length : 0;
+  // Source badge = today's restock requests + on-hold (Tomorrow).
+  //
+  // SALE-DRIVEN (2026-07-30), matching the Source list and its hub tabs. It used
+  // to count orders at READY|COLLECTED, so marking an order Sent lit the badge
+  // before any customer had touched the shoe — and with returns gone, nothing
+  // ever took it back down. It now counts restock_log, which the POS writes on a
+  // real sale. On hold = COMING_TOMORROW, unchanged.
+  const restockToday = useRestockLogRaw(today);
+  const sourceTodayCount = (restockToday || []).length;
   const onHold = orders ? orders.filter(o =>
     o.status === STATUS.COMING_TOMORROW && o.status !== STATUS.OUT_OF_STOCK
   ).length : 0;
@@ -12693,21 +12691,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // without an explicit hub field default to "hub1", matching the rest of
   // the app.
 
-  // All-hub today list — keep one shared filter, then slice per-hub for counts
-  // and the active tab. Cheap enough that we don't memo separately per hub.
-  const todayRestockOrdersAll = useMemo(() =>
-    orders.filter(o =>
-      o.status !== STATUS.OUT_OF_STOCK &&
-      (o.status === STATUS.READY || o.status === STATUS.COLLECTED) &&
-      orderSaleDate(o) === todayDate &&
-      !returnedTodayIds.has(o.id)
-    ),
-    [orders, todayDate, returnedTodayIds]
-  );
-  const todayRestockOrders = useMemo(
-    () => todayRestockOrdersAll.filter(o => (o.hub || "hub1") === hub),
-    [todayRestockOrdersAll, hub]
-  );
+  // (The old order-derived lists that lived here — todayRestockOrdersAll and its
+  // per-hub slice, built from status READY|COLLECTED — are GONE. Every consumer
+  // now reads the sale-driven feed below: the list, the hub tab badges and the
+  // home-screen badge. Deleted rather than left dangling so nobody re-wires a
+  // Ready-triggered count back in.)
   // ── SOURCE IS NOW SALE-DRIVEN (2026-07-30, owner) ─────────────────────────
   // It used to count ORDERS at status READY|COLLECTED. That meant a shoe entered
   // the restock list the moment the warehouse marked it Ready — before any
@@ -12806,10 +12794,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     const counts = { hub1: 0, hub2: 0 };
     const todayResponses = allResponses[todayDate] || {};
 
-    // -- Today: pending = unresponded cells from today's collected orders (live).
+    // -- Today: pending = unresponded cells from today's SALES (restock_log).
+    // Must read the same feed the list itself reads, or the badge counts orders
+    // marked Ready while the list shows only what sold — a badge promising work
+    // that is not in the list is worse than no badge.
     ["hub1", "hub2"].forEach(h => {
-      const hubOrders = todayRestockOrdersAll.filter(o => (o.hub || "hub1") === h);
-      const counts2 = computeCollectedCounts(hubOrders);
+      const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h);
+      const counts2 = computeRestockCounts(hubEntries);
       Object.entries(counts2).forEach(([key, product]) => {
         Object.entries(product.sizes || {}).forEach(([size, count]) => {
           if (todayResponses[key]?.[size]) return;
@@ -12842,7 +12833,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     });
 
     return counts;
-  }, [todayRestockOrdersAll, allResponses, todayDate, insightsLog, returnsLog, onHoldMerged]);
+  }, [restockLogToday, allResponses, todayDate, insightsLog, returnsLog, onHoldMerged]);
 
   // Top-tab On Hold badge — total pending across ALL hubs (matches old behavior).
   const onHoldCount = useMemo(
