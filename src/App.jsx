@@ -57,7 +57,7 @@ import { catByKey, sizesOf, isOneSize, legacyFor, needsAssignment } from "./util
 import { buildNewProduct } from "./utils/newProductRecord";
 // The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
 // if the two ever disagree, stock is deducted in one app and never credited in the other.
-import { isFootwearLine } from "./utils/footwearLine";
+import { isFootwearLine, productIsFootwear } from "./utils/footwearLine";
 import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries } from "./components/admin/SizeQtyBoxes";
@@ -9250,6 +9250,61 @@ function WarehouseView({ products = [], orders, onExit }) {
                     setPickerOpenId(null);
                     markSentAndPrint(order, { sentSize: chosen });
                   };
+                  // ── SIZE-LESS DISPLAY PARTNER GUARD (2026-07-29) ───────────
+                  // A Display Partner request is deliberately size-optional —
+                  // the shop wants "a pair for the display", any size. But the
+                  // PAIR THAT ACTUALLY GOES has a size, and until now nobody
+                  // recorded it: 17 of 51 live partner footwear orders (33%)
+                  // carry no size at all. Those orders then fail their dispatch
+                  // transfer with `missing_product_or_size`, and the POS — which
+                  // takes the size from the order and so never prompts — writes
+                  // a sale line with no size. The unit leaves the building and
+                  // the books never lose it.
+                  //
+                  // So the size is captured HERE, at the one moment it becomes a
+                  // fact: when the picker takes a specific pair off the shelf.
+                  // Nothing changes for the shop, and nothing changes for any
+                  // order that already has a size.
+                  const guardProduct = products.find((p) => p && p.id === order.productId) || null;
+                  const needsSentSize = !order.size && !order.sentSize && productIsFootwear(guardProduct);
+                  // Real sizes only — the "_" one-size sentinel is not a choice.
+                  const sizeChoices = (Array.isArray(guardProduct?.sizes) ? guardProduct.sizes : [])
+                    .map(String).map((s) => s.trim()).filter((s) => s && s !== "_");
+                  if (needsSentSize) {
+                    return (
+                      <div style={{ padding:"0 12px 10px 16px" }}>
+                        <div style={{ background:"rgba(251,191,36,.09)", border:"1px solid rgba(251,191,36,.35)",
+                                      borderRadius:10, padding:"9px 11px", marginBottom:8 }}>
+                          <div style={{ fontSize:11.5, fontWeight:800, color:"#FBBF24", letterSpacing:".03em" }}>
+                            WHICH SIZE ARE YOU SENDING?
+                          </div>
+                          <div style={{ fontSize:11, color:"rgba(251,191,36,.75)", marginTop:3, lineHeight:1.45 }}>
+                            This display request came through without a size. Pick the pair you are actually sending —
+                            the till needs it to take the sale off the right hub.
+                          </div>
+                        </div>
+                        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                          {sizeChoices.length ? sizeChoices.map((s) => (
+                            <button key={s} onClick={() => markSentAndPrint(order, { sentSize: s })}
+                              style={{ padding:"10px 14px", borderRadius:10, fontSize:13, fontWeight:800, cursor:"pointer",
+                                       background:"rgba(60,110,255,.14)", border:"1px solid rgba(74,127,255,.45)", color:"#9DBCFF",
+                                       minWidth:52 }}>
+                              <SizeTag size={s} />
+                            </button>
+                          )) : (
+                            <div style={{ fontSize:11.5, color:"rgba(255,255,255,.45)", fontStyle:"italic" }}>
+                              This product has no sizes on record — fix the product first, then send.
+                            </div>
+                          )}
+                          <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)}
+                            style={{ padding:"10px 14px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer",
+                                     background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B" }}>
+                            Out of Stock
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
                   return (
                     <div style={{ padding:"0 12px 10px 16px" }}>
                       {!pickerOpen ? (

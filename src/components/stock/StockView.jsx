@@ -5,6 +5,7 @@
 
 import React from "react";
 import { usePersistedTab, useWide } from "./hooks";
+import DisplayRegister from "./DisplayRegister";
 import { usePermissions } from "../PermissionsContext";
 import { useLocations } from "./useStock";
 import { useSyncStatus } from "./offlineQueue";
@@ -33,6 +34,7 @@ const BASE_TABS = [
   ["locate",    "Where is it"],
   ["setqty",    "Set Qty"],
   ["history",   "History"],
+  ["display",   "Display"],     // Display Register — what sneakers are on the floor, and in what size
   ["adjust",    "Adjust"],
   ["count",     "Count"],
   ["recount",   "Counted"],      // PERMANENT counted-stock review (admin-only; owner decision 2026-07-16)
@@ -109,6 +111,7 @@ export default function StockView({ products = [], onExit }) {
       {tab === "setqty"   && canStock && <SetQuantity {...shared} canStock={canStock} isAdmin={isAdmin} />}
       {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}
       {tab === "history"  && <MovementHistory {...shared} />}
+      {tab === "display"  && <StockErrorBoundary><DisplayRegister products={products} registry={registry} fixedStore={permRecord?.destShop || null} actorName={permRecord?.name || permRecord?.username || null} /></StockErrorBoundary>}
       {tab === "count"    && isAdmin && <CountSession {...shared} />}
       {tab === "recount"  && isAdmin && <StockErrorBoundary><CountedStockReview {...shared} /></StockErrorBoundary>}
     </>
