@@ -13184,41 +13184,30 @@ function ReturnsView({ orders, products = [], onExit }) {
                 Returned
               </span>
             ) : (
-              <button onClick={() => { setExpandedId(isExpanded ? null : order.id); setFailure(null); }}
-                style={{ background: isExpanded ? "rgba(255,255,255,.05)" : "rgba(74,127,255,.14)", border: isExpanded ? "1px solid rgba(255,255,255,.15)" : "1px solid rgba(74,127,255,.4)", color: isExpanded ? "rgba(233,238,255,.75)" : "#9DBCFF", borderRadius:10, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>
-                {isExpanded ? "Cancel" : "Log Return"}
-              </button>
+              // The "Log Return" action is GONE (owner, 2026-07-29): nothing goes
+              // back to a hub, so there is nothing to log. Leaving the button
+              // while its confirm panel says "nothing to send back" was the worst
+              // of both — a control that opens onto a dead end. The row is now
+              // read-only history. submitReturn and the whole reversal path stay
+              // in the file, deliberately unwired; see the note on submitReturn.
+              <span style={{ display:"inline-flex", alignItems:"center", gap:5, color:"rgba(233,238,255,.4)", fontSize:11.5, fontWeight:600, background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, padding:"5px 12px", whiteSpace:"nowrap" }}>
+                Stock stays put
+              </span>
             )}
           </div>
         </div>
         {/* ── RETURN ACTION REMOVED (2026-07-29, owner) ─────────────────────
-            Nothing goes back to a hub any more, so there is no return to confirm:
+            Nothing goes back to a hub, so there is nothing to return:
               • SNEAKERS were never transferred to the shop — the stock stayed
                 booked at the hub, so a pair coming back has nothing to reverse.
-                It just goes on the shelf.
-              • CLOTHING that reaches the shop STAYS there. It becomes shop stock
-                and is sold from the shop; it is not sent back.
-            A button offering to "restock to its origin hub" would move nothing
-            in either case, and a control that claims to act and doesn't is worse
-            than no control.
+              • CLOTHING that reaches the shop STAYS there as shop stock.
+            Both the "Log Return" button and its confirm panel are gone; the row
+            is read-only history now.
 
-            THE CODE IS DELIBERATELY LEFT IN PLACE — submitReturn, the disp_
-            reversal, resolveReturnDestination, logReturn and the returns_log feed
-            are all untouched, and the Returns list still shows history. Only the
-            confirm control is gone. If returning to a hub ever comes back, this
-            is a UI change, not a rebuild.
-
-            The expanded card still opens so the order's detail stays readable. */}
-        {isExpanded && !isReturned && (
-          <div style={{ borderTop:"1px solid rgba(255,255,255,.07)", padding:14, background:"rgba(255,255,255,.02)" }}>
-            <div style={{ display:"flex", gap:9, alignItems:"flex-start" }}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, marginTop:1 }}><polyline points="20 6 9 17 4 12"/></svg>
-              <div style={{ fontSize:12, color:"rgba(233,238,255,.62)", lineHeight:1.5 }}>
-                Nothing to send back — the stock is already where it should be.
-              </div>
-            </div>
-          </div>
-        )}
+            THE CODE IS DELIBERATELY RETAINED — submitReturn, the date-scoped
+            disp_ reversal, resolveReturnDestination, logReturn and the
+            returns_log feed are untouched, and the Returns list still renders.
+            See the note on submitReturn. This is a UI change, not a rebuild. */}
       </div>
     );
   };
