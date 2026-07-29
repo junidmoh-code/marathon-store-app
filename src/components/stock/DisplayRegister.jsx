@@ -32,6 +32,8 @@ import { serverNowIso } from "../../utils/serverTime.js";
 import { productIsFootwear } from "../../utils/footwearLine.js";
 import { SizeTag } from "../SizeTag.jsx";
 import { sellableLocations, labelFor } from "./locations.js";
+import { useLocations } from "./useStock.js";
+import { usePermissions } from "../PermissionsContext.jsx";
 
 const PANEL = "rgba(12,16,30,.55)";
 
@@ -56,6 +58,35 @@ function realSizes(product) {
   return arr.map(String).map((s) => s.trim()).filter((s) => s && s !== "_");
 }
 
+
+// ─── REGISTER A DISPLAY PAIR FROM THE SEND ────────────────────────────────────
+// The size the picker chooses when sending a Display Partner request IS the
+// display registration — same physical fact, recorded once. Called from the
+// Source send flow so the register fills itself as displays go out, instead of
+// staff having to re-enter everything by hand afterwards.
+//
+// Best-effort and never throws: the send is the operation that matters, and a
+// failed register write must not block a parcel leaving the building.
+export async function registerDisplayPair({ store, product, size, actorName, orderId }) {
+  if (!store || !product?.id || !size) return { ok: false, reason: "missing" };
+  try {
+    await update(ref(database, `${REGISTER_PATH}/${store}/${entryKey(product.id, size)}`), {
+      productId: product.id,
+      productName: product.name || "",
+      photoUrl: product.photoUrl || null,
+      size: String(size),
+      registeredAt: serverNowIso(),
+      registeredBy: actorName || null,
+      source: "display_partner_send",
+      orderId: orderId || null,
+    });
+    return { ok: true };
+  } catch (err) {
+    console.warn("[displayRegister] auto-register failed", err);
+    return { ok: false, reason: String(err?.message || err) };
+  }
+}
+
 export function useDisplayRegister(store) {
   const [entries, setEntries] = useState({});
   const [loaded, setLoaded] = useState(false);
@@ -71,7 +102,14 @@ export function useDisplayRegister(store) {
   return { entries, loaded };
 }
 
-export default function DisplayRegister({ products = [], registry, fixedStore = null, actorName = null }) {
+export default function DisplayRegister({ products = [], onExit = null, standalone = false }) {
+  // Self-sufficient: it is its own top-level module, not a Stock sub-tab, so it
+  // sources its own registry and its own user rather than being threaded props.
+  const registry = useLocations();
+  const { permRecord } = usePermissions();
+  const fixedStore = permRecord?.destShop || null;
+  const actorName = permRecord?.name || permRecord?.username || null;
+
   // Shop staff are pinned to their own shop by their /users record; an admin or
   // warehouse user has no destShop and picks. The register is per-shop because
   // a display is a physical shelf in one building.
@@ -101,12 +139,50 @@ export default function DisplayRegister({ products = [], registry, fixedStore = 
 
   const registeredKeys = useMemo(() => new Set(Object.keys(entries || {})), [entries]);
 
+  // ── SEARCH: name, brand, SKU, and BARCODE — including the last few digits ──
+  // Staff read the tail of a barcode off the label rather than the whole 8-digit
+  // code, and the codes are zero-padded ("00022806"), so a leading-zero-stripped
+  // suffix like "22806" — or just "2806" — has to find it. Every per-size barcode
+  // is searched too, so scanning or typing a SIZE code lands on the product and
+  // pre-selects that size.
+  const codesOf = (p) => {
+    const out = [];
+    if (p.barcode) out.push(["", String(p.barcode)]);
+    const bs = p.barcodes && typeof p.barcodes === "object" ? p.barcodes : {};
+    for (const [size, code] of Object.entries(bs)) if (code) out.push([String(size), String(code)]);
+    if (p.sku) out.push(["", String(p.sku)]);
+    return out;
+  };
+  const digitsOnly = (v) => String(v).replace(/\D/g, "");
+  const codeHit = (code, term, termDigits) => {
+    const c = String(code).toLowerCase();
+    if (c.includes(term)) return true;
+    if (!termDigits) return false;
+    const cd = digitsOnly(code);
+    // suffix match ("22806" or "2806" finds "00022806") and leading-zero-stripped
+    return cd.endsWith(termDigits) || cd.replace(/^0+/, "") === termDigits.replace(/^0+/, "");
+  };
+
   const searchResults = useMemo(() => {
     const term = q.trim().toLowerCase();
-    if (!term) return [];
-    return footwear
-      .filter((p) => `${p.name || ""} ${p.brand || ""} ${p.sku || ""}`.toLowerCase().includes(term))
-      .slice(0, 25);
+    const termDigits = digitsOnly(term);
+    // No query -> LIST EVERYTHING, so staff can browse the floor and tick things
+    // off rather than having to know what to type.
+    if (!term) return footwear.slice(0, 400);
+    const scored = [];
+    for (const p of footwear) {
+      const text = `${p.name || ""} ${p.brand || ""} ${p.sku || ""}`.toLowerCase();
+      let matchedSize = null;
+      let hit = text.includes(term);
+      if (termDigits.length >= 3) {
+        for (const [size, code] of codesOf(p)) {
+          if (codeHit(code, term, termDigits)) { hit = true; if (size) matchedSize = size; break; }
+        }
+      }
+      if (hit) scored.push({ p, matchedSize });
+      if (scored.length >= 400) break;
+    }
+    return scored.map((x) => Object.assign(x.p, { __matchedSize: x.matchedSize }));
   }, [footwear, q]);
 
   const addEntry = async (product, size) => {
@@ -148,7 +224,7 @@ export default function DisplayRegister({ products = [], registry, fixedStore = 
     width: "100%", boxSizing: "border-box", minHeight: 50,
   };
 
-  return (
+  const body = (
     <div style={{ padding: "0 14px 40px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "6px 0 10px" }}>
         <span style={{ fontSize: 19, fontWeight: 800, color: "#fff", letterSpacing: "-0.01em" }}>Display Register</span>
@@ -193,7 +269,8 @@ export default function DisplayRegister({ products = [], registry, fixedStore = 
           {searchResults.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 10 }}>
               {searchResults.map((p) => (
-                <button key={p.id} type="button" onClick={() => setPicking(p)}
+                <button key={p.id} type="button"
+                  onClick={() => (p.__matchedSize ? addEntry(p, p.__matchedSize) : setPicking(p))}
                   style={{ display: "flex", alignItems: "center", gap: 11, padding: "9px 11px", textAlign: "left",
                            background: PANEL, border: "1px solid rgba(120,150,255,.16)", borderRadius: 12, cursor: "pointer" }}>
                   <div style={{ width: 42, height: 42, borderRadius: 9, overflow: "hidden", flexShrink: 0,
@@ -206,15 +283,22 @@ export default function DisplayRegister({ products = [], registry, fixedStore = 
                                   textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
                     <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.42)" }}>
                       {p.brand || "no brand"} · {realSizes(p).length} sizes
+                      {(() => {
+                        const on = realSizes(p).filter((s2) => registeredKeys.has(entryKey(p.id, s2)));
+                        return on.length
+                          ? <span style={{ color: "#4ACA7A", fontWeight: 700 }}>{" · on display: " + on.join(", ")}</span>
+                          : null;
+                      })()}
+                      {p.__matchedSize ? <span style={{ color: "#9DBCFF", fontWeight: 700 }}>{" · code → size " + p.__matchedSize}</span> : null}
                     </div>
                   </div>
                 </button>
               ))}
             </div>
           )}
-          {q.trim() && searchResults.length === 0 && (
+          {searchResults.length === 0 && (
             <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.4)", padding: "12px 2px" }}>
-              No sneaker matches “{q.trim()}”.
+              {q.trim() ? `No sneaker matches “${q.trim()}”.` : "No sneakers in the catalogue."}
             </div>
           )}
         </>
@@ -300,6 +384,25 @@ export default function DisplayRegister({ products = [], registry, fixedStore = 
           </div>
         )}
       </div>
+    </div>
+  );
+
+  if (!standalone) return body;
+  return (
+    <div style={{ minHeight: "100vh", background: "#000", color: "#fff",
+                  fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif",
+                  maxWidth: 720, margin: "0 auto", paddingBottom: 40 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "50px 14px 12px" }}>
+        <div onClick={onExit} style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)",
+                                       borderRadius: 10, padding: "8px 14px", fontSize: 12,
+                                       color: "rgba(255,255,255,.7)", cursor: "pointer" }}>← Back</div>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,.4)", letterSpacing: ".5px" }}>Module</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#4A7FFF", letterSpacing: ".5px" }}>DISPLAY</div>
+        </div>
+        <div style={{ width: 78 }} />
+      </div>
+      {body}
     </div>
   );
 }

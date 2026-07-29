@@ -28,6 +28,7 @@ import { displayChecksVisibleForViewer } from "./config/displayChecks";
 import StockView from "./components/stock/StockView";
 import Hub2RefillQueue from "./components/stock/Hub2RefillQueue";
 import HealthView from "./components/stock/HealthView";
+import DisplayRegister, { registerDisplayPair } from "./components/stock/DisplayRegister";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { input as stockInput } from "./components/stock/ui";
@@ -243,7 +244,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", DISPLAY_REGISTER: "display_register" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2460,6 +2461,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       // Inventory Health — the AI refill engine's control centre, promoted to its
       // own primary card (owner decision 2026-07-12). Same access as Stock.
       canAccessStock                                           && { key:"health", icon:RoleIcons.insights, name:"Inventory Health", desc:"Refill engine & exceptions", onClick:()=>onSelect(ROLES.HEALTH) },
+      true                                                     && { key:"display_register", icon:RoleIcons.display, name:"Display Register", desc:"What's on the floor, and in what size", onClick:()=>onSelect(ROLES.DISPLAY_REGISTER) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
       isSuperAdmin && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc:"Photos · Names · Reorder · Voice", onClick:()=>onSelect(ROLES.AI_STUDIO) },
@@ -9285,7 +9287,16 @@ function WarehouseView({ products = [], orders, onExit }) {
                         </div>
                         <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
                           {sizeChoices.length ? sizeChoices.map((s) => (
-                            <button key={s} onClick={() => markSentAndPrint(order, { sentSize: s })}
+                            <button key={s} onClick={() => {
+                                // The size chosen here IS the display registration —
+                                // one physical fact, recorded once. Fire-and-forget so
+                                // it can never hold up the send.
+                                registerDisplayPair({
+                                  store: order.destShop, product: guardProduct, size: s,
+                                  actorName: null, orderId: order.id,
+                                }).catch(() => {});
+                                markSentAndPrint(order, { sentSize: s });
+                              }}
                               style={{ padding:"10px 14px", borderRadius:10, fontSize:13, fontWeight:800, cursor:"pointer",
                                        background:"rgba(60,110,255,.14)", border:"1px solid rgba(74,127,255,.45)", color:"#9DBCFF",
                                        minWidth:52 }}>
@@ -16330,6 +16341,7 @@ function AppInner() {
   else if (role === ROLES.DISPLAY_CHECKS) view = displayChecksRouteOpen ? <DisplayChecks onExit={() => setRole(null)} products={products} /> : null;
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.DISPLAY_REGISTER) view = <DisplayRegister products={products} onExit={() => setRole(null)} standalone />;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
