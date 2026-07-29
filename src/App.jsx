@@ -9666,6 +9666,11 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
   // Does this refill need a size picked before it can be marked done? Only for
   // FOOTWEAR that carries no size anywhere on the order — clothing and one-size
   // items are untouched, and a partner order that already named a size just uses it.
+  // Two-step confirm for a size-less footwear refill. A single tap on a size
+  // button marked the task done irreversibly — too easy to fumble on a phone in
+  // a warehouse. Pick, see it selected, then Send.
+  const [sizeSheet, setSizeSheet] = useState(null);   // { order, options, picked }
+
   const refillSizeChoices = (order) => {
     const known = order.sentSize || order.size || null;
     const prod = products.find((p) => p && p.id === order.productId) || null;
@@ -9731,6 +9736,66 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
         </div>
       )}
 
+      {/* ── SIZE CONFIRM SHEET ──────────────────────────────────────────────
+          Pick a size, see it selected, then Send. Two deliberate actions, so a
+          mis-tap costs nothing — it was one tap and irreversible before. */}
+      {sizeSheet && (
+        <div onClick={() => setSizeSheet(null)}
+             style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.78)", backdropFilter:"blur(4px)",
+                      display:"flex", alignItems:"center", justifyContent:"center", padding:16, zIndex:80 }}>
+          <div onClick={(e) => e.stopPropagation()}
+               style={{ background:"rgba(10,13,24,.97)", border:"1px solid rgba(74,127,255,.32)", borderRadius:18,
+                        padding:"20px 20px 16px", maxWidth:420, width:"100%", boxShadow:"0 24px 60px rgba(0,0,0,.6)" }}>
+            <div style={{ fontSize:16.5, fontWeight:800, color:"#fff", marginBottom:3 }}>
+              Which size are you sending?
+            </div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", lineHeight:1.5, marginBottom:14 }}>
+              #{sizeSheet.order.id} · {sizeSheet.order.productName}
+              <br />
+              This goes on the display register, and the till uses it to take the sale off the right hub.
+            </div>
+
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>
+              {sizeSheet.options.length ? sizeSheet.options.map((sz) => {
+                const on = sizeSheet.picked === sz;
+                return (
+                  <button key={sz} onClick={() => setSizeSheet((v) => ({ ...v, picked: sz }))}
+                    style={{ padding:"13px 17px", borderRadius:12, fontSize:15, fontWeight:800, cursor:"pointer", minWidth:56,
+                             background: on ? "#4A7FFF" : "rgba(74,127,255,.10)",
+                             border: `2px solid ${on ? "#4A7FFF" : "rgba(74,127,255,.30)"}`,
+                             color: on ? "#fff" : "#9DBCFF",
+                             boxShadow: on ? "0 0 16px rgba(74,127,255,.35)" : "none",
+                             transition:"background .12s, border-color .12s" }}>
+                    <SizeTag size={sz} />
+                  </button>
+                );
+              }) : (
+                <div style={{ fontSize:12.5, color:"#FBBF24" }}>
+                  This product has no sizes on record — fix the product first.
+                </div>
+              )}
+            </div>
+
+            <div style={{ display:"flex", gap:9, justifyContent:"flex-end", flexWrap:"wrap" }}>
+              <button onClick={() => setSizeSheet(null)}
+                style={{ background:"transparent", border:"1px solid rgba(255,255,255,.18)", color:"rgba(233,238,255,.7)",
+                         borderRadius:11, padding:"11px 17px", fontSize:13, fontWeight:700, cursor:"pointer" }}>
+                Cancel
+              </button>
+              <button
+                disabled={!sizeSheet.picked}
+                onClick={() => { const { order, picked } = sizeSheet; setSizeSheet(null); onSetStatus(order, "refilled", picked); }}
+                style={{ background: sizeSheet.picked ? "#4ADE80" : "rgba(255,255,255,.06)",
+                         border:"none", color: sizeSheet.picked ? "#04351a" : "rgba(233,238,255,.32)",
+                         borderRadius:11, padding:"11px 22px", fontSize:13.5, fontWeight:800,
+                         cursor: sizeSheet.picked ? "pointer" : "not-allowed" }}>
+                {sizeSheet.picked ? `Send size ${sizeSheet.picked}` : "Pick a size"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Due cards — grouped by day, oldest-first within each bucket.
           includeOlder=true preserves the Phase 9.5 "never lose a due refill"
           semantic by collapsing >3-day-old tasks into a separate Older bucket. */}
@@ -9756,44 +9821,14 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
                   <div style={{ fontWeight:700, color:"#fff", fontSize:13 }}>{order.productName}{order.size || order.sentSize ? ` — Size ${formatSize(sourceDisplaySize(order))}` : ""}</div>
                 </div>
               </div>
-              {(() => {
-                const sizes = refillSizeChoices(order);
-                // Footwear with no size anywhere on the order: the picker must say
-                // which pair is going out before this can be marked done.
-                if (!sizes.needed) return null;
-                return (
-                  <div style={{ background:"rgba(251,191,36,.09)", border:"1px solid rgba(251,191,36,.35)",
-                                borderRadius:10, padding:"9px 11px", marginBottom:9 }}>
-                    <div style={{ fontSize:11.5, fontWeight:800, color:"#FBBF24", letterSpacing:".03em" }}>
-                      WHICH SIZE ARE YOU PUTTING ON THE DISPLAY?
-                    </div>
-                    <div style={{ fontSize:11, color:"rgba(251,191,36,.75)", marginTop:3, lineHeight:1.45 }}>
-                      This request came through without a size. Pick the pair you are actually sending —
-                      it goes on the display register, and the till needs it to take the sale off the right hub.
-                    </div>
-                    <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:9 }}>
-                      {sizes.options.length ? sizes.options.map((sz) => (
-                        <button key={sz} onClick={() => onSetStatus(order, "refilled", sz)}
-                          style={{ padding:"9px 13px", borderRadius:9, fontSize:12.5, fontWeight:800, cursor:"pointer",
-                                   background:"rgba(60,110,255,.14)", border:"1px solid rgba(74,127,255,.45)", color:"#9DBCFF", minWidth:46 }}>
-                          <SizeTag size={sz} />
-                        </button>
-                      )) : (
-                        <span style={{ fontSize:11.5, color:"rgba(255,255,255,.5)", fontStyle:"italic" }}>
-                          No sizes on this product — fix the product record first.
-                        </span>
-                      )}
-                      <button onClick={() => onSetStatus(order, "stockDepleted")}
-                        style={{ padding:"9px 13px", borderRadius:9, fontSize:12, fontWeight:700, cursor:"pointer",
-                                 background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.4)", color:"#F87171" }}>
-                        Stock Depleted
-                      </button>
-                    </div>
-                  </div>
-                );
-              })()}
-              <div style={{ display:"flex", gap:8, ...(refillSizeChoices(order).needed ? { display:"none" } : {}) }}>
-                <button onClick={() => onSetStatus(order, "refilled", order.sentSize || order.size || null)}
+              <div style={{ display:"flex", gap:8 }}>
+                <button onClick={() => {
+                          const sz = refillSizeChoices(order);
+                          // Footwear with no size on the order opens the confirm
+                          // sheet; everything else keeps the direct action.
+                          if (sz.needed) setSizeSheet({ order, options: sz.options, picked: null });
+                          else onSetStatus(order, "refilled", order.sentSize || order.size || null);
+                        }}
                         style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.4)", color:"#4ADE80" }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                   Refilled
