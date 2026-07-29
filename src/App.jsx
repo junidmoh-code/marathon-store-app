@@ -8821,7 +8821,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // 'refilled' (display replenished) or 'stockDepleted' (no inventory left,
   // feeds Phase 11 Insights). displayRefilledBy stores the hub label
   // (anonymous auth has no email; selectedHub is the meaningful signal).
-  const setDisplayRefillStatus = (order, status) => {
+  const setDisplayRefillStatus = (order, status, refillSize = null) => {
     const now = serverNowIso();
     const patch = {
       displayRefillStatus: status,
@@ -8831,6 +8831,26 @@ function WarehouseView({ products = [], orders, onExit }) {
     if (status === "refilled") {
       patch.displayRefilledAt            = now;
       patch.displayRefillStockDepletedAt = null;
+      // ── THE SIZE OF THE PAIR NOW ON THE DISPLAY ────────────────────────────
+      // This is the moment a specific pair goes onto the shelf, so this is where
+      // its size becomes a fact worth recording. A Display Partner REQUEST is
+      // deliberately size-optional ("send a pair, any size"); the pair itself
+      // never is. Recording it here is what lets the register say what is
+      // actually on the floor — and what stops the sale of that pair being
+      // unattributable to a hub cell later.
+      if (refillSize) {
+        patch.displayRefillSize = String(refillSize);
+        // Feed the register from the same action — one physical fact, recorded
+        // once. Fire-and-forget: the refill is what matters and a register write
+        // must never block it.
+        const prod = products.find((p) => p && p.id === order.productId) || null;
+        if (order.destShop && prod) {
+          registerDisplayPair({
+            store: order.destShop, product: prod, size: refillSize,
+            actorName: selectedHub, orderId: order.id,
+          }).catch(() => {});
+        }
+      }
     } else if (status === "stockDepleted") {
       patch.displayRefillStockDepletedAt = now;
       patch.displayRefilledAt            = null;
@@ -9421,6 +9441,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             setShowCompleted={setShowRefilledCompleted}
             onSetStatus={setDisplayRefillStatus}
             onUndo={undoDisplayRefill}
+            products={products}
             nowTick={nowTick}
             selectedHub={selectedHub}
           />
@@ -9641,7 +9662,18 @@ function WarehouseView({ products = [], orders, onExit }) {
 // toggle reveals both kinds with status-colored borders and a per-row Undo.
 // nowTick is the parent's 30s ticker — used for "waiting Xm" chips so they
 // update live without a render storm.
-function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setShowCompleted, onSetStatus, onUndo, nowTick, selectedHub }) {
+function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setShowCompleted, onSetStatus, onUndo, nowTick, selectedHub, products = [] }) {
+  // Does this refill need a size picked before it can be marked done? Only for
+  // FOOTWEAR that carries no size anywhere on the order — clothing and one-size
+  // items are untouched, and a partner order that already named a size just uses it.
+  const refillSizeChoices = (order) => {
+    const known = order.sentSize || order.size || null;
+    const prod = products.find((p) => p && p.id === order.productId) || null;
+    if (known || !productIsFootwear(prod)) return { needed: false, options: [] };
+    const options = (Array.isArray(prod?.sizes) ? prod.sizes : [])
+      .map(String).map((x) => x.trim()).filter((x) => x && x !== "_");
+    return { needed: true, options };
+  };
   const fmtWaiting = (iso) => {
     const ms = nowTick - new Date(iso).getTime();
     const mins = Math.floor(ms / 60000);
@@ -9724,8 +9756,44 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
                   <div style={{ fontWeight:700, color:"#fff", fontSize:13 }}>{order.productName}{order.size || order.sentSize ? ` — Size ${formatSize(sourceDisplaySize(order))}` : ""}</div>
                 </div>
               </div>
-              <div style={{ display:"flex", gap:8 }}>
-                <button onClick={() => onSetStatus(order, "refilled")}
+              {(() => {
+                const sizes = refillSizeChoices(order);
+                // Footwear with no size anywhere on the order: the picker must say
+                // which pair is going out before this can be marked done.
+                if (!sizes.needed) return null;
+                return (
+                  <div style={{ background:"rgba(251,191,36,.09)", border:"1px solid rgba(251,191,36,.35)",
+                                borderRadius:10, padding:"9px 11px", marginBottom:9 }}>
+                    <div style={{ fontSize:11.5, fontWeight:800, color:"#FBBF24", letterSpacing:".03em" }}>
+                      WHICH SIZE ARE YOU PUTTING ON THE DISPLAY?
+                    </div>
+                    <div style={{ fontSize:11, color:"rgba(251,191,36,.75)", marginTop:3, lineHeight:1.45 }}>
+                      This request came through without a size. Pick the pair you are actually sending —
+                      it goes on the display register, and the till needs it to take the sale off the right hub.
+                    </div>
+                    <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:9 }}>
+                      {sizes.options.length ? sizes.options.map((sz) => (
+                        <button key={sz} onClick={() => onSetStatus(order, "refilled", sz)}
+                          style={{ padding:"9px 13px", borderRadius:9, fontSize:12.5, fontWeight:800, cursor:"pointer",
+                                   background:"rgba(60,110,255,.14)", border:"1px solid rgba(74,127,255,.45)", color:"#9DBCFF", minWidth:46 }}>
+                          <SizeTag size={sz} />
+                        </button>
+                      )) : (
+                        <span style={{ fontSize:11.5, color:"rgba(255,255,255,.5)", fontStyle:"italic" }}>
+                          No sizes on this product — fix the product record first.
+                        </span>
+                      )}
+                      <button onClick={() => onSetStatus(order, "stockDepleted")}
+                        style={{ padding:"9px 13px", borderRadius:9, fontSize:12, fontWeight:700, cursor:"pointer",
+                                 background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.4)", color:"#F87171" }}>
+                        Stock Depleted
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+              <div style={{ display:"flex", gap:8, ...(refillSizeChoices(order).needed ? { display:"none" } : {}) }}>
+                <button onClick={() => onSetStatus(order, "refilled", order.sentSize || order.size || null)}
                         style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.4)", color:"#4ADE80" }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                   Refilled
