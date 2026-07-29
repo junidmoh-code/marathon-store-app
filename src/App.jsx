@@ -12704,7 +12704,30 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     () => todayRestockOrdersAll.filter(o => (o.hub || "hub1") === hub),
     [todayRestockOrdersAll, hub]
   );
-  const rawCounts = useMemo(() => computeCollectedCounts(todayRestockOrders), [todayRestockOrders]);
+  // ── SOURCE IS NOW SALE-DRIVEN (2026-07-30, owner) ─────────────────────────
+  // It used to count ORDERS at status READY|COLLECTED. That meant a shoe entered
+  // the restock list the moment the warehouse marked it Ready — before any
+  // customer had touched it — so a pair that was fetched, shown and refused was
+  // already a restock request. The only way one ever left the list was
+  // `!returnedTodayIds.has(o.id)`, populated solely by the Return card. With
+  // returns gone (nothing goes back to a hub any more) that escape hatch went
+  // with it, and every fetched pair would have become a permanent phantom
+  // request.
+  //
+  // The honest trigger is a SALE, and it already exists: the POS writes
+  // restock_log/{SA-date} on every collected order (logOrderCollection.js,
+  // source:"pos") carrying productName, size, hub and orderNumber — the same
+  // shape computeRestockCounts already expects. Both helpers were in the file,
+  // written and unused. So Source now counts what actually SOLD.
+  //
+  // A refused pair simply never generates an entry, which is why no reversal is
+  // needed: there is nothing to undo, rather than something to remember to undo.
+  const restockLogToday = useRestockLogRaw(todayDate);
+  const restockLogForHub = useMemo(
+    () => (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === hub),
+    [restockLogToday, hub],
+  );
+  const rawCounts = useMemo(() => computeRestockCounts(restockLogForHub), [restockLogForHub]);
 
   // All Source responses: { date: { productKey: { size: { response, respondedOn } } } }
   // History tab derives its straggler list from this + live orders (5-day window).
