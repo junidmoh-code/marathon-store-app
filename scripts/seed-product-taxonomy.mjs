@@ -59,9 +59,14 @@ const foreign = liveKeys.filter((k) => !seedKeys.includes(k));   // console-adde
 
 // Seeded categories whose LIVE value has drifted from the checked-in seed —
 // i.e. someone edited them in the console. These are what --refresh overwrites.
+// Key PRESENCE is checked separately from the value's truthiness. A console
+// value of false / 0 / "" is still a present key, so it is neither "added" nor
+// (under a truthiness test) "drifted" — the default run would report nothing to
+// do while a seeded category sat there unusable. (CodeRabbit, PR #280.)
+const liveCats = (existing && existing.cats) || {};
 const drifted = seedKeys.filter((k) => {
-  const live = existing && existing.cats && existing.cats[k];
-  return live && JSON.stringify(canonical(live)) !== JSON.stringify(canonical(TAXONOMY_SEED.cats[k]));
+  if (!Object.prototype.hasOwnProperty.call(liveCats, k)) return false;   // absent -> "added", not drift
+  return JSON.stringify(canonical(liveCats[k])) !== JSON.stringify(canonical(TAXONOMY_SEED.cats[k]));
 });
 
 // Compare what RTDB can actually STORE, not what the seed object literally
@@ -84,6 +89,7 @@ console.log(`node:        /${NODE}`);
 console.log(`live:        ${existing ? `${liveKeys.length} categories (version ${existing.version})` : "ABSENT — first seed"}`);
 console.log(`seed:        ${seedKeys.length} categories (version ${TAXONOMY_SEED.version})`);
 console.log(`mode:        ${REPLACE ? "REPLACE (overwrite seeded + prune extras)" : REFRESH ? "REFRESH (overwrite the seeded 31)" : "add-missing-only (default — console edits preserved)"}`);
+console.log(`tops/version: ${!existing ? "written (first seed)" : REFRESH ? "OVERWRITTEN (--refresh)" : "left as-is"}`);
 
 if (existing) {
   if (added.length) console.log(`  + ${added.join(", ")}   ← will be created`);
@@ -120,12 +126,21 @@ if (DRY) {
 // /cats is untouched. serverTimestamp, not a client clock — the 2026-07-17
 // order-counter incident is the standing reminder that till and laptop clocks
 // lie.
+// SEED-LEVEL METADATA (tops / version) IS NOT TOUCHED BY THE DEFAULT RUN.
+// Writing it unconditionally would have reset console-edited `tops` — and
+// advanced the reported version — the moment anyone added one absent category,
+// flatly contradicting the "console edits preserved" guarantee in the header.
+// It is written only on a FIRST seed (nothing live yet) or when explicitly
+// forced. (CodeRabbit, PR #280 — Major.)
+const seedMetaWrite = !existing || REFRESH;
 const updates = {
-  [`${NODE}/version`]: TAXONOMY_SEED.version,
-  [`${NODE}/tops`]: TAXONOMY_SEED.tops,
   [`${NODE}/updatedAt`]: admin.database.ServerValue.TIMESTAMP,
   [`${NODE}/updatedBy`]: "seed-product-taxonomy",
 };
+if (seedMetaWrite) {
+  updates[`${NODE}/version`] = TAXONOMY_SEED.version;
+  updates[`${NODE}/tops`] = TAXONOMY_SEED.tops;
+}
 // Default writes ONLY categories that are absent live. --refresh also rewrites
 // the ones that exist, discarding any console edit to them.
 const toWrite = REFRESH ? seedKeys : added;

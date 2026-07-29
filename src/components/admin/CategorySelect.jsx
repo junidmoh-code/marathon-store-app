@@ -27,12 +27,19 @@ export default function CategorySelect({
   const [focus, setFocus] = useState(false);
   const selectRef = useRef(null);
   const groups = useMemo(() => groupedCategories(registry), [registry]);
-  const selected = catByKey(registry, value);
+  // A selected category must be ASSIGNABLE, not merely present. catByKey still
+  // resolves a retired or misconfigured entry, so without this a console edit
+  // made while the form was open would leave the picker showing a valid-looking
+  // selection, let the operator fill in the whole form, and only fail at save.
+  // Treat it as unavailable and make them reselect. (CodeRabbit, PR #280.)
+  const resolved = catByKey(registry, value);
+  const selectable = !!value && isAssignable(registry, value);
+  const selected = selectable ? resolved : null;
 
-  // A key that is no longer in the registry (retired category on an old draft)
-  // still renders its raw key rather than silently showing "Select a category…"
-  // — an operator must be able to SEE that something unexpected is selected.
-  const orphan = value && !selected;
+  // A key that is no longer usable — gone from the registry, retired, or
+  // misconfigured — renders its raw key rather than silently showing
+  // "Select a category…". The operator must SEE that the selection is bad.
+  const orphan = !!value && !selected;
 
   const borderColor = invalid ? "#F87171" : focus ? BLUE : "rgba(74,127,255,.34)";
 
@@ -59,7 +66,9 @@ export default function CategorySelect({
           color: selected || orphan ? "#fff" : "rgba(255,255,255,.40)",
           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         }}>
-          {selected ? selected.label : orphan ? value : placeholder}
+          {selected ? selected.label
+            : orphan ? `${resolved ? resolved.label : value} — unavailable, pick again`
+            : placeholder}
         </span>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={focus || selected ? BLUE : "rgba(255,255,255,.35)"}
              strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
@@ -85,7 +94,7 @@ export default function CategorySelect({
         }}
       >
         <option value="" disabled>{placeholder}</option>
-        {orphan && <option value={value}>{value} (retired)</option>}
+        {orphan && <option value={value} disabled>{resolved ? resolved.label : value} — unavailable</option>}
         {groups.map((g) => (
           <optgroup key={g.top} label={g.label.toUpperCase()}>
             {g.options.map((c) => {

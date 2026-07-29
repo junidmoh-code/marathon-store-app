@@ -54,7 +54,7 @@ import { printOrderSlips } from "./print/orderSlip";
 // The registry lives at /settings/productTaxonomy and is read LIVE, so adding a
 // category later is a data edit — no code change, no deploy. `legacyFor` is the
 // derivation that keeps newly-created products inside every existing automation.
-import { catByKey, sizesOf, isOneSize, legacyFor, needsAssignment } from "./utils/productTaxonomy";
+import { catByKey, sizesOf, isOneSize, legacyFor, needsAssignment, isAssignable } from "./utils/productTaxonomy";
 import { buildNewProduct } from "./utils/newProductRecord";
 import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
@@ -4820,7 +4820,16 @@ function AdminView({ products, orders, onExit }) {
   const { registry: taxonomy, source: taxonomySource } = useTaxonomy();
   // The chosen category's registry record — drives the size grid, the one-size
   // branch, the hub rules and the legacy derivation on save.
-  const selectedCat = useMemo(() => catByKey(taxonomy, form.categoryKey), [taxonomy, form.categoryKey]);
+  // ASSIGNABLE, not merely resolvable. catByKey still returns a retired or
+  // misconfigured category, so gating the form on its mere existence would let
+  // an operator fill everything in and only discover the problem at save — and
+  // the size grid would render off a category that cannot be used. legacyFor
+  // already refuses these; this makes the FORM agree, so the refusal is visible
+  // at the point of choosing rather than at the end. (CodeRabbit, PR #280.)
+  const selectedCat = useMemo(
+    () => (isAssignable(taxonomy, form.categoryKey) ? catByKey(taxonomy, form.categoryKey) : null),
+    [taxonomy, form.categoryKey],
+  );
   const formSizes = useMemo(() => (selectedCat ? sizesOf(selectedCat) : []), [selectedCat]);
   const formOneSize = !!selectedCat && isOneSize(selectedCat);
   // Legacy values this category will write. Derived here (not at save time) so
