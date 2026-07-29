@@ -13005,6 +13005,15 @@ function ReturnsView({ orders, products = [], onExit }) {
   // ledgered:false instead of guessing a move that would corrupt a hub cell.
   // returns_log keeps its role as the human report feed, now enriched with
   // productId/qty/ledgered so it can always be audited against the ledger.
+  // RETAINED, NOT WIRED (2026-07-29, owner). The Returns list still renders and
+  // returns_log still feeds Insights, but no UI calls this: nothing goes back to
+  // a hub any more — sneakers never left it, and clothing that reaches the shop
+  // stays as shop stock. Kept whole (with resolveReturnDestination, the disp_
+  // reversal and logReturn) because "returning to a hub" is a policy that could
+  // come back, and re-deriving this reversal logic from scratch — including the
+  // date-scoped disp_ id and the negative-tolerant reversal — would be a far
+  // bigger job than re-attaching a button. Do not delete as dead code.
+  // eslint-disable-next-line no-unused-vars
   const submitReturn = async (order) => {
     const scrub = (s) => s.replace(/[.#$[\]/\s:]/g, "_");
     const dispId = scrub(`disp_${order.id}_${order.createdAt || ""}`);
@@ -13182,40 +13191,33 @@ function ReturnsView({ orders, products = [], onExit }) {
             )}
           </div>
         </div>
-        {/* ── NO RETURN ACTION FOR FOOTWEAR (2026-07-29) ────────────────────
-            Sneakers are never transferred to the shop any more — the stock stays
-            booked at its hub — so a returned pair has NOTHING to reverse. The
-            shoe goes back on the shelf and the ledger was already right.
-            Offering "Confirm return · restocks to its origin hub" would be a
-            button that claims to move stock and doesn't: the fastest way to
-            teach staff the screen lies.
+        {/* ── RETURN ACTION REMOVED (2026-07-29, owner) ─────────────────────
+            Nothing goes back to a hub any more, so there is no return to confirm:
+              • SNEAKERS were never transferred to the shop — the stock stayed
+                booked at the hub, so a pair coming back has nothing to reverse.
+                It just goes on the shelf.
+              • CLOTHING that reaches the shop STAYS there. It becomes shop stock
+                and is sold from the shop; it is not sent back.
+            A button offering to "restock to its origin hub" would move nothing
+            in either case, and a control that claims to act and doesn't is worse
+            than no control.
 
-            CLOTHING KEEPS IT. Clothing still ships to the shop on Send, so its
-            return still has a real hub→shop transfer to reverse. Removing the
-            action outright would strand clothing at the shop with no way back. */}
+            THE CODE IS DELIBERATELY LEFT IN PLACE — submitReturn, the disp_
+            reversal, resolveReturnDestination, logReturn and the returns_log feed
+            are all untouched, and the Returns list still shows history. Only the
+            confirm control is gone. If returning to a hub ever comes back, this
+            is a UI change, not a rebuild.
+
+            The expanded card still opens so the order's detail stays readable. */}
         {isExpanded && !isReturned && (
-          isFootwearLine(products.find((p) => p && p.id === order.productId) || null, order.sentSize ?? order.size) ? (
-            <div style={{ borderTop:"1px solid rgba(255,255,255,.07)", padding:14, background:"rgba(255,255,255,.02)" }}>
-              <div style={{ display:"flex", gap:9, alignItems:"flex-start" }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, marginTop:1 }}><polyline points="20 6 9 17 4 12"/></svg>
-                <div style={{ fontSize:12, color:"rgba(233,238,255,.62)", lineHeight:1.5 }}>
-                  Nothing to return — this pair was never taken off <strong style={{ color:"#fff" }}>its hub</strong>.
-                  Put it back on the shelf; the stock is already correct.
-                </div>
+          <div style={{ borderTop:"1px solid rgba(255,255,255,.07)", padding:14, background:"rgba(255,255,255,.02)" }}>
+            <div style={{ display:"flex", gap:9, alignItems:"flex-start" }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, marginTop:1 }}><polyline points="20 6 9 17 4 12"/></svg>
+              <div style={{ fontSize:12, color:"rgba(233,238,255,.62)", lineHeight:1.5 }}>
+                Nothing to send back — the stock is already where it should be.
               </div>
             </div>
-          ) : (
-            <div style={{ borderTop:"1px solid rgba(255,255,255,.07)", padding:14, background:"rgba(74,127,255,.04)" }}>
-              <div style={{ display:"flex", gap:9, alignItems:"flex-start", marginBottom:12 }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, marginTop:1 }}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                <div style={{ fontSize:12, color:"rgba(233,238,255,.7)", lineHeight:1.5 }}>Confirming reverses the dispatch and restocks <strong style={{ color:"#fff" }}>Size {order.size}</strong> to its origin hub.</div>
-              </div>
-              <button onClick={() => submitReturn(order)}
-                style={{ width:"100%", background:"rgba(74,127,255,.92)", border:"none", color:"#fff", borderRadius:10, padding:"11px", fontSize:13, fontWeight:800, cursor:"pointer", letterSpacing:".01em" }}>
-                Confirm return · #{order.id}
-              </button>
-            </div>
-          )
+          </div>
         )}
       </div>
     );
