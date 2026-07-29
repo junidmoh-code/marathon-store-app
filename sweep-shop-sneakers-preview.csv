@@ -1,0 +1,626 @@
+op,shop,productId,name,size,qty,destination,basis
+return,marathon-pe,p1777895620932,"Nike Air Force 1 Cream Black Grey",7,2,hub1,holds-stock
+return,marathon-pe,p1777895620932,"Nike Air Force 1 Cream Black Grey",8,1,hub1,holds-stock
+return,marathon-pe,p1777897007208,"Nike Air Force 1 Low Drake NOCTA Certified Lover Boy Palest Purple",6,1,hub1,holds-stock
+return,marathon-pe,p1777897007208,"Nike Air Force 1 Low Drake NOCTA Certified Lover Boy Palest Purple",11,1,hub1,holds-stock
+return,marathon-pe,p1777897113164,"Nike Air Zoom G.T. Cut 2 White",6,2,hub1,hubs-field
+return,marathon-pe,p1777898570372,"Nike Air Force 1 Wild Green",8,2,hub1,holds-stock
+return,marathon-pe,p1777899156322,"Nike Zoom Vomero Roam Brown",6,1,hub1,holds-stock
+return,marathon-pe,p1777899156322,"Nike Zoom Vomero Roam Brown",7,1,hub1,holds-stock
+return,marathon-pe,p1777899156322,"Nike Zoom Vomero Roam Brown",10,1,hub1,holds-stock
+return,marathon-pe,p1777901502341,"Nike Mind 002 Grey",6,1,hub1,holds-stock
+return,marathon-pe,p1777905466361,"Air Jordan 1 Low Zion Williamson Brown and Green",8,2,hub2,holds-stock
+return,marathon-pe,p1777905846572,"Nike Air Max Plus White",7,1,hub1,holds-stock
+return,marathon-pe,p1777906553465,"Nike Air Force 1 White Green Year Of The Snake",6,1,hub1,holds-stock
+return,marathon-pe,p1777906656675,"Nike Zoom Vomero Roam Black White",3,1,hub1,holds-stock
+return,marathon-pe,p1777906656675,"Nike Zoom Vomero Roam Black White",6,2,hub1,holds-stock
+return,marathon-pe,p1777906656675,"Nike Zoom Vomero Roam Black White",9,1,hub1,holds-stock
+return,marathon-pe,p1777966616806,"Nike Free Metcon Black White",6,2,hub1,holds-stock
+return,marathon-pe,p1777966616806,"Nike Free Metcon Black White",8,1,hub1,holds-stock
+return,marathon-pe,p1777967160850,"On Cloudzone Kith Grey",9,1,hub1,holds-stock
+return,marathon-pe,p1777968034212,"Nike Air Max 90 Dia de los Muertos Orange",4,1,hub1,holds-stock
+return,marathon-pe,p1777968034212,"Nike Air Max 90 Dia de los Muertos Orange",5,1,hub1,holds-stock
+return,marathon-pe,p1777968964541,"Nike Air Max SNDR GORE-TEX Black",5,1,hub1,holds-stock
+return,marathon-pe,p1777970045917,"Nike Waffle Racer Black White Volt",4,1,hub1,holds-stock
+return,marathon-pe,p1777971508405,"On Cloud Horizon 2 Black",6,1,hub1,hubs-field
+return,marathon-pe,p1777971838346,"On Cloudventure 2 Gunmetal",9,1,hub1,holds-stock
+return,marathon-pe,p1777972826888,"On Cloudzone White Black",5,1,hub1,holds-stock
+return,marathon-pe,p1777973172598,"On Cloudsurfer Black",6,1,hub1,holds-stock
+return,marathon-pe,p1777974005928,"Adidas Montreal 76 Yellow Black",10,1,hub2,holds-stock
+return,marathon-pe,p1777974019392,"On Cloudvista 2 White Navy Grey",7,1,hub1,holds-stock
+return,marathon-pe,p1777974019392,"On Cloudvista 2 White Navy Grey",10,1,hub1,holds-stock
+return,marathon-pe,p1777974689357,"Adidas x Wales Bonner Samba Blue Crocodile",7,1,hub2,holds-stock
+return,marathon-pe,p1777974854269,"Adidas Samba Día De Muertos",7,1,hub2,holds-stock
+return,marathon-pe,p1777975038083,"New Balance 1000 Gold",9,1,hub2,holds-stock
+return,marathon-pe,p1777975415520,"New Balance 9060 Navy Beige",8,3,hub2,holds-stock
+return,marathon-pe,p1777975578419,"New Balance 9060 Pink",8,1,hub2,holds-stock
+return,marathon-pe,p1777975675096,"Nike Zoom Vomero 5 Silver and Blue",6,1,hub1,holds-stock
+return,marathon-pe,p1777976417120,"Nike Cortez White Pink",3,1,hub1,holds-stock
+return,marathon-pe,p1777976809912,"Lacoste L-Guard Breaker Black White",8,3,hub1,holds-stock
+return,marathon-pe,p1777977771776,"Lacoste Audyssol Green",6,1,hub1,holds-stock
+return,marathon-pe,p1777977771776,"Lacoste Audyssol Green",8,1,hub1,holds-stock
+return,marathon-pe,p1777978758562,"Lacoste Audyssor Green Orange",10,3,hub1,holds-stock
+return,marathon-pe,p1777978758562,"Lacoste Audyssor Green Orange",11,1,hub1,holds-stock
+return,marathon-pe,p1777979256775,"Nike Air Force 1 '07 Essential Summit White",5_5,1,hub1,holds-stock
+return,marathon-pe,p1777979312198,"Lacoste Carnaby White",8,1,hub1,holds-stock
+return,marathon-pe,p1777979392699,"Lacoste Gripshot Black",8,2,hub1,holds-stock
+return,marathon-pe,p1777979431089,"Lacoste Gripshot White",8,1,hub1,hubs-field
+return,marathon-pe,p1777979582784,"Lacoste Court Cage White Yellow Green",7,1,hub1,holds-stock
+return,marathon-pe,p1777979614146,"Lacoste Court Cage Green White",11,1,hub1,fallback-sneaker-hub
+return,marathon-pe,p1777979684653,"Lacoste Court Cage Black White",6,1,hub1,holds-stock
+return,marathon-pe,p1777979684653,"Lacoste Court Cage Black White",9,2,hub1,holds-stock
+return,marathon-pe,p1777979694047,"Nike Air Force 1 White",4,48,hub1,holds-stock
+return,marathon-pe,p1777980918979,"Lacoste Elite Active Off White",10,1,hub1,holds-stock
+return,marathon-pe,p1777981900566,"Lacoste Powercourt White Blue",5_5,1,hub1,holds-stock
+return,marathon-pe,p1777982149507,"Lacoste T Clip Boot Brown",11,1,hub1,holds-stock
+return,marathon-pe,p1777982928329,"Alo Yoga Runner Grey",6,1,hub2,holds-stock
+return,marathon-pe,p1777984163393,"New Balance 1000 Pink",6,1,hub2,holds-stock
+return,marathon-pe,p1777986194127,"New Balance 9060 Cream Grey",6,1,hub2,holds-stock
+return,marathon-pe,p1777986611409,"New Balance 9060 Blue Brown",6,1,hub2,holds-stock
+return,marathon-pe,p1777986980778,"New Balance 9060 Grey Green",8,1,hub2,holds-stock
+return,marathon-pe,p1777988357431,"Lacoste Slip On Green Tweed",8,1,hub1,holds-stock
+return,marathon-pe,p1777990658712,"Timberland Premium 6-Inch Wheat",11,1,hub1,hubs-field
+return,marathon-pe,p1777990737175,"Timberland Premium 6-Inch Green",11,1,hub1,hubs-field
+return,marathon-pe,p1777990976026,"Timberland 6-Inch Premium Waterproof Boot Grey",10,1,hub1,holds-stock
+return,marathon-pe,p1777991143468,"Nike Air Force 1 Boot Shell Green",8,1,hub1,holds-stock
+return,marathon-pe,p1777991362840,"Nike ACG Hiking Boot Black Grey",10,1,hub1,holds-stock
+return,marathon-pe,p1777992020231,"Nike Court Legacy White",7,1,hub1,holds-stock
+return,marathon-pe,p1778140177641,"Adidas ADI2000 White Grey",3,1,hub2,holds-stock
+return,marathon-pe,p1778140364028,"Air Jordan 1 Low Jade Smoke",7,1,hub2,holds-stock
+return,marathon-pe,p1778141471990,"Air Jordan 1 Mid Light Smoke Grey",6,1,hub2,holds-stock
+return,marathon-pe,p1778141599422,"Air Jordan 1 Retro High OG Gore-Tex Olive",10,1,hub2,holds-stock
+return,marathon-pe,p1778142478269,"Air Jordan 1 Retro High OG Dark Mocha",9,1,hub2,holds-stock
+return,marathon-pe,p1778142726489,"Adidas Lightweight Circuit Grey",5,1,hub2,holds-stock
+return,marathon-pe,p1778142775652,"Adidas Lightweight Circuit White Pink",6,1,hub2,holds-stock
+return,marathon-pe,p1778142815027,"Air Jordan 13 White Black Red",7,1,hub2,holds-stock
+return,marathon-pe,p1778142815027,"Air Jordan 13 White Black Red",8,1,hub2,holds-stock
+return,marathon-pe,p1778142930182,"Air Jordan 1 High OG Lost And Found",11,1,hub2,holds-stock
+return,marathon-pe,p1778142938478,"Adidas Samba Off-White",5,2,hub2,holds-stock
+return,marathon-pe,p1778143170334,"Air Jordan 4 Retro Black",8,1,hub2,hubs-field
+return,marathon-pe,p1778143498318,"Air Jordan 4 Retro Cozy Girl",8,1,hub2,holds-stock
+return,marathon-pe,p1778143859326,"Adidas x Wales Bonner Samba Studded Pack Cream",5,1,hub2,holds-stock
+return,marathon-pe,p1778143962193,"Adidas Samba White Halo Blue",6,1,hub2,holds-stock
+return,marathon-pe,p1778144674359,"Adidas Samba White Green",6,1,hub2,holds-stock
+return,marathon-pe,p1778146601504,"Amiri Ma Runner Brown",8,1,hub2,holds-stock
+return,marathon-pe,p1778147881161,"Converse Chuck Taylor All Star Black",8,1,hub1,holds-stock
+return,marathon-pe,p1778149746060,"Diesel Big D Slide Black Red",10,2,hub1,hubs-field
+return,marathon-pe,p1778149818423,"Diesel Big D Slide Navy White",6,2,hub1,holds-stock
+return,marathon-pe,p1778150117764,"Diesel Slide Red",11,1,hub1,holds-stock
+return,marathon-pe,p1778150176345,"Diesel Slide Black/Red",9,1,hub1,holds-stock
+return,marathon-pe,p1778150234766,"Diesel Slide White Red",7,1,hub1,holds-stock
+return,marathon-pe,p1778150348051,"Diesel Slide Black Red",7,1,hub1,holds-stock
+return,marathon-pe,p1778150396547,"Diesel Slide Red White",6,1,hub1,holds-stock
+return,marathon-pe,p1778150396547,"Diesel Slide Red White",9,1,hub1,holds-stock
+return,marathon-pe,p1778150447748,"Diesel Slide Black White",7,1,hub1,holds-stock
+return,marathon-pe,p1778234008406,"Dior Walk'n'Dior Blue",4,1,hub2,holds-stock
+return,marathon-pe,p1778234008406,"Dior Walk'n'Dior Blue",5_5,2,hub2,holds-stock
+return,marathon-pe,p1778235909661,"Replay Field Speed Black Red",11,1,hub2,holds-stock
+return,marathon-pe,p1778241852919,"Karl Lagerfeld Kapri Ikonik Full Black",6,6,hub2,holds-stock
+return,marathon-pe,p1778241852919,"Karl Lagerfeld Kapri Ikonik Full Black",7,7,hub2,holds-stock
+return,marathon-pe,p1778241852919,"Karl Lagerfeld Kapri Ikonik Full Black",8,5,hub2,holds-stock
+return,marathon-pe,p1778241852919,"Karl Lagerfeld Kapri Ikonik Full Black",9,1,hub2,holds-stock
+return,marathon-pe,p1778241852919,"Karl Lagerfeld Kapri Ikonik Full Black",10,5,hub2,holds-stock
+return,marathon-pe,p1778241852919,"Karl Lagerfeld Kapri Ikonik Full Black",11,1,hub2,holds-stock
+return,marathon-pe,p1778242243733,"Karl Lagerfeld Kapri Ikonik Black",8,9,hub2,deepest-holding
+return,marathon-pe,p1778242894055,"Karl Lagerfeld Ikonik Kapri Low-Top Charcoal Gray",6,1,hub2,holds-stock
+return,marathon-pe,p1778242894055,"Karl Lagerfeld Ikonik Kapri Low-Top Charcoal Gray",9,1,hub2,holds-stock
+return,marathon-pe,p1778242924460,"Karl Lagerfeld Kapri Ikonik White",7,4,hub2,holds-stock
+return,marathon-pe,p1778242924460,"Karl Lagerfeld Kapri Ikonik White",8,3,hub2,holds-stock
+return,marathon-pe,p1778242924460,"Karl Lagerfeld Kapri Ikonik White",10,2,hub2,holds-stock
+return,marathon-pe,p1778482596311,"Lacoste Elite Active Black",9,1,hub1,holds-stock
+return,marathon-pe,p1778659886480,"Lacoste T-Clip Black White",10,2,hub1,holds-stock
+return,marathon-pe,p1778659975666,"Lacoste T-Clip Winter Outdoor Black",9,3,hub1,holds-stock
+return,marathon-pe,p1778680483192,"Air Jordan 4 Retro Fear",4,1,hub2,holds-stock
+return,marathon-pe,p1778831450400,"Lacoste Slip-On Powder Blue",10,1,hub1,holds-stock
+return,marathon-pe,p1778841820730,"Nike Air Max Portal Canyon Pink",6,1,hub1,holds-stock
+return,marathon-pe,p1778844810609,"Nike Air Force 1 Anthracite Grey And Black",7,1,hub1,holds-stock
+return,marathon-pe,p1778915466053,"Lacoste Powercourt White/Green",7,1,hub1,holds-stock
+return,marathon-pe,p1778915544987,"Lacoste Powercourt Navy Blue",8,1,hub1,holds-stock
+return,marathon-pe,p1778915598155,"Lacoste L-Guard Beige Brown",7,1,hub1,holds-stock
+return,marathon-pe,p1778916464923,"Nike Air Force 1 Cream Navy",7,1,hub1,holds-stock
+return,marathon-pe,p1778917183049,"Lacoste Gripshot Mid Black",8,1,hub1,holds-stock
+return,marathon-pe,p1779185587062,"Lacoste Gripshot Mid Green",6,1,hub1,hubs-field
+return,marathon-pe,p1779527525476,"Lacoste L-Guard Breaker Light Grey Orange",7,1,hub1,hubs-field
+return,marathon-pe,p1779527600206,"Air Jordan 1 Retro High Electro Orange",6,1,hub2,holds-stock
+return,marathon-pe,p1779543774441,"Lacoste T-Clip Boot Black",8,1,hub1,holds-stock
+return,marathon-pe,p1779610187496,"Lacoste T-Clip Winter Outdoor Green Black",11,1,hub1,hubs-field
+return,marathon-pe,p1779610491749,"Lacoste Marice Dark Blue Canvas",8,1,hub1,holds-stock
+return,marathon-pe,p1779610819310,"Nike Air Max Plus White Deep Green",5_5,4,hub1,holds-stock
+return,marathon-pe,p1779611006445,"Lacoste Lerond Black",7,3,hub1,holds-stock
+return,marathon-pe,p1779611006445,"Lacoste Lerond Black",10,1,hub1,holds-stock
+return,marathon-pe,p1779611075538,"Lacoste Lerond Grey White",10,1,hub1,holds-stock
+return,marathon-pe,p1779783713617,"Nike Air Force 1 White",6,1,hub1,hubs-field
+return,marathon-pe,p1780131767763,"Air Jordan 1 Retro High OG Chicago Red",7,1,hub2,holds-stock
+return,marathon-pe,p1780735692089,"Nike Air Force 1 Brooklyn Off White",4,1,hub1,holds-stock
+return,marathon-pe,p1780989505914,"New Balance 9060 Brown",10,1,hub2,holds-stock
+return,marathon-pe,p1781514344358,"Nike Air Max 1 Cream Orange Speckle",8,1,hub1,hubs-field
+return,marathon-pe,p1781530128019,"Nike Air Force 1 Low Ducks Of A Feather",8,1,hub1,holds-stock
+return,marathon-pe,p1781530290392,"Nike Air Force 1 Tan Bling",8,1,hub1,holds-stock
+return,marathon-pe,p1781543207153,"The North Face Verto Alpha Blue Black",7,1,hub2,holds-stock
+return,marathon-pe,p1781636039444,"Nike Shox TL Full Black",7,1,hub1,holds-stock
+return,marathon-pe,p1781636114748,"Nike Shox White",4,1,hub1,holds-stock
+return,marathon-pe,p1781636210379,"Nike Shox TL Brown Black",3,1,hub1,holds-stock
+return,marathon-pe,p1781636210379,"Nike Shox TL Brown Black",6,1,hub1,holds-stock
+return,marathon-pe,p1781646731392,"Nike Mind Slide Grey",6,1,hub1,holds-stock
+return,marathon-pe,p1781646861641,"Nike Mind 002 Black",6,2,hub1,holds-stock
+return,marathon-pe,p1781646861641,"Nike Mind 002 Black",7,2,hub1,holds-stock
+return,marathon-pe,p1781646983315,"Nike Mind 002 Brown",4,1,hub1,holds-stock
+return,marathon-pe,p1781646983315,"Nike Mind 002 Brown",6,1,hub1,holds-stock
+return,marathon-pe,p1781647052738,"Nike Mind 002 White Orange",5,1,hub1,holds-stock
+return,marathon-pe,p1781647052738,"Nike Mind 002 White Orange",9,1,hub1,holds-stock
+return,marathon-pe,p1781648199935,"Nike SB Dunk Low Black White",3,1,hub1,holds-stock
+return,marathon-pe,p1781648199935,"Nike SB Dunk Low Black White",4,2,hub1,holds-stock
+return,marathon-pe,p1781648850816,"Nike SB Dunk Low SE Easter Candy",4,1,hub1,holds-stock
+return,marathon-pe,p1781649460930,"Nike SB Dunk Low Jarritos",5,1,hub1,holds-stock
+return,marathon-pe,p1781787688437,"Air Jordan 1 Low Black White",6,1,hub2,hubs-field
+return,marathon-pe,p1782003994710,"Nike Air Max Plus Black",5,1,hub1,hubs-field
+return,marathon-pe,p1782732556542,"Air jordan 1 black and white ",6,1,hub2,hubs-field
+return,marathon-pe,p1783338648850,"Air Jordan 1 Retro high og black toe reimagied black red & is the white ",6,1,hub2,holds-stock
+return,marathon-pe,p1783338648850,"Air Jordan 1 Retro high og black toe reimagied black red & is the white ",8,1,hub2,holds-stock
+return,marathon-pe,p1783338648850,"Air Jordan 1 Retro high og black toe reimagied black red & is the white ",10,1,hub2,holds-stock
+return,marathon-pe,p1783339503559,"Air portal ",6,1,hub1,hubs-field
+return,marathon-pe,p1783339932326,"Nike Tn brown ",5,1,hub1,hubs-field
+return,marathon-pe,p1783339932326,"Nike Tn brown ",5_5,1,hub1,hubs-field
+return,marathon-pe,p1783686677972,"Lululemon pink with cream",4,1,hub1,holds-stock
+return,marathon-pe,p1783756063446,"Lacoste green ",6,1,hub1,hubs-field
+return,marathon-pe,p1784212842924,"On cloud black white suede ",7,1,hub1,holds-stock
+return,marathon-pe,p1784298749623,"Air force blue ",8,1,hub1,holds-stock
+return,marathon-pe,p1784551107750,"Air force one off white blue",7,2,hub1,holds-stock
+return,marathon-pe,p1784633513949,"Nike airforce white 1",7,1,hub1,holds-stock
+return,marathon-pe,p1784633513949,"Nike airforce white 1",9,1,hub1,holds-stock
+return,marathon-pe,p1784636653248,"Nike zoom black ",8,1,hub1,holds-stock
+return,marathon-pe,p1784636653248,"Nike zoom black ",9,2,hub1,holds-stock
+return,marathon-pe,p1784636653248,"Nike zoom black ",10,1,hub1,holds-stock
+return,marathon-pe,p1784637548157,"Nike zoom red ",8,1,hub1,holds-stock
+return,marathon-pe,p1784642393629,"Nike zoom white end Grey ",6,1,hub1,holds-stock
+return,marathon-pe,p1784642393629,"Nike zoom white end Grey ",7,1,hub1,holds-stock
+return,marathon-pe,p1784644950734,"Air Nike zoom rival fly white end purple",11,1,hub1,holds-stock
+return,marathon-pe,p1784645806403,"Air Nike zoom rival fly",6,1,hub1,holds-stock
+return,marathon-pe,p1784718275050,"Nike Air force cream white with grey",7,1,hub1,holds-stock
+return,marathon-pe,p1784719581830,"Air Jordan 4 black end white cut",8,1,hub2,holds-stock
+return,marathon-pe,p1784728456861,"Lacoste spinor dark brown ",8,1,hub1,holds-stock
+return,marathon-pe,p1784985572692,"Tiger brown ",8,1,hub1,hubs-field
+return,trophy,p1777896054649,"Nike Air Force 1 Low CPFM White Red Flea",6,2,hub1,holds-stock
+return,trophy,p1777898350156,"Nike Air Zoom RTFKT White Gray",6,1,hub1,holds-stock
+return,trophy,p1777898520632,"Nike Air Force 1 Wild Yellow",8,1,hub1,holds-stock
+return,trophy,p1777898570372,"Nike Air Force 1 Wild Green",7,2,hub1,holds-stock
+return,trophy,p1777899208507,"Nike Zoom Vomero Roam Mint Green",7,1,hub1,holds-stock
+return,trophy,p1777901852685,"Air Jordan 4 Retro Black Cat",9,1,hub2,holds-stock
+return,trophy,p1777902440854,"Air Jordan 4 Retro Paris Saint-Germain",5_5,1,hub2,holds-stock
+return,trophy,p1777971607774,"On Cloudhorizon 2 Green",7,1,hub1,holds-stock
+return,trophy,p1777978205682,"Lacoste Audyssol Full Black",7,1,hub1,holds-stock
+return,trophy,p1777978229912,"Nike Air Force 1 Black Swoosh Outline White",3,1,hub1,hubs-field
+return,trophy,p1777979582784,"Lacoste Court Cage White Yellow Green",8,1,hub1,holds-stock
+return,trophy,p1777979694047,"Nike Air Force 1 White",5,1,hub1,holds-stock
+return,trophy,p1777979694047,"Nike Air Force 1 White",6,2,hub1,holds-stock
+return,trophy,p1777990491627,"Timberland Motion 6 Mid Wheat",8,1,hub1,holds-stock
+return,trophy,p1777990491627,"Timberland Motion 6 Mid Wheat",9,1,hub1,holds-stock
+return,trophy,p1778139909700,"Air Jordan 1 SE Craft Tech Grey",9,1,hub2,holds-stock
+return,trophy,p1778144514094,"Diesel S-Ukiyo V2 Low White",9,1,hub2,holds-stock
+return,trophy,p1778234008406,"Dior Walk'n'Dior Blue",3,1,hub2,holds-stock
+return,trophy,p1778236132671,"Replay Field Speed Black Orange",8,1,hub2,holds-stock
+return,trophy,p1778241170410,"Dolce & Gabbana Portofino Charcoal",9,1,hub2,holds-stock
+return,trophy,p1778241578343,"Karl Lagerfeld Kapri Kushion Signia Shine Black",9,1,hub2,holds-stock
+return,trophy,p1778241758995,"Karl Lagerfeld Kapri Stud Zip Black Gold",7,1,hub2,holds-stock
+return,trophy,p1778241758995,"Karl Lagerfeld Kapri Stud Zip Black Gold",8,1,hub2,holds-stock
+return,trophy,p1778244302666,"Versace Slide Black Gold Greca",11,1,hub2,holds-stock
+return,trophy,p1778857613279,"Alexander McQueen Oversized Sneaker Black",9,1,hub2,hubs-field
+return,trophy,p1780740402191,"Nike Air Force 1 Black",6,1,hub1,holds-stock
+return,trophy,p1783428479000,"Givenchy black ",8,1,hub2,hubs-field
+return,trophy,p1783501500520,"Brunello cucinelli sandla Grey ",10,1,hub2,holds-stock
+return,trophy,p1784632249752,"Timberland black white and green suede ",7,2,hub1,holds-stock
+return,trophy,p1784632249752,"Timberland black white and green suede ",8,2,hub1,holds-stock
+return,trophy,p1784632249752,"Timberland black white and green suede ",9,2,hub1,holds-stock
+return,trophy,p1784632249752,"Timberland black white and green suede ",10,1,hub1,holds-stock
+return,trophy,p1785233859974,"Karl slides",9,1,hub1,hubs-field
+heal,marathon-pe,p1777895620932,"Nike Air Force 1 Cream Black Grey",11,-1,-,negative-to-zero
+heal,marathon-pe,p1777895620932,"Nike Air Force 1 Cream Black Grey",_,-2,-,negative-to-zero
+heal,marathon-pe,p1777896117122,"Nike Air Force 1 Low Cactus Plant Flea Market White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777896385209,"A Bathing Ape Bape Sta Low Shark Black",10,-1,-,negative-to-zero
+heal,marathon-pe,p1777896728823,"Nike Air Force 1 Bape Swoosh Blue Camo",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777896804543,"Nike Air Force 1 Cool Grey",_,-2,-,negative-to-zero
+heal,marathon-pe,p1777896950572,"Nike Air Force 1 Black And Crimson",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777897007208,"Nike Air Force 1 Low Drake NOCTA Certified Lover Boy Palest Purple",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777897047939,"Nike Air Force 1 Low Certified Lover Boy Yellow",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777897161827,"Nike Air Max Zoom BB Black",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777897161827,"Nike Air Max Zoom BB Black",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777897161827,"Nike Air Max Zoom BB Black",10,-1,-,negative-to-zero
+heal,marathon-pe,p1777897427900,"Nike Air Zoom FY/OS Black",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777897827663,"Nike Air Max DN Grey Black Volt",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777898520632,"Nike Air Force 1 Wild Yellow",_,-2,-,negative-to-zero
+heal,marathon-pe,p1777898570372,"Nike Air Force 1 Wild Green",7,-2,-,negative-to-zero
+heal,marathon-pe,p1777898570372,"Nike Air Force 1 Wild Green",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777898570372,"Nike Air Force 1 Wild Green",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777899208507,"Nike Zoom Vomero Roam Mint Green",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777899303487,"Nike Air Max 95 Greedy Orange",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777899708156,"Nike Air Max 95 Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777899766317,"Nike Air Max 95 Greige Charcoal",8,-2,-,negative-to-zero
+heal,marathon-pe,p1777901852685,"Air Jordan 4 Retro Black Cat",3,-1,-,negative-to-zero
+heal,marathon-pe,p1777901852685,"Air Jordan 4 Retro Black Cat",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777902692033,"Nike Shox R4 Black White",10,-1,-,negative-to-zero
+heal,marathon-pe,p1777902966177,"Nike Road Racing Black White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777903744143,"Nike Zoomx Invincible Run Flyknit Black",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777903982167,"Air Jordan 1 Low Vibrant Pink White",4,-1,-,negative-to-zero
+heal,marathon-pe,p1777903982167,"Air Jordan 1 Low Vibrant Pink White",5,-1,-,negative-to-zero
+heal,marathon-pe,p1777903982167,"Air Jordan 1 Low Vibrant Pink White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777904061544,"Air Jordan 1 Low Wolf Grey",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777904316300,"Air Jordan 1 Low Black Grey",4,-2,-,negative-to-zero
+heal,marathon-pe,p1777904316300,"Air Jordan 1 Low Black Grey",5,-1,-,negative-to-zero
+heal,marathon-pe,p1777904316300,"Air Jordan 1 Low Black Grey",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777904630224,"Air Jordan 1 Low Blue Whisper and Dune Red",4,-1,-,negative-to-zero
+heal,marathon-pe,p1777904630224,"Air Jordan 1 Low Blue Whisper and Dune Red",5,-1,-,negative-to-zero
+heal,marathon-pe,p1777904630224,"Air Jordan 1 Low Blue Whisper and Dune Red",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777904630224,"Air Jordan 1 Low Blue Whisper and Dune Red",5_5,-1,-,negative-to-zero
+heal,marathon-pe,p1777905316546,"Nike Air Max Scorpion Full Black",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777905466361,"Air Jordan 1 Low Zion Williamson Brown and Green",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777905466361,"Air Jordan 1 Low Zion Williamson Brown and Green",7,-3,-,negative-to-zero
+heal,marathon-pe,p1777905466361,"Air Jordan 1 Low Zion Williamson Brown and Green",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777905466361,"Air Jordan 1 Low Zion Williamson Brown and Green",10,-1,-,negative-to-zero
+heal,marathon-pe,p1777905466361,"Air Jordan 1 Low Zion Williamson Brown and Green",11,-1,-,negative-to-zero
+heal,marathon-pe,p1777905519106,"Nike Air Max 270 Triple Black",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777905519106,"Nike Air Max 270 Triple Black",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777905781470,"Nike Zoomx Vaporfly Next 2 Black Cream",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777905979574,"Nike Air Max DN 2 White Pink",4,-1,-,negative-to-zero
+heal,marathon-pe,p1777905979574,"Nike Air Max DN 2 White Pink",5_5,-1,-,negative-to-zero
+heal,marathon-pe,p1777906258419,"Nike Air Max DN2 Black Orange",3,-1,-,negative-to-zero
+heal,marathon-pe,p1777906347653,"Nike Versair White",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777906494244,"Nike Air Force 1 Low Chocolate",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777906553465,"Nike Air Force 1 White Green Year Of The Snake",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777906839698,"Nike Air Force 1 '07 LV8 White Midnight Navy Gum",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777906839698,"Nike Air Force 1 '07 LV8 White Midnight Navy Gum",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777906839698,"Nike Air Force 1 '07 LV8 White Midnight Navy Gum",9,-2,-,negative-to-zero
+heal,marathon-pe,p1777906839698,"Nike Air Force 1 '07 LV8 White Midnight Navy Gum",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777966616806,"Nike Free Metcon Black White",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777966912596,"On Cloudzone White Navy",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777968857195,"Nike Air Max SNDR Canyon Gold",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777968964541,"Nike Air Max SNDR GORE-TEX Black",4,-1,-,negative-to-zero
+heal,marathon-pe,p1777970045917,"Nike Waffle Racer Black White Volt",5,-1,-,negative-to-zero
+heal,marathon-pe,p1777970668766,"Nike Waffle Debut Pink White",3,-1,-,negative-to-zero
+heal,marathon-pe,p1777971497846,"On Cloud X 4 Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777971508405,"On Cloud Horizon 2 Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777971580042,"On Cloud 6 Navy White",5,-1,-,negative-to-zero
+heal,marathon-pe,p1777971580042,"On Cloud 6 Navy White",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777971580042,"On Cloud 6 Navy White",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777971607774,"On Cloudhorizon 2 Green",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777973102966,"Adidas Adizero Adios Pro 4 Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777973167602,"Adidas Adizero Adios Pro White Purple",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777973244588,"On Cloudtilt White Pink Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777973467155,"On Cloudtilt White",5_5,-1,-,negative-to-zero
+heal,marathon-pe,p1777973556967,"On Cloudpulse Pink Red",4,-1,-,negative-to-zero
+heal,marathon-pe,p1777973935724,"Adidas Montreal 76 White Black",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777973935724,"Adidas Montreal 76 White Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777974019392,"On Cloudvista 2 White Navy Grey",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777974732558,"Adidas Samba Wonder White Maroon",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777974765700,"Adidas Samba White Core Black",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777974765700,"Adidas Samba White Core Black",10,-1,-,negative-to-zero
+heal,marathon-pe,p1777974810579,"Adidas Samba White Green Stripe",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777975164620,"New Balance 2000 White",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777975415520,"New Balance 9060 Navy Beige",9,-2,-,negative-to-zero
+heal,marathon-pe,p1777975415520,"New Balance 9060 Navy Beige",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777976170115,"New Balance Fresh Foam 1 Brown",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777976170115,"New Balance Fresh Foam 1 Brown",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777976287385,"New Balance 530 White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777976675055,"Polo Ralph Lauren Heritage Court II Black White",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777976923826,"Lacoste L-Guard Breaker Black Grey Green",10,-3,-,negative-to-zero
+heal,marathon-pe,p1777977696190,"Lacoste Audyssol White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777978169817,"Lacoste Audysol Black Grey Neon Yellow",7,-2,-,negative-to-zero
+heal,marathon-pe,p1777978169817,"Lacoste Audysol Black Grey Neon Yellow",9,-2,-,negative-to-zero
+heal,marathon-pe,p1777978229912,"Nike Air Force 1 Black Swoosh Outline White",3,-1,-,negative-to-zero
+heal,marathon-pe,p1777978392548,"Lacoste Audyssol Navy White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777978392548,"Lacoste Audyssol Navy White",9,-2,-,negative-to-zero
+heal,marathon-pe,p1777978758562,"Lacoste Audyssor Green Orange",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777978758562,"Lacoste Audyssor Green Orange",9,-2,-,negative-to-zero
+heal,marathon-pe,p1777978758562,"Lacoste Audyssor Green Orange",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777978800118,"Lacoste Audysol White",7,-2,-,negative-to-zero
+heal,marathon-pe,p1777979068865,"Lacoste T-Clip Winter Brown",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777979068865,"Lacoste T-Clip Winter Brown",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777979187820,"Lacoste Powercourt White Navy Red",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777979256775,"Nike Air Force 1 '07 Essential Summit White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777979392699,"Lacoste Gripshot Black",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777979392699,"Lacoste Gripshot Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777979431089,"Lacoste Gripshot White",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777979453080,"Nike Air Force 1 White Yellow Logo",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777979582784,"Lacoste Court Cage White Yellow Green",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777979614146,"Lacoste Court Cage Green White",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777979647724,"Lacoste Court Cage Brown White",10,-1,-,negative-to-zero
+heal,marathon-pe,p1777979684653,"Lacoste Court Cage Black White",11,-1,-,negative-to-zero
+heal,marathon-pe,p1777979684653,"Lacoste Court Cage Black White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777979694047,"Nike Air Force 1 White",5,-1,-,negative-to-zero
+heal,marathon-pe,p1777979694047,"Nike Air Force 1 White",6,-5,-,negative-to-zero
+heal,marathon-pe,p1777979694047,"Nike Air Force 1 White",_,-2,-,negative-to-zero
+heal,marathon-pe,p1777979953766,"Lacoste L-Guard Breaker White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777980623278,"Lacoste Spinor Textured Chunky Black",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777980827731,"Lacoste L003 Neo Shot White",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777980827731,"Lacoste L003 Neo Shot White",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777980865648,"Lacoste L003 Neo Shot Red",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777980865648,"Lacoste L003 Neo Shot Red",10,-2,-,negative-to-zero
+heal,marathon-pe,p1777980918979,"Lacoste Elite Active Off White",8,-2,-,negative-to-zero
+heal,marathon-pe,p1777980999523,"Lacoste Elite Active Black Red",11,-1,-,negative-to-zero
+heal,marathon-pe,p1777981900566,"Lacoste Powercourt White Blue",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777981905299,"Lacoste T-Clip Boot Black White Yellow",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777982149507,"Lacoste T Clip Boot Brown",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777982379459,"Lacoste Gripshot Mid Green",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777984161331,"Lacoste Gripshot Off White Blue Orange",7,-2,-,negative-to-zero
+heal,marathon-pe,p1777984220332,"Lacoste Missouri Mid Green",6,-3,-,negative-to-zero
+heal,marathon-pe,p1777984220332,"Lacoste Missouri Mid Green",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777984287015,"Lacoste Missouri Mid Green Grey",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777984382288,"Lacoste Marice Lace White Canvas",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777984453577,"New Balance 1000 Red",10,-1,-,negative-to-zero
+heal,marathon-pe,p1777984462991,"Lacoste Ramer LCR2 White Canvas",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777984462991,"Lacoste Ramer LCR2 White Canvas",10,-1,-,negative-to-zero
+heal,marathon-pe,p1777984605135,"New Balance 1000 Brown Black",3,-2,-,negative-to-zero
+heal,marathon-pe,p1777984605135,"New Balance 1000 Brown Black",4,-1,-,negative-to-zero
+heal,marathon-pe,p1777984605135,"New Balance 1000 Brown Black",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777986398303,"New Balance 9060 Pink",3,-1,-,negative-to-zero
+heal,marathon-pe,p1777986398303,"New Balance 9060 Pink",4,-1,-,negative-to-zero
+heal,marathon-pe,p1777986398303,"New Balance 9060 Pink",5_5,-1,-,negative-to-zero
+heal,marathon-pe,p1777986497098,"New Balance 9060 Blue/Pink",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777986690526,"New Balance 9060 Brown Pink",4,-2,-,negative-to-zero
+heal,marathon-pe,p1777986690526,"New Balance 9060 Brown Pink",5_5,-1,-,negative-to-zero
+heal,marathon-pe,p1777986690526,"New Balance 9060 Brown Pink",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777987079129,"New Balance 9060 Pink Grey",5,-1,-,negative-to-zero
+heal,marathon-pe,p1777989137009,"Lacoste Gripshot Off White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777989306216,"Lacoste Gripshot Mid Green",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777989424282,"Lacoste Gripshot Mid White",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777989424282,"Lacoste Gripshot Mid White",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777989484106,"Timberland GreenStride Motion 6 Low Black",_,-2,-,negative-to-zero
+heal,marathon-pe,p1777990411019,"Timberland Motion 6 Mid Black",6,-1,-,negative-to-zero
+heal,marathon-pe,p1777990411019,"Timberland Motion 6 Mid Black",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777990491627,"Timberland Motion 6 Mid Wheat",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777990491627,"Timberland Motion 6 Mid Wheat",10,-2,-,negative-to-zero
+heal,marathon-pe,p1777990658712,"Timberland Premium 6-Inch Wheat",8,-2,-,negative-to-zero
+heal,marathon-pe,p1777990658712,"Timberland Premium 6-Inch Wheat",9,-6,-,negative-to-zero
+heal,marathon-pe,p1777990658712,"Timberland Premium 6-Inch Wheat",10,-1,-,negative-to-zero
+heal,marathon-pe,p1777990658712,"Timberland Premium 6-Inch Wheat",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777990737175,"Timberland Premium 6-Inch Green",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777990737175,"Timberland Premium 6-Inch Green",8,-1,-,negative-to-zero
+heal,marathon-pe,p1777990737175,"Timberland Premium 6-Inch Green",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777990776633,"Timberland Premium 6-Inch Green Purple",7,-1,-,negative-to-zero
+heal,marathon-pe,p1777990818579,"Timberland Premium 6-Inch Light Green",9,-1,-,negative-to-zero
+heal,marathon-pe,p1777990941059,"Timberland 6-Inch Premium Waterproof Boot Khaki",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777991362840,"Nike ACG Hiking Boot Black Grey",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777991583998,"Nike SB Dunk Low Supreme Yellow Grey Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1777991981146,"Nike Killshot 2 Black Gum",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778139620221,"Air Jordan 1 Low SE Black Cream",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778139984873,"Jordan 1 Low SE Phantom Repaired Denim Swoosh",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778139984873,"Jordan 1 Low SE Phantom Repaired Denim Swoosh",9,-1,-,negative-to-zero
+heal,marathon-pe,p1778141093097,"Jordan Air Jordan 4 Retro Low Black White Red",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778141196522,"Air Jordan 4 Retro Low Cream",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778142335746,"Air Jordan 1 Retro High OG SP Dusted Clay",7,-1,-,negative-to-zero
+heal,marathon-pe,p1778142335746,"Air Jordan 1 Retro High OG SP Dusted Clay",8,-1,-,negative-to-zero
+heal,marathon-pe,p1778142335746,"Air Jordan 1 Retro High OG SP Dusted Clay",9,-1,-,negative-to-zero
+heal,marathon-pe,p1778142335746,"Air Jordan 1 Retro High OG SP Dusted Clay",10,-1,-,negative-to-zero
+heal,marathon-pe,p1778142335746,"Air Jordan 1 Retro High OG SP Dusted Clay",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778142338746,"Adidas Campus Black White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778142398790,"Air Jordan 1 High Zoom Air CMFT 2 Día de Muertos",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778142478269,"Air Jordan 1 Retro High OG Dark Mocha",7,-1,-,negative-to-zero
+heal,marathon-pe,p1778142478269,"Air Jordan 1 Retro High OG Dark Mocha",10,-1,-,negative-to-zero
+heal,marathon-pe,p1778142775652,"Adidas Lightweight Circuit White Pink",5,-1,-,negative-to-zero
+heal,marathon-pe,p1778142815027,"Air Jordan 13 White Black Red",9,-1,-,negative-to-zero
+heal,marathon-pe,p1778142858953,"Air Jordan 13 Black White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778142998049,"Nike Air Max 96 DT Red White",_,-2,-,negative-to-zero
+heal,marathon-pe,p1778143418641,"Air Jordan 4 Retro KAWS Grey",8,-1,-,negative-to-zero
+heal,marathon-pe,p1778143498318,"Air Jordan 4 Retro Cozy Girl",9,-1,-,negative-to-zero
+heal,marathon-pe,p1778143727154,"Air Jordan 4 White Red",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778143859326,"Adidas x Wales Bonner Samba Studded Pack Cream",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778143902036,"Adidas Samba Silver Metallic",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778143962193,"Adidas Samba White Halo Blue",4,-1,-,negative-to-zero
+heal,marathon-pe,p1778143962193,"Adidas Samba White Halo Blue",5,-1,-,negative-to-zero
+heal,marathon-pe,p1778144146893,"Adidas Samba x Feifei Ruan Black Ivory",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778144541007,"Diesel S-Ukiyo V2 Low Green",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778144674359,"Adidas Samba White Green",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778144705339,"diesel D2 Black White",8,-1,-,negative-to-zero
+heal,marathon-pe,p1778144782330,"Diesel Fullblack",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778145635487,"UGG Tasman Chestnut",5,-1,-,negative-to-zero
+heal,marathon-pe,p1778146631138,"Adidas x Sean Wotherspoon Gazelle Indoor Kaleidoscopic Lens",4,-1,-,negative-to-zero
+heal,marathon-pe,p1778146631138,"Adidas x Sean Wotherspoon Gazelle Indoor Kaleidoscopic Lens",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778146721660,"Birkenstock Arizona White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778146965038,"Birkenstock Arizona Suede Taupe",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778147827133,"New Balance 530 White",3,-1,-,negative-to-zero
+heal,marathon-pe,p1778147827133,"New Balance 530 White",5,-1,-,negative-to-zero
+heal,marathon-pe,p1778147827133,"New Balance 530 White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778149746060,"Diesel Big D Slide Black Red",7,-1,-,negative-to-zero
+heal,marathon-pe,p1778149746060,"Diesel Big D Slide Black Red",8,-2,-,negative-to-zero
+heal,marathon-pe,p1778149746060,"Diesel Big D Slide Black Red",9,-2,-,negative-to-zero
+heal,marathon-pe,p1778149818423,"Diesel Big D Slide Navy White",7,-2,-,negative-to-zero
+heal,marathon-pe,p1778150021679,"Diesel Big D Green Orange",_,-3,-,negative-to-zero
+heal,marathon-pe,p1778150117764,"Diesel Slide Red",7,-3,-,negative-to-zero
+heal,marathon-pe,p1778150117764,"Diesel Slide Red",8,-1,-,negative-to-zero
+heal,marathon-pe,p1778150117764,"Diesel Slide Red",10,-1,-,negative-to-zero
+heal,marathon-pe,p1778150176345,"Diesel Slide Black/Red",6,-5,-,negative-to-zero
+heal,marathon-pe,p1778150234766,"Diesel Slide White Red",8,-4,-,negative-to-zero
+heal,marathon-pe,p1778150322622,"Diesel Slide Black White",9,-2,-,negative-to-zero
+heal,marathon-pe,p1778150394300,"Diesel Slide White Red",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778150396547,"Diesel Slide Red White",7,-1,-,negative-to-zero
+heal,marathon-pe,p1778150396547,"Diesel Slide Red White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778150447748,"Diesel Slide Black White",6,-3,-,negative-to-zero
+heal,marathon-pe,p1778150447748,"Diesel Slide Black White",_,-2,-,negative-to-zero
+heal,marathon-pe,p1778162339303,"Lacoste Spinor Gray Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778166373332,"Air Jordan 4 Retro Military Black White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778244776625,"Lacoste Elite Active Black Navy",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778244776625,"Lacoste Elite Active Black Navy",8,-1,-,negative-to-zero
+heal,marathon-pe,p1778395990881,"Lacoste Spinor White",8,-1,-,negative-to-zero
+heal,marathon-pe,p1778395990881,"Lacoste Spinor White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778404327722,"Nike Air Max 90 Black",8,-1,-,negative-to-zero
+heal,marathon-pe,p1778404327722,"Nike Air Max 90 Black",9,-1,-,negative-to-zero
+heal,marathon-pe,p1778404327722,"Nike Air Max 90 Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778482596311,"Lacoste Elite Active Black",10,-1,-,negative-to-zero
+heal,marathon-pe,p1778659712559,"Lacoste Powercourt Navy Red",8,-5,-,negative-to-zero
+heal,marathon-pe,p1778659712559,"Lacoste Powercourt Navy Red",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778659886480,"Lacoste T-Clip Black White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778659886480,"Lacoste T-Clip Black White",8,-3,-,negative-to-zero
+heal,marathon-pe,p1778659886480,"Lacoste T-Clip Black White",9,-1,-,negative-to-zero
+heal,marathon-pe,p1778659975666,"Lacoste T-Clip Winter Outdoor Black",7,-1,-,negative-to-zero
+heal,marathon-pe,p1778659975666,"Lacoste T-Clip Winter Outdoor Black",8,-4,-,negative-to-zero
+heal,marathon-pe,p1778841258306,"Nike Air Max Artisan Blue White",4,-1,-,negative-to-zero
+heal,marathon-pe,p1778841535230,"Nike Air Max Portal Bright Ceramic",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778841535230,"Nike Air Max Portal Bright Ceramic",7,-3,-,negative-to-zero
+heal,marathon-pe,p1778841535230,"Nike Air Max Portal Bright Ceramic",5_5,-2,-,negative-to-zero
+heal,marathon-pe,p1778841820730,"Nike Air Max Portal Canyon Pink",4,-3,-,negative-to-zero
+heal,marathon-pe,p1778841820730,"Nike Air Max Portal Canyon Pink",8,-1,-,negative-to-zero
+heal,marathon-pe,p1778841820730,"Nike Air Max Portal Canyon Pink",5_5,-4,-,negative-to-zero
+heal,marathon-pe,p1778843940330,"Dolce & Gabbana Slide Black",6,-2,-,negative-to-zero
+heal,marathon-pe,p1778844810609,"Nike Air Force 1 Anthracite Grey And Black",6,-2,-,negative-to-zero
+heal,marathon-pe,p1778844810609,"Nike Air Force 1 Anthracite Grey And Black",8,-2,-,negative-to-zero
+heal,marathon-pe,p1778844810609,"Nike Air Force 1 Anthracite Grey And Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778915466053,"Lacoste Powercourt White/Green",8,-1,-,negative-to-zero
+heal,marathon-pe,p1778915466053,"Lacoste Powercourt White/Green",_,-1,-,negative-to-zero
+heal,marathon-pe,p1778915598155,"Lacoste L-Guard Beige Brown",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778915871911,"Lacoste T-Clip Winter Outdoor Green",10,-1,-,negative-to-zero
+heal,marathon-pe,p1778916558601,"Nike Air Force 1 Cream Dark Grey",6,-1,-,negative-to-zero
+heal,marathon-pe,p1778916854779,"The North Face Never Stop Black White",7,-1,-,negative-to-zero
+heal,marathon-pe,p1778916854779,"The North Face Never Stop Black White",8,-1,-,negative-to-zero
+heal,marathon-pe,p1779117430618,"New Balance 1000 Green White",3,-1,-,negative-to-zero
+heal,marathon-pe,p1779117430618,"New Balance 1000 Green White",5,-2,-,negative-to-zero
+heal,marathon-pe,p1779117430618,"New Balance 1000 Green White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1779117430618,"New Balance 1000 Green White",7,-1,-,negative-to-zero
+heal,marathon-pe,p1779117430618,"New Balance 1000 Green White",8,-2,-,negative-to-zero
+heal,marathon-pe,p1779117430618,"New Balance 1000 Green White",9,-1,-,negative-to-zero
+heal,marathon-pe,p1779278089444,"Nike Zoom Vomero Roam Green",8,-1,-,negative-to-zero
+heal,marathon-pe,p1779527600206,"Air Jordan 1 Retro High Electro Orange",_,-1,-,negative-to-zero
+heal,marathon-pe,p1779543774441,"Lacoste T-Clip Boot Black",6,-1,-,negative-to-zero
+heal,marathon-pe,p1779543774441,"Lacoste T-Clip Boot Black",7,-1,-,negative-to-zero
+heal,marathon-pe,p1779543774441,"Lacoste T-Clip Boot Black",_,-3,-,negative-to-zero
+heal,marathon-pe,p1779610079819,"Lacoste Gripshot M Winter Grey Blue",9,-1,-,negative-to-zero
+heal,marathon-pe,p1779610079819,"Lacoste Gripshot M Winter Grey Blue",_,-1,-,negative-to-zero
+heal,marathon-pe,p1779610187496,"Lacoste T-Clip Winter Outdoor Green Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1779610932616,"Lacoste Gripshot Lace Boot White Navy",_,-1,-,negative-to-zero
+heal,marathon-pe,p1779611006445,"Lacoste Lerond Black",6,-2,-,negative-to-zero
+heal,marathon-pe,p1779611006445,"Lacoste Lerond Black",8,-2,-,negative-to-zero
+heal,marathon-pe,p1779717428200,"On Cloud 6 Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1779783713617,"Nike Air Force 1 White",5,-3,-,negative-to-zero
+heal,marathon-pe,p1779784406481,"Nike Air Force 1 Off White Pink Blue",5,-1,-,negative-to-zero
+heal,marathon-pe,p1779961929379,"Lacoste L-Guard Breaker Black",6,-1,-,negative-to-zero
+heal,marathon-pe,p1779961929379,"Lacoste L-Guard Breaker Black",11,-1,-,negative-to-zero
+heal,marathon-pe,p1780131767763,"Air Jordan 1 Retro High OG Chicago Red",6,-1,-,negative-to-zero
+heal,marathon-pe,p1780735692089,"Nike Air Force 1 Brooklyn Off White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1780735692089,"Nike Air Force 1 Brooklyn Off White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1780740402191,"Nike Air Force 1 Black",6,-1,-,negative-to-zero
+heal,marathon-pe,p1781006928023,"Nike SB Dunk Low Verdy Visty",_,-1,-,negative-to-zero
+heal,marathon-pe,p1781084175824,"Nike Air Force 1 Cream Brown Gum",7,-1,-,negative-to-zero
+heal,marathon-pe,p1781084175824,"Nike Air Force 1 Cream Brown Gum",11,-1,-,negative-to-zero
+heal,marathon-pe,p1781530128019,"Nike Air Force 1 Low Ducks Of A Feather",6,-1,-,negative-to-zero
+heal,marathon-pe,p1781530128019,"Nike Air Force 1 Low Ducks Of A Feather",9,-2,-,negative-to-zero
+heal,marathon-pe,p1781530128019,"Nike Air Force 1 Low Ducks Of A Feather",10,-1,-,negative-to-zero
+heal,marathon-pe,p1781530222899,"Nike Air Force 1 Fontanka White",7,-2,-,negative-to-zero
+heal,marathon-pe,p1781530222899,"Nike Air Force 1 Fontanka White",8,-1,-,negative-to-zero
+heal,marathon-pe,p1781530222899,"Nike Air Force 1 Fontanka White",10,-1,-,negative-to-zero
+heal,marathon-pe,p1781530290392,"Nike Air Force 1 Tan Bling",7,-1,-,negative-to-zero
+heal,marathon-pe,p1781530290392,"Nike Air Force 1 Tan Bling",9,-1,-,negative-to-zero
+heal,marathon-pe,p1781530290392,"Nike Air Force 1 Tan Bling",_,-1,-,negative-to-zero
+heal,marathon-pe,p1781543207153,"The North Face Verto Alpha Blue Black",6,-2,-,negative-to-zero
+heal,marathon-pe,p1781543207153,"The North Face Verto Alpha Blue Black",8,-1,-,negative-to-zero
+heal,marathon-pe,p1781543207153,"The North Face Verto Alpha Blue Black",9,-3,-,negative-to-zero
+heal,marathon-pe,p1781636039444,"Nike Shox TL Full Black",6,-1,-,negative-to-zero
+heal,marathon-pe,p1781636039444,"Nike Shox TL Full Black",8,-2,-,negative-to-zero
+heal,marathon-pe,p1781636039444,"Nike Shox TL Full Black",_,-1,-,negative-to-zero
+heal,marathon-pe,p1781636765032,"Nike Shox Persian Violet White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1781646595056,"Nike Mind 001 Slide Red",10,-1,-,negative-to-zero
+heal,marathon-pe,p1781646731392,"Nike Mind Slide Grey",8,-1,-,negative-to-zero
+heal,marathon-pe,p1781646861641,"Nike Mind 002 Black",5,-1,-,negative-to-zero
+heal,marathon-pe,p1781646861641,"Nike Mind 002 Black",10,-1,-,negative-to-zero
+heal,marathon-pe,p1781648199935,"Nike SB Dunk Low Black White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1781648199935,"Nike SB Dunk Low Black White",8,-4,-,negative-to-zero
+heal,marathon-pe,p1781648199935,"Nike SB Dunk Low Black White",11,-1,-,negative-to-zero
+heal,marathon-pe,p1781648310444,"Nike SB Dunk Low Pink/White",_,-1,-,negative-to-zero
+heal,marathon-pe,p1781648850816,"Nike SB Dunk Low SE Easter Candy",5,-1,-,negative-to-zero
+heal,marathon-pe,p1781649460930,"Nike SB Dunk Low Jarritos",6,-1,-,negative-to-zero
+heal,marathon-pe,p1781649925620,"Nike SB Dunk Low Green White",9,-1,-,negative-to-zero
+heal,marathon-pe,p1781941263779,"Nike P-6000 White Grey",_,-1,-,negative-to-zero
+heal,marathon-pe,p1782002699857,"Nike Air Max Plus Black",7,-3,-,negative-to-zero
+heal,marathon-pe,p1782003614286,"Nike Air Max Plus Black Pink Blue",_,-1,-,negative-to-zero
+heal,marathon-pe,p1782055077934,"Nike SB Dunk Low Grey White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1782055077934,"Nike SB Dunk Low Grey White",7,-1,-,negative-to-zero
+heal,marathon-pe,p1782055077934,"Nike SB Dunk Low Grey White",8,-1,-,negative-to-zero
+heal,marathon-pe,p1782055077934,"Nike SB Dunk Low Grey White",10,-1,-,negative-to-zero
+heal,marathon-pe,p1782055077934,"Nike SB Dunk Low Grey White",_,-2,-,negative-to-zero
+heal,marathon-pe,p1782055999072,"Nike Free Metcon Grey White",10,-1,-,negative-to-zero
+heal,marathon-pe,p1782056766007,"Nike Free Metcon White Black",8,-1,-,negative-to-zero
+heal,marathon-pe,p1782554212937,"Portal",5_5,-1,-,negative-to-zero
+heal,marathon-pe,p1782905563969,"Jordan 3 white with black ",6,-1,-,negative-to-zero
+heal,marathon-pe,p1782913718916,"Nike air max 90 black ",7,-1,-,negative-to-zero
+heal,marathon-pe,p1782914149631,"Nike air max 90 black with grey ",7,-1,-,negative-to-zero
+heal,marathon-pe,p1782985855266,"Nike Air max 270 navy",6,-1,-,negative-to-zero
+heal,marathon-pe,p1783246906783,"Under armor hovr white and gray ",_,-1,-,negative-to-zero
+heal,marathon-pe,p1783335787603,"Air Jordan 1 low ",4,-1,-,negative-to-zero
+heal,marathon-pe,p1783339846297,"Air Jordan pink",8,-6,-,negative-to-zero
+heal,marathon-pe,p1783339846297,"Air Jordan pink",10,-1,-,negative-to-zero
+heal,marathon-pe,p1783339932326,"Nike Tn brown ",4,-1,-,negative-to-zero
+heal,marathon-pe,p1783340057277,"Nike TN",8,-1,-,negative-to-zero
+heal,marathon-pe,p1783340097366,"Nike TN black",3,-1,-,negative-to-zero
+heal,marathon-pe,p1783340097366,"Nike TN black",10,-1,-,negative-to-zero
+heal,marathon-pe,p1783340596465,"Nike air black and white ",4,-4,-,negative-to-zero
+heal,marathon-pe,p1783340649354,"Nike air pink",5,-1,-,negative-to-zero
+heal,marathon-pe,p1783340649354,"Nike air pink",6,-1,-,negative-to-zero
+heal,marathon-pe,p1783340892194,"Nike air full white ",6,-1,-,negative-to-zero
+heal,marathon-pe,p1783341154846,"Jordan low green ",3,-1,-,negative-to-zero
+heal,marathon-pe,p1783687716025,"Jordan low blue black",4,-1,-,negative-to-zero
+heal,marathon-pe,p1783687716025,"Jordan low blue black",7,-1,-,negative-to-zero
+heal,marathon-pe,p1783687716025,"Jordan low blue black",5_5,-1,-,negative-to-zero
+heal,marathon-pe,p1783935409979,"Amiri",3,-1,-,negative-to-zero
+heal,marathon-pe,p1783935688562,"Nike sacah ",3,-1,-,negative-to-zero
+heal,marathon-pe,p1783952291536,"Nike portal",5,-1,-,negative-to-zero
+heal,marathon-pe,p1783952291536,"Nike portal",7,-1,-,negative-to-zero
+heal,marathon-pe,p1784031339929,"Nike air cream",4,-1,-,negative-to-zero
+heal,marathon-pe,p1784033288610,"Soccerboot kit",33,-1,-,negative-to-zero
+heal,marathon-pe,p1784202066180,"Nike portal blue ",4,-1,-,negative-to-zero
+heal,marathon-pe,p1784202066180,"Nike portal blue ",5_5,-1,-,negative-to-zero
+heal,marathon-pe,p1784203216677,"Labubu",26,-12,-,negative-to-zero
+heal,marathon-pe,p1784208059238,"Lacoste brown ",_,-1,-,negative-to-zero
+heal,marathon-pe,p1784212842924,"On cloud black white suede ",9,-1,-,negative-to-zero
+heal,marathon-pe,p1784214175819,"Air force 1 black rubber",8,-1,-,negative-to-zero
+heal,marathon-pe,p1784215024196,"Air force white",7,-1,-,negative-to-zero
+heal,marathon-pe,p1784215415512,"Nike zoom white black ",9,-1,-,negative-to-zero
+heal,marathon-pe,p1784551107750,"Air force one off white blue",9,-1,-,negative-to-zero
+heal,marathon-pe,p1784637184621,"Nike blazer pitch ",3,-1,-,negative-to-zero
+heal,marathon-pe,p1784706909940,"Polo Ralph Lauren Heritage Court II White",6,-1,-,negative-to-zero
+heal,marathon-pe,p1784726655008,"Diesel slide red ",_,-1,-,negative-to-zero
+heal,marathon-pe,p1784728456861,"Lacoste spinor dark brown ",6,-1,-,negative-to-zero
+heal,marathon-pe,p1785240673537,"Kids soccerboot ",31,-1,-,negative-to-zero
+heal,trophy,p1778145822593,"UGG Classic Ultra Mini Sand",6,-1,-,negative-to-zero
+heal,trophy,p1778232928099,"Loro Piana Summer Charms Walk Babouche Loafer Green Suede",_,-1,-,negative-to-zero
+heal,trophy,p1778233240722,"Loro Piana Summer Charms Walk Loafer Brown Suede",_,-1,-,negative-to-zero
+heal,trophy,p1778233463885,"Louis Vuitton Time Out White",_,-1,-,negative-to-zero
+heal,trophy,p1778233761097,"Karl Lagerfeld Kapri Ikonik Black With Spikes",7,-1,-,negative-to-zero
+heal,trophy,p1778233761097,"Karl Lagerfeld Kapri Ikonik Black With Spikes",11,-1,-,negative-to-zero
+heal,trophy,p1778233761097,"Karl Lagerfeld Kapri Ikonik Black With Spikes",5_5,-1,-,negative-to-zero
+heal,trophy,p1778233761097,"Karl Lagerfeld Kapri Ikonik Black With Spikes",_,-1,-,negative-to-zero
+heal,trophy,p1778233961434,"Gucci Tennis 1977 Beige GG Canvas",_,-1,-,negative-to-zero
+heal,trophy,p1778234008406,"Dior Walk'n'Dior Blue",5_5,-2,-,negative-to-zero
+heal,trophy,p1778234008406,"Dior Walk'n'Dior Blue",_,-2,-,negative-to-zero
+heal,trophy,p1778234231270,"Dior Walk'n'Dior Plan De Paris black and white",_,-1,-,negative-to-zero
+heal,trophy,p1778235636820,"Emporio Armani Sneaker White Black",_,-1,-,negative-to-zero
+heal,trophy,p1778235909661,"Replay Field Speed Black Red",7,-1,-,negative-to-zero
+heal,trophy,p1778235909661,"Replay Field Speed Black Red",11,-1,-,negative-to-zero
+heal,trophy,p1778235952099,"Replay Field Speed Black",_,-1,-,negative-to-zero
+heal,trophy,p1778236722624,"Phillip Plain Black Leather",_,-1,-,negative-to-zero
+heal,trophy,p1778236909534,"Christian Louboutin Louis Junior Spikes Black",_,-1,-,negative-to-zero
+heal,trophy,p1778239274035,"Boss Menswear Gray Suede Loafers",8,-1,-,negative-to-zero
+heal,trophy,p1778239331320,"Hugo Boss Black Suede Loafer",_,-1,-,negative-to-zero
+heal,trophy,p1778239383779,"Bottega Veneta Loafer Navy Blue",10,-1,-,negative-to-zero
+heal,trophy,p1778239816726,"Prada Loafer Black",_,-1,-,negative-to-zero
+heal,trophy,p1778240848680,"Dolce & Gabbana Portofino Yacht Black",10,-1,-,negative-to-zero
+heal,trophy,p1778241708045,"Karl Lagerfeld Kapri Kite Black",_,-1,-,negative-to-zero
+heal,trophy,p1778241950413,"Karl Lagerfeld Kapri Ikonik Black",9,-1,-,negative-to-zero
+heal,trophy,p1778242139588,"Karl Lagerfeld Kapri Kushion Green Leather",_,-2,-,negative-to-zero
+heal,trophy,p1778242291103,"Karl Lagerfeld White Spike Studs",_,-1,-,negative-to-zero
+heal,trophy,p1778243029410,"Alexander McQueen Oversized Sneaker Black White Logo",9,-1,-,negative-to-zero
+heal,trophy,p1778243351882,"Boss Low Black White",_,-1,-,negative-to-zero
+heal,trophy,p1778243578695,"Diesel S-Athene Brown",_,-1,-,negative-to-zero
+heal,trophy,p1778244040199,"Lacoste Court Cage Leather Green White",_,-1,-,negative-to-zero
+heal,trophy,p1778244134005,"Dr. Martens Carlson Black Suede",5_5,-1,-,negative-to-zero
+heal,trophy,p1779104639473,"Dolce & Gabbana Perforated Logo Leather Sneaker White",6,-1,-,negative-to-zero
+heal,trophy,p1779104639473,"Dolce & Gabbana Perforated Logo Leather Sneaker White",_,-1,-,negative-to-zero
+heal,trophy,p1783160260134,"Boss black lether",_,-1,-,negative-to-zero
+heal,trophy,p1783168332657,"Armani exchange ",_,-1,-,negative-to-zero
+heal,trophy,p1783415687092,"GIVENCHY Paris full black ",_,-1,-,negative-to-zero
+heal,trophy,p1783428479000,"Givenchy black ",_,-1,-,negative-to-zero
+heal,trophy,p1783503992522,"Hugo boss sandlas brown & black ",_,-1,-,negative-to-zero
+heal,trophy,p1783509263224,"Prada Loafer nevy blue",_,-1,-,negative-to-zero
+heal,trophy,p1783521151226,"Louis Vuitton time out white",5_5,-1,-,negative-to-zero
+heal,trophy,p1783682732818,"Boss shoes",_,-1,-,negative-to-zero
+heal,trophy,p1783756903607,"Emporio armani",_,-1,-,negative-to-zero
+heal,trophy,p1783948464550,"Louis Vuitton full black ",_,-1,-,negative-to-zero
+heal,trophy,p1784025843775,"Dr  Martens 1461 Zebra Emboss Smooth Leather Oxford Shoes.",_,-1,-,negative-to-zero
+heal,trophy,p1784028846364," Kalr Lagerfeld men's karpri Ikonik 3D Sneakers in blue.They f",8,-1,-,negative-to-zero
+heal,trophy,p1784899797369,"Boos shoes",_,-1,-,negative-to-zero
