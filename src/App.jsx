@@ -2444,7 +2444,16 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       hasPermission(ROLE_TO_PERMISSION[ROLES.ASSISTANT]) && { key:"assistant", icon:RoleIcons.assistant, name:"Store Assistant", desc:"Place customer orders", badge:assistantBadge, onClick:()=>onSelect(ROLES.ASSISTANT) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) && { key:"warehouse", icon:RoleIcons.warehouse, name:"Warehouse", desc:"Manage order queue", badge:incoming, onClick:()=>onSelect(ROLES.WAREHOUSE) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])    && { key:"source", icon:RoleIcons.source, name:"Source", desc:"Restock requests", badge:sourceBadge, onClick:()=>onSelect(ROLES.SOURCE) },
-      hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && { key:"returns", icon:RoleIcons.returns, name:"Returns", desc:"Log returned items", onClick:()=>onSelect(ROLES.RETURNS) },
+      // ── RETURNS TILE REMOVED (2026-07-29, owner) ─────────────────────────
+      // Nothing goes back to a hub any more, so there is nothing to log:
+      // sneakers were never transferred off their hub, and clothing that reaches
+      // the shop stays there as shop stock. A tile called "Log returned items"
+      // that can only tell you there is nothing to do is a daily dead end.
+      //
+      // The MODULE IS NOT DELETED — ReturnsView, submitReturn, the date-scoped
+      // disp_ reversal, logReturn and the returns_log feed are all intact, and
+      // the route below still resolves. Only the way in from the home screen is
+      // gone. Restoring it is this one line.
       { key:"barcodes", icon:RoleIcons.stock, name:"Barcodes", desc:"Print product barcodes", onClick:()=>onSelect(ROLES.BARCODES) },
       { key:"label_print", icon:RoleIcons.stock, name:"Print Labels", desc:"Product labels · name, price, barcode", onClick:()=>onSelect(ROLES.LABEL_PRINT) },
       dcVisible && { key:"display_checks", icon:RoleIcons.display_checks, name:"Display Checks", desc:"Clothing display checks", onClick:()=>onSelect(ROLES.DISPLAY_CHECKS) },
@@ -2485,7 +2494,8 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       { k: "Orders today", v: assistantBadge, role: ROLES.WAREHOUSE },
       { k: "In queue", v: incoming, role: ROLES.WAREHOUSE },
       { k: "To restock", v: sourceBadge, warn: sourceBadge > 0, role: ROLES.SOURCE },
-      { k: "Returns", v: returnedToday.size, role: ROLES.RETURNS },
+      // "Returns" stat removed with the tile — it linked into the same module and
+      // would have been the one remaining door to a screen with nothing to do.
     ];
     return (
       <div style={{ minHeight:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, position:"relative" }}>
