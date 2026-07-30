@@ -24,16 +24,21 @@
 //
 // Live counts under this rule (2026-07-30): 635 footwear products have Central
 // stock; 121 are missing from both hubs — 95 never introduced, 26 sold out.
+import { stockSizeKey } from "../../utils/sizeKey";
 
 // Footwear is CATEGORY, never productType: 1,369 products carry
 // category "Footwear" while only 580 carry productType "sneaker", and 858
 // records have no productType at all. Same predicate the engine uses.
 export const isFootwearProduct = (p) => p?.category === "Footwear";
 
-const ILLEGAL = /[.#$[\]/\s]/g;
-// Local copy of the size-key encoder's shape so this module stays dependency-free
-// and unit-testable. Must agree with utils/sizeKey.js: "5.5" → "5_5".
-export const sizeKeyOf = (s) => String(s == null ? "" : s).trim().replace(ILLEGAL, "_") || "_";
+// THE canonical stock-cell encoder, imported rather than reimplemented.
+// (CodeRabbit #291.) The local copy this replaces also TRIMMED, which was not
+// merely a divergence but the wrong behaviour: /stock cells are keyed by
+// stockSizeKey, which does not trim, so a size stored as " 8" lives in the cell
+// "_8" while the trimming copy computed "8" and would have read straight past it
+// — both for the Central availability lookup and for the reservation map. One
+// encoder, and it must be the one the cells were written with.
+export const sizeKeyOf = stockSizeKey;
 
 // Numeric-aware size ordering — the clothing SIZE_ORDER table is letters only and
 // ranks every shoe size equal (99), which would render sizes in arbitrary order.

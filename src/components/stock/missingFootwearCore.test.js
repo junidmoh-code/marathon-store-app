@@ -267,22 +267,24 @@ describe("network-wide reservation — two hubs cannot claim the same Central un
   });
 });
 
-describe("one shared size-key encoder", () => {
-  it("sizeKeyOf trims, so whitespace cannot split a reservation across two keys", () => {
-    // The reservation is WRITTEN by the caller and READ by the plan. If the two
-    // sides encoded differently, " 8" would be reserved under "_8" and looked up
-    // under "8", and the units would be promised twice. (CodeRabbit #291.)
-    expect(sizeKeyOf(" 8")).toBe("8");
-    expect(sizeKeyOf("8 ")).toBe("8");
-    expect(sizeKeyOf(" 5.5 ")).toBe("5_5");
+describe("one shared size-key encoder — the same one the stock cells use", () => {
+  it("is the canonical stockSizeKey, so a key always matches its /stock cell", () => {
+    // The earlier local copy TRIMMED. That was not just a divergence, it was
+    // wrong: a size stored as " 8" lives in the cell "_8" (stockSizeKey does not
+    // trim), so a trimming encoder computed "8" and read straight past both the
+    // Central availability AND the reservation. (CodeRabbit #291.)
+    expect(sizeKeyOf(" 8")).toBe("_8");
+    expect(sizeKeyOf("5.5")).toBe("5_5");
+    expect(sizeKeyOf("")).toBe("_");
+    expect(sizeKeyOf(null)).toBe("_");
   });
 
-  it("a reservation written from a padded size is still found by the plan", () => {
+  it("a padded size resolves against the cell it is actually stored in", () => {
     const plan = footwearSolvePlan({
-      catalogSizes: ["8"], policy: { 8: 2 },
-      centralCells: { 8: { qty: 3 } },
-      reserved: { [sizeKeyOf(" 8 ")]: 2 },     // written from a padded token
+      catalogSizes: [" 8"], policy: { _8: 2 },
+      centralCells: { _8: { qty: 3 } },        // how stockSizeKey(" 8") writes it
+      reserved: { [sizeKeyOf(" 8")]: 2 },
     });
-    expect(plan).toEqual([{ size: "8", qty: 1, want: 2, avail: 1 }]);
+    expect(plan).toEqual([{ size: " 8", qty: 1, want: 2, avail: 1 }]);
   });
 });
