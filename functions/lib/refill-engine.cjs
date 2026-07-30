@@ -172,6 +172,28 @@ function isClothing(product) {
   return (product.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s)));
 }
 
+// ── Is this product footwear? ────────────────────────────────────────────────
+// CATEGORY, not productType — measured on the live catalogue 2026-07-30:
+//   category === "Footwear"      → 1,369 products
+//   productType === "sneaker"    →   580 products
+//   Footwear WITHOUT the type    →   801 products  ← would be silently unmanaged
+// productType is absent on 858 records altogether, so keying off it would leave
+// most of the shoe catalogue invisible to targeting. `category` is also what the
+// admin category system (#280) writes and what `categoryKey`/`subcategory`
+// agree with.
+//
+// DISJOINT FROM isClothing BY CONSTRUCTION — verified across the whole catalogue
+// on 2026-07-30: zero products satisfy both. The single collision that existed
+// ("Lacoste navy with white": productType "clothing" + category "Footwear" +
+// sizes 6-11) was a data-entry error and was corrected in the product record
+// rather than accommodated here. If a future record re-creates that state,
+// isClothing wins in resolveTarget (its branch is evaluated first) and the shoe
+// silently gets no target — so the invariant is worth a catalogue assertion, not
+// a code fallback.
+function isFootwear(product) {
+  return product?.category === "Footwear";
+}
+
 // Store carries a product if the stock node exists (regardless of qty).
 // Zero-qty cells persist indefinitely (applyMovement never deletes cells), so
 // node presence is a reliable assortment indicator even after sellouts.
@@ -209,6 +231,31 @@ function productSizes(products, pid) {
 // /stock_targets rows are untouched and keep working either way.
 function ruleTargetsEnabled(config, dest) {
   const v = config?.ruleBasedTargets;
+  if (v === true) return true;
+  if (v && typeof v === "object" && !Array.isArray(v)) return v[dest] === true;
+  return false;   // false, undefined, null, or anything unexpected → OFF
+}
+
+// ═══ KILL SWITCH — /config/refillEngine/footwearTargets ══════════════════════
+// FOOTWEAR's own switch, deliberately SEPARATE from ruleBasedTargets so either
+// product class can be killed without touching the other. Same grammar, same
+// fail-safe (absent → OFF), same zero-unwind property: footwear targets are
+// computed in memory per scan and never persisted.
+//
+//   footwearTargets: true                → ON at every destination
+//   footwearTargets: { hub1: true }      → per-destination; absent from the map
+//                                          is OFF (this is the intended rollout
+//                                          shape — hub1 first, then hub2)
+//   key ABSENT / any other type          → OFF  (fail-safe)
+//
+// WHY THIS IS READ *BEFORE* ruleTargetsEnabled IN resolveTarget: that function
+// early-returns on `!ruleTargetsEnabled(...)` at the clothing gate. Had the
+// footwear branch been placed after it, killing CLOTHING would also have killed
+// footwear — the two switches would have been secretly coupled, defeating the
+// whole point of a separate key. The branch order below is therefore load-bearing
+// and must not be "tidied" into one block.
+function footwearTargetsEnabled(config, dest) {
+  const v = config?.footwearTargets;
   if (v === true) return true;
   if (v && typeof v === "object" && !Array.isArray(v)) return v[dest] === true;
   return false;   // false, undefined, null, or anything unexpected → OFF
@@ -254,6 +301,43 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
       reorderPoint: typeof rp === "number" && Number.isFinite(rp) && rp >= 0 ? rp : null,
       source: "explicit",
     };
+  }
+  // ── FOOTWEAR RULE (2026-07-30) ─────────────────────────────────────────────
+  // Evaluated BEFORE the clothing kill switch below — see footwearTargetsEnabled
+  // for why that ordering is load-bearing (a shared early-return would couple the
+  // two switches). Structurally identical to the clothing rule otherwise: the
+  // location's standard run applied to every catalog size the location carries.
+  //
+  // reorderPoint comes FROM CONFIG here, unlike the clothing rule which pins it
+  // to null. Footwear is being switched on across an existing 6,445-cell estate,
+  // and at reorderPoint null the first scan proposes 993 intents at once (measured
+  // 2026-07-30). A reorderPoint of 0 — propose only when a cell hits zero — cuts
+  // that to 578 and is the intended launch setting. It is read per location so the
+  // throttle can be relaxed later without a deploy. Absent/garbage → null → the
+  // eager below-target behaviour, matching resolveTarget's existing fail-safe
+  // direction (over-order visibly rather than starve silently).
+  const fp = products?.[pid];
+  if (footwearTargetsEnabled(config, dest) && isFootwear(fp) && storeCarries(stock, dest, pid)) {
+    if (productSizes(products, pid).includes(size)) {
+      const run = config?.footwearRunByLocation?.[dest] || {};
+      // encodeSizeKey, NOT the raw size — RTDB rejects "." in a key, so the half
+      // size 5.5 can only be STORED in config as "5_5" (same encoding as the
+      // /stock cell it governs; see sizeKey.js and the epoch-ms key note above).
+      // A raw `run[size]` lookup would silently miss every half size: 538 live
+      // cells holding 865 units, the second-largest size band in the catalogue,
+      // would read as "no target" and never be replenished. The clothing rule
+      // above is unaffected either way because letter sizes encode to themselves.
+      const t = run[encodeSizeKey(size)];
+      if (typeof t === "number" && t > 0) {
+        const rp = config?.footwearReorderPoint?.[dest];
+        return {
+          target: t,
+          minQty: Math.max(1, t - 1),
+          reorderPoint: typeof rp === "number" && Number.isFinite(rp) && rp >= 0 ? rp : null,
+          source: "footwear_default",
+        };
+      }
+    }
   }
   if (!ruleTargetsEnabled(config, dest)) return null;   // ← kill switch
   // Global clothing rule: apply the location's standard run to every catalog
@@ -586,18 +670,34 @@ function computeRefillPlan(snapshot) {
   // collapses back to exactly the explicit-target keys (v5 behaviour), so the
   // engine does not even walk the ~6,000 rule-only cells. resolveTarget would
   // return null for them anyway — this keeps the scan cheap as well as correct.
+  // FOOTWEAR (2026-07-30) rides the same two helpers on its OWN switch. Both
+  // classes must be admitted here or resolveTarget is never even consulted for
+  // them — the deficit loop walks managedPids × sizesFor, so a target that
+  // resolves correctly still yields nothing if the pid never enters this set.
+  // When footwear is off, every expression below reduces to the original
+  // clothing-only form (see the tests pinning deep-equality of the clothing plan).
+  // A product that somehow satisfied BOTH predicates would be treated as
+  // clothing, matching resolveTarget's branch order.
   const managedPids = (dest) => {
     const out = new Set(Object.keys(targets?.[dest] || {}));
-    if (!ruleTargetsEnabled(config, dest)) return out;
+    const ruleOn = ruleTargetsEnabled(config, dest);
+    const footOn = footwearTargetsEnabled(config, dest);
+    if (!ruleOn && !footOn) return out;
     for (const [pid, p] of Object.entries(products || {})) {
-      if (isClothing(p) && storeCarries(stock, dest, pid)) out.add(pid);
+      if (!storeCarries(stock, dest, pid)) continue;
+      if (ruleOn && isClothing(p)) out.add(pid);
+      else if (footOn && isFootwear(p)) out.add(pid);
     }
     return out;
   };
   const sizesFor = (dest, pid) => {
     const out = new Set(Object.keys(targets?.[dest]?.[pid] || {}));
-    if (!ruleTargetsEnabled(config, dest)) return out;
-    if (isClothing(products?.[pid]) && storeCarries(stock, dest, pid)) {
+    const ruleOn = ruleTargetsEnabled(config, dest);
+    const footOn = footwearTargetsEnabled(config, dest);
+    if (!ruleOn && !footOn) return out;
+    const p = products?.[pid];
+    const managedHere = (ruleOn && isClothing(p)) || (footOn && isFootwear(p));
+    if (managedHere && storeCarries(stock, dest, pid)) {
       for (const s of productSizes(products, pid)) out.add(encodeSizeKey(s));
     }
     return out;
@@ -652,6 +752,13 @@ function computeRefillPlan(snapshot) {
   const awaitingSupplier = [];  // v9: whole upstream chain empty — supplier reorder / excess return
   const recountNeeded = [];     // loop guard: rejected N× while the denier's count claims stock — recount, don't re-ask
   let managedCells = 0;   // cells with a resolvable target > 0 (Health-score denominator)
+  // Counted SEPARATELY and deliberately kept OUT of managedCells: HealthView uses
+  // stats.managedCells as the Health-score denominator, and footwear adds ~6,445
+  // managed cells against clothing's ~8,400 — folding them in would move the
+  // displayed score for reasons that have nothing to do with clothing health, the
+  // moment footwearTargets is enabled. Sneakers have their own tab and their own
+  // rule; they get their own metric. (CodeRabbit #289.)
+  let footwearManagedCells = 0;
   const maxUnits = num(config?.maxUnitsPerIntent) || 20;
 
   // Rejection cooldown: (dest|pid|sizeKey) → { ts, by } — the most recent human
@@ -848,12 +955,17 @@ function computeRefillPlan(snapshot) {
     const mode = config?.mode?.[dest] || "off";
     const src = routes[dest];
     for (const pid of managedPids(dest)) {
-      if (!isClothing(products?.[pid]) && !targets?.[dest]?.[pid]) continue;
+      // Defensive class filter (managedPids already admitted this pid). Footwear
+      // is added here for the same reason it is added there: without it a shoe
+      // with no explicit row is dropped before resolveTarget is consulted. Still
+      // safe when footwear is off — resolveTarget then returns null and the
+      // `!t` guard below skips the cell, exactly as it does today.
+      if (!isClothing(products?.[pid]) && !isFootwear(products?.[pid]) && !targets?.[dest]?.[pid]) continue;
       for (const sizeKey of sizesFor(dest, pid)) {
         const size = rawSize(pid, sizeKey);
         const t = resolveTarget(ctx, dest, pid, size);
         if (!t || t.target <= 0) continue;
-        managedCells++;
+        if (isFootwear(products?.[pid])) footwearManagedCells++; else managedCells++;
         const q = cellQty(stock, dest, pid, size);
         const have = avail(q);
         const inb = inbound.get(`${dest}|${pid}|${sizeKey}`) || 0;
@@ -1113,24 +1225,57 @@ function computeRefillPlan(snapshot) {
   // (Kimi review, PR #277.) 0 is likewise not a valid throttle — use the kill
   // switch to stop the engine, not a zero cap.
   const maxIntents = Math.max(1, num(config?.maxIntentsPerRun) || 200);
-  let plannedIntents = intents;
-  if (intents.length > maxIntents) {
-    errors.push(`circuit breaker: ${intents.length} intents computed, capped to ${maxIntents} (fair per destination, high-priority first)`);
+  // The round-robin, factored out so the two product classes can be dealt
+  // SEPARATELY. Behaviour is unchanged for a single class.
+  const dealFairly = (list, cap) => {
+    if (list.length <= cap) return list;
     const byDest = new Map();
-    for (const i of intents) {
+    for (const i of list) {
       if (!byDest.has(i.dest)) byDest.set(i.dest, []);
       byDest.get(i.dest).push(i);
     }
-    for (const list of byDest.values()) list.sort((a, b) => (a.priority === b.priority ? 0 : a.priority === "high" ? -1 : 1));
-    plannedIntents = [];
+    for (const q of byDest.values()) q.sort((a, b) => (a.priority === b.priority ? 0 : a.priority === "high" ? -1 : 1));
+    const out = [];
     const queues = [...byDest.values()];
-    for (let round = 0; plannedIntents.length < maxIntents; round++) {
+    for (let round = 0; out.length < cap; round++) {
       let dealt = false;
       for (const q of queues) {
-        if (round < q.length && plannedIntents.length < maxIntents) { plannedIntents.push(q[round]); dealt = true; }
+        if (round < q.length && out.length < cap) { out.push(q[round]); dealt = true; }
       }
       if (!dealt) break;
     }
+    return out;
+  };
+
+  // ── FOOTWEAR GETS ITS OWN CAP (CodeRabbit #289, major) ──────────────────────
+  // maxIntentsPerRun is a GLOBAL cap dealt round-robin across destinations. Left
+  // shared, footwear would compete with clothing for the same 75 slots — directly
+  // inside hub2, which carries both classes, and by adding hub1 as another queue
+  // that takes round-robin turns. Enabling footwear would then delay or reorder
+  // clothing intents, which is precisely the coupling this feature promises not to
+  // create. The initial footwear backlog makes it certain rather than theoretical:
+  // 578-993 intents against a cap of 75.
+  //
+  // So the classes are capped INDEPENDENTLY. Clothing is dealt first from the
+  // untouched `intents` list with the untouched cap, so its allocation is
+  // identical to what it would be with footwear switched off — same inputs, same
+  // round-robin, same output. Footwear is then dealt from its own list under
+  // maxFootwearIntentsPerRun (default 25, the launch throttle) and appended.
+  //
+  // Partitioning by PRODUCT rather than by destination is deliberate: hub2 holds
+  // both classes, so a destination split would not separate them.
+  const isFootwearIntent = (i) => isFootwear(products?.[i.productId]);
+  const clothingIntents = intents.filter((i) => !isFootwearIntent(i));
+  const footwearIntents = intents.filter(isFootwearIntent);
+  const maxFootwearIntents = Math.max(1, num(config?.maxFootwearIntentsPerRun) || 25);
+  const plannedClothing = dealFairly(clothingIntents, maxIntents);
+  const plannedFootwear = dealFairly(footwearIntents, maxFootwearIntents);
+  const plannedIntents = [...plannedClothing, ...plannedFootwear];
+  if (clothingIntents.length > maxIntents) {
+    errors.push(`circuit breaker: ${clothingIntents.length} intents computed, capped to ${maxIntents} (fair per destination, high-priority first)`);
+  }
+  if (footwearIntents.length > maxFootwearIntents) {
+    errors.push(`circuit breaker (footwear): ${footwearIntents.length} intents computed, capped to ${maxFootwearIntents}`);
   }
 
   // ── inventory intelligence (plan §Inventory Intelligence — CLOTHING ONLY) ───
@@ -1424,12 +1569,20 @@ function computeRefillPlan(snapshot) {
     // whether rule-based targeting was on — the run record states it.
     policy: {
       ruleBasedTargets: Object.fromEntries(dests.map((d) => [d, ruleTargetsEnabled(config, d)])),
+      // Footwear rollout state, per destination — during an incident nobody
+      // should have to guess which hubs were armed. (CodeRabbit #289.)
+      footwearTargets: Object.fromEntries(dests.map((d) => [d, footwearTargetsEnabled(config, d)])),
       maxIntentsPerRun: maxIntents,
+      maxFootwearIntentsPerRun: maxFootwearIntents,
       intentsComputed: intents.length,
       intentsPlanned: plannedIntents.length,
-      throttled: intents.length > maxIntents,
+      // Split so a capped run shows WHICH class was throttled.
+      footwearIntentsComputed: footwearIntents.length,
+      footwearIntentsPlanned: plannedFootwear.length,
+      throttled: clothingIntents.length > maxIntents,
+      footwearThrottled: footwearIntents.length > maxFootwearIntents,
     },
-    stats: { managedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
+    stats: { managedCells, footwearManagedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
     exceptions: {
       noTarget: cap(noTarget),
       unintroduced: cap(unintroduced, 900),
