@@ -29,6 +29,7 @@ import { displayChecksVisibleForViewer } from "./config/displayChecks";
 import StockView from "./components/stock/StockView";
 import Hub2RefillQueue from "./components/stock/Hub2RefillQueue";
 import HealthView from "./components/stock/HealthView";
+import DisplayRegister, { registerDisplayPair } from "./components/stock/DisplayRegister";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { input as stockInput } from "./components/stock/ui";
@@ -56,6 +57,9 @@ import { printOrderSlips } from "./print/orderSlip";
 // derivation that keeps newly-created products inside every existing automation.
 import { catByKey, sizesOf, isOneSize, legacyFor, needsAssignment, isAssignable } from "./utils/productTaxonomy";
 import { buildNewProduct } from "./utils/newProductRecord";
+// The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
+// if the two ever disagree, stock is deducted in one app and never credited in the other.
+import { isFootwearLine, productIsFootwear } from "./utils/footwearLine";
 import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries } from "./components/admin/SizeQtyBoxes";
@@ -241,7 +245,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", DISPLAY_REGISTER: "display_register" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -901,6 +905,13 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
 // Every OOS event is permanently logged. Never deleted.
 // Returns a Promise — callers await this before updating UI so the log write
 // completes before the order status changes.
+// RETAINED, NOT WIRED (2026-07-30). Nothing in this app calls it any more: the
+// POS is the only restock trigger, writing restock_log itself for order
+// collections and walk-ins. Kept as the reference for the entry shape both apps
+// must agree on — Source reads this node and does not care which app wrote a
+// row, so the shape is a cross-app contract even though only one side writes it
+// today. If a store-app-side restock ever returns, it writes through here.
+// eslint-disable-next-line no-unused-vars
 async function logRestock(entry) {
   return push(ref(database, `restock_log/${entry.date}`), entry);
 }
@@ -2428,17 +2439,15 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
-  // Source badge = today's restock requests + on-hold (Tomorrow), excluding OOS.
-  // Today's request = orders marked READY/COLLECTED today (sold/sent items),
-  // minus any of those orders that have been returned today (physically back
-  // in the warehouse, no restock needed). On hold = COMING_TOMORROW.
-  const returnedToday = returnedOrderIdsOnSADate(returnsLog, today);
-  const sourceTodayCount = orders ? orders.filter(o =>
-    o.status !== STATUS.OUT_OF_STOCK &&
-    (o.status === STATUS.READY || o.status === STATUS.COLLECTED) &&
-    orderSaleDate(o) === today &&
-    !returnedToday.has(o.id)
-  ).length : 0;
+  // Source badge = today's restock requests + on-hold (Tomorrow).
+  //
+  // SALE-DRIVEN (2026-07-30), matching the Source list and its hub tabs. It used
+  // to count orders at READY|COLLECTED, so marking an order Sent lit the badge
+  // before any customer had touched the shoe — and with returns gone, nothing
+  // ever took it back down. It now counts restock_log, which the POS writes on a
+  // real sale. On hold = COMING_TOMORROW, unchanged.
+  const restockToday = useRestockLogRaw(today);
+  const sourceTodayCount = (restockToday || []).length;
   const onHold = orders ? orders.filter(o =>
     o.status === STATUS.COMING_TOMORROW && o.status !== STATUS.OUT_OF_STOCK
   ).length : 0;
@@ -2464,7 +2473,16 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       hasPermission(ROLE_TO_PERMISSION[ROLES.ASSISTANT]) && { key:"assistant", icon:RoleIcons.assistant, name:"Store Assistant", desc:"Place customer orders", badge:assistantBadge, onClick:()=>onSelect(ROLES.ASSISTANT) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.WAREHOUSE]) && { key:"warehouse", icon:RoleIcons.warehouse, name:"Warehouse", desc:"Manage order queue", badge:incoming, onClick:()=>onSelect(ROLES.WAREHOUSE) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.SOURCE])    && { key:"source", icon:RoleIcons.source, name:"Source", desc:"Restock requests", badge:sourceBadge, onClick:()=>onSelect(ROLES.SOURCE) },
-      hasPermission(ROLE_TO_PERMISSION[ROLES.RETURNS])   && { key:"returns", icon:RoleIcons.returns, name:"Returns", desc:"Log returned items", onClick:()=>onSelect(ROLES.RETURNS) },
+      // ── RETURNS TILE REMOVED (2026-07-29, owner) ─────────────────────────
+      // Nothing goes back to a hub any more, so there is nothing to log:
+      // sneakers were never transferred off their hub, and clothing that reaches
+      // the shop stays there as shop stock. A tile called "Log returned items"
+      // that can only tell you there is nothing to do is a daily dead end.
+      //
+      // The MODULE IS NOT DELETED — ReturnsView, submitReturn, the date-scoped
+      // disp_ reversal, logReturn and the returns_log feed are all intact, and
+      // the route below still resolves. Only the way in from the home screen is
+      // gone. Restoring it is this one line.
       { key:"barcodes", icon:RoleIcons.stock, name:"Barcodes", desc:"Print product barcodes", onClick:()=>onSelect(ROLES.BARCODES) },
       { key:"label_print", icon:RoleIcons.stock, name:"Print Labels", desc:"Product labels · name, price, barcode", onClick:()=>onSelect(ROLES.LABEL_PRINT) },
       dcVisible && { key:"display_checks", icon:RoleIcons.display_checks, name:"Display Checks", desc:"Clothing display checks", onClick:()=>onSelect(ROLES.DISPLAY_CHECKS) },
@@ -2481,6 +2499,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       // Inventory Health — the AI refill engine's control centre, promoted to its
       // own primary card (owner decision 2026-07-12). Same access as Stock.
       canAccessStock                                           && { key:"health", icon:RoleIcons.insights, name:"Inventory Health", desc:"Refill engine & exceptions", onClick:()=>onSelect(ROLES.HEALTH) },
+      true                                                     && { key:"display_register", icon:RoleIcons.display, name:"Display Register", desc:"What's on the floor, and in what size", onClick:()=>onSelect(ROLES.DISPLAY_REGISTER) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
       isSuperAdmin && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc:"Photos · Names · Reorder · Voice", onClick:()=>onSelect(ROLES.AI_STUDIO) },
@@ -2504,7 +2523,8 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       { k: "Orders today", v: assistantBadge, role: ROLES.WAREHOUSE },
       { k: "In queue", v: incoming, role: ROLES.WAREHOUSE },
       { k: "To restock", v: sourceBadge, warn: sourceBadge > 0, role: ROLES.SOURCE },
-      { k: "Returns", v: returnedToday.size, role: ROLES.RETURNS },
+      // "Returns" stat removed with the tile — it linked into the same module and
+      // would have been the one remaining door to a screen with nothing to do.
     ];
     return (
       <div style={{ minHeight:"100vh", background:"#000", color:"#f3f6ff", fontFamily:FONT, position:"relative" }}>
@@ -8603,22 +8623,19 @@ function WarehouseView({ products = [], orders, onExit }) {
   // sentSize, by design.
   const updateStatus = async (order, status, extraPatch = {}) => {
     const now = serverNowIso();
-    // When an item is COLLECTED (sold/given to customer), log a refill request so
-    // Source knows what needs restocking. OOS items are NOT logged — they're
-    // completely unavailable and can't be refilled.
-    if (status === STATUS.COLLECTED) {
-      await logRestock({
-        timestamp: now,
-        date: getSADateString(),
-        productName: order.productName,
-        photoUrl: order.productPhotoUrl || null,
-        photo: order.productPhoto || "",
-        size: order.size,
-        orderNumber: order.id,
-        hub: order.hub || selectedHub,
-        placedAtHub: order.placedAtHub || order.hub || selectedHub,
-      }).catch(err => console.warn("logRestock failed:", err));
-    }
+    // ── THE POS IS THE ONLY RESTOCK TRIGGER (2026-07-30, owner) ──────────────
+    // This used to write a restock_log entry on COLLECTED. Source is now fed by
+    // the SALE — the POS writes restock_log itself, for order collections
+    // (logOrderCollection.js) and walk-ins (logFootwearSold.js) — and the POS is
+    // also what marks an order collected in the first place (markOrderCollected.js
+    // writes status directly to /orders). So this branch could only ever fire if
+    // someone marked an order collected from THIS app, and every time it did it
+    // would add a SECOND restock entry for a sale the POS had already logged:
+    // Source would be told to restock one pair twice.
+    //
+    // Removed rather than guarded, because a "collected" that did not come from a
+    // till is not a sale, and inventing a restock request for it is exactly the
+    // phantom-request behaviour this whole change removes.
     const patch = { status, updatedAt: now, ...extraPatch };
     if (status === STATUS.READY)           patch.readyAt = now;
     if (status === STATUS.OUT_OF_STOCK)    patch.outOfStockAt = now;
@@ -8724,9 +8741,14 @@ function WarehouseView({ products = [], orders, onExit }) {
     // a stop, not a silent negative. Sneakers keep the A1 always-move
     // behavior below: their parcels physically leave regardless.)
     if (transfer.blockSend) return transfer;
+    // `skipped` is a DELIBERATE no-move (footwear now sells from the hub), not a
+    // failure — it must not stamp transferFailed, which drives the "route via
+    // Lightspeed" warnings and the reconciliation reports.
     updateStatus(order, STATUS.READY, {
       ...extraPatch,
-      ...(transfer.moved ? { transferFailed: null } : { transferFailed: transfer.reason || "unknown" }),
+      ...(transfer.moved || transfer.skipped
+        ? { transferFailed: null }
+        : { transferFailed: transfer.reason || "unknown" }),
     });
     return transfer;
   };
@@ -8734,7 +8756,9 @@ function WarehouseView({ products = [], orders, onExit }) {
   const markSentAndPrint = async (order, extraPatch = {}) => {
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
     const transfer = await markSentWithTransfer(order, extraPatch);
-    if (!transfer.moved) return;  // recordDispatchTransfer already raised the explaining toast
+    // A skipped footwear transfer still gets its label — the parcel physically
+    // travels to the shop exactly as before; only the ledger move is gone.
+    if (!transfer.moved && !transfer.skipped) return;  // recordDispatchTransfer already raised the explaining toast
     printDispatchLabel({ ...order, sentSize })
       .then((res) => {
         const diag = res?.diag ? ` [${res.diag}]` : "";
@@ -8780,6 +8804,24 @@ function WarehouseView({ products = [], orders, onExit }) {
   // idempotent re-send); returns false — with a non-blocking toast telling the picker
   // to route via Lightspeed — when the move isn't recordable or the hub is short.
   const recordDispatchTransfer = async (order, sentSize) => {
+    // ── SNEAKERS NO LONGER MOVE ON SEND (2026-07-29) ─────────────────────────
+    // Footwear stock stays booked at its hub. The parcel still physically travels
+    // and the order still flows exactly as before — but no ledger transfer is
+    // written, because the POS now deducts the sale at the hub instead.
+    //
+    // This is the half of the change that must NEVER run alone. If the transfer
+    // stops while the POS still deducts at the shop, every sneaker sale hits a
+    // shop cell holding zero and goes negative — precisely the 361-cell hole at
+    // Marathon PE that this work exists to remove. Deploy both apps together.
+    //
+    // Why this is safe for everything else: the gate needs the CATALOGUE and the
+    // SIZE to positively agree (see utils/footwearLine.js). Clothing, perfume,
+    // bags, an unknown product, a missing size — all fall through and keep
+    // writing the transfer exactly as they do today.
+    const orderProduct = products.find((p) => p && p.id === order.productId) || null;
+    if (isFootwearLine(orderProduct, sentSize ?? order.size)) {
+      return { moved: false, reason: "footwear_sells_from_hub", skipped: true };
+    }
     // New orders carry destShop; legacy pine orders infer marathon-pine; legacy
     // central orders can't be disambiguated (Marathon PE vs Trophy) → not recordable.
     const toShop = order.destShop || (order.placedStore === "pine" ? "marathon-pine" : null);
@@ -8866,7 +8908,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // 'refilled' (display replenished) or 'stockDepleted' (no inventory left,
   // feeds Phase 11 Insights). displayRefilledBy stores the hub label
   // (anonymous auth has no email; selectedHub is the meaningful signal).
-  const setDisplayRefillStatus = (order, status) => {
+  const setDisplayRefillStatus = (order, status, refillSize = null) => {
     const now = serverNowIso();
     const patch = {
       displayRefillStatus: status,
@@ -8876,6 +8918,26 @@ function WarehouseView({ products = [], orders, onExit }) {
     if (status === "refilled") {
       patch.displayRefilledAt            = now;
       patch.displayRefillStockDepletedAt = null;
+      // ── THE SIZE OF THE PAIR NOW ON THE DISPLAY ────────────────────────────
+      // This is the moment a specific pair goes onto the shelf, so this is where
+      // its size becomes a fact worth recording. A Display Partner REQUEST is
+      // deliberately size-optional ("send a pair, any size"); the pair itself
+      // never is. Recording it here is what lets the register say what is
+      // actually on the floor — and what stops the sale of that pair being
+      // unattributable to a hub cell later.
+      if (refillSize) {
+        patch.displayRefillSize = String(refillSize);
+        // Feed the register from the same action — one physical fact, recorded
+        // once. Fire-and-forget: the refill is what matters and a register write
+        // must never block it.
+        const prod = products.find((p) => p && p.id === order.productId) || null;
+        if (order.destShop && prod) {
+          registerDisplayPair({
+            store: order.destShop, product: prod, size: refillSize,
+            actorName: selectedHub, orderId: order.id,
+          }).catch(() => {});
+        }
+      }
     } else if (status === "stockDepleted") {
       patch.displayRefillStockDepletedAt = now;
       patch.displayRefilledAt            = null;
@@ -9297,6 +9359,70 @@ function WarehouseView({ products = [], orders, onExit }) {
                     setPickerOpenId(null);
                     markSentAndPrint(order, { sentSize: chosen });
                   };
+                  // ── SIZE-LESS DISPLAY PARTNER GUARD (2026-07-29) ───────────
+                  // A Display Partner request is deliberately size-optional —
+                  // the shop wants "a pair for the display", any size. But the
+                  // PAIR THAT ACTUALLY GOES has a size, and until now nobody
+                  // recorded it: 17 of 51 live partner footwear orders (33%)
+                  // carry no size at all. Those orders then fail their dispatch
+                  // transfer with `missing_product_or_size`, and the POS — which
+                  // takes the size from the order and so never prompts — writes
+                  // a sale line with no size. The unit leaves the building and
+                  // the books never lose it.
+                  //
+                  // So the size is captured HERE, at the one moment it becomes a
+                  // fact: when the picker takes a specific pair off the shelf.
+                  // Nothing changes for the shop, and nothing changes for any
+                  // order that already has a size.
+                  const guardProduct = products.find((p) => p && p.id === order.productId) || null;
+                  const needsSentSize = !order.size && !order.sentSize && productIsFootwear(guardProduct);
+                  // Real sizes only — the "_" one-size sentinel is not a choice.
+                  const sizeChoices = (Array.isArray(guardProduct?.sizes) ? guardProduct.sizes : [])
+                    .map(String).map((s) => s.trim()).filter((s) => s && s !== "_");
+                  if (needsSentSize) {
+                    return (
+                      <div style={{ padding:"0 12px 10px 16px" }}>
+                        <div style={{ background:"rgba(251,191,36,.09)", border:"1px solid rgba(251,191,36,.35)",
+                                      borderRadius:10, padding:"9px 11px", marginBottom:8 }}>
+                          <div style={{ fontSize:11.5, fontWeight:800, color:"#FBBF24", letterSpacing:".03em" }}>
+                            WHICH SIZE ARE YOU SENDING?
+                          </div>
+                          <div style={{ fontSize:11, color:"rgba(251,191,36,.75)", marginTop:3, lineHeight:1.45 }}>
+                            This display request came through without a size. Pick the pair you are actually sending —
+                            the till needs it to take the sale off the right hub.
+                          </div>
+                        </div>
+                        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                          {sizeChoices.length ? sizeChoices.map((s) => (
+                            <button key={s} onClick={() => {
+                                // The size chosen here IS the display registration —
+                                // one physical fact, recorded once. Fire-and-forget so
+                                // it can never hold up the send.
+                                registerDisplayPair({
+                                  store: order.destShop, product: guardProduct, size: s,
+                                  actorName: null, orderId: order.id,
+                                }).catch(() => {});
+                                markSentAndPrint(order, { sentSize: s });
+                              }}
+                              style={{ padding:"10px 14px", borderRadius:10, fontSize:13, fontWeight:800, cursor:"pointer",
+                                       background:"rgba(60,110,255,.14)", border:"1px solid rgba(74,127,255,.45)", color:"#9DBCFF",
+                                       minWidth:52 }}>
+                              <SizeTag size={s} />
+                            </button>
+                          )) : (
+                            <div style={{ fontSize:11.5, color:"rgba(255,255,255,.45)", fontStyle:"italic" }}>
+                              This product has no sizes on record — fix the product first, then send.
+                            </div>
+                          )}
+                          <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)}
+                            style={{ padding:"10px 14px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer",
+                                     background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B" }}>
+                            Out of Stock
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
                   return (
                     <div style={{ padding:"0 12px 10px 16px" }}>
                       {!pickerOpen ? (
@@ -9402,6 +9528,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             setShowCompleted={setShowRefilledCompleted}
             onSetStatus={setDisplayRefillStatus}
             onUndo={undoDisplayRefill}
+            products={products}
             nowTick={nowTick}
             selectedHub={selectedHub}
           />
@@ -9622,7 +9749,23 @@ function WarehouseView({ products = [], orders, onExit }) {
 // toggle reveals both kinds with status-colored borders and a per-row Undo.
 // nowTick is the parent's 30s ticker — used for "waiting Xm" chips so they
 // update live without a render storm.
-function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setShowCompleted, onSetStatus, onUndo, nowTick, selectedHub }) {
+function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setShowCompleted, onSetStatus, onUndo, nowTick, selectedHub, products = [] }) {
+  // Does this refill need a size picked before it can be marked done? Only for
+  // FOOTWEAR that carries no size anywhere on the order — clothing and one-size
+  // items are untouched, and a partner order that already named a size just uses it.
+  // Two-step confirm for a size-less footwear refill. A single tap on a size
+  // button marked the task done irreversibly — too easy to fumble on a phone in
+  // a warehouse. Pick, see it selected, then Send.
+  const [sizeSheet, setSizeSheet] = useState(null);   // { order, options, picked }
+
+  const refillSizeChoices = (order) => {
+    const known = order.sentSize || order.size || null;
+    const prod = products.find((p) => p && p.id === order.productId) || null;
+    if (known || !productIsFootwear(prod)) return { needed: false, options: [] };
+    const options = (Array.isArray(prod?.sizes) ? prod.sizes : [])
+      .map(String).map((x) => x.trim()).filter((x) => x && x !== "_");
+    return { needed: true, options };
+  };
   const fmtWaiting = (iso) => {
     const ms = nowTick - new Date(iso).getTime();
     const mins = Math.floor(ms / 60000);
@@ -9680,6 +9823,66 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
         </div>
       )}
 
+      {/* ── SIZE CONFIRM SHEET ──────────────────────────────────────────────
+          Pick a size, see it selected, then Send. Two deliberate actions, so a
+          mis-tap costs nothing — it was one tap and irreversible before. */}
+      {sizeSheet && (
+        <div onClick={() => setSizeSheet(null)}
+             style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.78)", backdropFilter:"blur(4px)",
+                      display:"flex", alignItems:"center", justifyContent:"center", padding:16, zIndex:80 }}>
+          <div onClick={(e) => e.stopPropagation()}
+               style={{ background:"rgba(10,13,24,.97)", border:"1px solid rgba(74,127,255,.32)", borderRadius:18,
+                        padding:"20px 20px 16px", maxWidth:420, width:"100%", boxShadow:"0 24px 60px rgba(0,0,0,.6)" }}>
+            <div style={{ fontSize:16.5, fontWeight:800, color:"#fff", marginBottom:3 }}>
+              Which size are you sending?
+            </div>
+            <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", lineHeight:1.5, marginBottom:14 }}>
+              #{sizeSheet.order.id} · {sizeSheet.order.productName}
+              <br />
+              This goes on the display register, and the till uses it to take the sale off the right hub.
+            </div>
+
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>
+              {sizeSheet.options.length ? sizeSheet.options.map((sz) => {
+                const on = sizeSheet.picked === sz;
+                return (
+                  <button key={sz} onClick={() => setSizeSheet((v) => ({ ...v, picked: sz }))}
+                    style={{ padding:"13px 17px", borderRadius:12, fontSize:15, fontWeight:800, cursor:"pointer", minWidth:56,
+                             background: on ? "#4A7FFF" : "rgba(74,127,255,.10)",
+                             border: `2px solid ${on ? "#4A7FFF" : "rgba(74,127,255,.30)"}`,
+                             color: on ? "#fff" : "#9DBCFF",
+                             boxShadow: on ? "0 0 16px rgba(74,127,255,.35)" : "none",
+                             transition:"background .12s, border-color .12s" }}>
+                    <SizeTag size={sz} />
+                  </button>
+                );
+              }) : (
+                <div style={{ fontSize:12.5, color:"#FBBF24" }}>
+                  This product has no sizes on record — fix the product first.
+                </div>
+              )}
+            </div>
+
+            <div style={{ display:"flex", gap:9, justifyContent:"flex-end", flexWrap:"wrap" }}>
+              <button onClick={() => setSizeSheet(null)}
+                style={{ background:"transparent", border:"1px solid rgba(255,255,255,.18)", color:"rgba(233,238,255,.7)",
+                         borderRadius:11, padding:"11px 17px", fontSize:13, fontWeight:700, cursor:"pointer" }}>
+                Cancel
+              </button>
+              <button
+                disabled={!sizeSheet.picked}
+                onClick={() => { const { order, picked } = sizeSheet; setSizeSheet(null); onSetStatus(order, "refilled", picked); }}
+                style={{ background: sizeSheet.picked ? "#4ADE80" : "rgba(255,255,255,.06)",
+                         border:"none", color: sizeSheet.picked ? "#04351a" : "rgba(233,238,255,.32)",
+                         borderRadius:11, padding:"11px 22px", fontSize:13.5, fontWeight:800,
+                         cursor: sizeSheet.picked ? "pointer" : "not-allowed" }}>
+                {sizeSheet.picked ? `Send size ${sizeSheet.picked}` : "Pick a size"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Due cards — grouped by day, oldest-first within each bucket.
           includeOlder=true preserves the Phase 9.5 "never lose a due refill"
           semantic by collapsing >3-day-old tasks into a separate Older bucket. */}
@@ -9706,7 +9909,13 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
                 </div>
               </div>
               <div style={{ display:"flex", gap:8 }}>
-                <button onClick={() => onSetStatus(order, "refilled")}
+                <button onClick={() => {
+                          const sz = refillSizeChoices(order);
+                          // Footwear with no size on the order opens the confirm
+                          // sheet; everything else keeps the direct action.
+                          if (sz.needed) setSizeSheet({ order, options: sz.options, picked: null });
+                          else onSetStatus(order, "refilled", order.sentSize || order.size || null);
+                        }}
                         style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.4)", color:"#4ADE80" }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                   Refilled
@@ -12491,22 +12700,35 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // without an explicit hub field default to "hub1", matching the rest of
   // the app.
 
-  // All-hub today list — keep one shared filter, then slice per-hub for counts
-  // and the active tab. Cheap enough that we don't memo separately per hub.
-  const todayRestockOrdersAll = useMemo(() =>
-    orders.filter(o =>
-      o.status !== STATUS.OUT_OF_STOCK &&
-      (o.status === STATUS.READY || o.status === STATUS.COLLECTED) &&
-      orderSaleDate(o) === todayDate &&
-      !returnedTodayIds.has(o.id)
-    ),
-    [orders, todayDate, returnedTodayIds]
+  // (The old order-derived lists that lived here — todayRestockOrdersAll and its
+  // per-hub slice, built from status READY|COLLECTED — are GONE. Every consumer
+  // now reads the sale-driven feed below: the list, the hub tab badges and the
+  // home-screen badge. Deleted rather than left dangling so nobody re-wires a
+  // Ready-triggered count back in.)
+  // ── SOURCE IS NOW SALE-DRIVEN (2026-07-30, owner) ─────────────────────────
+  // It used to count ORDERS at status READY|COLLECTED. That meant a shoe entered
+  // the restock list the moment the warehouse marked it Ready — before any
+  // customer had touched it — so a pair that was fetched, shown and refused was
+  // already a restock request. The only way one ever left the list was
+  // `!returnedTodayIds.has(o.id)`, populated solely by the Return card. With
+  // returns gone (nothing goes back to a hub any more) that escape hatch went
+  // with it, and every fetched pair would have become a permanent phantom
+  // request.
+  //
+  // The honest trigger is a SALE, and it already exists: the POS writes
+  // restock_log/{SA-date} on every collected order (logOrderCollection.js,
+  // source:"pos") carrying productName, size, hub and orderNumber — the same
+  // shape computeRestockCounts already expects. Both helpers were in the file,
+  // written and unused. So Source now counts what actually SOLD.
+  //
+  // A refused pair simply never generates an entry, which is why no reversal is
+  // needed: there is nothing to undo, rather than something to remember to undo.
+  const restockLogToday = useRestockLogRaw(todayDate);
+  const restockLogForHub = useMemo(
+    () => (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === hub),
+    [restockLogToday, hub],
   );
-  const todayRestockOrders = useMemo(
-    () => todayRestockOrdersAll.filter(o => (o.hub || "hub1") === hub),
-    [todayRestockOrdersAll, hub]
-  );
-  const rawCounts = useMemo(() => computeCollectedCounts(todayRestockOrders), [todayRestockOrders]);
+  const rawCounts = useMemo(() => computeRestockCounts(restockLogForHub), [restockLogForHub]);
 
   // All Source responses: { date: { productKey: { size: { response, respondedOn } } } }
   // History tab derives its straggler list from this + live orders (5-day window).
@@ -12581,10 +12803,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     const counts = { hub1: 0, hub2: 0 };
     const todayResponses = allResponses[todayDate] || {};
 
-    // -- Today: pending = unresponded cells from today's collected orders (live).
+    // -- Today: pending = unresponded cells from today's SALES (restock_log).
+    // Must read the same feed the list itself reads, or the badge counts orders
+    // marked Ready while the list shows only what sold — a badge promising work
+    // that is not in the list is worse than no badge.
     ["hub1", "hub2"].forEach(h => {
-      const hubOrders = todayRestockOrdersAll.filter(o => (o.hub || "hub1") === h);
-      const counts2 = computeCollectedCounts(hubOrders);
+      const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h);
+      const counts2 = computeRestockCounts(hubEntries);
       Object.entries(counts2).forEach(([key, product]) => {
         Object.entries(product.sizes || {}).forEach(([size, count]) => {
           if (todayResponses[key]?.[size]) return;
@@ -12617,7 +12842,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     });
 
     return counts;
-  }, [todayRestockOrdersAll, allResponses, todayDate, insightsLog, returnsLog, onHoldMerged]);
+  }, [restockLogToday, allResponses, todayDate, insightsLog, returnsLog, onHoldMerged]);
 
   // Top-tab On Hold badge — total pending across ALL hubs (matches old behavior).
   const onHoldCount = useMemo(
@@ -12883,6 +13108,15 @@ function ReturnsView({ orders, products = [], onExit }) {
   // ledgered:false instead of guessing a move that would corrupt a hub cell.
   // returns_log keeps its role as the human report feed, now enriched with
   // productId/qty/ledgered so it can always be audited against the ledger.
+  // RETAINED, NOT WIRED (2026-07-29, owner). The Returns list still renders and
+  // returns_log still feeds Insights, but no UI calls this: nothing goes back to
+  // a hub any more — sneakers never left it, and clothing that reaches the shop
+  // stays as shop stock. Kept whole (with resolveReturnDestination, the disp_
+  // reversal and logReturn) because "returning to a hub" is a policy that could
+  // come back, and re-deriving this reversal logic from scratch — including the
+  // date-scoped disp_ id and the negative-tolerant reversal — would be a far
+  // bigger job than re-attaching a button. Do not delete as dead code.
+  // eslint-disable-next-line no-unused-vars
   const submitReturn = async (order) => {
     const scrub = (s) => s.replace(/[.#$[\]/\s:]/g, "_");
     const dispId = scrub(`disp_${order.id}_${order.createdAt || ""}`);
@@ -12929,8 +13163,20 @@ function ReturnsView({ orders, products = [], onExit }) {
           // there is nothing to reverse in the hub ledger. Processed successfully.
           ledgered = true;
           ledgerNote = `no_transfer_needed:${dest.reason}`;
+        } else if (isFootwearLine(prod, order.sentSize ?? order.size)) {
+          // ── FOOTWEAR NOW SELLS FROM THE HUB (2026-07-29) ───────────────────
+          // Send writes no transfer, so a return has NOTHING to reverse — the
+          // stock never left the hub's books. This is the normal, expected path
+          // for a shoe that came back, not an error: the pair physically goes
+          // to the shelf and the ledger was already correct.
+          //
+          // This branch REPLACES the old "no dispatch to reverse — restock by
+          // hand via Lightspeed" warning, which would now fire on every single
+          // returned sneaker and train staff to ignore it.
+          ledgered = true;
+          ledgerNote = "footwear_no_transfer_to_reverse";
         } else {
-          // Footwear with no disp_ record — do NOT fire a phantom hub credit
+          // Non-footwear with no disp_ record — do NOT fire a phantom hub credit
           // (would hide a shortage). Surface it for manual routing; the recon pass
           // restocks the backlog honestly.
           ledgerNote = "no_dispatch_transfer";
@@ -13041,25 +13287,30 @@ function ReturnsView({ orders, products = [], onExit }) {
                 Returned
               </span>
             ) : (
-              <button onClick={() => { setExpandedId(isExpanded ? null : order.id); setFailure(null); }}
-                style={{ background: isExpanded ? "rgba(255,255,255,.05)" : "rgba(74,127,255,.14)", border: isExpanded ? "1px solid rgba(255,255,255,.15)" : "1px solid rgba(74,127,255,.4)", color: isExpanded ? "rgba(233,238,255,.75)" : "#9DBCFF", borderRadius:10, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>
-                {isExpanded ? "Cancel" : "Log Return"}
-              </button>
+              // The "Log Return" action is GONE (owner, 2026-07-29): nothing goes
+              // back to a hub, so there is nothing to log. Leaving the button
+              // while its confirm panel says "nothing to send back" was the worst
+              // of both — a control that opens onto a dead end. The row is now
+              // read-only history. submitReturn and the whole reversal path stay
+              // in the file, deliberately unwired; see the note on submitReturn.
+              <span style={{ display:"inline-flex", alignItems:"center", gap:5, color:"rgba(233,238,255,.4)", fontSize:11.5, fontWeight:600, background:"rgba(255,255,255,.03)", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, padding:"5px 12px", whiteSpace:"nowrap" }}>
+                Stock stays put
+              </span>
             )}
           </div>
         </div>
-        {isExpanded && !isReturned && (
-          <div style={{ borderTop:"1px solid rgba(255,255,255,.07)", padding:14, background:"rgba(74,127,255,.04)" }}>
-            <div style={{ display:"flex", gap:9, alignItems:"flex-start", marginBottom:12 }}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0, marginTop:1 }}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-              <div style={{ fontSize:12, color:"rgba(233,238,255,.7)", lineHeight:1.5 }}>Confirming reverses the dispatch and restocks <strong style={{ color:"#fff" }}>Size {order.size}</strong> to its origin hub.</div>
-            </div>
-            <button onClick={() => submitReturn(order)}
-              style={{ width:"100%", background:"rgba(74,127,255,.92)", border:"none", color:"#fff", borderRadius:10, padding:"11px", fontSize:13, fontWeight:800, cursor:"pointer", letterSpacing:".01em" }}>
-              Confirm return · #{order.id}
-            </button>
-          </div>
-        )}
+        {/* ── RETURN ACTION REMOVED (2026-07-29, owner) ─────────────────────
+            Nothing goes back to a hub, so there is nothing to return:
+              • SNEAKERS were never transferred to the shop — the stock stayed
+                booked at the hub, so a pair coming back has nothing to reverse.
+              • CLOTHING that reaches the shop STAYS there as shop stock.
+            Both the "Log Return" button and its confirm panel are gone; the row
+            is read-only history now.
+
+            THE CODE IS DELIBERATELY RETAINED — submitReturn, the date-scoped
+            disp_ reversal, resolveReturnDestination, logReturn and the
+            returns_log feed are untouched, and the Returns list still renders.
+            See the note on submitReturn. This is a UI change, not a rebuild. */}
       </div>
     );
   };
@@ -16310,6 +16561,7 @@ function AppInner() {
   else if (role === ROLES.DISPLAY_CHECKS) view = displayChecksRouteOpen ? <DisplayChecks onExit={() => setRole(null)} products={products} /> : null;
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.DISPLAY_REGISTER) view = <DisplayRegister products={products} onExit={() => setRole(null)} standalone />;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);

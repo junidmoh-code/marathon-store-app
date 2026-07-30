@@ -30,6 +30,7 @@
 import { createRequire } from "module";
 const require = createRequire("file:///Users/junidmohammed/Documents/marathon-store-app/functions/package.json");
 const admin = require("firebase-admin");
+const { productIsFootwear } = await import(new URL("../src/utils/footwearLine.js", import.meta.url));
 
 const DRY = !process.argv.includes("--commit");
 const CSV = process.argv.includes("--csv");
@@ -69,7 +70,11 @@ const pad = (s, n) => String(s).padEnd(n);
 // jerseys, tracksuits) carrying productType "sneaker". A negative test like
 // `productType !== "clothing"` also treats any product MISSING productType as
 // footwear — the failure that must be impossible.
-const isFootwear = (p) => !!p && p.category === "Footwear";
+// Uses the SHARED predicate, not a local copy — the app, the POS and this script
+// must agree on what a sneaker is, and a fourth definition drifting quietly is
+// exactly how stock ends up in the wrong place. productIsFootwear is the
+// catalogue half of the same gate the deduction uses. (CodeRabbit, Major.)
+const isFootwear = (p) => productIsFootwear(p);
 
 const hubsField = (p) => {
   const h = p && (p.hubs || (p.hub ? [p.hub] : []));
@@ -83,13 +88,16 @@ const hubsField = (p) => {
     db.ref("products").once("value").then((s) => s.val() || {}),
   ]);
 
-  // Units of this product held at a hub — used both to pick the destination and
-  // to break a tie by depth.
-  const heldAt = (hub, pid) => Object.values(stock[hub]?.[pid] || {})
-    .reduce((a, c) => a + Math.max(0, Number(c && c.qty) || 0), 0);
+  // Units of this product AT THIS SIZE held at a hub. Size-exact, deliberately:
+  // totalling every size would let unrelated depth decide the destination — hub1
+  // holding twenty size 8s would pull a size 9 away from the hub that actually
+  // stocks size 9. The whole premise of the routing is that a product+size sits
+  // in exactly one hub (verified: 3,250 of 3,263 cells), and that premise only
+  // holds per SIZE. (CodeRabbit, Critical.)
+  const heldAt = (hub, pid, sizeKey) => Math.max(0, Number(stock[hub]?.[pid]?.[sizeKey]?.qty) || 0);
 
-  // Hubs IN THIS SHOP'S NETWORK that physically hold the product.
-  const holdingHubs = (pid, shop) => networkOf(shop).hubs.filter((h) => heldAt(h, pid) > 0);
+  // Hubs IN THIS SHOP'S NETWORK that hold this exact product+size.
+  const holdingHubs = (pid, sizeKey, shop) => networkOf(shop).hubs.filter((h) => heldAt(h, pid, sizeKey) > 0);
 
   const returns = [], heals = [], unresolved = [];
   let posUnits = 0, negUnits = 0;
@@ -111,7 +119,7 @@ const hubsField = (p) => {
         }
 
         const net = networkOf(shop);
-        const held = holdingHubs(pid, shop);
+        const held = holdingHubs(pid, sizeKey, shop);
         // The hubs field is only usable if it names a hub in THIS network.
         const field = hubsField(p).filter((h) => net.hubs.includes(h));
 
@@ -120,15 +128,21 @@ const hubsField = (p) => {
         let dest = null, basis = null;
         if (held.length === 1) { dest = held[0]; basis = "holds-stock"; }
         else if (held.length > 1) {
-          const sorted = [...held].sort((a, b) => heldAt(b, pid) - heldAt(a, pid) || a.localeCompare(b));
-          if (heldAt(sorted[0], pid) > heldAt(sorted[1], pid)) { dest = sorted[0]; basis = "deepest-holding"; }
-          else { dest = FALLBACK_HUB[shop]; basis = "tie-fallback"; }
+          const sorted = [...held].sort((a, b) => heldAt(b, pid, sizeKey) - heldAt(a, pid, sizeKey) || a.localeCompare(b));
+          if (heldAt(sorted[0], pid, sizeKey) > heldAt(sorted[1], pid, sizeKey)) { dest = sorted[0]; basis = "deepest-holding"; }
+          else { dest = null; basis = "tie-unresolved"; }
         }
         else if (field.length === 1) { dest = field[0]; basis = "hubs-field"; }
-        else { dest = FALLBACK_HUB[shop]; basis = "fallback-sneaker-hub"; }
+        else { dest = null; basis = "unresolved"; }
 
+        // NO GUESSING. A blanket fallback hub used to live here, and it moved real
+        // goods on no evidence at all — an exact tie, or a product no hub holds,
+        // would be shipped to hub1 simply because hub1 is the sneaker room. A
+        // wrong hub is worse than a shoe left on the shop shelf: the shelf is
+        // visible and re-runnable, a mis-filed pair is neither. Unresolved cells
+        // are REPORTED and left alone. (CodeRabbit, Major.)
         if (!dest || !net.hubs.includes(dest)) {
-          unresolved.push({ shop, pid, name, sizeKey, qty, why: "no destination in this network" });
+          unresolved.push({ shop, pid, name, sizeKey, qty, why: `no hub in this network holds ${sizeKey} (${basis})` });
           continue;
         }
 
@@ -180,6 +194,19 @@ const hubsField = (p) => {
   console.log(`\nbackup: /reports/stock_corrections/${backup.key}`);
 
   let done = 0, failed = 0;
+  // WRITE-TIME PRECONDITION. The plan is computed from ONE snapshot read at the
+  // start; a sale or transfer landing between that read and a given write would
+  // be silently overwritten by a qty derived from stale state. This is not
+  // theoretical — during the first live run six units and a fresh negative
+  // appeared mid-sweep. Each cell is re-read immediately before its write and the
+  // cell is SKIPPED if it moved, so a concurrent change is never clobbered.
+  // (CodeRabbit, Major.)
+  const cellChanged = async (loc, pid, sizeKey, expected) => {
+    const live = await db.ref(`stock/${loc}/${pid}/${sizeKey}/qty`).once("value").then((x) => x.val());
+    const cur = Number(live) || 0;
+    return cur !== expected ? cur : null;
+  };
+
   const writeMovement = async (mv, cells) => {
     const mvId = db.ref("stock_movements").push().key;
     const updates = { [`stock_movements/${mvId}`]: { ...mv, appliedAt: ts, actor: "script:sweep-shop-sneakers", actorRole: "admin" } };
@@ -196,8 +223,15 @@ const hubsField = (p) => {
   const vOf = (loc, pid, sk) => Number(stock[loc]?.[pid]?.[sk]?.v) || 0;
   const qOf = (loc, pid, sk) => Number(stock[loc]?.[pid]?.[sk]?.qty) || 0;
 
+  let skippedStale = 0;
   for (const r of returns) {
     try {
+      const moved = await cellChanged(r.shop, r.pid, r.sizeKey, r.qty);
+      if (moved !== null) {
+        console.warn(`  skip (changed under us): ${r.shop} ${r.name} ${r.sizeKey} expected ${r.qty}, found ${moved}`);
+        skippedStale++;
+        continue;
+      }
       await writeMovement(
         { type: "transfer_out", productId: r.pid, size: r.sizeKey, qty: r.qty, from: r.shop, to: r.dest,
           before: { [r.shop]: r.qty, [r.dest]: qOf(r.dest, r.pid, r.sizeKey) },
@@ -212,6 +246,12 @@ const hubsField = (p) => {
 
   for (const h of heals) {
     try {
+      const moved = await cellChanged(h.shop, h.pid, h.sizeKey, h.qty);
+      if (moved !== null) {
+        console.warn(`  skip (changed under us): ${h.shop} ${h.name} ${h.sizeKey} expected ${h.qty}, found ${moved}`);
+        skippedStale++;
+        continue;
+      }
       await writeMovement(
         { type: "adjustment", productId: h.pid, size: h.sizeKey, qty: h.delta, from: null, to: h.shop,
           before: { [h.shop]: h.qty }, after: { [h.shop]: 0 }, ts,
@@ -223,7 +263,7 @@ const hubsField = (p) => {
     } catch (e) { failed++; console.error("heal failed", h.pid, h.sizeKey, String(e?.message || e)); }
   }
 
-  console.log(`\nwritten: ${done} movements, ${failed} failed.`);
+  console.log(`\nwritten: ${done} movements, ${failed} failed, ${skippedStale} skipped (changed mid-run).`);
 
   // Verify.
   const after = await db.ref("stock").once("value").then((s) => s.val() || {});
@@ -237,6 +277,14 @@ const hubsField = (p) => {
       }
     }
     console.log(`  ${shop}: ${cells} non-zero sneaker cells remaining (${left} units)`);
+  }
+  // A partial run must NOT look like a clean one — an operator reading "done"
+  // after 3 of 200 writes landed would move on and leave the rest. Non-zero exit
+  // on any failure; skips are re-runnable and reported, not failures.
+  // (CodeRabbit, Minor.)
+  if (failed) {
+    console.error(`\nFAILED: ${failed} movement(s) did not write. Re-run to finish — the plan is recomputed from live state each time.`);
+    process.exit(1);
   }
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });
