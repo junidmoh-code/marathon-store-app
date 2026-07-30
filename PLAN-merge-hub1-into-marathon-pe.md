@@ -124,10 +124,13 @@ applyMovement({ type: "transfer_out", from: pick, to: destHub, … })
 without changing this, fulfilment into Hub 1 writes to a dead location.
 
 **Fix:** map `destHub === "hub1" → "marathon-pe"` at the single call site. One
-mapping, one place. This is the only code change the merge strictly requires.
+mapping, one place. This is the only **stock-write** mapping the merge requires —
+NOT the only code change. The two below are equally mandatory: leaving either one
+pointing at a deactivated location is how a "one-line" change turns into a
+support call. All three belong in the acceptance criteria.
 
-Two more places name hub1 as a stock destination and need updating so they stop
-offering a dead location:
+**Also required — not optional.** Two more places name hub1 as a stock
+destination and must be updated so they stop offering a dead location:
 
 - `src/components/stock/distributionSuggest.js:30,48,55` — hub1 is in
   `DISTRIBUTION_DESTS` with a shoe run of 2; the Initial Distribution Wizard
