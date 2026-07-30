@@ -34,7 +34,7 @@ import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, AMBER, BLUE_L, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
-import { computeMissingFootwear, footwearSolvePlan } from "./missingFootwearCore";
+import { computeMissingFootwear, footwearSolvePlan, sizeKeyOf } from "./missingFootwearCore";
 import { useRefillRequests } from "./useStock";
 
 const HUBS = ["hub1", "hub2"];
@@ -128,7 +128,12 @@ export default function MissingFootwear({ products = [] }) {
   const reservedFor = (pid, requests) => (requests || [])
     .filter((r) => r && r.status === "open" && r.productId === pid && HUBS.includes(r.requestingLocation))
     .reduce((acc, r) => {
-      const k = encodeSizeKey(r.size);
+      // sizeKeyOf, NOT encodeSizeKey: the plan keys `reserved` with sizeKeyOf,
+      // which trims before encoding. encodeSizeKey does not, so a size stored as
+      // " 8" would be written here as "_8" and looked up as "8" — the reservation
+      // would silently not be found and the units double-promised. One encoder on
+      // both sides is the only way these can't drift. (CodeRabbit #291.)
+      const k = sizeKeyOf(r.size);
       acc[k] = (acc[k] || 0) + (Number(r.qty) || 0);
       return acc;
     }, {});

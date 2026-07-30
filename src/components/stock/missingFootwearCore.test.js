@@ -266,3 +266,23 @@ describe("network-wide reservation — two hubs cannot claim the same Central un
     expect(plan).toEqual([{ size: "5.5", qty: 1, want: 2, avail: 1 }]);
   });
 });
+
+describe("one shared size-key encoder", () => {
+  it("sizeKeyOf trims, so whitespace cannot split a reservation across two keys", () => {
+    // The reservation is WRITTEN by the caller and READ by the plan. If the two
+    // sides encoded differently, " 8" would be reserved under "_8" and looked up
+    // under "8", and the units would be promised twice. (CodeRabbit #291.)
+    expect(sizeKeyOf(" 8")).toBe("8");
+    expect(sizeKeyOf("8 ")).toBe("8");
+    expect(sizeKeyOf(" 5.5 ")).toBe("5_5");
+  });
+
+  it("a reservation written from a padded size is still found by the plan", () => {
+    const plan = footwearSolvePlan({
+      catalogSizes: ["8"], policy: { 8: 2 },
+      centralCells: { 8: { qty: 3 } },
+      reserved: { [sizeKeyOf(" 8 ")]: 2 },     // written from a padded token
+    });
+    expect(plan).toEqual([{ size: "8", qty: 1, want: 2, avail: 1 }]);
+  });
+});

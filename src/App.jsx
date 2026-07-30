@@ -12590,6 +12590,9 @@ const SOURCE_TAB_ICON = {
   history:  <><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></>,
   onhold:   <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
   clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
+  // Hub 1 lane — a shoe, since this lane exists for sneakers. (CodeRabbit #291:
+  // a missing entry renders an empty <svg> rather than falling back.)
+  hub1refill: <><path d="M2 17h20v2a1 1 0 01-1 1H3a1 1 0 01-1-1v-2z"/><path d="M2 17l1.5-5A2 2 0 015.4 10.6L9 10l3 3h6a4 4 0 014 4"/></>,
 };
 const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"],["hub1refill","Hub 1 Refill"]];
 
