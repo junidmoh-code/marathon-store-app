@@ -422,3 +422,29 @@ describe("assignment-queue predicates", () => {
     expect(needsAssignment(null)).toBe(false);
   });
 });
+
+// ── CodeRabbit findings, PR #280 — pinned so they cannot come back ───────────
+describe("a selected category must be ASSIGNABLE, not merely resolvable", () => {
+  // catByKey deliberately still resolves a retired/misconfigured entry so that
+  // history and labels keep working. The FORM must not treat that as usable, or
+  // an operator fills in everything and only fails at save.
+  it("a retired category resolves but is not assignable", () => {
+    const reg = { ...REG, cats: { ...REG.cats, belts: { ...REG.cats.belts, active: false } } };
+    expect(catByKey(reg, "belts")).toBeTruthy();       // still resolvable
+    expect(isAssignable(reg, "belts")).toBe(false);    // but not usable
+  });
+
+  it("a misconfigured category resolves but is not assignable", () => {
+    const reg = { ...REG, cats: { ...REG.cats, belts: {
+      ...REG.cats.belts, legacy: { category: "Accessories", productType: "apparel" } } } };
+    expect(catByKey(reg, "belts")).toBeTruthy();
+    expect(isAssignable(reg, "belts")).toBe(false);
+  });
+
+  it("every seeded category is both resolvable and assignable", () => {
+    for (const k of Object.keys(REG.cats)) {
+      expect(catByKey(REG, k)).toBeTruthy();
+      expect(isAssignable(REG, k)).toBe(true);
+    }
+  });
+});
