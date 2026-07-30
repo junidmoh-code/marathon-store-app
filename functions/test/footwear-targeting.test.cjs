@@ -99,9 +99,13 @@ test("a location the shoe is NOT carried at gets no target (storeCarries gate)",
   assert.equal(resolveTarget(ctx(c), "hub3", "sh1", "6"), null);
 });
 
-test("a size outside the run map gets no target", () => {
-  const c = cfg({ footwearTargets: true });
-  assert.equal(resolveTarget(ctx(c), "hub1", "sh1", "13"), null);
+test("a CATALOG size absent from the run map gets no target", () => {
+  // Must use a size the product actually comes in, else productSizes() rejects it
+  // before the run map is ever consulted and the test proves nothing. "7" is a
+  // catalog size; this run map deliberately omits it. (CodeRabbit #289.)
+  const c = cfg({ footwearTargets: true, footwearRunByLocation: { hub1: { "5_5": 2, 6: 3 } } });
+  assert.equal(resolveTarget(ctx(c), "hub1", "sh1", "6").target, 3);   // in the map
+  assert.equal(resolveTarget(ctx(c), "hub1", "sh1", "7"), null);        // catalog size, no standard
 });
 
 // ── 3. HALF SIZES — the encodeSizeKey contract ───────────────────────────────
@@ -132,12 +136,24 @@ test("a negative / garbage reorderPoint falls back to null, never starves the ce
   }
 });
 
-test("reorderPoint 0 suppresses a cell that still holds stock, keeps the empty one", () => {
-  const plan = computeRefillPlan(snap({
-    config: { footwearTargets: { hub1: true }, footwearReorderPoint: { hub1: 0 } },
-  }));
-  const sizes = plan.intents.filter((i) => i.productId === "sh1" && i.dest === "hub1").map((i) => i.sizeKey).sort();
-  assert.deepEqual(sizes, ["5_5", "6"], "size 7 holds 5 units — above reorderPoint 0, must stay quiet");
+test("reorderPoint 0 suppresses a BELOW-TARGET cell that still holds stock", () => {
+  // The cell must be below target (so it would otherwise propose) AND above the
+  // reorder point — only then does the gate decide. Size 6 at qty 1 against target
+  // 3 is exactly that; the earlier version used a size already above target, which
+  // `deficit <= 0` skipped before the gate ran. (CodeRabbit #289.)
+  const withStock = snap({ config: { footwearTargets: { hub1: true }, footwearReorderPoint: { hub1: 0 } } });
+  withStock.stock.hub1.sh1["6"] = { qty: 1 };            // below target 3, above rp 0
+  const gated = computeRefillPlan(withStock).intents.filter((i) => i.productId === "sh1" && i.dest === "hub1");
+  assert.deepEqual(gated.map((i) => i.sizeKey).sort(), ["5_5"], "size 6 holds 1 — above reorderPoint 0, must stay quiet");
+
+  // Same cell, gate OFF → it proposes. Proves the gate is what suppressed it.
+  const ungated = snap({ config: { footwearTargets: { hub1: true } } });
+  ungated.stock.hub1.sh1["6"] = { qty: 1 };
+  const open = computeRefillPlan(ungated).intents.filter((i) => i.productId === "sh1" && i.dest === "hub1");
+  // 7 is absent from BOTH lists — it holds 5 against target 2, so it is above
+  // target and never proposes regardless of the gate. Only 6 moves between the
+  // two lists, which is exactly the cell the gate decides.
+  assert.deepEqual(open.map((i) => i.sizeKey).sort(), ["5_5", "6"]);
 });
 
 // ── 5. EXPLICIT ROWS STILL WIN ───────────────────────────────────────────────
@@ -200,4 +216,62 @@ test("a clothing product is never resolved by the footwear rule", () => {
   const c = cfg({ footwearTargets: true, ruleBasedTargets: false });
   assert.equal(resolveTarget(ctx(c), "hub2", "cl1", "M"), null,
     "clothing must not leak into footwear targeting when its own switch is off");
+});
+
+// ── 8. THE SHARED CAP MUST NOT DISPLACE CLOTHING (CodeRabbit #289, major) ────
+// maxIntentsPerRun is dealt round-robin across destinations. Shared, footwear
+// would take slots from clothing — inside hub2, which carries both classes, and
+// by adding hub1 as another queue taking turns. With the live cap of 75 against a
+// 578-993 footwear backlog that is a certainty, not a risk. The classes are
+// therefore capped independently.
+function capSnap(config = {}) {
+  // 40 clothing sizes at hub2 and 40 footwear sizes at hub1, all empty, all
+  // suppliable — enough to saturate a small cap from both classes at once.
+  const sizes = Array.from({ length: 40 }, (_, i) => String(i + 1));
+  const cl = { id: "clBig", name: "Tee", category: "Clothing", productType: "clothing", sizes };
+  const sh = { id: "shBig", name: "Shoe", category: "Footwear", sizes };
+  const zero = Object.fromEntries(sizes.map((s) => [s, { qty: 0 }]));
+  const full = Object.fromEntries(sizes.map((s) => [s, { qty: 99 }]));
+  const run = Object.fromEntries(sizes.map((s) => [s, 3]));
+  return {
+    nowMs: NOW,
+    config: {
+      routes: { hub1: "central", hub2: "central" },
+      mode: { hub1: "live", hub2: "live" },
+      ruleBasedTargets: true,
+      defaultRunByStore: { hub2: run },
+      footwearRunByLocation: { hub1: run },
+      maxIntentsPerRun: 10,
+      maxUnitsPerIntent: 20,
+      ...config,
+    },
+    products: { clBig: cl, shBig: sh },
+    stock: { hub2: { clBig: zero }, hub1: { shBig: zero }, central: { clBig: full, shBig: full } },
+    targets: {}, openIndex: {}, refillRequests: {}, orders: {}, movements: [],
+  };
+}
+
+test("a saturated cap gives clothing IDENTICAL intents with footwear on or off", () => {
+  const off = computeRefillPlan(capSnap());
+  const on = computeRefillPlan(capSnap({ footwearTargets: true, maxFootwearIntentsPerRun: 10 }));
+  const clothing = (p) => p.intents.filter((i) => i.productId === "clBig").map((i) => i.sizeKey);
+
+  assert.equal(off.intents.length, 10, "cap must actually bind, else this proves nothing");
+  assert.deepEqual(clothing(on), clothing(off),
+    "footwear must not take a single clothing slot when the cap is saturated");
+  assert.equal(clothing(on).length, 10, "clothing keeps its FULL allocation");
+  assert.equal(on.intents.filter((i) => i.productId === "shBig").length, 10, "footwear is additive, under its own cap");
+});
+
+test("the footwear cap is independent of maxIntentsPerRun", () => {
+  const p = computeRefillPlan(capSnap({ footwearTargets: true, maxFootwearIntentsPerRun: 3 }));
+  assert.equal(p.intents.filter((i) => i.productId === "shBig").length, 3);
+  assert.equal(p.intents.filter((i) => i.productId === "clBig").length, 10);   // clothing untouched
+  assert.equal(p.policy.footwearThrottled, true);
+  assert.equal(p.policy.throttled, true);
+});
+
+test("run policy records footwear rollout state per destination", () => {
+  const p = computeRefillPlan(capSnap({ footwearTargets: { hub1: true } }));
+  assert.deepEqual(p.policy.footwearTargets, { hub1: true, hub2: false });
 });

@@ -1218,24 +1218,57 @@ function computeRefillPlan(snapshot) {
   // (Kimi review, PR #277.) 0 is likewise not a valid throttle — use the kill
   // switch to stop the engine, not a zero cap.
   const maxIntents = Math.max(1, num(config?.maxIntentsPerRun) || 200);
-  let plannedIntents = intents;
-  if (intents.length > maxIntents) {
-    errors.push(`circuit breaker: ${intents.length} intents computed, capped to ${maxIntents} (fair per destination, high-priority first)`);
+  // The round-robin, factored out so the two product classes can be dealt
+  // SEPARATELY. Behaviour is unchanged for a single class.
+  const dealFairly = (list, cap) => {
+    if (list.length <= cap) return list;
     const byDest = new Map();
-    for (const i of intents) {
+    for (const i of list) {
       if (!byDest.has(i.dest)) byDest.set(i.dest, []);
       byDest.get(i.dest).push(i);
     }
-    for (const list of byDest.values()) list.sort((a, b) => (a.priority === b.priority ? 0 : a.priority === "high" ? -1 : 1));
-    plannedIntents = [];
+    for (const q of byDest.values()) q.sort((a, b) => (a.priority === b.priority ? 0 : a.priority === "high" ? -1 : 1));
+    const out = [];
     const queues = [...byDest.values()];
-    for (let round = 0; plannedIntents.length < maxIntents; round++) {
+    for (let round = 0; out.length < cap; round++) {
       let dealt = false;
       for (const q of queues) {
-        if (round < q.length && plannedIntents.length < maxIntents) { plannedIntents.push(q[round]); dealt = true; }
+        if (round < q.length && out.length < cap) { out.push(q[round]); dealt = true; }
       }
       if (!dealt) break;
     }
+    return out;
+  };
+
+  // ── FOOTWEAR GETS ITS OWN CAP (CodeRabbit #289, major) ──────────────────────
+  // maxIntentsPerRun is a GLOBAL cap dealt round-robin across destinations. Left
+  // shared, footwear would compete with clothing for the same 75 slots — directly
+  // inside hub2, which carries both classes, and by adding hub1 as another queue
+  // that takes round-robin turns. Enabling footwear would then delay or reorder
+  // clothing intents, which is precisely the coupling this feature promises not to
+  // create. The initial footwear backlog makes it certain rather than theoretical:
+  // 578-993 intents against a cap of 75.
+  //
+  // So the classes are capped INDEPENDENTLY. Clothing is dealt first from the
+  // untouched `intents` list with the untouched cap, so its allocation is
+  // identical to what it would be with footwear switched off — same inputs, same
+  // round-robin, same output. Footwear is then dealt from its own list under
+  // maxFootwearIntentsPerRun (default 25, the launch throttle) and appended.
+  //
+  // Partitioning by PRODUCT rather than by destination is deliberate: hub2 holds
+  // both classes, so a destination split would not separate them.
+  const isFootwearIntent = (i) => isFootwear(products?.[i.productId]);
+  const clothingIntents = intents.filter((i) => !isFootwearIntent(i));
+  const footwearIntents = intents.filter(isFootwearIntent);
+  const maxFootwearIntents = Math.max(1, num(config?.maxFootwearIntentsPerRun) || 25);
+  const plannedClothing = dealFairly(clothingIntents, maxIntents);
+  const plannedFootwear = dealFairly(footwearIntents, maxFootwearIntents);
+  const plannedIntents = [...plannedClothing, ...plannedFootwear];
+  if (clothingIntents.length > maxIntents) {
+    errors.push(`circuit breaker: ${clothingIntents.length} intents computed, capped to ${maxIntents} (fair per destination, high-priority first)`);
+  }
+  if (footwearIntents.length > maxFootwearIntents) {
+    errors.push(`circuit breaker (footwear): ${footwearIntents.length} intents computed, capped to ${maxFootwearIntents}`);
   }
 
   // ── inventory intelligence (plan §Inventory Intelligence — CLOTHING ONLY) ───
@@ -1529,10 +1562,18 @@ function computeRefillPlan(snapshot) {
     // whether rule-based targeting was on — the run record states it.
     policy: {
       ruleBasedTargets: Object.fromEntries(dests.map((d) => [d, ruleTargetsEnabled(config, d)])),
+      // Footwear rollout state, per destination — during an incident nobody
+      // should have to guess which hubs were armed. (CodeRabbit #289.)
+      footwearTargets: Object.fromEntries(dests.map((d) => [d, footwearTargetsEnabled(config, d)])),
       maxIntentsPerRun: maxIntents,
+      maxFootwearIntentsPerRun: maxFootwearIntents,
       intentsComputed: intents.length,
       intentsPlanned: plannedIntents.length,
-      throttled: intents.length > maxIntents,
+      // Split so a capped run shows WHICH class was throttled.
+      footwearIntentsComputed: footwearIntents.length,
+      footwearIntentsPlanned: plannedFootwear.length,
+      throttled: clothingIntents.length > maxIntents,
+      footwearThrottled: footwearIntents.length > maxFootwearIntents,
     },
     stats: { managedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
     exceptions: {
