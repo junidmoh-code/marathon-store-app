@@ -69,16 +69,21 @@ const nameKey = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ")
 
 export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1", "hub2"] }) {
   const byId = products instanceof Map ? products : new Map((products || []).map((p) => [p.id, p]));
-  // ── DUPLICATE-RECORD INDEX ─────────────────────────────────────────────────
+  // ── SAME-NAME INDEX ────────────────────────────────────────────────────────
+  // NOT a duplicate detector. Owner, 2026-07-30: "the name might be the same but
+  // the photo is different" — same-named records are frequently DIFFERENT shoes,
+  // so this flags the coincidence for a human to judge and never asserts more.
   // Measured 2026-07-30: 55 footwear names span 125 records, and 40 of those have
   // stock split across more than one record — the same physical shoe entered twice.
-  // That makes a row a FALSE POSITIVE: record A looks missing from both hubs while
-  // record B holds the hub stock. 12 of 122 live rows are this (10%), including the
-  // largest (Lacoste Marice Slip-On Navy, 81 units, twin holds 8 at hub1).
+  // Where they ARE one shoe entered twice, the row is misleading: record A looks
+  // missing from both hubs while record B holds the hub stock. 12 of 122 live rows
+  // have a same-named sibling with hub stock (10%), including the largest (Lacoste
+  // Marice Slip-On Navy, 81 units, sibling holds 8 at hub1).
   //
-  // These rows are BADGED, not filtered: under that record the Central stock really
-  // is stranded, so hiding it would lose real inventory. The badge tells staff to
-  // merge the records rather than transfer against a phantom shortage.
+  // Rows are BADGED, never filtered — under that record the Central stock really is
+  // stranded, and the records may legitimately be two different shoes. The badge
+  // says only what is observed ("same name elsewhere") and leaves the call to the
+  // person looking at the two photos.
   const idsByName = new Map();
   for (const [pid, p] of byId) {
     if (!isFootwearProduct(p)) continue;

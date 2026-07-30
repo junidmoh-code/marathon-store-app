@@ -31,7 +31,7 @@ import { useStockCells } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey, stockCellPath } from "../../utils/sizeKey";
-import { GLASS, GRAY, GREEN, AMBER, BLUE_L, RED, FONT } from "./ui";
+import { GLASS, GRAY, GREEN, AMBER, BLUE_L, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { computeMissingFootwear, seedableSizes, footwearSizeRank } from "./missingFootwearCore";
@@ -176,11 +176,18 @@ export default function MissingFootwear({ products = [] }) {
             badges={<>
               <Badge tone={card.kind === "never_introduced" ? AMBER : BLUE_L}>{KIND_LABEL[card.kind]}</Badge>
               <Badge tone={BLUE_L}>{card.centralUnits} units at Central</Badge>
-              {card.duplicateOf && <Badge tone={RED}>DUPLICATE RECORD</Badge>}
+              {card.duplicateOf && <Badge tone={AMBER}>SAME NAME ELSEWHERE</Badge>}
             </>}
-            sub={card.duplicateOf
-              ? "Another product record with this name already holds hub stock — check whether these are one shoe before transferring."
-              : `Missing from ${card.missingFrom.map((h) => LOC_LABEL[h]).join(" + ") || "both hubs"}`}
+            sub={[
+              // Carriage and stock are different statements, so say the true one.
+              // A shoe carried at BOTH hubs but empty has missingFrom === [], and
+              // the old `|| "both hubs"` fallback then contradicted its own SOLD
+              // OUT badge. (CodeRabbit #290.)
+              card.missingFrom.length
+                ? `Not carried at ${card.missingFrom.map((h) => LOC_LABEL[h]).join(" + ")}`
+                : "Carried at both hubs, but both are empty",
+              card.duplicateOf ? "Another record shares this name — confirm it is a different shoe before transferring." : null,
+            ].filter(Boolean).join(" · ")}
             right={
               <div style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }}
