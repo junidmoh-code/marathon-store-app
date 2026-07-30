@@ -36,7 +36,16 @@ import { formatDuration, refillAgeTone } from "../../utils/duration";
 const SOURCE_LOC = "central";
 const DEST_LOC = "hub2";
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
-const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
+// Letters keep their existing ranks; NUMERIC sizes (shoes, and clothing waist
+// sizes) sort numerically after them instead of all tying at 99 and rendering in
+// arbitrary order. Footwear requests can now reach this queue, where a card
+// showing 9, 6, 11, 7 would be unreadable. "5_5" decodes to 5.5.
+const sizeRank = (s) => {
+  const i = SIZE_ORDER.indexOf(String(s).toUpperCase());
+  if (i >= 0) return i;
+  const n = Number.parseFloat(String(s).replace("_", "."));
+  return Number.isFinite(n) ? 100 + n : 999;
+};
 
 // Age tone → colour. serverNowMs() (not Date.now) drives every elapsed value so a
 // wrong till/device clock never mis-ages a request.

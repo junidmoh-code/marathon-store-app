@@ -146,3 +146,37 @@ export function seedableSizes({ allStock, pid, catalogSizes = [], hub, footwearR
     .filter((s) => !existing.has(sizeKeyOf(s)))
     .sort((a, b) => footwearSizeRank(a) - footwearSizeRank(b));
 }
+
+// ─── SOLVE PLAN — policy quantity, capped by what Central actually has ────────
+// Owner spec 2026-07-30: "the system knows the size policy for that location...
+// let's say the policy is two per size and Central only has one piece of size 8 —
+// everything will be 2, size 8 will be 1 because there is no stock."
+//
+// So each size is min(policy, availableAtCentral), and a size Central cannot
+// supply at all is dropped rather than requested at zero. Sizes the product does
+// not come in never appear, and a size with no policy entry is skipped — the
+// standard is what defines "how many should be there", and inventing one here
+// would replenish a size nobody approved.
+//
+// DEDUPE is part of the plan, not the caller's job: the Hub 2 queue groups open
+// requests by product, so raising a second request for a size that is already
+// open would show the same size twice on one card and let it be picked twice.
+//
+// Returns [{ size, qty, want, avail }] in numeric size order — `want` and `avail`
+// are kept so the UI can explain a short line ("2 wanted, 1 at Central") instead
+// of silently asking for less than policy.
+export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells = {}, openSizes = [] }) {
+  const alreadyOpen = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
+  return (catalogSizes || [])
+    .map(String)
+    .filter((s) => s && s !== "_")
+    .map((size) => {
+      const key = sizeKeyOf(size);
+      const want = Number(policy[key]) || 0;
+      const avail = Math.max(Number(centralCells?.[key]?.qty) || 0, 0);
+      return { size, key, want, avail, qty: Math.min(want, avail) };
+    })
+    .filter((l) => l.want > 0 && l.qty > 0 && !alreadyOpen.has(l.key))
+    .sort((a, b) => footwearSizeRank(a.size) - footwearSizeRank(b.size))
+    .map(({ size, qty, want, avail }) => ({ size, qty, want, avail }));
+}
