@@ -327,7 +327,7 @@ requests would be computed against counts nobody has confirmed yet.
 
 ### The one config key that would break this
 
-```
+```text
 /config/refillEngine/footwearTargets        ← DO NOT WRITE until the owner
                                               explicitly enables it
 ```
@@ -349,8 +349,9 @@ switch is safe to arm at all.
 1. **`MissingFootwear.jsx` — the Missing Products → Sneakers "Solve" button.**
    Human-triggered, per product, per destination. Builds the transfer from the
    destination's policy, capped by Central's actual stock, and raises the lines
-   into that hub's refill list. This is approved and is the ONLY automatic use of
-   the policy anywhere.
+   into that hub's refill list. This is the ONLY APPROVED use of the policy
+   anywhere, and it is MANUAL — a person decides, per product, per destination.
+   Nothing reads the policy on a timer, a scan, or a sale.
 2. **`refill-engine.cjs:322`** — inside the footwear branch, gated on
    `footwearTargets` above. Unreachable while that key is absent.
 
