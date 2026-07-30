@@ -311,3 +311,53 @@ one-size option at all, auto-mints over any supplier barcode, and always writes 
 `/settings/productTaxonomy` is already seeded v1 in RTDB — but no live code reads
 the registry yet. Until it ships, perfume records must be written directly to
 `/products` plus the `/barcodes` index.
+
+---
+
+## 🚨 TRIPWIRE — the sneaker size policy must NOT drive automatic refills
+
+**Owner directive, 2026-07-30.** Sneaker refill requests are generated from
+**actual sales only**: a size sells, that exact size is requested from the source.
+The engine must **never** compare sneaker inventory against the size policy and
+raise requests because a cell is below it.
+
+**Why:** the final inventory verification across the hubs is not finished. Until
+it is, sales are the only trusted trigger for sneaker refills — policy-driven
+requests would be computed against counts nobody has confirmed yet.
+
+### The one config key that would break this
+
+```
+/config/refillEngine/footwearTargets        ← DO NOT WRITE until the owner
+                                              explicitly enables it
+```
+
+Writing it arms `resolveTarget`'s footwear branch, which is exactly
+"compare stock to policy and auto-request". It is absent today, and absent means
+OFF by design (`footwearTargetsEnabled`, fail-safe). Everything else about
+footwear targeting is deployed and inert — deployed 2026-07-30 in #289, armed
+once for a live test, and **disarmed the same day** after it flooded the shared
+exception buckets (`belowTarget`, `missingSizes`, `awaitingSupplier`), pushing
+clothing out of the capped item lists and breaking the Missing Sizes screen. That
+regression is unfixed; the buckets still need an `isFootwear` gate before the
+switch is safe to arm at all.
+
+### What legitimately DOES use the policy
+
+`config/refillEngine/footwearRunByLocation` is read in exactly two places:
+
+1. **`MissingFootwear.jsx` — the Missing Products → Sneakers "Solve" button.**
+   Human-triggered, per product, per destination. Builds the transfer from the
+   destination's policy, capped by Central's actual stock, and raises the lines
+   into that hub's refill list. This is approved and is the ONLY automatic use of
+   the policy anywhere.
+2. **`refill-engine.cjs:322`** — inside the footwear branch, gated on
+   `footwearTargets` above. Unreachable while that key is absent.
+
+The run map alone is harmless: without `footwearTargets` the engine never reads
+it. That separation is deliberate so Solve can use the policy while automatic
+targeting stays off.
+
+**Before arming footwear targeting, ALL of these must be true:** hub inventory
+verification complete, the exception-bucket gate shipped, and an explicit owner
+go-ahead. Two of the three are not done.
