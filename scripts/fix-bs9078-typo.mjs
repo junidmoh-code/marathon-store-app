@@ -59,6 +59,22 @@ const cellPath = `stock/${LOC}/${PID}/${SIZE}`;
     console.error("\nREFUSING: cell not found or has no numeric qty.");
     process.exit(1);
   }
+  // PROVE THE MOVEMENT IS THE ONE WE MEAN. It was only printed before — so if the
+  // id ever pointed at a different event (a mistyped constant, a re-used key),
+  // this script would happily "correct" live stock against an unrelated
+  // movement. Every field of the alleged typo is checked, not just its
+  // existence. (CodeRabbit, Major.)
+  const bogusOk = bogus
+    && bogus.type === "received"
+    && bogus.productId === PID
+    && String(bogus.size) === SIZE
+    && bogus.to === LOC
+    && Number(bogus.qty) === BOGUS_QTY;
+  if (!bogusOk) {
+    console.error(`\nREFUSING: movement ${BOGUS_MOVEMENT} is not the ${BOGUS_QTY}-unit ${SIZE} receipt into ${LOC} this script exists to correct.`);
+    console.error("  found:", JSON.stringify({ type: bogus?.type, productId: bogus?.productId, size: bogus?.size, to: bogus?.to, qty: bogus?.qty }));
+    process.exit(1);
+  }
   if (cell.qty === CORRECT_TO) {
     console.log("\nAlready corrected — nothing to do.");
     process.exit(0);
@@ -114,6 +130,20 @@ const cellPath = `stock/${LOC}/${PID}/${SIZE}`;
   updates[`${cellPath}/updatedAt`] = now;
   updates[`${cellPath}/updatedBy`] = "script:fix-bs9078-typo";
 
+  // WRITE-TIME PRECONDITION. The plan above was computed from a READ; a
+  // concurrent sale between that read and this write would be silently
+  // overwritten by a qty derived from stale state. The transaction re-checks the
+  // cell at the moment of writing and aborts if it moved. (CodeRabbit, Major.)
+  const guard = await db.ref(`${cellPath}/qty`).transaction((cur) => {
+    if (cur !== EXPECTED_NOW) return;      // abort — someone else touched it
+    return CORRECT_TO;
+  });
+  if (!guard.committed) {
+    console.error(`\nABORTED: ${cellPath} changed under us (now ${guard.snapshot.val()}). Nothing written. Re-run to re-plan.`);
+    process.exit(1);
+  }
+  // qty is already correct; write the ledger row and the cell metadata alongside.
+  delete updates[`${cellPath}/qty`];
   await db.ref().update(updates);
   console.log(`movement: /stock_movements/${mvId}`);
 

@@ -1,6 +1,9 @@
 # PLAN B — Sneakers sell from the hub (POS writes hub inventory)
 
-**Status: PLAN ONLY. Nothing built, nothing written, no data touched.**
+**Status: SUPERSEDED BY THE IMPLEMENTATION.** Kept as the record of the decision
+and the evidence behind it. Where the built system differs from this plan, the
+build is right and the differences are marked `CHANGED IN BUILD` below — do not
+read this as a description of what shipped.
 Prepared 2026-07-29. Supersedes `PLAN-merge-hub1-into-marathon-pe.md` — see §8.
 
 ---
@@ -10,9 +13,16 @@ Prepared 2026-07-29. Supersedes `PLAN-merge-hub1-into-marathon-pe.md` — see §
 Every location stays exactly where it is. Nothing is merged, nothing is
 deactivated. What changes is **who deducts the stock**:
 
-- **Sneakers**: the POS writes the sale — and the return — **directly against the
-  hub's inventory** (`hub1` / `hub2` / `hub3`). No stock transfer between hub and
-  shop, ever. Shops hold no sneaker stock.
+- **Sneakers**: the POS writes the sale **directly against the hub's inventory**
+  (`hub1` / `hub2` / `hub3`). No stock transfer between hub and shop, ever. Shops
+  hold no sneaker stock.
+
+  > **CHANGED IN BUILD — returns.** This said the POS writes *returns* against the
+  > hub too. It does not, and must not: an order return is now a NO-OP, because
+  > the stock never left the hub's books, so there is nothing to reverse. The
+  > Return control was removed entirely. A POS *refund* is different and does
+  > credit the hub — that is the refund path, not the order-return path.
+  > Implementing both would have double-reversed a single pair.
 - **Clothing**: completely unchanged. The shop holds its own stock, the Assistant's
   clothing orders stay real hub→store transfers, and the refill policy and refill
   engine are untouched.
@@ -110,7 +120,7 @@ design rule**, not a tweak. It must be replaced by an equally explicit rule:
 | Fixes shop footwear negatives | no | **yes — removes the cause** |
 | Works for Pine / Building C | no | yes |
 | Locations changed | hub1 deactivated | **none** |
-| Reconciliation needed | 87 products, negatives | **none** |
+| Reconciliation needed | 87 products, negatives | **cutover sweep only** |
 | PE inventory jump | 6,510 → ~10,369 | none |
 | Reversible | ledger replay | **flip the routing rule** |
 | Requires POS change | no | **yes** |
@@ -150,7 +160,13 @@ the actual defect.
 1. Answer §5. Nothing is built before question 4 is resolved.
 2. Sweep shop sneaker stock back to the hubs (ledger movements, dry-run first).
 3. POS change + store-app change, developed together, reviewed together.
-4. Cutover in a closed window, both apps deployed in sequence.
+4. Cutover in a closed window with the tills OFF, both apps deployed **together —
+   not merely in sequence**. They share a routing contract: for the window
+   between the two deploys, one side has stopped writing the hub→shop transfer
+   while the other still deducts at the shop, and every sneaker sale in that gap
+   lands on a shop cell holding zero. Deploy back-to-back with no trading in
+   between; if the second deploy fails, roll the first one back rather than
+   leaving the pair split.
 5. Watch for a week: hub negatives, sneaker sales landing at the right location.
 
 ---
@@ -175,9 +191,15 @@ Plan B removes the cause in all of them, changes no locations, needs no
 reconciliation, and is reversible by flipping a rule.
 
 The cost is real and should not be glossed: it is a **cross-repo change that
-reverses an explicit POS design rule**, and it needs a coordinated release. That
-is a bigger engineering commitment than the merge — but a much smaller
-operational one, because nothing moves and no stock is restated.
+reverses an explicit POS design rule**, and it needs a coordinated release.
+
+> **CHANGED IN BUILD — reconciliation.** "No stock is restated" was wrong. The
+> cutover DOES require a reconciliation: every sneaker at PE and Trophy is swept
+> back to its hub and their negative footwear cells are healed to zero, and that
+> sweep must re-run immediately before the deploy because the shops re-accumulate
+> while the old system is still running. What the plan meant — and what remains
+> true — is that no HUB MERGE is needed and no location is restated. The shop side
+> very much is.
 
 **Classification: architecture.** Frozen band under maintenance mode. The
 evidence here is the strongest of any change proposed so far, but unfreezing is
