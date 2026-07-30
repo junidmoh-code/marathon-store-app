@@ -26,6 +26,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ref, update, get } from "firebase/database";
 import { database } from "../../firebase";
 import { useRefillRequests, useStockCells, useStockExceptions } from "./useStock";
+import { sizeRank } from "./hubSizeRank";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bRed } from "./ui";
@@ -46,17 +47,8 @@ const SOURCE_LOC = "central";
 // hub2 movement.
 const DEFAULT_DEST = "hub2";
 const HUB_LABEL = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
-const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
-// Letters keep their existing ranks; NUMERIC sizes (shoes, and clothing waist
-// sizes) sort numerically after them instead of all tying at 99 and rendering in
-// arbitrary order. Footwear requests can now reach this queue, where a card
-// showing 9, 6, 11, 7 would be unreadable. "5_5" decodes to 5.5.
-const sizeRank = (s) => {
-  const i = SIZE_ORDER.indexOf(String(s).toUpperCase());
-  if (i >= 0) return i;
-  const n = Number.parseFloat(String(s).replace("_", "."));
-  return Number.isFinite(n) ? 100 + n : 999;
-};
+// SIZE_ORDER / sizeRank now live in hubSizeRank.js so the tests exercise the
+// real implementation instead of a copy that could silently diverge.
 
 // Age tone → colour. serverNowMs() (not Date.now) drives every elapsed value so a
 // wrong till/device clock never mis-ages a request.
