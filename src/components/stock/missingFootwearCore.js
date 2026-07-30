@@ -158,14 +158,22 @@ export function seedableSizes({ allStock, pid, catalogSizes = [], hub, footwearR
 // standard is what defines "how many should be there", and inventing one here
 // would replenish a size nobody approved.
 //
-// DEDUPE is part of the plan, not the caller's job: the Hub 2 queue groups open
+// DEDUPE is part of the plan, not the caller's job: a hub's queue groups open
 // requests by product, so raising a second request for a size that is already
 // open would show the same size twice on one card and let it be picked twice.
+//
+// RESERVATION IS NETWORK-WIDE, dedupe is per-hub — they are different questions.
+// `openSizes` is "already queued AT THIS HUB" and stops a duplicate line on one
+// card. `reserved` is "already promised to ANY hub" and stops two hubs claiming
+// the same Central units: Central holds 3 of size 8, Hub 1 solves for 2, then Hub
+// 2 solves for 2 — without this, 4 units are committed against 3 and whoever
+// picks second comes up short. Availability is therefore Central's count MINUS
+// everything already owed. (CodeRabbit #291.)
 //
 // Returns [{ size, qty, want, avail }] in numeric size order — `want` and `avail`
 // are kept so the UI can explain a short line ("2 wanted, 1 at Central") instead
 // of silently asking for less than policy.
-export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells = {}, openSizes = [] }) {
+export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells = {}, openSizes = [], reserved = {} }) {
   const alreadyOpen = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
   return (catalogSizes || [])
     .map(String)
@@ -173,7 +181,9 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
     .map((size) => {
       const key = sizeKeyOf(size);
       const want = Number(policy[key]) || 0;
-      const avail = Math.max(Number(centralCells?.[key]?.qty) || 0, 0);
+      const onHand = Math.max(Number(centralCells?.[key]?.qty) || 0, 0);
+      const owed = Math.max(Number(reserved?.[key]) || 0, 0);
+      const avail = Math.max(onHand - owed, 0);   // free stock, not shelf stock
       return { size, key, want, avail, qty: Math.min(want, avail) };
     })
     .filter((l) => l.want > 0 && l.qty > 0 && !alreadyOpen.has(l.key))

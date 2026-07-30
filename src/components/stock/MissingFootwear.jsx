@@ -123,6 +123,15 @@ export default function MissingFootwear({ products = [] }) {
   // requests per product, so a duplicate would show one size twice on a card and
   // could be picked twice.
   const hubFor = (card) => solveHub[card.pid] || HUBS[0];
+  // Units already promised to ANY hub for this product. Central's shelf count is
+  // not free stock: two hubs solving the same shoe would otherwise each claim it.
+  const reservedFor = (pid, requests) => (requests || [])
+    .filter((r) => r && r.status === "open" && r.productId === pid && HUBS.includes(r.requestingLocation))
+    .reduce((acc, r) => {
+      const k = encodeSizeKey(r.size);
+      acc[k] = (acc[k] || 0) + (Number(r.qty) || 0);
+      return acc;
+    }, {});
   const openSizesFor = (pid, hub) => (allRequests || [])
     .filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === pid)
     .map((r) => r.size);
@@ -132,6 +141,7 @@ export default function MissingFootwear({ products = [] }) {
     policy: footwearRun?.[hub] || {},
     centralCells: allStock?.central?.[card.pid] || {},
     openSizes: openSizesFor(card.pid, hub),
+    reserved: reservedFor(card.pid, allRequests),
   });
 
   // SOLVE = raise the day's work, not a silent ledger move. One /refill_requests
@@ -147,7 +157,8 @@ export default function MissingFootwear({ products = [] }) {
     try {
       // Re-read live so a size queued by someone else between render and click is
       // not raised twice; the plan is recomputed against it rather than trusted.
-      const liveOpen = Object.values((await get(ref(database, "refill_requests"))).val() || {})
+      const liveRequests = Object.values((await get(ref(database, "refill_requests"))).val() || {});
+      const liveOpen = liveRequests
         .filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === card.pid)
         .map((r) => r.size);
       const fresh = footwearSolvePlan({
@@ -155,6 +166,11 @@ export default function MissingFootwear({ products = [] }) {
         policy: footwearRun?.[hub] || {},
         centralCells: allStock?.central?.[card.pid] || {},
         openSizes: liveOpen,
+        // Recomputed from the SAME fresh read, so a sibling hub's request raised
+        // between render and click is subtracted too. Two people clicking in the
+        // same instant can still overlap — closing that needs a server-side
+        // transaction, which this deliberately does not attempt.
+        reserved: reservedFor(card.pid, liveRequests),
       });
       if (!fresh.length) {
         setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: `Already queued at ${LOC_LABEL[hub]} — nothing new to raise.` } }));

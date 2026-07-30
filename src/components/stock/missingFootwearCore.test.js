@@ -229,3 +229,40 @@ describe("footwearSolvePlan — policy capped by Central stock", () => {
     expect(footwearSolvePlan({ catalogSizes: ["_"], policy: { _: 2 }, centralCells: central({ _: 9 }) })).toEqual([]);
   });
 });
+
+describe("network-wide reservation — two hubs cannot claim the same Central units", () => {
+  const policy = { 8: 2 };
+  const central = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, { qty: v }]));
+
+  it("subtracts stock already owed to ANOTHER hub", () => {
+    // Central holds 3; Hub 1 already has 2 on order, so only 1 is really free.
+    const plan = footwearSolvePlan({
+      catalogSizes: ["8"], policy, centralCells: central({ 8: 3 }), reserved: { 8: 2 },
+    });
+    expect(plan).toEqual([{ size: "8", qty: 1, want: 2, avail: 1 }]);
+  });
+
+  it("drops the size entirely once everything is spoken for", () => {
+    expect(footwearSolvePlan({
+      catalogSizes: ["8"], policy, centralCells: central({ 8: 2 }), reserved: { 8: 2 },
+    })).toEqual([]);
+  });
+
+  it("over-reservation never yields a negative availability", () => {
+    expect(footwearSolvePlan({
+      catalogSizes: ["8"], policy, centralCells: central({ 8: 1 }), reserved: { 8: 9 },
+    })).toEqual([]);
+  });
+
+  it("absent reserved map behaves exactly as before", () => {
+    expect(footwearSolvePlan({ catalogSizes: ["8"], policy, centralCells: central({ 8: 3 }) }))
+      .toEqual([{ size: "8", qty: 2, want: 2, avail: 3 }]);
+  });
+
+  it("reservation is keyed by the ENCODED size, so half sizes are counted", () => {
+    const plan = footwearSolvePlan({
+      catalogSizes: ["5.5"], policy: { "5_5": 2 }, centralCells: central({ "5_5": 3 }), reserved: { "5_5": 2 },
+    });
+    expect(plan).toEqual([{ size: "5.5", qty: 1, want: 2, avail: 1 }]);
+  });
+});
