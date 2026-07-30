@@ -752,6 +752,13 @@ function computeRefillPlan(snapshot) {
   const awaitingSupplier = [];  // v9: whole upstream chain empty — supplier reorder / excess return
   const recountNeeded = [];     // loop guard: rejected N× while the denier's count claims stock — recount, don't re-ask
   let managedCells = 0;   // cells with a resolvable target > 0 (Health-score denominator)
+  // Counted SEPARATELY and deliberately kept OUT of managedCells: HealthView uses
+  // stats.managedCells as the Health-score denominator, and footwear adds ~6,445
+  // managed cells against clothing's ~8,400 — folding them in would move the
+  // displayed score for reasons that have nothing to do with clothing health, the
+  // moment footwearTargets is enabled. Sneakers have their own tab and their own
+  // rule; they get their own metric. (CodeRabbit #289.)
+  let footwearManagedCells = 0;
   const maxUnits = num(config?.maxUnitsPerIntent) || 20;
 
   // Rejection cooldown: (dest|pid|sizeKey) → { ts, by } — the most recent human
@@ -958,7 +965,7 @@ function computeRefillPlan(snapshot) {
         const size = rawSize(pid, sizeKey);
         const t = resolveTarget(ctx, dest, pid, size);
         if (!t || t.target <= 0) continue;
-        managedCells++;
+        if (isFootwear(products?.[pid])) footwearManagedCells++; else managedCells++;
         const q = cellQty(stock, dest, pid, size);
         const have = avail(q);
         const inb = inbound.get(`${dest}|${pid}|${sizeKey}`) || 0;
@@ -1575,7 +1582,7 @@ function computeRefillPlan(snapshot) {
       throttled: clothingIntents.length > maxIntents,
       footwearThrottled: footwearIntents.length > maxFootwearIntents,
     },
-    stats: { managedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
+    stats: { managedCells, footwearManagedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
     exceptions: {
       noTarget: cap(noTarget),
       unintroduced: cap(unintroduced, 900),

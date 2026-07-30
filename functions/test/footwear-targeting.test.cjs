@@ -275,3 +275,15 @@ test("run policy records footwear rollout state per destination", () => {
   const p = computeRefillPlan(capSnap({ footwearTargets: { hub1: true } }));
   assert.deepEqual(p.policy.footwearTargets, { hub1: true, hub2: false });
 });
+
+test("footwear stays OUT of the Health-score denominator", () => {
+  // HealthView divides by stats.managedCells. Footwear adds ~6,445 managed cells
+  // against clothing's ~8,400, so folding them in would move the clothing Health
+  // score the moment the switch flips. (CodeRabbit #289.)
+  const off = computeRefillPlan(capSnap());
+  const on = computeRefillPlan(capSnap({ footwearTargets: true }));
+  assert.ok(off.stats.managedCells > 0, "denominator must be non-empty or this proves nothing");
+  assert.equal(on.stats.managedCells, off.stats.managedCells, "clothing denominator must not move");
+  assert.ok(on.stats.footwearManagedCells > 0, "footwear must be counted, just separately");
+  assert.equal(off.stats.footwearManagedCells, 0);
+});
