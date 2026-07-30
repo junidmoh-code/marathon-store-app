@@ -36,6 +36,8 @@ import { StatCard, DetailShell, ProductCard, Badge, SizeStepperChip, SizeFactChi
 import Hub2RefillQueue from "./Hub2RefillQueue";
 import MoveExcess from "./MoveExcess";
 import NetworkTransfer from "./NetworkTransfer";
+import MissingFootwear from "./MissingFootwear";
+import { computeMissingFootwear } from "./missingFootwearCore";
 import NoTargetQueue from "./NoTargetQueue";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 
@@ -236,6 +238,7 @@ function groupByProduct(items, keyFields) {
 
 export default function HealthView({ products = [], onExit }) {
   const [screen, setScreen] = useState(null);
+  const [missingTab, setMissingTab] = useState("clothing");   // Missing Products: Clothing | Sneakers
   const exceptions = useStockExceptions();
   const shadow = useEngineShadow();
   const openEngine = useEngineOpen();
@@ -335,7 +338,20 @@ export default function HealthView({ products = [], onExit }) {
     const at = Date.parse(t.createdAt || "");
     return Number.isFinite(at) && serverNowMs() - at > STALE_TRANSIT_HOURS * 3600e3;
   }).length, [transitOpen]);
-  const missingProducts = count("onlyInCentral") + count("onlyInHub2");
+  const missingProductsClothing = count("onlyInCentral") + count("onlyInHub2");
+  // SNEAKERS are computed CLIENT-SIDE from live /stock, deliberately, not from the
+  // scan's exception buckets: the engine's Health loop is clothing-only
+  // (`if (!isClothing(...)) continue` — "sneakers never appear in Health"), so a
+  // server-side count would need an engine change and a functions deploy for what
+  // is a read. It also means this count and the list inside the tab come from ONE
+  // function, so they cannot drift apart the way the clothing pair does (its count
+  // is the scan's unit-based buckets while its list is carriage-based, so a solved
+  // clothing row leaves the list while the headline keeps counting it).
+  const missingSneakerCards = useMemo(
+    () => computeMissingFootwear({ allStock, products }),
+    [allStock, products],
+  );
+  const missingProducts = missingProductsClothing + missingSneakerCards.length;
   // ("Needs Review" was removed 2026-07-12 v3 — the confidence signal still
   // feeds /stock_confidence for future use, but every dashboard card must lead
   // to an action, and a score without a workflow didn't.)
@@ -380,12 +396,36 @@ export default function HealthView({ products = [], onExit }) {
             <InTransit products={products} />
           </DetailShell>
         );
-      case "missingProducts":
+      // TWO TABS, TWO RULES — they are not the same question.
+      //   Clothing — Central/Hub 2 stock the SHOPS don't carry. Shops hold
+      //              clothing buffer, so they are the right downstream to test.
+      //   Sneakers — Central stock NEITHER HUB holds. Shoes pass through
+      //              shop → customer and hold no shop buffer by design (267 shop
+      //              shoe cells were zeroed for this reason; PE holds 16 footwear
+      //              units across 2,454 cells), so testing the shops would flag
+      //              nearly the whole catalogue and mean nothing. Hub 1 and Hub 2
+      //              are where sneaker buffer lives.
+      case "missingProducts": {
+        const clothingTab = missingTab === "clothing";
         return (
           <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts} onBack={back}>
-            <NetworkTransfer products={products} />
+            <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+              {[["clothing", "Clothing", missingProductsClothing], ["sneakers", "Sneakers", missingSneakerCards.length]].map(([key, label, n]) => (
+                <button key={key} onClick={() => setMissingTab(key)}
+                  style={{
+                    padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+                    border: missingTab === key ? "1px solid rgba(60,110,255,.5)" : "1px solid rgba(255,255,255,.1)",
+                    background: missingTab === key ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.03)",
+                    color: missingTab === key ? BLUE_L : "rgba(255,255,255,.45)",
+                  }}>
+                  {label} ({n})
+                </button>
+              ))}
+            </div>
+            {clothingTab ? <NetworkTransfer products={products} /> : <MissingFootwear products={products} />}
           </DetailShell>
         );
+      }
       case "missingSizes":
         return (
           <DetailShell title="Missing Sizes" sub="Real demand, zero stock anywhere — reorder candidates" count={count("missingSizes")} onBack={back}>
