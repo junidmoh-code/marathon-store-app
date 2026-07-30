@@ -381,7 +381,7 @@ export default function HealthView({ products = [], onExit }) {
       case "central":
         return (
           <DetailShell title="Central → Hub 2 Refills" sub="Also available on the Source card" count={centralQueue} onBack={back}>
-            <Hub2RefillQueue products={products} />
+            <Hub2RefillQueue products={products} dest="hub2" />
           </DetailShell>
         );
       case "excess":

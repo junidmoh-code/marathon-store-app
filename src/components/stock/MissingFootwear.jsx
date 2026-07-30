@@ -38,12 +38,10 @@ import { computeMissingFootwear, footwearSolvePlan } from "./missingFootwearCore
 import { useRefillRequests } from "./useStock";
 
 const HUBS = ["hub1", "hub2"];
-// Solve raises work into the Source -> Hub 2 refill queue, which is hardcoded
-// central -> hub2 (Hub2RefillQueue.jsx: SOURCE_LOC/DEST_LOC). There is no
-// equivalent queue for hub1, so a hub1 request would be created and then be
-// invisible with nowhere to work it. Solve therefore targets hub2 only; Move
-// still transfers to either hub directly.
-const SOLVE_HUB = "hub2";
+// Solve raises work into a hub's refill queue. Both hubs have one: the queue
+// component is now destination-parameterised (it was hub2-only because CLOTHING
+// is not kept at Hub 1, not because Hub 1 lacks refills — sneakers make Hub 1 the
+// bigger buffer at 3,967 units vs Hub 2's 3,288).
 const LOC_LABEL = { hub1: "Hub 1", hub2: "Hub 2", central: "Central" };
 const KIND_LABEL = { never_introduced: "NEVER INTRODUCED", sold_out: "SOLD OUT AT HUB" };
 
@@ -67,6 +65,7 @@ export default function MissingFootwear({ products = [] }) {
   const [done, setDone] = useState({});
   const [solvePid, setSolvePid] = useState(null);
   const [solveBusy, setSolveBusy] = useState(null);
+  const [solveHub, setSolveHub] = useState({});   // pid → chosen hub for Solve
   const [solved, setSolved] = useState({});
 
   // The footwear standard, read ONCE. Absent until footwear targeting is
@@ -123,15 +122,16 @@ export default function MissingFootwear({ products = [] }) {
   // Sizes already queued for this product at Hub 2 — the queue groups open
   // requests per product, so a duplicate would show one size twice on a card and
   // could be picked twice.
-  const openSizesFor = (pid) => (allRequests || [])
-    .filter((r) => r && r.status === "open" && r.requestingLocation === SOLVE_HUB && r.productId === pid)
+  const hubFor = (card) => solveHub[card.pid] || HUBS[0];
+  const openSizesFor = (pid, hub) => (allRequests || [])
+    .filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === pid)
     .map((r) => r.size);
 
-  const planFor = (card) => footwearSolvePlan({
+  const planFor = (card, hub = hubFor(card)) => footwearSolvePlan({
     catalogSizes: catalogSizes(card.pid),
-    policy: footwearRun?.[SOLVE_HUB] || {},
+    policy: footwearRun?.[hub] || {},
     centralCells: allStock?.central?.[card.pid] || {},
-    openSizes: openSizesFor(card.pid),
+    openSizes: openSizesFor(card.pid, hub),
   });
 
   // SOLVE = raise the day's work, not a silent ledger move. One /refill_requests
@@ -139,7 +139,8 @@ export default function MissingFootwear({ products = [] }) {
   // existing Source -> Hub 2 queue and close through its normal fulfil path.
   // Stock does NOT move here — Central staff pick it size by size from that queue.
   const solve = async (card) => {
-    const lines = planFor(card);
+    const hub = hubFor(card);
+    const lines = planFor(card, hub);
     if (solveBusy || !canAct || !lines.length) return;   // guarded by the disabled button
     setSolveBusy(card.pid);
     const now = serverNowIso();
@@ -147,16 +148,16 @@ export default function MissingFootwear({ products = [] }) {
       // Re-read live so a size queued by someone else between render and click is
       // not raised twice; the plan is recomputed against it rather than trusted.
       const liveOpen = Object.values((await get(ref(database, "refill_requests"))).val() || {})
-        .filter((r) => r && r.status === "open" && r.requestingLocation === SOLVE_HUB && r.productId === card.pid)
+        .filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === card.pid)
         .map((r) => r.size);
       const fresh = footwearSolvePlan({
         catalogSizes: catalogSizes(card.pid),
-        policy: footwearRun?.[SOLVE_HUB] || {},
+        policy: footwearRun?.[hub] || {},
         centralCells: allStock?.central?.[card.pid] || {},
         openSizes: liveOpen,
       });
       if (!fresh.length) {
-        setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: "Already queued at Hub 2 — nothing new to raise." } }));
+        setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: `Already queued at ${LOC_LABEL[hub]} — nothing new to raise.` } }));
       } else {
         // ONE atomic multi-path write: a partial failure would leave some sizes
         // queued and no way to tell which, so all lines land together or none do.
@@ -167,7 +168,7 @@ export default function MissingFootwear({ products = [] }) {
             productId: card.pid,
             size: l.size,
             qty: l.qty,
-            requestingLocation: SOLVE_HUB,
+            requestingLocation: hub,
             status: "open",
             createdAt: now,
             createdFrom: { manual: true, source: "central", via: "missing_sneakers" },
@@ -179,7 +180,7 @@ export default function MissingFootwear({ products = [] }) {
           ...d,
           [card.pid]: {
             ok: true,
-            msg: `Raised ${fresh.length} size${fresh.length === 1 ? "" : "s"} (${fresh.map((l) => `${l.size}\u00d7${l.qty}`).join(" · ")}) into Hub 2's refill list`
+            msg: `Raised ${fresh.length} size${fresh.length === 1 ? "" : "s"} (${fresh.map((l) => `${l.size}\u00d7${l.qty}`).join(" · ")}) into ${LOC_LABEL[hub]}'s refill list`
               + (short.length ? ` — ${short.map((l) => `${l.size} short (${l.avail} at Central, wanted ${l.want})`).join(", ")}` : "")
               + ". Central picks it as part of today's work.",
           },
@@ -205,11 +206,12 @@ export default function MissingFootwear({ products = [] }) {
         const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
         const sOpen = solvePid === card.pid;
         const sResult = solved[card.pid];
-        const solveLines = planFor(card);
-        const solvable = solveLines.length > 0;
+        const sHub = hubFor(card);
+        const solveLines = planFor(card, sHub);
+        const solvable = HUBS.some((h) => planFor(card, h).length > 0);
         const solveTitle = !footwearRun
           ? "Footwear targeting isn't configured yet — use Move instead"
-          : !solvable ? "Nothing to raise — every size is either already queued at Hub 2 or out of stock at Central" : undefined;
+          : !solvable ? "Nothing to raise at either hub — every size is already queued, or Central has none" : undefined;
         return (
           <ProductCard key={card.pid}
             photo={card.photo} name={card.name}
@@ -251,8 +253,15 @@ export default function MissingFootwear({ products = [] }) {
 
             {sOpen && (
               <div style={{ marginTop: 10 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                  {HUBS.map((h) => (
+                    <button key={h} onClick={() => setSolveHub((d) => ({ ...d, [card.pid]: h }))} style={destChip(sHub === h)}>
+                      {LOC_LABEL[h]}{planFor(card, h).length ? "" : " · nothing to raise"}
+                    </button>
+                  ))}
+                </div>
                 <div style={{ fontSize: 12, color: GRAY, marginBottom: 8 }}>
-                  Raises this into <b style={{ color: "#fff" }}>Source → Hub 2 refill list</b> as today's work.
+                  Raises this into <b style={{ color: "#fff" }}>Source → {LOC_LABEL[sHub]} Refill</b> as today's work.
                   Central picks it size by size; stock does not move yet.
                 </div>
                 {solveLines.length ? (
@@ -271,7 +280,7 @@ export default function MissingFootwear({ products = [] }) {
                   </>
                 ) : (
                   <div style={{ fontSize: 12, color: GRAY, marginBottom: 8 }}>
-                    Nothing to raise — every size is already queued at Hub 2 or Central has none.
+                    Nothing to raise at {LOC_LABEL[sHub]} — every size is already queued there, or Central has none.
                   </div>
                 )}
                 <button onClick={() => solve(card)} disabled={!!solveBusy || !solveLines.length}

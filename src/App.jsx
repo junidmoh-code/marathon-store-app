@@ -12591,7 +12591,7 @@ const SOURCE_TAB_ICON = {
   onhold:   <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
   clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
 };
-const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"]];
+const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"],["hub1refill","Hub 1 Refill"]];
 
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [tab, setTab] = usePersistedTab("source", "today");
@@ -12958,7 +12958,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         {/* "Clothing Sold" (per-store manual worklist) replaced by the Hub 2
             auto-refill queue — the engine detects sold→below-target itself and
             Central fulfils from this single tab (owner decision 2026-07-12). */}
-        {tab==="clothing" && <Hub2RefillQueue products={products} />}
+        {tab==="clothing" && <Hub2RefillQueue products={products} dest="hub2" />}
+        {/* Hub 1 lane (2026-07-30). The queue was hub2-only because CLOTHING is
+            not kept at Hub 1 — not because Hub 1 lacks refills. Sneakers make it
+            the bigger buffer, so it gets its own lane off the same component. */}
+        {tab==="hub1refill" && <Hub2RefillQueue products={products} dest="hub1" />}
     </>
   );
 

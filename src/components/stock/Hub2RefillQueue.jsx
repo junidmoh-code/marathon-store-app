@@ -34,7 +34,18 @@ import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { formatDuration, refillAgeTone } from "../../utils/duration";
 
 const SOURCE_LOC = "central";
-const DEST_LOC = "hub2";
+// HUB-AGNOSTIC (2026-07-30). This queue was written when only Hub 2 received
+// refills, because clothing is not kept at Hub 1 — that is a fact about CLOTHING,
+// not about Hub 1. Sneakers make Hub 1 the bigger buffer (3,967 footwear units vs
+// Hub 2's 3,288), so the destination is now a prop.
+//
+// The movement reason is derived as `${dest}_auto_refill` / `${dest}_refill_uncounted`,
+// which reproduces the existing "hub2_auto_refill" / "hub2_refill_uncounted"
+// strings byte-for-byte when dest is hub2 — the ledger's history keeps its
+// meaning and hub1 gets its own distinct reasons rather than being logged as
+// hub2 movement.
+const DEFAULT_DEST = "hub2";
+const HUB_LABEL = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
 // Letters keep their existing ranks; NUMERIC sizes (shoes, and clothing waist
 // sizes) sort numerically after them instead of all tying at 99 and rendering in
@@ -85,7 +96,9 @@ function AgePill({ elapsedMs, raisedIso, prefix }) {
   );
 }
 
-export default function Hub2RefillQueue({ products = [] }) {
+export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) {
+  const DEST_LOC = dest;
+  const destLabel = HUB_LABEL[dest] || dest;
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   // ONE subscription for the whole node; partition open vs fulfilled in memory so
@@ -211,13 +224,13 @@ export default function Hub2RefillQueue({ products = [] }) {
         res = await applyMovement(counted ? {
           type: "transfer_out", productId: r.productId, size: r.size, qty,
           from: SOURCE_LOC, to: DEST_LOC, actorRole,
-          reason: "hub2_auto_refill",
+          reason: `${DEST_LOC}_auto_refill`,
           movementId: `rrf_${r.id}`,
           link: { refillId: r.id },
         } : {
           type: "received", productId: r.productId, size: r.size, qty,
           to: DEST_LOC, actorRole,
-          reason: "hub2_refill_uncounted",
+          reason: `${DEST_LOC}_refill_uncounted`,
           movementId: `rrf_${r.id}`,
           link: { refillId: r.id },
         });
@@ -251,7 +264,7 @@ export default function Hub2RefillQueue({ products = [] }) {
       catch { fail += denied.length; }
     }
     const parts = [];
-    if (ok) parts.push(`${ok} unit(s) → Hub 2 ✓`);
+    if (ok) parts.push(`${ok} unit(s) → ${destLabel} ✓`);
     if (rejected) parts.push(`${rejected} size(s) rejected`);
     if (fail) parts.push(`${fail} failed — retry`);
     setMsg((m) => ({ ...m, [card.pid]: parts.join(" · ") }));
@@ -280,7 +293,7 @@ export default function Hub2RefillQueue({ products = [] }) {
       <div style={{ paddingBottom: 30 }}>
         {toggle}
         {history.length === 0 ? (
-          <div style={{ ...GLASS, padding: 16, color: GRAY, fontSize: 13 }}>No fulfilled Hub 2 refills yet.</div>
+          <div style={{ ...GLASS, padding: 16, color: GRAY, fontSize: 13 }}>{`No fulfilled ${destLabel} refills yet.`}</div>
         ) : (
           <>
             <div style={{ color: GRAY, fontSize: 11.5, margin: "0 2px 10px" }}>
@@ -315,7 +328,7 @@ export default function Hub2RefillQueue({ products = [] }) {
       <div style={{ paddingBottom: 30 }}>
         {toggle}
         <div style={{ ...GLASS, padding: 16, margin: "8px 0", color: GRAY, fontSize: 13 }}>
-          No refill requests Central can act on right now. When Hub 2 drops below its
+          {`No refill requests Central can act on right now. When ${destLabel} drops below its`}
           approved targets AND Central has the stock, requests appear here automatically.
           {passiveLine(" In the background: ")}
         </div>
@@ -375,7 +388,7 @@ export default function Hub2RefillQueue({ products = [] }) {
                         onChange={(v) => setPicks((prev) => ({ ...prev, [r.id]: v }))}
                         rejected={!!rejects[r.id]}
                         onReject={() => setRejects((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}
-                        hint={avail > 0 ? `need ×${r.qty || 1} · ${avail} here` : `need ×${r.qty || 1} · 0 counted — adds to Hub 2 only`}
+                        hint={avail > 0 ? `need ×${r.qty || 1} · ${avail} here` : `need ×${r.qty || 1} · 0 counted — adds to ${destLabel} only`}
                         disabled={!canTransfer || busyCard === card.pid}
                       />
                     );
@@ -395,7 +408,7 @@ export default function Hub2RefillQueue({ products = [] }) {
                   const label = busyCard === card.pid ? "Working…"
                     : allDenied ? "Reject request — not available"
                     : deniedCount > 0 ? `Transfer ${totalPick} · reject ${deniedCount} size${deniedCount === 1 ? "" : "s"}`
-                    : `Transfer ${totalPick} unit${totalPick === 1 ? "" : "s"} to Hub 2`;
+                    : `Transfer ${totalPick} unit${totalPick === 1 ? "" : "s"} to ${destLabel}`;
                   return (
                     <button
                       onClick={() => commit(card)}
