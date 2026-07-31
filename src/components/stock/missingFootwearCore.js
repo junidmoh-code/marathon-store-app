@@ -29,6 +29,8 @@ import { stockSizeKey } from "../../utils/sizeKey";
 // Footwear is CATEGORY, never productType: 1,369 products carry
 // category "Footwear" while only 580 carry productType "sneaker", and 858
 // records have no productType at all. Same predicate the engine uses.
+export const REQUEST_STALE_HOURS = 24;
+
 export const isFootwearProduct = (p) => p?.category === "Footwear";
 
 // THE canonical stock-cell encoder, imported rather than reimplemented.
@@ -220,17 +222,36 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
 // Solve raises the whole policy run at once, so in the normal flow this clears
 // the card immediately, which is the behaviour that was asked for.
 //
-// `sizes` is the card's supplyable sizes (Central has stock); `openSizes` is
-// every size with an OPEN request at any hub. Both go through sizeKeyOf so 5.5
-// and " 8" compare on the same key the /stock cell uses.
-export function footwearRequestCoverage({ sizes = [], openSizes = [] }) {
-  const open = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
-  // sizeKeyOf, not a raw !== "_": a padded sentinel (" _ ") is the SAME cell but
-  // would survive a literal compare and then never be requestable, permanently
-  // blocking coverage and pinning the card to the list. (CodeRabbit #294.)
+// A REQUEST ONLY COVERS FOR 24 HOURS (owner, 2026-07-31): "they should disappear
+// immediately, only come back after 24 hours if they don't get refilled, so I
+// don't re-request it again." The card going instantly stops the same shoe being
+// raised twice in a day; the card RETURNING stops a request that was never picked
+// from silently vanishing from the only screen that can chase it. An open request
+// older than the window therefore stops counting as coverage.
+//
+// `sizes` is the card's supplyable sizes (Central has stock); `openRequests` is
+// every OPEN request at any hub as {size, createdAt}. Sizes go through sizeKeyOf
+// so 5.5 and " 8" compare on the same key the /stock cell uses.
+export function footwearRequestCoverage({ sizes = [], openRequests = [], nowMs = 0, staleHours = REQUEST_STALE_HOURS }) {
+  const cutoff = nowMs - staleHours * 3600e3;
+  const fresh = new Set();
+  const stale = new Set();
+  for (const r of openRequests || []) {
+    const key = sizeKeyOf(r?.size);
+    const raised = Date.parse(r?.createdAt || "");
+    // AN UNPARSEABLE TIMESTAMP COUNTS AS STALE, deliberately. The two failure
+    // directions are not equal: treating it as fresh hides the card forever and
+    // the shortage becomes invisible, while treating it as stale shows a card
+    // that may already be handled. Surfacing work that is covered is a nuisance;
+    // hiding work that is not is a stockout.
+    if (Number.isFinite(raised) && raised >= cutoff) fresh.add(key); else stale.add(key);
+  }
   const list = (sizes || []).map(String).filter((s) => !isSentinelSize(s));
-  const requested = list.filter((s) => open.has(sizeKeyOf(s)));
-  return { requested, covered: list.length > 0 && requested.length === list.length };
+  const requested = list.filter((s) => fresh.has(sizeKeyOf(s)));
+  // Raised, still open, and past the window — the request was never picked, so
+  // the size is reachable again and the card says why it is back.
+  const stalled = list.filter((s) => !fresh.has(sizeKeyOf(s)) && stale.has(sizeKeyOf(s)));
+  return { requested, stalled, covered: list.length > 0 && requested.length === list.length };
 }
 
 // ─── PICK PLAN — the operator typed the sizes and quantities themselves ───────

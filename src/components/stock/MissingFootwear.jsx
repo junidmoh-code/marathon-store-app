@@ -46,8 +46,8 @@ import { useStockCells } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { GLASS, GRAY, GREEN, AMBER, BLUE_L, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
-import { serverNowIso } from "../../utils/serverTime";
-import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, footwearRequestCoverage, sizeKeyOf } from "./missingFootwearCore";
+import { serverNowIso, serverNowMs } from "../../utils/serverTime";
+import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, footwearRequestCoverage, REQUEST_STALE_HOURS, sizeKeyOf } from "./missingFootwearCore";
 import { useRefillRequests } from "./useStock";
 
 const HUBS = ["hub1", "hub2"];
@@ -106,7 +106,7 @@ export default function MissingFootwear({ products = [] }) {
       if (!r || r.status !== "open" || !r.productId) continue;
       if (!HUBS.includes(r.requestingLocation)) continue;
       if (!m.has(r.productId)) m.set(r.productId, []);
-      m.get(r.productId).push(r.size);
+      m.get(r.productId).push({ size: r.size, createdAt: r.createdAt });
     }
     return m;
   }, [allRequests]);
@@ -117,7 +117,8 @@ export default function MissingFootwear({ products = [] }) {
         ...c,
         cover: footwearRequestCoverage({
           sizes: c.sizes.map((s) => s.size),
-          openSizes: openSizesByPid.get(c.pid) || [],
+          openRequests: openSizesByPid.get(c.pid) || [],
+          nowMs: serverNowMs(),
         }),
       }));
     // Counted, not discarded: the empty state must be able to tell "nothing is
@@ -337,6 +338,10 @@ export default function MissingFootwear({ products = [] }) {
               <Badge tone={BLUE_L}>{card.centralUnits} units at Central</Badge>
               {card.cover.requested.length > 0 &&
                 <Badge tone={GREEN}>{`REQUESTED ${card.cover.requested.join(", ")}`}</Badge>}
+              {/* Back on the list because the request was never picked — say so,
+                  otherwise a reappearing card reads as a bug. */}
+              {card.cover.stalled.length > 0 &&
+                <Badge tone={AMBER}>{`NOT PICKED IN ${REQUEST_STALE_HOURS}H · ${card.cover.stalled.join(", ")}`}</Badge>}
               {card.duplicateOf && <Badge tone={AMBER}>SAME NAME ELSEWHERE</Badge>}
             </>}
             sub={[

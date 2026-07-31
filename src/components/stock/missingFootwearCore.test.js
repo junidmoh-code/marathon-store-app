@@ -366,43 +366,96 @@ describe("footwearPickPlan", () => {
 // "Once requested it is no longer missing" (owner, 2026-07-31) — but only when
 // EVERY supplyable size is requested, or a partial ask would strand the rest.
 describe("footwearRequestCoverage", () => {
+  // The signature now ages requests (24h window), so these cases — which are
+  // about size MATCHING, not ageing — pass freshly-raised requests. The ageing
+  // rule has its own describe block below.
+  const FRESH = "2026-07-31T11:00:00.000Z";
+  const NOW = Date.parse("2026-07-31T12:00:00.000Z");
+  const openAll = (sizes) => sizes.map((size) => ({ size, createdAt: FRESH }));
+  const cover = (sizes, openSizes) =>
+    footwearRequestCoverage({ sizes, openRequests: openAll(openSizes), nowMs: NOW });
+
   it("covered once every supplyable size has an open request", () => {
-    expect(footwearRequestCoverage({ sizes: ["6", "7"], openSizes: ["6", "7"] }))
-      .toEqual({ requested: ["6", "7"], covered: true });
+    expect(cover(["6", "7"], ["6", "7"]))
+      .toEqual({ requested: ["6", "7"], stalled: [], covered: true });
   });
 
   it("NOT covered on a partial request — the rest must stay reachable", () => {
     // The trap this exists to prevent: raising size 6 by hand must not make
     // sizes 7 and 8 vanish from the only screen that can request them.
-    expect(footwearRequestCoverage({ sizes: ["6", "7", "8"], openSizes: ["6"] }))
-      .toEqual({ requested: ["6"], covered: false });
+    expect(cover(["6", "7", "8"], ["6"]))
+      .toEqual({ requested: ["6"], stalled: [], covered: false });
   });
 
   it("not covered when nothing is requested", () => {
-    expect(footwearRequestCoverage({ sizes: ["6"], openSizes: [] }))
-      .toEqual({ requested: [], covered: false });
+    expect(cover(["6"], []))
+      .toEqual({ requested: [], stalled: [], covered: false });
   });
 
   it("never reports covered for an empty card", () => {
-    expect(footwearRequestCoverage({ sizes: [], openSizes: ["6"] }).covered).toBe(false);
+    expect(cover([], ["6"]).covered).toBe(false);
   });
 
   it("half sizes match on the stock key, not the raw string", () => {
-    expect(footwearRequestCoverage({ sizes: ["5.5"], openSizes: ["5_5"] }).covered).toBe(true);
-    expect(footwearRequestCoverage({ sizes: ["5_5"], openSizes: ["5.5"] }).covered).toBe(true);
+    expect(cover(["5.5"], ["5_5"]).covered).toBe(true);
+    expect(cover(["5_5"], ["5.5"]).covered).toBe(true);
   });
 
   it("a padded size matches the cell it is stored in", () => {
-    expect(footwearRequestCoverage({ sizes: [" 8"], openSizes: [" 8"] }).covered).toBe(true);
+    expect(cover([" 8"], [" 8"]).covered).toBe(true);
   });
 
   it("ignores the one-size sentinel so it cannot block coverage", () => {
-    expect(footwearRequestCoverage({ sizes: ["6", "_"], openSizes: ["6"] }).covered).toBe(true);
+    expect(cover(["6", "_"], ["6"]).covered).toBe(true);
   });
 
   it("ignores a PADDED sentinel too — same cell, so it must not pin the card", () => {
     // A literal !== "_" let " _ " through, and since it can never be requested
     // the card could never reach coverage. (CodeRabbit #294.)
-    expect(footwearRequestCoverage({ sizes: ["6", " _ "], openSizes: ["6"] }).covered).toBe(true);
+    expect(cover(["6", " _ "], ["6"]).covered).toBe(true);
+  });
+});
+
+describe("coverage expires after 24 hours", () => {
+  const NOW = Date.parse("2026-07-31T12:00:00.000Z");
+  const at = (hoursAgo) => new Date(NOW - hoursAgo * 3600e3).toISOString();
+  const cov = (sizes, openRequests) => footwearRequestCoverage({ sizes, openRequests, nowMs: NOW });
+
+  it("a fresh request covers, so the card disappears immediately", () => {
+    const r = cov(["6", "7"], [{ size: "6", createdAt: at(1) }, { size: "7", createdAt: at(0.2) }]);
+    expect(r.covered).toBe(true);
+    expect(r.stalled).toEqual([]);
+  });
+
+  it("an unpicked request stops covering after 24h, so the card comes back", () => {
+    const r = cov(["6", "7"], [{ size: "6", createdAt: at(25) }, { size: "7", createdAt: at(25) }]);
+    expect(r.covered).toBe(false);
+    expect(r.stalled).toEqual(["6", "7"]);
+    expect(r.requested).toEqual([]);
+  });
+
+  it("just inside the window still covers; just outside does not", () => {
+    expect(cov(["6"], [{ size: "6", createdAt: at(23.9) }]).covered).toBe(true);
+    expect(cov(["6"], [{ size: "6", createdAt: at(24.1) }]).covered).toBe(false);
+  });
+
+  it("one stale size is enough to bring the whole card back", () => {
+    const r = cov(["6", "7"], [{ size: "6", createdAt: at(1) }, { size: "7", createdAt: at(30) }]);
+    expect(r.covered).toBe(false);
+    expect(r.requested).toEqual(["6"]);     // still shown as raised
+    expect(r.stalled).toEqual(["7"]);       // and this one is chaseable again
+  });
+
+  it("an unparseable timestamp counts as STALE, never as fresh", () => {
+    // Fail-safe direction: hiding real work is a stockout, showing covered work
+    // is a nuisance.
+    for (const bad of ["", null, undefined, "not-a-date"]) {
+      expect(cov(["6"], [{ size: "6", createdAt: bad }]).covered).toBe(false);
+    }
+  });
+
+  it("ages the half size on its encoded key", () => {
+    expect(cov(["5.5"], [{ size: "5_5", createdAt: at(1) }]).covered).toBe(true);
+    expect(cov(["5.5"], [{ size: "5_5", createdAt: at(40) }]).stalled).toEqual(["5.5"]);
   });
 });
