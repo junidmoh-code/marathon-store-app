@@ -16,11 +16,12 @@
 //     tap away instead of permanently filling the screen.
 //   • The LIST is never split by location — a style is one line whose quantity
 //     is everything we own, summed across every building. The CARD still says
-//     where that stock sits ("269 Hub 2"), and floats the size breakdown for
-//     one location on click. Sizes are never on the face of the card: they're a
-//     follow-up question, not worth the grid's whole surface.
+//     where that stock sits ("269 Hub 2"). Sizes are never on the face of the
+//     card — clicking a location floats them in a PORTAL, outside the grid
+//     entirely, so opening one can never reflow the layout.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { get, orderByChild, query, ref, startAt } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells } from "./useStock";
@@ -378,8 +379,8 @@ function AttentionCard({ row, view }) {
   const tone = view === VIEW_LOW ? RED : view === VIEW_OVER ? AMBER : BLUE_L;
 
   return (
-    <div style={{ ...GLASS, overflow: "visible" }}>
-      <div style={{ position: "relative", height: PHOTO_H, background: "rgba(255,255,255,.03)", flexShrink: 0, overflow: "hidden", borderRadius: "15px 15px 0 0" }}>
+    <div style={{ ...GLASS, overflow: "hidden" }}>
+      <div style={{ position: "relative", height: PHOTO_H, background: "rgba(255,255,255,.03)", flexShrink: 0 }}>
         {showPhoto ? (
           <img
             src={row.photo}
@@ -440,24 +441,53 @@ function AttentionCard({ row, view }) {
 // A location on a product card — "269 Hub 2". Shops are tinted green so stock
 // on a shop floor reads differently from stock in a warehouse at a glance.
 //
-// Clicking floats that location's size breakdown; moving the pointer off the
-// chip dismisses it, so the card returns to a clean face without needing a
-// deliberate close. Escape and a second click also close it.
+// The size breakdown appears ONLY on click, and is rendered through a PORTAL as
+// a fixed-position panel — not inside the card. Anything laid out within the
+// card (even absolutely positioned) is at the mercy of the grid: it can be
+// clipped by a neighbour's stacking context, and it drags the card's own
+// geometry around. Escaping to the body means the grid NEVER reflows, whatever
+// the panel does. It is also capped in height and scrolls internally, so a
+// 20-size product can't produce a panel the length of the page.
+//
+// Moving the pointer off dismisses it, as do Escape, scrolling, resizing and a
+// second click — a read-only panel shouldn't need a deliberate close.
 function LocChip({ label, qty, shop, sizes }) {
-  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState(null);
   const accent = shop ? GREEN : BLUE_L;
+  const open = rect !== null;
 
   useEffect(() => {
     if (!open) return undefined;
-    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    const close = () => setRect(null);
+    const onKey = (e) => { if (e.key === "Escape") close(); };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    // `true` — catch scrolling in any ancestor, not just the window, since a
+    // fixed panel would otherwise hang in place while the grid moves under it.
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
   }, [open]);
 
+  const toggle = (e) => {
+    if (open) { setRect(null); return; }
+    setRect(e.currentTarget.getBoundingClientRect());
+  };
+
+  const PANEL_W = 232;
+  const PANEL_MAX_H = 168;
+  // Flip above the chip when there isn't room below, and keep the panel inside
+  // the viewport horizontally so a card at the right edge doesn't push it off.
+  const below = rect ? rect.bottom + PANEL_MAX_H + 10 < window.innerHeight : true;
+  const left = rect ? Math.max(8, Math.min(rect.left, window.innerWidth - PANEL_W - 8)) : 0;
+
   return (
-    <span style={{ position: "relative", display: "inline-block" }} onMouseLeave={() => setOpen(false)}>
+    <span style={{ display: "inline-block" }} onMouseLeave={() => setRect(null)}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         aria-expanded={open}
         title={`Sizes at ${label}`}
         style={{
@@ -470,11 +500,14 @@ function LocChip({ label, qty, shop, sizes }) {
         <b style={{ color: accent }}>{qty}</b> {label}
       </button>
 
-      {open && (
+      {open && createPortal(
         <div
+          role="tooltip"
           style={{
-            ...GLASS_SOLID, position: "absolute", bottom: "calc(100% + 6px)", left: 0, zIndex: 60,
-            padding: "8px 9px", minWidth: 148, maxWidth: 250,
+            ...GLASS_SOLID, position: "fixed", left, zIndex: 4000,
+            ...(below ? { top: rect.bottom + 6 } : { bottom: window.innerHeight - rect.top + 6 }),
+            width: PANEL_W, maxHeight: PANEL_MAX_H, overflowY: "auto", padding: "8px 9px",
+            pointerEvents: "none",
           }}
         >
           <div style={{ fontSize: 9.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>
@@ -492,7 +525,8 @@ function LocChip({ label, qty, shop, sizes }) {
               ))}
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </span>
   );
