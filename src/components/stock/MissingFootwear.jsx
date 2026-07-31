@@ -111,16 +111,18 @@ export default function MissingFootwear({ products = [] }) {
     return m;
   }, [allRequests]);
 
-  const cards = useMemo(() => {
-    return computeMissingFootwear({ allStock, products, hubs: HUBS })
+  const { cards, awaitingPick } = useMemo(() => {
+    const all = computeMissingFootwear({ allStock, products, hubs: HUBS })
       .map((c) => ({
         ...c,
         cover: footwearRequestCoverage({
           sizes: c.sizes.map((s) => s.size),
           openSizes: openSizesByPid.get(c.pid) || [],
         }),
-      }))
-      .filter((c) => !c.cover.covered);
+      }));
+    // Counted, not discarded: the empty state must be able to tell "nothing is
+    // stranded" apart from "it is all requested and waiting to be picked".
+    return { cards: all.filter((c) => !c.cover.covered), awaitingPick: all.filter((c) => c.cover.covered).length };
   }, [allStock, products, openSizesByPid]);
 
   const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter((s) => s && s !== "_");
@@ -286,7 +288,16 @@ export default function MissingFootwear({ products = [] }) {
   };
 
   if (!cards.length) {
-    return <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded sneakers — everything at Central is also held by a hub.</div>;
+    // Two very different situations, and saying the wrong one is a lie: a
+    // requested shoe is NOT held by a hub yet — nothing has moved, Central still
+    // has to pick it. (CodeRabbit #294.)
+    return (
+      <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>
+        {awaitingPick
+          ? `Nothing left to request — ${awaitingPick} shoe${awaitingPick === 1 ? " is" : "s are"} already requested and waiting for Central to pick. They come back here only if the request is cancelled; they leave for good once the units reach a hub.`
+          : "No stranded sneakers — everything at Central is also held by a hub."}
+      </div>
+    );
   }
 
   return (

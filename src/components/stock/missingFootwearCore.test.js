@@ -399,4 +399,10 @@ describe("footwearRequestCoverage", () => {
   it("ignores the one-size sentinel so it cannot block coverage", () => {
     expect(footwearRequestCoverage({ sizes: ["6", "_"], openSizes: ["6"] }).covered).toBe(true);
   });
+
+  it("ignores a PADDED sentinel too — same cell, so it must not pin the card", () => {
+    // A literal !== "_" let " _ " through, and since it can never be requested
+    // the card could never reach coverage. (CodeRabbit #294.)
+    expect(footwearRequestCoverage({ sizes: ["6", " _ "], openSizes: ["6"] }).covered).toBe(true);
+  });
 });

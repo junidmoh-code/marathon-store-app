@@ -40,6 +40,18 @@ export const isFootwearProduct = (p) => p?.category === "Footwear";
 // encoder, and it must be the one the cells were written with.
 export const sizeKeyOf = stockSizeKey;
 
+// A "size" that is not a size: the one-size sentinel, blank, or a padded copy of
+// either. TRIMMED on purpose and deliberately NOT sizeKeyOf — stockSizeKey does
+// not trim, so " _ " encodes to "___", a different key that a literal !== "_"
+// compare lets through. Left in, it can never be requested and would therefore
+// block a card from ever reaching full coverage, pinning it to the list forever.
+// One predicate, used by all three planners, so they cannot disagree about what
+// counts as a real size. (CodeRabbit #294.)
+export const isSentinelSize = (s) => {
+  const t = String(s ?? "").trim();
+  return !t || t === "_";
+};
+
 // Numeric-aware size ordering — the clothing SIZE_ORDER table is letters only and
 // ranks every shoe size equal (99), which would render sizes in arbitrary order.
 export function footwearSizeRank(s) {
@@ -182,7 +194,7 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
   const alreadyOpen = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
   return (catalogSizes || [])
     .map(String)
-    .filter((s) => s && s !== "_")
+    .filter((s) => !isSentinelSize(s))
     .map((size) => {
       const key = sizeKeyOf(size);
       const want = Number(policy[key]) || 0;
@@ -213,7 +225,10 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
 // and " 8" compare on the same key the /stock cell uses.
 export function footwearRequestCoverage({ sizes = [], openSizes = [] }) {
   const open = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
-  const list = (sizes || []).map(String).filter((s) => s && s !== "_");
+  // sizeKeyOf, not a raw !== "_": a padded sentinel (" _ ") is the SAME cell but
+  // would survive a literal compare and then never be requestable, permanently
+  // blocking coverage and pinning the card to the list. (CodeRabbit #294.)
+  const list = (sizes || []).map(String).filter((s) => !isSentinelSize(s));
   const requested = list.filter((s) => open.has(sizeKeyOf(s)));
   return { requested, covered: list.length > 0 && requested.length === list.length };
 }
@@ -240,7 +255,7 @@ export function footwearPickPlan({ picks = [], centralCells = {}, openSizes = []
   const alreadyOpen = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
   return (picks || [])
     .map((p) => ({ size: String(p?.size ?? ""), asked: Math.floor(Number(p?.qty) || 0) }))
-    .filter((p) => p.size && p.size !== "_" && p.asked > 0)
+    .filter((p) => !isSentinelSize(p.size) && p.asked > 0)
     .map((p) => {
       const key = sizeKeyOf(p.size);
       const onHand = Math.max(Number(centralCells?.[key]?.qty) || 0, 0);
