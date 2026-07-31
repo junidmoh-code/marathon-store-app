@@ -196,6 +196,28 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
     .map(({ size, qty, want, avail }) => ({ size, qty, want, avail }));
 }
 
+// ─── REQUEST COVERAGE — is this shoe still "missing"? ─────────────────────────
+// Owner rule 2026-07-31: once the sizes have been requested, the shoe is no
+// longer missing — it is about to be sent — so its card leaves the list.
+//
+// COVERAGE IS ALL-OR-NOTHING ON PURPOSE. Clearing the card on the FIRST request
+// would strand the rest: someone raising size 6 by hand would make sizes 7-11
+// disappear with no way back to them, and the list is the only route to those
+// sizes. So the card goes only when every size Central can supply is spoken for;
+// a partial request keeps the card and reports which sizes are already raised.
+// Solve raises the whole policy run at once, so in the normal flow this clears
+// the card immediately, which is the behaviour that was asked for.
+//
+// `sizes` is the card's supplyable sizes (Central has stock); `openSizes` is
+// every size with an OPEN request at any hub. Both go through sizeKeyOf so 5.5
+// and " 8" compare on the same key the /stock cell uses.
+export function footwearRequestCoverage({ sizes = [], openSizes = [] }) {
+  const open = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
+  const list = (sizes || []).map(String).filter((s) => s && s !== "_");
+  const requested = list.filter((s) => open.has(sizeKeyOf(s)));
+  return { requested, covered: list.length > 0 && requested.length === list.length };
+}
+
 // ─── PICK PLAN — the operator typed the sizes and quantities themselves ───────
 // Owner decision 2026-07-31: the "Move" button must RAISE A REQUEST like Solve
 // does, not transfer stock. Moving was the wrong default — it shifted inventory

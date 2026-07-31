@@ -3,7 +3,7 @@
 // that make it differ from the clothing rule on purpose: it is UNIT-based rather
 // than carriage-based, and the shops are deliberately not part of the test.
 import { describe, it, expect } from "vitest";
-import { computeMissingFootwear, seedableSizes, footwearSizeRank, sizeKeyOf, footwearSolvePlan, footwearPickPlan } from "./missingFootwearCore.js";
+import { computeMissingFootwear, seedableSizes, footwearSizeRank, sizeKeyOf, footwearSolvePlan, footwearPickPlan, footwearRequestCoverage } from "./missingFootwearCore.js";
 
 const SHOE = { id: "sh1", name: "Nike Air Max 1", category: "Footwear", sizes: ["5.5", "6", "7"] };
 const SHOE2 = { id: "sh2", name: "Nike Air Force 1", category: "Footwear", sizes: ["6", "7"] };
@@ -359,5 +359,44 @@ describe("footwearPickPlan", () => {
 
   it("skips the one-size sentinel", () => {
     expect(footwearPickPlan({ picks: [{ size: "_", qty: 2 }], centralCells: { _: { qty: 5 } } })).toEqual([]);
+  });
+});
+
+// ─── REQUEST COVERAGE ────────────────────────────────────────────────────────
+// "Once requested it is no longer missing" (owner, 2026-07-31) — but only when
+// EVERY supplyable size is requested, or a partial ask would strand the rest.
+describe("footwearRequestCoverage", () => {
+  it("covered once every supplyable size has an open request", () => {
+    expect(footwearRequestCoverage({ sizes: ["6", "7"], openSizes: ["6", "7"] }))
+      .toEqual({ requested: ["6", "7"], covered: true });
+  });
+
+  it("NOT covered on a partial request — the rest must stay reachable", () => {
+    // The trap this exists to prevent: raising size 6 by hand must not make
+    // sizes 7 and 8 vanish from the only screen that can request them.
+    expect(footwearRequestCoverage({ sizes: ["6", "7", "8"], openSizes: ["6"] }))
+      .toEqual({ requested: ["6"], covered: false });
+  });
+
+  it("not covered when nothing is requested", () => {
+    expect(footwearRequestCoverage({ sizes: ["6"], openSizes: [] }))
+      .toEqual({ requested: [], covered: false });
+  });
+
+  it("never reports covered for an empty card", () => {
+    expect(footwearRequestCoverage({ sizes: [], openSizes: ["6"] }).covered).toBe(false);
+  });
+
+  it("half sizes match on the stock key, not the raw string", () => {
+    expect(footwearRequestCoverage({ sizes: ["5.5"], openSizes: ["5_5"] }).covered).toBe(true);
+    expect(footwearRequestCoverage({ sizes: ["5_5"], openSizes: ["5.5"] }).covered).toBe(true);
+  });
+
+  it("a padded size matches the cell it is stored in", () => {
+    expect(footwearRequestCoverage({ sizes: [" 8"], openSizes: [" 8"] }).covered).toBe(true);
+  });
+
+  it("ignores the one-size sentinel so it cannot block coverage", () => {
+    expect(footwearRequestCoverage({ sizes: ["6", "_"], openSizes: ["6"] }).covered).toBe(true);
   });
 });

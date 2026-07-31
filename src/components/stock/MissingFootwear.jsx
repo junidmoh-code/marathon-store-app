@@ -47,7 +47,7 @@ import { usePermissions } from "../PermissionsContext";
 import { GLASS, GRAY, GREEN, AMBER, BLUE_L, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowIso } from "../../utils/serverTime";
-import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, sizeKeyOf } from "./missingFootwearCore";
+import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, footwearRequestCoverage, sizeKeyOf } from "./missingFootwearCore";
 import { useRefillRequests } from "./useStock";
 
 const HUBS = ["hub1", "hub2"];
@@ -95,10 +95,33 @@ export default function MissingFootwear({ products = [] }) {
   }, []);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
-  const cards = useMemo(
-    () => computeMissingFootwear({ allStock, products, hubs: HUBS }),
-    [allStock, products],
-  );
+  // A shoe with an OPEN request at either hub is on its way — owner rule
+  // 2026-07-31: "it is no longer missing since they're about to send it". The
+  // card is retired only when EVERY supplyable size is spoken for; a partial
+  // request keeps the row (badged) so the remaining sizes stay reachable, since
+  // this list is the only place they can be requested from.
+  const openSizesByPid = useMemo(() => {
+    const m = new Map();
+    for (const r of allRequests || []) {
+      if (!r || r.status !== "open" || !r.productId) continue;
+      if (!HUBS.includes(r.requestingLocation)) continue;
+      if (!m.has(r.productId)) m.set(r.productId, []);
+      m.get(r.productId).push(r.size);
+    }
+    return m;
+  }, [allRequests]);
+
+  const cards = useMemo(() => {
+    return computeMissingFootwear({ allStock, products, hubs: HUBS })
+      .map((c) => ({
+        ...c,
+        cover: footwearRequestCoverage({
+          sizes: c.sizes.map((s) => s.size),
+          openSizes: openSizesByPid.get(c.pid) || [],
+        }),
+      }))
+      .filter((c) => !c.cover.covered);
+  }, [allStock, products, openSizesByPid]);
 
   const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter((s) => s && s !== "_");
 
@@ -288,6 +311,8 @@ export default function MissingFootwear({ products = [] }) {
             badges={<>
               <Badge tone={card.kind === "never_introduced" ? AMBER : BLUE_L}>{KIND_LABEL[card.kind]}</Badge>
               <Badge tone={BLUE_L}>{card.centralUnits} units at Central</Badge>
+              {card.cover.requested.length > 0 &&
+                <Badge tone={GREEN}>{`REQUESTED ${card.cover.requested.join(", ")}`}</Badge>}
               {card.duplicateOf && <Badge tone={AMBER}>SAME NAME ELSEWHERE</Badge>}
             </>}
             sub={[
