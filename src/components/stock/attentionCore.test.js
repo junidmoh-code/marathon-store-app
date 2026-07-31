@@ -1,10 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
-  buildAttentionIndex, scopeEntry, selectAttentionRows, summarise, brandOptions,
-  soldUnitsByProduct, receivedProductIds, sizeBreakdown, locationBreakdown, rowCostValue,
-  isShopLocation, findStep, findSort, locationLabel,
-  VIEW_LOW, VIEW_OVER, VIEW_DEAD, LOW_STEPS, OVER_STEPS,
-  SCOPE_ALL, SCOPE_SHOPS, SCOPE_WAREHOUSE,
+  buildAttentionIndex, selectAttentionRows, summarise, brandOptions,
+  soldUnitsByProduct, receivedProductIds, sizeBreakdown, rowCostValue,
+  findStep, findSort, defaultSortFor,
+  VIEW_LOW, VIEW_OVER, VIEW_DEAD, LOW_STEPS, OVER_STEPS, DEAD_MIN_STEPS,
 } from "./attentionCore";
 
 const cell = (qty) => ({ qty, v: 1 });
@@ -25,21 +24,14 @@ const TREE = {
   hub2:          { shoe1: { 8: cell(10) }, shoe2: { 9: cell(40) } },
 };
 
-describe("isShopLocation", () => {
-  it("counts the three retail floors as shops, everything else as warehouse", () => {
-    expect(["marathon-pe", "marathon-pine", "trophy"].every(isShopLocation)).toBe(true);
-    expect(["hub1", "hub2", "hub3", "central", "base", "studio", "in_transit"].some(isShopLocation)).toBe(false);
-  });
-});
-
 describe("buildAttentionIndex", () => {
-  it("totals a product across locations and splits shop vs warehouse", () => {
+  it("sums a product across every location into one line", () => {
+    // Location is not modelled — 2 at PE + 1 at Trophy + 10 in hub2 is one
+    // style with 13 units, full stop.
     const e = buildAttentionIndex(TREE).get("shoe1");
     expect(e.total).toBe(13);
-    expect(e.shop).toBe(3);       // 2 PE + 1 Trophy
-    expect(e.warehouse).toBe(10); // hub2
-    expect(e.sizes.get("8")).toBe(12);
-    expect(e.byLocation.get("hub2").qty).toBe(10);
+    expect(e.sizes.get("8")).toBe(12);  // 2 (PE) + 10 (hub2)
+    expect(e.sizes.get("9")).toBe(1);   // Trophy
   });
 
   it("merges the raw and encoded spellings of one half-size", () => {
@@ -62,32 +54,6 @@ describe("buildAttentionIndex", () => {
     expect(buildAttentionIndex(null).size).toBe(0);
     expect(buildAttentionIndex({ trophy: null }).size).toBe(0);
     expect(buildAttentionIndex({ trophy: { shoe1: null } }).size).toBe(0);
-  });
-});
-
-describe("scopeEntry", () => {
-  const index = buildAttentionIndex(TREE);
-
-  it("narrows the totals to the chosen scope", () => {
-    const e = index.get("shoe1");
-    expect(scopeEntry(e, SCOPE_ALL).total).toBe(13);
-    expect(scopeEntry(e, SCOPE_SHOPS).total).toBe(3);
-    expect(scopeEntry(e, SCOPE_WAREHOUSE).total).toBe(10);
-    expect(scopeEntry(e, "marathon-pe").total).toBe(2);
-    expect(scopeEntry(e, "trophy").total).toBe(1);
-  });
-
-  it("returns null when the product isn't held in that scope at all", () => {
-    // shoe2 lives only in hub2 — it must not appear in a shop-scoped list.
-    expect(scopeEntry(index.get("shoe2"), SCOPE_SHOPS)).toBeNull();
-    expect(scopeEntry(index.get("shoe2"), "trophy")).toBeNull();
-    expect(scopeEntry(index.get("shoe2"), SCOPE_WAREHOUSE).total).toBe(40);
-  });
-
-  it("keeps only the sizes present in that scope", () => {
-    const pe = scopeEntry(index.get("shoe1"), "marathon-pe");
-    expect(Array.from(pe.sizes.keys())).toEqual(["8"]);
-    expect(pe.sizes.get("8")).toBe(2);
   });
 });
 
@@ -140,39 +106,28 @@ describe("row shaping", () => {
     ]);
   });
 
-  it("lists locations biggest holding first and flags shops", () => {
-    const out = locationBreakdown(new Map([["hub2", { qty: 10 }], ["trophy", { qty: 4 }]]));
-    expect(out.map((l) => [l.loc, l.qty, l.shop])).toEqual([["hub2", 10, false], ["trophy", 4, true]]);
-  });
-
   it("values stock at COST, and returns null (not zero) when there's no cost price", () => {
     expect(rowCostValue({ stockPrice: 250 }, 4)).toBe(1000);
     expect(rowCostValue({ stockPrice: 0 }, 4)).toBeNull();
     expect(rowCostValue({}, 4)).toBeNull();
   });
 
-  it("labels known locations and passes unknown ids through", () => {
-    expect(locationLabel("marathon-pe")).toBe("Marathon PE");
-    expect(locationLabel("weird")).toBe("weird");
-  });
 });
 
 describe("selectAttentionRows — LOW", () => {
   const index = buildAttentionIndex(TREE);
-  const base = { index, productsById: PRODUCTS, view: VIEW_LOW, scope: SCOPE_ALL };
+  const base = { index, productsById: PRODUCTS, view: VIEW_LOW };
 
   it("lists styles at or under the chosen rung, fewest first", () => {
     const rows = selectAttentionRows({ ...base, lowStepId: "5" }); // ≤4
     expect(rows.map((r) => [r.id, r.total])).toEqual([["cap1", 1], ["tee1", 3]]);
   });
 
-  it("re-reads 'low' against the active location scope", () => {
-    // shoe1 has 13 everywhere, but only 2 on the PE floor — at PE it IS low.
-    const all = selectAttentionRows({ ...base, lowStepId: "3" }).map((r) => r.id);
-    expect(all).not.toContain("shoe1");
-
-    const pe = selectAttentionRows({ ...base, scope: "marathon-pe", lowStepId: "3" });
-    expect(pe.map((r) => [r.id, r.total])).toEqual([["shoe1", 2], ["tee1", 3]]);
+  it("judges 'low' on the network total, not on any one building", () => {
+    // shoe1 is down to 2 on the PE floor but we own 13 — it is not low.
+    const rows = selectAttentionRows({ ...base, lowStepId: "3" }).map((r) => r.id);
+    expect(rows).not.toContain("shoe1");
+    expect(rows).toEqual(["cap1", "tee1"]);
   });
 
   it("respects the rung boundary exactly", () => {
@@ -218,25 +173,30 @@ describe("selectAttentionRows — OVER", () => {
   const index = buildAttentionIndex(TREE);
 
   it("lists styles at or over the rung", () => {
-    const rows = selectAttentionRows({ index, productsById: PRODUCTS, view: VIEW_OVER, overStepId: "20", sortId: "qtyDesc" });
+    const rows = selectAttentionRows({ index, productsById: PRODUCTS, view: VIEW_OVER, overStepId: "20" });
     expect(rows.map((r) => [r.id, r.total])).toEqual([["shoe2", 40]]);
     expect(findStep(OVER_STEPS, "50").min).toBe(50);
   });
 
-  it("reports the shop/hub split so hub-only piles are obvious", () => {
+  it("values the pile at cost", () => {
     const [row] = selectAttentionRows({ index, productsById: PRODUCTS, view: VIEW_OVER, overStepId: "20" });
-    expect([row.shop, row.warehouse]).toEqual([0, 40]);
     expect(row.costValue).toBe(8000); // 40 × R200
+  });
+
+  it("offers the rungs highest-first, with 20+ last", () => {
+    expect(OVER_STEPS.map((s) => s.id)).toEqual(["200", "100", "50", "20"]);
   });
 });
 
 describe("selectAttentionRows — DEAD", () => {
   const index = buildAttentionIndex(TREE);
-  const base = { index, productsById: PRODUCTS, view: VIEW_DEAD, sortId: "qtyDesc" };
+  // deadMinId "3" keeps the fixture's 3-unit tee in play; the default is 5.
+  const base = { index, productsById: PRODUCTS, view: VIEW_DEAD, deadMinId: "3" };
 
   it("lists in-stock styles with no sale in the window, biggest pile first", () => {
     const rows = selectAttentionRows({ ...base, soldMap: new Map([["shoe1", 2]]) });
-    expect(rows.map((r) => r.id)).toEqual(["shoe2", "tee1", "cap1"]); // shoe1 sold → moving
+    // shoe1 sold → moving. cap1 has 1 unit → below the floor, not "stagnant".
+    expect(rows.map((r) => r.id)).toEqual(["shoe2", "tee1"]);
   });
 
   it("tags a freshly delivered style instead of calling it dead", () => {
@@ -248,6 +208,17 @@ describe("selectAttentionRows — DEAD", () => {
   it("can hide just-arrived stock", () => {
     const rows = selectAttentionRows({ ...base, soldMap: new Map(), arrivedSet: new Set(["shoe2"]), hideJustArrived: true });
     expect(rows.map((r) => r.id)).not.toContain("shoe2");
+  });
+
+  it("ignores styles down to their last few — nearly sold out is not stagnant", () => {
+    // cap1 holds 1 unit. There is nothing left for it to move.
+    const rows = selectAttentionRows({ ...base, soldMap: new Map() });
+    expect(rows.map((r) => r.id)).not.toContain("cap1");
+
+    // Raising the floor drops the 3-unit tee too.
+    const strict = selectAttentionRows({ ...base, deadMinId: "5", soldMap: new Map() });
+    expect(strict.map((r) => r.id)).toEqual(["shoe1", "shoe2"].sort((a, b) => ({ shoe1: 13, shoe2: 40 })[b] - ({ shoe1: 13, shoe2: 40 })[a]));
+    expect(DEAD_MIN_STEPS.map((s) => s.min)).toEqual([3, 5, 10, 20]);
   });
 
   it("still flags a style whose only movements were transfers", () => {
