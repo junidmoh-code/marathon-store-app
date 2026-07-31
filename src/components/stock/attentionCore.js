@@ -203,8 +203,13 @@ function toRow(pid, product, entry) {
     subcategory: product?.subcategory || "",
     photo: product?.photoUrl || product?.photo || null,
     total: entry.total,
-    sizes: sizeBreakdown(entry.sizes),
-    locations: locationBreakdown(entry.byLocation),
+    // The size + location breakdowns are NOT built here. Shaping every match
+    // meant ~2700 pairs of array sorts on each filter change, of which only the
+    // ~48 rows actually on screen were ever looked at — which is what made
+    // changing an option feel like it hadn't taken. The raw entry rides along
+    // and each rendered card shapes its own (see AttentionView).
+    entry,
+    sizeCount: entry.sizes.size,
     costValue: rowCostValue(product, entry.total),
     retailPrice: num(product?.retailPrice),
   };
@@ -216,7 +221,7 @@ export const SORTS = Object.freeze([
   { id: "qtyDesc", label: "Most first", cmp: (a, b) => b.total - a.total },
   { id: "valueDesc", label: "Highest value", cmp: (a, b) => (b.costValue ?? -1) - (a.costValue ?? -1) },
   { id: "name", label: "Name A–Z", cmp: (a, b) => a.name.localeCompare(b.name) },
-  { id: "sizes", label: "Most sizes", cmp: (a, b) => b.sizes.length - a.sizes.length },
+  { id: "sizes", label: "Most sizes", cmp: (a, b) => b.sizeCount - a.sizeCount },
 ]);
 export const findSort = (id) => SORTS.find((s) => s.id === id) || SORTS[0];
 
@@ -292,12 +297,3 @@ export function summarise(rows) {
   return { styles: rows.length, units, value, valueKnown, valueMissing: rows.length - valueKnown };
 }
 
-// Brand list for the picker — only brands present in the current result set, so
-// the dropdown can't offer a filter that yields nothing.
-export function brandOptions(rows) {
-  const counts = new Map();
-  for (const r of rows) if (r.brand) counts.set(r.brand, (counts.get(r.brand) || 0) + 1);
-  return Array.from(counts.entries())
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([brand, count]) => ({ brand, count }));
-}

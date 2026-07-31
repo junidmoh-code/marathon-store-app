@@ -26,7 +26,7 @@ import { get, orderByChild, query, ref, startAt } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells } from "./useStock";
 import {
-  buildAttentionIndex, selectAttentionRows, summarise, brandOptions,
+  buildAttentionIndex, selectAttentionRows, summarise, locationBreakdown,
   soldUnitsByProduct, receivedProductIds, defaultSortFor,
   VIEW_LOW, VIEW_OVER, VIEW_DEAD, LOW_STEPS, OVER_STEPS, DEAD_MIN_STEPS,
   DEFAULT_LOW_STEP, DEFAULT_OVER_STEP, DEFAULT_DEAD_MIN, DEAD_WINDOWS, SORTS, findStep, findSort,
@@ -93,13 +93,13 @@ export default function AttentionView({ products, onExit }) {
   const [overStepId, setOverStepId] = useState(DEFAULT_OVER_STEP);
   const [deadMinId, setDeadMinId] = useState(DEFAULT_DEAD_MIN);
   const [category, setCategory] = useState("all");
-  const [brand, setBrand] = useState("all");
   const [sortId, setSortId] = useState(null);         // null = the view's own default
   const [search, setSearch] = useState("");
   const [days, setDays] = useState(DEAD_WINDOWS[0].days);
   const [hideJustArrived, setHideJustArrived] = useState(false);
   const [limit, setLimit] = useState(PAGE);
   const [reloadToken, setReloadToken] = useState(0);
+  const resultsRef = useRef(null);
 
   const dead = view === VIEW_DEAD;
   const stockTree = useStockCells();
@@ -116,32 +116,30 @@ export default function AttentionView({ products, onExit }) {
   const stockReady = stockTree && Object.keys(stockTree).length > 0;
   const effectiveSort = sortId || defaultSortFor(view);
 
-  // Rows BEFORE the brand filter — the brand list is built from these, so it can
-  // only ever offer a brand that would actually return something.
-  const rowsPreBrand = useMemo(() => {
+  const rows = useMemo(() => {
     if (!stockReady) return [];
     if (dead && !movementsReady) return [];
     return selectAttentionRows({
       index, productsById, view, lowStepId, overStepId, deadMinId,
-      category, brand: "all", search, sortId: effectiveSort,
+      category, search, sortId: effectiveSort,
       soldMap, arrivedSet, hideJustArrived,
     });
   }, [stockReady, dead, movementsReady, index, productsById, view, lowStepId, overStepId,
       deadMinId, category, search, effectiveSort, soldMap, arrivedSet, hideJustArrived]);
 
-  const brands = useMemo(() => brandOptions(rowsPreBrand), [rowsPreBrand]);
-  const rows = useMemo(
-    () => (brand === "all" ? rowsPreBrand : rowsPreBrand.filter((r) => r.brand === brand)),
-    [rowsPreBrand, brand],
-  );
   const stats = useMemo(() => summarise(rows), [rows]);
 
+  // Changing a filter resets paging and scrolls the grid back into view. Without
+  // the scroll, picking an option while deep in a long list left the viewport
+  // parked past the new (shorter) results — the page HAD updated, but from where
+  // the operator was sitting it looked like nothing had happened. `search` is
+  // excluded deliberately: scrolling on every keystroke is hostile.
   useEffect(() => {
-    if (brand !== "all" && !brands.some((b) => b.brand === brand)) setBrand("all");
-  }, [brands, brand]);
+    setLimit(PAGE);
+    resultsRef.current?.scrollIntoView({ block: "start" });
+  }, [view, lowStepId, overStepId, deadMinId, category, sortId, days, hideJustArrived]);
 
-  useEffect(() => { setLimit(PAGE); },
-    [view, lowStepId, overStepId, deadMinId, category, brand, search, sortId, days, hideJustArrived]);
+  useEffect(() => { setLimit(PAGE); }, [search]);
 
   const busy = !stockReady || (dead && movementsLoading);
   const shown = rows.slice(0, limit);
@@ -215,10 +213,6 @@ export default function AttentionView({ products, onExit }) {
                 options={[{ id: "all", label: "All types" }, ...[...TOP_CATEGORIES, UNCATEGORIZED_TOP].map((c) => ({ id: c, label: c }))]}
                 selected={category} onPick={setCategory} />
 
-        <Picker label="Brand" value={brand === "all" ? "All brands" : brand}
-                options={[{ id: "all", label: "All brands" }, ...brands.map((b) => ({ id: b.brand, label: `${b.brand} (${b.count})` }))]}
-                selected={brand} onPick={setBrand} scroll />
-
         <Picker label="Sort" value={findSort(effectiveSort).label}
                 options={SORTS.map((s) => ({ id: s.id, label: s.label }))}
                 selected={effectiveSort} onPick={setSortId} />
@@ -261,6 +255,7 @@ export default function AttentionView({ products, onExit }) {
       </div>
 
       {/* Results */}
+      <div ref={resultsRef} style={{ scrollMarginTop: 14 }} />
       {movementsError && dead ? (
         <Empty tone={RED}>Couldn’t load the movement history{movementsError.message ? ` — ${movementsError.message}` : ""}.</Empty>
       ) : busy ? (
@@ -295,7 +290,7 @@ export default function AttentionView({ products, onExit }) {
 }
 
 // A filter that shows its own value and opens on click. Keeps the long ladders
-// (quantity rungs, 200+ brands) off the screen until they're wanted, without
+// (the quantity rungs, the category list) off the screen until wanted, without
 // hiding WHICH option is active — the trigger is the answer.
 function Picker({ label, value, options, selected, onPick, hint, scroll }) {
   const [open, setOpen] = useState(false);
@@ -377,6 +372,9 @@ function AttentionCard({ row, view }) {
   const [failed, setFailed] = useState(false);
   const showPhoto = row.photo && !failed;
   const tone = view === VIEW_LOW ? RED : view === VIEW_OVER ? AMBER : BLUE_L;
+  // Shaped HERE, not in the selector: only the ~48 cards on screen pay for it,
+  // instead of every one of the thousands of rows a filter can match.
+  const locations = useMemo(() => locationBreakdown(row.entry.byLocation), [row.entry]);
 
   return (
     <div style={{ ...GLASS, overflow: "hidden" }}>
@@ -426,9 +424,9 @@ function AttentionCard({ row, view }) {
             breakdown on the face of the card; tapping a location floats it,
             because sizes are a follow-up question, not something worth spending
             the grid's whole surface on. */}
-        {row.locations.length > 0 && (
+        {locations.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 10 }}>
-            {row.locations.map((l) => (
+            {locations.map((l) => (
               <LocChip key={l.loc} label={l.label} qty={l.qty} shop={l.shop} sizes={l.sizes} />
             ))}
           </div>

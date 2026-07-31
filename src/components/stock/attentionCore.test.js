@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  buildAttentionIndex, selectAttentionRows, summarise, brandOptions,
+  buildAttentionIndex, selectAttentionRows, summarise,
   soldUnitsByProduct, receivedProductIds, sizeBreakdown, rowCostValue,
   locationBreakdown, locationLabel, isShopLocation,
   findStep, findSort, defaultSortFor,
@@ -113,14 +113,17 @@ describe("row shaping", () => {
       index: buildAttentionIndex(TREE), productsById: PRODUCTS, view: VIEW_LOW, lowStepId: "20",
     }).find((r) => r.id === "shoe1");
 
-    expect(row.locations.map((l) => [l.loc, l.qty, l.shop])).toEqual([
+    // Rows carry the raw entry; the card shapes it, so only visible cards pay.
+    const locs = locationBreakdown(row.entry.byLocation);
+    expect(locs.map((l) => [l.loc, l.qty, l.shop])).toEqual([
       ["hub2", 10, false], ["marathon-pe", 2, true], ["trophy", 1, true],
     ]);
     // Clicking a location must answer "which sizes, how many" for THAT place.
-    expect(row.locations.find((l) => l.loc === "hub2").sizes).toEqual([{ size: "8", qty: 10 }]);
-    expect(row.locations.find((l) => l.loc === "trophy").sizes).toEqual([{ size: "9", qty: 1 }]);
-    // …and the combined row still totals them.
-    expect(row.sizes).toEqual([{ size: "8", qty: 12 }, { size: "9", qty: 1 }]);
+    expect(locs.find((l) => l.loc === "hub2").sizes).toEqual([{ size: "8", qty: 10 }]);
+    expect(locs.find((l) => l.loc === "trophy").sizes).toEqual([{ size: "9", qty: 1 }]);
+    // …and the combined entry still totals them.
+    expect(sizeBreakdown(row.entry.sizes)).toEqual([{ size: "8", qty: 12 }, { size: "9", qty: 1 }]);
+    expect(row.sizeCount).toBe(2);
   });
 
   it("drops empty holdings and labels locations", () => {
@@ -275,21 +278,15 @@ describe("sorting", () => {
   });
 });
 
-describe("summarise + brandOptions", () => {
+describe("summarise", () => {
   const index = buildAttentionIndex(TREE);
   const rows = selectAttentionRows({ index, productsById: PRODUCTS, view: VIEW_LOW, lowStepId: "20" });
 
   it("adds up styles, units and cash — and reports what it couldn't price", () => {
     const s = summarise(rows);
     expect(s.styles).toBe(3);
-    expect(s.units).toBe(17);              // 13 + 3 + 1
-    expect(s.value).toBe(10700);           // 13×800 + 3×100; cap1 unpriced
+    expect(s.units).toBe(17);      // 13 + 3 + 1
+    expect(s.value).toBe(10700);   // 13x800 + 3x100; cap1 unpriced
     expect(s.valueMissing).toBe(1);
-  });
-
-  it("offers only brands present in the result set, most common first", () => {
-    // Nike twice (Air Max + Snapback), Marathon once.
-    expect(brandOptions(rows).map((b) => [b.brand, b.count])).toEqual([["Nike", 2], ["Marathon", 1]]);
-    expect(brandOptions([])).toEqual([]);
   });
 });
