@@ -127,9 +127,22 @@ export default function MissingFootwear({ products = [] }) {
 
   const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter((s) => s && s !== "_");
 
+  // FREE stock for one size — Central's shelf count minus everything already
+  // promised to a hub. `s.avail` off the card is the RAW count, which is the
+  // right number to show as "at Central" but the wrong ceiling for an ask: the
+  // request plan subtracts reservations anyway, so a stepper capped at raw let an
+  // operator type units that were already spoken for and only discover the
+  // shortfall in the result message. Cap and label both use the free number.
+  // (Last open finding from #291.)
+  const freeOf = (card, s) => {
+    const owed = Number(reservedFor(card.pid, allRequests)[s.sizeKey]) || 0;
+    return Math.max(0, (Number(s.avail) || 0) - owed);
+  };
+
   const qtyOf = (card, s) => {
+    const free = freeOf(card, s);
     const v = edits[`${card.pid}|${s.size}`];
-    return Math.max(0, Math.min(v == null ? Math.min(2, s.avail) : v, s.avail));
+    return Math.max(0, Math.min(v == null ? Math.min(2, free) : v, free));
   };
 
   // REQUEST = the operator's own sizes and quantities raised into the hub's
@@ -371,7 +384,7 @@ export default function MissingFootwear({ products = [] }) {
                     <div style={CHIP_GRID}>
                       {solveLines.map((l) => (
                         <SizeFactChip key={l.size} size={l.size}
-                          value={l.qty < l.want ? `${l.qty} of ${l.want} · only ${l.avail} at Central` : `${l.qty}`}
+                          value={l.qty < l.want ? `${l.qty} of ${l.want} · only ${l.avail} free at Central` : `${l.qty}`}
                           tone={l.qty < l.want ? AMBER : GREEN} />
                       ))}
                     </div>
@@ -396,8 +409,10 @@ export default function MissingFootwear({ products = [] }) {
               <div style={{ marginTop: 10 }}>
                 <div style={CHIP_GRID}>
                   {card.sizes.map((s) => (
-                    <SizeStepperChip key={s.sizeKey} size={s.size} qty={qtyOf(card, s)} max={s.avail}
-                      hint={`${s.avail} at Central`}
+                    <SizeStepperChip key={s.sizeKey} size={s.size} qty={qtyOf(card, s)} max={freeOf(card, s)}
+                      hint={freeOf(card, s) < s.avail
+                        ? `${freeOf(card, s)} free · ${s.avail} at Central`
+                        : `${s.avail} at Central`}
                       onChange={(v) => setEdits((e) => ({ ...e, [`${card.pid}|${s.size}`]: v }))} />
                   ))}
                 </div>
