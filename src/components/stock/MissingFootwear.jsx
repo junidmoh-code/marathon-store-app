@@ -1,10 +1,25 @@
-// ─── MISSING SNEAKERS — network transfer workflow ─────────────────────────────
+// ─── MISSING SNEAKERS — request workflow ──────────────────────────────────────
 // The footwear sibling of NetworkTransfer.jsx, same idiom and same widgets:
 //
 //   photo · name · kind badge · units-at-Central badge
 //   → per-size stepper chips (capped at Central's live stock)
 //   → destination chips (Hub 1 / Hub 2)
-//   → Transfer — immediate one-step applyMovement, straight from Health.
+//   → Request — raises /refill_requests into that hub's Source lane.
+//
+// NOTHING ON THIS SCREEN MOVES STOCK (owner, 2026-07-31). Both buttons raise a
+// request and Central picks it through the normal Source queue. The old "Move"
+// button applied a transfer_out the instant it was pressed, which shifted
+// inventory with no picking step and no paper trail anyone was watching — it had
+// to be reversed by hand twice on the day it shipped (3 units of Air Jordan 4,
+// 10 of a Gucci platform). If a genuine immediate transfer is ever needed again
+// it belongs behind its own explicitly-labelled control, not on this list.
+//
+// The two buttons differ only in WHERE THE NUMBER COMES FROM:
+//   Solve   — the policy quantity for that hub (footwearSolvePlan).
+//   Request — whatever the operator typed into the steppers (footwearPickPlan).
+// Both share the same guard rails: free stock net of other hubs' reservations,
+// no duplicate line for a size already open at that hub, short asks capped
+// rather than refused.
 //
 // Deliberately a SIBLING rather than a `variant` prop on NetworkTransfer. That
 // component runs the live clothing workflow; threading a second product class
@@ -14,27 +29,25 @@
 // this list can never disagree — the one thing the clothing pair does get wrong.
 //
 // TWO KINDS, TWO ACTION SETS:
-//   NEVER INTRODUCED — no cell at either hub. Transfer AND Solve.
-//   SOLD OUT         — a hub cell exists but is empty. Transfer only where there
+//   NEVER INTRODUCED — no cell at either hub. Request AND Solve.
+//   SOLD OUT         — a hub cell exists but is empty. Request only where there
 //                      is nothing absent left to seed; Solve is offered ONLY for
 //                      the sizes genuinely missing a cell. Seeding is
 //                      seed-if-absent, so a blanket Solve here would write
 //                      nothing and still report success.
 //
-// Rows clear when real units arrive at a hub (the rule is unit-based), so
-// Transfer retires a card and a pure Solve does not — which is why Solve's label
-// says "start managing" rather than "solved".
+// Rows clear when real units ARRIVE at a hub (the rule is unit-based). Neither
+// button moves stock any more, so neither retires a card on its own — the card
+// clears once Central actually picks the request and the units land.
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, get, push, update } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { useStockCells } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
-import { applyMovement } from "./applyMovement";
-import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, AMBER, BLUE_L, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
-import { serverNowMs, serverNowIso } from "../../utils/serverTime";
-import { computeMissingFootwear, footwearSolvePlan, sizeKeyOf } from "./missingFootwearCore";
+import { serverNowIso } from "../../utils/serverTime";
+import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, sizeKeyOf } from "./missingFootwearCore";
 import { useRefillRequests } from "./useStock";
 
 const HUBS = ["hub1", "hub2"];
@@ -53,7 +66,7 @@ const destChip = (on) => ({
 });
 
 export default function MissingFootwear({ products = [] }) {
-  const allStock = useStockCells();                 // live — a transfer retires its card
+  const allStock = useStockCells();                 // live — a card clears when units land
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
@@ -77,7 +90,7 @@ export default function MissingFootwear({ products = [] }) {
     let alive = true;
     get(ref(database, "config/refillEngine/footwearRunByLocation"))
       .then((s) => { if (alive) setFootwearRun(s.val() || null); })
-      .catch(() => { /* leave null — Solve disabled, Transfer unaffected */ });
+      .catch(() => { /* leave null — Solve disabled, Request unaffected */ });
     return () => { alive = false; };
   }, []);
 
@@ -94,28 +107,64 @@ export default function MissingFootwear({ products = [] }) {
     return Math.max(0, Math.min(v == null ? Math.min(2, s.avail) : v, s.avail));
   };
 
-  const transfer = async (card) => {
+  // REQUEST = the operator's own sizes and quantities raised into the hub's
+  // refill lane. Same write shape and same queue as Solve; only the number
+  // differs. Stock does NOT move here — Central picks it from the queue.
+  const request = async (card) => {
     const dest = dests[card.pid] || HUBS[0];
     if (busyPid || !canAct || !dest) return;
-    const lines = card.sizes.map((s) => ({ s, qty: qtyOf(card, s) })).filter((l) => l.qty > 0);
-    if (!lines.length) return;
+    const picks = card.sizes.map((s) => ({ size: s.size, qty: qtyOf(card, s) })).filter((l) => l.qty > 0);
+    if (!picks.length) return;
     setBusyPid(card.pid);
-    const batch = `fw_${serverNowMs().toString(36)}`;
-    let moved = 0; const failed = [];
-    for (const { s, qty } of lines) {
-      let res;
-      try {
-        res = await applyMovement({
-          type: "transfer_out", productId: card.pid, size: s.size, qty,
-          from: "central", to: dest, actorRole,
-          reason: "network_rebalance",
-          movementId: `${batch}_${card.pid}_${encodeSizeKey(s.size)}`,
-          link: { transferId: batch },
-        });
-      } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
-      if (res.ok) moved += qty; else failed.push(`${s.size}: ${res.reason}`);
+    const now = serverNowIso();
+    try {
+      // Re-read live: between render and click another hub may have promised
+      // these units, or this size may already have been queued here. The plan is
+      // recomputed against that read rather than trusting what was on screen.
+      const liveRequests = Object.values((await get(ref(database, "refill_requests"))).val() || {});
+      const liveOpen = liveRequests
+        .filter((r) => r && r.status === "open" && r.requestingLocation === dest && r.productId === card.pid)
+        .map((r) => r.size);
+      const fresh = footwearPickPlan({
+        picks,
+        centralCells: allStock?.central?.[card.pid] || {},
+        openSizes: liveOpen,
+        reserved: reservedFor(card.pid, liveRequests),
+      });
+      if (!fresh.length) {
+        setDone((d) => ({ ...d, [card.pid]: { ok: false, dest, msg: `Nothing to raise at ${LOC_LABEL[dest]} — those sizes are already queued there, or Central has none free.` } }));
+      } else {
+        // ONE atomic multi-path write, same reasoning as Solve: a partial failure
+        // would queue some sizes with no way to tell which.
+        const updates = {};
+        for (const l of fresh) {
+          const id = push(ref(database, "refill_requests")).key;
+          updates[`refill_requests/${id}`] = {
+            productId: card.pid,
+            size: l.size,
+            qty: l.qty,
+            requestingLocation: dest,
+            status: "open",
+            createdAt: now,
+            createdFrom: { manual: true, source: "central", via: "missing_sneakers_pick" },
+          };
+        }
+        await update(ref(database), updates);
+        const short = fresh.filter((l) => l.qty < l.asked);
+        setDone((d) => ({
+          ...d,
+          [card.pid]: {
+            ok: true, dest,
+            msg: `Requested ${fresh.reduce((t, l) => t + l.qty, 0)} across ${fresh.length} size${fresh.length === 1 ? "" : "s"} `
+              + `(${fresh.map((l) => `${l.size}×${l.qty}`).join(" · ")}) from ${LOC_LABEL[dest]}'s refill list`
+              + (short.length ? ` — ${short.map((l) => `${l.size} short (asked ${l.asked}, ${l.avail} free at Central)`).join(", ")}` : "")
+              + ". Central picks it; stock has not moved.",
+          },
+        }));
+      }
+    } catch (e) {
+      setDone((d) => ({ ...d, [card.pid]: { ok: false, dest, msg: `Couldn't raise the request — nothing changed, retry. (${e?.message || "error"})` } }));
     }
-    setDone((d) => ({ ...d, [card.pid]: { moved, dest, failed } }));
     setBusyPid(null);
   };
 
@@ -219,7 +268,7 @@ export default function MissingFootwear({ products = [] }) {
 
   return (
     <>
-      {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to transfer — viewing only.</div>}
+      {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to raise requests — viewing only.</div>}
       {cards.map((card) => {
         const open = openPid === card.pid;
         const result = done[card.pid];
@@ -231,7 +280,7 @@ export default function MissingFootwear({ products = [] }) {
         const solveLines = planFor(card, sHub);
         const solvable = HUBS.some((h) => planFor(card, h).length > 0);
         const solveTitle = !footwearRun
-          ? "Footwear targeting isn't configured yet — use Move instead"
+          ? "Footwear targeting isn't configured yet — use Request instead"
           : !solvable ? "Nothing to raise at either hub — every size is already queued, or Central has none" : undefined;
         return (
           <ProductCard key={card.pid}
@@ -249,7 +298,7 @@ export default function MissingFootwear({ products = [] }) {
               card.missingFrom.length
                 ? `Not carried at ${card.missingFrom.map((h) => LOC_LABEL[h]).join(" + ")}`
                 : "Carried at both hubs, but both are empty",
-              card.duplicateOf ? "Another record shares this name — confirm it is a different shoe before transferring." : null,
+              card.duplicateOf ? "Another record shares this name — confirm it is a different shoe before requesting." : null,
             ].filter(Boolean).join(" · ")}
             right={
               <div style={{ display: "flex", gap: 6 }}>
@@ -261,15 +310,11 @@ export default function MissingFootwear({ products = [] }) {
                 <button onClick={() => { setOpenPid(open ? null : card.pid); setSolvePid(null); }}
                         disabled={!canAct}
                         style={{ background: "rgba(60,110,255,.1)", border: "1px solid rgba(60,110,255,.35)", color: BLUE_L, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: canAct ? "pointer" : "default", opacity: canAct ? 1 : 0.4, fontFamily: FONT }}>
-                  {open ? "Close" : "Move"}
+                  {open ? "Close" : "Request"}
                 </button>
               </div>
             }>
-            {result && (
-              <div style={{ fontSize: 12, color: result.failed.length ? AMBER : GREEN, marginTop: 6 }}>
-                Moved {result.moved} to {LOC_LABEL[result.dest]}{result.failed.length ? ` — failed: ${result.failed.join(", ")}` : ""}
-              </div>
-            )}
+            {result && <div style={{ fontSize: 12, color: result.ok ? GREEN : AMBER, marginTop: 6 }}>{result.msg}</div>}
             {sResult && <div style={{ fontSize: 12, color: sResult.ok ? GREEN : AMBER, marginTop: 6 }}>{sResult.msg}</div>}
 
             {sOpen && (
@@ -327,9 +372,9 @@ export default function MissingFootwear({ products = [] }) {
                     </button>
                   ))}
                 </div>
-                <button onClick={() => transfer(card)} disabled={!!busyPid || total === 0}
+                <button onClick={() => request(card)} disabled={!!busyPid || total === 0}
                         style={{ background: "rgba(60,110,255,.15)", border: "1px solid rgba(60,110,255,.5)", color: BLUE_L, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: total ? "pointer" : "default", opacity: total ? 1 : 0.4, fontFamily: FONT }}>
-                  {busyPid === card.pid ? "Moving…" : `Transfer ${total} to ${LOC_LABEL[dest]}`}
+                  {busyPid === card.pid ? "Raising…" : `Request ${total} for ${LOC_LABEL[dest]}`}
                 </button>
               </div>
             )}
