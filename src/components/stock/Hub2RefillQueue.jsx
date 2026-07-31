@@ -165,32 +165,42 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
     });
   }, [openRequests, byId]);
 
-  // Fulfilled history for Hub 2 — total delay (raised → fulfilled), most-recently
-  // fulfilled first, capped so the list can't render thousands. Derived from the
-  // same subscription; no extra read.
-  const HISTORY_CAP = 100;
-  const history = useMemo(() => {
-    return allRequests
-      .filter((r) => r.requestingLocation === DEST_LOC && r.status === "fulfilled" && r.createdAt && r.resolvedAt)
-      .map((r) => ({ ...r, raisedMs: parseMs(r.createdAt), resolvedMs: parseMs(r.resolvedAt) }))
-      .filter((r) => Number.isFinite(r.raisedMs) && Number.isFinite(r.resolvedMs) && r.resolvedMs >= r.raisedMs)
-      .sort((a, b) => b.resolvedMs - a.resolvedMs)
-      .slice(0, HISTORY_CAP);
-  }, [allRequests]);
-
   const isFw = (pid) => isFootwearProduct(byId.get(pid));
   const splitCards = useMemo(() => ({
     sneakers: cards.filter((c) => isFw(c.pid)),
     clothing: cards.filter((c) => !isFw(c.pid)),
   }), [cards, byId]);   // eslint-disable-line react-hooks/exhaustive-deps
-  // Default to the kind that has work; sneakers win a tie because that is the
-  // lane that was just introduced and is the one being watched.
-  const activeKind = kind || (splitCards.sneakers.length ? "sneakers" : splitCards.clothing.length ? "clothing" : "sneakers");
+
+  // Fulfilled history — total delay (raised → fulfilled), most-recently fulfilled
+  // first. Derived from the same subscription; no extra read.
+  //
+  // PARTITION BEFORE THE CAP. Capping a MIXED list at 100 and filtering after
+  // meant a lane could be starved to nothing by the other one: 100 sneaker
+  // fulfilments in a row and clothing history rendered empty, looking like there
+  // had never been any. Each lane now gets its own 100. (CodeRabbit #294 — Major.)
+  const HISTORY_CAP = 100;
+  const historyByKind = useMemo(() => {
+    const all = allRequests
+      .filter((r) => r.requestingLocation === DEST_LOC && r.status === "fulfilled" && r.createdAt && r.resolvedAt)
+      .map((r) => ({ ...r, raisedMs: parseMs(r.createdAt), resolvedMs: parseMs(r.resolvedAt) }))
+      .filter((r) => Number.isFinite(r.raisedMs) && Number.isFinite(r.resolvedMs) && r.resolvedMs >= r.raisedMs)
+      .sort((a, b) => b.resolvedMs - a.resolvedMs);
+    return {
+      sneakers: all.filter((r) => isFw(r.productId)).slice(0, HISTORY_CAP),
+      clothing: all.filter((r) => !isFw(r.productId)).slice(0, HISTORY_CAP),
+    };
+  }, [allRequests, byId]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Which lane opens by default depends on WHICH VIEW you are in: the open queue
+  // and the history can be non-empty for different kinds, and picking the lane
+  // from open cards alone landed History on an empty Sneakers tab while Clothing
+  // history sat there unread. (CodeRabbit #294 — Major.)
+  const laneCounts = view === "history"
+    ? { sneakers: historyByKind.sneakers.length, clothing: historyByKind.clothing.length }
+    : { sneakers: splitCards.sneakers.length, clothing: splitCards.clothing.length };
+  const activeKind = kind || (laneCounts.sneakers ? "sneakers" : laneCounts.clothing ? "clothing" : "sneakers");
   const shownCards = splitCards[activeKind] || [];
-  const shownHistory = useMemo(
-    () => history.filter((r) => (activeKind === "sneakers" ? isFw(r.productId) : !isFw(r.productId))),
-    [history, activeKind, byId],   // eslint-disable-line react-hooks/exhaustive-deps
-  );
+  const shownHistory = historyByKind[activeKind] || [];
 
   const availOf = (pid, size) => Math.max(Number(centralCells?.[pid]?.[String(size)]?.qty) || 0, 0);
   // A size with counted Central stock is capped by it; a size showing ZERO can
@@ -293,7 +303,7 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   // empty rather than looking like a loading list.
   const kindToggle = (
     <div style={{ ...PILLS, marginRight: 8 }}>
-      {[["sneakers", "Sneakers", splitCards.sneakers.length], ["clothing", "Clothing", splitCards.clothing.length]].map(([k, label, n]) => (
+      {[["sneakers", "Sneakers", laneCounts.sneakers], ["clothing", "Clothing", laneCounts.clothing]].map(([k, label, n]) => (
         <button key={k} type="button" onClick={() => setKind(k)} style={pill(activeKind === k)}>
           {label} · {n}
         </button>
