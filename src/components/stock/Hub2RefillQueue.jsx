@@ -198,7 +198,15 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   const laneCounts = view === "history"
     ? { sneakers: historyByKind.sneakers.length, clothing: historyByKind.clothing.length }
     : { sneakers: splitCards.sneakers.length, clothing: splitCards.clothing.length };
-  const activeKind = kind || (laneCounts.sneakers ? "sneakers" : laneCounts.clothing ? "clothing" : "sneakers");
+  // CLOTHING FIRST when there is clothing work. This queue has always opened on
+  // clothing — it is Central's daily job and the engine fills it automatically.
+  // Sneakers are the new lane and must be opt-in via the pill, never something
+  // that displaces the existing workflow. Measured on live data the day this
+  // shipped: hub2 held 109 open clothing requests against 98 sneaker ones, so a
+  // sneakers-first default would have hidden all 109 behind a pill for the staff
+  // who work them. Sneakers still lead when there is no clothing outstanding, so
+  // an empty clothing lane never shows an empty screen.
+  const activeKind = kind || (laneCounts.clothing ? "clothing" : laneCounts.sneakers ? "sneakers" : "clothing");
   const shownCards = splitCards[activeKind] || [];
   const shownHistory = historyByKind[activeKind] || [];
 
