@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildAttentionIndex, selectAttentionRows, summarise, brandOptions,
   soldUnitsByProduct, receivedProductIds, sizeBreakdown, rowCostValue,
+  locationBreakdown, locationLabel, isShopLocation,
   findStep, findSort, defaultSortFor,
   VIEW_LOW, VIEW_OVER, VIEW_DEAD, LOW_STEPS, OVER_STEPS, DEAD_MIN_STEPS,
 } from "./attentionCore";
@@ -104,6 +105,31 @@ describe("row shaping", () => {
     expect(sizeBreakdown(new Map([["M", 2], ["L", 7], ["_", 1], ["S", 0]]))).toEqual([
       { size: "L", qty: 7 }, { size: "M", qty: 2 }, { size: "One size", qty: 1 },
     ]);
+  });
+
+  it("lists where the stock sits, biggest holding first, with each location's own sizes", () => {
+    // shoe1: 2 at PE (size 8), 1 at Trophy (size 9), 10 in hub2 (size 8).
+    const row = selectAttentionRows({
+      index: buildAttentionIndex(TREE), productsById: PRODUCTS, view: VIEW_LOW, lowStepId: "20",
+    }).find((r) => r.id === "shoe1");
+
+    expect(row.locations.map((l) => [l.loc, l.qty, l.shop])).toEqual([
+      ["hub2", 10, false], ["marathon-pe", 2, true], ["trophy", 1, true],
+    ]);
+    // Clicking a location must answer "which sizes, how many" for THAT place.
+    expect(row.locations.find((l) => l.loc === "hub2").sizes).toEqual([{ size: "8", qty: 10 }]);
+    expect(row.locations.find((l) => l.loc === "trophy").sizes).toEqual([{ size: "9", qty: 1 }]);
+    // …and the combined row still totals them.
+    expect(row.sizes).toEqual([{ size: "8", qty: 12 }, { size: "9", qty: 1 }]);
+  });
+
+  it("drops empty holdings and labels locations", () => {
+    expect(locationBreakdown(new Map([["hub2", { qty: 0, sizes: new Map() }]]))).toEqual([]);
+    expect(locationBreakdown(null)).toEqual([]);
+    expect(locationLabel("marathon-pe")).toBe("Marathon PE");
+    expect(locationLabel("weird")).toBe("weird");
+    expect(isShopLocation("trophy")).toBe(true);
+    expect(isShopLocation("hub2")).toBe(false);
   });
 
   it("values stock at COST, and returns null (not zero) when there's no cost price", () => {

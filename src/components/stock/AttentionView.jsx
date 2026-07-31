@@ -371,8 +371,11 @@ function Empty({ children, tone = GRAY }) {
 // reads as one even wall of images regardless of how much text sits underneath.
 function AttentionCard({ row, view }) {
   const [failed, setFailed] = useState(false);
+  // Which location's sizes the card is showing; null = the combined total.
+  const [picked, setPicked] = useState(null);
   const showPhoto = row.photo && !failed;
   const tone = view === VIEW_LOW ? RED : view === VIEW_OVER ? AMBER : BLUE_L;
+  const sizes = picked ? (row.locations.find((l) => l.loc === picked)?.sizes ?? []) : row.sizes;
 
   return (
     <div style={{ ...GLASS, overflow: "hidden" }}>
@@ -418,18 +421,66 @@ function AttentionCard({ row, view }) {
           </span>
         </div>
 
-        {row.sizes.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 9 }}>
-            {row.sizes.slice(0, 8).map((s) => (
-              <span key={s.size} style={{ fontSize: 10, border: "1px solid rgba(74,127,255,.24)", background: "rgba(74,127,255,.07)", borderRadius: 6, padding: "3px 6px", whiteSpace: "nowrap" }}>
-                <b style={{ color: "#fff" }}>{s.size}</b>
-                <span style={{ color: GRAY, marginLeft: 3 }}>{s.qty}</span>
-              </span>
-            ))}
-            {row.sizes.length > 8 && <span style={{ fontSize: 10, color: GRAY, alignSelf: "center" }}>+{row.sizes.length - 8}</span>}
-          </div>
+        {/* WHERE. The list is never split by building, but each card says where
+            its stock sits — and picking a location swaps the size row below to
+            that location's own split, which is the "what sizes, how many, and
+            in which shop" question in one tap. */}
+        {row.locations.length > 0 && (
+          <>
+            <div style={{ fontSize: 9.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", marginTop: 10, marginBottom: 5 }}>Where</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              <LocChip label="All" qty={row.total} on={picked === null} onClick={() => setPicked(null)} />
+              {row.locations.map((l) => (
+                <LocChip
+                  key={l.loc}
+                  label={l.label}
+                  qty={l.qty}
+                  shop={l.shop}
+                  on={picked === l.loc}
+                  onClick={() => setPicked(picked === l.loc ? null : l.loc)}
+                />
+              ))}
+            </div>
+          </>
+        )}
+
+        {sizes.length > 0 && (
+          <>
+            <div style={{ fontSize: 9.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", marginTop: 10, marginBottom: 5 }}>
+              {picked ? `Sizes at ${row.locations.find((l) => l.loc === picked)?.label}` : "Sizes"}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {sizes.slice(0, 10).map((s) => (
+                <span key={s.size} style={{ fontSize: 10, border: "1px solid rgba(74,127,255,.24)", background: "rgba(74,127,255,.07)", borderRadius: 6, padding: "3px 6px", whiteSpace: "nowrap" }}>
+                  <b style={{ color: "#fff" }}>{s.size}</b>
+                  <span style={{ color: GRAY, marginLeft: 3 }}>{s.qty}</span>
+                </span>
+              ))}
+              {sizes.length > 10 && <span style={{ fontSize: 10, color: GRAY, alignSelf: "center" }}>+{sizes.length - 10}</span>}
+            </div>
+          </>
         )}
       </div>
     </div>
+  );
+}
+
+// A location on a product card: name + how many sit there. Shops are tinted
+// green so "on a shop floor" reads differently from "in a warehouse" at a glance.
+function LocChip({ label, qty, shop, on, onClick }) {
+  const accent = shop ? GREEN : BLUE_L;
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={on}
+      style={{
+        fontFamily: FONT, cursor: "pointer", fontSize: 10, borderRadius: 6, padding: "3px 7px", whiteSpace: "nowrap",
+        background: on ? `${accent}26` : "rgba(255,255,255,.04)",
+        border: on ? `1px solid ${accent}` : "1px solid rgba(255,255,255,.12)",
+        color: on ? "#fff" : "#cfd8ee",
+      }}
+    >
+      {label} <b style={{ color: on ? "#fff" : accent }}>{qty}</b>
+    </button>
   );
 }

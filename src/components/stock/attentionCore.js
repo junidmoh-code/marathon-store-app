@@ -16,11 +16,22 @@
 import { topCategory } from "../../utils/productCategory";
 import { decodeSizeKey } from "../../utils/sizeKey";
 
-// LOCATION IS DELIBERATELY NOT MODELLED (owner call). A style is one line with
-// one quantity: every location under /stock is summed together and nothing in
-// the UI asks or answers "where". Buying decisions are made on how many we own
-// in total, not on which building they sit in — that's the warehouse's job, and
-// Inventory Health already covers it.
+// LOCATION IS A PROPERTY OF THE ROW, NOT A FILTER (owner call). The LIST is
+// never split by building — a style is one line whose quantity is the total we
+// own anywhere. But each row still carries its per-location holdings so the card
+// can show WHERE that stock sits, and break a single location down into sizes
+// on demand.
+const SHOP_SET = new Set(["marathon-pe", "marathon-pine", "trophy"]);
+export const isShopLocation = (loc) => SHOP_SET.has(loc);
+
+export const LOCATION_LABELS = Object.freeze({
+  "marathon-pe": "Marathon PE", "marathon-pine": "Marathon Pine", trophy: "Trophy",
+  hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", hubC: "Hub C",
+  central: "Central", base: "Base", studio: "Studio", warehouse1: "Warehouse 1",
+  in_transit: "In Transit",
+});
+export const locationLabel = (loc) => LOCATION_LABELS[loc] || loc;
+
 const NO_SIZE_KEY = "_";
 
 // ── Views ───────────────────────────────────────────────────────────────────
@@ -79,12 +90,13 @@ export const findStep = (steps, id, fallbackId) =>
 // zero. Size keys arrive in two spellings (the warehouse writes "5.5", the POS
 // writes "5_5"); both are normalised to the DECODED form so one size is one row.
 //
-// Returns Map(pid → { total, sizes: Map(size→qty) }).
+// Returns Map(pid → { total, sizes: Map(size→qty),
+//                     byLocation: Map(loc → { qty, sizes: Map(size→qty) }) }).
 export function buildAttentionIndex(stockTree) {
   const index = new Map();
   if (!stockTree || typeof stockTree !== "object") return index;
 
-  for (const productsAtLoc of Object.values(stockTree)) {
+  for (const [loc, productsAtLoc] of Object.entries(stockTree)) {
     if (!productsAtLoc || typeof productsAtLoc !== "object") continue;
 
     for (const [pid, sizes] of Object.entries(productsAtLoc)) {
@@ -95,10 +107,15 @@ export function buildAttentionIndex(stockTree) {
         if (typeof qty !== "number" || !Number.isFinite(qty)) continue;
 
         let entry = index.get(pid);
-        if (!entry) { entry = { total: 0, sizes: new Map() }; index.set(pid, entry); }
+        if (!entry) { entry = { total: 0, sizes: new Map(), byLocation: new Map() }; index.set(pid, entry); }
         const size = rawKey === NO_SIZE_KEY ? NO_SIZE_KEY : decodeSizeKey(rawKey);
         entry.total += qty;
         entry.sizes.set(size, (entry.sizes.get(size) || 0) + qty);
+
+        let at = entry.byLocation.get(loc);
+        if (!at) { at = { qty: 0, sizes: new Map() }; entry.byLocation.set(loc, at); }
+        at.qty += qty;
+        at.sizes.set(size, (at.sizes.get(size) || 0) + qty);
       }
     }
   }
@@ -151,6 +168,20 @@ export function sizeBreakdown(sizes) {
     .sort((a, b) => b.qty - a.qty || String(a.size).localeCompare(String(b.size), undefined, { numeric: true }));
 }
 
+// Where this style physically sits, biggest holding first. Each entry carries
+// its own size split so the card can expand one location into sizes on click.
+// Empty/negative holdings are dropped — a location with nothing in it is not a
+// place the stock "is".
+export function locationBreakdown(byLocation) {
+  return Array.from(byLocation || [])
+    .filter(([, at]) => at.qty > 0)
+    .map(([loc, at]) => ({
+      loc, label: locationLabel(loc), qty: at.qty, shop: isShopLocation(loc),
+      sizes: sizeBreakdown(at.sizes),
+    }))
+    .sort((a, b) => b.qty - a.qty || a.label.localeCompare(b.label));
+}
+
 const num = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
 
 // Cash tied up in this row, at COST. Retail would flatter the number; the
@@ -173,6 +204,7 @@ function toRow(pid, product, entry) {
     photo: product?.photoUrl || product?.photo || null,
     total: entry.total,
     sizes: sizeBreakdown(entry.sizes),
+    locations: locationBreakdown(entry.byLocation),
     costValue: rowCostValue(product, entry.total),
     retailPrice: num(product?.retailPrice),
   };
