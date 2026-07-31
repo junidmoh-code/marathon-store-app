@@ -195,3 +195,38 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
     .sort((a, b) => footwearSizeRank(a.size) - footwearSizeRank(b.size))
     .map(({ size, qty, want, avail }) => ({ size, qty, want, avail }));
 }
+
+// ─── PICK PLAN — the operator typed the sizes and quantities themselves ───────
+// Owner decision 2026-07-31: the "Move" button must RAISE A REQUEST like Solve
+// does, not transfer stock. Moving was the wrong default — it shifted inventory
+// silently and had to be reversed twice by hand on the day it shipped.
+//
+// Same guard rails as footwearSolvePlan, different source of the number: Solve
+// asks for the POLICY quantity, this asks for what a human chose. Everything
+// below is deliberately identical to Solve so the two paths cannot disagree
+// about what Central can supply:
+//   • FREE stock, not shelf stock — `reserved` (already promised to ANY hub) is
+//     subtracted first, so two hubs cannot both claim the same Central units.
+//   • a size already open AT THIS HUB is dropped, never duplicated, because the
+//     refill queue groups by product and would show it twice.
+//   • a short ask is CAPPED, not refused. The operator gets what exists and the
+//     shortfall is reported; refusing the whole line would make them re-enter it.
+//
+// `asked` is carried through so the UI can say "2 of 3 — Central has 2" rather
+// than silently raising less than the operator typed.
+export function footwearPickPlan({ picks = [], centralCells = {}, openSizes = [], reserved = {} }) {
+  const alreadyOpen = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
+  return (picks || [])
+    .map((p) => ({ size: String(p?.size ?? ""), asked: Math.floor(Number(p?.qty) || 0) }))
+    .filter((p) => p.size && p.size !== "_" && p.asked > 0)
+    .map((p) => {
+      const key = sizeKeyOf(p.size);
+      const onHand = Math.max(Number(centralCells?.[key]?.qty) || 0, 0);
+      const owed = Math.max(Number(reserved?.[key]) || 0, 0);
+      const avail = Math.max(onHand - owed, 0);
+      return { ...p, key, avail, qty: Math.min(p.asked, avail) };
+    })
+    .filter((l) => l.qty > 0 && !alreadyOpen.has(l.key))
+    .sort((a, b) => footwearSizeRank(a.size) - footwearSizeRank(b.size))
+    .map(({ size, qty, asked, avail }) => ({ size, qty, asked, avail }));
+}

@@ -3,7 +3,7 @@
 // that make it differ from the clothing rule on purpose: it is UNIT-based rather
 // than carriage-based, and the shops are deliberately not part of the test.
 import { describe, it, expect } from "vitest";
-import { computeMissingFootwear, seedableSizes, footwearSizeRank, sizeKeyOf, footwearSolvePlan } from "./missingFootwearCore.js";
+import { computeMissingFootwear, seedableSizes, footwearSizeRank, sizeKeyOf, footwearSolvePlan, footwearPickPlan } from "./missingFootwearCore.js";
 
 const SHOE = { id: "sh1", name: "Nike Air Max 1", category: "Footwear", sizes: ["5.5", "6", "7"] };
 const SHOE2 = { id: "sh2", name: "Nike Air Force 1", category: "Footwear", sizes: ["6", "7"] };
@@ -286,5 +286,78 @@ describe("one shared size-key encoder — the same one the stock cells use", () 
       reserved: { [sizeKeyOf(" 8")]: 2 },
     });
     expect(plan).toEqual([{ size: " 8", qty: 1, want: 2, avail: 1 }]);
+  });
+});
+
+// ─── PICK PLAN — the operator's own sizes/quantities ─────────────────────────
+// "Move" now raises a request instead of transferring stock (owner, 2026-07-31).
+// These pin the guard rails it MUST share with Solve, because the two write into
+// the same queue against the same Central shelf.
+describe("footwearPickPlan", () => {
+  it("raises exactly what was typed when Central can cover it", () => {
+    expect(footwearPickPlan({
+      picks: [{ size: "7", qty: 2 }],
+      centralCells: { 7: { qty: 5 } },
+    })).toEqual([{ size: "7", qty: 2, asked: 2, avail: 5 }]);
+  });
+
+  it("CAPS a short ask instead of refusing it, and reports what was asked", () => {
+    // The operator asked for 4; Central has 1. They get 1 and can see why,
+    // rather than the line vanishing and being re-entered.
+    expect(footwearPickPlan({
+      picks: [{ size: "7", qty: 4 }],
+      centralCells: { 7: { qty: 1 } },
+    })).toEqual([{ size: "7", qty: 1, asked: 4, avail: 1 }]);
+  });
+
+  it("subtracts units already promised to ANOTHER hub — free stock, not shelf stock", () => {
+    // Central shows 3, but 2 are owed to the other hub. Without this the same
+    // units are committed twice and whoever picks second comes up short.
+    expect(footwearPickPlan({
+      picks: [{ size: "7", qty: 3 }],
+      centralCells: { 7: { qty: 3 } },
+      reserved: { 7: 2 },
+    })).toEqual([{ size: "7", qty: 1, asked: 3, avail: 1 }]);
+  });
+
+  it("drops a size already open AT THIS HUB rather than duplicating it", () => {
+    expect(footwearPickPlan({
+      picks: [{ size: "7", qty: 2 }],
+      centralCells: { 7: { qty: 9 } },
+      openSizes: ["7"],
+    })).toEqual([]);
+  });
+
+  it("drops a size Central cannot supply at all", () => {
+    expect(footwearPickPlan({
+      picks: [{ size: "7", qty: 2 }, { size: "8", qty: 1 }],
+      centralCells: { 7: { qty: 0 }, 8: { qty: 4 } },
+    })).toEqual([{ size: "8", qty: 1, asked: 1, avail: 4 }]);
+  });
+
+  it("ignores zero, negative and non-numeric quantities", () => {
+    expect(footwearPickPlan({
+      picks: [{ size: "6", qty: 0 }, { size: "7", qty: -3 }, { size: "8", qty: "x" }],
+      centralCells: { 6: { qty: 5 }, 7: { qty: 5 }, 8: { qty: 5 } },
+    })).toEqual([]);
+  });
+
+  it("half sizes resolve against the cell they are stored in, not a raw '5.5' key", () => {
+    // 5.5 is 538 live cells. A raw lookup misses every one of them.
+    expect(footwearPickPlan({
+      picks: [{ size: "5.5", qty: 2 }],
+      centralCells: { "5_5": { qty: 2 } },
+    })).toEqual([{ size: "5.5", qty: 2, asked: 2, avail: 2 }]);
+  });
+
+  it("returns lines in numeric size order, not the order they were typed", () => {
+    expect(footwearPickPlan({
+      picks: [{ size: "10", qty: 1 }, { size: "5.5", qty: 1 }, { size: "7", qty: 1 }],
+      centralCells: { 10: { qty: 2 }, "5_5": { qty: 2 }, 7: { qty: 2 } },
+    }).map((l) => l.size)).toEqual(["5.5", "7", "10"]);
+  });
+
+  it("skips the one-size sentinel", () => {
+    expect(footwearPickPlan({ picks: [{ size: "_", qty: 2 }], centralCells: { _: { qty: 5 } } })).toEqual([]);
   });
 });
