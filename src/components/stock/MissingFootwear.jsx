@@ -25,18 +25,23 @@
 // Transfer retires a card and a pure Solve does not — which is why Solve's label
 // says "start managing" rather than "solved".
 import React, { useEffect, useMemo, useState } from "react";
-import { ref, get, update } from "firebase/database";
+import { ref, get, push, update } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { useStockCells } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
-import { encodeSizeKey, stockCellPath } from "../../utils/sizeKey";
+import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, AMBER, BLUE_L, FONT } from "./ui";
-import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
+import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
-import { computeMissingFootwear, seedableSizes, footwearSizeRank } from "./missingFootwearCore";
+import { computeMissingFootwear, footwearSolvePlan, sizeKeyOf } from "./missingFootwearCore";
+import { useRefillRequests } from "./useStock";
 
 const HUBS = ["hub1", "hub2"];
+// Solve raises work into a hub's refill queue. Both hubs have one: the queue
+// component is now destination-parameterised (it was hub2-only because CLOTHING
+// is not kept at Hub 1, not because Hub 1 lacks refills — sneakers make Hub 1 the
+// bigger buffer at 3,967 units vs Hub 2's 3,288).
 const LOC_LABEL = { hub1: "Hub 1", hub2: "Hub 2", central: "Central" };
 const KIND_LABEL = { never_introduced: "NEVER INTRODUCED", sold_out: "SOLD OUT AT HUB" };
 
@@ -59,14 +64,15 @@ export default function MissingFootwear({ products = [] }) {
   const [busyPid, setBusyPid] = useState(null);
   const [done, setDone] = useState({});
   const [solvePid, setSolvePid] = useState(null);
-  const [solveDest, setSolveDest] = useState({});
   const [solveBusy, setSolveBusy] = useState(null);
+  const [solveHub, setSolveHub] = useState({});   // pid → chosen hub for Solve
   const [solved, setSolved] = useState({});
 
   // The footwear standard, read ONCE. Absent until footwear targeting is
   // configured — Solve stays disabled until then rather than seeding cells the
   // engine would never refill.
   const [footwearRun, setFootwearRun] = useState(null);
+  const allRequests = useRefillRequests();
   useEffect(() => {
     let alive = true;
     get(ref(database, "config/refillEngine/footwearRunByLocation"))
@@ -82,8 +88,6 @@ export default function MissingFootwear({ products = [] }) {
   );
 
   const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter((s) => s && s !== "_");
-  const seedable = (card, hub) =>
-    seedableSizes({ allStock, pid: card.pid, catalogSizes: catalogSizes(card.pid), hub, footwearRun });
 
   const qtyOf = (card, s) => {
     const v = edits[`${card.pid}|${s.size}`];
@@ -115,37 +119,96 @@ export default function MissingFootwear({ products = [] }) {
     setBusyPid(null);
   };
 
+  // Sizes already queued for this product at Hub 2 — the queue groups open
+  // requests per product, so a duplicate would show one size twice on a card and
+  // could be picked twice.
+  const hubFor = (card) => solveHub[card.pid] || HUBS[0];
+  // Units already promised to ANY hub for this product. Central's shelf count is
+  // not free stock: two hubs solving the same shoe would otherwise each claim it.
+  const reservedFor = (pid, requests) => (requests || [])
+    .filter((r) => r && r.status === "open" && r.productId === pid && HUBS.includes(r.requestingLocation))
+    .reduce((acc, r) => {
+      // sizeKeyOf, NOT encodeSizeKey: the plan keys `reserved` with sizeKeyOf,
+      // which trims before encoding. encodeSizeKey does not, so a size stored as
+      // " 8" would be written here as "_8" and looked up as "8" — the reservation
+      // would silently not be found and the units double-promised. One encoder on
+      // both sides is the only way these can't drift. (CodeRabbit #291.)
+      const k = sizeKeyOf(r.size);
+      acc[k] = (acc[k] || 0) + (Number(r.qty) || 0);
+      return acc;
+    }, {});
+  const openSizesFor = (pid, hub) => (allRequests || [])
+    .filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === pid)
+    .map((r) => r.size);
+
+  const planFor = (card, hub = hubFor(card)) => footwearSolvePlan({
+    catalogSizes: catalogSizes(card.pid),
+    policy: footwearRun?.[hub] || {},
+    centralCells: allStock?.central?.[card.pid] || {},
+    openSizes: openSizesFor(card.pid, hub),
+    reserved: reservedFor(card.pid, allRequests),
+  });
+
+  // SOLVE = raise the day's work, not a silent ledger move. One /refill_requests
+  // row per size, in the shape the engine writes, so the lines land in the
+  // existing Source -> Hub 2 queue and close through its normal fulfil path.
+  // Stock does NOT move here — Central staff pick it size by size from that queue.
   const solve = async (card) => {
-    const hub = solveDest[card.pid] || HUBS[0];
-    const sizes = seedable(card, hub);
-    if (solveBusy || !canAct || !sizes.length) return;   // guarded by the disabled button
+    const hub = hubFor(card);
+    const lines = planFor(card, hub);
+    if (solveBusy || !canAct || !lines.length) return;   // guarded by the disabled button
     setSolveBusy(card.pid);
-    const uid = auth.currentUser?.uid || null;
     const now = serverNowIso();
     try {
-      const existing = (await get(ref(database, `stock/${hub}/${card.pid}`))).val() || {};
-      const updates = {};
-      for (const sz of sizes) {
-        // Re-checked against a FRESH read: never overwrite a cell that appeared
-        // between render and click (the SEED rule rejects it too).
-        if (existing[encodeSizeKey(sz)] === undefined) {
-          updates[stockCellPath(hub, card.pid, sz)] = { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: now, updatedBy: uid };
-        }
-      }
-      if (!Object.keys(updates).length) {
-        setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: "Already carried — nothing to seed." } }));
+      // Re-read live so a size queued by someone else between render and click is
+      // not raised twice; the plan is recomputed against it rather than trusted.
+      const liveRequests = Object.values((await get(ref(database, "refill_requests"))).val() || {});
+      const liveOpen = liveRequests
+        .filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === card.pid)
+        .map((r) => r.size);
+      const fresh = footwearSolvePlan({
+        catalogSizes: catalogSizes(card.pid),
+        policy: footwearRun?.[hub] || {},
+        centralCells: allStock?.central?.[card.pid] || {},
+        openSizes: liveOpen,
+        // Recomputed from the SAME fresh read, so a sibling hub's request raised
+        // between render and click is subtracted too. Two people clicking in the
+        // same instant can still overlap — closing that needs a server-side
+        // transaction, which this deliberately does not attempt.
+        reserved: reservedFor(card.pid, liveRequests),
+      });
+      if (!fresh.length) {
+        setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: `Already queued at ${LOC_LABEL[hub]} — nothing new to raise.` } }));
       } else {
-        // All-or-nothing, so a failure leaves NOTHING seeded and the row is clean.
+        // ONE atomic multi-path write: a partial failure would leave some sizes
+        // queued and no way to tell which, so all lines land together or none do.
+        const updates = {};
+        for (const l of fresh) {
+          const id = push(ref(database, "refill_requests")).key;
+          updates[`refill_requests/${id}`] = {
+            productId: card.pid,
+            size: l.size,
+            qty: l.qty,
+            requestingLocation: hub,
+            status: "open",
+            createdAt: now,
+            createdFrom: { manual: true, source: "central", via: "missing_sneakers" },
+          };
+        }
         await update(ref(database), updates);
-        const n = Object.keys(updates).length;
+        const short = fresh.filter((l) => l.qty < l.want);
         setSolved((d) => ({
           ...d,
-          [card.pid]: { ok: true, msg: `${LOC_LABEL[hub]} now carries ${n} size${n === 1 ? "" : "s"} — the engine will refill on its next scan. The row clears once stock arrives.` },
+          [card.pid]: {
+            ok: true,
+            msg: `Raised ${fresh.length} size${fresh.length === 1 ? "" : "s"} (${fresh.map((l) => `${l.size}\u00d7${l.qty}`).join(" · ")}) into ${LOC_LABEL[hub]}'s refill list`
+              + (short.length ? ` — ${short.map((l) => `${l.size} short (${l.avail} at Central, wanted ${l.want})`).join(", ")}` : "")
+              + ". Central picks it as part of today's work.",
+          },
         }));
       }
     } catch (e) {
-      setSolvePid((cur) => (cur === card.pid ? null : cur));
-      setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: `Couldn't seed — nothing changed, retry. (${e?.message || "error"})` } }));
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: `Couldn't raise the request — nothing changed, retry. (${e?.message || "error"})` } }));
     }
     setSolveBusy(null);
   };
@@ -164,12 +227,12 @@ export default function MissingFootwear({ products = [] }) {
         const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
         const sOpen = solvePid === card.pid;
         const sResult = solved[card.pid];
-        const sHub = solveDest[card.pid] || HUBS[0];
-        const sizesToSeed = seedable(card, sHub);
-        const solvable = HUBS.some((h) => seedable(card, h).length > 0);
+        const sHub = hubFor(card);
+        const solveLines = planFor(card, sHub);
+        const solvable = HUBS.some((h) => planFor(card, h).length > 0);
         const solveTitle = !footwearRun
           ? "Footwear targeting isn't configured yet — use Move instead"
-          : !solvable ? "Every size with a standard is already carried — use Move instead" : undefined;
+          : !solvable ? "Nothing to raise at either hub — every size is already queued, or Central has none" : undefined;
         return (
           <ProductCard key={card.pid}
             photo={card.photo} name={card.name}
@@ -211,22 +274,39 @@ export default function MissingFootwear({ products = [] }) {
 
             {sOpen && (
               <div style={{ marginTop: 10 }}>
-                <div style={{ fontSize: 12, color: GRAY, marginBottom: 6 }}>Start managing at:</div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
                   {HUBS.map((h) => (
-                    <button key={h} onClick={() => setSolveDest((d) => ({ ...d, [card.pid]: h }))} style={destChip(sHub === h)}>
-                      {LOC_LABEL[h]}{seedable(card, h).length ? "" : " · nothing to seed"}
+                    <button key={h} onClick={() => setSolveHub((d) => ({ ...d, [card.pid]: h }))} style={destChip(sHub === h)}>
+                      {LOC_LABEL[h]}{planFor(card, h).length ? "" : " · nothing to raise"}
                     </button>
                   ))}
                 </div>
                 <div style={{ fontSize: 12, color: GRAY, marginBottom: 8 }}>
-                  {sizesToSeed.length
-                    ? <>Seeds <b style={{ color: "#fff" }}>{sizesToSeed.length} size{sizesToSeed.length === 1 ? "" : "s"}</b> ({sizesToSeed.join(" · ")}) at <b>{LOC_LABEL[sHub]}</b> at qty 0, so the engine starts replenishing them.</>
-                    : <>Nothing to seed at {LOC_LABEL[sHub]} — every size with a standard already has a cell.</>}
+                  Raises this into <b style={{ color: "#fff" }}>Source → {LOC_LABEL[sHub]} Refill</b> as today's work.
+                  Central picks it size by size; stock does not move yet.
                 </div>
-                <button onClick={() => solve(card)} disabled={!!solveBusy || !sizesToSeed.length}
-                        style={{ background: "rgba(74,222,128,.14)", border: "1px solid rgba(74,222,128,.45)", color: GREEN, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: sizesToSeed.length ? "pointer" : "default", opacity: sizesToSeed.length ? 1 : 0.4, fontFamily: FONT }}>
-                  {solveBusy === card.pid ? "Seeding…" : "Confirm"}
+                {solveLines.length ? (
+                  <>
+                    <div style={CHIP_GRID}>
+                      {solveLines.map((l) => (
+                        <SizeFactChip key={l.size} size={l.size}
+                          value={l.qty < l.want ? `${l.qty} of ${l.want} · only ${l.avail} at Central` : `${l.qty}`}
+                          tone={l.qty < l.want ? AMBER : GREEN} />
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 12, color: GRAY, margin: "8px 0" }}>
+                      {solveLines.reduce((t, l) => t + l.qty, 0)} pieces across {solveLines.length} size{solveLines.length === 1 ? "" : "s"}
+                      {solveLines.some((l) => l.qty < l.want) ? " — short sizes are capped by Central stock, not policy." : "."}
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: GRAY, marginBottom: 8 }}>
+                    Nothing to raise at {LOC_LABEL[sHub]} — every size is already queued there, or Central has none.
+                  </div>
+                )}
+                <button onClick={() => solve(card)} disabled={!!solveBusy || !solveLines.length}
+                        style={{ background: "rgba(74,222,128,.14)", border: "1px solid rgba(74,222,128,.45)", color: GREEN, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: solveLines.length ? "pointer" : "default", opacity: solveLines.length ? 1 : 0.4, fontFamily: FONT }}>
+                  {solveBusy === card.pid ? "Raising…" : "Confirm"}
                 </button>
               </div>
             )}

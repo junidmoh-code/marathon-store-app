@@ -12590,8 +12590,11 @@ const SOURCE_TAB_ICON = {
   history:  <><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></>,
   onhold:   <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
   clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
+  // Hub 1 lane — a shoe, since this lane exists for sneakers. (CodeRabbit #291:
+  // a missing entry renders an empty <svg> rather than falling back.)
+  hub1refill: <><path d="M2 17h20v2a1 1 0 01-1 1H3a1 1 0 01-1-1v-2z"/><path d="M2 17l1.5-5A2 2 0 015.4 10.6L9 10l3 3h6a4 4 0 014 4"/></>,
 };
-const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"]];
+const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"],["hub1refill","Hub 1 Refill"]];
 
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [tab, setTab] = usePersistedTab("source", "today");
@@ -12894,7 +12897,10 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // Shared between the mobile column and the desktop rail/pane.
   const hubSelector = (
     <>
-      {tab !== "clothing" && tab !== "onhold" && (
+      {/* Hidden on the two refill tabs as well: each is already scoped to ONE
+          hub, so a Hub 1 / Hub 2 pill above it does nothing and reads as though
+          the queue below could be switched. (CodeRabbit, PR #291 — Minor.) */}
+      {tab !== "clothing" && tab !== "onhold" && tab !== "hub1refill" && (
       <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
         {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
           const active = hub === val;
@@ -12958,7 +12964,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         {/* "Clothing Sold" (per-store manual worklist) replaced by the Hub 2
             auto-refill queue — the engine detects sold→below-target itself and
             Central fulfils from this single tab (owner decision 2026-07-12). */}
-        {tab==="clothing" && <Hub2RefillQueue products={products} />}
+        {tab==="clothing" && <Hub2RefillQueue products={products} dest="hub2" />}
+        {/* Hub 1 lane (2026-07-30). The queue was hub2-only because CLOTHING is
+            not kept at Hub 1 — not because Hub 1 lacks refills. Sneakers make it
+            the bigger buffer, so it gets its own lane off the same component. */}
+        {tab==="hub1refill" && <Hub2RefillQueue products={products} dest="hub1" />}
     </>
   );
 
@@ -13038,9 +13048,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         </div>
       </div>
       <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
-      {/* TOP TABS — Today / History / On Hold */}
-      <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8 }}>
-        {[["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"]].map(([key, label]) => (
+      {/* TOP TABS — driven by SOURCE_TABS, the SAME list the desktop nav uses.
+          This was a hardcoded four-entry copy, so every tab added to SOURCE_TABS
+          (Hub 1 Refill) existed on desktop and was unreachable on mobile — the
+          devices the shop floor actually uses. Never re-inline this list.
+          (CodeRabbit, PR #291 — Major.) */}
+      <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8, overflowX:"auto" }}>
+        {SOURCE_TABS.map(([key, label]) => (
           <div key={key} onClick={() => setTab(key)}
                style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
             {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}

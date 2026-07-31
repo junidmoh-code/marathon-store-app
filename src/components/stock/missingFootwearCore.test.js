@@ -3,7 +3,7 @@
 // that make it differ from the clothing rule on purpose: it is UNIT-based rather
 // than carriage-based, and the shops are deliberately not part of the test.
 import { describe, it, expect } from "vitest";
-import { computeMissingFootwear, seedableSizes, footwearSizeRank, sizeKeyOf } from "./missingFootwearCore.js";
+import { computeMissingFootwear, seedableSizes, footwearSizeRank, sizeKeyOf, footwearSolvePlan } from "./missingFootwearCore.js";
 
 const SHOE = { id: "sh1", name: "Nike Air Max 1", category: "Footwear", sizes: ["5.5", "6", "7"] };
 const SHOE2 = { id: "sh2", name: "Nike Air Force 1", category: "Footwear", sizes: ["6", "7"] };
@@ -159,5 +159,132 @@ describe("seedableSizes — what Solve may write", () => {
     expect(seedableSizes({ allStock: {}, pid: "sh1", catalogSizes: ["5.5"], hub: "hub1", footwearRun })).toEqual(["5.5"]);
     // A raw-keyed run map must NOT resolve — RTDB cannot store "5.5" as a key.
     expect(seedableSizes({ allStock: {}, pid: "sh1", catalogSizes: ["5.5"], hub: "hub1", footwearRun: { hub1: { "5.5": 2 } } })).toEqual([]);
+  });
+});
+
+describe("footwearSolvePlan — policy capped by Central stock", () => {
+  const policy = { 3: 2, 4: 2, 5: 2, "5_5": 2, 6: 3, 7: 2, 8: 2, 9: 2, 10: 1, 11: 1 };
+  const central = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, { qty: v }]));
+
+  it("the owner's worked example: 2 per size, but size 8 has only one piece", () => {
+    const plan = footwearSolvePlan({
+      catalogSizes: ["6", "7", "8", "9", "10"],
+      policy: { 6: 2, 7: 2, 8: 2, 9: 2, 10: 2 },
+      centralCells: central({ 6: 9, 7: 9, 8: 1, 9: 9, 10: 9 }),
+    });
+    expect(plan).toEqual([
+      { size: "6", qty: 2, want: 2, avail: 9 },
+      { size: "7", qty: 2, want: 2, avail: 9 },
+      { size: "8", qty: 1, want: 2, avail: 1 },   // capped by stock, not policy
+      { size: "9", qty: 2, want: 2, avail: 9 },
+      { size: "10", qty: 2, want: 2, avail: 9 },
+    ]);
+  });
+
+  it("drops a size Central cannot supply at all rather than asking for zero", () => {
+    const plan = footwearSolvePlan({
+      catalogSizes: ["6", "7"], policy, centralCells: central({ 6: 4, 7: 0 }),
+    });
+    expect(plan.map((l) => l.size)).toEqual(["6"]);
+  });
+
+  it("honours the per-size policy, not a flat number", () => {
+    const plan = footwearSolvePlan({
+      catalogSizes: ["6", "10"], policy, centralCells: central({ 6: 99, 10: 99 }),
+    });
+    expect(plan).toEqual([
+      { size: "6", qty: 3, want: 3, avail: 99 },    // policy 3
+      { size: "10", qty: 1, want: 1, avail: 99 },   // policy 1
+    ]);
+  });
+
+  it("skips a catalog size with no policy entry", () => {
+    const plan = footwearSolvePlan({
+      catalogSizes: ["6", "13"], policy, centralCells: central({ 6: 5, 13: 5 }),
+    });
+    expect(plan.map((l) => l.size)).toEqual(["6"]);
+  });
+
+  it("resolves the half size through its encoded key and orders it numerically", () => {
+    const plan = footwearSolvePlan({
+      catalogSizes: ["6", "5.5", "3"], policy, centralCells: central({ 6: 5, "5_5": 5, 3: 5 }),
+    });
+    expect(plan.map((l) => l.size)).toEqual(["3", "5.5", "6"]);
+    expect(plan.find((l) => l.size === "5.5").qty).toBe(2);
+  });
+
+  it("skips sizes that already have an OPEN request — no double-picking", () => {
+    const plan = footwearSolvePlan({
+      catalogSizes: ["6", "7", "8"], policy, centralCells: central({ 6: 9, 7: 9, 8: 9 }),
+      openSizes: ["7"],
+    });
+    expect(plan.map((l) => l.size)).toEqual(["6", "8"]);
+  });
+
+  it("returns nothing when the policy is absent — Solve must stay disabled", () => {
+    expect(footwearSolvePlan({ catalogSizes: ["6"], policy: {}, centralCells: central({ 6: 9 }) })).toEqual([]);
+  });
+
+  it("ignores the one-size sentinel", () => {
+    expect(footwearSolvePlan({ catalogSizes: ["_"], policy: { _: 2 }, centralCells: central({ _: 9 }) })).toEqual([]);
+  });
+});
+
+describe("network-wide reservation — two hubs cannot claim the same Central units", () => {
+  const policy = { 8: 2 };
+  const central = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, { qty: v }]));
+
+  it("subtracts stock already owed to ANOTHER hub", () => {
+    // Central holds 3; Hub 1 already has 2 on order, so only 1 is really free.
+    const plan = footwearSolvePlan({
+      catalogSizes: ["8"], policy, centralCells: central({ 8: 3 }), reserved: { 8: 2 },
+    });
+    expect(plan).toEqual([{ size: "8", qty: 1, want: 2, avail: 1 }]);
+  });
+
+  it("drops the size entirely once everything is spoken for", () => {
+    expect(footwearSolvePlan({
+      catalogSizes: ["8"], policy, centralCells: central({ 8: 2 }), reserved: { 8: 2 },
+    })).toEqual([]);
+  });
+
+  it("over-reservation never yields a negative availability", () => {
+    expect(footwearSolvePlan({
+      catalogSizes: ["8"], policy, centralCells: central({ 8: 1 }), reserved: { 8: 9 },
+    })).toEqual([]);
+  });
+
+  it("absent reserved map behaves exactly as before", () => {
+    expect(footwearSolvePlan({ catalogSizes: ["8"], policy, centralCells: central({ 8: 3 }) }))
+      .toEqual([{ size: "8", qty: 2, want: 2, avail: 3 }]);
+  });
+
+  it("reservation is keyed by the ENCODED size, so half sizes are counted", () => {
+    const plan = footwearSolvePlan({
+      catalogSizes: ["5.5"], policy: { "5_5": 2 }, centralCells: central({ "5_5": 3 }), reserved: { "5_5": 2 },
+    });
+    expect(plan).toEqual([{ size: "5.5", qty: 1, want: 2, avail: 1 }]);
+  });
+});
+
+describe("one shared size-key encoder — the same one the stock cells use", () => {
+  it("is the canonical stockSizeKey, so a key always matches its /stock cell", () => {
+    // The earlier local copy TRIMMED. That was not just a divergence, it was
+    // wrong: a size stored as " 8" lives in the cell "_8" (stockSizeKey does not
+    // trim), so a trimming encoder computed "8" and read straight past both the
+    // Central availability AND the reservation. (CodeRabbit #291.)
+    expect(sizeKeyOf(" 8")).toBe("_8");
+    expect(sizeKeyOf("5.5")).toBe("5_5");
+    expect(sizeKeyOf("")).toBe("_");
+    expect(sizeKeyOf(null)).toBe("_");
+  });
+
+  it("a padded size resolves against the cell it is actually stored in", () => {
+    const plan = footwearSolvePlan({
+      catalogSizes: [" 8"], policy: { _8: 2 },
+      centralCells: { _8: { qty: 3 } },        // how stockSizeKey(" 8") writes it
+      reserved: { [sizeKeyOf(" 8")]: 2 },
+    });
+    expect(plan).toEqual([{ size: " 8", qty: 1, want: 2, avail: 1 }]);
   });
 });
