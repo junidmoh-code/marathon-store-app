@@ -615,6 +615,37 @@ The TV strip switches from `/laybyPulls` to `/laybyPullsBoard` when this lands.
 
 ---
 
+## `/attention_folders/{folderId}`
+
+> **Owned by this app** — written by the Attention workspace
+> (`src/components/stock/AttentionView.jsx`). This is the ONLY path Attention
+> writes; everything else that screen shows (`/products`, `/stock`,
+> `/stock_movements`) it reads.
+
+Named collections of products gathered from the Attention grid and kept for
+later — a reorder shortlist, a clearance pile, "ask the supplier about these".
+Purely a working set: creating a folder moves no stock, reserves nothing, and
+changes no price.
+
+**Deliberately NOT `/marketing`.** That tree belongs to marathon-ai (see below)
+and this app never writes it. If folders are ever promoted into campaigns it
+should be an explicit hand-off, not this screen writing into another app's data.
+
+| Field           | Type    | Notes |
+|-----------------|---------|-------|
+| `name`          | string  | Trimmed, whitespace-collapsed, max 60 chars. |
+| `createdAt`     | number  | ms since epoch, client clock. |
+| `createdBy`     | string \| null | uid of the creator. |
+| `createdByName` | string \| null | Display-name snapshot at create time. |
+| `items`         | object  | `{ [productId]: { addedAt: number, addedBy: string\|null } }` — **keyed by product id**, so adding the same product twice is idempotent and a folder can never hold duplicates. Absent when the folder is empty (RTDB drops empty objects; the reader treats absent as "no items"). |
+
+A product id in `items` that no longer exists in `/products` is surfaced in the
+UI as "Removed from catalogue" rather than dropped, so a folder never silently
+shrinks.
+
+Writes: create (`push`), rename (`update .name`), delete (`remove`), add item
+(`set items/{productId}`), remove item (`remove items/{productId}`).
+
 ## `/marketing/campaigns/{campaignId}`
 
 > **Owned by marathon-ai, not this app.** The marathon-store-app PWA never reads
