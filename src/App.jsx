@@ -12897,7 +12897,10 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // Shared between the mobile column and the desktop rail/pane.
   const hubSelector = (
     <>
-      {tab !== "clothing" && tab !== "onhold" && (
+      {/* Hidden on the two refill tabs as well: each is already scoped to ONE
+          hub, so a Hub 1 / Hub 2 pill above it does nothing and reads as though
+          the queue below could be switched. (CodeRabbit, PR #291 — Minor.) */}
+      {tab !== "clothing" && tab !== "onhold" && tab !== "hub1refill" && (
       <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
         {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
           const active = hub === val;
@@ -13045,9 +13048,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         </div>
       </div>
       <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
-      {/* TOP TABS — Today / History / On Hold */}
-      <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8 }}>
-        {[["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"]].map(([key, label]) => (
+      {/* TOP TABS — driven by SOURCE_TABS, the SAME list the desktop nav uses.
+          This was a hardcoded four-entry copy, so every tab added to SOURCE_TABS
+          (Hub 1 Refill) existed on desktop and was unreachable on mobile — the
+          devices the shop floor actually uses. Never re-inline this list.
+          (CodeRabbit, PR #291 — Major.) */}
+      <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8, overflowX:"auto" }}>
+        {SOURCE_TABS.map(([key, label]) => (
           <div key={key} onClick={() => setTab(key)}
                style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
             {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
