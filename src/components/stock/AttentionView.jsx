@@ -609,10 +609,11 @@ function LocChip({ label, qty, shop, sizes }) {
   };
 
   const PANEL_W = 232;
-  const PANEL_MAX_H = 168;
+  // Enough for a full shoe size run; anything beyond is counted, not scrolled.
+  const CHIP_CAP = 12;
   // Flip above the chip when there isn't room below, and keep the panel inside
   // the viewport horizontally so a card at the right edge doesn't push it off.
-  const below = rect ? rect.bottom + PANEL_MAX_H + 10 < window.innerHeight : true;
+  const below = rect ? rect.bottom + 180 < window.innerHeight : true;
   const left = rect ? Math.max(8, Math.min(rect.left, window.innerWidth - PANEL_W - 8)) : 0;
 
   return (
@@ -637,7 +638,11 @@ function LocChip({ label, qty, shop, sizes }) {
           style={{
             ...GLASS_SOLID, position: "fixed", left, zIndex: 4000,
             ...(below ? { top: rect.bottom + 6 } : { bottom: window.innerHeight - rect.top + 6 }),
-            width: PANEL_W, maxHeight: PANEL_MAX_H, overflowY: "auto", padding: "8px 9px",
+            width: PANEL_W, padding: "8px 9px",
+            // Not scrollable ON PURPOSE: the panel ignores pointer events (so it
+            // can't swallow a click meant for the card, and it dismisses as soon
+            // as the pointer leaves the chip), which would make an internal
+            // scrollbar impossible to actually use. Content is capped instead.
             pointerEvents: "none",
           }}
         >
@@ -648,12 +653,15 @@ function LocChip({ label, qty, shop, sizes }) {
             <div style={{ fontSize: 10.5, color: GRAY }}>No sizes recorded.</div>
           ) : (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-              {sizes.map((sz) => (
+              {sizes.slice(0, CHIP_CAP).map((sz) => (
                 <span key={sz.size} style={{ fontSize: 10.5, border: `1px solid ${accent}40`, background: `${accent}14`, borderRadius: 6, padding: "3px 7px", whiteSpace: "nowrap" }}>
                   <b style={{ color: "#fff" }}>{sz.size}</b>
                   <span style={{ color: GRAY, marginLeft: 4 }}>{sz.qty}</span>
                 </span>
               ))}
+              {sizes.length > CHIP_CAP && (
+                <span style={{ fontSize: 10.5, color: GRAY, alignSelf: "center" }}>+{sizes.length - CHIP_CAP} more</span>
+              )}
             </div>
           )}
         </div>,
