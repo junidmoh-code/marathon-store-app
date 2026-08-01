@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { detectPlatform, isDesktopPlatform, isMobilePlatform } from "./platform";
+import {
+  detectPlatform,
+  isDesktopPlatform,
+  isMobilePlatform,
+  isNarrowFor,
+  narrowBreakpointFor,
+  DESKTOP_NARROW_FLOOR,
+} from "./platform";
 
 // The regression this locks in (2026-08-01): the shop's Proline POS terminals —
 // Windows x64, 10-point touchscreen, 1024x600 panel — were getting the phone UI,
@@ -72,6 +79,49 @@ describe("other computers get the desktop workspace", () => {
 
   it("falls back to desktop when there is no navigator at all", () => {
     expect(detectPlatform(undefined)).toBe("desktop");
+  });
+});
+
+// The layout floor. A computer holds the desktop layout well below the phone
+// breakpoint — but a genuinely small window must still stack, which is the
+// behaviour that went missing when a computer was simply "never narrow".
+describe("isNarrowFor — the per-platform breakpoint", () => {
+  const BP = 1024; // what the desktop workspaces pass
+
+  it("keeps the 1024x600 Proline till on the desktop layout", () => {
+    // The original bug: 1024 <= 1024 matched, so the till got the phone UI.
+    expect(isNarrowFor("desktop", 1024, BP)).toBe(false);
+  });
+
+  it("keeps the till on desktop at 125% Windows scaling (819px)", () => {
+    expect(isNarrowFor("desktop", 819, BP)).toBe(false);
+  });
+
+  it("STILL stacks a computer once the window is genuinely small", () => {
+    expect(isNarrowFor("desktop", 700, BP)).toBe(true);
+    expect(isNarrowFor("desktop", 500, BP)).toBe(true);
+  });
+
+  it("switches a computer exactly at the floor, not before", () => {
+    expect(isNarrowFor("desktop", DESKTOP_NARROW_FLOOR + 1, BP)).toBe(false);
+    expect(isNarrowFor("desktop", DESKTOP_NARROW_FLOOR, BP)).toBe(true);
+  });
+
+  it("leaves phones and tablets on their own breakpoint", () => {
+    expect(isNarrowFor("mobile", 1024, BP)).toBe(true);   // iPad landscape: mobile UI
+    expect(isNarrowFor("mobile", 820, BP)).toBe(true);
+    expect(isNarrowFor("mobile", 1200, BP)).toBe(false);
+  });
+
+  it("never RAISES a caller's breakpoint for a computer", () => {
+    // A caller asking for 700 keeps 700 — the floor is a maximum, not a default.
+    expect(narrowBreakpointFor("desktop", 700)).toBe(700);
+    expect(narrowBreakpointFor("desktop", 1024)).toBe(DESKTOP_NARROW_FLOOR);
+    expect(narrowBreakpointFor("mobile", 1024)).toBe(1024);
+  });
+
+  it("is defensive about a missing width", () => {
+    expect(isNarrowFor("desktop", undefined, BP)).toBe(true);
   });
 });
 

@@ -88,6 +88,35 @@ export function detectPlatform(nav = currentNavigator()) {
   return DESKTOP;
 }
 
+// ─── How narrow is "too narrow", per platform ────────────────────────────────
+// A computer keeps the desktop workspace far below the phone/tablet breakpoint,
+// but not forever: drag a laptop window down to a sliver and the stacked layout
+// is genuinely the better one. This floor is where a computer is allowed to fall
+// back.
+//
+// 760px is chosen from what the workspace NEEDS, not from any device: the rail
+// is 184px, product cards are minmax(190px, 1fr), so 760 still fits the rail
+// plus a 3-across grid. It also keeps clear air under the tills — a 1024px
+// Proline panel stays desktop at 100% scale AND at 125% Windows scaling, where
+// it reports 819px. Below 760 even a computer stacks.
+export const DESKTOP_NARROW_FLOOR = 760;
+
+/**
+ * Should this client use the narrow (stacked) layout?
+ * @param {"desktop"|"mobile"} platform
+ * @param {number} width      viewport width in CSS px
+ * @param {number} breakpoint the caller's phone/tablet breakpoint (e.g. 1024)
+ */
+export function isNarrowFor(platform, width, breakpoint) {
+  const effective = platform === "desktop" ? Math.min(breakpoint, DESKTOP_NARROW_FLOOR) : breakpoint;
+  return (Number(width) || 0) <= effective;
+}
+
+/** The width at or below which THIS platform switches to the narrow layout. */
+export function narrowBreakpointFor(platform, breakpoint) {
+  return platform === "desktop" ? Math.min(breakpoint, DESKTOP_NARROW_FLOOR) : breakpoint;
+}
+
 /** True for Windows / macOS / Linux / ChromeOS machines. */
 export function isDesktopPlatform(nav) {
   return detectPlatform(nav) === DESKTOP;
