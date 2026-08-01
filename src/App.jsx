@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, useDeferredValue } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, equalTo, startAt } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
@@ -9,6 +9,7 @@ import { productMatchesQuery } from "./utils/productSearch";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import { getDeviceId } from "./device/deviceId";
+import { isDesktopPlatform } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./utils/productCategory";
@@ -4557,9 +4558,28 @@ const AI_TOOLS = [
 ];
 
 // Matches the sidebar breakpoint: true below `px` wide (tablet and down).
+//
+// A COMPUTER IS NEVER NARROW. Every caller uses this to choose between the
+// desktop workspace and the phone/tablet UI, so on a Windows/macOS/Linux/ChromeOS
+// machine it always answers false — see src/device/platform.js. The shops' Proline
+// tills are Windows x64 POS terminals with a touchscreen on a 1024x600 panel:
+// innerWidth is exactly 1024, `(max-width: 1024px)` MATCHES at 1024, and the
+// desktop workspaces promised "≥1024px" were handing a real computer the phone
+// layout. Windows display scaling made it worse (a 1366px panel reports 1092px at
+// 125% scale, 910px at 150%). Touch and panel size describe how a device is used,
+// not what it is.
+//
+// Real phones and Android tablets are untouched: they classify as "mobile" and
+// keep the width-driven behaviour below, exactly as before. Responsive CSS still
+// applies on desktop — this only stops a computer being swapped onto the mobile UI.
 function useIsNarrow(px = 980) {
-  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth <= px);
+  // Hardware fact, fixed for the life of the tab — read once, never re-measured.
+  const [isComputer] = useState(() => isDesktopPlatform());
+  const [narrow, setNarrow] = useState(
+    () => !isComputer && typeof window !== "undefined" && window.innerWidth <= px,
+  );
   useEffect(() => {
+    if (isComputer) return undefined; // no subscription needed: always wide
     const mq = window.matchMedia(`(max-width: ${px}px)`);
     const onChange = (e) => setNarrow(e.matches);
     setNarrow(mq.matches);
@@ -4570,8 +4590,8 @@ function useIsNarrow(px = 980) {
       if (mq.removeEventListener) mq.removeEventListener("change", onChange);
       else mq.removeListener(onChange);
     };
-  }, [px]);
-  return narrow;
+  }, [px, isComputer]);
+  return isComputer ? false : narrow;
 }
 
 // Tolerant epoch-ms parse for status timestamps that may be ISO strings or ms.
@@ -6422,7 +6442,13 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // keep the existing tap→sheet flow. Reuses AssistantView's cart + checkout via
 // props (onQuickAdd/onRemoveOne/onCheckout); clothing is CR-only, so the catalog
 // is sneakers only. Committed dark — the POS's world.
-function AssistantDesktop({ products, effectiveShop, availableShops, onSelectShop, shopRegistry,
+// How many product cards the desktop workspace builds at once. The till is a
+// Celeron J4125 with UHD 600 graphics: ~2.4k clothing cards (each with a photo,
+// a blurred glass background and an animated price) is several seconds of work,
+// which is what made typing in the search box lag. A screenful is ~12-20 cards.
+const AD_PAGE = 60;
+
+function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
                             search, setSearch, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, onSignOut, userEmail, mode, setMode,
                             customerName, setCustomerName, customerPhone, setCustomerPhone,
@@ -6451,13 +6477,11 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
   const [pendingShop, setPendingShop] = useState(null); // shop-switch confirm
   const searchRef = useRef(null);
 
-  // Catalog by MODE: sneaker mode browses sneakers; clothing (customer order)
-  // and cr (refill) both browse the clothing catalog.
-  const catalog = useMemo(() => {
-    const isClothing = p => (p.productType || "sneaker") === "clothing";
-    const wantClothing = mode !== "sneaker";
-    return (products || []).filter(p => p && p.id && p.name && (wantClothing ? isClothing(p) : !isClothing(p)));
-  }, [products, mode]);
+  // Catalog by MODE — the mode/hub-filtered candidate set, computed ONCE by
+  // AssistantView and passed in as `catalog`. It used to be re-derived here from
+  // the raw product list, which (a) skipped AssistantView's hub filter and (b)
+  // re-filtered the whole ~3.9k catalog on every keystroke, twice per render.
+  const catalog = products || [];
 
   // Brand dropdown options FROM the data (product.brand), counted, most-stocked
   // first; unbranded/code-only (brand == null) collapse into "Other".
@@ -6471,15 +6495,29 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
     return out;
   }, [catalog]);
 
+  // SEARCH RESULTS come from AssistantView's `searchResults` — the ONE search
+  // implementation, shared with the phone layout: barcode + SKU + per-size code
+  // matching (a scan jumps straight to the product) then Fuse fuzzy name/category
+  // matching. The desktop grid used to do its own `p.name.includes(query)`, which
+  // is why SCANNING A BARCODE FOUND NOTHING here while it worked on the phone.
+  // Everything below is just the workspace's own brand filter + sort on top.
   const shown = useMemo(() => {
-    let list = catalog.filter(p =>
-      (brand === "All" || (brand === "Other" ? !p.brand : p.brand === brand)) &&
-      (!search.trim() || p.name.toLowerCase().includes(search.toLowerCase())));
+    const results = searchResults || catalog;   // defensive: never render undefined
+    let list = brand === "All"
+      ? results
+      : results.filter(p => (brand === "Other" ? !p.brand : p.brand === brand));
     if (sort === "ph") list = [...list].sort((a, b) => (b.retailPrice || 0) - (a.retailPrice || 0));
     else if (sort === "pl") list = [...list].sort((a, b) => (a.retailPrice || 0) - (b.retailPrice || 0));
     else if (sort === "az") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     return list;
-  }, [catalog, brand, search, sort]);
+  }, [searchResults, catalog, brand, sort]);
+
+  // Render cap — a query like "a" matches thousands of products, and building
+  // that many cards is what made the till crawl. Cards are cheap to add on
+  // demand, so show a screenful and grow on scroll/click.
+  const [renderCap, setRenderCap] = useState(AD_PAGE);
+  useEffect(() => { setRenderCap(AD_PAGE); }, [searchResults, brand, sort, mode]);
+  const visible = useMemo(() => shown.slice(0, renderCap), [shown, renderCap]);
 
   // Reset the brand filter when switching modes (brands differ per catalog).
   useEffect(() => { setBrand("All"); }, [mode]);
@@ -6559,6 +6597,15 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
         .ad-scroll{flex:1;overflow:auto;padding:16px 22px 40px}
         .ad-count{font-size:11px;color:rgba(233,238,255,.3);margin:0 2px 12px}
         .ad-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px}
+        /* Skip layout/paint for cards scrolled out of view. contain-intrinsic-size
+           reserves each card's box so the scrollbar stays honest. Worth ~10x on the
+           till's integrated graphics; harmless everywhere else. */
+        .ad-card{content-visibility:auto;contain-intrinsic-size:auto 300px}
+        .ad-more{width:100%;margin-top:16px;padding:13px;border-radius:13px;cursor:pointer;font-family:inherit;
+                 background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);color:#cfd6e4;
+                 font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:10px}
+        .ad-more:hover{background:rgba(74,127,255,.12);border-color:rgba(74,127,255,.45);color:#9DBCFF}
+        .ad-more-n{font-size:11px;font-weight:600;color:rgba(233,238,255,.35)}
         .ad-card{position:relative;background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 45%),rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:16px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column;transition:transform .2s cubic-bezier(.2,.7,.2,1),border-color .2s,box-shadow .2s}
         .ad-card:hover,.ad-card:focus-visible{transform:translateY(-5px);border-color:rgba(74,127,255,.55);box-shadow:0 18px 42px -20px rgba(60,110,255,.6);outline:none}
         .ad-thumb{aspect-ratio:16/11;position:relative;overflow:hidden;background:#0a1020;display:grid;place-items:center}
@@ -6568,7 +6615,14 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
         .ad-body{padding:11px 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1}
         .ad-name{font-size:13.5px;font-weight:650;line-height:1.25;min-height:2.5em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
         .ad-crow{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:auto}
-        .ad-price{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;background:linear-gradient(90deg,#6e7bff,#5d8bff,#8a6dff,#7f5af0,#8a6dff,#5d8bff,#6e7bff);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:adSiri 4s linear infinite}
+        /* The shimmering price gradient runs ONLY on the hovered card. As an
+           always-on animation it was one compositor layer per card animating
+           forever — on the till's UHD 600 that alone pinned the GPU and made
+           typing in the search box stutter. Same look on the card you're
+           pointing at, no cost on the other 59. */
+        .ad-price{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;background:linear-gradient(90deg,#6e7bff,#5d8bff,#8a6dff,#7f5af0,#8a6dff,#5d8bff,#6e7bff);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}
+        .ad-card:hover .ad-price,.ad-card:focus-within .ad-price{animation:adSiri 4s linear infinite}
+        @media (prefers-reduced-motion: reduce){.ad-card:hover .ad-price,.ad-card:focus-within .ad-price{animation:none}}
         @keyframes adSiri{from{background-position:0 0}to{background-position:300% 0}}
         .ad-price.no{-webkit-text-fill-color:initial;color:rgba(233,238,255,.3);font-size:12px}
         .ad-szn{font-size:10px;color:rgba(233,238,255,.3);font-weight:700}
@@ -6701,12 +6755,15 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
               <span style={{ color: "#4A7FFF" }}>→</span>
             </button>
           )}
-          <div className="ad-count">{shown.length} {flow === "refill" ? "clothing item" : "product"}{shown.length !== 1 ? "s" : ""}</div>
+          <div className="ad-count">
+            {shown.length} {flow === "refill" ? "clothing item" : "product"}{shown.length !== 1 ? "s" : ""}
+            {visible.length < shown.length && ` · showing ${visible.length}`}
+          </div>
           {shown.length === 0 ? (
             <div style={{ textAlign: "center", color: "#444", padding: "3rem", fontSize: 14 }}>{flow === "refill" ? "No clothing products yet." : "No products match."}</div>
           ) : (
             <div className="ad-grid">
-              {shown.map(p => {
+              {visible.map(p => {
                 const priced = typeof p.retailPrice === "number" && p.retailPrice > 0;
                 const szs = sizesOf(p);
                 return (
@@ -6763,6 +6820,12 @@ function AssistantDesktop({ products, effectiveShop, availableShops, onSelectSho
                 );
               })}
             </div>
+          )}
+          {visible.length < shown.length && (
+            <button className="ad-more" onClick={() => setRenderCap(c => c + AD_PAGE)}>
+              Show {Math.min(AD_PAGE, shown.length - visible.length)} more
+              <span className="ad-more-n">{shown.length - visible.length} left</span>
+            </button>
           )}
         </div>
       </div>
@@ -7273,8 +7336,14 @@ function AssistantView({ products, onExit, orders = [] }) {
     minMatchCharLength: 2,
   }), [base]);
 
+  // Searching runs against a DEFERRED copy of the query: React paints the
+  // keystroke in the input first, then re-runs this filter at lower priority.
+  // Without it, every character waited on a Fuse pass over the whole catalog
+  // plus a full grid re-render before it appeared — which is why typing into
+  // the search box on the till lagged behind the keyboard.
+  const deferredSearch = useDeferredValue(search);
   const filtered = useMemo(() => {
-    const q = search.trim();
+    const q = deferredSearch.trim();
     if (!q) return base;
     // BARCODE / SKU match — typing or SCANNING a product code finds the product
     // directly, not just its name. Matches the product-level barcode + sku and any
@@ -7302,7 +7371,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         p.name.toLowerCase().includes(lc) || (p.category || "").toLowerCase().includes(lc)));
     }
     return merge(fuse.search(q).map(r => r.item));
-  }, [search, base, fuse]);
+  }, [deferredSearch, base, fuse]);
 
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
@@ -7718,7 +7787,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           sheet and photo lightbox (rendered later) surface over it. */}
       {isDesktop && !noStoreAccess && (
         <AssistantDesktop
-          products={products} effectiveShop={effectiveShop} availableShops={availableShops}
+          products={base} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
           onSelectShop={selectShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
@@ -7986,8 +8055,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           below the screen is now the single cart trigger. Sneaker users still
           see the cart review inside the Checkout sheet. */}
 
-      {/* SEARCH BAR */}
-      <div style={{ paddingBottom:14 }}>
+      {/* SEARCH BAR — desktop has its own in the workspace top bar. */}
+      <div style={{ paddingBottom:14, display: isDesktop ? "none" : undefined }}>
         <div style={{ background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.3)", borderRadius:22, padding:"12px 16px", display:"flex", alignItems:"center", gap:10 }}>
           <svg width="16" height="16" viewBox="0 0 24 24" stroke="rgba(255,255,255,.35)" fill="none" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products..." style={{ background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:14, flex:1 }}/>
@@ -7996,8 +8065,13 @@ function AssistantView({ products, onExit, orders = [] }) {
 
       {/* PRODUCT GRID — Sneakers AND clothing-for-customer use the 2-col
           tappable photo grid + size-picker sheet. CR (Clothing Refill) uses the
-          1-col bulk list with inline qty steppers per size. */}
-      {filtered.length === 0 ? (
+          1-col bulk list with inline qty steppers per size.
+          SKIPPED ON DESKTOP: AssistantDesktop is a full-screen overlay drawn OVER
+          this layout, so both grids used to build on every render — thousands of
+          invisible cards re-rendering behind the workspace on each keystroke.
+          The sheets below (size picker, checkout, lightbox) are shared and still
+          render for both. */}
+      {isDesktop ? null : filtered.length === 0 ? (
         <div style={{ textAlign:"center", color:"#444", padding:"3rem 1rem", fontSize:14 }}>
           {wantsClothing
             ? "No clothing products yet. Add one from Admin."
