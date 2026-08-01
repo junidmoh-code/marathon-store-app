@@ -9,6 +9,7 @@ import { productMatchesQuery } from "./utils/productSearch";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import { getDeviceId } from "./device/deviceId";
+import { isDesktopPlatform } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./utils/productCategory";
@@ -4557,9 +4558,28 @@ const AI_TOOLS = [
 ];
 
 // Matches the sidebar breakpoint: true below `px` wide (tablet and down).
+//
+// A COMPUTER IS NEVER NARROW. Every caller uses this to choose between the
+// desktop workspace and the phone/tablet UI, so on a Windows/macOS/Linux/ChromeOS
+// machine it always answers false — see src/device/platform.js. The shops' Proline
+// tills are Windows x64 POS terminals with a touchscreen on a 1024x600 panel:
+// innerWidth is exactly 1024, `(max-width: 1024px)` MATCHES at 1024, and the
+// desktop workspaces promised "≥1024px" were handing a real computer the phone
+// layout. Windows display scaling made it worse (a 1366px panel reports 1092px at
+// 125% scale, 910px at 150%). Touch and panel size describe how a device is used,
+// not what it is.
+//
+// Real phones and Android tablets are untouched: they classify as "mobile" and
+// keep the width-driven behaviour below, exactly as before. Responsive CSS still
+// applies on desktop — this only stops a computer being swapped onto the mobile UI.
 function useIsNarrow(px = 980) {
-  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth <= px);
+  // Hardware fact, fixed for the life of the tab — read once, never re-measured.
+  const [isComputer] = useState(() => isDesktopPlatform());
+  const [narrow, setNarrow] = useState(
+    () => !isComputer && typeof window !== "undefined" && window.innerWidth <= px,
+  );
   useEffect(() => {
+    if (isComputer) return undefined; // no subscription needed: always wide
     const mq = window.matchMedia(`(max-width: ${px}px)`);
     const onChange = (e) => setNarrow(e.matches);
     setNarrow(mq.matches);
@@ -4570,8 +4590,8 @@ function useIsNarrow(px = 980) {
       if (mq.removeEventListener) mq.removeEventListener("change", onChange);
       else mq.removeListener(onChange);
     };
-  }, [px]);
-  return narrow;
+  }, [px, isComputer]);
+  return isComputer ? false : narrow;
 }
 
 // Tolerant epoch-ms parse for status timestamps that may be ISO strings or ms.
