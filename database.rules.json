@@ -142,6 +142,7 @@
     "pos": {
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "sales": {
+        ".indexOn": "createdAt",
         "$saleId": {
           ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
           ".validate": "newData.hasChildren(['total','type'])",
@@ -151,6 +152,14 @@
           },
           "updatedAt": {
             ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+          },
+          "laybyCompletionSaleId": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isString()"
+          },
+          "markerPublished": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isBoolean()"
           },
           "returnedTransactions": {
             ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
