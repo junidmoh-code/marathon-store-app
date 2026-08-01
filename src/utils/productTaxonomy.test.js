@@ -3,13 +3,23 @@ import {
   TAXONOMY_SEED, SIZES_APPAREL, SIZES_FOOTWEAR, SIZES_KIDS, SIZES_GLOVES, ONE_SIZE_SENTINEL,
   catByKey, isOneSize, sizesOf, legacyFor, groupedCategories, allCategories, labelForKey,
   isAssigned, isLegacySneaker, needsAssignment, effectiveCategoryKey, isAssignable,
+  RETIRED_CATEGORY_KEYS, MERGED_INTO,
 } from "./productTaxonomy.js";
 import { CATEGORY_TREE } from "./productCategory.js";
 
 const REG = TAXONOMY_SEED;
 
 describe("registry shape", () => {
-  it("has 31 categories", () => expect(Object.keys(REG.cats)).toHaveLength(31));
+  // 32 entries: 26 assignable + 6 RETIRED by the 2026-08-01 merge. Retired rows
+  // stay in the registry so a product still carrying the key resolves to
+  // something the picker can flag, instead of reading as uncategorised.
+  it("has 32 categories — 26 active, 6 retired", () => {
+    const all = Object.values(REG.cats);
+    expect(all).toHaveLength(32);
+    expect(all.filter((c) => c.active)).toHaveLength(26);
+    expect(all.filter((c) => !c.active).map((c) => c.key).sort())
+      .toEqual(["boots", "cargo-pants", "jeans", "loafers", "running-shoes", "sweaters"]);
+  });
 
   it("every category key matches its record key", () => {
     for (const [k, c] of Object.entries(REG.cats)) expect(c.key).toBe(k);
@@ -131,6 +141,7 @@ describe("legacyFor — the signed-off derivation table", () => {
     "running-shoes":    { category: "Footwear",    subcategory: "Sneakers",              productType: "sneaker" },
     "boots":            { category: "Footwear",    subcategory: "Boots",                 productType: "sneaker" },
     "soccer-boots":     { category: "Footwear",    subcategory: "Soccer Boots",          productType: "sneaker" },
+    "designer-shoes":   { category: "Footwear",    subcategory: "Sneakers",              productType: "sneaker" },
     "slides":           { category: "Footwear",    subcategory: "Sandals & Slides",      productType: "sneaker" },
     "loafers":          { category: "Footwear",    subcategory: null,                    productType: "sneaker" },
     "kids-shoes":       { category: "Footwear",    subcategory: "Sneakers",              productType: "sneaker" },
@@ -169,6 +180,16 @@ describe("legacyFor — the signed-off derivation table", () => {
   });
 
   for (const [key, expected] of Object.entries(TABLE)) {
+    // A RETIRED category derives to null on purpose — it must not be assignable
+    // — but its stored triple is asserted below to prove the merge did not
+    // rewrite any legacy data.
+    if (RETIRED_CATEGORY_KEYS.has(key)) {
+      it(`${key} is retired → derives null, but keeps its legacy triple`, () => {
+        expect(legacyFor(REG, key)).toBeNull();
+        expect(REG.cats[key].legacy).toEqual(expected);
+      });
+      continue;
+    }
     it(`${key} → ${expected.category}/${expected.subcategory ?? "(omitted)"}/${expected.productType ?? "(omitted)"}`,
       () => expect(legacyFor(REG, key)).toEqual(expected));
   }
@@ -221,8 +242,8 @@ describe("legacyFor rejects an illegal registry entry", () => {
     expect(labelForKey(reg, "belts")).toBe("Belts");
   });
 
-  it("every seeded category is assignable", () => {
-    for (const k of Object.keys(REG.cats)) expect(isAssignable(REG, k)).toBe(true);
+  it("every ACTIVE category is assignable, and every retired one is not", () => {
+    for (const [k, c] of Object.entries(REG.cats)) expect(isAssignable(REG, k)).toBe(!!c.active);
   });
 });
 
@@ -254,9 +275,27 @@ describe("derivation ↔ live automation contracts", () => {
   });
 
   // The refill engine's isClothing() gate: productType wins when present.
-  it("footwear categories stay OUT of the refill clothing lane", () => {
-    for (const k of ["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes"]) {
-      expect(legacyFor(REG, k).productType).toBe("sneaker");
+  // THE MERGE-SAFETY TEST. Reads the STORED triple, not legacyFor, so it covers
+  // retired keys too: the whole promise made to the owner on 2026-08-01 was that
+  // merging categories cannot change what the engine sees. Every shoe key —
+  // merged away or not — must still carry productType "sneaker", which is what
+  // keeps it out of isClothing() and out of the refill clothing lane.
+  it("every footwear category stays OUT of the refill clothing lane, retired ones included", () => {
+    for (const k of ["sneakers", "running-shoes", "boots", "soccer-boots", "designer-shoes", "slides", "loafers", "kids-shoes"]) {
+      expect(REG.cats[k].legacy.productType).toBe("sneaker");
+      expect(REG.cats[k].legacy.category).toBe("Footwear");
+    }
+  });
+
+  // The six merged-away keys must resolve to the SAME legacy category and
+  // productType as the key they were merged into, or a re-pointed product would
+  // start behaving differently in the engine. (Subcategory may differ — jeans
+  // was "Jeans & Denim", pants is "Cargos & Pants" — and the re-point script
+  // deliberately leaves each product's own subcategory alone.)
+  it("each retired key matches its survivor on the two fields automations read", () => {
+    for (const [dead, alive] of Object.entries(MERGED_INTO)) {
+      expect(REG.cats[dead].legacy.category).toBe(REG.cats[alive].legacy.category);
+      expect(REG.cats[dead].legacy.productType).toBe(REG.cats[alive].legacy.productType);
     }
   });
 
@@ -284,9 +323,9 @@ describe("groupedCategories", () => {
   it("every shoe category sits under Footwear, not Clothing", () => {
     const g = groupedCategories(REG);
     expect(g[0].options.map((c) => c.key)).toEqual([
-      "sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes",
+      "sneakers", "soccer-boots", "designer-shoes", "slides", "kids-shoes",
     ]);
-    expect(g[1].options).toHaveLength(24);
+    expect(g[1].options).toHaveLength(21);
     // The heading a shoe appears under must never read "Clothing".
     for (const c of g[1].options) expect(c.legacy.category).not.toBe("Footwear");
   });
@@ -298,14 +337,14 @@ describe("groupedCategories", () => {
     expect(other).toBeTruthy();
     expect(other.options.map((c) => c.key)).toEqual(["belts"]);
     // Still reachable, still fully derivable — nothing silently disappears.
-    expect(allCategories(reg)).toHaveLength(31);
+    expect(allCategories(reg)).toHaveLength(26);
     expect(legacyFor(reg, "belts").subcategory).toBe("Belts");
   });
 
   it("hides inactive categories without breaking the rest", () => {
     const reg = { ...REG, cats: { ...REG.cats, belts: { ...REG.cats.belts, active: false } } };
     expect(allCategories(reg).map((c) => c.key)).not.toContain("belts");
-    expect(allCategories(reg)).toHaveLength(30);
+    expect(allCategories(reg)).toHaveLength(25);
   });
 
   it("survives a missing / garbled registry instead of throwing", () => {
@@ -441,10 +480,10 @@ describe("a selected category must be ASSIGNABLE, not merely resolvable", () => 
     expect(isAssignable(reg, "belts")).toBe(false);
   });
 
-  it("every seeded category is both resolvable and assignable", () => {
-    for (const k of Object.keys(REG.cats)) {
-      expect(catByKey(REG, k)).toBeTruthy();
-      expect(isAssignable(REG, k)).toBe(true);
+  it("every category resolves; only the active ones are assignable", () => {
+    for (const [k, c] of Object.entries(REG.cats)) {
+      expect(catByKey(REG, k)).toBeTruthy();       // retired keys STILL resolve
+      expect(isAssignable(REG, k)).toBe(!!c.active);
     }
   });
 });

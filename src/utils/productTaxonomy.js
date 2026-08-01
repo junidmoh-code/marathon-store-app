@@ -94,6 +94,11 @@ const SEED_ROWS = [
   ["running-shoes",     "Running Shoes",      "footwear", SIZES_FOOTWEAR,   "Footwear",    "Sneakers",              "sneaker"],
   ["boots",             "Boots",              "footwear", SIZES_FOOTWEAR,   "Footwear",    "Boots",                 "sneaker"],
   ["soccer-boots",      "Soccer Boots",       "footwear", SIZES_FOOTWEAR,   "Footwear",    "Soccer Boots",          "sneaker"],
+  // Owner, 2026-08-01. Legacy leaf is deliberately the EXISTING "Sneakers"
+  // subcategory rather than a new "Designer" string: a new legacy value would
+  // appear in every admin filter and report that groups by subcategory, and the
+  // brief was that the categories the system already works with stay untouched.
+  ["designer-shoes",    "Designer Shoes",     "footwear", SIZES_FOOTWEAR,   "Footwear",    "Sneakers",              "sneaker"],
   ["slides",            "Slides",             "footwear", SIZES_FOOTWEAR,   "Footwear",    "Sandals & Slides",      "sneaker"],
   ["loafers",           "Loafers",            "footwear", SIZES_FOOTWEAR,   "Footwear",    null,                    "sneaker"],
   // Kids shoe sizes 26–33 read as pants WAISTS to the shared size classifier,
@@ -103,7 +108,7 @@ const SEED_ROWS = [
   // ── Apparel (S..XXXL) ──────────────────────────────────────────────────────
   ["t-shirts",          "T-Shirts",           "clothing", SIZES_APPAREL,    "Clothing",    "T-Shirts",              "clothing"],
   ["golf-t-shirts",     "Golf T-Shirts",      "clothing", SIZES_APPAREL,    "Clothing",    "Polos",                 "clothing"],
-  ["hoodies",           "Hoodies",            "clothing", SIZES_APPAREL,    "Clothing",    "Hoodies & Sweatshirts", "clothing"],
+  ["hoodies",           "Sweaters & Hoodies", "clothing", SIZES_APPAREL,    "Clothing",    "Hoodies & Sweatshirts", "clothing"],
   ["sweaters",          "Sweaters",           "clothing", SIZES_APPAREL,    "Clothing",    "Hoodies & Sweatshirts", "clothing"],
   ["jackets",           "Jackets",            "clothing", SIZES_APPAREL,    "Clothing",    "Jackets & Coats",       "clothing"],
   ["tracksuits",        "Tracksuits",         "clothing", SIZES_APPAREL,    "Clothing",    "Tracksuits & Sets",     "clothing"],
@@ -152,6 +157,46 @@ const SEED_ROWS = [
 ];
 
 /** The registry object seeded into RTDB, and the offline fallback. */
+// ── MERGED AWAY 2026-08-01 (owner) ───────────────────────────────────────────
+//   jeans, cargo-pants            → pants
+//   sweaters                      → hoodies, relabelled "Sweaters & Hoodies"
+//   running-shoes, boots, loafers → sneakers
+//
+// RETIRED, NOT DELETED. A deleted key leaves any product still carrying it
+// pointing at nothing, which reads as uncategorised; retired keeps the entry
+// resolvable so the picker can say "unavailable, pick again" and the operator
+// sees there is a decision to make. Their rows keep their original legacy
+// triples untouched.
+//
+// NOTHING HERE CHANGES A PRODUCT'S LEGACY FIELDS. Every merge pair already
+// resolved to the same legacy `category` and `productType` (all six retirees are
+// Clothing/clothing or Footwear/sneaker exactly as their survivor is), so the
+// engine's isClothing / isFootwear gates, Display Checks, the POS and Insights
+// cannot observe this change at all. The only field that moves is `categoryKey`,
+// and only on the products re-pointed by scripts/merge-taxonomy-categories.mjs.
+//
+// The one asymmetry worth knowing: `jeans` carried legacy subcategory
+// "Jeans & Denim" while `pants` carries "Cargos & Pants". Re-pointed products
+// KEEP their existing subcategory — the script writes categoryKey only — so no
+// historical record is rewritten. New products picked as "Pants" get
+// "Cargos & Pants", which is what the surviving category has always meant.
+export const RETIRED_CATEGORY_KEYS = new Set([
+  "jeans", "cargo-pants",
+  "sweaters",
+  "running-shoes", "boots", "loafers",
+]);
+
+// Where a retired key's products should land, for the one-time re-point script
+// and for any future "this key is dead, what now?" question.
+export const MERGED_INTO = {
+  "jeans": "pants",
+  "cargo-pants": "pants",
+  "sweaters": "hoodies",
+  "running-shoes": "sneakers",
+  "boots": "sneakers",
+  "loafers": "sneakers",
+};
+
 export const TAXONOMY_SEED = {
   version: 1,
   tops: TAXONOMY_TOPS,
@@ -166,7 +211,7 @@ export const TAXONOMY_SEED = {
       sizes: [...sizes],
       legacy: { category: lCat, subcategory: lSub, productType: lType },
       flags: { ...EMPTY_FLAGS },
-      active: true,
+      active: !RETIRED_CATEGORY_KEYS.has(key),
     },
   ])),
 };
