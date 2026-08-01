@@ -14,6 +14,8 @@
 //   • Filters are COLLAPSED behind their own value. Each control shows what it
 //     is currently set to and opens on click — the long chip ladders are one
 //     tap away instead of permanently filling the screen.
+//   • Picked products go to one of TWO fixed lists — Marketing or Display —
+//     at /attention_lists. That is the ONLY thing this screen writes.
 //   • The LIST is never split by location — a style is one line whose quantity
 //     is everything we own, summed across every building. The CARD still says
 //     where that stock sits ("269 Hub 2"). Sizes are never on the face of the
@@ -22,7 +24,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { get, onValue, orderByChild, push, query, ref, remove, set, startAt, update } from "firebase/database";
+import { get, onValue, orderByChild, query, ref, remove, set, startAt } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells } from "./useStock";
 import {
@@ -34,8 +36,8 @@ import {
 import { TOP_CATEGORIES, UNCATEGORIZED_TOP } from "../../utils/productCategory";
 import { usePermissions } from "../PermissionsContext";
 import {
-  folderList, foldersHolding, newFolderRecord, newItemRecord, resolveFolderProducts, NAME_MAX,
-} from "./attentionFolders";
+  LISTS, listSummaries, listsHolding, newItemRecord, resolveListProducts,
+} from "./attentionLists";
 import { FONT, GLASS, GLASS_SOLID, GRAY, GREEN, RED, AMBER, BLUE_L, input } from "./ui";
 
 const DAY_MS = 86400000;
@@ -91,17 +93,17 @@ function useSoldWindow({ enabled, days, reloadToken }) {
   return { soldMap, arrivedSet, ready: state.movements !== null, loading, error };
 }
 
-// Folders live at /attention_folders. Small node (a handful of named lists), so
-// unlike the stock tree it's cheap to hold open — the panel and every card's
-// "already in" ticks stay live without a refresh.
-function useFolders() {
+// The two lists live at /attention_lists. Small node, so unlike the stock tree
+// it's cheap to hold open — the tabs' counts and every card's "already picked"
+// tick stay current without a refresh.
+function useLists() {
   const [raw, setRaw] = useState(null);
   useEffect(() => onValue(
-    ref(database, "attention_folders"),
+    ref(database, "attention_lists"),
     (snap) => setRaw(snap.val()),
-    (err) => { console.warn("Attention: folder read failed:", err); setRaw({}); },
+    (err) => { console.warn("Attention: list read failed:", err); setRaw({}); },
   ), []);
-  return { folders: useMemo(() => folderList(raw), [raw]), ready: raw !== null };
+  return useMemo(() => listSummaries(raw), [raw]);
 }
 
 export default function AttentionView({ products, onExit }) {
@@ -117,28 +119,18 @@ export default function AttentionView({ products, onExit }) {
   const [limit, setLimit] = useState(PAGE);
   const [reloadToken, setReloadToken] = useState(0);
   const resultsRef = useRef(null);
-  const [openFolderId, setOpenFolderId] = useState(null);
-  const [showFolders, setShowFolders] = useState(false);
+  const [showLists, setShowLists] = useState(false);
+  const [openListId, setOpenListId] = useState(LISTS[0].id);
   const { user } = usePermissions();
-  const { folders } = useFolders();
+  const lists = useLists();
 
-  // Writes are deliberately thin: add is keyed BY PRODUCT ID, so tapping a
-  // folder twice is a no-op rather than a duplicate.
-  const createFolder = async (name) => {
-    const record = newFolderRecord({
-      name, uid: user?.uid, displayName: user?.displayName || user?.email || null, nowMs: Date.now(),
-    });
-    const node = await push(ref(database, "attention_folders"), record);
-    return node.key;
-  };
-  const addToFolder = (folderId, productId) =>
-    set(ref(database, `attention_folders/${folderId}/items/${productId}`),
+  // Two writes, both keyed BY PRODUCT ID, so adding twice is a no-op rather
+  // than a duplicate and removing is a delete at a known path.
+  const addToList = (listId, productId) =>
+    set(ref(database, `attention_lists/${listId}/items/${productId}`),
         newItemRecord({ uid: user?.uid, nowMs: Date.now() }));
-  const removeFromFolder = (folderId, productId) =>
-    remove(ref(database, `attention_folders/${folderId}/items/${productId}`));
-  const renameFolder = (folderId, name) =>
-    update(ref(database, `attention_folders/${folderId}`), { name });
-  const deleteFolder = (folderId) => remove(ref(database, `attention_folders/${folderId}`));
+  const removeFromList = (listId, productId) =>
+    remove(ref(database, `attention_lists/${listId}/items/${productId}`));
 
   const dead = view === VIEW_DEAD;
   const stockTree = useStockCells();
@@ -194,16 +186,16 @@ export default function AttentionView({ products, onExit }) {
           <div style={{ fontSize: 12.5, color: GRAY, marginTop: 2 }}>{activeView?.blurb}</div>
         </div>
         <button
-          onClick={() => { setShowFolders((v) => !v); setOpenFolderId(null); }}
-          aria-pressed={showFolders}
+          onClick={() => setShowLists((v) => !v)}
+          aria-pressed={showLists}
           style={{
             borderRadius: 10, padding: "9px 14px", fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: FONT,
-            background: showFolders ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.05)",
-            border: showFolders ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.14)",
-            color: showFolders ? BLUE_L : "#dfe7ff", marginRight: 8,
+            background: showLists ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.05)",
+            border: showLists ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.14)",
+            color: showLists ? BLUE_L : "#dfe7ff", marginRight: 8,
           }}
         >
-          Folders{folders.length ? ` (${folders.length})` : ""}
+          {LISTS.map((l) => `${l.label} ${lists.find((x) => x.id === l.id)?.count ?? 0}`).join(" · ")}
         </button>
         <button
           onClick={() => setReloadToken((n) => n + 1)}
@@ -214,21 +206,18 @@ export default function AttentionView({ products, onExit }) {
         </button>
       </div>
 
-      {showFolders && (
-        <FoldersPanel
-          folders={folders}
+      {showLists && (
+        <ListsPanel
+          lists={lists}
           productsById={productsById}
-          openFolderId={openFolderId}
-          setOpenFolderId={setOpenFolderId}
-          onCreate={createFolder}
-          onRename={renameFolder}
-          onDelete={deleteFolder}
-          onRemoveItem={removeFromFolder}
-          onClose={() => { setShowFolders(false); setOpenFolderId(null); }}
+          openListId={openListId}
+          setOpenListId={setOpenListId}
+          onRemoveItem={removeFromList}
+          onClose={() => setShowLists(false)}
         />
       )}
 
-      {!showFolders && (
+      {!showLists && (
       <>
       {/* View switcher — the one control that stays open, because it's the question being asked */}
       <div style={{ display: "flex", gap: 8, marginBottom: 13, flexWrap: "wrap" }}>
@@ -343,10 +332,9 @@ export default function AttentionView({ products, onExit }) {
                 key={r.id}
                 row={r}
                 view={view}
-                folders={folders}
-                onAdd={addToFolder}
-                onRemove={removeFromFolder}
-                onCreate={createFolder}
+                lists={lists}
+                onAdd={addToList}
+                onRemove={removeFromList}
               />
             ))}
           </div>
@@ -431,188 +419,92 @@ function Picker({ label, value, options, selected, onPick, hint, scroll }) {
   );
 }
 
-// The folders workspace: the saved lists, and one folder's contents.
-// Same photo-first idiom as the grid, so a folder reads like a shelf of the
-// products you picked rather than a list of ids.
-function FoldersPanel({
-  folders, productsById, openFolderId, setOpenFolderId,
-  onCreate, onRename, onDelete, onRemoveItem, onClose,
-}) {
-  const [draft, setDraft] = useState("");
-  const [renaming, setRenaming] = useState(null);
-  const [renameDraft, setRenameDraft] = useState("");
+// The picked-products workspace: two tabs, Marketing and Display. Same
+// photo-first idiom as the grid, so a list reads like a shelf of what you
+// chose rather than a column of ids.
+function ListsPanel({ lists, productsById, openListId, setOpenListId, onRemoveItem, onClose }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const guard = async (fn) => {
+  const open = lists.find((l) => l.id === openListId) || lists[0];
+  const contents = useMemo(() => resolveListProducts(open, productsById), [open, productsById]);
+
+  const removeItem = async (productId) => {
     setBusy(true); setError(null);
-    try { await fn(); }
-    catch (err) { console.warn("Attention: folder write failed:", err); setError(err?.message || "Could not save."); }
+    try { await onRemoveItem(open.id, productId); }
+    catch (err) { console.warn("Attention: list write failed:", err); setError(err?.message || "Could not save."); }
     finally { setBusy(false); }
   };
 
-  const open = folders.find((f) => f.id === openFolderId) || null;
-  const contents = useMemo(
-    () => (open ? resolveFolderProducts(open, productsById) : []),
-    [open, productsById],
-  );
-
-  const head = (title, sub, back) => (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-      <button onClick={back}
-        style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 10, padding: "8px 12px", fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: FONT }}>
-        ← Back
-      </button>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 15, fontWeight: 800 }}>{title}</div>
-        <div style={{ fontSize: 11, color: GRAY, marginTop: 1 }}>{sub}</div>
-      </div>
-    </div>
-  );
-
-  if (open) {
-    return (
-      <div>
-        {head(open.name, `${open.count} ${open.count === 1 ? "product" : "products"}`, () => setOpenFolderId(null))}
-        {error && <div style={{ ...GLASS, padding: "10px 12px", color: RED, fontSize: 12, marginBottom: 12 }}>{error}</div>}
-
-        {contents.length === 0 ? (
-          <Empty>Nothing in this folder yet — add products with the ✚ on any card.</Empty>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12, alignItems: "start" }}>
-            {contents.map((c) => (
-              <div key={c.id} style={{ ...GLASS, overflow: "hidden" }}>
-                <div style={{ height: 150, background: "rgba(255,255,255,.03)", position: "relative" }}>
-                  {c.photo
-                    ? <img src={c.photo} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                    : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,.16)", fontSize: 30, fontWeight: 800 }}>
-                        {(c.name || "?").trim().charAt(0).toUpperCase()}
-                      </div>}
-                  <button
-                    onClick={() => guard(() => onRemoveItem(open.id, c.id))}
-                    disabled={busy}
-                    title="Remove from folder"
-                    style={{ position: "absolute", top: 7, right: 7, width: 26, height: 26, borderRadius: 8, cursor: "pointer", fontFamily: FONT, fontSize: 13, fontWeight: 800, background: "rgba(0,0,0,.72)", border: "1px solid rgba(255,255,255,.28)", color: "#fff", backdropFilter: "blur(6px)" }}
-                  >
-                    ✕
-                  </button>
-                </div>
-                <div style={{ padding: "9px 11px 11px" }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.3, height: "2.6em", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
-                    {c.missing ? "Removed from catalogue" : c.name}
-                  </div>
-                  {c.missing && <div style={{ fontSize: 10, color: AMBER, marginTop: 4 }}>{c.id}</div>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div>
-      {head("Folders", "Keep products together for later", onClose)}
-      {error && <div style={{ ...GLASS, padding: "10px 12px", color: RED, fontSize: 12, marginBottom: 12 }}>{error}</div>}
-
-      <div style={{ ...GLASS, padding: "11px 13px", marginBottom: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <input
-          value={draft}
-          maxLength={NAME_MAX}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && draft.trim()) guard(async () => { await onCreate(draft); setDraft(""); }); }}
-          placeholder="New folder name…"
-          style={{ ...input, padding: "8px 11px", fontSize: "0.85rem", flex: "1 1 220px", minWidth: 180 }}
-        />
-        <button
-          onClick={() => guard(async () => { await onCreate(draft); setDraft(""); })}
-          disabled={busy || !draft.trim()}
-          style={{ fontFamily: FONT, cursor: draft.trim() ? "pointer" : "default", borderRadius: 10, padding: "8px 15px", fontSize: 12.5, fontWeight: 700, background: "rgba(74,222,128,.16)", border: `1px solid ${GREEN}66`, color: GREEN, opacity: draft.trim() ? 1 : 0.5 }}
-        >
-          Create folder
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <button onClick={onClose}
+          style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 10, padding: "8px 12px", fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: FONT }}>
+          ← Back
         </button>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 800 }}>Picked products</div>
+          <div style={{ fontSize: 11, color: GRAY, marginTop: 1 }}>{open?.blurb}</div>
+        </div>
       </div>
 
-      {folders.length === 0 ? (
-        <Empty>No folders yet. Name one above, then add products with the ✚ on any card.</Empty>
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 12, alignItems: "start" }}>
-          {folders.map((f) => {
-            const covers = resolveFolderProducts(f, productsById).filter((c) => c.photo).slice(0, 4);
-            return (
-              <div key={f.id} style={{ ...GLASS, overflow: "hidden" }}>
-                <button
-                  onClick={() => setOpenFolderId(f.id)}
-                  style={{ display: "block", width: "100%", border: "none", background: "transparent", padding: 0, cursor: "pointer", fontFamily: FONT }}
-                >
-                  {/* A folder shows its first four products, so it's recognisable
-                      at a glance rather than a row of identical grey tiles. */}
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, height: 128, background: "rgba(255,255,255,.03)" }}>
-                    {covers.length === 0
-                      ? <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,.16)", fontSize: 26, fontWeight: 800 }}>—</div>
-                      : covers.map((c, i) => (
-                          <img key={c.id} src={c.photo} alt="" loading="lazy"
-                            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block",
-                                     gridColumn: covers.length === 1 ? "1 / -1" : undefined,
-                                     gridRow: covers.length <= 2 ? "1 / -1" : (i < 2 ? "1" : "2") }} />
-                        ))}
-                  </div>
-                </button>
-                <div style={{ padding: "10px 12px 12px" }}>
-                  {renaming === f.id ? (
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <input
-                        autoFocus
-                        value={renameDraft}
-                        maxLength={NAME_MAX}
-                        onChange={(e) => setRenameDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && renameDraft.trim()) guard(async () => { await onRename(f.id, renameDraft.trim()); setRenaming(null); });
-                          if (e.key === "Escape") setRenaming(null);
-                        }}
-                        style={{ ...input, padding: "6px 9px", fontSize: "0.8rem", flex: 1, minWidth: 0 }}
-                      />
-                      <button onClick={() => guard(async () => { await onRename(f.id, renameDraft.trim()); setRenaming(null); })}
-                        disabled={busy || !renameDraft.trim()}
-                        style={{ fontFamily: FONT, cursor: "pointer", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, background: "rgba(74,222,128,.16)", border: `1px solid ${GREEN}66`, color: GREEN }}>
-                        Save
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <div style={{ fontSize: 13, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
-                      <div style={{ fontSize: 10.5, color: GRAY, marginTop: 3 }}>
-                        {f.count} {f.count === 1 ? "product" : "products"}
-                        {f.createdByName ? ` · ${f.createdByName}` : ""}
-                      </div>
-                      <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
-                        <button onClick={() => setOpenFolderId(f.id)}
-                          style={{ flex: 1, fontFamily: FONT, cursor: "pointer", borderRadius: 8, padding: "6px 10px", fontSize: 11.5, fontWeight: 700, background: "rgba(74,127,255,.12)", border: "1px solid rgba(74,127,255,.4)", color: BLUE_L }}>
-                          Open
-                        </button>
-                        <button onClick={() => { setRenaming(f.id); setRenameDraft(f.name); }}
-                          style={{ fontFamily: FONT, cursor: "pointer", borderRadius: 8, padding: "6px 10px", fontSize: 11.5, fontWeight: 700, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.14)", color: "#dfe7ff" }}>
-                          Rename
-                        </button>
-                        <button
-                          onClick={() => {
-                            // A folder can hold a lot of gathered work — deleting
-                            // it is not something to do on a stray click.
-                            if (window.confirm(`Delete "${f.name}"? Its ${f.count} product${f.count === 1 ? "" : "s"} won't be affected.`)) {
-                              guard(() => onDelete(f.id));
-                            }
-                          }}
-                          style={{ fontFamily: FONT, cursor: "pointer", borderRadius: 8, padding: "6px 10px", fontSize: 11.5, fontWeight: 700, background: "rgba(248,113,113,.12)", border: "1px solid rgba(248,113,113,.35)", color: RED }}>
-                          Delete
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
+      {/* Both tabs are always present, whether or not anything is in them —
+          they're fixed destinations, not folders that come and go. */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        {lists.map((l) => {
+          const on = l.id === open?.id;
+          return (
+            <button
+              key={l.id}
+              onClick={() => setOpenListId(l.id)}
+              aria-pressed={on}
+              style={{
+                ...GLASS, fontFamily: FONT, cursor: "pointer", textAlign: "left", padding: "10px 16px", minWidth: 158,
+                border: on ? "1px solid rgba(74,127,255,.55)" : "1px solid rgba(255,255,255,.08)",
+                background: on ? "rgba(74,127,255,.13)" : GLASS.background,
+              }}
+            >
+              <div style={{ fontSize: 13.5, fontWeight: 800, color: on ? "#fff" : "#cfd8ee" }}>
+                {l.label} <span style={{ color: on ? BLUE_L : GRAY, fontWeight: 700 }}>{l.count}</span>
               </div>
-            );
-          })}
+              <div style={{ fontSize: 10.5, color: on ? BLUE_L : GRAY, marginTop: 3 }}>{l.blurb}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      {error && <div style={{ ...GLASS, padding: "10px 12px", color: RED, fontSize: 12, marginBottom: 12 }}>{error}</div>}
+
+      {contents.length === 0 ? (
+        <Empty>Nothing in {open?.label} yet — add products with the ✚ on any card.</Empty>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12, alignItems: "start" }}>
+          {contents.map((c) => (
+            <div key={c.id} style={{ ...GLASS, overflow: "hidden" }}>
+              <div style={{ height: 150, background: "rgba(255,255,255,.03)", position: "relative" }}>
+                {c.photo
+                  ? <img src={c.photo} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                  : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,.16)", fontSize: 30, fontWeight: 800 }}>
+                      {(c.name || "?").trim().charAt(0).toUpperCase()}
+                    </div>}
+                <button
+                  onClick={() => removeItem(c.id)}
+                  disabled={busy}
+                  title={`Remove from ${open.label}`}
+                  style={{ position: "absolute", top: 7, right: 7, width: 26, height: 26, borderRadius: 8, cursor: "pointer", fontFamily: FONT, fontSize: 13, fontWeight: 800, background: "rgba(0,0,0,.72)", border: "1px solid rgba(255,255,255,.28)", color: "#fff", backdropFilter: "blur(6px)" }}
+                >
+                  ✕
+                </button>
+              </div>
+              <div style={{ padding: "9px 11px 11px" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.3, height: "2.6em", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                  {c.missing ? "Removed from catalogue" : c.name}
+                </div>
+                {c.missing && <div style={{ fontSize: 10, color: AMBER, marginTop: 4 }}>{c.id}</div>}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -635,7 +527,7 @@ function Empty({ children, tone = GRAY }) {
 
 // One product. The photo tile is a FIXED height and never stretches, so the grid
 // reads as one even wall of images regardless of how much text sits underneath.
-function AttentionCard({ row, view, folders, onAdd, onRemove, onCreate }) {
+function AttentionCard({ row, view, lists, onAdd, onRemove }) {
   const [failed, setFailed] = useState(false);
   const showPhoto = row.photo && !failed;
   const tone = view === VIEW_LOW ? RED : view === VIEW_OVER ? AMBER : BLUE_L;
@@ -666,13 +558,7 @@ function AttentionCard({ row, view, folders, onAdd, onRemove, onCreate }) {
         </div>
 
         <div style={{ position: "absolute", bottom: 8, right: 8 }}>
-          <AddToFolder
-            productId={row.id}
-            folders={folders}
-            onAdd={onAdd}
-            onRemove={onRemove}
-            onCreate={onCreate}
-          />
+          <AddToList productId={row.id} lists={lists} onAdd={onAdd} onRemove={onRemove} />
         </div>
 
         {row.justArrived && (
@@ -713,23 +599,22 @@ function AttentionCard({ row, view, folders, onAdd, onRemove, onCreate }) {
   );
 }
 
-// "+" on a product tile: drop this product into a folder, or start a new one.
-// The menu ticks the folders that already hold it, so the button also answers
-// "where is this already?" — and tapping a ticked folder takes it back out.
+// "✚" on a product tile: send this product to Marketing or Display. Exactly
+// two choices, always both, so picking is one tap and there's no naming step.
+// The menu ticks whichever list already holds it, so the button also answers
+// "have I already picked this?" — and tapping a ticked list takes it back out.
+//
 // Portalled for the same reason as the size panel: a menu laid out inside the
 // card would be clipped by its neighbours and would drag the grid around.
-function AddToFolder({ productId, folders, onAdd, onRemove, onCreate }) {
+function AddToList({ productId, lists, onAdd, onRemove }) {
   const [rect, setRect] = useState(null);
-  const [creating, setCreating] = useState(false);
-  const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const open = rect !== null;
 
-  const holding = useMemo(() => foldersHolding(folders, productId), [folders, productId]);
+  const holding = useMemo(() => listsHolding(lists, productId), [lists, productId]);
   const inAny = holding.size > 0;
-
-  const close = () => { setRect(null); setCreating(false); setDraft(""); setError(null); };
+  const close = () => { setRect(null); setError(null); };
 
   useEffect(() => {
     if (!open) return undefined;
@@ -745,36 +630,28 @@ function AddToFolder({ productId, folders, onAdd, onRemove, onCreate }) {
     };
   }, [open]);
 
-  // Every write is awaited and its failure surfaced. A folder that silently
+  // Every write is awaited and its failure surfaced. A pick that silently
   // failed to save is worse than one that never appeared to.
-  const guard = async (fn) => {
+  const toggle = async (listId) => {
     setBusy(true); setError(null);
-    try { await fn(); return true; }
-    catch (err) { console.warn("Attention: folder write failed:", err); setError(err?.message || "Could not save."); return false; }
-    finally { setBusy(false); }
+    try {
+      if (holding.has(listId)) await onRemove(listId, productId);
+      else await onAdd(listId, productId);
+    } catch (err) {
+      console.warn("Attention: list write failed:", err);
+      setError(err?.message || "Could not save.");
+    } finally { setBusy(false); }
   };
 
-  const toggle = (folderId) => guard(() =>
-    holding.has(folderId) ? onRemove(folderId, productId) : onAdd(folderId, productId));
-
-  const create = async () => {
-    const name = draft;
-    const ok = await guard(async () => {
-      const id = await onCreate(name);
-      await onAdd(id, productId);
-    });
-    if (ok) close();
-  };
-
-  const PANEL_W = 224;
+  const PANEL_W = 216;
   const left = rect ? Math.max(8, Math.min(rect.right - PANEL_W, window.innerWidth - PANEL_W - 8)) : 0;
-  const below = rect ? rect.bottom + 260 < window.innerHeight : false;
+  const below = rect ? rect.bottom + 190 < window.innerHeight : false;
 
   return (
     <>
       <button
         onClick={(e) => (open ? close() : setRect(e.currentTarget.getBoundingClientRect()))}
-        title={inAny ? "In a folder — tap to change" : "Add to a folder"}
+        title={inAny ? "Picked — tap to change" : "Add to Marketing or Display"}
         aria-expanded={open}
         style={{
           width: 28, height: 28, borderRadius: 9, cursor: "pointer", fontFamily: FONT,
@@ -796,66 +673,34 @@ function AddToFolder({ productId, folders, onAdd, onRemove, onCreate }) {
           <div style={{
             ...GLASS_SOLID, position: "fixed", left, zIndex: 4600,
             ...(below ? { top: rect.bottom + 6 } : { bottom: window.innerHeight - rect.top + 6 }),
-            width: PANEL_W, maxHeight: 300, overflowY: "auto", padding: 7,
+            width: PANEL_W, padding: 7,
           }}>
             <div style={{ fontSize: 9.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", padding: "4px 7px 7px" }}>
-              Add to folder
+              Add to
             </div>
-
-            {folders.length === 0 && !creating && (
-              <div style={{ fontSize: 11, color: GRAY, padding: "0 7px 8px" }}>No folders yet.</div>
-            )}
-
-            {folders.map((f) => {
-              const on = holding.has(f.id);
+            {lists.map((l) => {
+              const on = holding.has(l.id);
               return (
                 <button
-                  key={f.id}
-                  onClick={() => toggle(f.id)}
+                  key={l.id}
+                  onClick={() => toggle(l.id)}
                   disabled={busy}
                   style={{
-                    display: "flex", alignItems: "center", gap: 7, width: "100%", textAlign: "left",
+                    display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
                     fontFamily: FONT, cursor: busy ? "default" : "pointer", border: "none", borderRadius: 8,
-                    padding: "8px 9px", background: on ? "rgba(74,222,128,.14)" : "transparent",
-                    color: on ? "#fff" : "#cfd8ee", fontSize: 12.5, fontWeight: on ? 800 : 600,
+                    padding: "10px 9px", background: on ? "rgba(74,222,128,.14)" : "transparent",
+                    color: on ? "#fff" : "#cfd8ee",
                   }}
                 >
-                  <span style={{ color: on ? GREEN : "rgba(255,255,255,.25)", fontSize: 12 }}>{on ? "✓" : "＋"}</span>
-                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
-                  <span style={{ fontSize: 10, color: GRAY }}>{f.count}</span>
+                  <span style={{ color: on ? GREEN : "rgba(255,255,255,.25)", fontSize: 13 }}>{on ? "✓" : "＋"}</span>
+                  <span style={{ flex: 1 }}>
+                    <span style={{ display: "block", fontSize: 12.5, fontWeight: on ? 800 : 700 }}>{l.label}</span>
+                    <span style={{ display: "block", fontSize: 10, color: GRAY, marginTop: 1 }}>{l.blurb}</span>
+                  </span>
+                  <span style={{ fontSize: 10, color: GRAY }}>{l.count}</span>
                 </button>
               );
             })}
-
-            {creating ? (
-              <div style={{ padding: "7px 5px 3px", display: "flex", flexDirection: "column", gap: 6 }}>
-                <input
-                  autoFocus
-                  value={draft}
-                  maxLength={NAME_MAX}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && draft.trim()) create(); }}
-                  placeholder="Folder name…"
-                  style={{ ...input, padding: "7px 9px", fontSize: "0.8rem" }}
-                />
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button onClick={create} disabled={busy || !draft.trim()}
-                    style={{ flex: 1, fontFamily: FONT, cursor: draft.trim() ? "pointer" : "default", borderRadius: 8, padding: "7px 9px", fontSize: 11.5, fontWeight: 700, background: "rgba(74,222,128,.16)", border: `1px solid ${GREEN}66`, color: GREEN, opacity: draft.trim() ? 1 : 0.5 }}>
-                    Create &amp; add
-                  </button>
-                  <button onClick={() => { setCreating(false); setDraft(""); }}
-                    style={{ fontFamily: FONT, cursor: "pointer", borderRadius: 8, padding: "7px 9px", fontSize: 11.5, fontWeight: 700, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.14)", color: GRAY }}>
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button onClick={() => setCreating(true)}
-                style={{ display: "block", width: "100%", textAlign: "left", fontFamily: FONT, cursor: "pointer", border: "none", borderTop: "1px solid rgba(255,255,255,.08)", borderRadius: 0, marginTop: 4, padding: "9px", background: "transparent", color: BLUE_L, fontSize: 12, fontWeight: 700 }}>
-                ＋ New folder…
-              </button>
-            )}
-
             {error && <div style={{ fontSize: 10.5, color: RED, padding: "6px 8px 2px" }}>{error}</div>}
           </div>
         </>,
