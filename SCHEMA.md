@@ -615,6 +615,44 @@ The TV strip switches from `/laybyPulls` to `/laybyPullsBoard` when this lands.
 
 ---
 
+## `/attention_lists/{listId}/items/{productId}`
+
+> **Owned by this app** — written by the Attention workspace
+> (`src/components/stock/AttentionView.jsx`). This is the ONLY path Attention
+> writes; everything else that screen shows (`/products`, `/stock`,
+> `/stock_movements`) it reads.
+
+Two FIXED lists of products picked off the Attention grid:
+
+| `listId`    | Meaning |
+|-------------|---------|
+| `marketing` | The week's advertising shortlist. |
+| `display`   | What should go out on the shop floor. |
+
+Fixed, not free-form — there is no create-a-folder step, so the same two lists
+mean the same thing to everyone. Adding a third is a code change, which is the
+right amount of friction for something people have to agree on.
+
+Each item is keyed **by product id**, so adding the same product twice is
+idempotent and a list can never hold duplicates:
+
+| Field     | Type            | Notes |
+|-----------|-----------------|-------|
+| `addedAt` | number          | ms since epoch, client clock. Also the display order (oldest pick first). |
+| `addedBy` | string \| null  | uid of whoever picked it. |
+
+A list with nothing in it has **no node at all** (RTDB drops empty objects); the
+reader treats absent as an empty list, so both tabs always render. A product id
+that later leaves `/products` is surfaced as "Removed from catalogue" rather
+than dropped, so a list never silently shrinks.
+
+Picking a product moves no stock, reserves nothing and changes no price.
+
+**Deliberately NOT `/marketing`.** That tree belongs to marathon-ai (see below)
+and this app never writes it. The `marketing` list here is a shortlist a human
+is still assembling; if it ever feeds a real campaign that should be an explicit
+hand-off, not this screen writing into another app's data.
+
 ## `/marketing/campaigns/{campaignId}`
 
 > **Owned by marathon-ai, not this app.** The marathon-store-app PWA never reads

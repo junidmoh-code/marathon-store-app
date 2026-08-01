@@ -142,6 +142,7 @@
     "pos": {
       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
       "sales": {
+        ".indexOn": "createdAt",
         "$saleId": {
           ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
           ".validate": "newData.hasChildren(['total','type'])",
@@ -151,6 +152,14 @@
           },
           "updatedAt": {
             ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+          },
+          "laybyCompletionSaleId": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isString()"
+          },
+          "markerPublished": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isBoolean()"
           },
           "returnedTransactions": {
             ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
@@ -523,6 +532,30 @@
           "$saleId": {
             ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
           }
+        }
+      }
+    },
+    "attention_lists": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$listId": {
+        ".validate": "$listId === 'marketing' || $listId === 'display'",
+        "items": {
+          "$productId": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && ($listId === 'marketing' || $listId === 'display')",
+            ".validate": "!newData.exists() || ((data.exists() || root.child('products').child($productId).exists()) && newData.hasChildren(['addedAt']) && newData.child('addedAt').isNumber())",
+            "addedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
+            },
+            "addedBy": {
+              ".validate": "newData.val() === null || (newData.isString() && newData.val() === auth.uid)"
+            },
+            "$other": {
+              ".validate": "false"
+            }
+          }
+        },
+        "$other": {
+          ".validate": "false"
         }
       }
     }
