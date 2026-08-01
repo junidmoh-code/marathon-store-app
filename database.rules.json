@@ -525,6 +525,30 @@
           }
         }
       }
+    },
+    "attention_lists": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$listId": {
+        ".validate": "$listId === 'marketing' || $listId === 'display'",
+        "items": {
+          "$productId": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && ($listId === 'marketing' || $listId === 'display')",
+            ".validate": "!newData.exists() || (newData.hasChildren(['addedAt']) && newData.child('addedAt').isNumber())",
+            "addedAt": {
+              ".validate": "newData.isNumber()"
+            },
+            "addedBy": {
+              ".validate": "newData.isString() || newData.val() === null"
+            },
+            "$other": {
+              ".validate": "false"
+            }
+          }
+        },
+        "$other": {
+          ".validate": "false"
+        }
+      }
     }
   }
 }
