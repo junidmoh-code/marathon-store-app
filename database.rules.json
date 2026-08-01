@@ -541,7 +541,7 @@
         ".validate": "$listId === 'marketing' || $listId === 'display'",
         "items": {
           "$productId": {
-            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && ($listId === 'marketing' || $listId === 'display')",
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && ($listId === 'marketing' || $listId === 'display')",
             ".validate": "!newData.exists() || ((data.exists() || root.child('products').child($productId).exists()) && newData.hasChildren(['addedAt']) && newData.child('addedAt').isNumber())",
             "addedAt": {
               ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
