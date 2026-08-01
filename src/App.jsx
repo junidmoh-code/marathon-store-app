@@ -30,6 +30,7 @@ import StockView from "./components/stock/StockView";
 import Hub2RefillQueue from "./components/stock/Hub2RefillQueue";
 import HealthView from "./components/stock/HealthView";
 import AttentionView from "./components/stock/AttentionView";
+import MarketingView from "./components/stock/MarketingView";
 import DisplayRegister, { registerDisplayPair } from "./components/stock/DisplayRegister";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
@@ -246,7 +247,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", DISPLAY_REGISTER: "display_register" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", DISPLAY_REGISTER: "display_register" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2504,6 +2505,10 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       // piled up, what isn't selling. Deliberately separate from Inventory
       // Health, which is the refill engine's operational control centre.
       canAccessStock                                           && { key:"attention", icon:RoleIcons.stock, name:"Attention", desc:"Low stock, overstock & non-movers", onClick:()=>onSelect(ROLES.ATTENTION) },
+      // Marketing — the products picked out of Attention, in two fixed lists
+      // (Marketing / Display). Picking happens on the Attention grid; this card
+      // is where you review what was picked.
+      canAccessStock                                           && { key:"marketing", icon:RoleIcons.insights, name:"Marketing", desc:"Picked for advertising & display", onClick:()=>onSelect(ROLES.MARKETING) },
       true                                                     && { key:"display_register", icon:RoleIcons.display, name:"Display Register", desc:"What's on the floor, and in what size", onClick:()=>onSelect(ROLES.DISPLAY_REGISTER) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
@@ -16343,7 +16348,7 @@ function AppInner() {
   useEffect(() => {
     if (!role) return;
     // Stock is stockRole-gated (not permission-mapped) — drop non-stock users back home.
-    if ((role === ROLES.STOCK || role === ROLES.HEALTH || role === ROLES.ATTENTION) && !canAccessStock) { setRole(null); return; }
+    if ((role === ROLES.STOCK || role === ROLES.HEALTH || role === ROLES.ATTENTION || role === ROLES.MARKETING) && !canAccessStock) { setRole(null); return; }
     // AI Studio is isSuperAdmin-gated (not permission-mapped) — drop anyone
     // else (e.g. a stale persisted role) back to the selector instead of
     // leaving them on the null view.
@@ -16581,6 +16586,7 @@ function AppInner() {
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.ATTENTION) view = canAccessStock ? <AttentionView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.MARKETING) view = canAccessStock ? <MarketingView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.DISPLAY_REGISTER) view = <DisplayRegister products={products} onExit={() => setRole(null)} standalone />;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;

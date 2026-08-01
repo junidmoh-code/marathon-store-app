@@ -14,8 +14,10 @@
 //   • Filters are COLLAPSED behind their own value. Each control shows what it
 //     is currently set to and opens on click — the long chip ladders are one
 //     tap away instead of permanently filling the screen.
-//   • Picked products go to one of TWO fixed lists — Marketing or Display —
-//     at /attention_lists. That is the ONLY thing this screen writes.
+//   • The ✚ on a tile files a product into one of two fixed lists (Marketing
+//     or Display) at /attention_lists — the ONLY thing this screen writes.
+//     REVIEWING those lists lives in the Marketing workspace, not here: picking
+//     belongs next to the stock and the photo, reviewing is a separate moment.
 //   • The LIST is never split by location — a style is one line whose quantity
 //     is everything we own, summed across every building. The CARD still says
 //     where that stock sits ("269 Hub 2"). Sizes are never on the face of the
@@ -24,7 +26,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { get, onValue, orderByChild, query, ref, remove, set, startAt } from "firebase/database";
+import { get, orderByChild, query, ref, startAt } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells } from "./useStock";
 import {
@@ -34,10 +36,8 @@ import {
   DEFAULT_LOW_STEP, DEFAULT_OVER_STEP, DEFAULT_DEAD_MIN, DEAD_WINDOWS, SORTS, findStep, findSort,
 } from "./attentionCore";
 import { TOP_CATEGORIES, UNCATEGORIZED_TOP } from "../../utils/productCategory";
-import { usePermissions } from "../PermissionsContext";
-import {
-  LISTS, listSummaries, listsHolding, newItemRecord, resolveListProducts,
-} from "./attentionLists";
+import { listsHolding } from "./attentionLists";
+import { useAttentionLists } from "./useAttentionLists";
 import { FONT, GLASS, GLASS_SOLID, GRAY, GREEN, RED, AMBER, BLUE_L, input } from "./ui";
 
 const DAY_MS = 86400000;
@@ -93,19 +93,6 @@ function useSoldWindow({ enabled, days, reloadToken }) {
   return { soldMap, arrivedSet, ready: state.movements !== null, loading, error };
 }
 
-// The two lists live at /attention_lists. Small node, so unlike the stock tree
-// it's cheap to hold open — the tabs' counts and every card's "already picked"
-// tick stay current without a refresh.
-function useLists() {
-  const [raw, setRaw] = useState(null);
-  useEffect(() => onValue(
-    ref(database, "attention_lists"),
-    (snap) => setRaw(snap.val()),
-    (err) => { console.warn("Attention: list read failed:", err); setRaw({}); },
-  ), []);
-  return useMemo(() => listSummaries(raw), [raw]);
-}
-
 export default function AttentionView({ products, onExit }) {
   const [view, setView] = useState(VIEW_LOW);
   const [lowStepId, setLowStepId] = useState(DEFAULT_LOW_STEP);
@@ -119,18 +106,9 @@ export default function AttentionView({ products, onExit }) {
   const [limit, setLimit] = useState(PAGE);
   const [reloadToken, setReloadToken] = useState(0);
   const resultsRef = useRef(null);
-  const [showLists, setShowLists] = useState(false);
-  const [openListId, setOpenListId] = useState(LISTS[0].id);
-  const { user } = usePermissions();
-  const lists = useLists();
-
-  // Two writes, both keyed BY PRODUCT ID, so adding twice is a no-op rather
-  // than a duplicate and removing is a delete at a known path.
-  const addToList = (listId, productId) =>
-    set(ref(database, `attention_lists/${listId}/items/${productId}`),
-        newItemRecord({ uid: user?.uid, nowMs: Date.now() }));
-  const removeFromList = (listId, productId) =>
-    remove(ref(database, `attention_lists/${listId}/items/${productId}`));
+  // Picking only. The lists themselves are REVIEWED in the Marketing
+  // workspace — this screen just files products into them.
+  const { lists, addToList, removeFromList } = useAttentionLists();
 
   const dead = view === VIEW_DEAD;
   const stockTree = useStockCells();
@@ -186,18 +164,6 @@ export default function AttentionView({ products, onExit }) {
           <div style={{ fontSize: 12.5, color: GRAY, marginTop: 2 }}>{activeView?.blurb}</div>
         </div>
         <button
-          onClick={() => setShowLists((v) => !v)}
-          aria-pressed={showLists}
-          style={{
-            borderRadius: 10, padding: "9px 14px", fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: FONT,
-            background: showLists ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.05)",
-            border: showLists ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.14)",
-            color: showLists ? BLUE_L : "#dfe7ff", marginRight: 8,
-          }}
-        >
-          {LISTS.map((l) => `${l.label} ${lists.find((x) => x.id === l.id)?.count ?? 0}`).join(" · ")}
-        </button>
-        <button
           onClick={() => setReloadToken((n) => n + 1)}
           disabled={busy}
           style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.14)", color: "#dfe7ff", borderRadius: 10, padding: "9px 14px", fontWeight: 700, fontSize: 12.5, cursor: busy ? "default" : "pointer", opacity: busy ? 0.55 : 1, fontFamily: FONT }}
@@ -206,19 +172,6 @@ export default function AttentionView({ products, onExit }) {
         </button>
       </div>
 
-      {showLists && (
-        <ListsPanel
-          lists={lists}
-          productsById={productsById}
-          openListId={openListId}
-          setOpenListId={setOpenListId}
-          onRemoveItem={removeFromList}
-          onClose={() => setShowLists(false)}
-        />
-      )}
-
-      {!showLists && (
-      <>
       {/* View switcher — the one control that stays open, because it's the question being asked */}
       <div style={{ display: "flex", gap: 8, marginBottom: 13, flexWrap: "wrap" }}>
         {VIEWS.map((v) => {
@@ -350,8 +303,6 @@ export default function AttentionView({ products, onExit }) {
           )}
         </>
       )}
-      </>
-      )}
     </div>
   );
 }
@@ -413,98 +364,6 @@ function Picker({ label, value, options, selected, onPick, hint, scroll }) {
               </button>
             );
           })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// The picked-products workspace: two tabs, Marketing and Display. Same
-// photo-first idiom as the grid, so a list reads like a shelf of what you
-// chose rather than a column of ids.
-function ListsPanel({ lists, productsById, openListId, setOpenListId, onRemoveItem, onClose }) {
-  const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);
-
-  const open = lists.find((l) => l.id === openListId) || lists[0];
-  const contents = useMemo(() => resolveListProducts(open, productsById), [open, productsById]);
-
-  const removeItem = async (productId) => {
-    setBusy(true); setError(null);
-    try { await onRemoveItem(open.id, productId); }
-    catch (err) { console.warn("Attention: list write failed:", err); setError(err?.message || "Could not save."); }
-    finally { setBusy(false); }
-  };
-
-  return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-        <button onClick={onClose}
-          style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 10, padding: "8px 12px", fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: FONT }}>
-          ← Back
-        </button>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 15, fontWeight: 800 }}>Picked products</div>
-          <div style={{ fontSize: 11, color: GRAY, marginTop: 1 }}>{open?.blurb}</div>
-        </div>
-      </div>
-
-      {/* Both tabs are always present, whether or not anything is in them —
-          they're fixed destinations, not folders that come and go. */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-        {lists.map((l) => {
-          const on = l.id === open?.id;
-          return (
-            <button
-              key={l.id}
-              onClick={() => setOpenListId(l.id)}
-              aria-pressed={on}
-              style={{
-                ...GLASS, fontFamily: FONT, cursor: "pointer", textAlign: "left", padding: "10px 16px", minWidth: 158,
-                border: on ? "1px solid rgba(74,127,255,.55)" : "1px solid rgba(255,255,255,.08)",
-                background: on ? "rgba(74,127,255,.13)" : GLASS.background,
-              }}
-            >
-              <div style={{ fontSize: 13.5, fontWeight: 800, color: on ? "#fff" : "#cfd8ee" }}>
-                {l.label} <span style={{ color: on ? BLUE_L : GRAY, fontWeight: 700 }}>{l.count}</span>
-              </div>
-              <div style={{ fontSize: 10.5, color: on ? BLUE_L : GRAY, marginTop: 3 }}>{l.blurb}</div>
-            </button>
-          );
-        })}
-      </div>
-
-      {error && <div style={{ ...GLASS, padding: "10px 12px", color: RED, fontSize: 12, marginBottom: 12 }}>{error}</div>}
-
-      {contents.length === 0 ? (
-        <Empty>Nothing in {open?.label} yet — add products with the ✚ on any card.</Empty>
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12, alignItems: "start" }}>
-          {contents.map((c) => (
-            <div key={c.id} style={{ ...GLASS, overflow: "hidden" }}>
-              <div style={{ height: 150, background: "rgba(255,255,255,.03)", position: "relative" }}>
-                {c.photo
-                  ? <img src={c.photo} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                  : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,.16)", fontSize: 30, fontWeight: 800 }}>
-                      {(c.name || "?").trim().charAt(0).toUpperCase()}
-                    </div>}
-                <button
-                  onClick={() => removeItem(c.id)}
-                  disabled={busy}
-                  title={`Remove from ${open.label}`}
-                  style={{ position: "absolute", top: 7, right: 7, width: 26, height: 26, borderRadius: 8, cursor: "pointer", fontFamily: FONT, fontSize: 13, fontWeight: 800, background: "rgba(0,0,0,.72)", border: "1px solid rgba(255,255,255,.28)", color: "#fff", backdropFilter: "blur(6px)" }}
-                >
-                  ✕
-                </button>
-              </div>
-              <div style={{ padding: "9px 11px 11px" }}>
-                <div style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.3, height: "2.6em", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
-                  {c.missing ? "Removed from catalogue" : c.name}
-                </div>
-                {c.missing && <div style={{ fontSize: 10, color: AMBER, marginTop: 4 }}>{c.id}</div>}
-              </div>
-            </div>
-          ))}
         </div>
       )}
     </div>
