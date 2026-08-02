@@ -107,3 +107,45 @@ describe("release after idle — heap comes back", () => {
     expect(store._state().consumers).toBe(0);
   });
 });
+
+// Provider unmount must close NOW, not in five minutes: a subscription with no
+// possible consumer is pure cost, and a provider remount inside the delay window
+// would hold two live whole-node subscriptions at once.
+describe("destroy — synchronous teardown on provider unmount", () => {
+  it("closes immediately, without waiting for the delay", () => {
+    store.retain(); store.retain();
+    store.destroy();
+    expect(sdk.closes).toBe(1);
+    expect(store._state()).toMatchObject({ consumers: 0, isOpen: false, hasPendingRelease: false });
+  });
+
+  it("cancels a release already in flight, so the timer cannot fire later", () => {
+    store.retain();
+    store.release();                       // arms the 5-min timer
+    store.destroy();
+    expect(sdk.closes).toBe(1);
+    vi.advanceTimersByTime(DELAY * 2);
+    expect(sdk.closes).toBe(1);            // not closed twice
+  });
+
+  it("drops the cached log", () => {
+    store.retain();
+    sdk.push([{ action: "placed" }]);
+    store.destroy();
+    expect(store.getSnapshot()).toBe(EMPTY);
+  });
+
+  it("is safe to call with nothing open", () => {
+    expect(() => store.destroy()).not.toThrow();
+    expect(sdk.closes).toBe(0);
+  });
+
+  it("a fresh store after destroy opens exactly one subscription", () => {
+    store.retain();
+    store.destroy();
+    const next = createInsightsLogStore({ open: sdk.open, releaseDelayMs: DELAY });
+    next.retain();
+    expect(sdk.opens).toBe(2);   // one per store, never two at once
+    expect(sdk.closes).toBe(1);
+  });
+});

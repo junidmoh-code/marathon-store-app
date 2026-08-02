@@ -12,6 +12,7 @@ import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
+import { buildCustomerIndex } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
@@ -1494,40 +1495,7 @@ function useCustomersDb() {
 // form. The index is keyed by normalised phone, so it cannot contain duplicates.
 function useCustomerIndex() {
   const customersDb = useCustomersDb();
-  return useMemo(() => {
-    const byPhone = new Map();
-    for (const [key, c] of Object.entries(customersDb || {})) {
-      if (!c || typeof c !== "object") continue;
-      // The `phone` FIELD is preferred, but some records carry junk there (a
-      // name, a partial number) while the record KEY holds the real normalised
-      // digits — fall back to the key rather than lose the customer.
-      const normalised = normalizeSAPhone(c.phone) || normalizeSAPhone(key);
-      if (!normalised) continue;
-      const name = (c.name || "").trim();
-      const candidate = { name, phone: c.phone || key, lastOrderAt: c.lastOrderAt || "", _key: key };
-      const held = byPhone.get(normalised);
-      if (!held || beatsHeldCustomer(candidate, held)) byPhone.set(normalised, candidate);
-    }
-    // Nameless records would render a blank suggestion row — drop them, exactly
-    // as the log-derived index did (`if (!phone || !e.customerName) continue`).
-    return Array.from(byPhone.values())
-      .filter(c => c.name)
-      .map(({ name, phone, lastOrderAt }) => ({ name, phone, lastOrderAt }));
-  }, [customersDb]);
-}
-
-// The duplicate-phone winner rule, extracted so it is unit-testable: a non-empty
-// name wins; then the most recent lastOrderAt; then the international ("27…")
-// key form as a deterministic tie-break.
-export function beatsHeldCustomer(candidate, held) {
-  const cNamed = !!candidate.name, hNamed = !!held.name;
-  if (cNamed !== hNamed) return cNamed;
-  const cLast = candidate.lastOrderAt || "", hLast = held.lastOrderAt || "";
-  if (cLast !== hLast) return cLast > hLast;
-  const cIntl = String(candidate._key || "").startsWith("27");
-  const hIntl = String(held._key || "").startsWith("27");
-  if (cIntl !== hIntl) return cIntl;
-  return false;
+  return useMemo(() => buildCustomerIndex(customersDb), [customersDb]);
 }
 
 // Match against the customer index. `mode` picks the field to prefix-match.

@@ -62,6 +62,17 @@ export function createInsightsLogStore({
         if (consumers === 0) closeNow();
       }, releaseDelayMs);
     },
+    // SYNCHRONOUS teardown for provider unmount (sign-out, app teardown).
+    // release() only ARMS the delay timer, so draining consumers through it
+    // would leave the subscription open for up to releaseDelayMs with no
+    // consumer that could ever reuse it — and a provider remount inside that
+    // window would hold TWO live whole-node subscriptions, which is the exact
+    // cost this module exists to avoid.
+    destroy() {
+      consumers = 0;
+      cancelPendingRelease();
+      closeNow();
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

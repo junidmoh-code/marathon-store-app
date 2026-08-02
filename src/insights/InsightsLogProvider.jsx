@@ -68,7 +68,10 @@ export function InsightsLogProvider({
   const release = useCallback(() => { if (authReady) store.release(); }, [authReady, store]);
 
   // Unmounting the provider (sign-out, app teardown) must not leak the listener.
-  useEffect(() => () => { while (store._state().consumers > 0) store.release(); }, [store]);
+  // destroy() closes SYNCHRONOUSLY — draining through release() would only arm
+  // the 5-minute timer, leaving a subscription open that no consumer can reuse,
+  // and a remount inside that window would hold two live subscriptions.
+  useEffect(() => () => store.destroy(), [store]);
 
   const value = useMemo(() => ({ log, retain, release }), [log, retain, release]);
   return <InsightsLogContext.Provider value={value}>{children}</InsightsLogContext.Provider>;
