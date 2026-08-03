@@ -42,7 +42,7 @@ import Hub2RefillQueue from "./components/stock/Hub2RefillQueue";
 import HealthView from "./components/stock/HealthView";
 import AttentionView from "./components/stock/AttentionView";
 import MarketingView from "./components/stock/MarketingView";
-import DisplayRegister, { registerDisplayPair } from "./components/stock/DisplayRegister";
+import DisplayRegister, { registerDisplayPair, mayUseDisplayRegister } from "./components/stock/DisplayRegister";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { input as stockInput } from "./components/stock/ui";
@@ -2570,7 +2570,11 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       // (Marketing / Display). Picking happens on the Attention grid; this card
       // is where you review what was picked.
       canAccessStock                                           && { key:"marketing", icon:RoleIcons.insights, name:"Marketing", desc:"Picked for advertising & display", onClick:()=>onSelect(ROLES.MARKETING) },
-      true                                                     && { key:"display_register", icon:RoleIcons.display, name:"Display Register", desc:"What's on the floor, and in what size", onClick:()=>onSelect(ROLES.DISPLAY_REGISTER) },
+      // Stock users OR display staff — the same rule the route gate applies
+      // (mayUseDisplayRegister). Was the literal `true`, which showed the tile to
+      // every signed-in account including POS-only till logins.
+      mayUseDisplayRegister({ canAccessStock, hasPermission })
+                                                               && { key:"display_register", icon:RoleIcons.display, name:"Display Register", desc:"What's on the floor, and in what size", onClick:()=>onSelect(ROLES.DISPLAY_REGISTER) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
       isSuperAdmin && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc:"Photos · Names · Reorder · Voice", onClick:()=>onSelect(ROLES.AI_STUDIO) },
@@ -16772,7 +16776,20 @@ function AppInner() {
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.ATTENTION) view = canAccessStock ? <AttentionView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.MARKETING) view = canAccessStock ? <MarketingView products={products} onExit={() => setRole(null)} /> : null;
-  else if (role === ROLES.DISPLAY_REGISTER) view = <DisplayRegister products={products} onExit={() => setRole(null)} standalone />;
+  // ── THE ROUTE GATE (layer 1 of 2) ────────────────────────────────────────────
+  // A REAL check, not a hidden tile: a refused viewer never gets DisplayRegister
+  // mounted, so its /settings/displayRegister listener is never opened and no
+  // write surface exists. Hiding the tile alone would leave the route reachable
+  // through a persisted role — the exact defect #302 fixed for User Management.
+  //
+  // Layer 2 is the component's own gate, which re-checks the IDENTICAL rule
+  // independently (mayUseDisplayRegister, src/components/stock/DisplayRegister.jsx).
+  // Neither layer relies on the other; deleting either one leaves a working gate.
+  else if (role === ROLES.DISPLAY_REGISTER) {
+    view = mayUseDisplayRegister({ canAccessStock, hasPermission })
+      ? <DisplayRegister products={products} onExit={() => setRole(null)} standalone />
+      : null;
+  }
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
