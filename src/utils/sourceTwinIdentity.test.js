@@ -5,7 +5,7 @@
 // different product of the identical name.
 import { describe, it, expect } from "vitest";
 import { restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceNameKey } from "./insights";
-import { buildProductIdIndex, resolveProductIdByName, buildPhotoIndex, photoForProduct, canFulfilCard } from "./productIdentity";
+import { buildProductIdIndex, resolveProductIdByName, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./productIdentity";
 import { sourceMovementIdSeed } from "../components/stock/sourceMovementDedupe";
 
 const NAME = "Nike SB Dunk Low Green White";
@@ -53,11 +53,12 @@ describe("twin products in the Source queue (past-day History feed)", () => {
     const seedB = sourceMovementIdSeed(DATE, TWIN_B, SIZE);
     expect(seedA).not.toBe(seedB);
 
-    // And this is what the OLD name key did to all three of the above.
+    // And this is what the OLD name key did to all three of the above: both
+    // twins carry the SAME legacy key, so pre-cutover they shared one response
+    // cell and one movement id.
     const legacyKey = sourceNameKey(NAME);
     expect(groups[TWIN_A].nameKey).toBe(legacyKey);
     expect(groups[TWIN_B].nameKey).toBe(legacyKey);
-    expect(sourceMovementIdSeed(DATE, legacyKey, SIZE)).toBe(sourceMovementIdSeed(DATE, legacyKey, SIZE));
   });
 
   it("today's sales feed splits the same twins the same way (both builders in lock-step)", () => {
@@ -79,14 +80,10 @@ describe("twin products in the Source queue (past-day History feed)", () => {
 });
 
 describe("ambiguous-name refusal reaches the caller", () => {
-  // resolveId as fulfilCtx builds it (App.jsx): id if the record has one, else
-  // the identity index — which refuses duplicated names.
+  // The SAME function fulfilCtx.resolveId calls in App.jsx — not a local copy,
+  // so the test cannot pass while the component's resolution drifts away.
   const idx = buildProductIdIndex(CATALOG);
-  const resolveId = (product) => {
-    if (!product) return null;
-    if (product.productId) return product.productId;
-    return resolveProductIdByName(idx, product.productName);
-  };
+  const resolveId = (product) => resolveProductId(product, idx);
 
   it("a pid-less card for a duplicated name resolves to null and CANNOT fulfil", () => {
     const legacyCard = { productName: NAME, productId: null };
@@ -109,5 +106,12 @@ describe("ambiguous-name refusal reaches the caller", () => {
 
   it("no transfer permission → cannot fulfil regardless of a good id", () => {
     expect(canFulfilCard({ enabled: false, productId: TWIN_A })).toBe(false);
+  });
+
+  it("resolveProductId handles a null product without throwing", () => {
+    expect(resolveProductId(null, idx)).toBeNull();
+    expect(resolveProductId({}, idx)).toBeNull();
+    // Same verdict via the lower-level name resolver.
+    expect(resolveProductIdByName(idx, NAME)).toBeNull();
   });
 });

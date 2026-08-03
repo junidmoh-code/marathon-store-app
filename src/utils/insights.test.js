@@ -11,6 +11,7 @@ import {
   computeRestockCounts,
   sourceGroupKey,
   sourceNameKey,
+  sourceResponsePath,
   onHoldEventsFromLog,
   onHoldKey,
 } from "./insights";
@@ -345,6 +346,26 @@ describe("computeRestockCounts (Source Today built from restock_log sales)", () 
   it("tolerates empty/absent entries", () => {
     expect(computeRestockCounts(null)).toEqual({});
     expect(computeRestockCounts([null, sale()])).toMatchObject({ pA: { sizes: { "8": 1 } } });
+  });
+
+  it("a row with NEITHER a product id NOR a name never produces an empty key", () => {
+    // An empty key makes sourceResponsePath collapse to the date node, so
+    // saveSourceResponse would write a size leaf straight under
+    // restock_requests/{date} and corrupt that day's response tree.
+    const out = computeRestockCounts([{ size: "9" }, { productId: "", productName: "   ", size: "8" }]);
+    expect(Object.keys(out)).not.toContain("");
+    expect(sourceResponsePath("2026-06-16", sourceGroupKey(undefined, undefined))).toBe("restock_requests/2026-06-16/Unknown");
+    // The group is still usable: named, and safe to sort/render.
+    Object.values(out).forEach(g => expect(typeof g.productName).toBe("string"));
+  });
+
+  it("back-fills BOTH image fields from a later row", () => {
+    const out = computeRestockCounts([
+      { productId: "pA", productName: "Nike Air", size: "8" },
+      { productId: "pA", productName: "Nike Air", size: "9", photo: "👟", photoUrl: "https://x/a.jpg" },
+    ]);
+    expect(out.pA.photoUrl).toBe("https://x/a.jpg");
+    expect(out.pA.photo).toBe("👟");
   });
 });
 

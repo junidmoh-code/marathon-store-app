@@ -63,7 +63,7 @@ import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/La
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
-import { buildProductIdIndex, resolveProductIdByName, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
+import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { checkSourceMovementDuplicate, sourceMovementIdSeed } from "./components/stock/sourceMovementDedupe";
 import { printOrderSlips } from "./print/orderSlip";
 // ── New product taxonomy (31 categories, RTDB-backed registry) ───────────────
@@ -11520,7 +11520,11 @@ function SourceFulfilPanel({ productId, size, destHub, remaining, alreadySent, m
     const counted = !!avail && typeof avail[pick] === "number";
     const q = Math.max(1, Math.min(Math.round(qty) || 1, remaining));
     const mvId = `${movementIdSeed}_${alreadySent}`;
-    let res, viaLegacy = false;
+    // Credit progress with what ACTUALLY moved. For a fresh transfer that is the
+    // picked quantity; for a suppressed duplicate it is the quantity the
+    // recorded movement carried, which can be smaller — crediting `q` there
+    // would close the cell over units that never shipped.
+    let res, viaLegacy = false, appliedQty = q;
     try {
       // Dual-id duplicate check (pid-key cutover): a transfer already applied
       // under the legacy NAME-derived id must not re-apply under the new pid
@@ -11534,6 +11538,7 @@ function SourceFulfilPanel({ productId, size, destHub, remaining, alreadySent, m
       });
       if (dup.duplicate) {
         viaLegacy = dup.viaLegacy;
+        appliedQty = dup.appliedQty;
         if (viaLegacy) console.warn(`[Source] legacy movement id matched (hit #${++_legacyMvIdHits} this session) — suppressed re-apply of ${legacyMovementIdSeed}_${alreadySent}`);
         res = { ok: true, idempotent: true };
       } else {
@@ -11552,7 +11557,7 @@ function SourceFulfilPanel({ productId, size, destHub, remaining, alreadySent, m
       }
     } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
     setBusy(false);
-    if (res.ok) onDone(q, pick, counted, viaLegacy);
+    if (res.ok) onDone(appliedQty, pick, counted, viaLegacy);
     else setErr(`Transfer failed: ${res.reason || "unknown"}. Check your stock access and retry.`);
   };
 
@@ -12792,10 +12797,18 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const productIdIndex = useMemo(() => buildProductIdIndex(products), [products]);
   // The old collision warning compared names, so byte-identical twins never
   // tripped it. Warn from the catalog index instead — once per name per build.
+  // BOTH collision kinds are reported: a name that only collides once
+  // normalized ("Air Max 90" / "air  max 90") refuses to resolve exactly like an
+  // exact duplicate does, so leaving it unwarned means a card silently loses
+  // Fulfil with nothing in the console to explain why.
   useEffect(() => {
     productIdIndex.duplicates.forEach(({ name, ids }) => {
       console.warn(`[Source] ${ids.length} products share the exact name "${name}" (${ids.join(", ")}). ` +
         "Cards stay separate by id, but rename them — pid-less legacy cards for this name can never fulfil, and name-based analytics merge them.");
+    });
+    productIdIndex.normalizedDuplicates.forEach(({ name, ids }) => {
+      console.warn(`[Source] ${ids.length} products have names differing only in spacing/case ("${name}" once normalized: ${ids.join(", ")}). ` +
+        "A pid-less card for any of them cannot fulfil — rename them apart.");
     });
   }, [productIdIndex]);
   const fulfilCtx = useMemo(() => ({
@@ -12804,11 +12817,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     // items can carry hubC (clothing-customer routing), which has no /stock
     // presence; those cards keep the plain Sent button instead.
     knownLoc: (id) => !!id && transferTargets(locationsReg).some(l => l.id === id),
-    resolveId: (product) => {
-      if (!product) return null;
-      if (product.productId) return product.productId;
-      return resolveProductIdByName(productIdIndex, product.productName);
-    },
+    resolveId: (product) => resolveProductId(product, productIdIndex),
   }), [canTransfer, actorRole, locationsReg, productIdIndex]);
   // Partial complete → progress leaf (cell stays open); final units → the exact
   // same response record the old Available button wrote, plus audit extras.

@@ -26,30 +26,50 @@ export const normalizeName = (s) =>
 const AMBIGUOUS = Symbol("ambiguous-product-name");
 
 // products: array of catalog records ({ id, name, ... }).
-// Returns { exact, norm, duplicates }:
-//   exact/norm — Map(name → pid | AMBIGUOUS)
-//   duplicates — [{ name, ids }] one entry per exact name shared by >1 id,
-//                for the caller to warn about (this is the collision the old
-//                warning never caught: byte-identical names never differed).
+// Returns { exact, norm, duplicates, normalizedDuplicates }:
+//   exact/norm           — Map(name → pid | AMBIGUOUS)
+//   duplicates           — [{ name, ids }] per exact name shared by >1 id (the
+//                          collision the old warning never caught: byte-
+//                          identical names never differed as strings).
+//   normalizedDuplicates — names that differ as strings but collide once
+//                          normalized ("Air Max 90" / "air  max 90"). These
+//                          also refuse to resolve, so they must be warned about
+//                          too or the operator gets a silently disabled Fulfil
+//                          button with no diagnostic. Groups already reported in
+//                          `duplicates` are filtered out so nothing warns twice.
+// Collected id-first (Set per name) rather than by overwriting as we go: the
+// same record appearing twice is not a collision, and a third twin must not
+// reset the verdict.
 export function buildProductIdIndex(products) {
-  const exact = new Map();
-  const norm = new Map();
-  const dupIds = new Map(); // exact name → Set(ids), only for duplicated names
-  const mark = (map, key, id) => {
-    if (!map.has(key)) { map.set(key, id); return; }
-    if (map.get(key) !== id) map.set(key, AMBIGUOUS);
+  const exactIds = new Map(); // name            → Set(pid)
+  const normIds = new Map();  // normalized name → Set(pid)
+  const add = (map, key, id) => {
+    if (!map.has(key)) map.set(key, new Set());
+    map.get(key).add(id);
   };
   (products || []).forEach((p) => {
     if (!p || !p.name || !p.id) return;
-    if (exact.has(p.name) && exact.get(p.name) !== p.id) {
-      if (!dupIds.has(p.name)) dupIds.set(p.name, new Set([exact.get(p.name) === AMBIGUOUS ? null : exact.get(p.name)].filter(Boolean)));
-      dupIds.get(p.name).add(p.id);
-    }
-    mark(exact, p.name, p.id);
-    mark(norm, normalizeName(p.name), p.id);
+    add(exactIds, p.name, p.id);
+    add(normIds, normalizeName(p.name), p.id);
   });
-  const duplicates = Array.from(dupIds.entries()).map(([name, ids]) => ({ name, ids: Array.from(ids) }));
-  return { exact, norm, duplicates };
+  // One id → that id; more than one → AMBIGUOUS, never a guess.
+  const resolveMap = (idMap) => {
+    const out = new Map();
+    idMap.forEach((ids, key) => out.set(key, ids.size === 1 ? [...ids][0] : AMBIGUOUS));
+    return out;
+  };
+  const collisions = (idMap) => Array.from(idMap.entries())
+    .filter(([, ids]) => ids.size > 1)
+    .map(([name, ids]) => ({ name, ids: Array.from(ids) }));
+  const duplicates = collisions(exactIds);
+  const sig = (ids) => ids.slice().sort().join("|");
+  const exactSigs = new Set(duplicates.map((d) => sig(d.ids)));
+  return {
+    exact: resolveMap(exactIds),
+    norm: resolveMap(normIds),
+    duplicates,
+    normalizedDuplicates: collisions(normIds).filter((d) => !exactSigs.has(sig(d.ids))),
+  };
 }
 
 // pid when the name is UNIQUE in the catalog; null when unknown OR ambiguous.
@@ -61,6 +81,17 @@ export function resolveProductIdByName(index, name) {
   const hitNorm = index.norm.get(normalizeName(name));
   if (hitNorm && hitNorm !== AMBIGUOUS) return hitNorm;
   return null;
+}
+
+// THE product-id resolver for a Source card / on-hold item. Its own productId
+// wins; only a record that predates the field falls back to the name index,
+// which refuses duplicated names. Exported (rather than inlined in the
+// component) so App.jsx and its tests exercise the same function and cannot
+// drift apart. product: { productId?, productName? }.
+export function resolveProductId(product, index) {
+  if (!product) return null;
+  if (product.productId) return product.productId;
+  return resolveProductIdByName(index, product.productName);
 }
 
 // The Source card's stock-transfer gate. A card may move stock ONLY with a

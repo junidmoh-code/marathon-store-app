@@ -30,13 +30,24 @@ export function sourceMovementIdSeed(date, groupKey, encodedSize) {
   return `srcful_${date}_${groupKey}_${encodedSize}`;
 }
 
+// Returns { duplicate, viaLegacy, appliedQty }.
+//
+// appliedQty is the quantity the ALREADY-RECORDED movement moved — which is not
+// necessarily the quantity the operator just picked. Crediting the picked
+// quantity would let a suppressed duplicate close a cell for units that never
+// moved (existing movement sent 1, operator now confirms 3, cell closes at 3,
+// two units never leave). The caller credits progress with this instead.
+// 0 when there is nothing to credit, so an unreadable record under-credits and
+// leaves the cell open rather than closing it on a guess.
+//
 // getMovement: async (movementId) => movement record | null
 export async function checkSourceMovementDuplicate({ getMovement, newId, legacyId, productId }) {
+  const qtyOf = (m) => (Number(m?.qty) > 0 ? Number(m.qty) : 0);
   const existing = await getMovement(newId);
-  if (existing) return { duplicate: true, viaLegacy: false };
+  if (existing) return { duplicate: true, viaLegacy: false, appliedQty: qtyOf(existing) };
   if (legacyId && legacyId !== newId) {
     const legacy = await getMovement(legacyId);
-    if (legacy && legacy.productId === productId) return { duplicate: true, viaLegacy: true };
+    if (legacy && legacy.productId === productId) return { duplicate: true, viaLegacy: true, appliedQty: qtyOf(legacy) };
   }
-  return { duplicate: false, viaLegacy: false };
+  return { duplicate: false, viaLegacy: false, appliedQty: 0 };
 }

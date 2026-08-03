@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildProductIdIndex, resolveProductIdByName, buildPhotoIndex, photoForProduct, normalizeName } from "./productIdentity";
+import { buildProductIdIndex, resolveProductIdByName, resolveProductId, buildPhotoIndex, photoForProduct, normalizeName } from "./productIdentity";
 
 // Mirrors the live incident: three DISTINCT records, byte-identical names,
 // different photos (see _twin-name-collision-forensic-report.md).
@@ -47,12 +47,52 @@ describe("buildProductIdIndex / resolveProductIdByName", () => {
     expect(idx.duplicates).toHaveLength(1);
     expect(idx.duplicates[0].name).toBe("Nike SB Dunk Low Green White");
     expect(idx.duplicates[0].ids.sort()).toEqual(["p1781648943606", "p1781649332106", "p1781649925620"]);
+    // Exact collisions are NOT repeated in the normalized list — they would
+    // otherwise warn twice for the same pair of products.
+    expect(idx.normalizedDuplicates).toHaveLength(0);
+  });
+
+  it("reports normalize-only collisions separately, so a silent refusal still gets a diagnostic", () => {
+    // These names differ as strings, so `duplicates` stays empty — but they
+    // collide once normalized, which is enough to refuse a lookup. Without this
+    // list the operator sees Fulfil disabled with nothing in the console.
+    const idx = buildProductIdIndex([
+      { id: "pA", name: "Air Max 90" },
+      { id: "pB", name: "air  max 90" },
+    ]);
+    expect(idx.duplicates).toHaveLength(0);
+    expect(idx.normalizedDuplicates).toHaveLength(1);
+    expect(idx.normalizedDuplicates[0].name).toBe("air max 90");
+    expect(idx.normalizedDuplicates[0].ids.sort()).toEqual(["pA", "pB"]);
+    // …and that is exactly the query the index refuses.
+    expect(resolveProductIdByName(idx, "AIR MAX 90")).toBeNull();
   });
 
   it("does not flag the same record listed twice as a duplicate", () => {
     const idx = buildProductIdIndex([UNIQUE, UNIQUE]);
     expect(idx.duplicates).toHaveLength(0);
+    expect(idx.normalizedDuplicates).toHaveLength(0);
     expect(resolveProductIdByName(idx, UNIQUE.name)).toBe("pU");
+  });
+});
+
+describe("resolveProductId (the resolver App.jsx's fulfilCtx.resolveId calls)", () => {
+  const idx = buildProductIdIndex([...TWINS, UNIQUE]);
+
+  it("prefers the record's own id over any name lookup", () => {
+    // Even for a duplicated name: the record knows what it is.
+    expect(resolveProductId({ productId: "p1781649332106", productName: TWINS[0].name }, idx)).toBe("p1781649332106");
+  });
+
+  it("falls back to the name index for pid-less records, and refuses ambiguity", () => {
+    expect(resolveProductId({ productName: "Adidas Samba OG Black" }, idx)).toBe("pU");
+    expect(resolveProductId({ productName: "Nike SB Dunk Low Green White" }, idx)).toBeNull();
+  });
+
+  it("returns null for empty input rather than throwing", () => {
+    expect(resolveProductId(null, idx)).toBeNull();
+    expect(resolveProductId({}, idx)).toBeNull();
+    expect(resolveProductId({ productName: "" }, idx)).toBeNull();
   });
 });
 

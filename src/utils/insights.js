@@ -127,8 +127,14 @@ const sanitizeKey = sourceNameKey;
 // restockCountsFromLog for History) MUST use this one function — the two feeds
 // meet at the same restock_requests/{date}/{key}/{size} response paths, so a
 // key divergence between them desynchronizes Today and History.
+// The "Unknown" tail is load-bearing, not defensive dressing: a row with no
+// productId AND no usable name would otherwise sanitize to "", and an empty key
+// makes sourceResponsePath collapse to the DATE NODE — writing a size leaf
+// directly under restock_requests/{date} and corrupting that day's response
+// tree. restockCountsFromLog already defaulted its name to "Unknown"; this puts
+// the guarantee in the shared key builder so both feeds inherit it.
 export function sourceGroupKey(productId, productName) {
-  return productId || sanitizeKey(productName);
+  return productId || sanitizeKey(productName) || "Unknown";
 }
 
 // The one place the Source response/progress cell path is shaped. Two products
@@ -171,17 +177,25 @@ export function computeRestockCounts(entries, { onNameCollision } = {}) {
   const seenNames = new Map();
   (entries || []).forEach(entry => {
     if (!entry) return;
-    noteNameCollision(seenNames, entry.productName, entry.productId, onNameCollision);
-    const key = sourceGroupKey(entry.productId, entry.productName);
+    // Default the name once, then derive BOTH keys from it — mirroring
+    // restockCountsFromLog. A bare `entry.productName` would leave the group
+    // title undefined (SourceTodayTab sorts with .productName.localeCompare and
+    // would throw) and give nameKey "", which then reads as a bogus legacy key.
+    const name = entry.productName || "Unknown";
+    noteNameCollision(seenNames, name, entry.productId, onNameCollision);
+    const key = sourceGroupKey(entry.productId, name);
     if (!result[key]) result[key] = {
-      productName: entry.productName,
+      productName: name,
       productId: entry.productId || null,
-      nameKey: sanitizeKey(entry.productName),
+      nameKey: sanitizeKey(name),
       photo: entry.photo || "",
       photoUrl: entry.photoUrl || null,
       sizes: {},
     };
+    // Back-fill both image fields: ProductPhoto renders either, so a group
+    // whose first row carried neither must still pick up a later row's.
     if (entry.photoUrl && !result[key].photoUrl) result[key].photoUrl = entry.photoUrl;
+    if (entry.photo && !result[key].photo) result[key].photo = entry.photo;
     if (entry.size) result[key].sizes[entry.size] = (result[key].sizes[entry.size] || 0) + 1;
   });
   return result;

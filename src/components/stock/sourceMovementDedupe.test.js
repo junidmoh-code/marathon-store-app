@@ -21,9 +21,9 @@ describe("checkSourceMovementDuplicate — Source fulfil dual-id check", () => {
   it("same pid, same size, same day, second attempt → suppressed as duplicate", () => {
     // The ordinary double-tap / retry case. Must stay suppressed, or the fix
     // would trade a wrong-product bug for a double-deduction bug.
-    const { getMovement } = ledger({ [NEW_A]: { productId: "pTwinA", size: "9" } });
+    const { getMovement } = ledger({ [NEW_A]: { productId: "pTwinA", size: "9", qty: 1 } });
     return checkSourceMovementDuplicate({ getMovement, newId: NEW_A, legacyId: LEGACY, productId: "pTwinA" })
-      .then(r => expect(r).toEqual({ duplicate: true, viaLegacy: false }));
+      .then(r => expect(r).toEqual({ duplicate: true, viaLegacy: false, appliedQty: 1 }));
   });
 
   it("TWIN pid, identical name, same size, same day → NOT a duplicate, the transfer lands", async () => {
@@ -31,30 +31,30 @@ describe("checkSourceMovementDuplicate — Source fulfil dual-id check", () => {
     // would also derive. B's own pid id is absent, and the legacy record belongs
     // to A (different productId), so B must be allowed through.
     // A check weakened to "legacy id exists → duplicate" fails exactly here.
-    const { getMovement } = ledger({ [LEGACY]: { productId: "pTwinA", size: "9" } });
+    const { getMovement } = ledger({ [LEGACY]: { productId: "pTwinA", size: "9", qty: 1 } });
     const r = await checkSourceMovementDuplicate({ getMovement, newId: NEW_B, legacyId: LEGACY, productId: "pTwinB" });
-    expect(r).toEqual({ duplicate: false, viaLegacy: false });
+    expect(r).toEqual({ duplicate: false, viaLegacy: false, appliedQty: 0 });
   });
 
   it("a movement written under the LEGACY name id → recognised, not re-applied, flagged viaLegacy", async () => {
     // Cutover safety: this transfer really did happen pre-deploy. Re-applying it
     // under the new pid id would double-move stock.
-    const { getMovement } = ledger({ [LEGACY]: { productId: "pTwinA", size: "9" } });
+    const { getMovement } = ledger({ [LEGACY]: { productId: "pTwinA", size: "9", qty: 1 } });
     const r = await checkSourceMovementDuplicate({ getMovement, newId: NEW_A, legacyId: LEGACY, productId: "pTwinA" });
-    expect(r).toEqual({ duplicate: true, viaLegacy: true });
+    expect(r).toEqual({ duplicate: true, viaLegacy: true, appliedQty: 1 });
   });
 
   it("nothing recorded under either id → not a duplicate", async () => {
     const { getMovement } = ledger({});
     const r = await checkSourceMovementDuplicate({ getMovement, newId: NEW_A, legacyId: LEGACY, productId: "pTwinA" });
-    expect(r).toEqual({ duplicate: false, viaLegacy: false });
+    expect(r).toEqual({ duplicate: false, viaLegacy: false, appliedQty: 0 });
   });
 
   it("the NEW id wins without ever reading the legacy id", async () => {
     // Once a cell is post-cutover the legacy read is pure waste; it must be skipped.
-    const l = ledger({ [NEW_A]: { productId: "pTwinA" }, [LEGACY]: { productId: "pTwinA" } });
+    const l = ledger({ [NEW_A]: { productId: "pTwinA", qty: 2 }, [LEGACY]: { productId: "pTwinA", qty: 1 } });
     const r = await checkSourceMovementDuplicate({ getMovement: l.getMovement, newId: NEW_A, legacyId: LEGACY, productId: "pTwinA" });
-    expect(r).toEqual({ duplicate: true, viaLegacy: false });
+    expect(r).toEqual({ duplicate: true, viaLegacy: false, appliedQty: 2 });
     expect(l.reads).toEqual([NEW_A]);
   });
 
@@ -72,18 +72,37 @@ describe("checkSourceMovementDuplicate — Source fulfil dual-id check", () => {
   it("a legacy record with no productId at all does not block the transfer", async () => {
     // Defensive: an ancient/hand-written movement lacking productId can't be
     // proven to be ours, so it must not suppress a real transfer.
-    const { getMovement } = ledger({ [LEGACY]: { size: "9" } });
+    const { getMovement } = ledger({ [LEGACY]: { size: "9", qty: 1 } });
     const r = await checkSourceMovementDuplicate({ getMovement, newId: NEW_A, legacyId: LEGACY, productId: "pTwinA" });
-    expect(r).toEqual({ duplicate: false, viaLegacy: false });
+    expect(r).toEqual({ duplicate: false, viaLegacy: false, appliedQty: 0 });
   });
 
   it("partial-fulfil ids stay independent — the _{alreadySent} suffix is part of the id", async () => {
     // Sending unit 2 of 3 must not be suppressed by unit 1's movement.
-    const { getMovement } = ledger({ "srcful_2026-08-03_pTwinA_9_0": { productId: "pTwinA" } });
+    const { getMovement } = ledger({ "srcful_2026-08-03_pTwinA_9_0": { productId: "pTwinA", qty: 1 } });
     const r = await checkSourceMovementDuplicate({
       getMovement, newId: "srcful_2026-08-03_pTwinA_9_1",
       legacyId: "srcful_2026-08-03_Nike_SB_Dunk_Low_Green_White_9_1", productId: "pTwinA",
     });
-    expect(r).toEqual({ duplicate: false, viaLegacy: false });
+    expect(r).toEqual({ duplicate: false, viaLegacy: false, appliedQty: 0 });
+  });
+
+  it("reports the qty the RECORDED movement moved, not the qty being requested", async () => {
+    // A suppressed duplicate must credit progress with what actually shipped.
+    // The caller asks for 3 here; only 1 ever moved, so crediting 3 would close
+    // the cell over two units that never left the building.
+    const { getMovement } = ledger({ [LEGACY]: { productId: "pTwinA", qty: 1 } });
+    const r = await checkSourceMovementDuplicate({ getMovement, newId: NEW_A, legacyId: LEGACY, productId: "pTwinA" });
+    expect(r.duplicate).toBe(true);
+    expect(r.appliedQty).toBe(1);
+  });
+
+  it("under-credits rather than guessing when the recorded qty is missing or junk", async () => {
+    // 0 leaves the cell open (safe) instead of closing it on an assumption.
+    for (const bad of [undefined, 0, -2, "abc", null]) {
+      const { getMovement } = ledger({ [NEW_A]: { productId: "pTwinA", qty: bad } });
+      const r = await checkSourceMovementDuplicate({ getMovement, newId: NEW_A, legacyId: LEGACY, productId: "pTwinA" });
+      expect(r).toEqual({ duplicate: true, viaLegacy: false, appliedQty: 0 });
+    }
   });
 });
