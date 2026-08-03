@@ -15,6 +15,18 @@
 
 import { normalizeSAPhone } from "../utils/phone";
 
+// A COMPLETE canonical SA number: normalizeSAPhone always emits "+27" + 9
+// national digits for a real one. Checked against the normalised value rather
+// than via toLocalSA(), which would treat a bare 9-digit FOREIGN number
+// ("+656996104") as if it were SA and defeat the point.
+//
+// Why completeness matters here: normalizeSAPhone happily turns partial input
+// into a non-empty string ("071" → "+2771"), so a truthy result is NOT evidence
+// of a usable number. Without this the key fallback below is skipped whenever
+// the `phone` field holds *any* digits, losing customers whose record key is the
+// only complete number they have (CodeRabbit, PR #300).
+const isCompleteSAPhone = (normalised) => /^\+27\d{9}$/.test(normalised || "");
+
 /**
  * Which of two records representing the SAME normalised number wins.
  * Total order, so the winner never depends on Object.entries() iteration order:
@@ -49,18 +61,25 @@ export function indexCustomersByPhone(customersDb) {
     if (!c || typeof c !== "object") continue;
 
     // The `phone` FIELD is preferred, but some records carry junk there (a name,
-    // a partial number) while the record KEY holds the real digits. When the
-    // field cannot be normalised we fall back to the key for BOTH the identity
-    // and the displayed value — using the key for one and the junk field for the
-    // other would render a name in the phone column and leave the record
-    // unsearchable by number, defeating the rescue.
-    const phoneFromField = normalizeSAPhone(c.phone);
-    const normalised = phoneFromField || normalizeSAPhone(key);
+    // a partial number, a malformed international) while the record KEY holds the
+    // real digits. Preference order:
+    //   1. the field, if it is a COMPLETE SA number
+    //   2. the key, if IT is complete            ← rescues those records
+    //   3. whichever normalises to anything at all, field first — a partial
+    //      number is still better than dropping the customer entirely
+    // Identity and the displayed value always come from the SAME source: using
+    // the key for one and the junk field for the other would render a name in
+    // the phone column and leave the record unsearchable by number.
+    const fieldPhone = normalizeSAPhone(c.phone);
+    const keyPhone = normalizeSAPhone(key);
+    const useField = isCompleteSAPhone(fieldPhone)
+      || (!isCompleteSAPhone(keyPhone) && !!fieldPhone);
+    const normalised = useField ? fieldPhone : keyPhone;
     if (!normalised) continue;
 
     const candidate = {
       name: (c.name || "").trim(),
-      phone: phoneFromField ? c.phone : key,
+      phone: useField ? c.phone : key,
       lastOrderAt: c.lastOrderAt || "",
       _key: key,
     };

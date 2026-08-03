@@ -33,7 +33,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * with startAt() selects every key written at or after `ms` — push keys sort
  * lexicographically in PUSH_CHARS order, which is the same order as time.
  * @param {number} ms epoch milliseconds
- * @returns {string} 8-char key prefix, e.g. 1785000000000 -> "-OyJt3B-"
+ * @returns {string} 8-char key prefix, e.g. 1785000000000 -> "-OyPHbc-"
  */
 export function pushKeyForMs(ms) {
   let n = Math.max(0, Math.floor(Number(ms) || 0));

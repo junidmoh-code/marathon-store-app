@@ -35,6 +35,12 @@ describe("pushKeyForMs — real keys from /insights_log", () => {
     expect(pushKeyForMs(ms + 7 * 24 * 3600_000) > key).toBe(true);
   });
 
+  // Pins the worked example in pushKeyForMs' JSDoc — the first version of that
+  // comment carried a mis-transcribed value (CodeRabbit, PR #300).
+  it("matches the worked example in its own JSDoc", () => {
+    expect(pushKeyForMs(1785000000000)).toBe("-OyPHbc-");
+  });
+
   it("is exactly 8 characters and uses only push-key alphabet", () => {
     const k = pushKeyForMs(1785000000000);
     expect(k).toHaveLength(8);

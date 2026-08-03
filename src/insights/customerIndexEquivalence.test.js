@@ -113,6 +113,37 @@ describe("junk phone field, real number in the key", () => {
   });
 });
 
+// normalizeSAPhone turns partial input into a non-empty string ("071" → "+2771"),
+// so "the field normalised to something" is NOT evidence of a usable number. The
+// key fallback must be reachable whenever the field is incomplete, or a customer
+// whose only complete number lives in the record key is lost.
+describe("incomplete phone field, complete number in the key", () => {
+  const PARTIAL = { "0821234567": { phone: "071", name: "Sipho", lastOrderAt: "2026-07-01T00:00:00Z" } };
+
+  it("indexes under the KEY when the phone field is only partial digits", () => {
+    expect([...indexCustomersByPhone(PARTIAL).keys()]).toEqual(["+27821234567"]);
+    expect(buildCustomerIndex(PARTIAL)[0].phone).toBe("0821234567");
+  });
+
+  it("rescues a malformed international field when the key is a real SA number", () => {
+    // The one live case: phone "+656996104" (9 digits, not SA) vs a complete key.
+    const db = { "27656996104": { phone: "+656996104", name: "S", lastOrderAt: "2026-06-01T00:00:00Z" } };
+    expect([...indexCustomersByPhone(db).keys()]).toEqual(["+27656996104"]);
+  });
+
+  it("still prefers the FIELD when it is a complete SA number", () => {
+    const db = { "0000000000": { phone: "0712345678", name: "Thabo", lastOrderAt: "2026-07-01T00:00:00Z" } };
+    expect([...indexCustomersByPhone(db).keys()]).toEqual(["+27712345678"]);
+    expect(buildCustomerIndex(db)[0].phone).toBe("0712345678");
+  });
+
+  it("keeps a partial number rather than dropping the customer when NEITHER is complete", () => {
+    const db = { "071": { phone: "072", name: "Partial" } };
+    expect(buildCustomerIndex(db)).toHaveLength(1);
+    expect(buildCustomerIndex(db)[0].phone).toBe("072"); // field first
+  });
+});
+
 describe("what the index excludes", () => {
   it("drops nameless records — they would render a blank suggestion row", () => {
     const idx = buildCustomerIndex({
