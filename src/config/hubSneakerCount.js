@@ -71,21 +71,35 @@ export function canUseHubSneakerCount(viewer) {
  * May this viewer actually WRITE an adjustment?
  *
  * ⚠️ DELIBERATELY NOT the same gate as opening, and deliberately NOT satisfied by
- * being super-admin. The RTDB rules do not know or care about ADMIN_EMAIL — they
- * read the STORED record:
+ * being super-admin. The two questions have different answers because they are
+ * decided in different places:
  *
- *   /stock/$loc/$pid/$size  .write  requires users/{uid}/stockRole to EXIST
- *   /stock_movements/$mvId/type     requires stockRole === 'admin' for adjustment
+ *   • OPENING the view is decided by this app, in JS.
+ *   • WRITING is decided by the RTDB rules, which do not know ADMIN_EMAIL exists
+ *     and read only the STORED record:
  *
- * Verified against live data 2026-08-03: there is NO /users record for
- * gunidmoh@gmail.com at all (31 records, all username-based staff). The app's
- * super-admin shortcut is a CLIENT-side permissions bypass; it mints no
- * stockRole. So the owner's own account passes every UI gate and would then be
- * refused by RTDB on every single adjustment.
+ *       /stock/$loc/$pid/$size  .write  requires users/{uid}/stockRole to EXIST
+ *       /stock_movements/$mvId/type     requires stockRole === 'admin'
+ *                                       for an `adjustment`
  *
- * Rather than discover that on the fortieth box, the view checks this separately
- * and says so up front. Fixing it for real is one field on one /users record —
- * an owner action, not a code change.
+ * The app's super-admin shortcut is a CLIENT-side permissions bypass — it makes
+ * hasPermission() return true for an email, and mints no stockRole. So being
+ * super-admin is not, on its own, evidence that a write will be accepted: an
+ * account can pass every UI gate here and still be refused by RTDB on every
+ * correction, if its /users record carries no admin stockRole.
+ *
+ * This gate therefore asks the same question the rules will ask, and the view
+ * shows a banner when the answer is no — so the refusal is visible at the door
+ * rather than on the fortieth box. When it does fire, the fix is a stockRole
+ * field on that user's /users record: an owner action in the console, NOT a
+ * widening of this gate.
+ *
+ * Deliberately states no fact about any particular account. Stored roles change
+ * without this file changing, so a claim about who currently holds what would be
+ * stale the moment someone edits /users — and a comment asserting the wrong
+ * thing is worse than no comment. (An earlier version of this block did exactly
+ * that: it recorded, as verified fact, that a specific account had no /users
+ * record. It did. The check below is the honest form of the question.)
  */
 export function canAdjustHubCount(viewer) {
   if (!HUB_SNEAKER_COUNT_ENABLED) return false;
