@@ -3,11 +3,12 @@
 // (owner direction 2026-08-03), and each line below is now load-bearing:
 //   open   — admin AND warehouse (the people who actually count)
 //   adjust — admin ONLY (mirrors the RTDB rule on `adjustment` movements)
-//   variance — admin ONLY (the original spec's "readable by admin only",
-//              vacuous while the module was admin-only, real now)
+//   (the variance tab was replaced by History, visible to every counter —
+//    owner direction 2026-08-03; the admin-only piece that remains is Apply,
+//    which rides on canAdjustHubCount)
 import { describe, it, expect } from "vitest";
 import {
-  canUseHubSneakerCount, canAdjustHubCount, canSeeHubCountVariance,
+  canUseHubSneakerCount, canAdjustHubCount,
   hubSneakerCountVisibleForViewer,
 } from "./hubSneakerCount.js";
 import { ADMIN_EMAIL } from "../components/PermissionsContext";
@@ -42,14 +43,5 @@ describe("who can write stock corrections", () => {
     expect(canAdjustHubCount(v(null, ADMIN_EMAIL))).toBe(false);
     expect(canAdjustHubCount(v("warehouse", ADMIN_EMAIL))).toBe(false);
     expect(canAdjustHubCount(v("admin", ADMIN_EMAIL))).toBe(true);
-  });
-});
-
-describe("who can read the variance list", () => {
-  it("admin (and super-admin) only — counters feed it, they do not read it", () => {
-    expect(canSeeHubCountVariance(v("admin"))).toBe(true);
-    expect(canSeeHubCountVariance(v(null, ADMIN_EMAIL))).toBe(true);
-    expect(canSeeHubCountVariance(v("warehouse"))).toBe(false);
-    expect(canSeeHubCountVariance(v("store"))).toBe(false);
   });
 });

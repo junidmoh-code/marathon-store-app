@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import {
   hubOptions, buildHubRows, seededRowFor, mergeSeededRows, progressOf,
-  isRowSettled, isStaleExpectation, varianceRows, filterRows, cellKey,
+  isRowSettled, isStaleExpectation, historyRows, filterRows, cellKey,
   isCountableSizeKey, sizeLabelOf, recoverSeededRows,
 } from "./hubCountCore.js";
 
@@ -207,25 +207,60 @@ describe("the staleness test — the anti-clobber guard", () => {
   });
 });
 
-describe("variance", () => {
+describe("history (replaces variance — owner direction 2026-08-03)", () => {
   const counted = {
-    [cellKey("sh1", "6")]: { productId: "sh1", sizeKey: "6", expected: 5, actual: 5 },
-    [cellKey("sh1", "7")]: { productId: "sh1", sizeKey: "7", expected: 5, actual: 2 },
-    [cellKey("sh2", "5_5")]: { productId: "sh2", sizeKey: "5_5", expected: 1, actual: 3 },
+    [cellKey("sh1", "6")]: { productId: "sh1", sizeKey: "6", expected: 5, actual: 5, action: "confirm", at: "2026-08-03T10:00:00Z" },
+    [cellKey("sh1", "7")]: { productId: "sh1", sizeKey: "7", expected: 5, actual: 2, action: "adjust", at: "2026-08-03T12:00:00Z" },
+    [cellKey("sh2", "5_5")]: { productId: "sh2", sizeKey: "5_5", expected: 1, actual: 3, action: "flag", at: "2026-08-03T11:00:00Z" },
   };
   const byId = new Map(PRODUCTS.map((p) => [p.id, p]));
 
-  it("lists only the rows where actual disagreed with expected, biggest gap first", () => {
-    const v = varianceRows(counted, byId);
-    expect(v).toHaveLength(2);
-    expect(v[0].delta).toBe(-3);
-    expect(v[0].name).toBe("Nike Air Max 1");
-    expect(v[1].delta).toBe(2);
-    expect(v[1].sizeLabel).toBe("5.5");
+  it("lists EVERY record — confirms included — newest first", () => {
+    const h = historyRows(counted, byId);
+    expect(h).toHaveLength(3);
+    expect(h.map((r) => r.at)).toEqual(["2026-08-03T12:00:00Z", "2026-08-03T11:00:00Z", "2026-08-03T10:00:00Z"]);
   });
 
-  it("is empty when everything matched", () => {
-    expect(varianceRows({ [cellKey("sh1", "6")]: { productId: "sh1", sizeKey: "6", expected: 5, actual: 5 } }, byId)).toEqual([]);
+  it("marks a flag as pending — the admin's apply queue survives the tab change", () => {
+    const h = historyRows(counted, byId);
+    expect(h.find((r) => r.action === "flag").pending).toBe(true);
+    expect(h.filter((r) => r.pending)).toHaveLength(1);
+  });
+
+  it("carries delta and display fields", () => {
+    const h = historyRows(counted, byId);
+    const adj = h.find((r) => r.action === "adjust");
+    expect(adj.delta).toBe(-3);
+    expect(adj.name).toBe("Nike Air Max 1");
+    expect(h.find((r) => r.sizeKey === "5_5").sizeLabel).toBe("5.5");
+  });
+});
+
+describe("quantity-first ordering (owner direction 2026-08-03)", () => {
+  it("biggest displayed stacks first; names only break ties", () => {
+    const rows = buildHubRows({ products: PRODUCTS, hubStock: {
+      sh1: { 6: cell(2) },              // Nike, total 2
+      sh2: { 6: cell(9) },              // Adidas, total 9
+      sh3: { 8: cell(2) },              // Puma, total 2
+    } });
+    expect(rows.map((r) => r.id)).toEqual(["sh2", "sh1", "sh3"]);   // 9 first, then the 2s by name
+  });
+
+  it("sorts on the DISPLAYED total, so a big negative cannot bury a real stack", () => {
+    const rows = buildHubRows({ products: PRODUCTS, hubStock: {
+      sh1: { 6: cell(-50), 7: cell(3) },   // true total −47, displayed 3
+      sh2: { 6: cell(2) },
+    } });
+    expect(rows.map((r) => r.id)).toEqual(["sh1", "sh2"]);
+  });
+});
+
+describe("no negatives on screen — but the truth is kept", () => {
+  it("displayTotal clamps per-cell; total stays honest", () => {
+    const rows = buildHubRows({ products: PRODUCTS, hubStock: { sh1: { 6: cell(-3), 7: cell(5) } } });
+    expect(rows[0].displayTotal).toBe(5);   // what the counter sees
+    expect(rows[0].total).toBe(2);          // what the maths uses
+    expect(rows[0].sizes[0].expected).toBe(-3);   // per-size truth untouched
   });
 });
 
