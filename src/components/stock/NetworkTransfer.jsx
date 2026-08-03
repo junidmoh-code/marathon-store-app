@@ -77,10 +77,15 @@ export default function NetworkTransfer({ products = [] }) {
   // null = not read yet, and everything downstream treats that as OFF, so the
   // button starts greyed and lights up only on evidence.
   const [cfg, setCfg] = useState(null);
+  // Tracked separately because the fail-safe {} is indistinguishable from a real
+  // config with no switches set — without this the tooltip would blame the kill
+  // switch for what is actually a failed read, sending someone to check a
+  // setting that was never the problem. (CodeRabbit, PR #305.)
+  const [cfgErr, setCfgErr] = useState(false);
   useEffect(() => onValue(
     ref(database, "config/refillEngine"),
-    (s) => setCfg(s.val() || {}),
-    () => setCfg({}),   // unreadable → no switches → Solve stays off (fail-safe)
+    (s) => { setCfgErr(false); setCfg(s.val() || {}); },
+    () => { setCfgErr(true); setCfg({}); },   // unreadable → no switches → Solve off (fail-safe)
   ), []);
   const std = cfg?.defaultRunByStore;
   const subRun = cfg?.subcategoryRunByLocation;
@@ -132,8 +137,19 @@ export default function NetworkTransfer({ products = [] }) {
   // is "_" while encodeSizeKey("") is "", so seeding one would arm a phantom ""
   // cell beside the real "_" stock. No live product has one (checked across all
   // 3,953), and the engine refuses to target one either (refill-engine.cjs).
-  const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter(Boolean);
-  const stdRun = useMemo(() => ({ ...STD_FALLBACK, ...std }), [std]);
+  // filter on TRIMMED content, not truthiness: "   " is truthy and would sail
+  // through to be seeded, while the engine's own guard rejects it — the exact
+  // UI/engine divergence this module exists to prevent. (CodeRabbit, PR #305.)
+  const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter((s) => s.trim() !== "");
+  // Once the live config has arrived, TRUST IT ALONE. The old merge
+  // ({...STD_FALLBACK, ...std}) was shallow per location, so any location the
+  // live defaultRunByStore omits kept the hardcoded map — letting Solve qualify
+  // a size the engine has no standard for and seed a cell it would never refill.
+  // The fallback cannot serve its original "config is slow" purpose any more
+  // either: cfg === null now disables Solve outright via ruleOn. So it survives
+  // only as the pre-load placeholder, where nothing can act on it.
+  // (CodeRabbit, PR #305.)
+  const stdRun = useMemo(() => (cfg ? (std || {}) : STD_FALLBACK), [cfg, std]);
   // The standard THIS product is governed by — subcategory policy where one
   // applies, the size run otherwise (solvePlan.js mirrors resolveTarget).
   const runFor = (pid) => effectiveStandard({
@@ -270,6 +286,7 @@ export default function NetworkTransfer({ products = [] }) {
         // the answer was the engine's switch or a config still loading.
         const armed = STORES.some((s) => seedLocations(card.source, s).every(ruleOn));
         const whyNot = !cfg ? "Checking the engine's settings…"
+          : cfgErr ? "Couldn't read the engine's settings — Solve is off until it loads. Use Move manually."
           : !armed ? "Rule-based refills are switched off — the engine wouldn't refill this, so there's nothing to seed. Use Move manually."
           : "No refill policy covers this product — use Move manually";
         return (
