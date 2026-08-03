@@ -236,6 +236,44 @@ export async function confirmCell({ hub, sessionId, productId, sizeKey, expected
   return { ok: true, record: rec };
 }
 
+/**
+ * FLAG — record a mismatched count WITHOUT touching stock.
+ *
+ * The warehouse counter's mismatch path. The live rules permit `adjustment`
+ * movements only for stockRole "admin", so a warehouse counter cannot write the
+ * correction — but /settings is open to any staff account, so they CAN record
+ * what the shelf actually holds. The record lands in the Variance list with
+ * action "flag", and an admin applies the correction from there via adjustCell,
+ * which re-runs the SAME fence: if the cell moved between the count and the
+ * apply, the apply rejects and the row needs a fresh count, never a blind write.
+ *
+ * Same staleness fence as confirm/adjust — a count against a shelf that no
+ * longer matches the number the counter was shown is not a count.
+ */
+export async function flagCell({ hub, sessionId, productId, sizeKey, expected, actual }) {
+  const target = Number(actual);
+  if (!Number.isInteger(target) || target < 0) {
+    return { ok: false, message: "Enter a whole number of pairs (0 or more)." };
+  }
+  const live = await readLiveQty(hub, productId, sizeKey);
+  if (live.error) return live;
+  if (Number(live.qty) !== Number(expected)) return staleResult(live.qty, expected);
+  if (target === Number(expected)) {
+    return confirmCell({ hub, sessionId, productId, sizeKey, expected });   // it matches — just a confirm
+  }
+
+  // Stock stays exactly where it is: `live` on the record is the UNCHANGED cell
+  // value, and settled is true because nothing was written that could fail to
+  // settle. `action: "flag"` is what marks it as awaiting an admin.
+  const rec = recordFor({ productId, sizeKey, expected, actual: target, action: "flag", live: Number(expected), settled: true });
+  try {
+    await writeRecord(hub, sessionId, rec);
+  } catch (err) {
+    return { ok: false, message: `Could not save the count: ${String(err?.message || err)}` };
+  }
+  return { ok: true, record: rec };
+}
+
 async function readLiveQty(hub, productId, sizeKey) {
   // The encoded key we hold must survive a decode→re-encode round trip, because
   // applyMovement takes a RAW size and re-encodes it to find the cell. If the

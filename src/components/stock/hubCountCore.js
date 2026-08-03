@@ -272,13 +272,18 @@ export function varianceRows(counted = {}, productsById = new Map()) {
       ...r,
       delta: Number(r.actual) - Number(r.expected),
       unsettled: r.settled === false,
+      // A "flag" is a warehouse counter's recorded mismatch: stock untouched,
+      // correction awaiting an admin. Pending rows are the admin's WORK QUEUE.
+      pending: r.action === "flag",
       live: r.live == null ? Number(r.actual) : Number(r.live),
       name: byId.get(r.productId)?.name || r.productId,
       sizeLabel: sizeLabelOf(r.sizeKey),
     }))
-    // Unsettled first — they need a human, not just a note.
+    // Unsettled first (walk back to the shelf), then pending corrections (the
+    // admin's queue), then by how much is at stake.
     .sort((a, b) =>
       (b.unsettled ? 1 : 0) - (a.unsettled ? 1 : 0)
+      || (b.pending ? 1 : 0) - (a.pending ? 1 : 0)
       || Math.abs(b.delta) - Math.abs(a.delta)
       || a.name.localeCompare(b.name));
 }
