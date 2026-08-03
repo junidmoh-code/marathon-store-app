@@ -194,20 +194,29 @@ function recordFor({ productId, sizeKey, expected, actual, action, movementId, l
 
 async function writeRecord(hub, sessionId, rec) {
   const path = `${countedPath(hub, sessionId)}/${cellKey(rec.productId, rec.sizeKey)}`;
-  // Is this a NEW cell or a re-count of one already recorded? The tally must not
-  // move when a counter corrects a cell they already did.
-  const existed = await one(path);
-  await update(ref(database), { [path]: rec });
 
-  if (!existed) {
-    // Increment via transaction: two counters recording their first cell at the
-    // same moment would otherwise both read the same tally and write the same
-    // value, losing one. The tally only feeds the home card, so a failure here
-    // is cosmetic and must never fail the count itself.
+  // CREATION is a transaction on the record path itself, so RTDB serializes two
+  // counters hitting the same fresh cell: exactly one commit observes null and
+  // creates; the other re-runs against the record, aborts, and falls through to
+  // a plain overwrite. `committed` is therefore the truth about who created —
+  // the old read-then-write asked "did it exist a moment ago?", and two
+  // concurrent first-writers both heard "no" and both bumped the tally.
+  const res = await runTransaction(ref(database, path), (cur) => (cur === null ? rec : undefined));
+
+  if (res && res.committed) {
+    // We created it → count it, once. The tally only feeds the home card, so a
+    // failure here is cosmetic and must never fail the count itself.
     try {
       await runTransaction(ref(database, `${sessionPath(hub)}/doneCells`),
         (cur) => (typeof cur === "number" ? cur : 0) + 1);
     } catch { /* card progress only — the count is already saved */ }
+  } else {
+    // Overwrite of an existing record: a recount, an admin apply landing over a
+    // flag, or the loser of the create race. No tally change. A flag CAN land
+    // over an applied adjust — but only when the counter's expected equals the
+    // post-apply live value (the fence rejects anything else), and that is a
+    // genuinely NEW discrepancy against current stock, not a resurrection.
+    await update(ref(database), { [path]: rec });
   }
 }
 
@@ -228,6 +237,44 @@ export async function confirmCell({ hub, sessionId, productId, sizeKey, expected
   const rec = recordFor({ productId, sizeKey, expected, actual: expected, action: "confirm" });
   // A confirm changed no stock, so a failed record write means simply nothing
   // happened — safe to report as a failure and let the counter tap again.
+  try {
+    await writeRecord(hub, sessionId, rec);
+  } catch (err) {
+    return { ok: false, message: `Could not save the count: ${String(err?.message || err)}` };
+  }
+  return { ok: true, record: rec };
+}
+
+/**
+ * FLAG — record a mismatched count WITHOUT touching stock.
+ *
+ * The warehouse counter's mismatch path. The live rules permit `adjustment`
+ * movements only for stockRole "admin", so a warehouse counter cannot write the
+ * correction — but /settings is open to any staff account, so they CAN record
+ * what the shelf actually holds. The record lands in the Variance list with
+ * action "flag", and an admin applies the correction from there via adjustCell,
+ * which re-runs the SAME fence: if the cell moved between the count and the
+ * apply, the apply rejects and the row needs a fresh count, never a blind write.
+ *
+ * Same staleness fence as confirm/adjust — a count against a shelf that no
+ * longer matches the number the counter was shown is not a count.
+ */
+export async function flagCell({ hub, sessionId, productId, sizeKey, expected, actual }) {
+  const target = Number(actual);
+  if (!Number.isInteger(target) || target < 0) {
+    return { ok: false, message: "Enter a whole number of pairs (0 or more)." };
+  }
+  const live = await readLiveQty(hub, productId, sizeKey);
+  if (live.error) return live;
+  if (Number(live.qty) !== Number(expected)) return staleResult(live.qty, expected);
+  if (target === Number(expected)) {
+    return confirmCell({ hub, sessionId, productId, sizeKey, expected });   // it matches — just a confirm
+  }
+
+  // Stock stays exactly where it is: `live` on the record is the UNCHANGED cell
+  // value, and settled is true because nothing was written that could fail to
+  // settle. `action: "flag"` is what marks it as awaiting an admin.
+  const rec = recordFor({ productId, sizeKey, expected, actual: target, action: "flag", live: Number(expected), settled: true });
   try {
     await writeRecord(hub, sessionId, rec);
   } catch (err) {

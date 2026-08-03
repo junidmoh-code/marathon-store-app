@@ -39,18 +39,51 @@ import {
 } from "./hubCountCore";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
-  confirmCell, adjustCell, useLocationRegistryOnce, rememberHub, rememberedHub,
+  confirmCell, adjustCell, flagCell, useLocationRegistryOnce, rememberHub, rememberedHub,
 } from "./hubCountStore";
 
-function Thumb({ url }) {
+function Thumb({ url, onOpen, size = 44 }) {
   // "Image if cheap": the catalogue's existing thumbnail URL, lazy-loaded, and
-  // only ever for the ≤50 rows on the current page. No fetching, no resizing.
+  // only ever for the ≤50 rows on the current page. Tappable when a photo
+  // exists — a counter matching a physical shoe to a row needs to SEE the shoe,
+  // and a 44px thumb is not seeing it.
   if (url) {
-    return <img src={url} alt="" loading="lazy" decoding="async"
-      onError={(e) => { e.currentTarget.style.display = "none"; }}
-      style={{ width: 38, height: 38, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />;
+    return (
+      <img src={url} alt="" loading="lazy" decoding="async"
+        onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(url); } : undefined}
+        onError={(e) => { e.currentTarget.style.display = "none"; }}
+        style={{ width: size, height: size, objectFit: "cover", borderRadius: 10, flexShrink: 0,
+                 cursor: onOpen ? "zoom-in" : "default", border: "1px solid rgba(255,255,255,.08)" }} />
+    );
   }
-  return <div style={{ width: 38, height: 38, borderRadius: 8, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, flexShrink: 0 }}>👟</div>;
+  return <div style={{ width: size, height: size, borderRadius: 10, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>👟</div>;
+}
+
+// Full-screen photo view. Tap anywhere to close — a counter holding a shoe in
+// one hand gets a one-thumb close, no hunt for an ✕.
+function PhotoLightbox({ url, onClose }) {
+  if (!url) return null;
+  return (
+    <div onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(0,0,0,.9)",
+               display: "flex", alignItems: "center", justifyContent: "center", padding: 18, cursor: "zoom-out" }}>
+      <img src={url} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 14 }} />
+    </div>
+  );
+}
+
+// The boxed size label. Owner feedback 2026-08-03: a bare "8" sitting beside
+// "expected 4" read as just another quantity — the word "Size" plus the box is
+// what separates WHICH SHOE from HOW MANY.
+function SizeBox({ label }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 62,
+                   padding: "7px 10px", borderRadius: 9, background: "rgba(74,127,255,.13)",
+                   border: "1px solid rgba(74,127,255,.4)", color: "#CFE0FF",
+                   fontSize: 12, fontWeight: 800, flexShrink: 0, whiteSpace: "nowrap" }}>
+      Size {label}
+    </span>
+  );
 }
 
 export default function HubSneakerCount({ products = [], actorRole, viewer, onExit }) {
@@ -79,6 +112,7 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   const [busyCell, setBusyCell] = useState("");
   const [toast, setToast] = useState(null);
   const [tab, setTab] = useState("count");
+  const [photo, setPhoto] = useState(null);           // tapped product photo, full-screen
   // Cells the counter has chosen to re-count. A recorded cell is otherwise
   // read-only; this is the escape hatch for a mistyped quantity.
   const [recounting, setRecounting] = useState(() => new Set());
@@ -240,6 +274,8 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
         // must agree with what was actually written.
         if (res.record?.action === "adjust") await refreshExpected(row.id, size.sizeKey);
         if (res.warning) flash("err", res.warning, 9000);
+        else if (res.record?.action === "flag")
+          flash("ok", `${row.name} · size ${size.label} recorded — the difference goes to an admin to apply.`, 3400);
         else flash("ok", `${row.name} · size ${size.label} recorded.`, 2200);
       } else {
         flash("err", res.message || "Could not record that count.", 7000);
@@ -257,6 +293,39 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
 
   const onAdjust = (row, size, actual) => runWrite(row, size, () =>
     adjustCell({ hub, sessionId: session.sessionId, productId: row.id, sizeKey: size.sizeKey, expected: size.expected, actual, actorRole }));
+
+  // The warehouse counter's mismatch path: record the shelf truth, move no
+  // stock. The difference queues in Variance for an admin to apply.
+  const onFlag = (row, size, actual) => runWrite(row, size, () =>
+    flagCell({ hub, sessionId: session.sessionId, productId: row.id, sizeKey: size.sizeKey, expected: size.expected, actual }));
+
+  // ADMIN: apply a counter's flagged correction. Same adjustCell, same fence —
+  // if the cell moved since the counter looked at the shelf, this rejects and
+  // the row needs a fresh count, never a blind write of an old number.
+  const [busyVariance, setBusyVariance] = useState("");
+  const applyVariance = async (row) => {
+    setBusyVariance(row.key);
+    try {
+      const res = await adjustCell({
+        hub, sessionId: session.sessionId, productId: row.productId, sizeKey: row.sizeKey,
+        expected: row.expected, actual: row.actual, actorRole,
+      });
+      if (res.ok) {
+        setCounted((c) => ({ ...c, [row.key]: res.record }));
+        await refreshExpected(row.productId, row.sizeKey);
+        flash(res.warning ? "err" : "ok",
+          res.warning || `Applied — ${row.name} size ${row.sizeLabel} corrected to ${row.actual}.`,
+          res.warning ? 9000 : 3200);
+      } else {
+        flash("err", res.stale
+          ? `${row.name} size ${row.sizeLabel}: stock moved since it was counted — recount it before applying.`
+          : (res.message || "Could not apply."), 7000);
+        if (res.stale) await refreshExpected(row.productId, row.sizeKey);
+      }
+    } finally {
+      setBusyVariance("");
+    }
+  };
 
   // Re-count a cell that was already recorded: pull the CURRENT value (the old
   // `expected` is meaningless now — stock moved) and reopen the input. Writing
@@ -317,14 +386,13 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
         )}
       </Card>
 
-      {/* The rules read the STORED stockRole, not the app's super-admin email
-          shortcut. Say so at the door rather than on the fortieth box. */}
+      {/* For non-admin counters this is a supported flow, not a failure — say
+          what their taps do, in their language, once, at the door. */}
       {!canAdjust && (
-        <div style={{ background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.4)", borderRadius: 11, padding: "9px 11px", margin: "10px 0", fontSize: 12, color: AMBER, lineHeight: 1.45 }}>
-          <strong>Corrections are disabled for this account.</strong> Writing an adjustment needs
-          <code style={{ margin: "0 4px" }}>stockRole: "admin"</code> on your <code>/users</code> record, which the security
-          rules check directly — being a super-admin in the app does not grant it. You can still count
-          cells that already match, and read the variance list.
+        <div style={{ background: "rgba(74,127,255,.08)", border: "1px solid rgba(74,127,255,.3)", borderRadius: 11, padding: "9px 11px", margin: "10px 0", fontSize: 12, color: BLUE_L, lineHeight: 1.5 }}>
+          <strong>Count freely — nothing you enter here moves stock.</strong> Where your count matches, tap
+          Confirm. Where it differs, type what is really on the shelf and tap Record — an admin applies the
+          correction afterwards.
         </div>
       )}
 
@@ -355,15 +423,16 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
               page={safePage} pageCount={pageCount} setPage={setPage}
               openRow={openRow} setOpenRow={setOpenRow}
               inputs={inputs} setInputs={setInputs} busyCell={busyCell}
-              onConfirm={onConfirm} onAdjust={onAdjust} onRecount={onRecount}
-              recounting={recounting} canAdjust={canAdjust}
+              onConfirm={onConfirm} onAdjust={onAdjust} onFlag={onFlag} onRecount={onRecount}
+              recounting={recounting} canAdjust={canAdjust} onOpenPhoto={setPhoto}
               addQuery={addQuery} setAddQuery={setAddQuery} addMatches={addMatches} onAdd={addProduct}
             />
-          ) : (
-            <VarianceList rows={variance} />
-          )}
+          ) : canSeeVariance ? (
+            <VarianceList rows={variance} canAdjust={canAdjust} onApply={applyVariance} busyKey={busyVariance} />
+          ) : null}
         </>
       )}
+      <PhotoLightbox url={photo} onClose={() => setPhoto(null)} />
       <Toast msg={toast} />
     </div>
   );
@@ -372,8 +441,8 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
 // ── The paginated product list ────────────────────────────────────────────────
 function CountList({
   rows, totalRows, counted, query, setQuery, page, pageCount, setPage,
-  openRow, setOpenRow, inputs, setInputs, busyCell, onConfirm, onAdjust, onRecount,
-  recounting, canAdjust, addQuery, setAddQuery, addMatches, onAdd,
+  openRow, setOpenRow, inputs, setInputs, busyCell, onConfirm, onAdjust, onFlag, onRecount,
+  recounting, canAdjust, onOpenPhoto, addQuery, setAddQuery, addMatches, onAdd,
 }) {
   return (
     <>
@@ -397,7 +466,7 @@ function CountList({
             ) : addMatches.map((p) => (
               <button key={p.id} onClick={() => onAdd(p)}
                 style={{ display: "flex", alignItems: "center", gap: 9, textAlign: "left", background: CARD, border: BORDER, borderRadius: 9, padding: "6px 9px", cursor: "pointer" }}>
-                <Thumb url={p.photoUrl} />
+                <Thumb url={p.photoUrl} onOpen={onOpenPhoto} size={38} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
                   <div style={{ fontSize: 10, color: GRAY }}>no stock cell at this hub — seeds from 0</div>
@@ -422,8 +491,8 @@ function CountList({
             <ProductRow key={row.id} row={row} counted={counted}
               open={openRow === row.id} onToggle={() => setOpenRow(openRow === row.id ? "" : row.id)}
               inputs={inputs} setInputs={setInputs} busyCell={busyCell}
-              onConfirm={onConfirm} onAdjust={onAdjust} onRecount={onRecount}
-              recounting={recounting} canAdjust={canAdjust} />
+              onConfirm={onConfirm} onAdjust={onAdjust} onFlag={onFlag} onRecount={onRecount}
+              recounting={recounting} canAdjust={canAdjust} onOpenPhoto={onOpenPhoto} />
           ))}
         </div>
       )}
@@ -440,7 +509,7 @@ function CountList({
 }
 
 // ── One product, collapsed to a summary until tapped ──────────────────────────
-function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell, onConfirm, onAdjust, onRecount, recounting, canAdjust }) {
+function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell, onConfirm, onAdjust, onFlag, onRecount, recounting, canAdjust, onOpenPhoto }) {
   const settled = isRowSettled(row, counted);
   const doneCount = row.sizes.filter((s) => counted[cellKey(row.id, s.sizeKey)]).length;
 
@@ -448,7 +517,7 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
     <div style={{ background: CARD, border: settled ? "1px solid rgba(74,222,128,.3)" : BORDER, borderRadius: 11, opacity: settled && !open ? 0.55 : 1 }}>
       <button onClick={onToggle}
         style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "transparent", border: "none", padding: "9px 10px", cursor: "pointer" }}>
-        <Thumb url={row.photoUrl} />
+        <Thumb url={row.photoUrl} onOpen={onOpenPhoto} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {settled && <span style={{ color: GREEN, marginRight: 5 }}>✓</span>}{row.name}
@@ -477,6 +546,7 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
               busy={busyCell === cellKey(row.id, size.sizeKey)}
               onConfirm={() => onConfirm(row, size)}
               onAdjust={(actual) => onAdjust(row, size, actual)}
+              onFlag={(actual) => onFlag(row, size, actual)}
               onRecount={() => onRecount(row, size)} />
           ))}
         </div>
@@ -489,29 +559,40 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
 // The button is a Confirm until the typed number differs from expected, at which
 // point it becomes an Adjust. One control, so a counter can never confirm a
 // number they have just contradicted.
-function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, onConfirm, onAdjust, onRecount }) {
+// One size cell. Reads left to right as a sentence: WHICH size → what the
+// SYSTEM expects → what the SHELF says → one action. The size sits in a labeled
+// box so it can never be mistaken for a quantity (owner feedback), and the
+// expected number is boxed with its own caption for the same reason.
+function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, onConfirm, onAdjust, onFlag, onRecount }) {
   const typed = String(value ?? "").trim();
   const parsed = /^\d+$/.test(typed) ? parseInt(typed, 10) : null;
-  const isAdjust = parsed != null && parsed !== Number(size.expected);
+  const isMismatch = parsed != null && parsed !== Number(size.expected);
   const done = !!record && !recounting;
   // A negative cell cannot be "confirmed" — no shelf holds −3 pairs, so the only
   // honest action is to type what is actually there.
   const negative = Number(size.expected) < 0;
-  const blocked = isAdjust && !canAdjust;
+
+  const pendingFlag = done && record.action === "flag";
+  const doneColor = record
+    ? (record.settled === false ? RED : pendingFlag ? AMBER : record.actual === record.expected ? GREEN : AMBER)
+    : GREEN;
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, opacity: done ? 0.5 : 1 }}>
-      <div style={{ width: 44, fontSize: 13, fontWeight: 700, color: "#fff", flexShrink: 0 }}>{size.label}</div>
-      <div style={{ width: 66, flexShrink: 0 }}>
-        <div style={{ fontSize: 13, color: negative ? RED : "#fff" }}>{size.expected}</div>
-        <div style={{ fontSize: 9, color: GRAY }}>expected</div>
+    <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 8px", borderRadius: 10,
+                  background: done ? "transparent" : "rgba(255,255,255,.025)", opacity: done ? 0.55 : 1 }}>
+      <SizeBox label={size.label} />
+      <div style={{ width: 64, textAlign: "center", flexShrink: 0, background: "rgba(255,255,255,.04)",
+                    border: BORDER, borderRadius: 9, padding: "4px 6px" }}>
+        <div style={{ fontSize: 14.5, fontWeight: 700, color: negative ? RED : "#fff" }}>{size.expected}</div>
+        <div style={{ fontSize: 8.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".06em" }}>expected</div>
       </div>
 
       {done ? (
         <>
-          <div style={{ flex: 1, fontSize: 11.5, color: record.settled === false ? RED : record.actual === record.expected ? GREEN : AMBER }}>
-            {record.settled === false ? "⚠ re-check shelf" : "✓ counted"} {record.actual}
+          <div style={{ flex: 1, fontSize: 11.5, color: doneColor }}>
+            {record.settled === false ? "⚠ re-check shelf —" : pendingFlag ? "✎ counted" : "✓ counted"} {record.actual}
             {record.actual !== record.expected && ` (was ${record.expected}, ${record.actual > record.expected ? "+" : ""}${record.actual - record.expected})`}
+            {pendingFlag && <div style={{ fontSize: 10, color: AMBER }}>waiting for an admin to apply</div>}
             {record.settled === false && <div style={{ fontSize: 10, color: RED }}>cell now reads {record.live}</div>}
           </div>
           <button onClick={onRecount} disabled={busy}
@@ -522,14 +603,16 @@ function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, o
       ) : (
         <>
           <input value={value} onChange={(e) => onChange(e.target.value)} inputMode="numeric"
-            placeholder="actual" autoFocus={recounting}
+            placeholder="on shelf" autoFocus={recounting}
             style={{ ...input, flex: 1, minWidth: 0, padding: "8px 10px", fontSize: "0.85rem" }} />
-          <button disabled={busy || blocked || (typed !== "" && parsed == null) || (negative && !isAdjust)}
-            title={blocked ? "This account cannot write stock corrections" : negative && !isAdjust ? "Type what is on the shelf — a negative cell cannot be confirmed" : ""}
-            onClick={() => (isAdjust ? onAdjust(parsed) : onConfirm())}
-            style={{ ...(isAdjust ? bBlue : bGreen), padding: "8px 12px", flexShrink: 0,
-                     opacity: busy || blocked || (negative && !isAdjust) ? 0.45 : 1 }}>
-            {busy ? "…" : isAdjust ? "Adjust" : "Confirm"}
+          {/* One button, three faces: Confirm (matches) / Adjust (admin writes
+              stock) / Record (staff — saves the difference for an admin). */}
+          <button disabled={busy || (typed !== "" && parsed == null) || (negative && !isMismatch)}
+            title={negative && !isMismatch ? "Type what is on the shelf — a negative cell cannot be confirmed" : ""}
+            onClick={() => (isMismatch ? (canAdjust ? onAdjust(parsed) : onFlag(parsed)) : onConfirm())}
+            style={{ ...(isMismatch ? bBlue : bGreen), padding: "8px 13px", flexShrink: 0,
+                     opacity: busy || (negative && !isMismatch) ? 0.45 : 1 }}>
+            {busy ? "…" : isMismatch ? (canAdjust ? "Adjust" : "Record") : "Confirm"}
           </button>
         </>
       )}
@@ -538,14 +621,20 @@ function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, o
 }
 
 // ── Variance: every recorded cell whose actual disagreed with the system ──────
-function VarianceList({ rows }) {
+// For an admin this doubles as the WORK QUEUE: rows a warehouse counter recorded
+// (action "flag") carry an Apply button that writes the correction through the
+// same fenced adjust path — a stale cell rejects and demands a recount, never a
+// blind write of an old number.
+function VarianceList({ rows, canAdjust, onApply, busyKey }) {
   if (!rows.length) return <Empty>No variances recorded in this session — every counted cell matched.</Empty>;
   const net = rows.reduce((t, r) => t + r.delta, 0);
   const unsettled = rows.filter((r) => r.unsettled).length;
+  const pending = rows.filter((r) => r.pending).length;
   return (
     <Card>
       <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>
         {rows.length} variance{rows.length === 1 ? "" : "s"} · net {net > 0 ? "+" : ""}{net} pairs
+        {pending > 0 && <span style={{ color: AMBER }}> · {pending} awaiting apply</span>}
       </div>
       {unsettled > 0 && (
         <div style={{ fontSize: 11.5, color: RED, marginBottom: 8, lineHeight: 1.45 }}>
@@ -555,19 +644,28 @@ function VarianceList({ rows }) {
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
         {rows.map((r) => (
-          <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 9, padding: "6px 0", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
+          <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12.5, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {r.unsettled && <span style={{ color: RED, marginRight: 4 }}>⚠</span>}{r.name}
+                {r.unsettled && <span style={{ color: RED, marginRight: 4 }}>⚠</span>}
+                {r.pending && <span style={{ color: AMBER, marginRight: 4 }}>✎</span>}
+                {r.name}
               </div>
               <div style={{ fontSize: 10, color: GRAY }}>
-                size {r.sizeLabel} · expected {r.expected} → counted {r.actual}
+                Size {r.sizeLabel} · expected {r.expected} → counted {r.actual}
+                {r.pending && <span style={{ color: AMBER }}> · stock not yet corrected</span>}
                 {r.unsettled && <span style={{ color: RED }}> · cell reads {r.live}</span>}
               </div>
             </div>
             <div style={{ fontSize: 14, fontWeight: 700, color: r.delta > 0 ? GREEN : RED, flexShrink: 0 }}>
               {r.delta > 0 ? "+" : ""}{r.delta}
             </div>
+            {r.pending && canAdjust && (
+              <button onClick={() => onApply(r)} disabled={busyKey === r.key}
+                style={{ ...bBlue, padding: "7px 12px", fontSize: "0.72rem", flexShrink: 0, opacity: busyKey === r.key ? 0.5 : 1 }}>
+                {busyKey === r.key ? "…" : "Apply"}
+              </button>
+            )}
           </div>
         ))}
       </div>

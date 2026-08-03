@@ -66,6 +66,10 @@ vi.mock("firebase/database", () => ({
   // moved underneath us before the commit, RE-RUN it against the new value.
   // That re-run is what makes first-write-wins actually work.
   runTransaction: async (node, fn) => {
+    // A rules rejection fails a transaction exactly as it fails an update — the
+    // durability tests inject failure per path prefix and must cover BOTH ways
+    // a record write can happen.
+    if (failWritesUnder && String(node.path).startsWith(failWritesUnder)) throw new Error("PERMISSION_DENIED");
     for (let i = 0; i < 5; i++) {
       const cur = getPath(node.path);
       const next = fn(cur);
@@ -135,7 +139,7 @@ const applyMovementMock = vi.fn(async (mv, { maxRetries = 6 } = {}) => {
 
 vi.mock("./applyMovement", () => ({ applyMovement: (...args) => applyMovementMock(...args) }));
 
-const { adjustCell, confirmCell, openOrResumeSession, loadCardSummary } = await import("./hubCountStore.js");
+const { adjustCell, confirmCell, flagCell, openOrResumeSession, loadCardSummary } = await import("./hubCountStore.js");
 
 const HUB = "hub1";
 const PID = "sh1";
@@ -371,6 +375,19 @@ describe("card progress is a tally, not a download", () => {
     expect(sessionFor().doneCells).toBe(1);      // same cell, corrected — still one
   });
 
+  it("two concurrent first-writes on one cell cannot double-count the tally", async () => {
+    seedCell(4);
+    // Another counter's record lands while OUR create-transaction is in flight:
+    // the transaction re-runs against it, aborts, and we overwrite WITHOUT
+    // counting — only the actual creator's client bumps the tally.
+    raceDuringTxn = () => setPath(`settings/hubSneakerCount/counted/${HUB}/${SESSION}/${PID}::8`,
+      { productId: PID, sizeKey: "8", expected: 4, actual: 4, action: "confirm" });
+    const res = await confirmCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4 });
+    expect(res.ok).toBe(true);
+    expect(recordNow()).toBeTruthy();                 // our record still landed (overwrite)
+    expect(getPath(`settings/hubSneakerCount/sessions/${HUB}/doneCells`) || 0).toBe(0);   // we did NOT create → no bump
+  });
+
   it("reads ONLY the session record — never the counted node", async () => {
     await openOrResumeSession(HUB);
     const sid = sessionFor().sessionId;
@@ -380,6 +397,68 @@ describe("card progress is a tally, not a download", () => {
 
     const s = await loadCardSummary(HUB);
     expect(s).toMatchObject({ done: 1, total: 40 });
+  });
+});
+
+// ── FLAG — the warehouse counter's mismatch path ─────────────────────────────
+// The rules only let admins write `adjustment` movements, so staff RECORD the
+// mismatch instead. The invariant that matters: flagCell must NEVER reach the
+// stock writer — a "record" that moved stock would be an adjustment with a
+// friendlier name and no rule behind it.
+describe("flagCell records a mismatch without touching stock", () => {
+  it("writes a flag record; the stock writer is never called; the cell is untouched", async () => {
+    seedCell(4);
+    const res = await flagCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 7 });
+
+    expect(res.ok).toBe(true);
+    expect(applyMovementMock).not.toHaveBeenCalled();
+    expect(cellNow().qty).toBe(4);                    // stock exactly where it was
+    expect(cellNow().v).toBe(1);                      // version untouched
+    expect(recordNow()).toMatchObject({ action: "flag", expected: 4, actual: 7, settled: true, live: 4 });
+  });
+
+  it("is fenced like everything else — a moved cell rejects the record", async () => {
+    seedCell(2);                                       // someone already changed it
+    const res = await flagCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 7 });
+    expect(res.ok).toBe(false);
+    expect(res.stale).toBe(true);
+    expect(recordNow()).toBeNull();
+  });
+
+  it("a matching count degrades to a plain confirm", async () => {
+    seedCell(4);
+    const res = await flagCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 4 });
+    expect(res.ok).toBe(true);
+    expect(recordNow().action).toBe("confirm");
+  });
+
+  it("rejects junk before any read", async () => {
+    seedCell(4);
+    for (const bad of [-1, 2.5, NaN]) {
+      const res = await flagCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: bad });
+      expect(res.ok).toBe(false);
+    }
+  });
+
+  it("the admin APPLY is just adjustCell over the flagged numbers — and overwrites the flag", async () => {
+    seedCell(4);
+    await flagCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 7 });
+    // Admin applies later; stock has not moved in between.
+    const res = await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 7, actorRole: "admin" });
+    expect(res.ok).toBe(true);
+    expect(cellNow().qty).toBe(7);
+    expect(recordNow().action).toBe("adjust");        // pending cleared — same key, overwritten
+  });
+
+  it("the apply REJECTS when stock moved after the count — no blind write of an old number", async () => {
+    seedCell(4);
+    await flagCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 7 });
+    setPath(cellPath(), { qty: 3, v: 2, mv: "sale", lastType: "sold" });   // a sale lands before the admin gets there
+    const res = await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 7, actorRole: "admin" });
+    expect(res.ok).toBe(false);
+    expect(res.stale).toBe(true);
+    expect(cellNow().qty).toBe(3);                    // the sale's truth survives
+    expect(recordNow().action).toBe("flag");          // still queued, needs a recount
   });
 });
 

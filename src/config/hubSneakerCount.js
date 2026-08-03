@@ -58,13 +58,25 @@ export function isHubCountSuperAdmin(viewer) {
 }
 
 /**
- * May this viewer OPEN the count view? (Reading, and the variance list.)
- * Super-admin always; otherwise a real admin stock role.
+ * May this viewer OPEN the count view and record counts?
+ *
+ * WAREHOUSE IS IN (owner direction 2026-08-03: "they go in the card and count
+ * what needs to be counted" — "they" being the hub staff, who sign in with
+ * stockRole "warehouse", not "admin"). The original admin-only gate made the
+ * card invisible on every tablet that would actually do the counting.
+ *
+ * What warehouse counters CAN do is bounded by the live rules, not by us:
+ *   • CONFIRM a matching cell        → /settings write, open to any staff ✓
+ *   • RECORD a mismatch (flag)       → /settings write, no stock change   ✓
+ *   • APPLY a stock correction       → `adjustment` movement, rules demand
+ *                                      stockRole "admin" — NOT warehouse  ✗
+ * So staff record everything; the mismatches queue in Variance and an admin
+ * applies them. See canAdjustHubCount below — that gate did not widen.
  */
 export function canUseHubSneakerCount(viewer) {
   if (!HUB_SNEAKER_COUNT_ENABLED) return false;
   if (isHubCountSuperAdmin(viewer)) return true;
-  return viewer?.stockRole === "admin";
+  return viewer?.stockRole === "admin" || viewer?.stockRole === "warehouse";
 }
 
 /**
@@ -132,7 +144,13 @@ export function canAdjustHubCount(viewer) {
  * managed by hand and this branch is forbidden from touching them.
  */
 export function canSeeHubCountVariance(viewer) {
-  return canUseHubSneakerCount(viewer);
+  // ADMIN ONLY — this stopped mirroring canUseHubSneakerCount the day warehouse
+  // came in. The original spec said "variance readable by admin only", and that
+  // was vacuous while the whole module was admin-only; now it is load-bearing.
+  // Warehouse counters feed the variance list; they do not read it.
+  if (!HUB_SNEAKER_COUNT_ENABLED) return false;
+  if (isHubCountSuperAdmin(viewer)) return true;
+  return viewer?.stockRole === "admin";
 }
 
 /** Should the temporary home card render for this viewer? */
