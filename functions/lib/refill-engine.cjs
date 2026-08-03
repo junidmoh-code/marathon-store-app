@@ -261,11 +261,55 @@ function footwearTargetsEnabled(config, dest) {
   return false;   // false, undefined, null, or anything unexpected → OFF
 }
 
+// ═══ SUBCATEGORY POLICY — /config/refillEngine/subcategoryRunByLocation ══════
+// A standing "keep N of every product in this subcategory" rule, keyed by the
+// catalogue's own /products/{id}.subcategory field.
+//
+//   subcategoryRunByLocation: { hub2: { Watches: 2 }, trophy: { Watches: 2 } }
+//
+// WHY IT EXISTS (owner directive 2026-08-03): the clothing rule keys its target
+// off SIZE (defaultRunByStore), which cannot express "watches keep 2". Watches
+// are one-size — catalogue size "_" — and defaultRunByStore holds only garment
+// letters, so every watch resolved to no target and sat unmanaged. The obvious
+// shortcut, adding "_" to defaultRunByStore, was REJECTED by the owner and must
+// not be revived: "_" is shared by every one-size product, so it would have
+// silently armed 20 pairs of sunglasses, 4 belts and 4 jewellery lines carried
+// at Trophy/PE alongside the 6 watches. Subcategory is the narrow key that says
+// what was actually meant. (Perfume is untouched either way — it carries no
+// productType and is not clothing, so it never reaches this branch; its policy
+// stays explicit /stock_targets rows.)
+//
+// TWO INDEPENDENT OFF-SWITCHES, both fail-safe:
+//   • delete /config/refillEngine/subcategoryRunByLocation → policy gone, live,
+//     no deploy. Absent / non-object / non-positive → no policy, exactly as
+//     before this shipped. Nothing is persisted, so there is nothing to unwind.
+//   • ruleBasedTargets:false still kills this too — the branch sits AFTER that
+//     kill switch on purpose. This is deliberately the opposite choice from the
+//     footwear rule above (which sits BEFORE it to stay independent): footwear
+//     is a separate estate with its own rollout, whereas a subcategory policy is
+//     a REFINEMENT of the clothing rule and must die with the one big red button
+//     rather than outlive it.
+//
+// It carries NO reorderPoint, for the same reason the clothing rule pins it to
+// null: a top-up policy's trigger belongs on an approved row, not a code default.
+function subcategoryRun(config, products, pid, dest) {
+  const sub = products?.[pid]?.subcategory;
+  if (typeof sub !== "string" || !sub) return null;
+  const run = config?.subcategoryRunByLocation?.[dest];
+  if (!run || typeof run !== "object" || Array.isArray(run)) return null;
+  const t = run[sub];
+  // Positive finite only. A 0 here is NOT "deliberately excluded" (that meaning
+  // belongs to an explicit row a human wrote); at policy level it can only be a
+  // typo, and honouring it would silently stop replenishing a whole category.
+  return typeof t === "number" && Number.isFinite(t) && t > 0 ? t : null;
+}
+
 // ── target resolution — EXPLICIT OVERRIDE, THEN GLOBAL CLOTHING RULE ─────────
 // Priority order (owner decision 2026-07-21, re-landed under review 2026-07-25):
 //   1. explicit manual override (/stock_targets) — always wins
-//   2. global clothing rule (config.defaultRunByStore + catalog sizes),
-//      ONLY where ruleBasedTargets is enabled for this destination
+//   2. subcategory policy (config.subcategoryRunByLocation), then the global
+//      clothing rule (config.defaultRunByStore + catalog sizes) — both ONLY
+//      where ruleBasedTargets is enabled for this destination
 //   3. null (non-clothing, store does not carry, or deliberately excluded)
 // Explicit target 0 continues to mean "deliberately excluded".
 //
@@ -346,6 +390,27 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
   if (isClothing(p) && storeCarries(stock, dest, pid)) {
     const sizes = productSizes(products, pid);
     if (sizes.includes(size)) {
+      // MORE SPECIFIC WINS: a subcategory policy overrides the size run for the
+      // products it names. Today that decides exactly two live records — the two
+      // watches mis-filed with garment sizes S and M — and it resolves both to
+      // the same 2 the size run would have given them at Trophy/PE, so this
+      // ordering changes no live cell. It is written this way so "watches keep 2"
+      // stays true of EVERY watch, including any future one that arrives with a
+      // stray letter size, instead of silently falling back to the garment run.
+      //
+      // A BLANK size is refused. It reads as another spelling of one-size, but
+      // the encodings disagree exactly where it matters: stockSizeKey("") is the
+      // "_" cell that holds the stock, while encodeSizeKey("") is "" — so a
+      // policy honoured here would chase a phantom "" cell that can never be
+      // filled while the real units sit in "_". The size run never reached this
+      // case (no run has a "" key), so the policy must not introduce it. No live
+      // product has a blank size today; this keeps it harmless if one is created.
+      const subT = typeof size === "string" && size.trim() !== ""
+        ? subcategoryRun(config, products, pid, dest)
+        : null;
+      if (subT !== null) {
+        return { target: subT, minQty: Math.max(1, subT - 1), reorderPoint: null, source: "subcategory_default" };
+      }
       const run = config?.defaultRunByStore?.[dest] || {};
       const t = run[size];
       if (typeof t === "number" && t > 0) {
@@ -1654,4 +1719,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate };
+module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate };
