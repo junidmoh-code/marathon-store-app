@@ -93,7 +93,7 @@ export function buildHubRows({ products = [], hubStock = {} }) {
     rows.push(makeRow(product, sizes));
   }
 
-  return rows.sort(byName);
+  return rows.sort(byQuantityDesc);
 }
 
 function sizeRowsFor(node) {
@@ -109,16 +109,24 @@ function makeRow(product, sizes, seeded = false) {
     name: product.name || "(unnamed)",
     code: product.barcode != null ? String(product.barcode) : (product.sku != null ? String(product.sku) : ""),
     photoUrl: product.photoUrl || "",
-    // The TRUE sum, negatives included. A hub cell can legitimately sit negative
-    // (a dispatch off an uncounted cell), and hiding that behind a clamp would
-    // conceal exactly the discrepancy a stock-take exists to find.
+    // The TRUE sum, negatives included — every write path fences and computes
+    // against reality, never the display.
     total: sizes.reduce((t, s) => t + s.expected, 0),
+    // What the UI SHOWS (owner direction 2026-08-03: no negative numbers on the
+    // count screen — a shelf cannot hold −3 pairs, and to a counter the minus is
+    // noise). Each below-zero cell displays as 0; the truth stays in `total` and
+    // in per-size `expected`, and counting the cell is what actually fixes it.
+    displayTotal: sizes.reduce((t, s) => t + Math.max(0, s.expected), 0),
     seeded,
     sizes,
   };
 }
 
 const byName = (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+// List order (owner direction 2026-08-03): biggest stacks first. Counting runs
+// top-down through the physical bulk of the hub instead of hopping the alphabet.
+// Sorts on the DISPLAYED total so the order matches what the screen says.
+const byQuantityDesc = (a, b) => (b.displayTotal - a.displayTotal) || byName(a, b);
 
 /**
  * A row for a product that is physically on the shelf but has NO cell at this
@@ -178,10 +186,13 @@ export function mergeSeededRows(hubRows, seededRows) {
     const extra = seed.sizes.filter((s) => !have.has(s.sizeKey));
     if (!extra.length) return row;
     const sizes = [...row.sizes, ...extra].sort((a, b) => footwearSizeRank(a.sizeKey) - footwearSizeRank(b.sizeKey));
-    return { ...row, sizes, total: sizes.reduce((t, s) => t + s.expected, 0), seeded: true };
+    return { ...row, sizes,
+      total: sizes.reduce((t, s) => t + s.expected, 0),
+      displayTotal: sizes.reduce((t, s) => t + Math.max(0, s.expected), 0),
+      seeded: true };
   });
 
-  return [...merged, ...seedById.values()].sort(byName);
+  return [...merged, ...seedById.values()].sort(byQuantityDesc);
 }
 
 /**
@@ -255,37 +266,28 @@ export function isStaleExpectation(expected, live) {
 }
 
 /**
- * The variance list: every recorded cell where actual !== expected.
- * Sorted by absolute delta, largest first — the numbers worth arguing about are
- * at the top rather than buried in alphabetical order.
+ * The History tab (owner direction 2026-08-03, replacing the Variance list):
+ * EVERY recorded cell, newest first — the log of what has been counted, by
+ * outcome. Pending rows (a warehouse counter's recorded mismatch, action
+ * "flag") are the admin's apply queue and surface with their Apply button in
+ * the view; unsettled rows still mean "walk back to that shelf".
  */
-export function varianceRows(counted = {}, productsById = new Map()) {
+export function historyRows(counted = {}, productsById = new Map()) {
   const byId = productsById instanceof Map ? productsById : new Map(Object.entries(productsById || {}));
   return Object.entries(counted)
     .map(([key, rec]) => ({ key, ...rec }))
-    // A variance is a disagreement between shelf and system. An UNSETTLED record
-    // is listed too even if those two agreed, because it means the cell did not
-    // end up where the count put it — that is a cell someone has to walk back to,
-    // and burying it would defeat the point of persisting `settled`.
-    .filter((r) => Number(r.actual) !== Number(r.expected) || r.settled === false)
     .map((r) => ({
       ...r,
       delta: Number(r.actual) - Number(r.expected),
-      unsettled: r.settled === false,
-      // A "flag" is a warehouse counter's recorded mismatch: stock untouched,
-      // correction awaiting an admin. Pending rows are the admin's WORK QUEUE.
       pending: r.action === "flag",
+      unsettled: r.settled === false,
       live: r.live == null ? Number(r.actual) : Number(r.live),
       name: byId.get(r.productId)?.name || r.productId,
       sizeLabel: sizeLabelOf(r.sizeKey),
     }))
-    // Unsettled first (walk back to the shelf), then pending corrections (the
-    // admin's queue), then by how much is at stake.
-    .sort((a, b) =>
-      (b.unsettled ? 1 : 0) - (a.unsettled ? 1 : 0)
-      || (b.pending ? 1 : 0) - (a.pending ? 1 : 0)
-      || Math.abs(b.delta) - Math.abs(a.delta)
-      || a.name.localeCompare(b.name));
+    // Newest first — `at` is ISO, so string order is time order. Ties (same
+    // millisecond is possible across devices) break by name for stability.
+    .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")) || a.name.localeCompare(b.name));
 }
 
 /** Filter rows by the search box (name or code), case/punctuation-insensitive. */

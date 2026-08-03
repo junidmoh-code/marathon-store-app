@@ -118,40 +118,6 @@ export function canAdjustHubCount(viewer) {
   return viewer?.stockRole === "admin";        // the STORED role, never the email shortcut
 }
 
-/**
- * May this viewer see the variance list?
- *
- * ⚠️ CLIENT-SIDE ONLY, and weaker than it looks. Session data lives under
- * /settings, whose live rules are:
- *
- *   .read   auth != null                    ← includes ANONYMOUS auth
- *   .write  auth != null && non-anonymous   ← any staff account, any stockRole
- *
- * The read gate matters because this app deliberately runs anonymous sessions on
- * the TV displays, so "signed-in staff only" is not what `auth != null` buys.
- * And because there is no child validation, any non-anonymous account — a POS or
- * warehouse user who cannot write a single adjustment — can overwrite the
- * counted records or the session node outright. The count PROGRESS and VARIANCE
- * are therefore convenience state, NOT tamper-evident audit.
- *
- * The audit record is /stock_movements, which IS rule-protected and carries the
- * whole count in `link.count*` — every adjustment is independently reconstructible
- * from the ledger without trusting /settings at all.
- *
- * Making the count data itself private and tamper-proof needs one hand-written
- * console rule on settings/hubSneakerCount (read+write gated to
- * stockRole === 'admin'). Flagged to the owner; not done here, because rules are
- * managed by hand and this branch is forbidden from touching them.
- */
-export function canSeeHubCountVariance(viewer) {
-  // ADMIN ONLY — this stopped mirroring canUseHubSneakerCount the day warehouse
-  // came in. The original spec said "variance readable by admin only", and that
-  // was vacuous while the whole module was admin-only; now it is load-bearing.
-  // Warehouse counters feed the variance list; they do not read it.
-  if (!HUB_SNEAKER_COUNT_ENABLED) return false;
-  if (isHubCountSuperAdmin(viewer)) return true;
-  return viewer?.stockRole === "admin";
-}
 
 /** Should the temporary home card render for this viewer? */
 export function hubSneakerCountVisibleForViewer(viewer) {

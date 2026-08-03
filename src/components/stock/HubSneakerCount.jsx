@@ -30,12 +30,11 @@ import { Card, Empty, Toast } from "./widgets";
 import { FONT, BG, CARD, BORDER, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGray, bBlue, bGhost, input, tabOn, tabOff } from "./ui";
 import {
   HUB_COUNT_PAGE_SIZE,
-  canSeeHubCountVariance,
   canAdjustHubCount,
 } from "../../config/hubSneakerCount";
 import {
   hubOptions, buildHubRows, seededRowFor, mergeSeededRows, progressOf,
-  isRowSettled, varianceRows, filterRows, cellKey, recoverSeededRows,
+  isRowSettled, historyRows, filterRows, cellKey, recoverSeededRows,
 } from "./hubCountCore";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
@@ -355,8 +354,8 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   };
 
   // ── RENDER ────────────────────────────────────────────────────────────────
-  const variance = useMemo(() => varianceRows(counted, productsById), [counted, productsById]);
-  const canSeeVariance = canSeeHubCountVariance(viewer);
+  const history = useMemo(() => historyRows(counted, productsById), [counted, productsById]);
+  const pendingApply = useMemo(() => history.filter((r) => r.pending).length, [history]);
   const canAdjust = canAdjustHubCount(viewer);
 
   return (
@@ -408,11 +407,9 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
         <>
           <div style={{ display: "flex", gap: 7, margin: "12px 0", alignItems: "center" }}>
             <button onClick={() => setTab("count")} style={tab === "count" ? tabOn : tabOff}>Count</button>
-            {canSeeVariance && (
-              <button onClick={() => setTab("variance")} style={tab === "variance" ? tabOn : tabOff}>
-                Variance{variance.length ? ` (${variance.length})` : ""}
-              </button>
-            )}
+            <button onClick={() => setTab("history")} style={tab === "history" ? tabOn : tabOff}>
+              History{history.length ? ` (${history.length})` : ""}{pendingApply && canAdjust ? ` · ${pendingApply} to apply` : ""}
+            </button>
             <button onClick={refreshRecorded} style={{ ...tabOff, marginLeft: "auto" }}
               title="Re-read what every counter has recorded (one-shot, no live subscription)">↻ Refresh</button>
           </div>
@@ -427,9 +424,9 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
               recounting={recounting} canAdjust={canAdjust} onOpenPhoto={setPhoto}
               addQuery={addQuery} setAddQuery={setAddQuery} addMatches={addMatches} onAdd={addProduct}
             />
-          ) : canSeeVariance ? (
-            <VarianceList rows={variance} canAdjust={canAdjust} onApply={applyVariance} busyKey={busyVariance} />
-          ) : null}
+          ) : (
+            <HistoryList rows={history} canAdjust={canAdjust} onApply={applyVariance} busyKey={busyVariance} />
+          )}
         </>
       )}
       <PhotoLightbox url={photo} onClose={() => setPhoto(null)} />
@@ -529,7 +526,8 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
           </div>
         </div>
         <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: row.total < 0 ? RED : "#fff" }}>{row.total}</div>
+          {/* displayTotal: below-zero cells count as 0 here — no negatives on screen. */}
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>{row.displayTotal}</div>
           <div style={{ fontSize: 9.5, color: GRAY }}>on hand</div>
         </div>
       </button>
@@ -566,11 +564,16 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
 function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, onConfirm, onAdjust, onFlag, onRecount }) {
   const typed = String(value ?? "").trim();
   const parsed = /^\d+$/.test(typed) ? parseInt(typed, 10) : null;
-  const isMismatch = parsed != null && parsed !== Number(size.expected);
   const done = !!record && !recounting;
-  // A negative cell cannot be "confirmed" — no shelf holds −3 pairs, so the only
-  // honest action is to type what is actually there.
+  // No negative numbers on screen (owner direction): a below-zero cell DISPLAYS
+  // as 0, but the TRUE value stays underneath — every write fences and computes
+  // against it, which is exactly how counting the cell repairs it.
   const negative = Number(size.expected) < 0;
+  const expDisp = negative ? 0 : Number(size.expected);
+  // On a negative cell even "matches the shown 0" is a correction in truth, so
+  // every submission routes through adjust/record — never a bare confirm, which
+  // would notarize the negative.
+  const isMismatch = parsed != null && (negative || parsed !== Number(size.expected));
 
   const pendingFlag = done && record.action === "flag";
   const doneColor = record
@@ -583,7 +586,7 @@ function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, o
       <SizeBox label={size.label} />
       <div style={{ width: 64, textAlign: "center", flexShrink: 0, background: "rgba(255,255,255,.04)",
                     border: BORDER, borderRadius: 9, padding: "4px 6px" }}>
-        <div style={{ fontSize: 14.5, fontWeight: 700, color: negative ? RED : "#fff" }}>{size.expected}</div>
+        <div style={{ fontSize: 14.5, fontWeight: 700, color: "#fff" }}>{expDisp}</div>
         <div style={{ fontSize: 8.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".06em" }}>expected</div>
       </div>
 
@@ -591,7 +594,7 @@ function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, o
         <>
           <div style={{ flex: 1, fontSize: 11.5, color: doneColor }}>
             {record.settled === false ? "⚠ re-check shelf —" : pendingFlag ? "✎ counted" : "✓ counted"} {record.actual}
-            {record.actual !== record.expected && ` (was ${record.expected}, ${record.actual > record.expected ? "+" : ""}${record.actual - record.expected})`}
+            {record.actual !== record.expected && ` (was ${Math.max(0, record.expected)}${record.expected < 0 ? ", under 0" : ""}, ${record.actual > record.expected ? "+" : ""}${record.actual - record.expected})`}
             {pendingFlag && <div style={{ fontSize: 10, color: AMBER }}>waiting for an admin to apply</div>}
             {record.settled === false && <div style={{ fontSize: 10, color: RED }}>cell now reads {record.live}</div>}
           </div>
@@ -607,11 +610,11 @@ function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, o
             style={{ ...input, flex: 1, minWidth: 0, padding: "8px 10px", fontSize: "0.85rem" }} />
           {/* One button, three faces: Confirm (matches) / Adjust (admin writes
               stock) / Record (staff — saves the difference for an admin). */}
-          <button disabled={busy || (typed !== "" && parsed == null) || (negative && !isMismatch)}
-            title={negative && !isMismatch ? "Type what is on the shelf — a negative cell cannot be confirmed" : ""}
+          <button disabled={busy || (typed !== "" && parsed == null) || (negative && parsed == null)}
+            title={negative && parsed == null ? "Type what is on the shelf (0 counts) — this cell needs a real count" : ""}
             onClick={() => (isMismatch ? (canAdjust ? onAdjust(parsed) : onFlag(parsed)) : onConfirm())}
             style={{ ...(isMismatch ? bBlue : bGreen), padding: "8px 13px", flexShrink: 0,
-                     opacity: busy || (negative && !isMismatch) ? 0.45 : 1 }}>
+                     opacity: busy || (negative && parsed == null) ? 0.45 : 1 }}>
             {busy ? "…" : isMismatch ? (canAdjust ? "Adjust" : "Record") : "Confirm"}
           </button>
         </>
@@ -620,54 +623,73 @@ function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, o
   );
 }
 
-// ── Variance: every recorded cell whose actual disagreed with the system ──────
-// For an admin this doubles as the WORK QUEUE: rows a warehouse counter recorded
-// (action "flag") carry an Apply button that writes the correction through the
-// same fenced adjust path — a stale cell rejects and demands a recount, never a
-// blind write of an old number.
-function VarianceList({ rows, canAdjust, onApply, busyKey }) {
-  if (!rows.length) return <Empty>No variances recorded in this session — every counted cell matched.</Empty>;
-  const net = rows.reduce((t, r) => t + r.delta, 0);
-  const unsettled = rows.filter((r) => r.unsettled).length;
+// ── History: every recorded cell, newest first (replaces the Variance tab) ────
+// The counter's receipt roll and the admin's apply queue in one place. Pending
+// rows (✎, a warehouse counter's recorded mismatch) carry Apply for admins —
+// the same fenced adjust path; stale cells reject into a recount.
+function relTime(iso) {
+  const ms = Date.now() - new Date(iso || 0).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hr${h === 1 ? "" : "s"} ago`;
+  return `${Math.floor(h / 24)} d ago`;
+}
+
+function HistoryList({ rows, canAdjust, onApply, busyKey }) {
+  if (!rows.length) return <Empty>Nothing recorded yet — counted cells will show up here, newest first.</Empty>;
   const pending = rows.filter((r) => r.pending).length;
+  const unsettled = rows.filter((r) => r.unsettled).length;
   return (
     <Card>
       <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>
-        {rows.length} variance{rows.length === 1 ? "" : "s"} · net {net > 0 ? "+" : ""}{net} pairs
+        {rows.length} recorded
         {pending > 0 && <span style={{ color: AMBER }}> · {pending} awaiting apply</span>}
       </div>
       {unsettled > 0 && (
         <div style={{ fontSize: 11.5, color: RED, marginBottom: 8, lineHeight: 1.45 }}>
-          ⚠ {unsettled} cell{unsettled === 1 ? "" : "s"} did not settle at the counted number — another write landed at the
-          same moment. Walk back to {unsettled === 1 ? "it" : "them"} and re-count.
+          ⚠ {unsettled} cell{unsettled === 1 ? "" : "s"} did not settle at the counted number — walk back and re-count.
         </div>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-        {rows.map((r) => (
-          <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12.5, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {r.unsettled && <span style={{ color: RED, marginRight: 4 }}>⚠</span>}
-                {r.pending && <span style={{ color: AMBER, marginRight: 4 }}>✎</span>}
-                {r.name}
+        {rows.map((r) => {
+          // No negative stock numbers on screen (owner direction) — a below-zero
+          // system value displays as 0; the true value still drives the write.
+          const expDisp = Math.max(0, Number(r.expected));
+          const wasNegative = Number(r.expected) < 0;
+          const changed = Number(r.actual) !== Number(r.expected);
+          return (
+            <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
+              <span style={{ fontSize: 13, flexShrink: 0, width: 18, textAlign: "center",
+                             color: r.unsettled ? RED : r.pending ? AMBER : GREEN }}>
+                {r.unsettled ? "⚠" : r.pending ? "✎" : "✓"}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
+                <div style={{ fontSize: 10, color: GRAY }}>
+                  Size {r.sizeLabel} · {changed ? `${expDisp} → ${r.actual}` : `counted ${r.actual}`}
+                  {wasNegative && " · was under 0"}
+                  {r.pending && <span style={{ color: AMBER }}> · stock not yet corrected</span>}
+                  {r.unsettled && <span style={{ color: RED }}> · cell reads {r.live}</span>}
+                  {r.at && ` · ${relTime(r.at)}`}
+                </div>
               </div>
-              <div style={{ fontSize: 10, color: GRAY }}>
-                Size {r.sizeLabel} · expected {r.expected} → counted {r.actual}
-                {r.pending && <span style={{ color: AMBER }}> · stock not yet corrected</span>}
-                {r.unsettled && <span style={{ color: RED }}> · cell reads {r.live}</span>}
-              </div>
+              {changed && (
+                <div style={{ fontSize: 13, fontWeight: 700, color: r.delta > 0 ? GREEN : RED, flexShrink: 0 }}>
+                  {r.delta > 0 ? "+" : ""}{r.delta}
+                </div>
+              )}
+              {r.pending && canAdjust && (
+                <button onClick={() => onApply(r)} disabled={busyKey === r.key}
+                  style={{ ...bBlue, padding: "7px 12px", fontSize: "0.72rem", flexShrink: 0, opacity: busyKey === r.key ? 0.5 : 1 }}>
+                  {busyKey === r.key ? "…" : "Apply"}
+                </button>
+              )}
             </div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: r.delta > 0 ? GREEN : RED, flexShrink: 0 }}>
-              {r.delta > 0 ? "+" : ""}{r.delta}
-            </div>
-            {r.pending && canAdjust && (
-              <button onClick={() => onApply(r)} disabled={busyKey === r.key}
-                style={{ ...bBlue, padding: "7px 12px", fontSize: "0.72rem", flexShrink: 0, opacity: busyKey === r.key ? 0.5 : 1 }}>
-                {busyKey === r.key ? "…" : "Apply"}
-              </button>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </Card>
   );
