@@ -11471,6 +11471,12 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, w
 const SOURCE_REFILL_REASON    = "source_refill";
 const SOURCE_UNCOUNTED_REASON = "source_uncounted_send";
 const SOURCE_TRANSFER_ROLES   = ["store", "warehouse", "admin"];
+// Catalog collisions already warned about this session. Module-level, matching
+// _warnedNameCollisions in utils/insights.js: the identity index rebuilds on
+// every /products snapshot, and the live catalog holds 177 duplicate-name
+// groups — re-printing all of them per rebuild would bury every other console
+// signal, including the per-fulfil legacy-movement warning below.
+const _warnedCatalogCollisions = new Set();
 // Session counter for legacy (name-derived) movement-id matches. Each hit is
 // also persisted as `viaLegacyMovementId: true` on the response record, so
 // "when can the dual-read retire" is answerable from the DB, not from memory.
@@ -12802,12 +12808,21 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // exact duplicate does, so leaving it unwarned means a card silently loses
   // Fulfil with nothing in the console to explain why.
   useEffect(() => {
+    // Warn once per distinct collision, not once per index rebuild.
+    const once = (kind, name, ids, msg) => {
+      const sig = `${kind}::${name}::${ids.slice().sort().join("|")}`;
+      if (_warnedCatalogCollisions.has(sig)) return;
+      _warnedCatalogCollisions.add(sig);
+      console.warn(msg);
+    };
     productIdIndex.duplicates.forEach(({ name, ids }) => {
-      console.warn(`[Source] ${ids.length} products share the exact name "${name}" (${ids.join(", ")}). ` +
+      once("exact", name, ids,
+        `[Source] ${ids.length} products share the exact name "${name}" (${ids.join(", ")}). ` +
         "Cards stay separate by id, but rename them — pid-less legacy cards for this name can never fulfil, and name-based analytics merge them.");
     });
     productIdIndex.normalizedDuplicates.forEach(({ name, ids }) => {
-      console.warn(`[Source] ${ids.length} products have names differing only in spacing/case ("${name}" once normalized: ${ids.join(", ")}). ` +
+      once("norm", name, ids,
+        `[Source] ${ids.length} products have names differing only in spacing/case ("${name}" once normalized: ${ids.join(", ")}). ` +
         "A pid-less card for any of them cannot fulfil — rename them apart.");
     });
   }, [productIdIndex]);
