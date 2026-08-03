@@ -249,7 +249,13 @@ export default function NetworkTransfer({ products = [] }) {
         const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
         const sOpen = solvePid === card.pid;
         const sResult = solved[card.pid];
-        const sStore = solveDest[card.pid] || STORES[0];
+        // Default to a store this product can ACTUALLY be solved at, not simply
+        // STORES[0]. With an asymmetric policy (say Trophy rolled out before PE)
+        // the outer button is armed because SOME store qualifies, while the panel
+        // opened on a store that doesn't — leaving a correctly-disabled confirm
+        // button under an enabled Solve, which reads as broken. The operator can
+        // still pick either store; this only changes which one is pre-selected.
+        const sStore = solveDest[card.pid] || STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
         const plan = sOpen ? solvePlan(card, sStore) : null;
         // Solvable only if the engine has a standard for at least one of its sizes
         // at at least one store. This used to probe STORES[0] alone, on the grounds

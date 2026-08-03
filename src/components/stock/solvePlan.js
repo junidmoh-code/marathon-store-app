@@ -18,6 +18,15 @@
 // effectiveStandard() folds the two sources into the ONE run map the rest of
 // this file already speaks, so qualifyingSizes/solvePlan need no new arguments
 // and keep their existing meaning.
+//
+// ONE MIRROR GAP IS LOAD-BEARING AND LIVES ELSEWHERE: the engine nests its
+// subcategory branch inside isClothing(product), and nothing in this file checks
+// productType. That composes correctly only because NetworkTransfer's `cards`
+// list applies its own isClothing filter before any row can reach Solve — so a
+// non-clothing product can never be offered here in the first place. Any FUTURE
+// entry point into Solve (a "solve from search", say) must apply that same
+// filter, or it will offer to seed products the engine will not manage.
+// (Senior-architect review, PR #305.)
 
 // Is the engine's rule-based targeting on at this destination? A BYTE-FOR-BYTE
 // mirror of ruleTargetsEnabled() in refill-engine.cjs, including its fail-safe:
