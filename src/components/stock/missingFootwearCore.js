@@ -62,9 +62,9 @@ const carries = (allStock, loc, pid) => cellsOf(allStock, loc, pid).length > 0;
 /**
  * Missing-sneaker cards, newest logic in one place so the Health stat card and
  * the drill-in list are computed from the SAME source and can never disagree.
- * (The clothing card does disagree with its own list: its count comes from the
- * scan's unit-based exception buckets while its list is carriage-based, so a
- * solved row leaves the list while the headline keeps counting it.)
+ * (The clothing side used to disagree with its own list — scan-based count over
+ * a carriage-based list. It now follows this same pattern: see
+ * missingProductsCore.js, PR #308.)
  *
  * @param hubs downstream locations that hold sneaker buffer, in display order.
  * @returns cards sorted by stranded units, largest first.

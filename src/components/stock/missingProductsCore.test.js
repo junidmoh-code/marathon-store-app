@@ -97,10 +97,19 @@ describe("computeMissingProducts — which products are stranded", () => {
     });
     expect(cards.map((c) => c.pid)).toEqual(["j1", "b1", "t1"]);
   });
-  it("survives empty and malformed input without throwing", () => {
+  it("survives empty, absent and MALFORMED input without throwing", () => {
     expect(computeMissingProducts({ allStock: {}, products: [] })).toEqual([]);
     expect(computeMissingProducts({})).toEqual([]);
+    expect(computeMissingProducts()).toEqual([]);
     expect(computeMissingProducts({ allStock: { central: { ghost: { M: cell(3) } } }, products: PRODUCTS })).toEqual([]);
+    // The shapes that actually threw before hardening: the raw /products MAP
+    // instead of the array the app passes, and null/undefined members. A crash
+    // here blanks the whole Health screen, so it must degrade to "nothing
+    // stranded" instead. (Codex review, PR #308.)
+    expect(computeMissingProducts({ allStock: { central: { t1: { M: cell(5) } } }, products: {} })).toEqual([]);
+    expect(computeMissingProducts({ allStock: { central: { t1: { M: cell(5) } } }, products: null })).toEqual([]);
+    expect(computeMissingProducts({ allStock: { central: { t1: { M: cell(5) } } }, products: "nope" })).toEqual([]);
+    expect(() => computeMissingProducts({ allStock: { central: { t1: { M: cell(5) } } }, products: [null, undefined, TEE] })).not.toThrow();
   });
 });
 

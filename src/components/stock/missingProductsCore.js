@@ -63,8 +63,12 @@ export function isClothing(p) {
 
 // The stranded-card list. `allStock` is { loc: { pid: { sizeKey: cell } } } and
 // `products` is an array of catalogue records.
-export function computeMissingProducts({ allStock, products }) {
-  const byId = new Map((products || []).map((p) => [p.id, p]));
+export function computeMissingProducts({ allStock, products } = {}) {
+  // Array.isArray, not `products || []`: an object here (the raw /products map
+  // rather than the array the app passes) would throw on .map and blank the whole
+  // Health screen. A tab that surfaces stranded stock should degrade to "nothing
+  // stranded" rather than to a crash. (Codex review, PR #308.)
+  const byId = new Map((Array.isArray(products) ? products : []).map((p) => [p?.id, p]));
   const sumAt = (loc, pid) =>
     Object.values(allStock?.[loc]?.[pid] || {}).reduce((t, c) => t + Math.max(Number(c?.qty) || 0, 0), 0);
   const carries = (loc, pid) =>

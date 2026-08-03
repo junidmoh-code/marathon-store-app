@@ -358,9 +358,9 @@ export default function HealthView({ products = [], onExit }) {
   // (`if (!isClothing(...)) continue` — "sneakers never appear in Health"), so a
   // server-side count would need an engine change and a functions deploy for what
   // is a read. It also means this count and the list inside the tab come from ONE
-  // function, so they cannot drift apart the way the clothing pair does (its count
-  // is the scan's unit-based buckets while its list is carriage-based, so a solved
-  // clothing row leaves the list while the headline keeps counting it).
+  // function, so they cannot drift apart. The clothing pair above now follows the
+  // same rule — it used to be the scan's buckets over a carriage-based list, and
+  // that is the drift this comment used to describe as live. (PR #308.)
   const missingSneakerCards = useMemo(
     () => computeMissingFootwear({ allStock, products }),
     [allStock, products],
@@ -453,7 +453,7 @@ export default function HealthView({ products = [], onExit }) {
             </div>
             {activeTab === "sneakers"
               ? <MissingFootwear products={products} />
-              : <NetworkTransfer products={products} category={activeTab} />}
+              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} />}
           </DetailShell>
         );
       }

@@ -14,7 +14,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, get, update, onValue } from "firebase/database";
 import { database, auth } from "../../firebase";
-import { useStockCells } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey, stockCellPath } from "../../utils/sizeKey";
@@ -49,8 +48,14 @@ const destChip = (on) => ({
   color: on ? BLUE_L : "rgba(255,255,255,.5)",
 });
 
-export default function NetworkTransfer({ products = [], category = "all" }) {
-  const allStock = useStockCells();   // { loc: { pid: { rawSize: cell } } } — live
+// `allStock` is passed IN by HealthView rather than subscribed here. Two
+// independent onValue listeners on the whole ~3.6MB /stock tree meant two
+// separate React states settling on their own schedule, so the chip counts above
+// this list could show one snapshot while the list below rendered the previous
+// one — the same count-disagrees-with-list class of bug this tab was just fixed
+// for. One subscription, one snapshot, and one less full-tree listener.
+// (Codex review, PR #308.) HealthView is the only renderer of this component.
+export default function NetworkTransfer({ products = [], category = "all", allStock = {} }) {
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
