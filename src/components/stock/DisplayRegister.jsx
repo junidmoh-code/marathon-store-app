@@ -104,25 +104,48 @@ export function useDisplayRegister(store) {
 }
 
 // ── WHO MAY USE THE DISPLAY REGISTER ─────────────────────────────────────────
-// Stock-capable users (the warehouse view of the floor) OR display staff (the
-// people who actually put the pairs out and record them). Exported so App.jsx's
-// tile and route gate evaluate the IDENTICAL rule — one definition, three call
-// sites, no chance of the tile and the route disagreeing.
+// Stock-capable users (the warehouse view of the floor) OR store assistants and
+// display staff (the people who actually put the pairs out and record them).
+// Exported so App.jsx's tile and route gate evaluate the IDENTICAL rule — one
+// definition, three call sites, no chance of the tile and the route disagreeing.
 //
-// Measured against live /users when this gate was added (31 accounts): 18 pass
-// on stock access, all 6 store assistants pass on display_refills/display_checks,
-// and the 7 refused are 6 POS-only till logins (stockRole "pos", no permissions)
-// plus the TV display account. Nobody who was using the register loses it.
+// WHY `store_assistant` AND NOT `display_refills`. The obvious key is
+// display_refills, and it is WRONG: it is a dead permission, removed from the
+// catalog and documented as gating nothing (UserManagement.jsx). Five current
+// assistants still carry it on legacy /users records, so a gate built on it
+// LOOKS correct today and silently locks out every assistant created from now
+// on — the role preset is ["store_assistant", "place_orders"], which contains
+// no display key at all. `store_assistant` is live, catalogued, and the default
+// for the role. `display_checks` is kept as the explicit grant for display-only
+// staff who are not assistants.
+//
+// Measured against live /users (31 accounts): this rule and the display_refills
+// one admit the SAME 24 accounts today — all 13 store assistants included — but
+// a future store assistant is admitted by this one and refused by the other.
 export function mayUseDisplayRegister({ canAccessStock = false, hasPermission = () => false } = {}) {
   return !!canAccessStock
-    || !!hasPermission("display_refills")
+    || !!hasPermission("store_assistant")
     || !!hasPermission("display_checks");
+}
+
+// The stock-access derivation, shared with App.jsx rather than copied into it.
+// Both gates must compute this the same way; two hand-written copies of the same
+// formula is exactly the drift this module exists to prevent.
+export function hasStockAccess({ permRecord = null, hasPermission = () => false, isSuperAdmin = false } = {}) {
+  const stockRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
+  return stockRole === "admin" || stockRole === "warehouse" || !!hasPermission("stock_management");
 }
 
 // ── THE GATE (layer 2 of 2) ──────────────────────────────────────────────────
 // Authorization only — no state, no effects, no subscription. The real screen
 // mounts only once the answer is yes, so a refused viewer never opens the
-// /settings/displayRegister listener and never gets a write surface.
+// /settings/displayRegister listener and is never shown a way to write.
+//
+// SCOPE, HONESTLY: this is an in-app boundary, not a security boundary. The live
+// rule on /settings is `auth != null && sign_in_provider != "anonymous"`, so any
+// signed-in client can still read or write that path directly through the SDK.
+// Closing that requires a console rules edit (the rules are console-managed and
+// are not in this repo), which is deliberately out of scope here.
 //
 // Split rather than an early return inside one component for the reason #302
 // documents: the check must sit ABOVE the hooks, and a hook cannot live below a
@@ -134,9 +157,7 @@ export function mayUseDisplayRegister({ canAccessStock = false, hasPermission = 
 // leaves a working gate.
 export default function DisplayRegister(props) {
   const { permRecord, hasPermission, isSuperAdmin } = usePermissions();
-  const stockRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
-  const canAccessStock =
-    stockRole === "admin" || stockRole === "warehouse" || hasPermission("stock_management");
+  const canAccessStock = hasStockAccess({ permRecord, hasPermission, isSuperAdmin });
 
   if (!mayUseDisplayRegister({ canAccessStock, hasPermission })) {
     return <DisplayRegisterNotAuthorized onExit={props.onExit} />;

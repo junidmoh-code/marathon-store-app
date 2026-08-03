@@ -54,7 +54,7 @@ vi.mock("../PermissionsContext.jsx", () => ({ usePermissions: () => VIEWER }));
 
 const DisplayRegisterModule = await import("./DisplayRegister.jsx");
 const DisplayRegister = DisplayRegisterModule.default;
-const { mayUseDisplayRegister } = DisplayRegisterModule;
+const { mayUseDisplayRegister, hasStockAccess } = DisplayRegisterModule;
 
 // A refused viewer must carry a destShop. Without one the register would open no
 // listener EVEN IF the gate were deleted (it waits for a shop), so the "no
@@ -83,9 +83,22 @@ describe("mayUseDisplayRegister — who may open the register", () => {
     expect(mayUseDisplayRegister({ canAccessStock: true, hasPermission: () => false })).toBe(true);
   });
 
-  it("admits display staff — the people who actually put pairs on the floor", () => {
-    expect(mayUseDisplayRegister({ canAccessStock: false, hasPermission: (p) => p === "display_refills" })).toBe(true);
+  it("admits store assistants and display staff — the people who put pairs on the floor", () => {
+    expect(mayUseDisplayRegister({ canAccessStock: false, hasPermission: (p) => p === "store_assistant" })).toBe(true);
     expect(mayUseDisplayRegister({ canAccessStock: false, hasPermission: (p) => p === "display_checks" })).toBe(true);
+  });
+
+  // display_refills is DEAD — removed from the permission catalog and documented
+  // as gating nothing (UserManagement.jsx). Gating on it would admit the five
+  // legacy records that still carry it and silently lock out every store
+  // assistant created afterwards, whose preset is ["store_assistant","place_orders"].
+  it("does NOT rely on the retired display_refills permission", () => {
+    expect(mayUseDisplayRegister({ canAccessStock: false, hasPermission: (p) => p === "display_refills" })).toBe(false);
+  });
+
+  it("admits a FUTURE store assistant created from the role preset", () => {
+    const preset = ["store_assistant", "place_orders"];
+    expect(mayUseDisplayRegister({ canAccessStock: false, hasPermission: (p) => preset.includes(p) })).toBe(true);
   });
 
   it("refuses an account with neither — a POS-only till login", () => {
@@ -100,6 +113,26 @@ describe("mayUseDisplayRegister — who may open the register", () => {
   it("is defensive when called with nothing", () => {
     expect(mayUseDisplayRegister()).toBe(false);
     expect(mayUseDisplayRegister({})).toBe(false);
+  });
+});
+
+// The stock-access derivation is SHARED with App.jsx rather than copied, so the
+// two gates cannot drift. Pinned here because a divergent copy is invisible.
+describe("hasStockAccess — one derivation, used by both gates", () => {
+  it("admits admin and warehouse stockRoles", () => {
+    expect(hasStockAccess({ permRecord: { stockRole: "admin" } })).toBe(true);
+    expect(hasStockAccess({ permRecord: { stockRole: "warehouse" } })).toBe(true);
+  });
+  it("admits the stock_management permission without a stockRole", () => {
+    expect(hasStockAccess({ permRecord: {}, hasPermission: (p) => p === "stock_management" })).toBe(true);
+  });
+  it("treats the super-admin as admin", () => {
+    expect(hasStockAccess({ permRecord: null, isSuperAdmin: true })).toBe(true);
+  });
+  it("refuses a POS stockRole and an empty record", () => {
+    expect(hasStockAccess({ permRecord: { stockRole: "pos" } })).toBe(false);
+    expect(hasStockAccess({})).toBe(false);
+    expect(hasStockAccess()).toBe(false);
   });
 });
 
@@ -123,8 +156,8 @@ describe("LAYER 2 — a refused viewer opens no register subscription", () => {
     expect(onValueMock).not.toHaveBeenCalled();
   });
 
-  it("DOES register the listener for display staff — so the refusals are not vacuous", () => {
-    VIEWER = { permRecord: { stockRole: null, destShop: "marathon-pe" }, hasPermission: (p) => p === "display_refills", isSuperAdmin: false };
+  it("DOES register the listener for a store assistant — so the refusals are not vacuous", () => {
+    VIEWER = { permRecord: { stockRole: null, destShop: "marathon-pe" }, hasPermission: (p) => p === "store_assistant", isSuperAdmin: false };
     renderRegister();
     expect(onValueMock).toHaveBeenCalled();
     expect(onValueMock.mock.calls[0][0].path).toMatch(/^settings\/displayRegister\//);
@@ -168,8 +201,10 @@ describe("LAYER 1 — the App.jsx gates, asserted against the source", () => {
   });
 
   it("gates the ROUTE on the same rule — hiding the tile is not a gate", () => {
-    const start = appSrc.indexOf("role === ROLES.DISPLAY_REGISTER");
-    expect(start, "the DISPLAY_REGISTER route must exist").toBeGreaterThan(-1);
+    // Anchor on the ROUTE MOUNT specifically — `role === ROLES.DISPLAY_REGISTER`
+    // also appears in the persisted-role safety net above it.
+    const start = appSrc.indexOf("else if (role === ROLES.DISPLAY_REGISTER)");
+    expect(start, "the DISPLAY_REGISTER route mount must exist").toBeGreaterThan(-1);
     const routeBlock = appSrc.slice(start, start + 600);
     expect(routeBlock).toMatch(/mayUseDisplayRegister/);
     // Authorized arm first, refusal second.
@@ -185,6 +220,17 @@ describe("LAYER 1 — the App.jsx gates, asserted against the source", () => {
 
   it("both layers call the SAME exported rule — they cannot drift apart", () => {
     expect(appSrc).toMatch(/import DisplayRegister,\s*\{[^}]*mayUseDisplayRegister[^}]*\}/);
-    expect((appSrc.match(/mayUseDisplayRegister\(/g) || []).length).toBeGreaterThanOrEqual(2);
+    expect((appSrc.match(/mayUseDisplayRegister\(/g) || []).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("uses the SHARED stock-access derivation instead of re-deriving it", () => {
+    expect(appSrc).toMatch(/import DisplayRegister,\s*\{[^}]*hasStockAccess[^}]*\}/);
+    expect(appSrc).toMatch(/const canAccessStock = hasStockAccess\(/);
+    // The hand-written copy this replaces.
+    expect(appSrc).not.toMatch(/const canAccessStock = stockRole === "admin"/);
+  });
+
+  it("drops a persisted DISPLAY_REGISTER role the viewer no longer qualifies for", () => {
+    expect(appSrc).toMatch(/role === ROLES\.DISPLAY_REGISTER && !mayUseDisplayRegister\([\s\S]{0,120}setRole\(null\)/);
   });
 });
