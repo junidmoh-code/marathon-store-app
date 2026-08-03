@@ -39,7 +39,7 @@
 // left, and a reload restores it. NOTHING here is ever deleted.
 
 import { useEffect, useState } from "react";
-import { ref, child, get, update, push } from "firebase/database";
+import { ref, child, get, update, push, runTransaction } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
@@ -108,18 +108,32 @@ export function useLocationRegistryOnce() {
  * crashed the engine's retryHistory scans (#269).
  */
 export async function openOrResumeSession(hub) {
-  const existing = await one(sessionPath(hub));
-  if (existing && existing.sessionId) return existing;
-
   const user = auth.currentUser;
-  const session = {
+  const candidate = {
     sessionId: push(child(ref(database), `${HUB_COUNT_ROOT}/sessions`)).key,
     hub,
     openedAt: serverNowIso(),
     openedBy: user ? user.uid : null,
   };
-  await update(ref(database), { [sessionPath(hub)]: session });
-  return session;
+
+  // COMPARE-AND-SET, not read-then-write. The obvious `get()` then `update()`
+  // is a check-then-act race, and the scenario that triggers it is the exact one
+  // this feature is for: two counters opening the same hub for the first time at
+  // the start of a shift. Both would read null, both would mint an id, and the
+  // second full-node write would REPLACE the first — leaving the loser writing
+  // counts under a session id nothing will ever load again. Their /stock
+  // corrections would survive (those are independent movements) but their
+  // progress would silently vanish from the card, from a reload, and from the
+  // other counter's screen.
+  //
+  // The transaction makes first-write-wins atomic, and the loser adopts the
+  // winner's session from the committed snapshot rather than trusting the id it
+  // minted locally.
+  const res = await runTransaction(ref(database, sessionPath(hub)), (cur) =>
+    (cur && cur.sessionId) ? cur : candidate
+  );
+  const committed = res && res.snapshot ? res.snapshot.val() : null;
+  return committed && committed.sessionId ? committed : candidate;
 }
 
 /** Every cell already recorded in this session → { "pid::sizeKey": record }. */
@@ -148,17 +162,24 @@ export async function loadCardSummary(hub) {
   };
 }
 
-function recordFor({ productId, sizeKey, expected, actual, action, movementId }) {
+function recordFor({ productId, sizeKey, expected, actual, action, movementId, live, settled }) {
   const user = auth.currentUser;
   return {
     productId,
     sizeKey,
     expected: Number(expected),
-    actual: Number(actual),
+    actual: Number(actual),                  // what the counter said was on the shelf
     action,                                  // "confirm" | "adjust"
     at: serverNowIso(),
     by: user ? user.uid : null,
     movementId: movementId || null,
+    // What /stock actually held immediately after the write, and whether that
+    // agreed with the count. Persisted rather than left as a toast: an unsettled
+    // adjust means a human has to go and physically re-check that cell, and a
+    // 9-second toast is not a work item. `settled: false` survives the reload,
+    // and the Variance tab surfaces it.
+    live: live == null ? Number(actual) : Number(live),
+    settled: settled !== false,
   };
 }
 
@@ -183,7 +204,13 @@ export async function confirmCell({ hub, sessionId, productId, sizeKey, expected
   if (Number(live.qty) !== Number(expected)) return staleResult(live.qty, expected);
 
   const rec = recordFor({ productId, sizeKey, expected, actual: expected, action: "confirm" });
-  await writeRecord(hub, sessionId, rec);
+  // A confirm changed no stock, so a failed record write means simply nothing
+  // happened — safe to report as a failure and let the counter tap again.
+  try {
+    await writeRecord(hub, sessionId, rec);
+  } catch (err) {
+    return { ok: false, message: `Could not save the count: ${String(err?.message || err)}` };
+  }
   return { ok: true, record: rec };
 }
 
@@ -219,20 +246,27 @@ const staleResult = (live, expected) => ({
  *      them recheck. This catches the realistic, human-scale race — two people
  *      on the same shelf minutes apart.
  *
- *   2. VERSION REJECTION, with retries OFF. applyMovement carries optimistic
- *      concurrency on the cell's `v`: it reads v and writes v+1, and the rule
- *      rejects anything else. Its DEFAULT is to retry 6 times, and each retry
- *      re-reads — which is right for a relative movement (a transfer of 3 is
- *      still a transfer of 3) but WRONG for a count, whose meaning is absolute:
- *      re-applying `actual - expected` onto a base that moved produces a number
- *      nobody counted. `maxRetries: 1` turns that conflict into a visible
- *      failure instead of a silent re-application. This is a supported option on
- *      the existing writer — not a fork of it.
+ *   2. THE PRECONDITION, CHECKED BY THE WRITER ITSELF (`expect: { qty }`), plus
+ *      retries OFF. This is the layer that actually makes it safe, and layer 1
+ *      alone did NOT: the fence and applyMovement perform two SEPARATE reads, so
+ *      a write landing in the round trip between them produced no version
+ *      conflict at all — applyMovement never saw the old version. It would
+ *      compute its delta against the new base and commit a number nobody
+ *      counted. Passing `expect` moves the comparison inside the writer's own
+ *      read-write window, and `maxRetries: 1` stops a retry re-applying a
+ *      relative delta onto a base that moved. Between them the read-decide-write
+ *      is atomic end to end. (Layer 1 survives because it gives fast, specific
+ *      feedback without a write attempt — but it is a courtesy, not the guard.)
+ *
+ *      Consequence worth knowing: an ordinary POS sale landing mid-count now
+ *      REJECTS the adjustment rather than composing with it. That is correct for
+ *      a stock-take — if the cell moved, the shelf the counter looked at is no
+ *      longer the shelf the number describes.
  *
  *   3. POST-WRITE ASSERT. Re-read and confirm the cell now holds `actual`. If it
- *      does not, someone landed in the same millisecond: report loudly WITH the
- *      movement id, so the write can be traced and reversed by hand. Never
- *      swallowed.
+ *      does not, PERSIST that on the record (`settled: false` + the value the
+ *      cell really holds) so it survives the toast and surfaces in Variance as a
+ *      cell a human must physically re-check. Never swallowed.
  */
 export async function adjustCell({ hub, sessionId, productId, sizeKey, expected, actual, actorRole }) {
   const target = Number(actual);
@@ -271,11 +305,15 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
         countDelta: delta,
         countAt: serverNowIso(),
       },
+      // layer 2 — the writer re-checks this against the cell it is about to
+      // write from, so the caller's earlier read cannot go stale underneath us.
+      expect: { qty: Number(expected) },
     },
-    { maxRetries: 1 }                        // layer 2
+    { maxRetries: 1 }
   );
 
   if (!res.ok) {
+    if (res.reason === "stale_expectation") return staleResult(res.live, expected);
     // A version conflict and a real permission denial are indistinguishable
     // client-side (both surface as PERMISSION_DENIED), so say both plainly
     // rather than guessing.
@@ -291,8 +329,28 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
   const after = await readLiveQty(hub, productId, sizeKey);                            // layer 3
   const settled = !after.error && Number(after.qty) === target;
 
-  const rec = recordFor({ productId, sizeKey, expected, actual: target, action: "adjust", movementId: res.movementId });
-  await writeRecord(hub, sessionId, rec);
+  const rec = recordFor({
+    productId, sizeKey, expected, actual: target, action: "adjust",
+    movementId: res.movementId,
+    live: after.error ? target : Number(after.qty),
+    settled,
+  });
+
+  // The stock movement has ALREADY committed at this point. If the progress
+  // record fails to save, reporting "failed" would be actively dangerous — the
+  // counter would re-enter the number and try again. (The fence would catch the
+  // second attempt, but only after telling them something confusing.) So report
+  // success and say plainly what did not get saved. The count itself is not lost:
+  // the movement carries the whole thing in `link.count*`.
+  try {
+    await writeRecord(hub, sessionId, rec);
+  } catch (err) {
+    return {
+      ok: true,
+      record: rec,
+      warning: `Stock WAS updated to ${target}, but this device could not save the progress record (${String(err?.message || err)}). Movement ${res.movementId} has the full count in its provenance — do not count this cell again.`,
+    };
+  }
 
   if (!settled) {
     return {

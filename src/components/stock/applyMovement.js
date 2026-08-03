@@ -58,10 +58,33 @@ function cellDeltas(m) {
   }
 }
 
+// ── expect: THE ABSOLUTE-VALUE PRECONDITION (opt-in) ──────────────────────────
+// `expect: { qty }` makes the write conditional on the cell STILL holding that
+// quantity at the moment this function reads it. Absent (the default) nothing
+// changes for any existing caller.
+//
+// Why it exists. The `v` version guard protects the window between THIS
+// function's read and its write — microseconds. A caller that read the cell
+// itself first (to show a user a number and ask them to act on it) has a second,
+// much wider window: the network round trip between the caller's read and ours.
+// Nothing used to police that gap, so a concurrent write could land in it and
+// this function would compute its delta against the NEW base and commit happily,
+// with no version conflict, because it never saw the old version.
+//
+// For a RELATIVE movement that is correct — a transfer of 3 is a transfer of 3
+// whatever else happened. For an ABSOLUTE intent ("the shelf holds 8"), it is
+// not: the delta gets applied to a base the human never saw, and stock lands on
+// a number nobody counted. `expect` closes that window; together with the `v`
+// rule the read-decide-write becomes atomic end to end.
+//
+// Single-cell movements only — a relocation touches two cells and "the expected
+// quantity" would be ambiguous.
+//
 // movement: {
 //   type, productId, size, qty(>0), from?|null, to?|null, reason?, link?,
 //   ts?(real event time ISO), actorRole?, cellState?(set /state on touched cells),
-//   movementId?(supply to make the call idempotent — e.g. from an offline queue)
+//   movementId?(supply to make the call idempotent — e.g. from an offline queue),
+//   expect?({ qty } — refuse unless the cell still holds exactly this)
 // }
 // returns { ok:true, movementId, idempotent? } | { ok:false, reason, ... }
 export async function applyMovement(movement, opts = {}) {
@@ -78,6 +101,9 @@ export async function applyMovement(movement, opts = {}) {
 
   const deltas = cellDeltas(movement);
   if (!deltas) return { ok: false, reason: "missing_location" };
+
+  const expectQty = movement.expect && typeof movement.expect.qty === "number" ? movement.expect.qty : null;
+  if (expectQty !== null && deltas.length !== 1) return { ok: false, reason: "expect_requires_single_cell" };
 
   const mvId = movement.movementId || push(child(ref(database), "stock_movements")).key;
 
@@ -96,6 +122,12 @@ export async function applyMovement(movement, opts = {}) {
       const snap = await get(child(ref(database), path));
       const cell = snap.val();
       const curQty = cell && typeof cell.qty === "number" ? cell.qty : 0;
+      // The absolute-value precondition, checked against the read we are about to
+      // write from — NOT against whatever the caller saw earlier. Re-checked on
+      // every attempt, so a retry can never launder a stale expectation.
+      if (expectQty !== null && curQty !== expectQty) {
+        return { ok: false, reason: "stale_expectation", location: d.loc, expected: expectQty, live: curQty };
+      }
       const newQty = curQty + d.delta;
       // P0 (stock-integrity): only a NEGATIVE delta can be floored — a positive
       // delta (a return / the +to leg of a transfer) always applies, even onto a

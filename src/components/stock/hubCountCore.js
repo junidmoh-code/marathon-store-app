@@ -132,8 +132,13 @@ const byName = (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id
 export function seededRowFor(product) {
   if (!product || !product.id) return null;
   const raw = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : SIZES_FOOTWEAR;
-  const sizes = raw
-    .map((s) => stockSizeKey(s))
+  return seededRowForSizes(product, raw.map((s) => stockSizeKey(s)));
+}
+
+/** A seeded row restricted to specific (already-encoded) size keys. */
+export function seededRowForSizes(product, sizeKeys) {
+  if (!product || !product.id) return null;
+  const sizes = (sizeKeys || [])
     .filter(isCountableSizeKey)
     .filter((k, i, arr) => arr.indexOf(k) === i)
     .map((sizeKey) => ({ sizeKey, label: sizeLabelOf(sizeKey), expected: 0 }))
@@ -143,13 +148,80 @@ export function seededRowFor(product) {
 }
 
 /**
- * Merge manually-added (seeded) rows into the hub rows, dropping any that the
- * hub snapshot already covers — adding a product that turns out to HAVE cells
- * must not produce two rows for one product.
+ * Merge manually-added (seeded) rows into the hub rows.
+ *
+ * ── MERGES BY SIZE, NOT BY PRODUCT ───────────────────────────────────────────
+ * The obvious "drop any seeded row whose product already appears" is WRONG, and
+ * wrong in a way that destroys the add-a-missing-product flow. Sequence: a shoe
+ * with sizes 8/9/10 has no cell at this hub, so it is added as a seeded row.
+ * The counter finds 3 pairs of size 9 and adjusts. That write CREATES a real
+ * cell — but only for size 9. On the next rebuild the product now appears in
+ * `hubRows` with a single size, and a product-level dedupe would discard the
+ * seeded row carrying 8 and 10 entirely. Those sizes vanish from the screen, the
+ * "add" search excludes the product because it is now listed, and no reload
+ * brings them back — /stock genuinely only holds the one cell. Any pairs of 8 or
+ * 10 on that shelf become uncountable, silently, and the N-of-M denominator
+ * SHRINKS mid-count.
+ *
+ * So: union the size lists. A real cell always wins over a seeded placeholder
+ * for the same size; seeded sizes the hub has no cell for yet stay visible until
+ * the counter deals with them too.
  */
 export function mergeSeededRows(hubRows, seededRows) {
-  const have = new Set(hubRows.map((r) => r.id));
-  return [...hubRows, ...seededRows.filter((r) => r && !have.has(r.id))].sort(byName);
+  const seedById = new Map((seededRows || []).filter((r) => r && r.id).map((r) => [r.id, r]));
+
+  const merged = hubRows.map((row) => {
+    const seed = seedById.get(row.id);
+    if (!seed) return row;
+    seedById.delete(row.id);
+    const have = new Set(row.sizes.map((s) => s.sizeKey));
+    const extra = seed.sizes.filter((s) => !have.has(s.sizeKey));
+    if (!extra.length) return row;
+    const sizes = [...row.sizes, ...extra].sort((a, b) => footwearSizeRank(a.sizeKey) - footwearSizeRank(b.sizeKey));
+    return { ...row, sizes, total: sizes.reduce((t, s) => t + s.expected, 0), seeded: true };
+  });
+
+  return [...merged, ...seedById.values()].sort(byName);
+}
+
+/**
+ * Rebuild seeded rows from what this session already recorded.
+ *
+ * Seeded rows are created by a human tapping "add", which means they live in one
+ * device's memory. Without this, a reload — or a second counter's tablet — shows
+ * none of them, so work that WAS recorded looks undone and the same shelf gets
+ * counted twice. Every recorded cell carries its productId and sizeKey, so the
+ * rows are reconstructible from RTDB, which is where the shared truth lives.
+ *
+ * Two cases, deliberately different:
+ *   • the product has NO countable cell at this hub → restore its FULL size run
+ *     (it is still entirely "added from zero")
+ *   • the product HAS cells, but a recorded size has none → restore only that
+ *     size. Restoring the full run here would invent sizes this hub never
+ *     carried and inflate the denominator.
+ */
+export function recoverSeededRows({ counted = {}, hubStock = {}, products = [] }) {
+  const byId = products instanceof Map ? products : new Map((products || []).map((p) => [p?.id, p]).filter(([id]) => id));
+  const missing = new Map();                       // pid -> Set(sizeKey)
+
+  for (const rec of Object.values(counted || {})) {
+    if (!rec || !rec.productId || !isCountableSizeKey(rec.sizeKey)) continue;
+    const node = hubStock[rec.productId];
+    if (node && node[rec.sizeKey]) continue;       // a real cell exists — nothing to recover
+    if (!missing.has(rec.productId)) missing.set(rec.productId, new Set());
+    missing.get(rec.productId).add(rec.sizeKey);
+  }
+
+  const rows = [];
+  for (const [pid, keys] of missing) {
+    const product = byId.get(pid);
+    if (!product) continue;
+    const node = hubStock[pid];
+    const hasAnyCell = !!node && Object.keys(node).some(isCountableSizeKey);
+    const row = hasAnyCell ? seededRowForSizes(product, [...keys]) : seededRowFor(product);
+    if (row) rows.push(row);
+  }
+  return rows;
 }
 
 /** N of M for the progress readout: M = countable cells, N = those recorded. */
@@ -191,14 +263,24 @@ export function varianceRows(counted = {}, productsById = new Map()) {
   const byId = productsById instanceof Map ? productsById : new Map(Object.entries(productsById || {}));
   return Object.entries(counted)
     .map(([key, rec]) => ({ key, ...rec }))
-    .filter((r) => Number(r.actual) !== Number(r.expected))
+    // A variance is a disagreement between shelf and system. An UNSETTLED record
+    // is listed too even if those two agreed, because it means the cell did not
+    // end up where the count put it — that is a cell someone has to walk back to,
+    // and burying it would defeat the point of persisting `settled`.
+    .filter((r) => Number(r.actual) !== Number(r.expected) || r.settled === false)
     .map((r) => ({
       ...r,
       delta: Number(r.actual) - Number(r.expected),
+      unsettled: r.settled === false,
+      live: r.live == null ? Number(r.actual) : Number(r.live),
       name: byId.get(r.productId)?.name || r.productId,
       sizeLabel: sizeLabelOf(r.sizeKey),
     }))
-    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.name.localeCompare(b.name));
+    // Unsettled first — they need a human, not just a note.
+    .sort((a, b) =>
+      (b.unsettled ? 1 : 0) - (a.unsettled ? 1 : 0)
+      || Math.abs(b.delta) - Math.abs(a.delta)
+      || a.name.localeCompare(b.name));
 }
 
 /** Filter rows by the search box (name or code), case/punctuation-insensitive. */

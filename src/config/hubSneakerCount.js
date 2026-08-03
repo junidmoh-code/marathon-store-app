@@ -57,7 +57,10 @@ export function isHubCountSuperAdmin(viewer) {
   return !!viewer && viewer.email === ADMIN_EMAIL;
 }
 
-/** May this viewer open the count view and write counts? */
+/**
+ * May this viewer OPEN the count view? (Reading, and the variance list.)
+ * Super-admin always; otherwise a real admin stock role.
+ */
 export function canUseHubSneakerCount(viewer) {
   if (!HUB_SNEAKER_COUNT_ENABLED) return false;
   if (isHubCountSuperAdmin(viewer)) return true;
@@ -65,17 +68,54 @@ export function canUseHubSneakerCount(viewer) {
 }
 
 /**
+ * May this viewer actually WRITE an adjustment?
+ *
+ * ⚠️ DELIBERATELY NOT the same gate as opening, and deliberately NOT satisfied by
+ * being super-admin. The RTDB rules do not know or care about ADMIN_EMAIL — they
+ * read the STORED record:
+ *
+ *   /stock/$loc/$pid/$size  .write  requires users/{uid}/stockRole to EXIST
+ *   /stock_movements/$mvId/type     requires stockRole === 'admin' for adjustment
+ *
+ * Verified against live data 2026-08-03: there is NO /users record for
+ * gunidmoh@gmail.com at all (31 records, all username-based staff). The app's
+ * super-admin shortcut is a CLIENT-side permissions bypass; it mints no
+ * stockRole. So the owner's own account passes every UI gate and would then be
+ * refused by RTDB on every single adjustment.
+ *
+ * Rather than discover that on the fortieth box, the view checks this separately
+ * and says so up front. Fixing it for real is one field on one /users record —
+ * an owner action, not a code change.
+ */
+export function canAdjustHubCount(viewer) {
+  if (!HUB_SNEAKER_COUNT_ENABLED) return false;
+  return viewer?.stockRole === "admin";        // the STORED role, never the email shortcut
+}
+
+/**
  * May this viewer see the variance list?
  *
- * ⚠️ CLIENT-SIDE ONLY, and deliberately so. The session data lives under
- * /settings, which the live rules make readable to every signed-in user, so this
- * hides the variance list in the UI — it does not make the underlying numbers
- * unreadable to someone with a console. Enforcing it for real would need a rules
- * change, which is out of scope by instruction. Today it is moot in practice:
- * the whole module is already admin-gated by canUseHubSneakerCount above, so the
- * only people who can reach the view are the only people allowed to see variance.
- * It stays a separate function so widening access to counters later does NOT
- * accidentally widen access to variance.
+ * ⚠️ CLIENT-SIDE ONLY, and weaker than it looks. Session data lives under
+ * /settings, whose live rules are:
+ *
+ *   .read   auth != null                    ← includes ANONYMOUS auth
+ *   .write  auth != null && non-anonymous   ← any staff account, any stockRole
+ *
+ * The read gate matters because this app deliberately runs anonymous sessions on
+ * the TV displays, so "signed-in staff only" is not what `auth != null` buys.
+ * And because there is no child validation, any non-anonymous account — a POS or
+ * warehouse user who cannot write a single adjustment — can overwrite the
+ * counted records or the session node outright. The count PROGRESS and VARIANCE
+ * are therefore convenience state, NOT tamper-evident audit.
+ *
+ * The audit record is /stock_movements, which IS rule-protected and carries the
+ * whole count in `link.count*` — every adjustment is independently reconstructible
+ * from the ledger without trusting /settings at all.
+ *
+ * Making the count data itself private and tamper-proof needs one hand-written
+ * console rule on settings/hubSneakerCount (read+write gated to
+ * stockRole === 'admin'). Flagged to the owner; not done here, because rules are
+ * managed by hand and this branch is forbidden from touching them.
  */
 export function canSeeHubCountVariance(viewer) {
   return canUseHubSneakerCount(viewer);

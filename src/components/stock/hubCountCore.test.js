@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import {
   hubOptions, buildHubRows, seededRowFor, mergeSeededRows, progressOf,
   isRowSettled, isStaleExpectation, varianceRows, filterRows, cellKey,
-  isCountableSizeKey, sizeLabelOf,
+  isCountableSizeKey, sizeLabelOf, recoverSeededRows,
 } from "./hubCountCore.js";
 
 const SHOE = { id: "sh1", name: "Nike Air Max 1", category: "Footwear", barcode: "10000001", sizes: ["5.5", "6", "7"] };
@@ -107,11 +107,75 @@ describe("adding a product that has no cell at this hub", () => {
     expect(seededRowFor({ id: "x", name: "Belt", sizes: ["_"] })).toBeNull();
   });
 
-  it("never produces a duplicate row for a product the hub snapshot already covers", () => {
+  it("never produces a duplicate ROW for a product the hub snapshot already covers", () => {
     const hubRows = buildHubRows({ products: PRODUCTS, hubStock: { sh1: { 6: cell(3) } } });
     const merged = mergeSeededRows(hubRows, [seededRowFor(SHOE), seededRowFor(SHOE2)]);
     expect(merged.map((r) => r.id).sort()).toEqual(["sh1", "sh2"]);
-    expect(merged.find((r) => r.id === "sh1").sizes).toHaveLength(1);   // the REAL row won
+  });
+
+  // ── THE SIZE-COLLAPSE REGRESSION ──────────────────────────────────────────
+  // Merging by PRODUCT instead of by SIZE silently deletes the sizes the hub has
+  // no cell for yet — which is every size the counter has not reached. It is the
+  // add-a-missing-product flow eating its own work.
+  it("MERGES BY SIZE: a real cell never swallows the seeded sizes beside it", () => {
+    const hubRows = buildHubRows({ products: PRODUCTS, hubStock: { sh1: { 6: cell(3) } } });
+    const merged = mergeSeededRows(hubRows, [seededRowFor(SHOE)]);   // SHOE has 5.5, 6, 7
+    const sh1 = merged.find((r) => r.id === "sh1");
+    expect(sh1.sizes.map((s) => s.sizeKey)).toEqual(["5_5", "6", "7"]);
+    expect(sh1.sizes.find((s) => s.sizeKey === "6").expected).toBe(3);   // real cell wins for 6
+    expect(sh1.sizes.find((s) => s.sizeKey === "7").expected).toBe(0);   // seeded size survives
+    expect(sh1.total).toBe(3);
+  });
+
+  it("reproduces the full sequence: adjust one seeded size, the others must remain", () => {
+    // 1. shoe has NO cells here → seeded row with all three sizes
+    const seeded = seededRowFor(SHOE);
+    expect(mergeSeededRows(buildHubRows({ products: PRODUCTS, hubStock: {} }), [seeded])[0].sizes).toHaveLength(3);
+    // 2. counter adjusts size 9 → a REAL cell now exists for that size only
+    const afterAdjust = buildHubRows({ products: PRODUCTS, hubStock: { sh1: { 6: cell(3) } } });
+    // 3. the rebuild must NOT shrink the row (the old code left exactly one size)
+    const merged = mergeSeededRows(afterAdjust, [seeded]);
+    expect(merged.find((r) => r.id === "sh1").sizes).toHaveLength(3);
+  });
+});
+
+describe("recovering seeded rows from what the session recorded", () => {
+  const hubStock = { sh2: { 6: cell(1) } };
+
+  it("rebuilds the FULL size run for a product with no cell at this hub", () => {
+    const counted = { [cellKey("sh1", "7")]: { productId: "sh1", sizeKey: "7", expected: 0, actual: 0 } };
+    const rows = recoverSeededRows({ counted, hubStock, products: PRODUCTS });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe("sh1");
+    expect(rows[0].sizes.map((s) => s.sizeKey)).toEqual(["5_5", "6", "7"]);
+  });
+
+  it("rebuilds ONLY the recorded size when the product does have other cells — never invents sizes", () => {
+    const counted = { [cellKey("sh2", "7")]: { productId: "sh2", sizeKey: "7", expected: 0, actual: 0 } };
+    const rows = recoverSeededRows({ counted, hubStock, products: PRODUCTS });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].sizes.map((s) => s.sizeKey)).toEqual(["7"]);   // NOT the whole run
+  });
+
+  it("recovers nothing for a size that has a real cell — there is a row already", () => {
+    const counted = { [cellKey("sh2", "6")]: { productId: "sh2", sizeKey: "6", expected: 1, actual: 1 } };
+    expect(recoverSeededRows({ counted, hubStock, products: PRODUCTS })).toEqual([]);
+  });
+
+  it("survives a record whose product is gone from the catalogue", () => {
+    const counted = { [cellKey("ghost", "7")]: { productId: "ghost", sizeKey: "7", expected: 0, actual: 0 } };
+    expect(recoverSeededRows({ counted, hubStock, products: PRODUCTS })).toEqual([]);
+  });
+
+  it("closes the loop: a reload shows the added-from-zero row a counter confirmed", () => {
+    const counted = { [cellKey("sh1", "6")]: { productId: "sh1", sizeKey: "6", expected: 0, actual: 0 } };
+    const rows = mergeSeededRows(
+      buildHubRows({ products: PRODUCTS, hubStock: {} }),
+      recoverSeededRows({ counted, hubStock: {}, products: PRODUCTS })
+    );
+    expect(rows.map((r) => r.id)).toEqual(["sh1"]);
+    expect(isRowSettled(rows[0], counted)).toBe(false);          // 1 of 3 sizes done
+    expect(progressOf(rows, counted)).toEqual({ done: 1, total: 3 });
   });
 });
 

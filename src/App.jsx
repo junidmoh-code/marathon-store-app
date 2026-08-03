@@ -16695,9 +16695,14 @@ function AppInner() {
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
   // TEMPORARY — hub sneaker stock-take. `products` is passed (not re-read): App
   // already holds the catalogue, and the count view freezes it on entry.
+  // viewer.stockRole is the STORED role, deliberately NOT the super-admin-widened
+  // `stockRole` above: the RTDB rules read /users/{uid}/stockRole and know nothing
+  // about ADMIN_EMAIL, so the write gate must be told the truth or it would
+  // promise corrections it cannot deliver.
   else if (role === ROLES.HUB_SNEAKER_COUNT) view = hubCountRouteOpen
     ? <HubSneakerCount products={products} actorRole={stockRole}
-        viewer={{ email: authUser?.email, stockRole }} onExit={() => setRole(null)} />
+        viewer={{ email: authUser?.email, stockRole: permRecord?.stockRole || null }}
+        onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.ATTENTION) view = canAccessStock ? <AttentionView products={products} onExit={() => setRole(null)} /> : null;

@@ -46,10 +46,32 @@ vi.mock("firebase/database", () => ({
   child: (node, path) => ({ path: node.path ? `${node.path}/${path}` : path }),
   get: async (node) => ({ val: () => getPath(node.path), exists: () => getPath(node.path) != null }),
   update: async (node, updates) => {
-    for (const [k, v] of Object.entries(updates)) setPath(node.path ? `${node.path}/${k}` : k, v);
+    for (const [k, v] of Object.entries(updates)) {
+      const full = node.path ? `${node.path}/${k}` : k;
+      if (failWritesUnder && full.startsWith(failWritesUnder)) throw new Error("PERMISSION_DENIED");
+      setPath(full, v);
+    }
   },
   push: () => ({ key: `pk${++pushN}` }),
+  // Models RTDB's real transaction semantics: run the updater, and if the value
+  // moved underneath us before the commit, RE-RUN it against the new value.
+  // That re-run is what makes first-write-wins actually work.
+  runTransaction: async (node, fn) => {
+    for (let i = 0; i < 5; i++) {
+      const cur = getPath(node.path);
+      const next = fn(cur);
+      if (raceDuringTxn) { const w = raceDuringTxn; raceDuringTxn = null; w(); }
+      const now = getPath(node.path);
+      if (JSON.stringify(now) !== JSON.stringify(cur)) continue;      // conflict → re-run
+      if (next === undefined) return { committed: false, snapshot: { val: () => cur } };
+      setPath(node.path, next);
+      return { committed: true, snapshot: { val: () => next } };
+    }
+    return { committed: false, snapshot: { val: () => getPath(node.path) } };
+  },
 }));
+let raceDuringTxn = null;
+let failWritesUnder = null;   // path prefix whose writes should reject
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: () => () => {} }));
 vi.mock("../../firebase", () => ({ database: { fake: true }, auth: { currentUser: { uid: "counter-1" } } }));
 
@@ -61,15 +83,28 @@ vi.mock("../../firebase", () => ({ database: { fake: true }, auth: { currentUser
 let raceDuringWrite = null;
 let raceAfterWrite = null;
 
+// `raceBeforeWriterRead` fires once BEFORE the writer's own read — the window
+// between the caller's fence read and applyMovement's read, which the `v` guard
+// cannot see because the writer never observes the old version.
+let raceBeforeWriterRead = null;
+
 const applyMovementMock = vi.fn(async (mv, { maxRetries = 6 } = {}) => {
   const loc = mv.to || mv.from;
   const path = stockCellPath(loc, mv.productId, mv.size);
   const delta = mv.to ? Number(mv.qty) : -Number(mv.qty);
 
+  if (raceBeforeWriterRead) { const w = raceBeforeWriterRead; raceBeforeWriterRead = null; w(); }
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const cell = getPath(path);
     const curQty = cell && typeof cell.qty === "number" ? cell.qty : 0;
     const seenV = cell && typeof cell.v === "number" ? cell.v : null;
+
+    // The absolute-value precondition, mirroring the real applyMovement: checked
+    // against the value THIS function just read, on every attempt.
+    if (mv.expect && typeof mv.expect.qty === "number" && curQty !== mv.expect.qty) {
+      return { ok: false, reason: "stale_expectation", expected: mv.expect.qty, live: curQty };
+    }
 
     if (raceDuringWrite) { const w = raceDuringWrite; raceDuringWrite = null; w(); }
 
@@ -89,7 +124,7 @@ const applyMovementMock = vi.fn(async (mv, { maxRetries = 6 } = {}) => {
 
 vi.mock("./applyMovement", () => ({ applyMovement: (...args) => applyMovementMock(...args) }));
 
-const { adjustCell, confirmCell } = await import("./hubCountStore.js");
+const { adjustCell, confirmCell, openOrResumeSession } = await import("./hubCountStore.js");
 
 const HUB = "hub1";
 const PID = "sh1";
@@ -103,8 +138,43 @@ const seedCell = (qty, v = 1, size = "8") => setPath(cellPath(size), { qty, v, m
 beforeEach(() => {
   store = {};
   pushN = 0; mvN = 0;
-  raceDuringWrite = null; raceAfterWrite = null;
+  raceDuringWrite = null; raceAfterWrite = null; raceBeforeWriterRead = null; raceDuringTxn = null;
+  failWritesUnder = null;
   applyMovementMock.mockClear();
+});
+
+// ── SESSION IDENTITY ─────────────────────────────────────────────────────────
+// "A second counter sees what's already done" is only true if both counters are
+// in the SAME session. A check-then-write would let two tablets mint two ids and
+// have the second overwrite the first, orphaning a whole counter's progress.
+describe("session open/resume is compare-and-set", () => {
+  const sessionNode = () => getPath(`settings/hubSneakerCount/sessions/${HUB}`);
+
+  it("creates a session when the hub has never been counted", async () => {
+    const s = await openOrResumeSession(HUB);
+    expect(s.sessionId).toBeTruthy();
+    expect(sessionNode().sessionId).toBe(s.sessionId);
+  });
+
+  it("RESUMES the existing session rather than minting a second one", async () => {
+    const first = await openOrResumeSession(HUB);
+    const second = await openOrResumeSession(HUB);
+    expect(second.sessionId).toBe(first.sessionId);
+  });
+
+  it("two tablets opening the same fresh hub converge on ONE session", async () => {
+    // Counter B's session commits while counter A's transaction is in flight.
+    const bId = "sessionFromCounterB";
+    raceDuringTxn = () => setPath(`settings/hubSneakerCount/sessions/${HUB}`,
+      { sessionId: bId, hub: HUB, openedAt: "t", openedBy: "counter-2" });
+
+    const a = await openOrResumeSession(HUB);
+
+    // A must ADOPT B's session, not keep the id it minted locally — otherwise A
+    // writes counts under an id nothing will ever load again.
+    expect(a.sessionId).toBe(bId);
+    expect(sessionNode().sessionId).toBe(bId);
+  });
 });
 
 // ── LAYER 1 ──────────────────────────────────────────────────────────────────
@@ -185,6 +255,47 @@ describe("LAYER 2 — retries OFF, so a version conflict fails instead of re-app
   });
 });
 
+// ── LAYER 2b — THE GAP BETWEEN THE FENCE AND THE WRITER ─────────────────────
+// Found in review (Codex, stage 5). The fence and applyMovement do two SEPARATE
+// reads. A write landing between them produces no version conflict at all —
+// applyMovement never saw the old version, so it computes its delta against the
+// new base and commits happily. The `expect` precondition is what closes it.
+describe("LAYER 2b — a write landing between the fence and the writer's own read", () => {
+  it("REJECTS instead of committing a number nobody counted", async () => {
+    seedCell(10, 4);
+    // Counter A completes an entire adjustment in the gap: 10 → 8.
+    raceBeforeWriterRead = () => setPath(cellPath(), { qty: 8, v: 5, mv: "counterA", lastType: "adjustment" });
+
+    // Counter B saw 10, counted 8, so B's delta is -2.
+    const res = await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 10, actual: 8 });
+
+    expect(res.ok).toBe(false);
+    expect(res.stale).toBe(true);
+    expect(res.message).toContain("8");                 // tells B what it really holds now
+    // Without `expect`, B's -2 would have applied to A's 8 and committed 6 —
+    // a number neither counter ever counted.
+    expect(cellNow().qty).toBe(8);
+    expect(recordNow()).toBeNull();
+  });
+
+  it("passes the expected quantity to the writer, so the check happens at ITS read", async () => {
+    seedCell(4);
+    await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 5 });
+    expect(applyMovementMock.mock.calls[0][0].expect).toEqual({ qty: 4 });
+  });
+
+  it("demonstrates the harness WOULD catch a re-based write (no expect → silent 6)", async () => {
+    seedCell(10, 4);
+    raceBeforeWriterRead = () => setPath(cellPath(), { qty: 8, v: 5, mv: "counterA", lastType: "adjustment" });
+    const res = await applyMovementMock(
+      { type: "adjustment", productId: PID, size: "8", qty: 2, to: null, from: HUB },   // no expect
+      { maxRetries: 1 }
+    );
+    expect(res.ok).toBe(true);
+    expect(cellNow().qty).toBe(6);                     // the bug, reproduced
+  });
+});
+
 // ── LAYER 3 ──────────────────────────────────────────────────────────────────
 describe("LAYER 3 — the post-write assert", () => {
   it("warns WITH the movement id when the cell does not end up at the counted value", async () => {
@@ -207,6 +318,48 @@ describe("LAYER 3 — the post-write assert", () => {
     expect(res.ok).toBe(true);
     expect(res.warning).toBeUndefined();
     expect(cellNow().qty).toBe(6);
+    expect(recordNow().settled).toBe(true);
+  });
+
+  it("PERSISTS the unsettled state on the record — a toast is not a work item", async () => {
+    seedCell(4);
+    raceAfterWrite = () => setPath(cellPath(), { qty: 99, v: 9, mv: "other", lastType: "sold" });
+    await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 6 });
+
+    // Survives the reload: the record itself says this cell needs re-checking,
+    // and what it really holds.
+    expect(recordNow()).toMatchObject({ settled: false, actual: 6, live: 99 });
+  });
+});
+
+// ── DURABILITY ───────────────────────────────────────────────────────────────
+// The movement commits stock and the ledger atomically; the progress record is a
+// separate write that can fail on its own. Reporting that as "the count failed"
+// would be actively dangerous: the counter re-enters the number and adjusts a
+// second time.
+describe("a lost progress record must never be reported as a failed count", () => {
+  it("reports SUCCESS with a warning when stock committed but the record write failed", async () => {
+    seedCell(4);
+    failWritesUnder = "settings/hubSneakerCount/counted";
+
+    const res = await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 6 });
+
+    expect(cellNow().qty).toBe(6);                    // the stock DID move
+    expect(res.ok).toBe(true);                        // …so this is NOT a failure
+    expect(res.warning).toMatch(/Stock WAS updated/i);
+    expect(res.warning).toContain("do not count this cell again");
+    expect(recordNow()).toBeNull();                   // record genuinely absent
+  });
+
+  it("a failed CONFIRM is a plain failure — no stock moved, safe to retry", async () => {
+    seedCell(4);
+    failWritesUnder = "settings/hubSneakerCount/counted";
+
+    const res = await confirmCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4 });
+
+    expect(res.ok).toBe(false);
+    expect(cellNow().qty).toBe(4);
+    expect(applyMovementMock).not.toHaveBeenCalled();
   });
 });
 
