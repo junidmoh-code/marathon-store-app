@@ -397,7 +397,17 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
       // ordering changes no live cell. It is written this way so "watches keep 2"
       // stays true of EVERY watch, including any future one that arrives with a
       // stray letter size, instead of silently falling back to the garment run.
-      const subT = subcategoryRun(config, products, pid, dest);
+      //
+      // A BLANK size is refused. It reads as another spelling of one-size, but
+      // the encodings disagree exactly where it matters: stockSizeKey("") is the
+      // "_" cell that holds the stock, while encodeSizeKey("") is "" — so a
+      // policy honoured here would chase a phantom "" cell that can never be
+      // filled while the real units sit in "_". The size run never reached this
+      // case (no run has a "" key), so the policy must not introduce it. No live
+      // product has a blank size today; this keeps it harmless if one is created.
+      const subT = typeof size === "string" && size.trim() !== ""
+        ? subcategoryRun(config, products, pid, dest)
+        : null;
       if (subT !== null) {
         return { target: subT, minQty: Math.max(1, subT - 1), reorderPoint: null, source: "subcategory_default" };
       }

@@ -12,7 +12,7 @@
 // retires its card instantly. Strictly clothing; strictly existing tokens.
 
 import React, { useEffect, useMemo, useState } from "react";
-import { ref, get, update } from "firebase/database";
+import { ref, get, update, onValue } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { useStockCells } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
@@ -21,7 +21,7 @@ import { encodeSizeKey, stockCellPath } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
-import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, effectiveStandard } from "./solvePlan";
+import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, effectiveStandard, ruleTargetsEnabledFor } from "./solvePlan";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -67,23 +67,25 @@ export default function NetworkTransfer({ products = [] }) {
   const [solveBusy, setSolveBusy] = useState(null);
   const [solved, setSolved] = useState({});         // pid → {store, sizes, msg, ok}
 
-  // The size-standard, read ONCE (get, not a listener) for the confirm estimate.
-  const [std, setStd] = useState(STD_FALLBACK);
-  // The subcategory policy ("keep N of every Watch here"). NO fallback: absent
-  // means no policy, which greys Solve back out. That is the correct failure
-  // direction — a hardcoded fallback would let a config read that quietly failed
-  // seed cells the live engine has no policy to refill.
-  const [subRun, setSubRun] = useState({});
-  useEffect(() => {
-    let alive = true;
-    get(ref(database, "config/refillEngine/defaultRunByStore"))
-      .then((s) => { const v = s.val(); if (alive && v) setStd(v); })
-      .catch(() => { /* keep fallback — estimate only */ });
-    get(ref(database, "config/refillEngine/subcategoryRunByLocation"))
-      .then((s) => { const v = s.val(); if (alive && v && typeof v === "object") setSubRun(v); })
-      .catch(() => { /* no policy — Solve stays disabled for one-size products */ });
-    return () => { alive = false; };
-  }, []);
+  // The engine config, LIVE (onValue, not the one-shot get this used to do).
+  // Solve's enabled state is a promise about what the engine will do next, so it
+  // has to track the engine's switches rather than a snapshot taken when the tab
+  // was opened: an operator who kills rule-based targets — or deletes the watch
+  // policy — while this screen sits open would otherwise keep seeing an armed
+  // Solve button and seed cells nothing will ever refill. One small config node.
+  //
+  // null = not read yet, and everything downstream treats that as OFF, so the
+  // button starts greyed and lights up only on evidence.
+  const [cfg, setCfg] = useState(null);
+  useEffect(() => onValue(
+    ref(database, "config/refillEngine"),
+    (s) => setCfg(s.val() || {}),
+    () => setCfg({}),   // unreadable → no switches → Solve stays off (fail-safe)
+  ), []);
+  const std = cfg?.defaultRunByStore;
+  const subRun = cfg?.subcategoryRunByLocation;
+  // Mirrors the engine's kill switch exactly (solvePlan.js). Absent → off.
+  const ruleOn = (dest) => ruleTargetsEnabledFor(cfg?.ruleBasedTargets, dest);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const qtyAt = (loc, pid, size) => Math.max(Number(allStock?.[loc]?.[pid]?.[String(size)]?.qty) || 0, 0);
@@ -124,6 +126,12 @@ export default function NetworkTransfer({ products = [] }) {
   // got a say. The standard lookup is what excludes it now — "_" has no entry in
   // a garment-letter run, so a one-size product with no subcategory policy still
   // ends up with zero qualifying sizes and a greyed Solve, exactly as before.
+  //
+  // A BLANK catalogue size stays filtered out. It looks like another spelling of
+  // one-size, but the two encodings disagree where it counts: stockSizeKey("")
+  // is "_" while encodeSizeKey("") is "", so seeding one would arm a phantom ""
+  // cell beside the real "_" stock. No live product has one (checked across all
+  // 3,953), and the engine refuses to target one either (refill-engine.cjs).
   const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter(Boolean);
   const stdRun = useMemo(() => ({ ...STD_FALLBACK, ...std }), [std]);
   // The standard THIS product is governed by — subcategory policy where one
@@ -134,7 +142,16 @@ export default function NetworkTransfer({ products = [] }) {
   // Sizes safe to seed — a positive standard at every seed location (solvePlan.js).
   // A size with no standard would seed a cell the engine never refills, then vanish
   // with a false "solved", so it's excluded. (Codex fix a.)
-  const qualifyingSizes = (card, store) => computeQualifyingSizes(catalogSizes(card.pid), card.source, store, runFor(card.pid));
+  //
+  // The rule-switch check is the same guarantee one level up: with rule-based
+  // targeting off at a seed location the engine refills NOTHING there by rule, so
+  // no size qualifies, whatever the standards say. Returning empty here is what
+  // greys the button, disables the confirm action AND makes solve() bail — one
+  // choke point rather than three places to keep in step.
+  const qualifyingSizes = (card, store) => {
+    if (!seedLocations(card.source, store).every(ruleOn)) return [];
+    return computeQualifyingSizes(catalogSizes(card.pid), card.source, store, runFor(card.pid));
+  };
 
   // Confirm estimate via the pure helper (solvePlan.js), over the QUALIFYING sizes
   // only — availability closes over live /stock; std falls back if config is slow.
@@ -242,6 +259,13 @@ export default function NetworkTransfer({ products = [] }) {
         // keeps the button honest; the panel's own button still re-checks the store
         // actually nominated, so a store with no policy remains unsolvable.
         const solvable = STORES.some((s) => qualifyingSizes(card, s).length > 0);
+        // Why it's greyed — three genuinely different situations that all used to
+        // read "no standard sizes", which sent people looking at the product when
+        // the answer was the engine's switch or a config still loading.
+        const armed = STORES.some((s) => seedLocations(card.source, s).every(ruleOn));
+        const whyNot = !cfg ? "Checking the engine's settings…"
+          : !armed ? "Rule-based refills are switched off — the engine wouldn't refill this, so there's nothing to seed. Use Move manually."
+          : "No refill policy covers this product — use Move manually";
         return (
           <ProductCard key={card.pid}
             photo={card.photo} name={card.name}
@@ -252,7 +276,7 @@ export default function NetworkTransfer({ products = [] }) {
             right={
               <div style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!canAct || !solvable}
-                        title={!solvable ? "No standard sizes for this product — use Move manually" : undefined}
+                        title={!solvable ? whyNot : undefined}
                         style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: (canAct && solvable) ? "pointer" : "default", opacity: (canAct && solvable) ? 1 : 0.4, fontFamily: FONT }}>
                   {sOpen ? "Close" : "Solve"}
                 </button>

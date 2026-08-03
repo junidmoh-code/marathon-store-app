@@ -121,6 +121,21 @@ test("a size that is not in the product's catalogue gets no target", () => {
     "the policy applies to catalogue sizes only — it must not invent cells");
 });
 
+test("a BLANK catalogue size never resolves a policy target", () => {
+  // stockSizeKey("") is "_" but encodeSizeKey("") is "" — a policy honoured on a
+  // blank size would chase a phantom "" cell while the units sit in "_". The
+  // size run never reached this case, so the policy must not introduce it.
+  const blank = { id: "wb", name: "Nameless watch", subcategory: "Watches", productType: "clothing", sizes: [""] };
+  const c = {
+    targets: {},
+    config: { ruleBasedTargets: true, defaultRunByStore: SIZE_RUN, subcategoryRunByLocation: WATCH_POLICY },
+    products: { wb: blank },
+    stock: { trophy: { wb: { _: { qty: 0 } } } },
+  };
+  assert.equal(resolveTarget(c, "trophy", "wb", ""), null, "blank size must resolve nothing");
+  assert.equal(resolveTarget(c, "trophy", "wb", "   "), null, "whitespace is not a size either");
+});
+
 // ── 3. both off-switches ─────────────────────────────────────────────────────
 
 test("deleting the config node kills the policy live", () => {
@@ -191,6 +206,42 @@ test("a carried, empty watch at Trophy produces a 2-unit refill intent from Hub 
   assert.ok(intent, "the whole point: a seeded watch cell must now generate a refill");
   assert.equal(intent.qty, 2, "top up to the policy target");
   assert.equal(intent.size, "_", "on the one-size cell, not an invented size");
+});
+
+test("the Central-stranded cascade: Hub 2 pulls from Central, then the store pulls from Hub 2", () => {
+  // The 35 watches sitting only in Central reach a store in TWO legs, which is
+  // why Solve seeds Hub 2 as well. Leg 1 with Hub 2 empty; then the same board
+  // with Hub 2 stocked, proving leg 2 follows.
+  const base = {
+    nowMs: NOW,
+    config: {
+      routes: { trophy: "hub2", hub2: "central" },
+      mode: { trophy: "live", hub2: "live" },
+      ruleBasedTargets: true,
+      defaultRunByStore: SIZE_RUN,
+      subcategoryRunByLocation: WATCH_POLICY,
+      maxUnitsPerIntent: 20,
+    },
+    products: { w1: WATCH },
+    targets: {},
+  };
+  const legOne = computeRefillPlan({
+    ...base,
+    // Both seeded by Solve, both empty; only Central holds units.
+    stock: { trophy: { w1: { _: { qty: 0 } } }, hub2: { w1: { _: { qty: 0 } } }, central: { w1: { _: { qty: 174 } } } },
+  });
+  const toHub = (legOne.intents || []).find((i) => i.dest === "hub2" && i.productId === "w1");
+  assert.ok(toHub, "leg 1: Hub 2 must pull from Central once seeded");
+  assert.equal(toHub.qty, 2);
+  assert.equal(toHub.source, "central");
+
+  const legTwo = computeRefillPlan({
+    ...base,
+    stock: { trophy: { w1: { _: { qty: 0 } } }, hub2: { w1: { _: { qty: 2 } } }, central: { w1: { _: { qty: 172 } } } },
+  });
+  const toStore = (legTwo.intents || []).find((i) => i.dest === "trophy" && i.productId === "w1");
+  assert.ok(toStore, "leg 2: once Hub 2 has received, the store pulls from Hub 2");
+  assert.equal(toStore.source, "hub2");
 });
 
 test("without the policy that same watch generates nothing", () => {

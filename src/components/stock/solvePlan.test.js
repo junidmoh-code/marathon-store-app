@@ -1,5 +1,27 @@
 import { describe, it, expect } from "vitest";
-import { seedLocations, standardUnits, solvePlan, qualifyingSizes, effectiveStandard } from "./solvePlan";
+import { seedLocations, standardUnits, solvePlan, qualifyingSizes, effectiveStandard, ruleTargetsEnabledFor } from "./solvePlan";
+
+describe("ruleTargetsEnabledFor — mirrors the engine's kill switch", () => {
+  it("true means on everywhere", () => {
+    expect(ruleTargetsEnabledFor(true, "trophy")).toBe(true);
+    expect(ruleTargetsEnabledFor(true, "hub2")).toBe(true);
+  });
+  it("an object is per-destination, and absent means off", () => {
+    const v = { trophy: true, hub2: false };
+    expect(ruleTargetsEnabledFor(v, "trophy")).toBe(true);
+    expect(ruleTargetsEnabledFor(v, "hub2")).toBe(false);
+    expect(ruleTargetsEnabledFor(v, "marathon-pe")).toBe(false);
+  });
+  it("anything else is OFF — the fail-safe direction", () => {
+    for (const v of [false, undefined, null, 0, 1, "true", [], [true]]) {
+      expect(ruleTargetsEnabledFor(v, "trophy")).toBe(false);
+    }
+  });
+  it("a truthy-but-not-true per-destination value is still off", () => {
+    expect(ruleTargetsEnabledFor({ trophy: 1 }, "trophy")).toBe(false);
+    expect(ruleTargetsEnabledFor({ trophy: "yes" }, "trophy")).toBe(false);
+  });
+});
 
 const STD = {
   hub2: { L: 3, M: 3, S: 2, XL: 2, XXL: 2, XXXL: 1 },
@@ -45,6 +67,17 @@ describe("effectiveStandard — mirrors the engine's subcategory policy", () => 
     const eff = effectiveStandard({ std: STD, subRun: WATCH_POLICY, subcategory: "Watches", sizes: ["S"] });
     expect(eff.trophy).toEqual({ S: 2 });
     expect(eff.hub2).toEqual({ S: 2 });   // not the hub2 garment run
+  });
+  it("a non-string subcategory is refused, exactly as the engine refuses it", () => {
+    // A numeric subcategory with a matching policy key: the engine's
+    // `typeof sub === "string"` check rejects it, so this must too, or Solve
+    // would enable a seed the engine never honours.
+    const eff = effectiveStandard({ std: STD, subRun: { trophy: { 7: 2 } }, subcategory: 7, sizes: ["_"] });
+    expect(eff.trophy).toEqual(STD.trophy);
+    expect(effectiveStandard({ std: STD, subRun: WATCH_POLICY, subcategory: "", sizes: ["_"] }).trophy).toEqual(STD.trophy);
+  });
+  it("an array where the per-location map belongs is not indexed into", () => {
+    expect(effectiveStandard({ std: STD, subRun: { trophy: [2] }, subcategory: "Watches", sizes: ["_"] }).trophy).toEqual(STD.trophy);
   });
   it("survives missing inputs without throwing", () => {
     expect(effectiveStandard({})).toEqual({});

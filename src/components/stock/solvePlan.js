@@ -19,6 +19,26 @@
 // this file already speaks, so qualifyingSizes/solvePlan need no new arguments
 // and keep their existing meaning.
 
+// Is the engine's rule-based targeting on at this destination? A BYTE-FOR-BYTE
+// mirror of ruleTargetsEnabled() in refill-engine.cjs, including its fail-safe:
+// true = everywhere, an object = per-destination with absent meaning off, and
+// anything else — false, missing, garbage, or a config node that could not be
+// read — meaning OFF.
+//
+// Solve MUST consult this. Seeding is only ever justified by "the engine will
+// then refill it", and with the kill switch off the engine refills nothing by
+// rule, so every seeded cell would sit at qty 0 forever while its row vanished
+// from Missing Products looking handled. That hole predates the subcategory
+// policy — it applied to ordinary clothing too — and is closed here because the
+// policy makes one-size products depend on the same guarantee.
+export function ruleTargetsEnabledFor(ruleBasedTargets, dest) {
+  if (ruleBasedTargets === true) return true;
+  if (ruleBasedTargets && typeof ruleBasedTargets === "object" && !Array.isArray(ruleBasedTargets)) {
+    return ruleBasedTargets[dest] === true;
+  }
+  return false;
+}
+
 // Which locations get a qty-0 carriage seed. Central-stranded needs BOTH Hub 2
 // (so the engine raises central→hub2) and the nominated store (so it raises
 // hub2→store once Hub 2 receives). Hub2-stranded needs the store only.
@@ -38,6 +58,10 @@ export function seedLocations(source, store) {
 // definition has no entry in a garment-letter run.
 export function effectiveStandard({ std, subRun, subcategory, sizes }) {
   const locs = new Set([...Object.keys(std || {}), ...Object.keys(subRun || {})]);
+  // Non-empty STRING, matching the engine's subcategoryRun() exactly. A truthy
+  // check would accept a numeric subcategory (say 7) that the engine refuses,
+  // and the mirror has to be exact in BOTH directions or Solve lies.
+  const sub = typeof subcategory === "string" && subcategory ? subcategory : null;
   const out = {};
   for (const loc of locs) {
     // `typeof t === "number"`, NOT Number(t): this must accept EXACTLY what the
@@ -46,7 +70,8 @@ export function effectiveStandard({ std, subRun, subcategory, sizes }) {
     // engine would reject the same value and never refill them. That is the
     // false-solve this whole module exists to prevent, so the two validations
     // have to be byte-for-byte the same rule.
-    const t = subcategory ? (subRun?.[loc] || {})[subcategory] : undefined;
+    const run = (subRun || {})[loc];
+    const t = sub && run && typeof run === "object" && !Array.isArray(run) ? run[sub] : undefined;
     out[loc] = typeof t === "number" && Number.isFinite(t) && t > 0
       ? Object.fromEntries((sizes || []).map((sz) => [String(sz).toUpperCase(), t]))
       : ((std || {})[loc] || {});
