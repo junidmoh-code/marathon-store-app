@@ -14,7 +14,7 @@
 // is a register you walk and confirm rather than a queue you clear.
 //
 // ── DELIBERATELY INERT ───────────────────────────────────────────────────────
-// This writes ONE new node, /display_register/{store}/{productId}__{sizeKey},
+// This writes ONE new node, /settings/displayRegister/{store}/{productId}__{sizeKey},
 // and NOTHING else. It does not touch /stock, does not move inventory, does not
 // create orders, and no automation reads it yet. Registering a pair is a record
 // of a physical fact, not a transaction — so a mistake here can never cost
