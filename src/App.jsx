@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useMemo, useCallback, useDeferredValue } from "react";
-import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, equalTo, startAt } from "firebase/database";
+import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue } from "react";
+import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
@@ -9,6 +9,10 @@ import { productMatchesQuery } from "./utils/productSearch";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import { getDeviceId } from "./device/deviceId";
+import { InsightsLogContext } from "./insights/InsightsLogContext";
+import { InsightsLogProvider } from "./insights/InsightsLogProvider";
+import { recentDaysStartKey } from "./insights/insightsLogRange";
+import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
@@ -735,12 +739,48 @@ function logInsight(entry) {
     .catch(err => console.warn("logInsight failed:", err));
 }
 
+// Whole-node readers share ONE subscription via InsightsLogProvider — this hook
+// only registers interest in it. Same signature and same newest-first ordering
+// as the bare per-consumer onValue it replaces; the 18.73 MB is downloaded once
+// while at least one consumer is mounted, and released ~5 min after the last one
+// unmounts. See src/insights/InsightsLogProvider.jsx.
+//
+// Consumers that render a BOUNDED period must not use this — see
+// useInsightsLogRecentDays below.
 function useInsightsLog() {
+  const { log, retain, release } = useContext(InsightsLogContext);
+  useEffect(() => {
+    retain();
+    return release;
+  }, [retain, release]);
+  return log;
+}
+
+// Bounded reader: only the last `days` SA days, via an orderByKey() range.
+// /insights_log has no `.indexOn` in the live rules, so orderByChild is not
+// available — push keys encode write time, so a key range IS a time range
+// (src/insights/insightsLogRange.js documents the measured key/timestamp skew
+// and the 48h padding that covers it). Callers still filter on `timestamp`,
+// so the range can only ever change what is DOWNLOADED, never what is rendered.
+function useInsightsLogRecentDays(days) {
   const authReady = useAuthReady();
   const [log, setLog] = useState([]);
+  // The range anchor is a function of TODAY, and a till is left open all day —
+  // often across midnight. Without re-anchoring, a terminal opened on Monday
+  // still asks for Monday's window on Tuesday, so the newest day silently falls
+  // outside the query and the Source screen loses a day of history. Re-stamp the
+  // SA day key on a slow tick (the same pattern useLiveOrders uses); setState
+  // with an unchanged key is a no-op, so this costs nothing until the day flips.
+  const [saDay, setSaDay] = useState(() => saDateString());
   useEffect(() => {
-    if (!authReady) return;
-    const unsub = onValue(ref(database, "insights_log"), snap => {
+    const t = setInterval(() => setSaDay(saDateString()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    if (!authReady) return undefined;
+    const { startKey } = recentDaysStartKey(days, serverNowMs());
+    const q = query(ref(database, "insights_log"), orderByKey(), startAt(startKey));
+    const unsub = onValue(q, snap => {
       const data = snap.val();
       if (!data) { setLog([]); return; }
       setLog(
@@ -750,7 +790,9 @@ function useInsightsLog() {
       );
     });
     return () => unsub();
-  }, [authReady]);
+    // saDay is a DEPENDENCY, not decoration: when the SA date rolls over the
+    // query re-anchors to the new day's window.
+  }, [authReady, days, saDay]);
   return log;
 }
 
@@ -1449,33 +1491,30 @@ function useCustomersDb() {
   return customers;
 }
 
-// Customer index for the Assistant order-entry autocomplete. Derived from
-// insights_log (where past customer name + phone + timestamp actually live —
-// `/customers` only stores opt-in flags). Returns one entry per distinct
-// phone with the most-recent name, total order count (action="placed"), and
-// the last-order ISO. Cheap O(N) once over the log.
+// Customer index for the Assistant order-entry autocomplete — one entry per
+// distinct phone, built from /customers (1.12 MB).
+//
+// It used to be derived from /insights_log, which meant downloading 18.73 MB on
+// every Store Assistant mount to extract names and phone numbers. The comment
+// that justified it ("/customers only stores opt-in flags") was simply wrong:
+// live /customers carries `phone` on 100% of its 6,523 records, `name` on 99.9%
+// and `lastOrderAt` on 97.2%, and covers 6,363 of the 6,379 pairs the log-derived
+// index produced — 99.7%. The 16 it does not cover are documented in the PR:
+// 8 numbers last seen on or before 2026-05-07, 6 where a NAME was typed into the
+// phone field, and 2 junk 2-3 digit values.
+//
+// FIELDS: `phone` and `name` only. `lastOrderAt` is carried for ORDERING ONLY —
+// matchCustomers sorts newest-first on it, so dropping it would silently reorder
+// the five suggestions staff see. `orderCount` is deliberately NOT derived here:
+// nothing in the dropdown reads it.
+//
+// DUPLICATES: the same number is stored under two keys for 34 customers (local
+// "06…" and international "276…" forms). One winner per normalised number:
+// non-empty name first, then most recent lastOrderAt, then the international key
+// form. The index is keyed by normalised phone, so it cannot contain duplicates.
 function useCustomerIndex() {
-  const log = useInsightsLog();
-  return useMemo(() => {
-    const byPhone = new Map();
-    for (const e of log) {
-      const phone = (e?.customerPhone || "").trim();
-      if (!phone || !e.customerName) continue;
-      let rec = byPhone.get(phone);
-      if (!rec) {
-        rec = { name: e.customerName, phone, orderCount: 0, lastOrderAt: "" };
-        byPhone.set(phone, rec);
-      }
-      if (e.action === "placed") rec.orderCount += 1;
-      // Keep the most recent name variant in case the customer's spelling
-      // drifted over time.
-      if ((e.timestamp || "") > (rec.lastOrderAt || "")) {
-        rec.lastOrderAt = e.timestamp || "";
-        if (e.customerName) rec.name = e.customerName;
-      }
-    }
-    return Array.from(byPhone.values());
-  }, [log]);
+  const customersDb = useCustomersDb();
+  return useMemo(() => buildCustomerIndex(customersDb), [customersDb]);
 }
 
 // Match against the customer index. `mode` picks the field to prefix-match.
@@ -1498,7 +1537,10 @@ function matchCustomers(customers, query, mode) {
       if ((c.name || "").toLowerCase().startsWith(needle)) hits.push(c);
     }
   }
-  hits.sort((a, b) => tsMs(b.lastOrderAt) - tsMs(a.lastOrderAt));
+  // Shared comparator (src/insights/customerIndex.js) so the ordering staff see
+  // is asserted by unit test in the layer that owns it. Same contract as before:
+  // most recent first, missing dates last.
+  hits.sort(byMostRecentOrder);
   return hits.slice(0, 5);
 }
 
@@ -12762,7 +12804,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // today's orders overwrite yesterday's slots; past-day + on-hold requests read
   // straight from /orders vanished. The log keeps every ready/tomorrow transition
   // forever, so past days survive. Today's tabs still use live /orders (no lag).
-  const insightsLog = useInsightsLog();
+  //
+  // BOUNDED: this screen only ever looks back HISTORY_RETENTION_DAYS — the
+  // History tab iterates exactly that many days (SourceHistoryTab) and On Hold
+  // uses the same `pastDates` set — so it requests that range instead of the
+  // whole 18.73 MB node. The window is derived from the constant the screen
+  // renders, so changing HISTORY_RETENTION_DAYS moves the query with it.
+  const insightsLog = useInsightsLogRecentDays(HISTORY_RETENTION_DAYS);
 
   // name → { photoUrl, photo } lookup so log-reconstructed cards (the log carries
   // no photo) still render a thumbnail. Mirrors the Insights productPhotoMap.
@@ -16393,6 +16441,9 @@ function UserIndicator({ label, onSignOut }) {
 // AuthGate's perspective, e.g. signed out from the Google session).
 function AppInner() {
   const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut } = usePermissions();
+  // Gates the shared /insights_log subscription (mounted at the bottom of this
+  // component): the read is rules-gated on a non-anonymous user.
+  const insightsAuthReady = useAuthReady();
   // Display Checks route access — master flag + module gate (super-admin, or a
   // store-scoped display_checks grant). Used both to guard a stale persisted role
   // and to mount the view. Dark by default (master flag off).
@@ -16755,7 +16806,14 @@ function AppInner() {
       {showClockWarning && <ClockWarningBanner />}
       {!role && <AndroidInstallChip />}
       {!role && <IOSInstallTooltip />}
-      <AppErrorBoundary key={role || "home"}>{view}</AppErrorBoundary>
+      {/* One shared /insights_log subscription for the whole-node readers
+          (Insights, Customers, Admin). LAZY — a session that never opens one of
+          those screens downloads nothing — and released ~5 min after the last
+          consumer unmounts so the 18.73 MB is not held on a tablet that has
+          moved on. See src/insights/InsightsLogProvider.jsx. */}
+      <InsightsLogProvider authReady={insightsAuthReady}>
+        <AppErrorBoundary key={role || "home"}>{view}</AppErrorBoundary>
+      </InsightsLogProvider>
       {showIndicator && <UserIndicator label={indicatorLabel} onSignOut={handleAdminSignOut} />}
     </>
   );
