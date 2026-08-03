@@ -32,6 +32,12 @@ import AppErrorBoundary from "./AppErrorBoundary";
 import DisplayChecks from "./pages/DisplayChecks";
 import { displayChecksVisibleForViewer } from "./config/displayChecks";
 import StockView from "./components/stock/StockView";
+// TEMPORARY — hub sneaker stock-take. Both of these render nothing once
+// HUB_SNEAKER_COUNT_ENABLED is flipped off; removing the feature is deleting
+// these three lines plus the two src/components/stock/hubCount* modules.
+import HubSneakerCount from "./components/stock/HubSneakerCount";
+import HubSneakerCountCard from "./components/stock/HubSneakerCountCard";
+import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 import Hub2RefillQueue from "./components/stock/Hub2RefillQueue";
 import HealthView from "./components/stock/HealthView";
 import AttentionView from "./components/stock/AttentionView";
@@ -252,7 +258,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", DISPLAY_REGISTER: "display_register" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", DISPLAY_REGISTER: "display_register", HUB_SNEAKER_COUNT: "hub_sneaker_count" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2511,6 +2517,18 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
     isSuperAdmin ? null : (homePerm?.destShop || null)
   );
 
+  // TEMPORARY — Hub Sneaker Count card. Its own card rather than a role tile
+  // because it carries live state (hub picker + N-of-M progress) that a tile
+  // cannot show. Admin-only, matching the rule that gates its writes; goes dark
+  // with the whole feature when HUB_SNEAKER_COUNT_ENABLED is flipped off.
+  const hubCountVisible = hubSneakerCountVisibleForViewer({
+    email: homeUser?.email,
+    stockRole: isSuperAdmin ? "admin" : (homePerm?.stockRole || null),
+  });
+  const hubCountCard = hubCountVisible
+    ? <HubSneakerCountCard onOpen={() => onSelect(ROLES.HUB_SNEAKER_COUNT)} />
+    : null;
+
   // Shared, permission-gated role data — rendered as a desktop tile grid or the
   // mobile RoleCard list.
   const groups = [
@@ -2657,6 +2675,11 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
             })}
           </div>
 
+          {/* TEMPORARY — hub sneaker stock-take. Above Workspaces because it is
+              the current job, and outside the anyCards branch so it still shows
+              for an admin with no other tiles. */}
+          {hubCountCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".18s" }}>{hubCountCard}</div>}
+
           {!anyCards ? (
             <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
               No tools assigned to your account yet. Ask an admin to update your permissions.
@@ -2709,6 +2732,8 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
           Empty groups are hidden so staff with limited permissions don't see
           empty headings. Inventory Health lives in the Administration group above. */}
       <div style={{ padding:"10px 14px 36px", background:"#000" }}>
+        {/* TEMPORARY — hub sneaker stock-take (see the desktop branch above). */}
+        {hubCountCard}
         {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
           <GroupSection key={g.label} label={g.label}>
             {g.cards.map((c, i) => (
@@ -16434,6 +16459,11 @@ function AppInner() {
   // stockRole (so seed counters with stockRole=warehouse keep access without a
   // permission). Actual WRITES are still gated by stockRole in the RTDB rules.
   const canAccessStock = stockRole === "admin" || stockRole === "warehouse" || hasPermission("stock_management");
+  // TEMPORARY — hub sneaker count route access. Admin-only, because an Adjust is
+  // an `adjustment` movement and the LIVE rules permit those for stockRole
+  // 'admin' only; a warehouse counter would be refused by RTDB on every
+  // correction, so the door is closed here rather than at the write.
+  const hubCountRouteOpen = hubSneakerCountVisibleForViewer({ email: authUser?.email, stockRole });
   const canMint = isSuperAdmin || !!permRecord?.stockRole || hasPermission("barcode");
 
   // hash tracks the URL fragment for the #admin sign-in trigger and any
@@ -16448,9 +16478,9 @@ function AppInner() {
   // the global top-right pill is suppressed there (≥1024px) to avoid two.
   const isNarrowApp = useIsNarrow(1024);
   const wantAdmin = hash === "#admin";
-  // /#admin/users (list) and /#admin/users/<uid> (detail) both mount the
-  // UserManagement view. The component itself gates non-super-admin viewers
-  // with a NotAuthorized screen — see src/components/UserManagement.jsx.
+  // /#admin/users (list) and /#admin/users/<uid> (detail) are the User
+  // Management routes. This constant only recognises the HASH — it grants
+  // nothing. Authorization happens at the mount below.
   const wantUserMgmt = hash === "#admin/users" || hash === "#admin/users/" || hash.startsWith("#admin/users/");
   // Legacy isAdmin alias — true for super-admin only. Some downstream views
   // (e.g. BroadcastGroupsView role check) still read this; the right gate is
@@ -16483,9 +16513,12 @@ function AppInner() {
     // Display Checks is gated on the master flag + module access (not a plain
     // permission map) — drop a stale/persisted role that no longer qualifies.
     if (role === ROLES.DISPLAY_CHECKS && !displayChecksRouteOpen) { setRole(null); return; }
+    // Same for the temporary count: a persisted role must not survive the master
+    // flag being switched off after the stock-take.
+    if (role === ROLES.HUB_SNEAKER_COUNT && !hubCountRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -16684,10 +16717,24 @@ function AppInner() {
 
   let view = null;
   if (wantUserMgmt) {
-    // UserManagement handles its own super-admin gate + renders NotAuthorized
-    // for non-super-admin viewers. Hash-routed sub-paths (e.g. /#admin/users/<uid>)
-    // are parsed inside the component, so we just mount it and let it handle the rest.
-    view = <UserManagement authUser={authUser} onExit={() => (window.location.hash = "")} />;
+    // ── THE ROUTE GATE (layer 1 of 2) ──────────────────────────────────────
+    // A REAL check: a non-super-admin never gets UserManagement mounted at all,
+    // so none of its state, effects or subscriptions are created. They get the
+    // admin sign-in screen instead — the same thing #admin shows, and the useful
+    // response, since the usual way to reach this route unauthorized is to open
+    // a deep link before signing in.
+    //
+    // Layer 2 is the component's own gate, which re-checks the identical
+    // condition independently (src/components/UserManagement.jsx). Neither layer
+    // relies on the other; deleting either one leaves a working gate. That was
+    // NOT true before: both comments claimed the other side was gating, and only
+    // the component actually was.
+    //
+    // Hash-routed sub-paths (/#admin/users/<uid>) are parsed inside the
+    // component; this only decides whether it renders.
+    view = isSuperAdmin
+      ? <UserManagement authUser={authUser} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
@@ -16711,6 +16758,17 @@ function AppInner() {
   // reset effect drops them home. Shell only — reads no data.
   else if (role === ROLES.DISPLAY_CHECKS) view = displayChecksRouteOpen ? <DisplayChecks onExit={() => setRole(null)} products={products} /> : null;
   else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
+  // TEMPORARY — hub sneaker stock-take. `products` is passed (not re-read): App
+  // already holds the catalogue, and the count view freezes it on entry.
+  // viewer.stockRole is the STORED role, deliberately NOT the super-admin-widened
+  // `stockRole` above: the RTDB rules read /users/{uid}/stockRole and know nothing
+  // about ADMIN_EMAIL, so the write gate must be told the truth or it would
+  // promise corrections it cannot deliver.
+  else if (role === ROLES.HUB_SNEAKER_COUNT) view = hubCountRouteOpen
+    ? <HubSneakerCount products={products} actorRole={stockRole}
+        viewer={{ email: authUser?.email, stockRole: permRecord?.stockRole || null }}
+        onExit={() => setRole(null)} />
+    : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.ATTENTION) view = canAccessStock ? <AttentionView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.MARKETING) view = canAccessStock ? <MarketingView products={products} onExit={() => setRole(null)} /> : null;
