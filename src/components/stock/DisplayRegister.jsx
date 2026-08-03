@@ -14,7 +14,7 @@
 // is a register you walk and confirm rather than a queue you clear.
 //
 // ── DELIBERATELY INERT ───────────────────────────────────────────────────────
-// This writes ONE new node, /display_register/{store}/{productId}__{sizeKey},
+// This writes ONE new node, /settings/displayRegister/{store}/{productId}__{sizeKey},
 // and NOTHING else. It does not touch /stock, does not move inventory, does not
 // create orders, and no automation reads it yet. Registering a pair is a record
 // of a physical fact, not a transaction — so a mistake here can never cost
@@ -33,6 +33,7 @@ import { productIsFootwear } from "../../utils/footwearLine.js";
 import { SizeTag } from "../SizeTag.jsx";
 import { sellableLocations, labelFor } from "./locations.js";
 import { useLocations } from "./useStock.js";
+import { FONT } from "./ui";
 import { usePermissions } from "../PermissionsContext.jsx";
 
 const PANEL = "rgba(12,16,30,.55)";
@@ -102,7 +103,91 @@ export function useDisplayRegister(store) {
   return { entries, loaded };
 }
 
-export default function DisplayRegister({ products = [], onExit = null, standalone = false }) {
+// ── WHO MAY USE THE DISPLAY REGISTER ─────────────────────────────────────────
+// Stock-capable users (the warehouse view of the floor) OR store assistants and
+// display staff (the people who actually put the pairs out and record them).
+// Exported so App.jsx's tile and route gate evaluate the IDENTICAL rule — one
+// definition, three call sites, no chance of the tile and the route disagreeing.
+//
+// WHY `store_assistant` AND NOT `display_refills`. The obvious key is
+// display_refills, and it is WRONG: it is a dead permission, removed from the
+// catalog and documented as gating nothing (UserManagement.jsx). Five current
+// assistants still carry it on legacy /users records, so a gate built on it
+// LOOKS correct today and silently locks out every assistant created from now
+// on — the role preset is ["store_assistant", "place_orders"], which contains
+// no display key at all. `store_assistant` is live, catalogued, and the default
+// for the role. `display_checks` is kept as the explicit grant for display-only
+// staff who are not assistants.
+//
+// Measured against live /users (31 accounts): this rule and the display_refills
+// one admit the SAME 24 accounts today — all 13 store assistants included — but
+// a future store assistant is admitted by this one and refused by the other.
+export function mayUseDisplayRegister({ canAccessStock = false, hasPermission = () => false } = {}) {
+  return !!canAccessStock
+    || !!hasPermission("store_assistant")
+    || !!hasPermission("display_checks");
+}
+
+// The stock-access derivation, shared with App.jsx rather than copied into it.
+// Both gates must compute this the same way; two hand-written copies of the same
+// formula is exactly the drift this module exists to prevent.
+export function hasStockAccess({ permRecord = null, hasPermission = () => false, isSuperAdmin = false } = {}) {
+  const stockRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
+  return stockRole === "admin" || stockRole === "warehouse" || !!hasPermission("stock_management");
+}
+
+// ── THE GATE (layer 2 of 2) ──────────────────────────────────────────────────
+// Authorization only — no state, no effects, no subscription. The real screen
+// mounts only once the answer is yes, so a refused viewer never opens the
+// /settings/displayRegister listener and is never shown a way to write.
+//
+// SCOPE, HONESTLY: this is an in-app boundary, not a security boundary. The live
+// rule on /settings is `auth != null && sign_in_provider != "anonymous"`, so any
+// signed-in client can still read or write that path directly through the SDK.
+// Closing that requires a console rules edit (the rules are console-managed and
+// are not in this repo), which is deliberately out of scope here.
+//
+// Split rather than an early return inside one component for the reason #302
+// documents: the check must sit ABOVE the hooks, and a hook cannot live below a
+// conditional return — permRecord arrives asynchronously, so the same instance
+// would render first without it and then with it, changing its hook count.
+//
+// Layer 1 is the route mount in App.jsx, which independently refuses to render
+// this component at all. Neither layer relies on the other; deleting either one
+// leaves a working gate.
+export default function DisplayRegister(props) {
+  const { permRecord, hasPermission, isSuperAdmin } = usePermissions();
+  const canAccessStock = hasStockAccess({ permRecord, hasPermission, isSuperAdmin });
+
+  if (!mayUseDisplayRegister({ canAccessStock, hasPermission })) {
+    return <DisplayRegisterNotAuthorized onExit={props.onExit} />;
+  }
+  return <DisplayRegisterAuthed {...props} />;
+}
+
+function DisplayRegisterNotAuthorized({ onExit = null }) {
+  return (
+    <div style={{ padding: "48px 22px", textAlign: "center", color: "#cfd6e4", fontFamily: FONT }}>
+      <div style={{ fontSize: 34, marginBottom: 10 }}>🔒</div>
+      <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>Display Register</div>
+      <div style={{ fontSize: 13, color: "rgba(233,238,255,.55)", maxWidth: 420, margin: "0 auto" }}>
+        You don’t have access to the Display Register. Ask an admin for stock access, or the
+        display permission if you work the floor.
+      </div>
+      {onExit && (
+        <button onClick={onExit}
+                style={{ marginTop: 18, padding: "9px 16px", borderRadius: 10, cursor: "pointer",
+                         background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.14)",
+                         color: "#cfd6e4", fontFamily: FONT, fontSize: 13, fontWeight: 700 }}>
+          Back
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Everything below here runs ONLY for a viewer who passed the gate.
+function DisplayRegisterAuthed({ products = [], onExit = null, standalone = false }) {
   // Self-sufficient: it is its own top-level module, not a Stock sub-tab, so it
   // sources its own registry and its own user rather than being threaded props.
   const registry = useLocations();
