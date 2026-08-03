@@ -1,11 +1,56 @@
 import { describe, it, expect } from "vitest";
-import { seedLocations, standardUnits, solvePlan, qualifyingSizes } from "./solvePlan";
+import { seedLocations, standardUnits, solvePlan, qualifyingSizes, effectiveStandard } from "./solvePlan";
 
 const STD = {
   hub2: { L: 3, M: 3, S: 2, XL: 2, XXL: 2, XXXL: 1 },
   trophy: { L: 2, M: 2, S: 2, XL: 1, XXL: 1, XXXL: 1 },
   "marathon-pe": { L: 2, M: 2, S: 2, XL: 1, XXL: 1, XXXL: 1 },
 };
+
+// The live watch policy (config.subcategoryRunByLocation), 2026-08-03.
+const WATCH_POLICY = { hub2: { Watches: 2 }, trophy: { Watches: 2 }, "marathon-pe": { Watches: 2 } };
+
+describe("effectiveStandard — mirrors the engine's subcategory policy", () => {
+  it("a policy subcategory replaces the size run for that product", () => {
+    const eff = effectiveStandard({ std: STD, subRun: WATCH_POLICY, subcategory: "Watches", sizes: ["_"] });
+    expect(eff.trophy).toEqual({ _: 2 });
+    expect(eff.hub2).toEqual({ _: 2 });
+  });
+  it("makes a one-size product solvable — the whole point", () => {
+    const eff = effectiveStandard({ std: STD, subRun: WATCH_POLICY, subcategory: "Watches", sizes: ["_"] });
+    expect(qualifyingSizes(["_"], "central", "trophy", eff)).toEqual(["_"]);
+    // …and the estimate is the policy number at each leg, not a garment run.
+    const p = solvePlan({ std: eff, sizes: ["_"], source: "central", store: "trophy", availAt: () => 174 });
+    expect(p.storeUnits).toBe(2);
+    expect(p.hubUnits).toBe(2);
+  });
+  it("leaves every other product's run untouched", () => {
+    const eff = effectiveStandard({ std: STD, subRun: WATCH_POLICY, subcategory: "Eyewear", sizes: ["_"] });
+    expect(eff).toEqual(STD);
+    expect(qualifyingSizes(["_"], "hub2", "trophy", eff)).toEqual([]);   // sunglasses stay unsolvable
+  });
+  it("no subcategory, no policy node, or a non-positive value → the size run", () => {
+    for (const args of [
+      { subRun: WATCH_POLICY, subcategory: undefined },
+      { subRun: {}, subcategory: "Watches" },
+      { subRun: { trophy: { Watches: 0 } }, subcategory: "Watches" },
+      { subRun: { trophy: { Watches: -2 } }, subcategory: "Watches" },
+      { subRun: { trophy: { Watches: "2" } }, subcategory: "Watches" },
+    ]) {
+      expect(effectiveStandard({ std: STD, sizes: ["_"], ...args }).trophy).toEqual(STD.trophy);
+    }
+  });
+  it("a garment-sized product in a policy subcategory gets the policy at every size", () => {
+    // The two watches mis-filed with S/M — 'watches keep 2' must hold for them too.
+    const eff = effectiveStandard({ std: STD, subRun: WATCH_POLICY, subcategory: "Watches", sizes: ["S"] });
+    expect(eff.trophy).toEqual({ S: 2 });
+    expect(eff.hub2).toEqual({ S: 2 });   // not the hub2 garment run
+  });
+  it("survives missing inputs without throwing", () => {
+    expect(effectiveStandard({})).toEqual({});
+    expect(effectiveStandard({ std: STD, subRun: null, subcategory: "Watches", sizes: null }).trophy).toEqual(STD.trophy);
+  });
+});
 
 describe("qualifyingSizes — only sizes the engine has a standard for (Codex fix a)", () => {
   it("hub2-stranded: keeps sizes with a store standard, drops the rest", () => {

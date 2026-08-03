@@ -21,12 +21,14 @@ import { encodeSizeKey, stockCellPath } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
-import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes } from "./solvePlan";
+import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, effectiveStandard } from "./solvePlan";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
 const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
+// "_" is the catalogue's one-size sentinel — a real cell key, but never shown raw.
+const sizeLabel = (s) => (String(s) === "_" ? "One size" : String(s));
 // Fallback size-standard if config/refillEngine can't be read — mirrors the live
 // defaultRunByStore (2026-07). Only used for the confirm ESTIMATE; the engine
 // computes the real numbers from its own config regardless.
@@ -67,11 +69,19 @@ export default function NetworkTransfer({ products = [] }) {
 
   // The size-standard, read ONCE (get, not a listener) for the confirm estimate.
   const [std, setStd] = useState(STD_FALLBACK);
+  // The subcategory policy ("keep N of every Watch here"). NO fallback: absent
+  // means no policy, which greys Solve back out. That is the correct failure
+  // direction — a hardcoded fallback would let a config read that quietly failed
+  // seed cells the live engine has no policy to refill.
+  const [subRun, setSubRun] = useState({});
   useEffect(() => {
     let alive = true;
     get(ref(database, "config/refillEngine/defaultRunByStore"))
       .then((s) => { const v = s.val(); if (alive && v) setStd(v); })
       .catch(() => { /* keep fallback — estimate only */ });
+    get(ref(database, "config/refillEngine/subcategoryRunByLocation"))
+      .then((s) => { const v = s.val(); if (alive && v && typeof v === "object") setSubRun(v); })
+      .catch(() => { /* no policy — Solve stays disabled for one-size products */ });
     return () => { alive = false; };
   }, []);
 
@@ -108,18 +118,28 @@ export default function NetworkTransfer({ products = [] }) {
     return out.sort((a, b) => b.units - a.units);
   }, [allStock, byId]);
 
-  // Catalog sizes to seed (real sizes only, drop the one-size "_" sentinel).
-  const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter((s) => s && s !== "_");
+  // Catalog sizes to seed. The one-size "_" sentinel is KEPT (it used to be
+  // dropped here): it is a real, seedable cell key for a one-size product, and
+  // dropping it made every such product unsolvable before qualifyingSizes ever
+  // got a say. The standard lookup is what excludes it now — "_" has no entry in
+  // a garment-letter run, so a one-size product with no subcategory policy still
+  // ends up with zero qualifying sizes and a greyed Solve, exactly as before.
+  const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter(Boolean);
   const stdRun = useMemo(() => ({ ...STD_FALLBACK, ...std }), [std]);
+  // The standard THIS product is governed by — subcategory policy where one
+  // applies, the size run otherwise (solvePlan.js mirrors resolveTarget).
+  const runFor = (pid) => effectiveStandard({
+    std: stdRun, subRun, subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
+  });
   // Sizes safe to seed — a positive standard at every seed location (solvePlan.js).
   // A size with no standard would seed a cell the engine never refills, then vanish
   // with a false "solved", so it's excluded. (Codex fix a.)
-  const qualifyingSizes = (card, store) => computeQualifyingSizes(catalogSizes(card.pid), card.source, store, stdRun);
+  const qualifyingSizes = (card, store) => computeQualifyingSizes(catalogSizes(card.pid), card.source, store, runFor(card.pid));
 
   // Confirm estimate via the pure helper (solvePlan.js), over the QUALIFYING sizes
   // only — availability closes over live /stock; std falls back if config is slow.
   const solvePlan = (card, store) => computeSolvePlan({
-    std: stdRun,
+    std: runFor(card.pid),
     sizes: qualifyingSizes(card, store),
     source: card.source,
     store,
@@ -215,8 +235,13 @@ export default function NetworkTransfer({ products = [] }) {
         const sStore = solveDest[card.pid] || STORES[0];
         const plan = sOpen ? solvePlan(card, sStore) : null;
         // Solvable only if the engine has a standard for at least one of its sizes
-        // (store standards are identical PE/Trophy, so one store is representative).
-        const solvable = qualifyingSizes(card, STORES[0]).length > 0;
+        // at at least one store. This used to probe STORES[0] alone, on the grounds
+        // that the PE and Trophy size runs are identical — true of defaultRunByStore,
+        // but NOT guaranteed of a subcategory policy, which is configured per
+        // location and could name one store and not the other. Probing every store
+        // keeps the button honest; the panel's own button still re-checks the store
+        // actually nominated, so a store with no policy remains unsolvable.
+        const solvable = STORES.some((s) => qualifyingSizes(card, s).length > 0);
         return (
           <ProductCard key={card.pid}
             photo={card.photo} name={card.name}
@@ -257,7 +282,10 @@ export default function NetworkTransfer({ products = [] }) {
                 </div>
                 {/* Inline confirm — what gets seeded + what the engine will then want. */}
                 <div style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
-                  <b style={{ color: "#fff" }}>{plan.sizes.length} size{plan.sizes.length === 1 ? "" : "s"}</b> ({plan.sizes.join(" · ")}) → seeds {card.source === "central" ? <b>Hub 2 + {LOC_LABEL[sStore]}</b> : <b>{LOC_LABEL[sStore]}</b>} at qty 0.
+                  {plan.sizes.length === 1 && plan.sizes[0] === "_"
+                    ? <b style={{ color: "#fff" }}>One size</b>
+                    : <><b style={{ color: "#fff" }}>{plan.sizes.length} size{plan.sizes.length === 1 ? "" : "s"}</b> ({plan.sizes.map(sizeLabel).join(" · ")})</>
+                  } → seeds {card.source === "central" ? <b>Hub 2 + {LOC_LABEL[sStore]}</b> : <b>{LOC_LABEL[sStore]}</b>} at qty 0.
                   <div style={{ marginTop: 5, color: GRAY }}>
                     The engine will then want ~<b style={{ color: BLUE_L }}>{plan.storeUnits} units</b> at {LOC_LABEL[sStore]}
                     {plan.twoLeg
