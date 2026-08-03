@@ -38,7 +38,7 @@ import MoveExcess from "./MoveExcess";
 import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
 import { computeMissingFootwear } from "./missingFootwearCore";
-import { computeMissingProducts, countByCategory, MISSING_CATEGORIES } from "./missingProductsCore";
+import { computeMissingProducts, countByCategory, buildChips, pickActiveTab } from "./missingProductsCore";
 import NoTargetQueue from "./NoTargetQueue";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 
@@ -426,16 +426,8 @@ export default function HealthView({ products = [], onExit }) {
         // surface. (Belts live there today; anything new to the catalogue lands
         // there rather than nowhere.) An empty group is hidden the same way, so
         // a shop with no stranded bags doesn't stare at "Bags (0)".
-        const chips = [
-          ...MISSING_CATEGORIES
-            .filter((c) => missingByCategory[c.key] > 0 || (c.key === "clothing" && !missingProductCards.length))
-            .map((c) => [c.key, c.label, missingByCategory[c.key]]),
-          ["sneakers", "Sneakers", missingSneakerCards.length],
-        ];
-        // A chip can vanish under you when its last card is solved — fall back to
-        // the first available rather than rendering an empty screen with no
-        // selection. (Sneakers is always present, so there is always a fallback.)
-        const activeTab = chips.some(([k]) => k === missingTab) ? missingTab : chips[0][0];
+        const chips = buildChips(missingByCategory, missingProductCards.length, missingSneakerCards.length);
+        const activeTab = pickActiveTab(chips, missingTab);
         return (
           <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts} onBack={back}>
             <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
@@ -453,7 +445,7 @@ export default function HealthView({ products = [], onExit }) {
             </div>
             {activeTab === "sneakers"
               ? <MissingFootwear products={products} />
-              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} />}
+              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingProductCards} />}
           </DetailShell>
         );
       }

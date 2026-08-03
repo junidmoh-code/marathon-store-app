@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   computeMissingProducts, categoryOf, countByCategory, isClothing, MISSING_CATEGORIES,
+  buildChips, pickActiveTab,
 } from "./missingProductsCore";
 
 // Live catalogue shapes (2026-08-03). Bags, watches and belts are all recorded
@@ -137,6 +138,58 @@ describe("countByCategory — the chip numbers", () => {
     const counts = countByCategory(cards);
     for (const { key } of MISSING_CATEGORIES) {
       expect(cards.filter((c) => c.category === key)).toHaveLength(counts[key]);
+    }
+  });
+});
+
+describe("buildChips + pickActiveTab — the chip row's state machine", () => {
+  const counts = (o) => ({ clothing: 0, bags: 0, watches: 0, other: 0, ...o });
+
+  it("shows a chip per non-empty category, then Sneakers", () => {
+    const chips = buildChips(counts({ clothing: 304, bags: 39, watches: 35, other: 2 }), 380, 12);
+    expect(chips).toEqual([
+      ["clothing", "Clothing", 304], ["bags", "Bags", 39],
+      ["watches", "Watches", 35], ["other", "Other", 2], ["sneakers", "Sneakers", 12],
+    ]);
+  });
+  it("hides empty categories — no staring at 'Bags (0)'", () => {
+    const chips = buildChips(counts({ clothing: 5, watches: 2 }), 7, 0);
+    expect(chips.map(([k]) => k)).toEqual(["clothing", "watches", "sneakers"]);
+  });
+  it("hides Other on a normal day, shows it the moment a belt strands", () => {
+    expect(buildChips(counts({ clothing: 5 }), 5, 0).map(([k]) => k)).not.toContain("other");
+    expect(buildChips(counts({ clothing: 5, other: 1 }), 6, 0).map(([k]) => k)).toContain("other");
+  });
+  it("keeps Clothing visible when NOTHING is stranded, so the row is never bare", () => {
+    const chips = buildChips(counts({}), 0, 0);
+    expect(chips).toEqual([["clothing", "Clothing", 0], ["sneakers", "Sneakers", 0]]);
+  });
+  it("is never empty — Sneakers is unconditional, so chips[0] always exists", () => {
+    for (const c of [counts({}), counts({ bags: 1 }), undefined]) {
+      expect(buildChips(c, 0, 0).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the user's selection while it still exists", () => {
+    const chips = buildChips(counts({ clothing: 5, bags: 2 }), 7, 3);
+    expect(pickActiveTab(chips, "bags")).toBe("bags");
+    expect(pickActiveTab(chips, "sneakers")).toBe("sneakers");
+  });
+  it("THE VANISHING CHIP: solving the last bag while viewing Bags falls back, never blanks", () => {
+    const after = buildChips(counts({ clothing: 5 }), 5, 0);   // bags chip is gone
+    expect(after.map(([k]) => k)).not.toContain("bags");
+    expect(pickActiveTab(after, "bags")).toBe("clothing");     // not undefined, not empty
+  });
+  it("falls back on first mount before any stock has loaded", () => {
+    const chips = buildChips(counts({}), 0, 0);
+    expect(pickActiveTab(chips, "clothing")).toBe("clothing");
+    expect(pickActiveTab(chips, "bags")).toBe("clothing");
+  });
+  it("never returns a key that isn't in the rendered row", () => {
+    const chips = buildChips(counts({ watches: 3 }), 3, 1);
+    const keys = chips.map(([k]) => k);
+    for (const sel of ["bags", "other", "clothing", "nonsense", undefined, null]) {
+      expect(keys).toContain(pickActiveTab(chips, sel));
     }
   });
 });

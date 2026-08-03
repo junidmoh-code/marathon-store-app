@@ -107,3 +107,33 @@ export function countByCategory(cards) {
   for (const c of cards || []) out[c.category] = (out[c.category] || 0) + 1;
   return out;
 }
+
+// ── the chip row itself ──────────────────────────────────────────────────────
+// Pure so it can be tested: this is the logic most likely to break in a way the
+// core's own tests would never see (a chip vanishing under the user, an empty
+// selection, an index error on an empty list), and the project has no component
+// test runner — react-test-renderer isn't even a dependency. Keeping the rules
+// here rather than inline in JSX is what makes them checkable at all.
+// (Senior-architect review, PR #308.)
+
+// Which chips to show, in order, as [key, label, count].
+// An empty category is hidden — nobody needs to stare at "Bags (0)" — EXCEPT
+// Clothing when there is nothing stranded at all, so the screen always has a
+// selected chip and never renders a bare row. Sneakers is unconditional: it owns
+// its own list and is therefore also the guaranteed non-empty fallback.
+export function buildChips(counts, totalCards, sneakerCount) {
+  return [
+    ...MISSING_CATEGORIES
+      .filter((c) => (counts?.[c.key] || 0) > 0 || (c.key === "clothing" && !totalCards))
+      .map((c) => [c.key, c.label, counts?.[c.key] || 0]),
+    ["sneakers", "Sneakers", sneakerCount || 0],
+  ];
+}
+
+// The chip actually rendered. The stored selection can disappear underneath the
+// user — solve the last stranded bag while looking at Bags and that chip is gone
+// on the next render — so fall back rather than render a selection that no
+// longer exists. buildChips guarantees a non-empty list, so chips[0] is safe.
+export function pickActiveTab(chips, selected) {
+  return (chips || []).some(([k]) => k === selected) ? selected : chips?.[0]?.[0];
+}

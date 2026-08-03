@@ -55,7 +55,7 @@ const destChip = (on) => ({
 // one — the same count-disagrees-with-list class of bug this tab was just fixed
 // for. One subscription, one snapshot, and one less full-tree listener.
 // (Codex review, PR #308.) HealthView is the only renderer of this component.
-export default function NetworkTransfer({ products = [], category = "all", allStock = {} }) {
+export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null }) {
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
@@ -106,13 +106,18 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const carries = (loc, pid) => !!allStock?.[loc]?.[pid] && Object.keys(allStock[loc][pid]).length > 0;
 
   // Stranded clothing: real upstream stock, NOT carried anywhere downstream.
-  // Computed by missingProductsCore so this list and the chip counts above it
-  // come from ONE function and cannot drift (they did before: 391 vs 380).
-  // `category` filters to one chip; absent/"all" shows everything.
+  // Built by missingProductsCore so this list and the chip counts above it come
+  // from ONE function and cannot drift (they did before: 391 vs 380).
+  //
+  // HealthView has already built the full list to count the chips, so it hands
+  // it straight over and this only filters — no second walk of the central+hub2
+  // union and its size arithmetic on every stock write. The fallback keeps the
+  // component usable on its own; it just isn't the path the app takes.
+  // (Senior-architect review, PR #308.)
   const cards = useMemo(() => {
-    const all = computeMissingProducts({ allStock, products });
+    const all = allCards || computeMissingProducts({ allStock, products });
     return category && category !== "all" ? all.filter((c) => c.category === category) : all;
-  }, [allStock, products, category]);
+  }, [allCards, allStock, products, category]);
 
   // Catalog sizes to seed. The one-size "_" sentinel is KEPT (it used to be
   // dropped here): it is a real, seedable cell key for a one-size product, and
