@@ -62,7 +62,9 @@ import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
-import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
+import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
+import { buildProductIdIndex, resolveProductIdByName, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
+import { checkSourceMovementDuplicate, sourceMovementIdSeed } from "./components/stock/sourceMovementDedupe";
 import { printOrderSlips } from "./print/orderSlip";
 // ── New product taxonomy (31 categories, RTDB-backed registry) ───────────────
 // The registry lives at /settings/productTaxonomy and is read LIVE, so adding a
@@ -810,9 +812,9 @@ function dateStrToLocal(s) {
   return new Date(y, m - 1, d);
 }
 
-function toKey(str) {
-  return (str || "").replace(/[.#$[\]/\s]/g, "_");
-}
+// (toKey, the old name→RTDB-key sanitizer, moved to utils/insights.js as
+// sourceNameKey — it now only labels LEGACY pre-cutover cells; Source group
+// keys are product ids via sourceGroupKey.)
 
 // ─── INSIGHTS AGGREGATION HELPERS (Phase 13A integrity pass) ─────────────────
 // Two corrections applied uniformly across every "fulfilment-side" Insights
@@ -1035,7 +1037,7 @@ function useAllSourceResponses() {
 // transferred flags from Transfer & Fulfil. Readers only consume
 // response/respondedOn, so extras are DB-only forensics.
 function saveSourceResponse(date, productKey, size, response, extra) {
-  update(ref(database, `restock_requests/${date}/${productKey}`), {
+  update(ref(database, sourceResponsePath(date, productKey)), {
     [size]: { response, respondedOn: serverNowIso(), ...(extra || {}) }
   }).catch(err => console.warn("saveSourceResponse failed:", err));
 }
@@ -1044,7 +1046,7 @@ function saveSourceResponse(date, productKey, size, response, extra) {
 // field on purpose (see useAllSourceResponses) — the cell stays pending with a
 // "n of m sent" badge until the remainder ships and saveSourceResponse closes it.
 function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
-  update(ref(database, `restock_requests/${date}/${productKey}`), {
+  update(ref(database, sourceResponsePath(date, productKey)), {
     [size]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}) }
   }).catch(err => console.warn("saveSourceFulfilProgress failed:", err));
 }
@@ -1052,7 +1054,7 @@ function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
 // Reverses a Source response — removes the single (size) leaf so the cell
 // returns to the active pending list. Used by Undo on a completed card.
 function clearSourceResponse(date, productKey, size) {
-  return remove(ref(database, `restock_requests/${date}/${productKey}/${size}`))
+  return remove(ref(database, `${sourceResponsePath(date, productKey)}/${size}`))
     .catch(err => console.warn("clearSourceResponse failed:", err));
 }
 
@@ -1295,55 +1297,16 @@ function useRestockLogRaw(date) {
   return entries;
 }
 
-// Compute { productKey: { productName, photo, sizes: { size: count } } } from raw OOS entries.
-function computeRestockCounts(entries) {
-  const result = {};
-  (entries || []).forEach(entry => {
-    const key = toKey(entry.productName);
-    if (!result[key]) result[key] = { productName: entry.productName, photo: entry.photo || "", photoUrl: entry.photoUrl || null, sizes: {} };
-    if (entry.photoUrl && !result[key].photoUrl) result[key].photoUrl = entry.photoUrl;
-    if (entry.size) result[key].sizes[entry.size] = (result[key].sizes[entry.size] || 0) + 1;
-  });
-  return result;
-}
-
-// Tracks product-name collisions we've already warned about, so the warning
-// fires once per distinct collision rather than every render.
-const _seenKeyCollisions = new Set();
-
-// Derive { productKey: { productName, photo, photoUrl, sizes: { size: count } } }
-// directly from an array of COLLECTED order objects.
-// This is the authoritative source for refill requests — no Firebase log needed.
-//
-// Source-only behavior: when an order has sentSize (warehouse substituted a size
-// at fulfillment), bucket by sentSize, not order.size. Source's job is to
-// restock the size physically pulled from inventory, not the requested one.
-// The original order.size is preserved on the order for audit / dispute trail.
-function computeCollectedCounts(collectedOrders) {
-  const result = {};
-  (collectedOrders || []).forEach(order => {
-    const key = toKey(order.productName);
-    if (!result[key]) {
-      result[key] = { productName: order.productName, productId: order.productId || null, photo: order.productPhoto || "", photoUrl: order.productPhotoUrl || null, sizes: {} };
-    } else if (result[key].productName !== order.productName) {
-      // Two distinct product names collapsed to the same key (toKey strips spaces, ., #, $, [, ], /).
-      // This breaks Source: their responses share the same restock_requests path and they
-      // render with duplicate React keys. Rename one of the products to fix.
-      const collisionId = `${key}::${result[key].productName}::${order.productName}`;
-      if (!_seenKeyCollisions.has(collisionId)) {
-        _seenKeyCollisions.add(collisionId);
-        console.warn(`[Source] Product name collision: "${result[key].productName}" and "${order.productName}" both map to key "${key}". Rename one product to avoid lost Available/OOS responses.`);
-      }
-    }
-    if (order.productPhotoUrl && !result[key].photoUrl) result[key].photoUrl = order.productPhotoUrl;
-    // productId powers Transfer & Fulfil — take it from any order in the group
-    // (very old orders predate the field; those cards fall back by name).
-    if (!result[key].productId && order.productId) result[key].productId = order.productId;
-    const displaySize = sourceDisplaySize(order);
-    if (displaySize) result[key].sizes[displaySize] = (result[key].sizes[displaySize] || 0) + 1;
-  });
-  return result;
-}
+// computeRestockCounts (today's-sales group builder) lives in utils/insights.js
+// beside restockCountsFromLog — the two feeds meet at the same
+// restock_requests/{date}/{key}/{size} cells, so their sourceGroupKey MUST stay
+// identical, and co-location is what enforces that. Groups are keyed by
+// productId (name only for pid-less legacy rows): identically-named twin
+// products get separate cards, separate response cells and separate movement
+// ids. (computeCollectedCounts, the retired order-driven builder this file used
+// before Source went sale-driven on 2026-07-30, is deleted rather than left
+// dangling — it still carried the name-merge collision bug, and the 07-30
+// redesign's own precedent is to delete retired paths so nobody re-wires them.)
 
 // Returns the SA-timezone YYYY-MM-DD date the warehouse marked the order READY.
 // Source uses this so its "Today's Request" matches Net Sales exactly:
@@ -11294,13 +11257,17 @@ function IconClock({ size = 28, strokeWidth = 2.6 }) {
 // before computing rawCounts, so each tab component renders only its hub's
 // items and never sees the other hub's data. React keys include the hub
 // prefix to keep DOM nodes from colliding even when SourceView re-renders
-// at a moment React reconciles tabs in the wrong order. Product-name
-// collisions (e.g. "Air Max 90" vs "Air.Max.90" → "Air_Max_90") are
-// detected in computeCollectedCounts and warned to console once each.
+// at a moment React reconciles tabs in the wrong order.
 //
 // "Available" and "Out of Stock" responses live at:
 //   restock_requests/{date}/{productKey}/{size} = { response, respondedOn }
-// Today's active list filters those cells OUT. The Completed toggle reveals
+// productKey is the sourceGroupKey (utils/insights): the PRODUCT ID, with the
+// sanitized name only for pid-less legacy rows — identically-named twin
+// products no longer share one cell. Cells written before the pid-key cutover
+// used the name key, so every response/progress read below checks the new key
+// FIRST and falls back to the group's nameKey; the fallback goes quiet on its
+// own once the HISTORY_RETENTION_DAYS window is past-cutover only.
+// Today's active list filters responded cells OUT. The Completed toggle reveals
 // them with green/red indicators and an Undo button (clearSourceResponse).
 
 // Inline pill toggle used by Today / On Hold to reveal completed items.
@@ -11347,6 +11314,9 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, w
 
   // Build flat cell lists. Sort by product name then numeric size for stable
   // ordering — keeps cards from jumping when responses flow in.
+  // Response cells are read under the group key (the pid) FIRST, then under the
+  // legacy name key — pre-cutover responses live there, and without the
+  // fallback every already-handled cell would reappear as pending on deploy.
   const { pending, completed, totalUnits, totalProducts } = useMemo(() => {
     const pending = [];
     const completed = [];
@@ -11355,13 +11325,15 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, w
     Object.entries(rawCounts)
       .sort(([, a], [, b]) => a.productName.localeCompare(b.productName))
       .forEach(([key, product]) => {
+        const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
         const sizes = Object.keys(product.sizes || {}).sort((a, b) => Number(a) - Number(b));
         sizes.forEach(size => {
           const count = typeof product.sizes[size] === "number" ? product.sizes[size] : 1;
           totalUnits += count;
           productsSeen.add(key);
-          const resp = responses[key]?.[size]?.response;
-          const cell = { key, product, size, count };
+          const resp = responses[key]?.[size]?.response
+                    || (legacyKey ? responses[legacyKey]?.[size]?.response : undefined);
+          const cell = { key, legacyKey, product, size, count };
           if (resp) completed.push({ ...cell, response: resp });
           else pending.push(cell);
         });
@@ -11425,8 +11397,15 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, w
               enabled: fulfilCtx.canTransfer,
               productId: fulfilCtx.resolveId(cell.product),
               destHub: hub,
-              sent: progress?.[cell.key]?.[cell.size]?.fulfilledQty || 0,
-              movementIdSeed: `srcful_${date}_${cell.key}_${encodeSizeKey(cell.size)}`,
+              // Partial progress may predate the pid-key cutover — take the
+              // larger of the two leaves so units sent under the old name key
+              // still count as sent.
+              sent: Math.max(
+                progress?.[cell.key]?.[cell.size]?.fulfilledQty || 0,
+                cell.legacyKey ? (progress?.[cell.legacyKey]?.[cell.size]?.fulfilledQty || 0) : 0,
+              ),
+              movementIdSeed: sourceMovementIdSeed(date, cell.key, encodeSizeKey(cell.size)),
+              legacyMovementIdSeed: cell.legacyKey ? sourceMovementIdSeed(date, cell.legacyKey, encodeSizeKey(cell.size)) : null,
               locationsReg: fulfilCtx.locationsReg,
               actorRole: fulfilCtx.actorRole,
               onProgress: (newSent, complete, meta) => onFulfilProgress(date, cell.key, cell.size, newSent, complete, meta),
@@ -11453,7 +11432,7 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, w
                 size={cell.size}
                 count={cell.count}
                 response={cell.response}
-                onUndo={() => onUndo(cell.key, cell.size)}
+                onUndo={() => onUndo(cell.key, cell.size, cell.legacyKey)}
               />
             ))}
           </div>
@@ -11479,6 +11458,11 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, w
 //     the hub gains real stock, nothing phantom is deducted.
 //   • Idempotency: movementId = {seed}_{unitsAlreadySent}. A double-tap resolves
 //     to the same id and applyMovement no-ops; the next partial gets a fresh id.
+//     The seed embeds the group key = PRODUCT ID (pid-key cutover) — the old
+//     name-derived seed made identically-named twins collide to one id, so the
+//     second twin's transfer was silently swallowed. Transfers applied under a
+//     legacy name id must not re-apply under the new id: doTransfer dual-checks
+//     both ids (see sourceMovementDedupe.js) for the retention window.
 //   • Partial fulfilment: fewer units than requested leaves the cell OPEN with a
 //     "n of m sent" badge (progress leaf, see saveSourceFulfilProgress); the
 //     response record only closes it when the last unit ships.
@@ -11487,10 +11471,14 @@ function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, w
 const SOURCE_REFILL_REASON    = "source_refill";
 const SOURCE_UNCOUNTED_REASON = "source_uncounted_send";
 const SOURCE_TRANSFER_ROLES   = ["store", "warehouse", "admin"];
+// Session counter for legacy (name-derived) movement-id matches. Each hit is
+// also persisted as `viaLegacyMovementId: true` on the response record, so
+// "when can the dual-read retire" is answerable from the DB, not from memory.
+let _legacyMvIdHits = 0;
 
 // Inline expandable panel: supply-location chips (with live counted qty), a qty
 // stepper when more than one unit is open, and the Transfer & Fulfil confirm.
-function SourceFulfilPanel({ productId, size, destHub, remaining, alreadySent, movementIdSeed, locationsReg, actorRole, onDone, onCancel, onWithoutTransfer }) {
+function SourceFulfilPanel({ productId, size, destHub, remaining, alreadySent, movementIdSeed, legacyMovementIdSeed, locationsReg, actorRole, onDone, onCancel, onWithoutTransfer }) {
   const [avail, setAvail] = useState(null);   // { locId: qty | null } — null = never counted there
   const [pick, setPick]   = useState(null);
   const [qty, setQty]     = useState(Math.max(1, remaining));
@@ -11532,23 +11520,39 @@ function SourceFulfilPanel({ productId, size, destHub, remaining, alreadySent, m
     const counted = !!avail && typeof avail[pick] === "number";
     const q = Math.max(1, Math.min(Math.round(qty) || 1, remaining));
     const mvId = `${movementIdSeed}_${alreadySent}`;
-    let res;
+    let res, viaLegacy = false;
     try {
-      res = await applyMovement(counted ? {
-        type: "transfer_out", productId, size, qty: q,
-        from: pick, to: destHub, actorRole,
-        allowNegative: true,
-        reason: SOURCE_REFILL_REASON,
-        movementId: mvId, link: { refillId: movementIdSeed },
-      } : {
-        type: "received", productId, size, qty: q,
-        to: destHub, actorRole,
-        reason: SOURCE_UNCOUNTED_REASON,
-        movementId: mvId, link: { refillId: movementIdSeed },
+      // Dual-id duplicate check (pid-key cutover): a transfer already applied
+      // under the legacy NAME-derived id must not re-apply under the new pid
+      // id — but a legacy id left by an identically-named TWIN (different
+      // productId on the movement) is not ours and must not block this one.
+      const dup = await checkSourceMovementDuplicate({
+        getMovement: async (id) => (await get(ref(database, `stock_movements/${id}`))).val(),
+        newId: mvId,
+        legacyId: legacyMovementIdSeed ? `${legacyMovementIdSeed}_${alreadySent}` : null,
+        productId,
       });
+      if (dup.duplicate) {
+        viaLegacy = dup.viaLegacy;
+        if (viaLegacy) console.warn(`[Source] legacy movement id matched (hit #${++_legacyMvIdHits} this session) — suppressed re-apply of ${legacyMovementIdSeed}_${alreadySent}`);
+        res = { ok: true, idempotent: true };
+      } else {
+        res = await applyMovement(counted ? {
+          type: "transfer_out", productId, size, qty: q,
+          from: pick, to: destHub, actorRole,
+          allowNegative: true,
+          reason: SOURCE_REFILL_REASON,
+          movementId: mvId, link: { refillId: movementIdSeed },
+        } : {
+          type: "received", productId, size, qty: q,
+          to: destHub, actorRole,
+          reason: SOURCE_UNCOUNTED_REASON,
+          movementId: mvId, link: { refillId: movementIdSeed },
+        });
+      }
     } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
     setBusy(false);
-    if (res.ok) onDone(q, pick, counted);
+    if (res.ok) onDone(q, pick, counted, viaLegacy);
     else setErr(`Transfer failed: ${res.reason || "unknown"}. Check your stock access and retry.`);
   };
 
@@ -11628,7 +11632,9 @@ function PendingCard({ product, size, count, onAvailable, onOutOfStock, fulfil, 
   };
   const sent = fulfil?.sent || 0;
   const remaining = Math.max(1, count - sent);
-  const canFulfil = !!(fulfil && fulfil.enabled && fulfil.productId);
+  // No resolved product id (unknown name, or an AMBIGUOUS one the identity
+  // index refused to guess at) → no stock transfer, plain Available button.
+  const canFulfil = !!fulfil && canFulfilCard(fulfil);
   return (
     <div style={{
       background:"rgba(4,5,10,1)",
@@ -11685,11 +11691,12 @@ function PendingCard({ product, size, count, onAvailable, onOutOfStock, fulfil, 
           remaining={remaining}
           alreadySent={sent}
           movementIdSeed={fulfil.movementIdSeed}
+          legacyMovementIdSeed={fulfil.legacyMovementIdSeed || null}
           locationsReg={fulfil.locationsReg}
           actorRole={fulfil.actorRole}
-          onDone={(q, from, counted) => {
+          onDone={(q, from, counted, viaLegacy) => {
             setOpen(false);
-            fulfil.onProgress(sent + q, sent + q >= count, { lastFrom: from, counted });
+            fulfil.onProgress(sent + q, sent + q >= count, { lastFrom: from, counted, ...(viaLegacy ? { viaLegacyMovementId: true } : {}) });
           }}
           onCancel={() => setOpen(false)}
           onWithoutTransfer={() => { setOpen(false); tap(onAvailable); }}
@@ -11760,7 +11767,7 @@ const HISTORY_RETENTION_DAYS = 5;
 // Reactions write to restock_requests/{day-N}/{key}/{size} = { response, respondedOn:NOW }
 // — see saveSourceResponse. The original-day path is what makes resolution
 // stick across page loads; respondedOn carries "today's stamp" for the audit.
-function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoForName, onResponse, fulfilCtx, fulfilProgress, onFulfilProgress }) {
+function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResponse, fulfilCtx, fulfilProgress, onFulfilProgress }) {
   // Default expand: yesterday open, older closed. Stored by daysAgo number.
   const [openDays, setOpenDays] = useState(() => new Set([1]));
   const toggle = (d) => setOpenDays(prev => {
@@ -11772,8 +11779,11 @@ function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoForName, on
   // Per past day: rebuild the rawCounts shape SourceTodayTab uses from the
   // durable insights_log (action="ready") instead of live /orders — the live
   // orders that carried these requests were overwritten by the daily orderNumber
-  // rollover. Then strip (key, size) cells that already have a response that day.
-  // Photos aren't in the log, so join them from the catalog by product name.
+  // rollover. Then strip (key, size) cells that already have a response that day
+  // (checking the legacy name key too — pre-cutover responses live there).
+  // Photos aren't in the log, so join them from the catalog BY PRODUCT ID —
+  // duplicate names are real, and the old name join showed one twin's photo on
+  // the other twin's card (the misleading face of the wrong-deduction bug).
   const groups = useMemo(() => {
     return Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => i + 1).map(daysAgo => {
       const dateStr   = getSAPastDateString(daysAgo);
@@ -11784,20 +11794,21 @@ function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoForName, on
       const pending = {};
       let pendingUnits = 0;
       Object.entries(rawCounts).forEach(([key, product]) => {
+        const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
         const sizes = {};
         Object.entries(product.sizes || {}).forEach(([size, count]) => {
-          if (dayResponses[key]?.[size]) return;
+          if (dayResponses[key]?.[size] || (legacyKey && dayResponses[legacyKey]?.[size])) return;
           sizes[size] = count;
           pendingUnits += (typeof count === "number" ? count : 1);
         });
         if (Object.keys(sizes).length) {
-          const ph = photoForName(product.productName);
-          pending[key] = { ...product, sizes, photoUrl: ph.photoUrl, photo: ph.photo };
+          const ph = photoFor(product);
+          pending[key] = { ...product, legacyKey, sizes, photoUrl: ph.photoUrl, photo: ph.photo };
         }
       });
       return { daysAgo, dateStr, label: HISTORY_DAY_LABELS[daysAgo], pending, pendingUnits };
     }).filter(g => g.pendingUnits > 0);
-  }, [log, returnsLog, allResponses, hub, photoForName]);
+  }, [log, returnsLog, allResponses, hub, photoFor]);
 
   if (!groups.length) return (
     <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem 1.5rem", textAlign:"center", boxShadow:"0 0 16px rgba(60,110,255,.08)" }}>
@@ -11847,8 +11858,12 @@ function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoForName, on
                           enabled: fulfilCtx.canTransfer,
                           productId: fulfilCtx.resolveId(product),
                           destHub: hub,
-                          sent: fulfilProgress?.[g.dateStr]?.[key]?.[size]?.fulfilledQty || 0,
-                          movementIdSeed: `srcful_${g.dateStr}_${key}_${encodeSizeKey(size)}`,
+                          sent: Math.max(
+                            fulfilProgress?.[g.dateStr]?.[key]?.[size]?.fulfilledQty || 0,
+                            product.legacyKey ? (fulfilProgress?.[g.dateStr]?.[product.legacyKey]?.[size]?.fulfilledQty || 0) : 0,
+                          ),
+                          movementIdSeed: sourceMovementIdSeed(g.dateStr, key, encodeSizeKey(size)),
+                          legacyMovementIdSeed: product.legacyKey ? sourceMovementIdSeed(g.dateStr, product.legacyKey, encodeSizeKey(size)) : null,
                           locationsReg: fulfilCtx.locationsReg,
                           actorRole: fulfilCtx.actorRole,
                           onProgress: (newSent, complete, meta) => onFulfilProgress(g.dateStr, key, size, newSent, complete, meta),
@@ -11957,7 +11972,10 @@ function SourceOnHoldTab({ items, fulfilCtx }) {
           hub, then the exact same response write); without it, plain Sent. */}
       {pending.map(item => {
         const pid = fulfilCtx ? fulfilCtx.resolveId({ productId: item.productId, productName: item.productName }) : null;
-        const canFulfil = !!(fulfilCtx?.canTransfer && pid && item.size && fulfilCtx.knownLoc(item.hub));
+        // Same refusal gate as PendingCard, plus On Hold's own requirements (a
+        // size, and a hub that is a registered stock location).
+        const canFulfil = canFulfilCard({ enabled: fulfilCtx?.canTransfer, productId: pid })
+          && !!item.size && fulfilCtx.knownLoc(item.hub);
         const isOpen = openComposite === item.composite;
         return (
         <div key={`onhold-${item.composite}`} style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"1.1rem 1.25rem", boxShadow:"0 0 16px rgba(60,110,255,.15)", borderLeft:`3px solid ${BLUE}` }}>
@@ -12765,18 +12783,21 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canTransfer = SOURCE_TRANSFER_ROLES.includes(actorRole);
   const locationsReg = useLocations();
-  // Fallback productId resolution by (normalized) product name — for cells
-  // rebuilt from log events or orders that predate the productId field.
-  const productIdByName = useMemo(() => {
-    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
-    const map = {};
-    (products || []).forEach(p => {
-      if (!p.name || !p.id) return;
-      map[p.name] = p.id;
-      map[normKey(p.name)] = p.id;
+  // Fallback productId resolution by (normalized) product name — ONLY for cells
+  // rebuilt from log events or orders that predate the productId field. The
+  // index REFUSES duplicated names (returns null) instead of guessing between
+  // twins — a wrong guess here became a wrong /stock deduction (see
+  // _twin-name-collision-forensic-report.md). A refused card simply keeps its
+  // plain Available/Sent buttons (canFulfil goes false), which is always safe.
+  const productIdIndex = useMemo(() => buildProductIdIndex(products), [products]);
+  // The old collision warning compared names, so byte-identical twins never
+  // tripped it. Warn from the catalog index instead — once per name per build.
+  useEffect(() => {
+    productIdIndex.duplicates.forEach(({ name, ids }) => {
+      console.warn(`[Source] ${ids.length} products share the exact name "${name}" (${ids.join(", ")}). ` +
+        "Cards stay separate by id, but rename them — pid-less legacy cards for this name can never fulfil, and name-based analytics merge them.");
     });
-    return map;
-  }, [products]);
+  }, [productIdIndex]);
   const fulfilCtx = useMemo(() => ({
     canTransfer, actorRole, locationsReg,
     // A transfer destination must be a REGISTERED stock location — On Hold
@@ -12786,12 +12807,9 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     resolveId: (product) => {
       if (!product) return null;
       if (product.productId) return product.productId;
-      const name = product.productName;
-      if (!name) return null;
-      const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
-      return productIdByName[name] || productIdByName[normKey(name)] || null;
+      return resolveProductIdByName(productIdIndex, product.productName);
     },
-  }), [canTransfer, actorRole, locationsReg, productIdByName]);
+  }), [canTransfer, actorRole, locationsReg, productIdIndex]);
   // Partial complete → progress leaf (cell stays open); final units → the exact
   // same response record the old Available button wrote, plus audit extras.
   const handleFulfilProgress = useCallback((date, key, size, newQty, complete, meta) => {
@@ -12812,24 +12830,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // renders, so changing HISTORY_RETENTION_DAYS moves the query with it.
   const insightsLog = useInsightsLogRecentDays(HISTORY_RETENTION_DAYS);
 
-  // name → { photoUrl, photo } lookup so log-reconstructed cards (the log carries
-  // no photo) still render a thumbnail. Mirrors the Insights productPhotoMap.
-  const sourcePhotoMap = useMemo(() => {
-    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
-    const map = {};
-    (products || []).forEach(p => {
-      if (!p.name) return;
-      const entry = { photoUrl: p.photoUrl || null, photo: p.photo || "" };
-      map[p.name] = entry;
-      map[normKey(p.name)] = entry;
-    });
-    return map;
-  }, [products]);
-  const photoForName = useCallback((name) => {
-    if (!name) return { photoUrl: null, photo: "" };
-    const normKey = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/\s*-\s*/g, '-');
-    return sourcePhotoMap[name] || sourcePhotoMap[normKey(name)] || { photoUrl: null, photo: "" };
-  }, [sourcePhotoMap]);
+  // Photo lookup for log-reconstructed cards (the log carries no photo).
+  // Joined BY PRODUCT ID first — the old name-keyed map (last duplicate wins)
+  // put one twin's photo on all identically-named cards, which is how a correct
+  // deduction could LOOK like the wrong product. Name join survives only as the
+  // fallback for pid-less legacy records.
+  const photoIndex = useMemo(() => buildPhotoIndex(products), [products]);
+  const photoFor = useCallback((product) => photoForProduct(photoIndex, product), [photoIndex]);
 
   // On Hold response state — read once here so badges and the On Hold tab
   // share the same source of truth (no duplicate Firebase listeners).
@@ -12931,7 +12938,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     onHoldEventsFromLog({ log: insightsLog, dates: pastDates }).forEach(e => {
       const composite = onHoldKey(e.saDate, e.orderNumber);
       if (byComposite.has(composite)) return;
-      const ph = photoForName(e.productName);
+      const ph = photoFor(e);
       byComposite.set(composite, {
         composite, orderNumber: e.orderNumber, saDate: e.saDate,
         productName: e.productName, productId: e.productId || null,
@@ -12956,7 +12963,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       list.push(item);
     });
     return list.sort((a, b) => tsMs(b.ts) - tsMs(a.ts));
-  }, [insightsLog, orders, onHoldResponses, returnsLog, todayDate, sourcePhotoMap]);
+  }, [insightsLog, orders, onHoldResponses, returnsLog, todayDate, photoFor]);
 
   // Per-hub pending counts for the Hub 1 / Hub 2 sub-tab badges. Mirrors the
   // exact same pending logic each tab uses (Today excludes responded cells,
@@ -12973,8 +12980,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h);
       const counts2 = computeRestockCounts(hubEntries);
       Object.entries(counts2).forEach(([key, product]) => {
+        const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
         Object.entries(product.sizes || {}).forEach(([size, count]) => {
-          if (todayResponses[key]?.[size]) return;
+          // Same dual-read (pid key, then legacy name key) as the Today list —
+          // the badge must never promise work the list doesn't show.
+          if (todayResponses[key]?.[size] || (legacyKey && todayResponses[legacyKey]?.[size])) return;
           counts[h] += (typeof count === "number" ? count : 1);
         });
       });
@@ -12989,8 +12999,9 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       ["hub1", "hub2"].forEach(h => {
         const counts2 = restockCountsFromLog({ log: insightsLog, dateStr, hub: h, returnedIds: returned });
         Object.entries(counts2).forEach(([key, product]) => {
+          const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
           Object.entries(product.sizes || {}).forEach(([size, count]) => {
-            if (dayResponses[key]?.[size]) return;
+            if (dayResponses[key]?.[size] || (legacyKey && dayResponses[legacyKey]?.[size])) return;
             counts[h] += (typeof count === "number" ? count : 1);
           });
         });
@@ -13049,8 +13060,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const handleResponse = (date, productKey, size, response) => {
     saveSourceResponse(date, productKey, size, response);
   };
-  const handleUndo = (date, productKey, size) => {
+  const handleUndo = (date, productKey, size, legacyKey) => {
     clearSourceResponse(date, productKey, size);
+    // A pre-cutover response lives under the legacy name key — clear that leaf
+    // too, or the dual-read would keep showing the cell as completed. (For a
+    // twin-shared legacy cell this can resurrect the twin's card as well; that
+    // record was ambiguous to begin with and ages out of the 5-day window.)
+    if (legacyKey && legacyKey !== productKey) clearSourceResponse(date, legacyKey, size);
   };
 
   // Shared between the mobile column and the desktop rail/pane.
@@ -13108,13 +13124,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
                               progress={fulfilProgress[todayDate] || {}}
                               onFulfilProgress={handleFulfilProgress}
                               onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
-                              onUndo={(key, size) => handleUndo(todayDate, key, size)} />}
+                              onUndo={(key, size, legacyKey) => handleUndo(todayDate, key, size, legacyKey)} />}
         {tab==="history" && <SourceHistoryTab
                               log={insightsLog}
                               returnsLog={returnsLog}
                               allResponses={allResponses}
                               hub={hub}
-                              photoForName={photoForName}
+                              photoFor={photoFor}
                               fulfilCtx={fulfilCtx}
                               fulfilProgress={fulfilProgress}
                               onFulfilProgress={handleFulfilProgress}
