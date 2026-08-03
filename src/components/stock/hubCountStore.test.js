@@ -66,6 +66,10 @@ vi.mock("firebase/database", () => ({
   // moved underneath us before the commit, RE-RUN it against the new value.
   // That re-run is what makes first-write-wins actually work.
   runTransaction: async (node, fn) => {
+    // A rules rejection fails a transaction exactly as it fails an update — the
+    // durability tests inject failure per path prefix and must cover BOTH ways
+    // a record write can happen.
+    if (failWritesUnder && String(node.path).startsWith(failWritesUnder)) throw new Error("PERMISSION_DENIED");
     for (let i = 0; i < 5; i++) {
       const cur = getPath(node.path);
       const next = fn(cur);
@@ -369,6 +373,19 @@ describe("card progress is a tally, not a download", () => {
     await adjustCell({ hub: HUB, sessionId: sid, productId: PID, sizeKey: "8", expected: 4, actual: 6 });
 
     expect(sessionFor().doneCells).toBe(1);      // same cell, corrected — still one
+  });
+
+  it("two concurrent first-writes on one cell cannot double-count the tally", async () => {
+    seedCell(4);
+    // Another counter's record lands while OUR create-transaction is in flight:
+    // the transaction re-runs against it, aborts, and we overwrite WITHOUT
+    // counting — only the actual creator's client bumps the tally.
+    raceDuringTxn = () => setPath(`settings/hubSneakerCount/counted/${HUB}/${SESSION}/${PID}::8`,
+      { productId: PID, sizeKey: "8", expected: 4, actual: 4, action: "confirm" });
+    const res = await confirmCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4 });
+    expect(res.ok).toBe(true);
+    expect(recordNow()).toBeTruthy();                 // our record still landed (overwrite)
+    expect(getPath(`settings/hubSneakerCount/sessions/${HUB}/doneCells`) || 0).toBe(0);   // we did NOT create → no bump
   });
 
   it("reads ONLY the session record — never the counted node", async () => {

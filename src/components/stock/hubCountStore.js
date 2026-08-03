@@ -194,20 +194,29 @@ function recordFor({ productId, sizeKey, expected, actual, action, movementId, l
 
 async function writeRecord(hub, sessionId, rec) {
   const path = `${countedPath(hub, sessionId)}/${cellKey(rec.productId, rec.sizeKey)}`;
-  // Is this a NEW cell or a re-count of one already recorded? The tally must not
-  // move when a counter corrects a cell they already did.
-  const existed = await one(path);
-  await update(ref(database), { [path]: rec });
 
-  if (!existed) {
-    // Increment via transaction: two counters recording their first cell at the
-    // same moment would otherwise both read the same tally and write the same
-    // value, losing one. The tally only feeds the home card, so a failure here
-    // is cosmetic and must never fail the count itself.
+  // CREATION is a transaction on the record path itself, so RTDB serializes two
+  // counters hitting the same fresh cell: exactly one commit observes null and
+  // creates; the other re-runs against the record, aborts, and falls through to
+  // a plain overwrite. `committed` is therefore the truth about who created —
+  // the old read-then-write asked "did it exist a moment ago?", and two
+  // concurrent first-writers both heard "no" and both bumped the tally.
+  const res = await runTransaction(ref(database, path), (cur) => (cur === null ? rec : undefined));
+
+  if (res && res.committed) {
+    // We created it → count it, once. The tally only feeds the home card, so a
+    // failure here is cosmetic and must never fail the count itself.
     try {
       await runTransaction(ref(database, `${sessionPath(hub)}/doneCells`),
         (cur) => (typeof cur === "number" ? cur : 0) + 1);
     } catch { /* card progress only — the count is already saved */ }
+  } else {
+    // Overwrite of an existing record: a recount, an admin apply landing over a
+    // flag, or the loser of the create race. No tally change. A flag CAN land
+    // over an applied adjust — but only when the counter's expected equals the
+    // post-apply live value (the fence rejects anything else), and that is a
+    // genuinely NEW discrepancy against current stock, not a resurrection.
+    await update(ref(database), { [path]: rec });
   }
 }
 

@@ -427,9 +427,9 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
               recounting={recounting} canAdjust={canAdjust} onOpenPhoto={setPhoto}
               addQuery={addQuery} setAddQuery={setAddQuery} addMatches={addMatches} onAdd={addProduct}
             />
-          ) : (
+          ) : canSeeVariance ? (
             <VarianceList rows={variance} canAdjust={canAdjust} onApply={applyVariance} busyKey={busyVariance} />
-          )}
+          ) : null}
         </>
       )}
       <PhotoLightbox url={photo} onClose={() => setPhoto(null)} />
