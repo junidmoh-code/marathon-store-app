@@ -67,10 +67,20 @@ export function InsightsLogProvider({
   const retain = useCallback(() => { if (authReady) store.retain(); }, [authReady, store]);
   const release = useCallback(() => { if (authReady) store.release(); }, [authReady, store]);
 
-  // Unmounting the provider (sign-out, app teardown) must not leak the listener.
-  // destroy() closes SYNCHRONOUSLY — draining through release() would only arm
-  // the 5-minute timer, leaving a subscription open that no consumer can reuse,
-  // and a remount inside that window would hold two live subscriptions.
+  // AUTHORIZATION LOST (sign-out) — close NOW and drop the cached log.
+  // Gating retain/release alone only stops FUTURE calls: an already-open listener
+  // would keep streaming /insights_log, and 18.73 MB of it would stay on the heap,
+  // after the read is no longer permitted. A pending 5-minute release timer would
+  // likewise still be armed. destroy() cancels the timer, unsubscribes, clears the
+  // snapshot and notifies consumers — synchronously.
+  useEffect(() => {
+    if (!authReady) store.destroy();
+  }, [authReady, store]);
+
+  // Unmounting the provider (app teardown) must not leak the listener either.
+  // Draining through release() would only arm the 5-minute timer, leaving a
+  // subscription open that no consumer can reuse — and a remount inside that
+  // window would hold two live subscriptions.
   useEffect(() => () => store.destroy(), [store]);
 
   const value = useMemo(() => ({ log, retain, release }), [log, retain, release]);

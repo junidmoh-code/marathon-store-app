@@ -140,6 +140,49 @@ describe("destroy — synchronous teardown on provider unmount", () => {
     expect(sdk.closes).toBe(0);
   });
 
+  // SIGN-OUT. The provider calls destroy() the moment authReady goes false. After
+  // that there must be no live /insights_log listener and no 18.73 MB retained —
+  // gating retain/release alone would only stop FUTURE calls while the existing
+  // listener kept streaming data the user is no longer entitled to read.
+  it("sign-out with consumers still mounted: listener closed, cache dropped", () => {
+    store.retain(); store.retain();          // two screens open
+    sdk.push([{ action: "placed" }, { action: "ready" }]);
+    expect(store._state().isOpen).toBe(true);
+
+    store.destroy();                          // ← authReady flips false
+
+    expect(sdk.closes).toBe(1);
+    expect(store._state()).toMatchObject({ consumers: 0, isOpen: false, hasPendingRelease: false });
+    expect(store.getSnapshot()).toBe(EMPTY);
+    expect(sdk.push).toBeNull();              // the SDK handle is gone, not just ignored
+  });
+
+  it("sign-out while a delayed release is pending kills the timer too", () => {
+    store.retain();
+    store.release();                          // 5-min timer armed
+    store.destroy();                          // sign-out mid-window
+    expect(sdk.closes).toBe(1);
+    vi.advanceTimersByTime(DELAY * 3);
+    expect(sdk.closes).toBe(1);               // timer cannot fire a second close
+    expect(store._state().isOpen).toBe(false);
+  });
+
+  it("nothing re-opens on its own after sign-out", () => {
+    store.retain();
+    store.destroy();
+    vi.advanceTimersByTime(DELAY * 5);
+    expect(sdk.opens).toBe(1);                // no resurrection without a retain
+    expect(store._state().isOpen).toBe(false);
+  });
+
+  it("signing back IN re-opens exactly one subscription", () => {
+    store.retain();
+    store.destroy();                          // sign-out
+    store.retain();                           // sign-in, screen mounts again
+    expect(sdk.opens).toBe(2);
+    expect(store._state().isOpen).toBe(true);
+  });
+
   it("a fresh store after destroy opens exactly one subscription", () => {
     store.retain();
     store.destroy();

@@ -81,6 +81,12 @@ export function indexCustomersByPhone(customersDb) {
       name: (c.name || "").trim(),
       phone: useField ? c.phone : key,
       lastOrderAt: c.lastOrderAt || "",
+      // DISPLAY ONLY — the suggestion row prints "N past orders". Copied verbatim
+      // from /customers; never derived here and never used in any decision (not
+      // in the winner rule, not in ordering, not in filtering). The log-derived
+      // index used to COUNT `placed` events, one per unit, so its figure was
+      // inflated for multi-item purchases; /customers counts orders.
+      orderCount: Number.isFinite(c.orderCount) ? c.orderCount : 0,
       _key: key,
     };
     const held = byPhone.get(normalised);
@@ -97,5 +103,23 @@ export function indexCustomersByPhone(customersDb) {
 export function buildCustomerIndex(customersDb) {
   return Array.from(indexCustomersByPhone(customersDb).values())
     .filter(c => c.name)
-    .map(({ name, phone, lastOrderAt }) => ({ name, phone, lastOrderAt }));
+    .map(({ name, phone, lastOrderAt, orderCount }) => ({ name, phone, lastOrderAt, orderCount }));
+}
+
+/**
+ * Suggestion ordering: most recently ordered first. THE comparator matchCustomers
+ * sorts with — exported so the ordering is testable in the layer that owns it,
+ * rather than asserted indirectly through the reducer.
+ * A customer with no lastOrderAt sorts LAST (missing/invalid dates coerce to 0),
+ * never ahead of someone with a real one.
+ */
+export function byMostRecentOrder(a, b) {
+  return orderMs(b?.lastOrderAt) - orderMs(a?.lastOrderAt);
+}
+
+// Mirrors App.jsx's tsMs contract: null / "" / unparseable → 0.
+function orderMs(v) {
+  if (v == null || v === "") return 0;
+  const n = typeof v === "number" ? v : new Date(v).getTime();
+  return Number.isNaN(n) ? 0 : n;
 }

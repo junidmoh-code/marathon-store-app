@@ -12,7 +12,7 @@ import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
-import { buildCustomerIndex } from "./insights/customerIndex";
+import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
@@ -759,6 +759,17 @@ function useInsightsLog() {
 function useInsightsLogRecentDays(days) {
   const authReady = useAuthReady();
   const [log, setLog] = useState([]);
+  // The range anchor is a function of TODAY, and a till is left open all day —
+  // often across midnight. Without re-anchoring, a terminal opened on Monday
+  // still asks for Monday's window on Tuesday, so the newest day silently falls
+  // outside the query and the Source screen loses a day of history. Re-stamp the
+  // SA day key on a slow tick (the same pattern useLiveOrders uses); setState
+  // with an unchanged key is a no-op, so this costs nothing until the day flips.
+  const [saDay, setSaDay] = useState(() => saDateString());
+  useEffect(() => {
+    const t = setInterval(() => setSaDay(saDateString()), 60_000);
+    return () => clearInterval(t);
+  }, []);
   useEffect(() => {
     if (!authReady) return undefined;
     const { startKey } = recentDaysStartKey(days, serverNowMs());
@@ -773,7 +784,9 @@ function useInsightsLogRecentDays(days) {
       );
     });
     return () => unsub();
-  }, [authReady, days]);
+    // saDay is a DEPENDENCY, not decoration: when the SA date rolls over the
+    // query re-anchors to the new day's window.
+  }, [authReady, days, saDay]);
   return log;
 }
 
@@ -1518,7 +1531,10 @@ function matchCustomers(customers, query, mode) {
       if ((c.name || "").toLowerCase().startsWith(needle)) hits.push(c);
     }
   }
-  hits.sort((a, b) => tsMs(b.lastOrderAt) - tsMs(a.lastOrderAt));
+  // Shared comparator (src/insights/customerIndex.js) so the ordering staff see
+  // is asserted by unit test in the layer that owns it. Same contract as before:
+  // most recent first, missing dates last.
+  hits.sort(byMostRecentOrder);
   return hits.slice(0, 5);
 }
 

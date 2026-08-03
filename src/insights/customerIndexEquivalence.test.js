@@ -10,7 +10,7 @@
 // The pairs /customers cannot supply, and the names it spells differently, are
 // ACCEPTED and enumerated in the PR description — data differences, not logic.
 import { describe, it, expect } from "vitest";
-import { buildCustomerIndex, indexCustomersByPhone, beatsHeldCustomer } from "./customerIndex";
+import { buildCustomerIndex, indexCustomersByPhone, beatsHeldCustomer, byMostRecentOrder } from "./customerIndex";
 
 describe("duplicate-phone winner rule", () => {
   it("prefers the record WITH a name (the real shape of most duplicates)", () => {
@@ -157,17 +157,68 @@ describe("what the index excludes", () => {
     expect(buildCustomerIndex({ junk: { phone: "Mike from Model", name: "Mike" } })).toHaveLength(0);
   });
 
-  it("carries lastOrderAt for ORDERING ONLY, and never derives orderCount", () => {
+  it("carries lastOrderAt for ordering, and COPIES orderCount for display", () => {
     const [rec] = buildCustomerIndex({
       "0712345678": { phone: "0712345678", name: "Sara", lastOrderAt: "2026-07-01T00:00:00Z", orderCount: 9 },
     });
     expect(rec.lastOrderAt).toBe("2026-07-01T00:00:00Z");
-    expect(rec).not.toHaveProperty("orderCount");
+    expect(rec.orderCount).toBe(9);   // verbatim from /customers, never derived
   });
 
-  it("a customer with NO lastOrderAt still appears, sorting last (tsMs → 0)", () => {
+  it("defaults orderCount to 0 so the label never prints 'undefined past orders'", () => {
+    const [rec] = buildCustomerIndex({ "0712345678": { phone: "0712345678", name: "NoCount" } });
+    expect(rec.orderCount).toBe(0);
+    expect(Number.isFinite(rec.orderCount)).toBe(true);
+  });
+
+  it("orderCount never influences which duplicate wins", () => {
+    // Same name, same lastOrderAt, same key form — only orderCount differs, and
+    // it must not break the tie (display-only field).
+    const a = { name: "T", lastOrderAt: "2026-07-01T00:00:00Z", orderCount: 99, _key: "27700000002" };
+    const b = { name: "T", lastOrderAt: "2026-07-01T00:00:00Z", orderCount: 0, _key: "27700000001" };
+    expect(beatsHeldCustomer(a, b)).toBe(false); // b's key is lexically smaller — count is irrelevant
+  });
+
+  it("a customer with NO lastOrderAt is still included", () => {
     const idx = buildCustomerIndex({ "0712345678": { phone: "0712345678", name: "NoDate" } });
     expect(idx).toHaveLength(1);
     expect(idx[0].lastOrderAt).toBe("");
+  });
+});
+
+// The ORDER staff see, asserted in the layer that owns it: matchCustomers sorts
+// with byMostRecentOrder and slices 5, so this comparator decides which five
+// suggestions appear. Asserting it through buildCustomerIndex (which does not
+// sort) could never catch an ordering regression.
+describe("suggestion ordering — byMostRecentOrder", () => {
+  const dated = (name, lastOrderAt) => ({ name, phone: "0712345678", lastOrderAt });
+
+  it("puts the most recent order first", () => {
+    const list = [dated("Older", "2026-01-01T00:00:00Z"), dated("Newer", "2026-07-01T00:00:00Z")];
+    expect([...list].sort(byMostRecentOrder).map(c => c.name)).toEqual(["Newer", "Older"]);
+  });
+
+  it("sorts a customer with NO lastOrderAt LAST, whichever way round the input is", () => {
+    const withDate = dated("Dated", "2026-07-01T00:00:00Z");
+    const without = dated("NoDate", "");
+    expect([without, withDate].sort(byMostRecentOrder).map(c => c.name)).toEqual(["Dated", "NoDate"]);
+    expect([withDate, without].sort(byMostRecentOrder).map(c => c.name)).toEqual(["Dated", "NoDate"]);
+  });
+
+  it("treats missing and unparseable dates the same as absent (never ahead of a real one)", () => {
+    const real = dated("Real", "2026-07-01T00:00:00Z");
+    for (const bad of [undefined, null, "", "not-a-date"]) {
+      expect([dated("Bad", bad), real].sort(byMostRecentOrder).map(c => c.name)).toEqual(["Real", "Bad"]);
+    }
+  });
+
+  it("keeps the top-5 slice deterministic across the full pipeline", () => {
+    const idx = buildCustomerIndex({
+      a: { phone: "0712345671", name: "A", lastOrderAt: "2026-01-01T00:00:00Z" },
+      b: { phone: "0712345672", name: "B", lastOrderAt: "2026-07-01T00:00:00Z" },
+      c: { phone: "0712345673", name: "C" },                       // no date → last
+      d: { phone: "0712345674", name: "D", lastOrderAt: "2026-05-01T00:00:00Z" },
+    });
+    expect(idx.sort(byMostRecentOrder).map(c => c.name)).toEqual(["B", "D", "A", "C"]);
   });
 });
