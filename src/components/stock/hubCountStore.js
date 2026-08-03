@@ -150,14 +150,23 @@ export async function publishSessionTotal(hub, sessionId, totalCells) {
   await update(ref(database), { [`${sessionPath(hub)}/totalCells`]: totalCells });
 }
 
-/** The home card's cheap read: session record + how many cells are recorded. */
+/**
+ * The home card's cheap read: the session record and NOTHING else.
+ *
+ * This used to pull the whole counted/{hub}/{sessionId} node and use only
+ * Object.keys().length — several thousand eight-field records at hub 2, i.e.
+ * hundreds of kilobytes transferred on every app open and every hub switch, to
+ * render one number. Exactly the cost this module's header refuses to pay for
+ * /stock, and at its worst on the last day of the count when the node is
+ * biggest. The tally is now maintained as `doneCells` on the session record
+ * itself (see writeRecord), so the card reads one small object.
+ */
 export async function loadCardSummary(hub) {
   const session = await one(sessionPath(hub));
   if (!session || !session.sessionId) return { session: null, done: 0, total: 0 };
-  const counted = await one(countedPath(hub, session.sessionId));
   return {
     session,
-    done: counted ? Object.keys(counted).length : 0,
+    done: Number(session.doneCells) || 0,
     total: Number(session.totalCells) || 0,
   };
 }
@@ -184,9 +193,22 @@ function recordFor({ productId, sizeKey, expected, actual, action, movementId, l
 }
 
 async function writeRecord(hub, sessionId, rec) {
-  await update(ref(database), {
-    [`${countedPath(hub, sessionId)}/${cellKey(rec.productId, rec.sizeKey)}`]: rec,
-  });
+  const path = `${countedPath(hub, sessionId)}/${cellKey(rec.productId, rec.sizeKey)}`;
+  // Is this a NEW cell or a re-count of one already recorded? The tally must not
+  // move when a counter corrects a cell they already did.
+  const existed = await one(path);
+  await update(ref(database), { [path]: rec });
+
+  if (!existed) {
+    // Increment via transaction: two counters recording their first cell at the
+    // same moment would otherwise both read the same tally and write the same
+    // value, losing one. The tally only feeds the home card, so a failure here
+    // is cosmetic and must never fail the count itself.
+    try {
+      await runTransaction(ref(database, `${sessionPath(hub)}/doneCells`),
+        (cur) => (typeof cur === "number" ? cur : 0) + 1);
+    } catch { /* card progress only — the count is already saved */ }
+  }
 }
 
 /**
@@ -326,14 +348,29 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
     };
   }
 
-  const after = await readLiveQty(hub, productId, sizeKey);                            // layer 3
+  // layer 3 — guarded. This read used to be unprotected, and `one()` REJECTS on a
+  // failed read: the rejection propagated straight out of adjustCell and the
+  // record write below never ran. The movement had already committed, so /stock
+  // held the corrected quantity while the session held no record for the cell —
+  // it showed as uncounted, and a retry then hit the stale fence because the
+  // frozen snapshot still had the old expected. A verification failure must cost
+  // us the verification, never the record.
+  let after;
+  try {
+    after = await readLiveQty(hub, productId, sizeKey);
+  } catch (err) {
+    after = { error: true, unverified: String(err?.message || err) };
+  }
   const settled = !after.error && Number(after.qty) === target;
 
   const rec = recordFor({
     productId, sizeKey, expected, actual: target, action: "adjust",
     movementId: res.movementId,
     live: after.error ? target : Number(after.qty),
-    settled,
+    // An unverifiable write is recorded as settled — we have no evidence it went
+    // wrong, and flagging every dropped read as a discrepancy would fill Variance
+    // with noise on bad shop wifi. The caller is told separately.
+    settled: after.error ? true : settled,
   });
 
   // The stock movement has ALREADY committed at this point. If the progress
@@ -349,6 +386,14 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
       ok: true,
       record: rec,
       warning: `Stock WAS updated to ${target}, but this device could not save the progress record (${String(err?.message || err)}). Movement ${res.movementId} has the full count in its provenance — do not count this cell again.`,
+    };
+  }
+
+  if (after.unverified) {
+    return {
+      ok: true,
+      record: rec,
+      warning: `Recorded ${target}, but this device could not re-read the cell to confirm it (${after.unverified}). The movement committed; check History if the number looks wrong.`,
     };
   }
 

@@ -44,7 +44,16 @@ function setPath(path, value) {
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path || "" }),
   child: (node, path) => ({ path: node.path ? `${node.path}/${path}` : path }),
-  get: async (node) => ({ val: () => getPath(node.path), exists: () => getPath(node.path) != null }),
+  get: async (node) => {
+    // Fail reads under a path, optionally after letting the first N through — the
+    // adjust flow reads the cell twice (pre-flight fence, then post-write verify)
+    // and these tests need to break only the second.
+    if (failReadsUnder && String(node.path).startsWith(failReadsUnder)) {
+      if (failReadsSkip > 0) failReadsSkip -= 1;
+      else throw new Error("READ_FAILED");
+    }
+    return { val: () => getPath(node.path), exists: () => getPath(node.path) != null };
+  },
   update: async (node, updates) => {
     for (const [k, v] of Object.entries(updates)) {
       const full = node.path ? `${node.path}/${k}` : k;
@@ -72,6 +81,8 @@ vi.mock("firebase/database", () => ({
 }));
 let raceDuringTxn = null;
 let failWritesUnder = null;   // path prefix whose writes should reject
+let failReadsUnder = null;    // path prefix whose reads should reject
+let failReadsSkip = 0;        // let this many matching reads through first
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: () => () => {} }));
 vi.mock("../../firebase", () => ({ database: { fake: true }, auth: { currentUser: { uid: "counter-1" } } }));
 
@@ -124,7 +135,7 @@ const applyMovementMock = vi.fn(async (mv, { maxRetries = 6 } = {}) => {
 
 vi.mock("./applyMovement", () => ({ applyMovement: (...args) => applyMovementMock(...args) }));
 
-const { adjustCell, confirmCell, openOrResumeSession } = await import("./hubCountStore.js");
+const { adjustCell, confirmCell, openOrResumeSession, loadCardSummary } = await import("./hubCountStore.js");
 
 const HUB = "hub1";
 const PID = "sh1";
@@ -139,7 +150,7 @@ beforeEach(() => {
   store = {};
   pushN = 0; mvN = 0;
   raceDuringWrite = null; raceAfterWrite = null; raceBeforeWriterRead = null; raceDuringTxn = null;
-  failWritesUnder = null;
+  failWritesUnder = null; failReadsUnder = null; failReadsSkip = 0;
   applyMovementMock.mockClear();
 });
 
@@ -332,6 +343,46 @@ describe("LAYER 3 — the post-write assert", () => {
   });
 });
 
+// ── THE HOME CARD MUST NOT PAY FOR THE WHOLE COUNT ──────────────────────────
+// Found by CodeRabbit: loadCardSummary used to download every counted record to
+// produce one number — several thousand records at hub 2, on every app open.
+describe("card progress is a tally, not a download", () => {
+  const sessionFor = () => getPath(`settings/hubSneakerCount/sessions/${HUB}`);
+
+  it("counts each newly recorded cell exactly once", async () => {
+    await openOrResumeSession(HUB);
+    const sid = sessionFor().sessionId;
+    seedCell(4); seedCell(2, 1, "9");
+
+    await confirmCell({ hub: HUB, sessionId: sid, productId: PID, sizeKey: "8", expected: 4 });
+    await confirmCell({ hub: HUB, sessionId: sid, productId: PID, sizeKey: "9", expected: 2 });
+
+    expect(sessionFor().doneCells).toBe(2);
+  });
+
+  it("does NOT double-count a re-count of a cell already recorded", async () => {
+    await openOrResumeSession(HUB);
+    const sid = sessionFor().sessionId;
+    seedCell(4);
+
+    await confirmCell({ hub: HUB, sessionId: sid, productId: PID, sizeKey: "8", expected: 4 });
+    await adjustCell({ hub: HUB, sessionId: sid, productId: PID, sizeKey: "8", expected: 4, actual: 6 });
+
+    expect(sessionFor().doneCells).toBe(1);      // same cell, corrected — still one
+  });
+
+  it("reads ONLY the session record — never the counted node", async () => {
+    await openOrResumeSession(HUB);
+    const sid = sessionFor().sessionId;
+    seedCell(4);
+    await confirmCell({ hub: HUB, sessionId: sid, productId: PID, sizeKey: "8", expected: 4 });
+    setPath(`${`settings/hubSneakerCount/sessions/${HUB}`}/totalCells`, 40);
+
+    const s = await loadCardSummary(HUB);
+    expect(s).toMatchObject({ done: 1, total: 40 });
+  });
+});
+
 // ── DURABILITY ───────────────────────────────────────────────────────────────
 // The movement commits stock and the ledger atomically; the progress record is a
 // separate write that can fail on its own. Reporting that as "the count failed"
@@ -349,6 +400,20 @@ describe("a lost progress record must never be reported as a failed count", () =
     expect(res.warning).toMatch(/Stock WAS updated/i);
     expect(res.warning).toContain("do not count this cell again");
     expect(recordNow()).toBeNull();                   // record genuinely absent
+  });
+
+  it("a failed VERIFICATION read costs the verification, never the record", async () => {
+    seedCell(4);
+    // The post-write re-read rejects. Previously this exception propagated out of
+    // adjustCell and the record write never ran — stock corrected, cell showing
+    // as uncounted, and a retry blocked by the stale fence.
+    failReadsUnder = `stock/${HUB}/${PID}/8`;
+    failReadsSkip = 1;                              // fence read succeeds; verify read fails
+    const res = await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 6 });
+
+    expect(res.ok).toBe(true);
+    expect(recordNow()).toBeTruthy();               // the record SURVIVED
+    expect(res.warning).toMatch(/could not re-read/i);
   });
 
   it("a failed CONFIRM is a plain failure — no stock moved, safe to retry", async () => {

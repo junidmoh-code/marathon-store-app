@@ -101,8 +101,24 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   }, [hasTyped]);
 
   // ── ENTRY: the one-shot load, once per hub ────────────────────────────────
+  // ⚠️ WAITS FOR A NON-EMPTY CATALOGUE. `hub` can be set on the very first
+  // render (resumed from sessionStorage after a mid-count reload), and at that
+  // moment App's products subscription has not delivered yet — `products` is
+  // still []. Freezing THAT is catastrophic in a quiet way: every stock cell
+  // fails to find its product record, every row is skipped, and the counter is
+  // told "No sneaker products hold stock cells here" for a hub holding thousands
+  // of cells. Since the freeze is deliberately permanent, the empty array would
+  // never be replaced.
+  //
+  // So the freeze waits for the first non-empty catalogue. The guarantee the
+  // freeze exists for — the list cannot re-order under a counter's thumb — is
+  // unchanged; it just starts from a catalogue that exists.
+  const loadedFor = useRef("");
   useEffect(() => {
-    if (!hub) { setSnapshot(null); setSession(null); setCounted({}); return; }
+    if (!hub) { setSnapshot(null); setSession(null); setCounted({}); loadedFor.current = ""; return; }
+    if (loadedFor.current === hub) return;      // already frozen for this hub
+    if (!products.length) return;               // catalogue not in yet — wait, don't freeze []
+    loadedFor.current = hub;
     let cancelled = false;
     setLoading(true); setLoadError("");
     setSeeded([]); setInputs({}); setOpenRow(""); setPage(0); setQuery("");
@@ -129,11 +145,10 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
     })();
 
     return () => { cancelled = true; };
-    // `products` is deliberately NOT a dependency: it is frozen at entry (see the
-    // header note). Re-running on every catalogue tick is exactly what this
-    // feature must not do.
+    // Depends on whether the catalogue has ARRIVED, never on its contents — so a
+    // later catalogue tick cannot re-run this and re-order the list mid-count.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hub]);
+  }, [hub, products.length > 0]);
 
   const catalogue = snapshot?.catalogue || [];
   const productsById = useMemo(
@@ -315,10 +330,12 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
 
       {!hub ? (
         <Empty>Pick a hub to start. The count list loads once and stays put — no live updates while you work.</Empty>
-      ) : loading ? (
-        <Empty>Loading {labelFor(hub, registry)}…</Empty>
       ) : loadError ? (
         <Empty><span style={{ color: RED }}>Could not load: {loadError}</span></Empty>
+      ) : loading || !snapshot ? (
+        // `!snapshot` also covers waiting for the catalogue on a resumed session.
+        // Without it the list would render empty and claim the hub holds nothing.
+        <Empty>Loading {labelFor(hub, registry)}…</Empty>
       ) : (
         <>
           <div style={{ display: "flex", gap: 7, margin: "12px 0", alignItems: "center" }}>
@@ -392,7 +409,13 @@ function CountList({
       </Card>
 
       {totalRows === 0 ? (
-        <Empty>No sneaker products hold stock cells here.</Empty>
+        // Two different states, and conflating them tells the counter something
+        // false: a filtered-out list is not an empty hub.
+        <Empty>
+          {query.trim()
+            ? <>Nothing on this hub’s list matches “{query.trim()}”.</>
+            : "No sneaker products hold stock cells here."}
+        </Empty>
       ) : (
         <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 7 }}>
           {rows.map((row) => (

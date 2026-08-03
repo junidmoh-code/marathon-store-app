@@ -16,7 +16,7 @@
 // view has ever been opened for a hub there is no M yet, and the card says so
 // rather than inventing a number.
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { CARD, BORDER, GRAY, GREEN, BLUE_L, tabOn, tabOff } from "./ui";
 import { hubOptions } from "./hubCountCore";
 import { loadCardSummary, rememberHub, useLocationRegistryOnce } from "./hubCountStore";
@@ -27,14 +27,19 @@ export default function HubSneakerCountCard({ onOpen }) {
   // hubOptions falls back to the DEFAULT_LOCATIONS seed, so the picker is never
   // empty on first paint.
   const registry = useLocationRegistryOnce();
-  const hubs = hubOptions(registry);
+  // Memoised: hubOptions builds a new array every call, which would make the
+  // effect below re-run (and re-fetch) on every render.
+  const hubs = useMemo(() => hubOptions(registry), [registry]);
   const [hub, setHub] = useState(hubs[0]?.id || "");
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // Keep the selection valid if the registry resolves after first paint.
+  // Keep the selection valid once the LIVE registry replaces the fallback seed.
+  // Not just "fill an empty selection": a seeded id that the real registry does
+  // not contain would otherwise stay selected and load a hub that isn't there.
   useEffect(() => {
-    if (!hub && hubs.length) setHub(hubs[0].id);
+    if (!hubs.length) return;
+    if (!hub || !hubs.some((h) => h.id === hub)) setHub(hubs[0].id);
   }, [hub, hubs]);
 
   useEffect(() => {
