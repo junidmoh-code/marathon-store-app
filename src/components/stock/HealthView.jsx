@@ -38,6 +38,7 @@ import MoveExcess from "./MoveExcess";
 import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
 import { computeMissingFootwear } from "./missingFootwearCore";
+import { computeMissingProducts, countByCategory, MISSING_CATEGORIES } from "./missingProductsCore";
 import NoTargetQueue from "./NoTargetQueue";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 
@@ -338,7 +339,20 @@ export default function HealthView({ products = [], onExit }) {
     const at = Date.parse(t.createdAt || "");
     return Number.isFinite(at) && serverNowMs() - at > STALE_TRANSIT_HOURS * 3600e3;
   }).length, [transitOpen]);
-  const missingProductsClothing = count("onlyInCentral") + count("onlyInHub2");
+  // Stranded non-footwear, computed CLIENT-SIDE from live /stock — the same
+  // function that builds the list inside the tab (missingProductsCore). It used
+  // to be the scan's unit-based buckets (onlyInCentral + onlyInHub2), which
+  // counted a different thing from what the list showed: 391 vs 380 measured
+  // 2026-08-03. Harmless while it was one number over one list; not harmless
+  // once the tab splits into category chips, because chips summing to 380 under
+  // a 391 headline reads as a broken screen. Sneakers already work this way and
+  // the note below says why that was the right call.
+  const missingProductCards = useMemo(
+    () => computeMissingProducts({ allStock, products }),
+    [allStock, products],
+  );
+  const missingByCategory = useMemo(() => countByCategory(missingProductCards), [missingProductCards]);
+  const missingProductsClothing = missingProductCards.length;
   // SNEAKERS are computed CLIENT-SIDE from live /stock, deliberately, not from the
   // scan's exception buckets: the engine's Health loop is clothing-only
   // (`if (!isClothing(...)) continue` — "sneakers never appear in Health"), so a
@@ -406,23 +420,40 @@ export default function HealthView({ products = [], onExit }) {
       //              nearly the whole catalogue and mean nothing. Hub 1 and Hub 2
       //              are where sneaker buffer lives.
       case "missingProducts": {
-        const clothingTab = missingTab === "clothing";
+        // Chips: the catalogue groups, then Sneakers. "Other" is a catch-all and
+        // appears ONLY when it has cards — every stranded product must be
+        // reachable from some chip, or the tab hides the very stock it exists to
+        // surface. (Belts live there today; anything new to the catalogue lands
+        // there rather than nowhere.) An empty group is hidden the same way, so
+        // a shop with no stranded bags doesn't stare at "Bags (0)".
+        const chips = [
+          ...MISSING_CATEGORIES
+            .filter((c) => missingByCategory[c.key] > 0 || (c.key === "clothing" && !missingProductCards.length))
+            .map((c) => [c.key, c.label, missingByCategory[c.key]]),
+          ["sneakers", "Sneakers", missingSneakerCards.length],
+        ];
+        // A chip can vanish under you when its last card is solved — fall back to
+        // the first available rather than rendering an empty screen with no
+        // selection. (Sneakers is always present, so there is always a fallback.)
+        const activeTab = chips.some(([k]) => k === missingTab) ? missingTab : chips[0][0];
         return (
           <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts} onBack={back}>
             <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-              {[["clothing", "Clothing", missingProductsClothing], ["sneakers", "Sneakers", missingSneakerCards.length]].map(([key, label, n]) => (
+              {chips.map(([key, label, n]) => (
                 <button key={key} onClick={() => setMissingTab(key)}
                   style={{
                     padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
-                    border: missingTab === key ? "1px solid rgba(60,110,255,.5)" : "1px solid rgba(255,255,255,.1)",
-                    background: missingTab === key ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.03)",
-                    color: missingTab === key ? BLUE_L : "rgba(255,255,255,.45)",
+                    border: activeTab === key ? "1px solid rgba(60,110,255,.5)" : "1px solid rgba(255,255,255,.1)",
+                    background: activeTab === key ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.03)",
+                    color: activeTab === key ? BLUE_L : "rgba(255,255,255,.45)",
                   }}>
                   {label} ({n})
                 </button>
               ))}
             </div>
-            {clothingTab ? <NetworkTransfer products={products} /> : <MissingFootwear products={products} />}
+            {activeTab === "sneakers"
+              ? <MissingFootwear products={products} />
+              : <NetworkTransfer products={products} category={activeTab} />}
           </DetailShell>
         );
       }

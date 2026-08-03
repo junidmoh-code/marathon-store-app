@@ -22,11 +22,10 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, effectiveStandard, ruleTargetsEnabledFor } from "./solvePlan";
+import { computeMissingProducts } from "./missingProductsCore";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
-const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
-const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
 // "_" is the catalogue's one-size sentinel — a real cell key, but never shown raw.
 const sizeLabel = (s) => (String(s) === "_" ? "One size" : String(s));
 // Fallback size-standard if config/refillEngine can't be read — mirrors the live
@@ -38,9 +37,10 @@ const STD_FALLBACK = {
   trophy: { L: 2, M: 2, S: 2, XL: 1, XXL: 1, XXXL: 1 },
 };
 
-const isClothing = (p) =>
-  p?.productType === "clothing" ||
-  (!p?.productType && (p?.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s))));
+// isClothing / the stranded-card build / size ordering all moved to
+// missingProductsCore.js, so the chip counts in HealthView and this list are one
+// function. Do not reintroduce a local copy — that is exactly how the old count
+// and list drifted apart.
 
 const destChip = (on) => ({
   padding: "8px 13px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
@@ -49,7 +49,7 @@ const destChip = (on) => ({
   color: on ? BLUE_L : "rgba(255,255,255,.5)",
 });
 
-export default function NetworkTransfer({ products = [] }) {
+export default function NetworkTransfer({ products = [], category = "all" }) {
   const allStock = useStockCells();   // { loc: { pid: { rawSize: cell } } } — live
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
@@ -94,7 +94,6 @@ export default function NetworkTransfer({ products = [] }) {
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const qtyAt = (loc, pid, size) => Math.max(Number(allStock?.[loc]?.[pid]?.[String(size)]?.qty) || 0, 0);
-  const sumAt = (loc, pid) => Object.values(allStock?.[loc]?.[pid] || {}).reduce((t, c) => t + Math.max(Number(c?.qty) || 0, 0), 0);
   // "Carries" = has a stock NODE (even a zeroed cell) — the engine's own gate
   // (storeCarries). A Solve seeds a qty-0 cell, so keying the downstream check on
   // carriage (not qty) makes a solved row leave the list immediately and never
@@ -102,28 +101,13 @@ export default function NetworkTransfer({ products = [] }) {
   const carries = (loc, pid) => !!allStock?.[loc]?.[pid] && Object.keys(allStock[loc][pid]).length > 0;
 
   // Stranded clothing: real upstream stock, NOT carried anywhere downstream.
+  // Computed by missingProductsCore so this list and the chip counts above it
+  // come from ONE function and cannot drift (they did before: 391 vs 380).
+  // `category` filters to one chip; absent/"all" shows everything.
   const cards = useMemo(() => {
-    const out = [];
-    const pids = new Set([...Object.keys(allStock?.central || {}), ...Object.keys(allStock?.hub2 || {})]);
-    for (const pid of pids) {
-      const p = byId.get(pid);
-      if (!isClothing(p)) continue;
-      const ce = sumAt("central", pid), h2 = sumAt("hub2", pid);
-      const carriedDownstream = carries("marathon-pe", pid) || carries("trophy", pid);
-      let source = null, kind = null;
-      if (ce > 0 && !carries("hub2", pid) && !carriedDownstream) { source = "central"; kind = "Only in Central"; }
-      else if (h2 > 0 && !carriedDownstream) { source = "hub2"; kind = "Only in Hub 2"; }
-      if (!source) continue;
-      const sizes = Object.entries(allStock[source]?.[pid] || {})
-        .map(([size, c]) => ({ size, avail: Math.max(Number(c?.qty) || 0, 0) }))
-        .filter((s) => s.avail > 0)
-        .sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
-      if (!sizes.length) continue;
-      const missing = source === "central" ? ["hub2", ...STORES].filter((l) => !carries(l, pid)) : STORES;
-      out.push({ pid, name: p?.name || pid, photo: p?.photoUrl, source, kind, sizes, missing, units: sizes.reduce((t, s) => t + s.avail, 0) });
-    }
-    return out.sort((a, b) => b.units - a.units);
-  }, [allStock, byId]);
+    const all = computeMissingProducts({ allStock, products });
+    return category && category !== "all" ? all.filter((c) => c.category === category) : all;
+  }, [allStock, products, category]);
 
   // Catalog sizes to seed. The one-size "_" sentinel is KEPT (it used to be
   // dropped here): it is a real, seedable cell key for a one-size product, and
