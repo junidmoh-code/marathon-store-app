@@ -16397,9 +16397,9 @@ function AppInner() {
   // the global top-right pill is suppressed there (≥1024px) to avoid two.
   const isNarrowApp = useIsNarrow(1024);
   const wantAdmin = hash === "#admin";
-  // /#admin/users (list) and /#admin/users/<uid> (detail) both mount the
-  // UserManagement view. The component itself gates non-super-admin viewers
-  // with a NotAuthorized screen — see src/components/UserManagement.jsx.
+  // /#admin/users (list) and /#admin/users/<uid> (detail) are the User
+  // Management routes. This constant only recognises the HASH — it grants
+  // nothing. Authorization happens at the mount below.
   const wantUserMgmt = hash === "#admin/users" || hash === "#admin/users/" || hash.startsWith("#admin/users/");
   // Legacy isAdmin alias — true for super-admin only. Some downstream views
   // (e.g. BroadcastGroupsView role check) still read this; the right gate is
@@ -16633,10 +16633,24 @@ function AppInner() {
 
   let view = null;
   if (wantUserMgmt) {
-    // UserManagement handles its own super-admin gate + renders NotAuthorized
-    // for non-super-admin viewers. Hash-routed sub-paths (e.g. /#admin/users/<uid>)
-    // are parsed inside the component, so we just mount it and let it handle the rest.
-    view = <UserManagement authUser={authUser} onExit={() => (window.location.hash = "")} />;
+    // ── THE ROUTE GATE (layer 1 of 2) ──────────────────────────────────────
+    // A REAL check: a non-super-admin never gets UserManagement mounted at all,
+    // so none of its state, effects or subscriptions are created. They get the
+    // admin sign-in screen instead — the same thing #admin shows, and the useful
+    // response, since the usual way to reach this route unauthorized is to open
+    // a deep link before signing in.
+    //
+    // Layer 2 is the component's own gate, which re-checks the identical
+    // condition independently (src/components/UserManagement.jsx). Neither layer
+    // relies on the other; deleting either one leaves a working gate. That was
+    // NOT true before: both comments claimed the other side was gating, and only
+    // the component actually was.
+    //
+    // Hash-routed sub-paths (/#admin/users/<uid>) are parsed inside the
+    // component; this only decides whether it renders.
+    view = isSuperAdmin
+      ? <UserManagement authUser={authUser} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {

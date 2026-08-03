@@ -146,7 +146,30 @@ function friendlyError(err) {
 // Top-level component
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── THE GATE (layer 2 of 2) ───────────────────────────────────────────────────
+// This component is ONLY the authorization check. It holds no state and no
+// effects, and it renders the real screen only for the super-admin.
+//
+// Why it is split in two rather than an early `return` inside one component:
+// the check has to sit ABOVE the /users subscription so a refused viewer never
+// opens it, and a hook cannot live below a conditional return — `authUser`
+// arrives asynchronously, so the same instance would render first without a
+// user and then with one, changing its hook count between renders and crashing
+// React. Splitting puts every hook inside a component that only mounts once the
+// answer is yes.
+//
+// Layer 1 is the route mount in App.jsx, which independently refuses to render
+// this component at all for a non-super-admin. Both layers are real; neither
+// relies on the other.
 export default function UserManagement({ authUser, onExit }) {
+  if (!authUser || authUser.email !== ADMIN_EMAIL) {
+    return <NotAuthorized onExit={onExit} />;
+  }
+  return <UserManagementAuthed authUser={authUser} onExit={onExit} />;
+}
+
+// Everything below here runs ONLY for a verified super-admin.
+function UserManagementAuthed({ authUser, onExit }) {
   const [users,     setUsers]     = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [route,     setRoute]     = useState(() => parseHash() || { view: "list", uid: null });
@@ -154,7 +177,10 @@ export default function UserManagement({ authUser, onExit }) {
   const [granting,  setGranting]  = useState(false);
   const listScrollRef = useRef(0);
 
-  // /users subscription
+  // /users subscription. Reached only via the gate above, so a viewer who is
+  // refused never opens it — the listener used to be registered during the same
+  // render that returned NotAuthorized, because hooks run regardless of an early
+  // return placed after them.
   useEffect(() => {
     if (!authUser) return;
     const unsub = onValue(ref(database, "users"), (snap) => {
@@ -197,11 +223,6 @@ export default function UserManagement({ authUser, onExit }) {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  // Gate (defense in depth — the route mount in App.jsx is already gated)
-  if (!authUser || authUser.email !== ADMIN_EMAIL) {
-    return <NotAuthorized onExit={onExit} />;
-  }
-
   const goToDetail = (uid) => {
     listScrollRef.current = window.scrollY;
     window.location.hash = `#admin/users/${uid}`;
@@ -214,11 +235,28 @@ export default function UserManagement({ authUser, onExit }) {
   const isDetail = route.view === "detail";
   const selectedUser = isDetail ? users.find((u) => u.uid === route.uid) : null;
 
-  // The super-admin signs in with Google and has NO /users record (AuthGate
-  // bypasses permissions by email). But stock-write RTDB rules read
-  // /users/{uid}/stockRole — so without a record, even the super-admin can't
-  // receive/transfer. Offer a one-tap self-grant that materializes a minimal
-  // admin record with stockRole:"admin". Only shown until it exists.
+  // ── SELF-GRANT: shown when the VIEWER'S OWN record has no stock role ────────
+  // The condition is exactly that and nothing more: this viewer has no /users
+  // record at all, OR has one without a `stockRole` field. It does not test who
+  // the viewer is — it does not need to, because only the super-admin reaches
+  // this component (see the gate above), and the RTDB rules independently allow
+  // `/users` writes for that one account only.
+  //
+  // Why it exists: AuthGate bypasses PERMISSIONS by email, but the stock rules
+  // read stored data — `/stock` requires users/{uid}/stockRole to exist, and an
+  // `adjustment` movement requires it to equal "admin". An account can therefore
+  // pass every UI check and still be refused by RTDB on every receive, transfer
+  // or correction. This offers a one-tap fix for that state.
+  //
+  // It is self-extinguishing: granting writes the field, the condition goes
+  // false, the banner disappears. So finding it already hidden means it has
+  // served its purpose — NOT that it was never needed.
+  //
+  // (An earlier version of this comment asserted that the super-admin has no
+  // /users record. That was false when written, and it described a narrower
+  // thing than the code checks. Do not reintroduce a claim about any specific
+  // account's stored state here: `/users` is edited outside this file, so any
+  // such claim rots silently.)
   const selfRecord = users.find((u) => u.uid === authUser.uid);
   const selfNeedsStock = !loading && (!selfRecord || !selfRecord.stockRole);
   const grantSelfStock = async () => {
