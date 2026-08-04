@@ -25,7 +25,13 @@ const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
 
 const LOCK_STEAL_MS = 10 * 60e3;
-const MOVEMENTS_WINDOW_DAYS = 45;      // covers confidence (30d) + default-run gate (14d)
+// The ledger slice every run reads. 45 → 31: the two lookbacks that actually
+// read it are the 30-day confidence score and the confirmed-out gate
+// (config.confirmedOutDays, default 14), and the max() below keeps the second
+// one honest if it is ever raised. 31 clears the 30-day lookback by a day —
+// the smallest window that does — while 45 carried 14 days nothing reads.
+// Measured: 14.02 MB/run at 45 days, ~12.5 MB at 31.
+const MOVEMENTS_WINDOW_DAYS = 31;      // covers confidence (30d) + 1 day of slack
 const RUNS_KEEP_DAYS = 7;
 
 // Universe → placedStore string the app writes on refill orders.
@@ -223,6 +229,28 @@ async function runScan() {
   const counts = { intents: 0, shadow: 0, closes: 0, exceptions: 0, errors: [] };
   try {
     const config = (await db.ref("config/refillEngine").once("value")).val();
+    // ── scanIntervalMinutes IS NOT A DIAL ────────────────────────────────────
+    // It has never been read by any code — cadence is owned by the schedule on
+    // the exported function, which Cloud Scheduler enforces. Left in the
+    // database it reads as the control for exactly the thing it cannot change,
+    // which is how a 15-minute overnight cadence survived unquestioned.
+    //
+    // NOT wired up deliberately. Making it a live throttle would mean gating the
+    // run on a persisted last-run time, and a misread there stops refill intents
+    // being created at all — a silent outage of the thing that restocks shops,
+    // traded for a dial whose job the schedule already does. The live control
+    // that DOES exist and is honoured on every run is `enabled`.
+    //
+    // ACTION FOR THE OWNER: delete /config/refillEngine/scanIntervalMinutes in
+    // the console. This warning exists so it cannot be forgotten quietly — a
+    // code change cannot remove a database field.
+    if (config && config.scanIntervalMinutes !== undefined) {
+      console.warn(
+        "refillHealthScan: /config/refillEngine/scanIntervalMinutes is DEAD and controls nothing " +
+        `(value: ${JSON.stringify(config.scanIntervalMinutes)}). Cadence comes from the function's ` +
+        "schedule (every 15 minutes from 07:00 to 19:00, Africa/Johannesburg). Delete the field."
+      );
+    }
     if (!config || config.enabled !== true) {
       await db.ref(`refill_engine/runs/${runId}`).set({ startedAt, skipped: "engine disabled" });
       return;
@@ -633,8 +661,41 @@ async function runScan() {
   }
 }
 
+// ── CADENCE — trading hours only ─────────────────────────────────────────────
+// Was "every 15 minutes", i.e. 96 runs/day. Each run snapshots the RTDB
+// (stock_targets, products, refill_requests, orders, per-location stock, plus a
+// 31-day stock_movements slice) — ~31 MB measured live on 2026-08-04, of which
+// 14 MB is the ledger. Overnight that snapshot recomputes a picture that has not
+// changed: movements between 19:00 and 07:00 SAST are 4.27% of all ledger
+// activity, and once scripts and migrations are excluded, ~69 per night across
+// 22 nights. Roughly a third of the daily cost bought nothing.
+//
+// 07:00 to 19:00 inclusive, every 15 minutes = 49 runs/day (was 96):
+//   • 07:00      — morning sweep, before the 08:30 open, catches anything an
+//                  evening transfer left behind
+//   • 08:30–17:30 — trading; unchanged behaviour, still 15-minute cadence
+//   • 17:30–19:00 — the catch-up window after close
+//
+// App Engine cron syntax ("every N minutes from HH:MM to HH:MM") is used rather
+// than unix-cron because it is INCLUSIVE of the end time: `*/15 7-19 * * *`
+// would also fire at 19:15/19:30/19:45, which is exactly the window we are
+// closing. The previous value used the same syntax family ("every 15 minutes").
+//
+// timeZone is set EXPLICITLY: Cloud Scheduler defaults to UTC, which in SAST
+// (UTC+2, no DST) would shift the whole window two hours and run the "morning
+// sweep" at 09:00 local while leaving 05:00–07:00 uncovered.
+//
+// DEPLOY: scoped only — `firebase deploy --only functions:refillHealthScan`.
+// A bare `--only functions` would touch the POS app's functions in this shared
+// project (see the header note).
 exports.refillHealthScan = onSchedule(
-  { schedule: "every 15 minutes", region: "europe-west1", timeoutSeconds: 300, memory: "512MiB" },
+  {
+    schedule: "every 15 minutes from 07:00 to 19:00",
+    timeZone: "Africa/Johannesburg",
+    region: "europe-west1",
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
   runScan
 );
 exports._runScan = runScan; // exported for one-off manual invocation in tests/smoke
