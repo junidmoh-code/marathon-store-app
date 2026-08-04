@@ -19,7 +19,27 @@
 // than depending on a fallback forever — it is an explicit, confirmed action,
 // never something that fires on page load.
 
-import { useEffect, useMemo, useState } from "react";
+// ── WHY THIS PAGE IS BUILT THE WAY IT IS (perf) ──────────────────────────────
+// Measured 2026-08-04 on live data: 2,586 products in the backlog. Rendering
+// them all at once froze every phone. Four compounding causes, all fixed here —
+// do not reintroduce any of them:
+//
+//   1. NO backdrop-filter ON A ROW. Each blurred row is its own GPU compositing
+//      layer WITH a backdrop read-back, per paint and per scroll frame. 2,586 of
+//      them is not "slow", it is a locked phone. Rows use a flat translucent
+//      background; the blur survives only on the handful of chrome elements
+//      (batch bar, modals) where the count is fixed and small.
+//   2. PAGINATED at PAGE_SIZE. `list.map` over the whole queue also meant
+//      ~80,000 <option> nodes, because every row carried its own <select> of 31
+//      categories in 2 optgroups.
+//   3. NO <select> PER ROW. A row shows a BUTTON; the category list opens once,
+//      for the row you tapped. 31 options exist once, not 2,586 times.
+//   4. ROWS ARE MEMOISED and the search is DEBOUNCED. Row state (`sel`) lives in
+//      the parent, so without memo every keystroke and every checkbox tap
+//      re-rendered the entire page — and `products` is a live subscription over
+//      the whole 2.5 MB catalogue, so any edit anywhere did too.
+
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase.js";
 import {
@@ -37,6 +57,12 @@ const SELECT_CAP = 2000;
 // payload that either lands or doesn't. Chunks keep each write small and let a
 // partial failure be reported honestly.
 const WRITE_CHUNK = 250;
+// Rows rendered at once. The queue is ~2,600 today; everything above this waits
+// behind "Show more" rather than being built into the DOM up front.
+const PAGE_SIZE = 40;
+// Search debounce. Filtering re-renders the visible page, so it must not run on
+// every keystroke while a thumb is mid-word.
+const SEARCH_DEBOUNCE_MS = 220;
 
 const chunk = (arr, n) => {
   const out = [];
@@ -44,8 +70,74 @@ const chunk = (arr, n) => {
   return out;
 };
 
+// ── ONE ROW ───────────────────────────────────────────────────────────────────
+// memo() with a narrow prop surface, because `sel` lives in the parent: without
+// it, one checkbox tap or one keystroke re-rendered every row on the page. The
+// callbacks it receives are all useCallback-stable for the same reason.
+//
+// NOTE THE ABSENCES, both deliberate and both load-bearing:
+//   • no backdrop-filter — a blurred row is a GPU layer with a backdrop read
+//   • no <select>        — tapping "Pick category" opens the ONE shared sheet
+const AssignRow = memo(function AssignRow({ p, on, saving, busy, onToggle, onPhoto, onPick }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 12, padding: "11px 13px",
+      // Flat translucent fill. Visually near-identical to the old blurred card,
+      // minus the per-row compositing layer that froze phones.
+      background: on ? "rgba(74,127,255,.11)" : "rgba(14,18,32,.72)",
+      border: `1px solid ${on ? "rgba(74,127,255,.45)" : "rgba(120,150,255,.14)"}`,
+      borderRadius: 14,
+    }}>
+      <input type="checkbox" checked={on} onChange={() => onToggle(p.id)} aria-label={`Select ${p.name || p.id}`}
+        style={{ width: 22, height: 22, accentColor: BLUE, cursor: "pointer", flexShrink: 0 }} />
+
+      {p.photoUrl ? (
+        <button type="button" onClick={() => onPhoto(p)} title="Open photo"
+          aria-label={`Open photo of ${p.name || p.id}`}
+          style={{ position: "relative", width: 52, height: 52, borderRadius: 10, overflow: "hidden",
+                   flexShrink: 0, padding: 0, cursor: "zoom-in", background: "rgba(255,255,255,.04)",
+                   border: "1px solid rgba(255,255,255,.07)" }}>
+          <img src={p.photoUrl} alt="" loading="lazy" decoding="async"
+               style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+          <span style={{ position: "absolute", right: 2, bottom: 2, width: 15, height: 15, borderRadius: 4,
+                         background: "rgba(0,0,0,.62)", color: "#fff", fontSize: 9, lineHeight: "15px",
+                         textAlign: "center" }}>⤢</span>
+        </button>
+      ) : (
+        <div style={{ width: 52, height: 52, borderRadius: 10, flexShrink: 0,
+                      background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.07)",
+                      display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <span style={{ fontSize: 17, opacity: .3 }}>▦</span>
+        </div>
+      )}
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {p.name || p.id}
+        </div>
+        <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.42)", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {p.brand ? <b style={{ color: "rgba(233,238,255,.6)" }}>{p.brand}</b> : "no brand"}
+          {" · now: "}
+          {p.category || "—"}{p.subcategory ? ` / ${p.subcategory}` : ""}
+          {" · "}{p.productType || "no type"}
+        </div>
+        <button type="button" disabled={busy || saving} onClick={() => onPick(p)}
+          aria-label={`Assign a category to ${p.name || p.id}`}
+          style={{ marginTop: 8, background: "rgba(74,127,255,.12)", border: "1px solid rgba(74,127,255,.42)",
+                   color: "#9DBCFF", borderRadius: 10, padding: "10px 14px", fontSize: 13.5, fontWeight: 700,
+                   cursor: busy || saving ? "wait" : "pointer", opacity: saving ? .5 : 1, minHeight: 42 }}>
+          {saving ? "Saving…" : "Pick category ▾"}
+        </button>
+      </div>
+    </div>
+  );
+});
+
 export default function AssignCategoriesTab({ products = [], registry }) {
   const [q, setQ] = useState("");
+  // What the input shows (`q`) is separate from what filters (`qDebounced`), so
+  // typing stays instant while the list recomputes at most every 220ms.
+  const [qDebounced, setQDebounced] = useState("");
   const [legacyFilter, setLegacyFilter] = useState("");   // legacy top-level or "sub:<leaf>"
   const [brandFilter, setBrandFilter] = useState("");
   const [sel, setSel] = useState(() => new Set());
@@ -62,6 +154,16 @@ export default function AssignCategoriesTab({ products = [], registry }) {
   // the decision can be made and applied without closing and hunting for the row
   // again.
   const [photoView, setPhotoView] = useState(null);       // the product being viewed
+  // How many rows are currently built into the DOM (see PAGE_SIZE).
+  const [shown, setShown] = useState(PAGE_SIZE);
+  // The row whose category picker is open. One picker exists at a time — that is
+  // the whole reason 80,000 <option> nodes are gone.
+  const [pickFor, setPickFor] = useState(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setQDebounced(q), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [q]);
 
   const cats = useMemo(() => allCategories(registry), [registry]);
   const groups = useMemo(() => groupedCategories(registry), [registry]);
@@ -111,7 +213,7 @@ export default function AssignCategoriesTab({ products = [], registry }) {
 
   // ── The visible, filtered list.
   const list = useMemo(() => {
-    const query = q.trim().toLowerCase();
+    const query = qDebounced.trim().toLowerCase();
     return queue
       .filter((p) => {
         if (brandFilter && p.brand !== brandFilter) return false;
@@ -128,7 +230,13 @@ export default function AssignCategoriesTab({ products = [], registry }) {
         return true;
       })
       .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  }, [queue, q, legacyFilter, brandFilter]);
+  }, [queue, qDebounced, legacyFilter, brandFilter]);
+
+  // The rows actually rendered. Everything past this waits behind "Show more".
+  const visible = useMemo(() => list.slice(0, shown), [list, shown]);
+  // A new filter/search means a new list — start it from the top again, or the
+  // user would land mid-way through a page count that no longer means anything.
+  useEffect(() => { setShown(PAGE_SIZE); }, [qDebounced, legacyFilter, brandFilter]);
 
   // Prune selections that have left the backlog (assigned on another device) so
   // the toolbar count can never promise more than the write will touch.
@@ -146,15 +254,16 @@ export default function AssignCategoriesTab({ products = [], registry }) {
 
   // Esc closes the photo viewer, and the confirm dialog when no photo is open.
   useEffect(() => {
-    if (!photoView && !confirm) return;
+    if (!photoView && !confirm && !pickFor) return;
     const onKey = (e) => {
       if (e.key !== "Escape") return;
-      if (photoView) setPhotoView(null);
+      if (pickFor) setPickFor(null);
+      else if (photoView) setPhotoView(null);
       else if (!busy) setConfirm(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [photoView, confirm, busy]);
+  }, [photoView, confirm, pickFor, busy]);
 
   // Keep the open photo in sync with live data, and drop it once the product
   // leaves the queue — otherwise assigning it on another device would leave a
@@ -170,7 +279,17 @@ export default function AssignCategoriesTab({ products = [], registry }) {
     if (confirm?.kind === "bulk" && selectedList.length === 0) setConfirm(null);
   }, [confirm, selectedList.length]);
 
-  const toggle = (id) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  // Same rule the photo viewer follows: if the product was assigned on another
+  // device while its picker was open, close it rather than offer a dead choice.
+  useEffect(() => {
+    if (pickFor && !queue.some((p) => p.id === pickFor.id)) setPickFor(null);
+  }, [queue, pickFor]);
+
+  // Stable identities — a memoised row that receives a fresh function on every
+  // parent render is not memoised at all.
+  const toggle = useCallback((id) => {
+    setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  }, []);
   const selectAllMatching = () => setSel((s) => {
     const n = new Set(s);
     for (const p of list) { if (n.size >= SELECT_CAP) break; n.add(p.id); }
@@ -423,71 +542,74 @@ export default function AssignCategoriesTab({ products = [], registry }) {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-          {list.map((p) => {
-            const on = sel.has(p.id);
-            return (
-              <div key={p.id} style={{
-                display: "flex", alignItems: "center", gap: 12, padding: "11px 13px",
-                background: on ? "rgba(74,127,255,.09)" : CARD,
-                backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)",
-                border: `1px solid ${on ? "rgba(74,127,255,.45)" : "rgba(120,150,255,.14)"}`,
-                borderRadius: 14, transition: "background .12s, border-color .12s",
-              }}>
-                <input type="checkbox" checked={on} onChange={() => toggle(p.id)} aria-label={`Select ${p.name || p.id}`}
-                  style={{ width: 20, height: 20, accentColor: BLUE, cursor: "pointer", flexShrink: 0 }} />
+          {visible.map((p) => (
+            <AssignRow key={p.id} p={p} on={sel.has(p.id)} saving={savingId === p.id} busy={busy}
+              onToggle={toggle} onPhoto={setPhotoView} onPick={setPickFor} />
+          ))}
 
-                {p.photoUrl ? (
-                  <button type="button" onClick={() => setPhotoView(p)}
-                    title="Open photo"
-                    aria-label={`Open photo of ${p.name || p.id}`}
-                    style={{ position: "relative", width: 52, height: 52, borderRadius: 10, overflow: "hidden",
-                             flexShrink: 0, padding: 0, cursor: "zoom-in", background: "rgba(255,255,255,.04)",
-                             border: "1px solid rgba(255,255,255,.07)" }}>
-                    <img src={p.photoUrl} alt="" loading="lazy"
-                         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                    <span style={{ position: "absolute", right: 2, bottom: 2, width: 15, height: 15, borderRadius: 4,
-                                   background: "rgba(0,0,0,.62)", color: "#fff", fontSize: 9, lineHeight: "15px",
-                                   textAlign: "center" }}>⤢</span>
-                  </button>
-                ) : (
-                  <div style={{ width: 52, height: 52, borderRadius: 10, flexShrink: 0,
-                                background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.07)",
-                                display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <span style={{ fontSize: 17, opacity: .3 }}>▦</span>
-                  </div>
-                )}
-
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {p.name || p.id}
-                  </div>
-                  <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.42)", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {p.brand ? <b style={{ color: "rgba(233,238,255,.6)" }}>{p.brand}</b> : "no brand"}
-                    {" · now: "}
-                    {p.category || "—"}{p.subcategory ? ` / ${p.subcategory}` : ""}
-                    {" · "}{p.productType || "no type"}
-                  </div>
-                  <div style={{ marginTop: 8 }}>
-                    <select
-                      value=""
-                      disabled={busy || savingId === p.id}
-                      onChange={(e) => { if (e.target.value) assignOne(p, e.target.value); }}
-                      aria-label={`Assign a category to ${p.name || p.id}`}
-                      style={{ ...pickerStyle, minHeight: 42, padding: "9px 11px", fontSize: 15,
-                               opacity: savingId === p.id ? .5 : 1, maxWidth: 300 }}>
-                      <option value="">{savingId === p.id ? "Saving…" : "Pick category…"}</option>
-                      {catOptions}
-                    </select>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-          {list.length >= SELECT_CAP && (
-            <div style={{ fontSize: 12, color: "rgba(251,191,36,.8)", padding: "8px 2px" }}>
-              Showing {list.length.toLocaleString()} — “Select all” stops at {SELECT_CAP.toLocaleString()}.
+          {list.length > visible.length && (
+            <button type="button" onClick={() => setShown((n) => n + PAGE_SIZE * 2)}
+              style={{ background: "rgba(74,127,255,.10)", border: "1px solid rgba(74,127,255,.35)", color: "#9DBCFF",
+                       borderRadius: 12, padding: "13px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer", marginTop: 3 }}>
+              Show more — {(list.length - visible.length).toLocaleString()} more match
+            </button>
+          )}
+          {list.length > 0 && (
+            <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.35)", padding: "4px 2px", textAlign: "center" }}>
+              Showing {visible.length.toLocaleString()} of {list.length.toLocaleString()}
+              {list.length >= SELECT_CAP && ` · “Select all” stops at ${SELECT_CAP.toLocaleString()}`}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── CATEGORY PICKER (one, shared) ─────────────────────────────────── */}
+      {/* The 31 categories exist ONCE in the DOM, for whichever row was tapped —
+          not once per row. This is what removed ~80,000 <option> nodes. */}
+      {pickFor && (
+        <div onClick={() => setPickFor(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.72)", zIndex: 65,
+                   display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: "#0B0E18", border: "1px solid rgba(74,127,255,.28)",
+                     borderRadius: "18px 18px 0 0", padding: "16px 16px 22px", width: "100%", maxWidth: 520,
+                     maxHeight: "82vh", overflowY: "auto", boxShadow: "0 -18px 50px rgba(0,0,0,.6)" }}>
+            <div style={{ fontSize: 12, color: "rgba(233,238,255,.45)", marginBottom: 2 }}>Assign category to</div>
+            <div style={{ fontSize: 15.5, fontWeight: 800, color: "#fff", marginBottom: 14,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {pickFor.name || pickFor.id}
+            </div>
+
+            {groups.map((g) => (
+              <div key={g.top} style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: ".08em", color: "rgba(233,238,255,.35)",
+                              textTransform: "uppercase", marginBottom: 7 }}>{g.label}</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {g.options.map((c) => {
+                    const ok = isAssignable(registry, c.key);
+                    return (
+                      <button key={c.key} type="button" disabled={!ok || busy}
+                        onClick={() => { const t = pickFor; setPickFor(null); assignOne(t, c.key); }}
+                        style={{ background: ok ? "rgba(74,127,255,.10)" : "rgba(255,255,255,.03)",
+                                 border: `1px solid ${ok ? "rgba(74,127,255,.35)" : "rgba(255,255,255,.10)"}`,
+                                 color: ok ? "#CFE0FF" : "rgba(233,238,255,.3)", borderRadius: 10,
+                                 padding: "11px 14px", fontSize: 13.5, fontWeight: 700, minHeight: 44,
+                                 cursor: ok && !busy ? "pointer" : "not-allowed" }}>
+                        {ok ? c.label : `${c.label} — misconfigured`}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+
+            <button type="button" onClick={() => setPickFor(null)}
+              style={{ width: "100%", background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.16)",
+                       color: "rgba(233,238,255,.75)", borderRadius: 11, padding: "13px", fontSize: 13.5,
+                       fontWeight: 700, cursor: "pointer", marginTop: 4 }}>
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 
