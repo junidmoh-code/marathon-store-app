@@ -18,8 +18,13 @@
 // Names are matched raw and normalized (trim, collapse spaces, lowercase,
 // collapse spaced hyphens) — the same normalization the old maps used.
 
+// String()-coerced on the way in: /products has no schema, so a numeric or
+// object `name` reaches here unchanged (the catalog already holds names like
+// "2598" that are one careless re-save away from being stored as a number).
+// Both index builders run inside a useMemo in SourceView, so a TypeError here
+// would white-screen the ENTIRE Source view rather than degrade one card.
 export const normalizeName = (s) =>
-  s.trim().replace(/\s+/g, " ").toLowerCase().replace(/\s*-\s*/g, "-");
+  String(s ?? "").trim().replace(/\s+/g, " ").toLowerCase().replace(/\s*-\s*/g, "-");
 
 // Sentinel marking a name that maps to MORE than one product id. Kept as a
 // value (not absence) so "seen twice" can't be re-set by a third duplicate.
@@ -49,7 +54,12 @@ export function buildProductIdIndex(products) {
   };
   (products || []).forEach((p) => {
     if (!p || !p.name || !p.id) return;
-    add(exactIds, p.name, p.id);
+    // String()-keyed, not raw: a numeric name 2598 and a string "2598" are
+    // DIFFERENT Map keys, so an uncoerced index would resolve a lookup for
+    // "2598" to whichever one happened to be the string — silently picking
+    // between two products a human calls the same name, which is the exact
+    // class of bug this module exists to refuse.
+    add(exactIds, String(p.name), p.id);
     add(normIds, normalizeName(p.name), p.id);
   });
   // One id → that id; more than one → AMBIGUOUS, never a guess.
@@ -76,7 +86,8 @@ export function buildProductIdIndex(products) {
 // Never guesses: a wrong pid here becomes a wrong /stock write downstream.
 export function resolveProductIdByName(index, name) {
   if (!index || !name) return null;
-  const hitExact = index.exact.get(name);
+  // Coerced to match the index's String() keying — see buildProductIdIndex.
+  const hitExact = index.exact.get(String(name));
   if (hitExact && hitExact !== AMBIGUOUS) return hitExact;
   const hitNorm = index.norm.get(normalizeName(name));
   if (hitNorm && hitNorm !== AMBIGUOUS) return hitNorm;

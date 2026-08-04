@@ -124,4 +124,34 @@ describe("normalizeName", () => {
   it("trims, collapses whitespace, lowercases, collapses spaced hyphens", () => {
     expect(normalizeName("  Nike  Air -  Max ")).toBe("nike air-max");
   });
+
+  it("survives non-string input instead of white-screening the Source view", () => {
+    // /products has no schema. The index builders run in a useMemo, so a
+    // TypeError here takes the whole view down, not one card. The catalog
+    // already holds names like "2598" — one careless re-save from being numeric.
+    expect(() => normalizeName(2598)).not.toThrow();
+    expect(normalizeName(2598)).toBe("2598");
+    expect(normalizeName(null)).toBe("");
+    expect(normalizeName(undefined)).toBe("");
+    expect(() => normalizeName({})).not.toThrow();
+  });
+});
+
+describe("index builders tolerate a malformed catalog", () => {
+  it("a numeric name is indexed, not thrown on", () => {
+    const idx = buildProductIdIndex([{ id: "pNum", name: 2598 }, UNIQUE]);
+    expect(resolveProductIdByName(idx, "2598")).toBe("pNum");
+    expect(resolveProductIdByName(idx, UNIQUE.name)).toBe("pU");
+  });
+
+  it("two products whose numeric names normalize alike still refuse", () => {
+    const idx = buildProductIdIndex([{ id: "pA", name: 2598 }, { id: "pB", name: "2598" }]);
+    expect(resolveProductIdByName(idx, "2598")).toBeNull();
+  });
+
+  it("buildPhotoIndex does not throw on a non-string name", () => {
+    const idx = buildPhotoIndex([{ id: "pNum", name: 2598, photoUrl: "https://x/n.jpg" }]);
+    expect(photoForProduct(idx, { productId: "pNum" }).photoUrl).toBe("https://x/n.jpg");
+    expect(photoForProduct(idx, { productName: 2598 }).photoUrl).toBe("https://x/n.jpg");
+  });
 });

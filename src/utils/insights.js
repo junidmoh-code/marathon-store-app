@@ -114,7 +114,10 @@ export function readyEventsForPeriod(args) {
 // RTDB-illegal chars → "_". Exported as the LEGACY name key: response cells and
 // movement ids written before the pid-key cutover used it, and the dual-read
 // paths still need to derive it. New cells never use it when a productId exists.
-export const sourceNameKey = (s) => (s || "").replace(/[.#$[\]/\s]/g, "_");
+// String()-coerced for the same reason as normalizeName: the log feeds carry no
+// schema, and a non-string productName would throw inside the group builders'
+// useMemo and take the whole Source view down instead of one card.
+export const sourceNameKey = (s) => String(s ?? "").replace(/[.#$[\]/\s]/g, "_");
 const sanitizeKey = sourceNameKey;
 
 // ── THE Source group key — productId first, sanitized name only as fallback ──
