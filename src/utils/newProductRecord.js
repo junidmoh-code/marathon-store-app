@@ -15,6 +15,7 @@
 // ADDS `categoryKey` alongside. It never removes or rewrites a legacy field.
 
 import { legacyFor, sizesOf, catByKey } from "./productTaxonomy.js";
+import { normaliseStyleCode, formatStyleCodeForDisplay } from "./styleCode.js";
 
 export const VALID_HUBS = ["hub1", "hub2", "hub3"];
 
@@ -40,7 +41,7 @@ export function cleanHubs(hubs, isClothing) {
  *
  * @param {object}   registry   live taxonomy registry
  * @param {object}   form       { name, categoryKey, photo, hubs, stockPrice, retailPrice, hasShoeBoxOption }
- * @param {object}   extras     { id, photoUrl, brand, photoUploaded }
+ * @param {object}   extras     { id, photoUrl, brand, photoUploaded, styleCode }
  */
 export function buildNewProduct(registry, form, extras = {}) {
   const cat = catByKey(registry, form && form.categoryKey);
@@ -90,6 +91,26 @@ export function buildNewProduct(registry, form, extras = {}) {
   product.hasShoeBoxOption = isClothing ? false : !!form.hasShoeBoxOption;
 
   if (extras.photoUploaded && extras.photoUpdatedAt != null) product.photoUpdatedAt = extras.photoUpdatedAt;
+
+  // ── STYLE CODE — the manufacturer code off the inside-tongue label ─────────
+  // Two fields, both written or neither:
+  //   styleCode            the human-readable form, as the brand prints it
+  //   styleCodeNormalised  the identity key — uppercase, separators stripped.
+  //                        THIS is what lookups, the /sneaker_models cache and
+  //                        the duplicate check match on, and what the /products
+  //                        .indexOn covers.
+  // OMITTED (not written as null) when there is no code: clothing, accessories
+  // and perfume have no style code, and a null on every one of them is 5,000
+  // pointless bytes that also make "has a code" a two-condition test everywhere.
+  // Absent means "no code" — every reader must tolerate it.
+  const styleCodeNormalised = normaliseStyleCode(extras.styleCode);
+  if (styleCodeNormalised) {
+    // Keep the operator's spelling when they gave one; otherwise render the
+    // canonical form. The KEY is always the normalised value either way.
+    const typed = String(extras.styleCode || "").trim();
+    product.styleCode = typed || formatStyleCodeForDisplay(styleCodeNormalised);
+    product.styleCodeNormalised = styleCodeNormalised;
+  }
 
   return product;
 }

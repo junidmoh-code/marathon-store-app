@@ -3126,3 +3126,19 @@ exports.wakeHeldChecks = require("./displayChecks/wakeHeldChecks.js").wakeHeldCh
 // decision in displayChecks/lib.cjs; IO in displayChecks/completeCheck.js.
 //   firebase deploy --only functions:completeDisplayCheck
 exports.completeDisplayCheck = require("./displayChecks/completeCheck.js").completeDisplayCheck;
+
+// ─── STYLE CODE — resolveStyleCode (sneaker intake identity lookup) ───────────
+// Sneakers arrive without boxes, so there is no box barcode. The manufacturer
+// style code on the inside-tongue label is the canonical identity key instead.
+// This callable turns a code into a product identity behind ONE signature and a
+// three-tier provider chain — /sneaker_models cache, the KicksDB catalog API,
+// and a reserved web-search stub — so a tier can be swapped without touching a
+// caller. Pure normalisation in lib/style-code.cjs, providers in
+// lib/style-code-providers.cjs (both node-tested); IO in
+// styleCode/resolveStyleCode.js.
+//
+// SECRET: KICKSDB_API_KEY. The key is read inside the function and NEVER ships
+// to the client — the browser only ever calls this callable.
+//   firebase functions:secrets:set KICKSDB_API_KEY
+//   firebase deploy --only functions:resolveStyleCode
+exports.resolveStyleCode = require("./styleCode/resolveStyleCode.js").resolveStyleCode;
