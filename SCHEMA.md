@@ -261,7 +261,19 @@ write time and shows up in the UI as a silent no-op.
 | `detectedAt` | number (epoch ms) | **Required.** |
 | `status` | `"open"` \| `"merged"` \| `"dismissed"` | Rules-validated enum. A human closes it; nothing else does. |
 | `detectedBy` | string \| null | uid of whoever ran the lookup that surfaced it. |
-| `styleCodeNormalised` / `styleCode` | string | Context for the banner. |
+| `styleCodeNormalised` | string (≤32 chars) | Context for the banner. The live rule validates this field by name and length. **NOT `styleCode`** — that field name is not validated here, and the normalised form always fits 32 characters. |
+
+The live rule carries an `$other` validator set to `true`, so additional
+children are permitted; `detectedBy` and `styleCodeNormalised` each have their
+own explicit validators.
+
+**Re-detection never reopens a closed pair.** A style-code collision is
+*permanent* until someone merges the products — both records keep the code, so
+every future scan of that shoe re-detects it. A blind `.set()` would therefore
+rewrite `status` to `"open"` on every scan and the duplicate queue could never
+be cleared. An existing row keeps its `status` **and** its original
+`detectedAt` (when the collision was first seen is the useful fact, not when it
+was last re-observed); only a genuinely new row is born `"open"`.
 
 `pairId` is **deterministic**: the two ids sorted and joined with `__`
 (`"p1__p2"`). Re-detecting the same collision rewrites the same row instead of

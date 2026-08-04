@@ -513,6 +513,22 @@ async function reserveNextSkuAndBarcode() {
   return reserved; // { sku, barcode }
 }
 
+// ─── AN ERROR THE OPERATOR IS MEANT TO READ ──────────────────────────────────
+// addProduct's catch block shows a generic "please try again" for anything it
+// does not recognise, because raw failures are noise on a shop floor. Some
+// failures, though, ARE the instruction — "this code is already on another
+// product, add stock to that one instead". Those must survive the filter.
+//
+// It used to decide that by pattern-matching the message text, which silently
+// swallowed every style-code claim message and left the operator retrying an
+// action that could never succeed. Intent is now flagged, not inferred: if the
+// message is written FOR a person, say so here. (CodeRabbit, PR #312.)
+function operatorError(message) {
+  const err = new Error(message);
+  err.showToOperator = true;
+  return err;
+}
+
 function addProductToFirebase(product) {
   if (!product || !product.id || !product.name) {
     console.warn("addProductToFirebase: refusing to write invalid product", product);
@@ -5088,15 +5104,23 @@ function AdminView({ products, orders, onExit }) {
           uid: auth.currentUser?.uid ?? null,
           nowMs: serverNowMs(),
         });
+        // These messages MUST reach the operator verbatim. The generic catch
+        // below used to decide that by pattern-matching the message text, which
+        // silently swallowed every one of these ("reserve" does not match
+        // "reservation") and showed "please try again" instead. The operator
+        // then retried forever, hitting CLAIM_TAKEN every time, and the one
+        // instruction they needed — add stock to the existing product — was
+        // never shown. Flag intent explicitly rather than describing it in
+        // prose the error handler has to guess at. (CodeRabbit, PR #312.)
         if (outcome.kind === CLAIM_TAKEN) {
           // Someone already owns this code. NOTHING has been written yet.
-          throw new Error(
+          throw operatorError(
             `${claimFailureMessage(outcome)}` +
             (outcome.productId ? `\n\nExisting product: ${outcome.productId}` : "")
           );
         }
         if (outcome.kind !== CLAIM_OK) {
-          throw new Error(claimFailureMessage(outcome));
+          throw operatorError(claimFailureMessage(outcome));
         }
       }
 
@@ -5111,7 +5135,7 @@ function AdminView({ products, orders, onExit }) {
           console.error("addProduct: product write failed AFTER the style-code claim landed", {
             styleCodeNormalised: newProduct.styleCodeNormalised, productId: id,
           });
-          throw new Error(
+          throw operatorError(
             `The product could not be saved, but style code ${newProduct.styleCode} was already ` +
             `reserved for id ${id}. Ask an admin to clear that reservation before retrying — ` +
             `the code will otherwise look taken by a product that does not exist.`
@@ -5183,7 +5207,11 @@ function AdminView({ products, orders, onExit }) {
       // Surface counter-exhaustion + reservation errors with their actual
       // message so the admin knows what's wrong; everything else gets the
       // generic prompt.
-      const msg = /counter exhausted|reservation|no longer available/i.test(String(err?.message || ""))
+      // `showToOperator` is the explicit signal; the regex is the legacy path
+      // for errors thrown before that flag existed. Deciding what a person is
+      // allowed to read by pattern-matching English is how the claim messages
+      // were lost — new operator-facing errors must set the flag.
+      const msg = err?.showToOperator || /counter exhausted|reservation|no longer available/i.test(String(err?.message || ""))
         ? `Failed to save product:\n${err.message}`
         : "Failed to save product. Please try again.";
       alert(msg);

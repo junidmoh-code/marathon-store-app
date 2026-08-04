@@ -149,9 +149,12 @@ async function runVisionOcr(base64, { fetchImpl, tokenFn } = {}) {
 async function runGeminiRead(base64, mimeType, apiKey, { fetchImpl } = {}) {
   const doFetch = fetchImpl || ((...a) => fetch(...a));
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
-  const res = await doFetch(`${GEMINI_ENDPOINT}?key=${encodeURIComponent(apiKey)}`, {
+  const res = await doFetch(GEMINI_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // The key goes in a HEADER, never the query string: URLs end up in access
+    // logs, error reports and traces, and we went to some trouble to keep this
+    // key off the client — leaking it server-side would waste that.
+    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
     body: JSON.stringify({
       contents: [{
         role: "user",
@@ -254,11 +257,20 @@ async function runLabelRead(db, {
     }
   }
 
-  // ── CACHE THE OUTCOME ──
-  // Zero candidates is cached too: a blank/unreadable photo must not re-bill on
+  // ── CACHE THE OUTCOME — BUT ONLY A SETTLED ONE ──
+  // Zero candidates is cached: a blank/unreadable photo must not re-bill on
   // every retry either. buildOcrCacheRecord reduces everything to bare codes, so
   // no payload can leak into the node.
-  if (!errors.length || candidates.length) {
+  //
+  // What must NOT be cached is a result the funnel never finished deciding. If
+  // tier 1 returns two candidates and tier 2 THROWS, the answer is still
+  // ambiguous — and caching it freezes that ambiguity for the full 90-day TTL,
+  // because every later read of the same photo hits the fresh-cache branch and
+  // returns before tier 2 is ever retried. A transient Gemini outage would
+  // permanently pin an unresolved label. (CodeRabbit, PR #312.)
+  const tier2Failed = tier2Used && errors.some((e) => e.tier === "gemini");
+  const settled = !tier2Failed && (!errors.length || candidates.length === 1);
+  if (settled) {
     try {
       await cacheRef.set(buildOcrCacheRecord({ candidates, source, nowMs }));
     } catch (err) {
@@ -295,12 +307,18 @@ exports.readStyleCodeLabel = onCall(
     }
     const mime = ALLOWED_MIME.includes(mimeType) ? mimeType : "image/jpeg";
 
-    let buffer;
-    try {
-      buffer = Buffer.from(imageBase64, "base64");
-    } catch {
+    // ── SANITISE BEFORE DECODING ──────────────────────────────────────────
+    // Buffer.from(x, "base64") does NOT throw on malformed input — it silently
+    // drops anything it cannot decode. So junk passes the size check, and the
+    // ORIGINAL string (data-URL prefix and all) is what gets forwarded to both
+    // providers, where it fails obscurely and bills us for the privilege.
+    // Strip the prefix, validate the alphabet, and use the cleaned value
+    // everywhere downstream. (CodeRabbit, PR #312.)
+    const cleaned = imageBase64.replace(/^data:image\/[a-z+.-]+;base64,/i, "").replace(/\s/g, "");
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(cleaned) || cleaned.length % 4 !== 0) {
       throw new HttpsError("invalid-argument", "imageBase64 is not valid base64.");
     }
+    const buffer = Buffer.from(cleaned, "base64");
     if (!buffer.length) throw new HttpsError("invalid-argument", "imageBase64 decoded to nothing.");
     if (buffer.length > MAX_IMAGE_BYTES) {
       throw new HttpsError("invalid-argument", "Label photo is too large — retake it.");
@@ -308,7 +326,7 @@ exports.readStyleCodeLabel = onCall(
 
     return runLabelRead(db, {
       buffer,
-      base64: imageBase64,
+      base64: cleaned,
       mimeType: mime,
       nowMs: Date.now(),
       geminiKey: geminiApiKey.value(),

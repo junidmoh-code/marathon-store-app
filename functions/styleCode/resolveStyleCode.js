@@ -143,20 +143,40 @@ async function findProductsByStyleCode(db, normalised) {
 // and never delete: an automatic merge here would destroy stock history.
 async function flagDuplicates(db, normalised, matches, actor, nowMs) {
   const pairs = duplicatePairs(matches.map((m) => m.id));
-  await Promise.all(pairs.map(({ pairId, productIdA, productIdB }) =>
-    db.ref(`${DUPLICATE_CANDIDATES_PATH}/${pairId}`).set({
+  await Promise.all(pairs.map(async ({ pairId, productIdA, productIdB }) => {
+    const ref = db.ref(`${DUPLICATE_CANDIDATES_PATH}/${pairId}`);
+    const prior = (await ref.get()).val();
+
+    // ── NEVER REOPEN A PAIR A HUMAN HAS CLOSED ──────────────────────────────
+    // pairId is deterministic, so re-detecting the same collision targets the
+    // same row. A blind .set() would rewrite status to "open" every time.
+    // And a style-code collision is PERMANENT until someone merges the
+    // products — both records keep the code, so every future scan of that shoe
+    // re-detects it. Rewriting the status would therefore reopen the row on
+    // every scan and the duplicate queue could never be cleared, which
+    // contradicts SCHEMA.md's "a human closes it; nothing else does".
+    // (CodeRabbit, PR #312.)
+    //
+    // So: an existing row keeps its status AND its original detectedAt (when
+    // the collision was first seen is the useful fact, not when it was last
+    // re-observed). Only a genuinely new row is born "open".
+    const status = prior && typeof prior.status === "string" ? prior.status : "open";
+    const detectedAt = prior && Number.isFinite(Number(prior.detectedAt)) ? Number(prior.detectedAt) : nowMs;
+
+    await ref.set({
       productIdA,
       productIdB,
       reason: DUP_REASON_STYLE_CODE, // enum: styleCodeCollision | manual | heuristic
-      status: "open",                // enum: open | merged | dismissed — a human closes it
-      detectedAt: nowMs,
-      // EXACTLY the rules-listed fields and nothing else. It is not confirmed
-      // whether this node permits additional children, and an unlisted key on a
-      // strictly-validated node is rejected at write time and looks like a
-      // silent no-op. The style code and the detecting user are already on the
-      // resolve response that raises the banner, so carrying them here too
-      // would buy nothing and risk the whole write.
-    })));
+      status,                        // enum: open | merged | dismissed — a human closes it
+      detectedAt,
+      // Context. The live rule permits additional children ($other validator is
+      // true) and validates both of these explicitly. NOTE the field is
+      // styleCodeNormalised, NOT styleCode — the rule validates a string of at
+      // most 32 characters, which the normalised form always satisfies.
+      styleCodeNormalised: normalised,
+      detectedBy: actor ? actor.uid : null,
+    });
+  }));
   return pairs.map((p) => p.pairId);
 }
 
@@ -309,7 +329,16 @@ async function runResolve(db, {
   // extra read.
   let claimOrphaned = false;
   if (claim && !existingProducts.some((p) => p.id === claim.productId)) {
-    claimOrphaned = !(await db.ref(`products/${claim.productId}/id`).get()).exists();
+    try {
+      claimOrphaned = !(await db.ref(`products/${claim.productId}/id`).get()).exists();
+    } catch (err) {
+      // Advisory flag only, and the ONE unguarded await left after the tier
+      // walk. Every other post-resolve write here states the same policy —
+      // bookkeeping must never fail the lookup — and this read was the
+      // exception: a rejection would discard an answer we had already obtained
+      // and paid the vendor for. Degrade to "not orphaned". (CodeRabbit #312.)
+      console.warn(`resolveStyleCode: orphan probe failed for ${claim.productId}:`, err && err.message);
+    }
   }
 
   const duplicate = existingProducts.length > 1;

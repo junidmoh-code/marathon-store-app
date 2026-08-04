@@ -332,3 +332,87 @@ test("claimIndexServerSide writes only the three permitted fields", async () => 
   assert.deepStrictEqual(Object.keys(db.data.style_code_index.IE3437).sort(),
     ["claimedAt", "claimedBy", "productId"]);
 });
+
+// ── SSRF GUARD (CWE-918) ─────────────────────────────────────────────────────
+// This worker fetches two URLs that came out of the database. product.photoUrl
+// is writable by ANY authenticated non-anonymous user, so without a destination
+// allowlist a staff account can make the function dial an internal address on
+// their behalf. (CodeRabbit, PR #312.)
+const { assertFetchableImageUrl, ALLOWED_IMAGE_HOSTS, compareImages } = require("../styleCode/processCapture.js");
+
+test("SSRF: internal and private addresses are refused", async () => {
+  const attacks = [
+    "http://169.254.169.254/latest/meta-data/",              // cloud metadata
+    "https://169.254.169.254/computeMetadata/v1/",
+    "https://metadata.google.internal/computeMetadata/v1/",
+    "https://localhost/admin",
+    "https://127.0.0.1:8080/",
+    "https://10.0.0.5/internal",
+    "https://192.168.1.1/router",
+    "http://firebasestorage.googleapis.com/x.jpg",           // right host, wrong scheme
+    "file:///etc/passwd",
+    "gopher://evil/",
+    "https://evil.example.com/x.jpg",
+    "https://firebasestorage.googleapis.com.evil.com/x.jpg", // suffix trick
+    "not a url",
+    "",
+    null,
+  ];
+  for (const url of attacks) {
+    assert.throws(() => assertFetchableImageUrl(url), /not https|not allowed|not a valid URL/,
+      `must refuse ${JSON.stringify(url)}`);
+  }
+});
+
+test("SSRF: the hosts we actually use are permitted", () => {
+  for (const host of ALLOWED_IMAGE_HOSTS) {
+    assert.strictEqual(assertFetchableImageUrl(`https://${host}/some/photo.jpg`), `https://${host}/some/photo.jpg`);
+  }
+  // Case-insensitive on host, as URLs are.
+  assert.ok(assertFetchableImageUrl("https://IMAGES.STOCKX.COM/a.jpg"));
+});
+
+test("SSRF: BOTH urls are validated before EITHER request is made", async () => {
+  let fetches = 0;
+  await assert.rejects(
+    compareImages("https://firebasestorage.googleapis.com/ok.jpg", "https://evil.example.com/x.jpg", "k", {
+      imageFetch: async () => { fetches++; return { ok: true, headers: { get: () => "image/jpeg" }, arrayBuffer: async () => new ArrayBuffer(4) }; },
+      fetchImpl: async () => { throw new Error("model must not be called"); },
+    }),
+    /not allowed/,
+  );
+  assert.strictEqual(fetches, 0, "a rejected second URL must not leave the first request in flight");
+});
+
+test("SSRF: redirects off an allowed host are refused", async () => {
+  // A permitted host that 302s to an internal one would otherwise walk straight
+  // through the allowlist, so the fetch must refuse to follow redirects at all.
+  const src = require("node:fs").readFileSync(require.resolve("../styleCode/processCapture.js"), "utf8");
+  assert.match(src, /redirect:\s*"error"/, "fetch must not follow redirects");
+});
+
+test("a refused image URL routes the capture to REVIEW, never to agreement", async () => {
+  const db = fakeDb({
+    products: { p1: PRODUCT({ photoUrl: "https://evil.example.com/x.jpg" }) },
+    sneaker_models: { CT8527016: MODEL() },
+  });
+  // No compareFn -> the real compareImages runs and throws on the bad host.
+  const out = await runCapture(db, "c1", CAPTURE(), { nowMs: NOW, geminiKey: "k" });
+  assert.strictEqual(out.status, "needsReview", "failing closed means a human looks, never a silent pass");
+  assert.match(db.data.products.p1.pendingStyleCode.comparisonError, /not allowed/);
+});
+
+// ── The API key must not ride in a URL ───────────────────────────────────────
+test("the Gemini key goes in a header, never the query string", async () => {
+  let seenUrl = null, seenHeaders = null;
+  await compareImages("https://images.stockx.com/a.jpg", "https://images.stockx.com/b.jpg", "SECRET-KEY", {
+    imageFetch: async () => ({ ok: true, headers: { get: () => "image/jpeg" }, arrayBuffer: async () => new ArrayBuffer(4) }),
+    fetchImpl: async (url, opts) => {
+      seenUrl = url; seenHeaders = opts.headers;
+      return { ok: true, async json() { return { candidates: [{ content: { parts: [{ text: '{"sameProduct":true,"confidence":0.9}' }] } }] }; } };
+    },
+  });
+  assert.ok(!String(seenUrl).includes("SECRET-KEY"), "URLs reach logs, traces and error reports");
+  assert.ok(!String(seenUrl).includes("key="));
+  assert.strictEqual(seenHeaders["x-goog-api-key"], "SECRET-KEY");
+});

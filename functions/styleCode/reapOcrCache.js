@@ -46,7 +46,15 @@ async function runReap(db, { nowMs, batch = BATCH } = {}) {
   const startAfter = typeof cursor === "string" ? cursor : "";
 
   const page = (await root.orderByKey().startAfter(startAfter).limitToFirst(batch).get()).val() || {};
-  const keys = Object.keys(page).filter((k) => k !== CURSOR_KEY);
+  // `.val()` hands back a PLAIN OBJECT, and JS property order is not a promise
+  // to reflect the query's ordering. Re-establish the lexicographic order
+  // orderByKey actually defines, or "the last key of the page" is not the
+  // highest key and the next page silently skips rows.
+  const pageKeys = Object.keys(page).sort();
+  // `_cursor` is our own bookkeeping, not a cache row — excluded from reaping.
+  // But it still OCCUPIES one of the `batch` slots the query returned, which is
+  // why the wrap decision below counts pageKeys and not this.
+  const keys = pageKeys.filter((k) => k !== CURSOR_KEY);
 
   // One multi-path update, not N deletes — a single round trip either way.
   const removals = {};
@@ -64,8 +72,17 @@ async function runReap(db, { nowMs, batch = BATCH } = {}) {
   if (deleted) await root.update(removals);
 
   // Fewer than a full page means the end of the node — wrap for the next run.
-  const wrapped = keys.length < batch;
-  const nextCursor = wrapped ? "" : keys[keys.length - 1];
+  //
+  // COUNT THE RAW PAGE, NOT THE FILTERED ROWS. `_cursor` sorts after the digits
+  // and before "a", and cache keys are lowercase sha256 hex — so it sits INSIDE
+  // the key range and lands in some page, consuming one of the `batch` slots.
+  // Comparing the filtered length against `batch` makes that page look short,
+  // wraps the cursor back to "", and the next run re-reads the same page. Once
+  // the node holds more than one page the sweep loops on the first one forever
+  // and never reaps the rest — the node grows without bound, which is the exact
+  // cost problem this function exists to prevent. (CodeRabbit, PR #312.)
+  const wrapped = pageKeys.length < batch;
+  const nextCursor = wrapped ? "" : pageKeys[pageKeys.length - 1];
   await root.child(CURSOR_KEY).set(nextCursor);
 
   return { scanned: keys.length, deleted, wrapped, nextCursor };

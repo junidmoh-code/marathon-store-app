@@ -439,10 +439,15 @@ test("two products on ONE code write a PAIR row to /duplicate_candidates and rai
   assert.strictEqual(flag.status, "open");
   assert.strictEqual(flag.detectedAt, NOW);
   assert.ok(!("productIds" in flag), "the array shape is the REJECTED shape");
-  // EXACTLY the rules-listed fields — an unlisted key on a strictly-validated
-  // node is rejected at write time and looks like a silent no-op.
+  assert.strictEqual(flag.detectedBy, "u1");
+  // The live rule permits extra children and validates these explicitly. The
+  // field is styleCodeNormalised, NOT styleCode — validated as a string of at
+  // most 32 chars, which the normalised form always satisfies.
+  assert.strictEqual(flag.styleCodeNormalised, "CT8527016");
+  assert.ok(flag.styleCodeNormalised.length <= 32);
+  assert.ok(!("styleCode" in flag), "styleCode is not the validated field name");
   assert.deepStrictEqual(Object.keys(flag).sort(),
-    ["detectedAt", "productIdA", "productIdB", "reason", "status"]);
+    ["detectedAt", "detectedBy", "productIdA", "productIdB", "reason", "status", "styleCodeNormalised"]);
 
   // NOTHING was merged, renamed or deleted — both products are untouched.
   assert.deepStrictEqual(db.data.products.p1, PRODUCTS.p1);
@@ -731,4 +736,55 @@ test("the miss is logged against the code as READ, not a variant", async () => {
   });
   assert.ok(db.data[STYLE_CODE_MISSES_PATH].CT8527O16, "the catalog failed on what we asked for");
   assert.strictEqual(Object.keys(db.data[STYLE_CODE_MISSES_PATH]).length, 1, "variants must not each log a miss");
+});
+
+// ── A CLOSED DUPLICATE MUST STAY CLOSED ──────────────────────────────────────
+// A style-code collision is PERMANENT until someone merges the products: both
+// records keep the code, so every future scan of that shoe re-detects it. If
+// re-detection rewrote the status, the duplicate queue could never be cleared.
+test("re-detection NEVER reopens a pair a human closed", async () => {
+  for (const closed of ["merged", "dismissed"]) {
+    const db = fakeDb({
+      products: PRODUCTS,
+      [DUPLICATE_CANDIDATES_PATH]: {
+        p1__p2: { productIdA: "p1", productIdB: "p2", reason: "styleCodeCollision", status: closed, detectedAt: 111 },
+      },
+    });
+    await runResolve(db, { code: "CT8527-016", providers: providersFor(db, fakeKicksDb({})), actor: ACTOR, nowMs: NOW });
+    const row = db.data[DUPLICATE_CANDIDATES_PATH].p1__p2;
+    assert.strictEqual(row.status, closed, `a ${closed} pair must not be reopened`);
+    assert.strictEqual(row.detectedAt, 111, "the FIRST sighting is the useful fact, not the latest re-observation");
+  }
+});
+
+test("an already-open pair stays open and keeps its original detectedAt", async () => {
+  const db = fakeDb({
+    products: PRODUCTS,
+    [DUPLICATE_CANDIDATES_PATH]: {
+      p1__p2: { productIdA: "p1", productIdB: "p2", reason: "styleCodeCollision", status: "open", detectedAt: 222 },
+    },
+  });
+  await runResolve(db, { code: "CT8527-016", providers: providersFor(db, fakeKicksDb({})), actor: ACTOR, nowMs: NOW });
+  const row = db.data[DUPLICATE_CANDIDATES_PATH].p1__p2;
+  assert.strictEqual(row.status, "open");
+  assert.strictEqual(row.detectedAt, 222);
+});
+
+test("a genuinely NEW pair is born open, stamped now", async () => {
+  const db = fakeDb({ products: PRODUCTS });
+  await runResolve(db, { code: "CT8527-016", providers: providersFor(db, fakeKicksDb({})), actor: ACTOR, nowMs: NOW });
+  const row = db.data[DUPLICATE_CANDIDATES_PATH].p1__p2;
+  assert.strictEqual(row.status, "open");
+  assert.strictEqual(row.detectedAt, NOW);
+});
+
+test("a malformed prior status is not trusted — it falls back to open", async () => {
+  const db = fakeDb({
+    products: PRODUCTS,
+    [DUPLICATE_CANDIDATES_PATH]: { p1__p2: { productIdA: "p1", productIdB: "p2", status: 42, detectedAt: "soon" } },
+  });
+  await runResolve(db, { code: "CT8527-016", providers: providersFor(db, fakeKicksDb({})), actor: ACTOR, nowMs: NOW });
+  const row = db.data[DUPLICATE_CANDIDATES_PATH].p1__p2;
+  assert.strictEqual(row.status, "open");
+  assert.strictEqual(row.detectedAt, NOW);
 });

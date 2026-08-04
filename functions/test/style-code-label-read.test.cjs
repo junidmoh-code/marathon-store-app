@@ -231,12 +231,81 @@ test("both tiers broken returns no candidates AND the errors — never a false '
     "an outage must NOT be cached as 'this photo has no code' for 90 days");
 });
 
-test("a missing Gemini key disables tier 2 without taking tier 1 down", async () => {
+test("a missing Gemini key is REPORTED as a tier-2 error, not a blank read", async () => {
+  // The original version of this test fed Vision a clean label, so tier 1
+  // answered, tier 2 never ran, and the missing-key branch was never reached —
+  // the test asserted nothing about the thing it was named for. Force tier 1 to
+  // come back empty so tier 2 actually runs. (CodeRabbit, PR #312.)
   const db = fakeDb({});
   const out = await runLabelRead(db, base({
-    geminiKey: "", visionFetch: visionOk(NIKE_LABEL), geminiFetch: geminiOk({}),
+    geminiKey: "",
+    visionFetch: visionOk("MADE IN VIETNAM"),          // zero candidates -> tier 2 IS attempted
+    geminiFetch: async () => { throw new Error("must not be reached without a key"); },
   }));
-  assert.deepStrictEqual(out.candidates, ["CT8527016"], "tier 1 answered, so tier 2 was never needed");
+
+  assert.deepStrictEqual(out.candidates, []);
+  assert.strictEqual(out.tier2Used, true);
+  assert.strictEqual(out.errors.length, 1);
+  assert.strictEqual(out.errors[0].tier, "gemini");
+  assert.match(out.errors[0].message, /GEMINI_API_KEY is not configured/);
+});
+
+test("tier 1 answering on its own still needs no Gemini key", async () => {
+  const db = fakeDb({});
+  const out = await runLabelRead(db, base({
+    geminiKey: "", visionFetch: visionOk(NIKE_LABEL),
+    geminiFetch: async () => { throw new Error("must not be called"); },
+  }));
+  assert.deepStrictEqual(out.candidates, ["CT8527016"]);
+  assert.strictEqual(out.tier2Used, false);
+  assert.deepStrictEqual(out.errors, []);
+});
+
+// ── A TIER-2 FAILURE MUST NOT FREEZE AN AMBIGUOUS ANSWER FOR 90 DAYS ─────────
+test("an AMBIGUOUS read is NOT cached when tier 2 failed", async () => {
+  // Vision finds two codes, Gemini (which exists to disambiguate) throws. The
+  // answer is unresolved. Caching it would pin that ambiguity for the full TTL,
+  // because every later read of the photo returns from cache before tier 2 is
+  // retried — a transient outage becomes permanent. (CodeRabbit, PR #312.)
+  const db = fakeDb({});
+  const out = await runLabelRead(db, base({
+    visionFetch: visionOk("CT8527-016\nIE3437"),
+    geminiFetch: async () => ({ ok: false, status: 503, async json() { return {}; } }),
+  }));
+
+  assert.strictEqual(out.candidates.length, 2, "still ambiguous");
+  assert.strictEqual(db.data[OCR_CACHE_PATH], undefined, "an unsettled answer must never be cached");
+});
+
+test("the same photo gets a REAL second chance once Gemini recovers", async () => {
+  const db = fakeDb({});
+  await runLabelRead(db, base({
+    visionFetch: visionOk("CT8527-016\nIE3437"),
+    geminiFetch: async () => ({ ok: false, status: 503, async json() { return {}; } }),
+  }));
+  // Gemini is back.
+  const retry = await runLabelRead(db, base({
+    visionFetch: visionOk("CT8527-016\nIE3437"),
+    geminiFetch: geminiOk({ styleCode: "CT8527-016", styleCodeConfidence: 0.95 }),
+  }));
+  assert.strictEqual(retry.fromCache, false, "the outage must not have pinned the earlier answer");
+  assert.deepStrictEqual(retry.candidates, ["CT8527016"]);
+  assert.ok(db.data[OCR_CACHE_PATH][HASH], "now it is settled, so now it caches");
+});
+
+test("a SETTLED single-candidate read still caches", async () => {
+  const db = fakeDb({});
+  await runLabelRead(db, base({ visionFetch: visionOk(NIKE_LABEL), geminiFetch: geminiOk({}) }));
+  assert.deepStrictEqual(db.data[OCR_CACHE_PATH][HASH].candidates, ["CT8527016"]);
+});
+
+test("a settled EMPTY read still caches — a blank label must not re-bill", async () => {
+  const db = fakeDb({});
+  await runLabelRead(db, base({
+    visionFetch: visionOk("MADE IN VIETNAM"),
+    geminiFetch: geminiOk({ styleCode: "", styleCodeConfidence: 0 }),
+  }));
+  assert.deepStrictEqual(db.data[OCR_CACHE_PATH][HASH].candidates, []);
 });
 
 // ── The reaper ───────────────────────────────────────────────────────────────
@@ -283,6 +352,66 @@ test("the reaper never treats its own cursor as a cache row", async () => {
   const out = await runReap(db, { nowMs: NOW, batch: 10 });
   assert.strictEqual(out.deleted, 1);
   assert.strictEqual(typeof db.data[OCR_CACHE_PATH][CURSOR_KEY], "string");
+});
+
+// ── THE BUG THIS SUITE MISSED FIRST TIME ROUND ───────────────────────────────
+// The original version of the test above used 2 rows with batch 10, so the page
+// was never FULL and the wrap arithmetic was never stressed. That is precisely
+// how the defect below shipped: `_cursor` occupies one of the `batch` slots the
+// query returns, so counting the FILTERED rows makes a full page look short.
+// (CodeRabbit, PR #312.)
+// Cache keys are lowercase sha256 hex, so they span "0"–"9" and "a"–"f".
+// `_` is 0x5F: AFTER "9" (0x39) and BEFORE "a" (0x61). So `_cursor` lands in the
+// middle of a realistic key range — which is exactly what makes it fall inside
+// a page and consume one of the `batch` slots. A fixture of digit-leading keys
+// only would put `_cursor` last and never reproduce the bug.
+const expired = () => ({ candidates: [], expiresAt: NOW - 1 });
+function hexKeyRows(nDigitLeading, nLetterLeading) {
+  const rows = { [CURSOR_KEY]: "" };
+  for (let i = 0; i < nDigitLeading; i++) rows[String(i).padStart(2, "0")] = expired();      // "00".."NN"
+  for (let i = 0; i < nLetterLeading; i++) rows[`a${String(i).padStart(2, "0")}`] = expired(); // "a00".."aNN"
+  return rows;
+}
+
+test("a FULL page containing the cursor key does NOT wrap early", async () => {
+  // 9 digit-leading rows, then `_cursor`, then letter-leading rows. The first
+  // page of 10 is therefore 9 real rows + `_cursor` — genuinely full.
+  const db = fakeDb({ [OCR_CACHE_PATH]: hexKeyRows(9, 10) });
+
+  const first = await runReap(db, { nowMs: NOW, batch: 10 });
+  // The query returned 10 children; one was `_cursor`, so only 9 are reapable.
+  // That must NOT be read as "the end of the node".
+  assert.strictEqual(first.deleted, 9);
+  assert.strictEqual(first.wrapped, false, "a full page must never wrap — the cursor would reset to the start");
+  assert.strictEqual(first.nextCursor, CURSOR_KEY, "the cursor advances to the last RAW key of the page");
+
+  // And the run after it must make progress rather than re-reading page one.
+  const second = await runReap(db, { nowMs: NOW, batch: 10 });
+  assert.ok(second.deleted > 0, "the sweep must reach rows beyond the first page");
+  assert.notStrictEqual(second.nextCursor, first.nextCursor);
+});
+
+test("repeated runs eventually clear the WHOLE node, never looping on page one", async () => {
+  const db = fakeDb({ [OCR_CACHE_PATH]: hexKeyRows(20, 25) });
+
+  let deleted = 0;
+  for (let run = 0; run < 12; run++) deleted += (await runReap(db, { nowMs: NOW, batch: 10 })).deleted;
+
+  assert.strictEqual(deleted, 45, "every expired row must be reaped");
+  const left = Object.keys(db.data[OCR_CACHE_PATH]).filter((k) => k !== CURSOR_KEY);
+  assert.deepStrictEqual(left, [], "an unbounded node is the cost problem this function exists to prevent");
+});
+
+test("the next cursor is the LEXICOGRAPHICALLY highest key, not object-property order", async () => {
+  // .val() gives a plain object; property order is not a promise to reflect
+  // orderByKey. If the last property isn't the highest key, the next page skips
+  // rows and they are never reaped.
+  const db = fakeDb({ [OCR_CACHE_PATH]: {} });
+  // Insert deliberately out of lexicographic order.
+  for (const k of ["ccc", "aaa", "bbb"]) db.data[OCR_CACHE_PATH][k] = { candidates: [], expiresAt: NOW + 10000 };
+
+  const out = await runReap(db, { nowMs: NOW, batch: 3 });
+  assert.strictEqual(out.nextCursor, "ccc");
 });
 
 test("a row with no usable expiresAt is LEFT ALONE, not deleted", async () => {

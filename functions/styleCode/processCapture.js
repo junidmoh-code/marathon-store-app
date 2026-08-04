@@ -81,9 +81,55 @@ const COMPARE_SCHEMA = {
   required: ["sameProduct", "confidence"],
 };
 
+// ── SSRF GUARD (CWE-918) ─────────────────────────────────────────────────────
+// This function runs server-side with the project's own network position, and
+// it fetches TWO URLs that came out of the database:
+//   • product.photoUrl — writable by ANY authenticated non-anonymous user
+//   • model.imageUrl   — from an external catalogue, with no host restriction
+// Handing either straight to fetch() lets a staff account point this function at
+// an internal address (metadata server, private ranges) and have it dial out on
+// their behalf. So destinations are constrained BEFORE either request starts:
+// https only, an explicit host allowlist, and redirects refused — a permitted
+// host that 302s to an internal one would otherwise walk straight through.
+//
+// Fails CLOSED and LOUDLY: a rejected URL throws, the comparison is recorded as
+// unavailable, and the capture routes to human review. It never silently
+// becomes an agreement. (CodeRabbit, PR #312.)
+const ALLOWED_IMAGE_HOSTS = [
+  // Firebase Storage — where our own product photos live.
+  "firebasestorage.googleapis.com",
+  "storage.googleapis.com",
+  "marathon-club.firebasestorage.app",
+  // Catalogue imagery reachable through the KicksDB unified API.
+  "images.stockx.com",
+  "image.goat.com",
+  "images.kicks.dev",
+  "cdn.kicks.dev",
+];
+
+function assertFetchableImageUrl(raw) {
+  let parsed;
+  try {
+    parsed = new URL(String(raw));
+  } catch {
+    throw new Error("image URL is not a valid URL");
+  }
+  if (parsed.protocol !== "https:") throw new Error(`image URL is not https: ${parsed.protocol}`);
+  const host = parsed.hostname.toLowerCase();
+  if (!ALLOWED_IMAGE_HOSTS.includes(host)) {
+    throw new Error(`image host not allowed: ${host}`);
+  }
+  return parsed.toString();
+}
+
 async function fetchImageBase64(url, fetchImpl) {
   const doFetch = fetchImpl || ((...a) => fetch(...a));
-  const res = await doFetch(url, { signal: AbortSignal.timeout(15000) });
+  const safe = assertFetchableImageUrl(url);
+  const res = await doFetch(safe, {
+    signal: AbortSignal.timeout(15000),
+    // Do not follow a redirect off an allowed host onto an arbitrary one.
+    redirect: "error",
+  });
   if (!res.ok) throw new Error(`image fetch HTTP ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.length > COMPARE_MAX_BYTES) throw new Error("image too large to compare");
@@ -99,13 +145,18 @@ async function fetchImageBase64(url, fetchImpl) {
 async function compareImages(productUrl, catalogueUrl, apiKey, { fetchImpl, imageFetch } = {}) {
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
   const doFetch = fetchImpl || ((...a) => fetch(...a));
+  // Validate BOTH destinations before either request is initiated — a rejected
+  // second URL must not leave the first request already in flight.
+  assertFetchableImageUrl(productUrl);
+  assertFetchableImageUrl(catalogueUrl);
   const [a, b] = await Promise.all([
     fetchImageBase64(productUrl, imageFetch),
     fetchImageBase64(catalogueUrl, imageFetch),
   ]);
-  const res = await doFetch(`${COMPARE_ENDPOINT}?key=${encodeURIComponent(apiKey)}`, {
+  const res = await doFetch(COMPARE_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // Key in a HEADER, not the query string — URLs reach logs and traces.
+    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
     body: JSON.stringify({
       contents: [{
         role: "user",
@@ -259,6 +310,8 @@ async function runCapture(db, captureId, capture, {
 
 exports.runCapture = runCapture;
 exports.compareImages = compareImages;
+exports.assertFetchableImageUrl = assertFetchableImageUrl;
+exports.ALLOWED_IMAGE_HOSTS = ALLOWED_IMAGE_HOSTS;
 exports.claimIndexServerSide = claimIndexServerSide;
 exports.COMPARE_MODEL = COMPARE_MODEL;
 

@@ -86,11 +86,23 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);   // the resolveStyleCode payload
   const [labelPhoto, setLabelPhoto] = useState(null); // { dataUrl, base64, blob }
+  // WHICH CODE THIS PHOTO ACTUALLY PRODUCED. The photo is EVIDENCE for one
+  // specific code; if the operator then edits the field or picks a different
+  // candidate, that photo is evidence for a different shoe's label and must not
+  // follow the new code. Without this, styleCodeLabelPhoto could end up
+  // pointing at the wrong label — defeating the entire purpose of the field —
+  // and confusableRetry would stay on for a hand-typed code, which the comment
+  // in lookup() explicitly says it must not. (CodeRabbit, PR #312.)
+  const [photoForCode, setPhotoForCode] = useState(null); // normalised code
   const [readNote, setReadNote] = useState(null);
   const fileRef = useRef(null);
 
   const normalised = normaliseStyleCode(typed);
   const canSubmit = !!normalised && !busy;
+  // The photo counts as evidence ONLY while the code still matches the one it
+  // was read from. Everything downstream keys off this, not off labelPhoto.
+  const photoMatchesCode = !!labelPhoto && !!photoForCode && photoForCode === normalised;
+  const evidencePhoto = photoMatchesCode ? labelPhoto : null;
 
   // ── Tier 1–2: photograph the label ────────────────────────────────────────
   async function handleLabelPhoto(e) {
@@ -114,6 +126,7 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
           setReadNote({ tone: "warn", text: "That photo produced something that isn't a style code. Type it instead." });
         } else {
           setTyped(formatStyleCodeForDisplay(code));
+          setPhotoForCode(code); // this photo IS the evidence for this code
           setReadNote({ tone: "good", text: `Read from the label: ${formatStyleCodeForDisplay(code)}. Check it matches the shoe, then continue.` });
         }
       } else if (candidates.length > 1) {
@@ -142,7 +155,7 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       // confusableRetry is on ONLY when the code came off a photo — a human who
       // typed it did not misread a glyph, so manual entry never pays for the
       // variant lookups.
-      const res = await resolveStyleCodeFn({ code: typed, confusableRetry: !!labelPhoto });
+      const res = await resolveStyleCodeFn({ code: typed, confusableRetry: !!evidencePhoto });
       const data = (res && res.data) || {};
       setResult(data);
 
@@ -167,7 +180,8 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       styleCodeNormalised: result?.normalised || normalised,
       styleCodeSource: source,           // enum: cache | api | websearch | manual
       styleCodeFetchedAt: Date.now(),
-      labelPhoto,                        // uploaded by the caller, if present
+      // Only when this photo is still evidence for THIS code (see photoForCode).
+      labelPhoto: evidencePhoto,
     };
   }
 
@@ -219,9 +233,18 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
               {busy === "reading" ? "Reading the label…" : labelPhoto ? "Photo taken — tap to retake" : "📷  Take a photo of the label"}
             </button>
             {labelPhoto && (
-              <img src={labelPhoto.dataUrl} alt="label"
-                   style={{ marginTop: 10, width: 96, height: 96, objectFit: "cover", borderRadius: 10,
-                            border: "1px solid rgba(60,110,255,.25)" }} />
+              <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <img src={labelPhoto.dataUrl} alt="label"
+                     style={{ width: 96, height: 96, objectFit: "cover", borderRadius: 10,
+                              border: "1px solid rgba(60,110,255,.25)",
+                              opacity: photoMatchesCode ? 1 : 0.4 }} />
+                {!photoMatchesCode && (
+                  <span style={{ ...meta, color: AMBER, maxWidth: 260 }}>
+                    The code was changed after this photo, so it is no longer kept as evidence for it.
+                    Retake it to attach a label photo.
+                  </span>
+                )}
+              </div>
             )}
           </div>
 
@@ -231,7 +254,8 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
               {readNote.options && (
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                   {readNote.options.map((c) => (
-                    <button key={c} type="button" onClick={() => { setTyped(formatStyleCodeForDisplay(c)); setReadNote(null); }}
+                    <button key={c} type="button"
+                      onClick={() => { setTyped(formatStyleCodeForDisplay(c)); setPhotoForCode(normaliseStyleCode(c)); setReadNote(null); }}
                       style={{ background: "rgba(74,127,255,.14)", border: `1px solid ${BLUE}`, color: "#fff",
                                borderRadius: 10, padding: "10px 14px", fontWeight: 800, cursor: "pointer",
                                fontFamily: "ui-monospace, monospace", minHeight: 44 }}>
