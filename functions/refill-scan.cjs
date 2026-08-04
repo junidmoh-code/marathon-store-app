@@ -1,5 +1,6 @@
 // ─── REFILL HEALTH SCAN (Cloud Function I/O wrapper) ──────────────────────────
-// Every 15 minutes: snapshot the RTDB, ask lib/refill-engine.cjs (pure, tested)
+// Every 15 minutes during trading hours (07:00-19:00 SAST): snapshot the RTDB,
+// ask lib/refill-engine.cjs (pure, tested)
 // what should happen, then apply it:
 //   • close finished/cancelled refill locks
 //   • create refill intents — per destination MODE from /config/refillEngine:
@@ -683,7 +684,7 @@ async function runScan() {
 // ── CADENCE — trading hours only ─────────────────────────────────────────────
 // Was "every 15 minutes", i.e. 96 runs/day. Each run snapshots the RTDB
 // (stock_targets, products, refill_requests, orders, per-location stock, plus a
-// 31-day stock_movements slice) — ~31 MB measured live on 2026-08-04, of which
+// 45-day stock_movements slice) — ~31 MB measured live on 2026-08-04, of which
 // 14 MB is the ledger. Overnight that snapshot recomputes a picture that has not
 // changed: movements between 19:00 and 07:00 SAST are 4.27% of all ledger
 // activity, and once scripts and migrations are excluded, ~69 per night across
