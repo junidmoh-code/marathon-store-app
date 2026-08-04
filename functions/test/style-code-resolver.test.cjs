@@ -648,3 +648,87 @@ test("a fresh resolve into an EMPTY slot is a create, not a correction", async (
   assert.strictEqual(out.cached, true);
   assert.strictEqual(out.cacheCorrected, false);
 });
+
+// ── TIER 3 — CONFUSABLE-CHARACTER RETRY ─────────────────────────────────────
+// OCR confuses 0/O, 1/I, 8/B, 5/S, 2/Z on a small printed label. When a code
+// misses everywhere, retry the LOOKUP with the plausible misreadings.
+test("a misread glyph is recovered by retrying the lookup", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({ "CT8527-016": [KDB_RECORD("CT8527-016", "Nike Dunk Low", "https://img/a.jpg")] });
+  // OCR read the 0 as an O.
+  const out = await runResolve(db, {
+    code: "CT8527O16", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW, confusableRetry: true,
+  });
+
+  assert.strictEqual(out.found, true);
+  assert.strictEqual(out.normalised, "CT8527016", "the CORRECTED code is the effective identity");
+  assert.strictEqual(out.correctedFrom, "CT8527O16", "and the UI is told what was actually read");
+});
+
+test("THE POISON GUARD: a corrected resolve caches under the REAL code, never the misread one", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({ "CT8527-016": [KDB_RECORD("CT8527-016", "Nike Dunk Low", "https://img/a.jpg")] });
+  await runResolve(db, {
+    code: "CT8527O16", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW, confusableRetry: true,
+  });
+
+  assert.ok(db.data.sneaker_models.CT8527016, "cached under the real code");
+  assert.strictEqual(db.data.sneaker_models.CT8527O16, undefined,
+    "caching under the misread code would poison it permanently and stamp a product with a code no shoe carries");
+});
+
+test("a corrected resolve re-asks ownership about the CORRECTED code", async () => {
+  const db = fakeDb({
+    products: PRODUCTS,
+    [STYLE_CODE_INDEX_PATH]: { CT8527016: { productId: "p1", claimedAt: 1, claimedBy: "u1" } },
+  });
+  const kdb = fakeKicksDb({ "CT8527-016": [KDB_RECORD("CT8527-016", "Nike Dunk Low", "https://img/a.jpg")] });
+  const out = await runResolve(db, {
+    code: "CT8527O16", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW, confusableRetry: true,
+  });
+
+  assert.strictEqual(out.claim.productId, "p1", "the claim on the corrected code must be found");
+  assert.ok(out.existingProducts.some((p) => p.id === "p1"));
+});
+
+test("tier 3 is OFF by default — a typed code does not pay for variant lookups", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({ "CT8527-016": [KDB_RECORD("CT8527-016", "Nike Dunk Low", "https://img/a.jpg")] });
+  const out = await runResolve(db, { code: "CT8527O16", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+
+  assert.strictEqual(out.found, false, "a human who typed it did not misread it");
+  assert.strictEqual(out.correctedFrom, null);
+});
+
+test("tier 3 lookups are hard-capped", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({});
+  await runResolve(db, {
+    code: "SSSSSSSSS", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW,
+    confusableRetry: true, maxConfusableLookups: 3,
+  });
+  // 1 first pass + at most 3 variants, each asking at most its spellings.
+  assert.ok(kdb.calls.length <= 4 * 3, `unbounded variant fan-out: ${kdb.calls.length} calls`);
+});
+
+test("a code with no confusable characters skips tier 3 entirely", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({});
+  const before = kdb.calls.length;
+  const out = await runResolve(db, {
+    code: "XY3467", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW, confusableRetry: true,
+  });
+  assert.strictEqual(out.found, false);
+  assert.strictEqual(out.correctedFrom, null);
+  assert.ok(kdb.calls.length - before <= 2, "no variants to try, so no extra lookups");
+});
+
+test("the miss is logged against the code as READ, not a variant", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({});
+  await runResolve(db, {
+    code: "CT8527O16", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW, confusableRetry: true,
+  });
+  assert.ok(db.data[STYLE_CODE_MISSES_PATH].CT8527O16, "the catalog failed on what we asked for");
+  assert.strictEqual(Object.keys(db.data[STYLE_CODE_MISSES_PATH]).length, 1, "variants must not each log a miss");
+});

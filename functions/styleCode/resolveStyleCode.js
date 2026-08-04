@@ -44,6 +44,7 @@ const {
   styleCodeFormat,
   brandFamilyForStyleCode,
 } = require("../lib/style-code.cjs");
+const { confusableVariants } = require("../lib/style-code-ocr.cjs");
 const { assertStyleCodeAccess } = require("./access.cjs");
 
 if (!admin.apps.length) {
@@ -191,31 +192,71 @@ async function logMiss(db, normalised, { actor, nowMs, errors }) {
  * The resolve core — injectable db/providers/clock so it is unit-testable
  * without firebase-admin or a network (mirrors runComplete in displayChecks).
  *
- * @returns {{
- *   normalised: string, displayCode: string, found: boolean,
- *   model: object|null, source: string|null, tier: number|null, fromCache: boolean,
- *   existingProducts: object[], duplicate: boolean, cached: boolean,
- *   errors: Array<{provider:string,message:string}>
- * }}
+ * @param {object} opts
+ *   code                  what the human typed, or what OCR read
+ *   providers             the tier chain
+ *   confusableRetry       enable TIER 3 (see below). Off by default: a human
+ *                         who TYPED a code did not misread it, so manual entry
+ *                         must not pay for variant lookups. A camera read does.
+ *   maxConfusableLookups  hard cap on variant lookups (each can reach metered quota)
+ *
+ * @returns {object} see the return statement — `normalised` is always the
+ *   EFFECTIVE identity, which is the corrected code when tier 3 fired.
  */
-async function runResolve(db, { code, providers, actor, nowMs }) {
-  const normalised = normaliseStyleCode(code);
-  if (!normalised) {
+async function runResolve(db, {
+  code, providers, actor, nowMs, confusableRetry = false, maxConfusableLookups = 6,
+}) {
+  const typedNormalised = normaliseStyleCode(code);
+  if (!typedNormalised) {
     return { kind: "reject", code: "empty-code" };
   }
 
-  // Three independent questions, asked at once: what IS this code (tier walk),
-  // who OWNS it (the claim — authoritative), and what already carries it (the
-  // collision scan).
-  const [chain, claim, existingProducts] = await Promise.all([
+  // Three independent questions, asked at once for the common path: what IS
+  // this code (tier walk), who OWNS it (the claim — authoritative), and what
+  // already carries it (the collision scan).
+  let [chain, claim, existingProducts] = await Promise.all([
     resolveThroughProviders(providers, {
-      normalised,
+      normalised: typedNormalised,
       raw: typeof code === "string" ? code : "",
       candidates: styleCodeQueryCandidates(code),
     }),
-    readClaim(db, normalised),
-    findProductsByStyleCode(db, normalised),
+    readClaim(db, typedNormalised),
+    findProductsByStyleCode(db, typedNormalised),
   ]);
+
+  // ── TIER 3 — CONFUSABLE-CHARACTER RETRY (lookup only, no new vision call) ──
+  // OCR reliably confuses 0/O, 1/I, 8/B, 5/S and 2/Z on a small printed label.
+  // When a code misses everywhere, the likeliest explanation is one misread
+  // glyph — so we retry the LOOKUP with the plausible misreadings. No image is
+  // re-processed; this tier costs only the lookups it makes, and the cache tier
+  // answers most variants for free.
+  //
+  // WHEN A VARIANT ANSWERS, THE VARIANT BECOMES THE IDENTITY. Caching the found
+  // model under the MISREAD code would poison the cache permanently and stamp a
+  // product with a style code that does not exist on any shoe. So the effective
+  // code changes, and ownership/collision are re-asked about the corrected one.
+  let correctedFrom = null;
+  let normalised = typedNormalised;
+  if (!chain.model && confusableRetry) {
+    for (const variant of confusableVariants(typedNormalised, { max: maxConfusableLookups })) {
+      const attempt = await resolveThroughProviders(providers, {
+        normalised: variant,
+        raw: variant,
+        candidates: styleCodeQueryCandidates(variant),
+      });
+      if (attempt.model) {
+        chain = attempt;
+        correctedFrom = typedNormalised;
+        normalised = variant;
+        // Re-ask ownership and collisions about the code we actually resolved.
+        [claim, existingProducts] = await Promise.all([
+          readClaim(db, normalised),
+          findProductsByStyleCode(db, normalised),
+        ]);
+        break;
+      }
+    }
+  }
 
   // CACHE EVERY SUCCESSFUL EXTERNAL RESOLVE. This is the whole point of tier 1:
   // pay a vendor once per code, for the lifetime of the business.
@@ -253,12 +294,13 @@ async function runResolve(db, { code, providers, actor, nowMs }) {
   }
 
   // A miss is data, not just an absence — record it so catalog coverage can be
-  // measured per brand. Never let the bookkeeping fail the lookup.
+  // measured per brand. Logged against the code as READ, because that is the
+  // code the catalog actually failed on. Never let bookkeeping fail the lookup.
   if (!chain.model) {
     try {
-      await logMiss(db, normalised, { actor, nowMs, errors: chain.errors });
+      await logMiss(db, typedNormalised, { actor, nowMs, errors: chain.errors });
     } catch (err) {
-      console.warn(`resolveStyleCode: miss log failed for ${normalised}:`, err && err.message);
+      console.warn(`resolveStyleCode: miss log failed for ${typedNormalised}:`, err && err.message);
     }
   }
 
@@ -284,8 +326,14 @@ async function runResolve(db, { code, providers, actor, nowMs }) {
 
   return {
     kind: "ok",
+    // The EFFECTIVE identity. When tier 3 corrected a misread glyph this is the
+    // corrected code — the one to claim, stamp and cache under.
     normalised,
     displayCode: (chain.model && chain.model.styleCode) || formatStyleCodeForDisplay(normalised),
+    // Non-null when tier 3 fired: the code as READ, which the UI must show
+    // ("read CT8527-O16, resolved as CT8527-016") so the operator can veto a
+    // correction rather than have it applied behind their back.
+    correctedFrom,
     found: !!chain.model,
     model: chain.model || null,
     source: chain.provider,

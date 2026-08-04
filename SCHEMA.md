@@ -36,6 +36,10 @@ Each product is its own node. `productId` is generated client-side as
 | **`barcodes`**    | **`{ [sizeKey]: "00000001" }`**   | **no**   | **Per-(product, size) barcode codes (the size-variant expansion the `barcode` field reserved space for). Each value is an 8-digit code reserved from the SAME `/products_meta/lastBarcode` counter the first time that product+size needs a label, then PERMANENT — reused on every reprint, never regenerated/overwritten. Key is the size run through the ONE canonical encoder (`barcodeSizeKey` → `encodeSizeKey`, shared with `/stock` and the POS: `"5.5"` → `"5_5"`, one-size/null → `"_"`); the raw size is preserved in `/barcodes/{code}`. Reserved/stored by `src/components/stock/barcodeStore.js#ensureBarcode`. Rendered as Code 128.** |
 | **`styleCode`**   | **string**                        | **no**   | **Manufacturer style code off the inside-tongue label, in the human-readable form the brand prints (`"CT8527-016"`). Display only — never match on it.** |
 | **`styleCodeNormalised`** | **string** (`[A-Z0-9]+`)  | **no**   | **THE identity key for sneaker intake: `styleCode` uppercased with every non-alphanumeric stripped (`"CT8527-016"` → `"CT8527016"`). All lookups, the `/sneaker_models` cache key and the duplicate check match on this and only this. Normalisation NEVER truncates — `CT8527-016` and `CT8527-700` are different products. Written by `normaliseStyleCode` (`src/utils/styleCode.js`, server twin `functions/lib/style-code.cjs`). **IMMUTABLE once set** — the live rules let only the super-admin change an existing value; a denial must be shown, never swallowed. Indexed (`.indexOn`) in the live rules.** |
+| **`styleCodeSource`** | **`"cache"` \| `"api"` \| `"websearch"` \| `"manual"`** | **no** | **Rules-validated enum — where the suggested data came from. NOTE: a DIFFERENT enum from `/sneaker_models.source`, which has no `cache` member (a cached row records how it was *originally* obtained, not that it was served from cache).** |
+| **`styleCodeFetchedAt`** | **number (epoch ms)**      | **no**   | **When the catalogue lookup ran.** |
+| **`styleCodeConfirmedBy`** | **string \| null**      | **no**   | **uid of the human who pressed Confirm. Opaque uid only — never an email; `/products` is readable by every signed-in staff member.** |
+| **`styleCodeLabelPhoto`** | **string (https URL)**    | **no**   | **The actual photo of the actual tongue label the code was read from — the evidence behind the identity. Stored at `products/_intake/{code}/{productId}.jpg`.** |
 | **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15 — RETIRED. Was a product-level depletion flag (blurred + un-orderable + Depleted Products tab). The blocking feature is gone: writers no longer set it and readers ignore it; any legacy value is inert. Products are always live & orderable. Safe to ignore / backfill-clear later.** |
 | **`depletedBy`**  | **string \| null**                | **no**   | **Phase 15 — RETIRED (see `depletedAt`). Inert legacy field.** |
 
@@ -266,6 +270,48 @@ rows, each pairing the lowest-sorted id with one of the others.
 **Nothing is ever merged.** No winner is picked, no record is deleted, no field
 is rewritten. An automatic merge here would destroy stock history. The flag is a
 note and a banner — that is all it is.
+
+---
+
+## `/style_code_ocr_cache/{sha256}` — label-OCR results, 90-day TTL
+
+Written **only** by `readStyleCodeLabel` (Cloud Function, admin SDK). Keyed on a
+**sha256 of the image bytes**, so a staff member who retakes the same photo — or
+two people photographing the same label — never re-bills the OCR.
+
+| Field | Type | Notes |
+|---|---|---|
+| `candidates` | string[] | The extracted **normalised style codes**, capped at 8. An empty array is a valid, useful answer: an unreadable photo must not re-bill on every retry either. |
+| `source` | `"vision"` \| `"gemini"` | Which tier produced them. |
+| `at` | number (epoch ms) | |
+| `expiresAt` | number (epoch ms) | `at + 90 days`. |
+
+### This node stores candidates ONLY — never the Vision payload
+
+A full `DOCUMENT_TEXT_DETECTION` response is tens of kilobytes of per-symbol
+bounding boxes. Multiplied by every photo taken in every shop, and re-downloaded
+on every read, that is exactly the node shape that has already cost this project
+real money in RTDB download bandwidth. `buildOcrCacheRecord` **constructs** the
+row field by field rather than spreading anything into it, so a fat payload
+cannot leak in by accident, and a test asserts one row stays under 200 bytes.
+
+The client also downscales every label photo to **1024px** before upload, for the
+same reason — see `src/utils/labelPhoto.js`.
+
+### Cleanup is two mechanisms, not one
+
+1. **Lazy expiry** — `readStyleCodeLabel` never serves a row past `expiresAt`; it
+   simply re-reads and overwrites. This is what guarantees correctness.
+2. **`reapStyleCodeOcrCache`** (scheduled, 03:00 SAST) — a photo taken once and
+   never retaken is never re-read, so lazy expiry alone would leave its row
+   forever. The sweep removes those.
+
+The sweep is **bounded and cursored**: it walks the node in pages of 500 ordered
+by key and remembers where it stopped in `_cursor` (a reserved child — every real
+key is a 64-char sha256 hex digest, so an underscore-prefixed key can never
+collide). Reading the whole node once a day would be the same bandwidth mistake
+in a different costume. A row with no usable `expiresAt` is **left alone**:
+deleting data we cannot reason about is worse than keeping a few stale rows.
 
 ---
 
