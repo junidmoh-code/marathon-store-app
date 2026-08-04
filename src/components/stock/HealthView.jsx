@@ -352,11 +352,17 @@ export default function HealthView({ products = [], onExit }) {
   // once the tab splits into category chips, because chips summing to 380 under
   // a 391 headline reads as a broken screen. Sneakers already work this way and
   // the note below says why that was the right call.
+  //
+  // null until /stock answers. The old count came from the scan snapshot and was
+  // there immediately; a client-side count is 0 until the listener fires, and a
+  // GREEN 0 on the dashboard states "nothing is stranded" at the exact moment we
+  // know nothing at all. Same gate this file already applies to migratableLive
+  // and liveNegatives above. (CodeRabbit, PR #308.)
   const missingProductCards = useMemo(
-    () => computeMissingProducts({ allStock, products }),
+    () => (allStock && Object.keys(allStock).length ? computeMissingProducts({ allStock, products }) : null),
     [allStock, products],
   );
-  const missingProductsClothing = missingProductCards.length;
+  const missingProductsClothing = missingProductCards?.length ?? null;
   // SNEAKERS are computed CLIENT-SIDE from live /stock, deliberately, not from the
   // scan's exception buckets: the engine's Health loop is clothing-only
   // (`if (!isClothing(...)) continue` — "sneakers never appear in Health"), so a
@@ -369,7 +375,9 @@ export default function HealthView({ products = [], onExit }) {
     () => computeMissingFootwear({ allStock, products }),
     [allStock, products],
   );
-  const missingProducts = missingProductsClothing + missingSneakerCards.length;
+  // null while stock loads — see missingProductCards. Sneakers alone would be a
+  // half-answer, so the whole figure waits rather than under-reporting.
+  const missingProducts = missingProductsClothing == null ? null : missingProductsClothing + missingSneakerCards.length;
   // ("Needs Review" was removed 2026-07-12 v3 — the confidence signal still
   // feeds /stock_confidence for future use, but every dashboard card must lead
   // to an action, and a score without a workflow didn't.)
@@ -428,10 +436,10 @@ export default function HealthView({ products = [], onExit }) {
         // Watches, Tracksuits & Sets … — then Sneakers. Built from the cards, so
         // there are no empty chips to scroll past and a subcategory added to the
         // taxonomy tomorrow gets a chip with no code change.
-        const chips = buildChips(missingProductCards, missingSneakerCards.length);
+        const chips = buildChips(missingProductCards || [], missingSneakerCards.length);
         const activeTab = pickActiveTab(chips, missingTab);
         return (
-          <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts} onBack={back}>
+          <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts ?? "—"} onBack={back}>
             <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
               {chips.map(([key, label, n]) => (
                 <button key={key} onClick={() => setMissingTab(key)}
@@ -447,7 +455,7 @@ export default function HealthView({ products = [], onExit }) {
             </div>
             {activeTab === "sneakers"
               ? <MissingFootwear products={products} />
-              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingProductCards} />}
+              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingProductCards || []} />}
           </DetailShell>
         );
       }
@@ -695,8 +703,10 @@ export default function HealthView({ products = [], onExit }) {
                         onClick={() => setScreen("intransit")} />
               <StatCard label="Excess Inventory" value={count("excess")} tone={count("excess") ? AMBER : GREEN}
                         sub="Hub 2 + shops above target → rebalance" onClick={() => setScreen("excess")} />
-              <StatCard label="Missing Products" value={missingProducts} tone={missingProducts ? AMBER : GREEN}
-                        sub="Stranded upstream — transfer from here" onClick={() => setScreen("missingProducts")} />
+              <StatCard label="Missing Products" value={missingProducts == null ? "—" : missingProducts}
+                        tone={missingProducts == null ? GRAY : missingProducts ? AMBER : GREEN}
+                        sub={missingProducts == null ? "Loading live stock…" : "Stranded upstream — transfer from here"}
+                        onClick={() => setScreen("missingProducts")} />
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
               <StatCard label="Recount Needed" value={count("recountNeeded")} tone={count("recountNeeded") ? RED : GREEN}

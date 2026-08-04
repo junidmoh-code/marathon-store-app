@@ -99,11 +99,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const qtyAt = (loc, pid, size) => Math.max(Number(allStock?.[loc]?.[pid]?.[String(size)]?.qty) || 0, 0);
-  // "Carries" = has a stock NODE (even a zeroed cell) — the engine's own gate
-  // (storeCarries). A Solve seeds a qty-0 cell, so keying the downstream check on
-  // carriage (not qty) makes a solved row leave the list immediately and never
-  // re-flag a product the engine is already managing.
-  const carries = (loc, pid) => !!allStock?.[loc]?.[pid] && Object.keys(allStock[loc][pid]).length > 0;
+  // ("carries" lived here and is now missingProductsCore's alone — the carriage
+  // rule belongs with the card build it gates. Keeping a copy would be a second
+  // implementation of the engine's storeCarries idea. CodeRabbit, PR #308.)
 
   // Stranded clothing: real upstream stock, NOT carried anywhere downstream.
   // Built by missingProductsCore so this list and the chip counts above it come

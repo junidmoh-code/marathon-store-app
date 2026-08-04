@@ -176,6 +176,14 @@ describe("buildChips + pickActiveTab — the chip row's state machine", () => {
     const chips = buildChips(many(3, "bags", "Bags"), 0);
     expect(chips.map(([k]) => k)).toEqual(["bags", "sneakers"]);
   });
+  it("ranks by slug, so an oddly-spelled legacy record keeps its taxonomy position", () => {
+    // "T-shirts" / "  t-shirts  " are the same chip as "T-Shirts" and must sort
+    // with it, not fall to the alphabetical tail. (CodeRabbit, PR #308.)
+    for (const spelling of ["T-shirts", "  t-shirts  ", "T-SHIRTS"]) {
+      const chips = buildChips([card("t-shirts", spelling), card("watches", "Watches")], 0);
+      expect(chips.map(([k]) => k)).toEqual(["t-shirts", "watches", "sneakers"]);
+    }
+  });
   it("a subcategory the taxonomy has never heard of still gets a chip", () => {
     // The point of building from cards: no code change when the catalogue grows.
     const chips = buildChips([card("wetsuits", "Wetsuits"), card("bags", "Bags")], 0);

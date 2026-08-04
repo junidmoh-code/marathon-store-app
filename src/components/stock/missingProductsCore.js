@@ -41,18 +41,31 @@ const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase());
 // tempting to bury them; that would hide the single largest pile of stranded
 // stock in the business behind a taxonomy gap. It sorts last, but it shows.
 
+const UNCATEGORISED = { key: "uncategorised", label: "Uncategorised" };
+
+// One normaliser for both the chip key and the canonical order, so the two can
+// never disagree about what "Tracksuits & Sets" is called. Declared BEFORE
+// CANONICAL_SUBCATEGORIES, which calls it at module scope — a const below that
+// point is in the temporal dead zone and throws on import, taking the whole
+// Health screen with it.
+const slugify = (s) => String(s).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
 // Canonical chip order, derived from the taxonomy registry's own row order so
 // the row reads the way the Add Product form does, and stays STABLE as counts
 // change. Sorting by count would reshuffle the chips under the operator's finger
 // every time stock moved.
+// Held as SLUGS, not labels: ranking compared canonical labels against the
+// product's own spelling, so a legacy record reading "T-shirts" or with odd
+// spacing kept its chip but silently dropped to the alphabetical tail. The slug
+// is the same key the chip itself is identified by, so both sides normalise the
+// same way. (CodeRabbit, PR #308.)
 const CANONICAL_SUBCATEGORIES = [...new Set(
   Object.values(TAXONOMY_SEED.cats || {})
     .sort((a, b) => (a.order || 0) - (b.order || 0))
     .map((c) => c?.legacy?.subcategory)
-    .filter(Boolean),
+    .filter(Boolean)
+    .map((s) => slugify(s)),
 )];
-
-const UNCATEGORISED = { key: "uncategorised", label: "Uncategorised" };
 
 // A missing, blank or explicitly-"uncategorized" subcategory all mean the same
 // thing to an operator: nobody has said what this product is. They collapse into
@@ -65,7 +78,7 @@ const looksUncategorised = (sub) => !sub || /uncategori[sz]ed/i.test(sub);
 export function groupOf(product) {
   const sub = String(product?.subcategory || "").trim();
   if (looksUncategorised(sub)) return { ...UNCATEGORISED };
-  return { key: sub.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), label: sub };
+  return { key: slugify(sub), label: sub };
 }
 
 // Is this product clothing in the engine's sense? Byte-identical to
@@ -154,15 +167,15 @@ export function buildChips(cards, sneakerCount) {
     e.n += 1;
     seen.set(c.group, e);
   }
-  const rank = (label) => {
-    const i = CANONICAL_SUBCATEGORIES.indexOf(label);
+  const rank = (key) => {
+    const i = CANONICAL_SUBCATEGORIES.indexOf(key);
     return i < 0 ? CANONICAL_SUBCATEGORIES.length : i;
   };
   const groups = [...seen.values()].sort((a, b) => {
     if (a.key === UNCATEGORISED.key) return 1;          // always last
     if (b.key === UNCATEGORISED.key) return -1;
-    const d = rank(a.label) - rank(b.label);
-    return d !== 0 ? d : a.label.localeCompare(b.label);
+    const d = rank(a.key) - rank(b.key);
+    return d !== 0 ? d : String(a.label).localeCompare(String(b.label));
   });
   return [
     ...groups.map((g) => [g.key, g.label, g.n]),
