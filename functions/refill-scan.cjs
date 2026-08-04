@@ -25,13 +25,32 @@ const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
 
 const LOCK_STEAL_MS = 10 * 60e3;
-// The ledger slice every run reads. 45 → 31: the two lookbacks that actually
-// read it are the 30-day confidence score and the confirmed-out gate
-// (config.confirmedOutDays, default 14), and the max() below keeps the second
-// one honest if it is ever raised. 31 clears the 30-day lookback by a day —
-// the smallest window that does — while 45 carried 14 days nothing reads.
-// Measured: 14.02 MB/run at 45 days, ~12.5 MB at 31.
-const MOVEMENTS_WINDOW_DAYS = 31;      // covers confidence (30d) + 1 day of slack
+// The ledger slice every run reads. HELD AT 45 — the reduction to 31 was
+// implemented, reviewed, and reverted.
+//
+// The obvious lookbacks are the 30-day confidence score and the confirmed-out
+// gate (config.confirmedOutDays, default 14), so 31 looked like the smallest
+// safe window. It is not: `ledgerTouched()` (lib/refill-engine.cjs:540) has NO
+// time bound of its own. It protects an OPEN refill request whose pick is
+// physically recorded in the ledger — `inFlight` — and that flag is what stops
+// the request being withdrawn as "awaiting_upstream" when the source reads
+// empty, and what skips the auto-resize. Its evidence is whatever movements the
+// slice happens to contain.
+//
+// Nothing closes an open intent for age: the staleIntentHours branch only
+// REPORTS (stuckRefills), it never withdraws. So an intent can outlive any
+// window, and the moment its pick falls outside the slice it silently loses its
+// in-flight guard and can be cancelled or resized while a warehouse pick is in
+// progress. Found by adversarial review (Codex, PR review 2026-08-04).
+//
+// Live check the same day: 188 open intents, oldest 11 days — so 45 carries
+// roughly 4x headroom and the hazard is not active. Narrowing to 31 would save
+// ~1.5 MB/run (~$4/month); the cadence change in this PR saves ~$65/month. That
+// is not a trade worth making against a silent withdrawal of an in-flight order.
+//
+// To narrow it safely, bound intent age first (close or escalate a stuck intent
+// rather than only reporting it), then the window can follow that bound.
+const MOVEMENTS_WINDOW_DAYS = 45;      // confidence (30d) + confirmed-out gate + in-flight ledger evidence
 const RUNS_KEEP_DAYS = 7;
 
 // Universe → placedStore string the app writes on refill orders.

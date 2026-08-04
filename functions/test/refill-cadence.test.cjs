@@ -7,8 +7,8 @@
 //
 //   1. the SCHEDULE — 07:00→19:00 inclusive, Africa/Johannesburg, and NOT the
 //      unix-cron form that would overshoot past 19:00
-//   2. the WINDOW — 31 days, with the max() guard still covering a raised
-//      confirmedOutDays
+//   2. the WINDOW — held at 45, with the max() guard intact, and a regression
+//      test for the in-flight ledger evidence that forced it to stay
 //   3. IDEMPOTENCY ACROSS THE OVERNIGHT GAP — the 07:00 run produces exactly
 //      the plan the skipped 19:00–07:00 runs would have produced
 //
@@ -56,25 +56,34 @@ test("the scoped-deploy instruction survives next to the schedule", () => {
 });
 
 // ── 2. THE LEDGER WINDOW ─────────────────────────────────────────────────────
-test("MOVEMENTS_WINDOW_DAYS is 31", () => {
-  assert.match(SRC, /const MOVEMENTS_WINDOW_DAYS = 31;/);
+test("MOVEMENTS_WINDOW_DAYS is held at 45", () => {
+  // Deliberately NOT 31. ledgerTouched() has no time bound of its own and uses
+  // this slice to prove a pick is in flight; nothing closes an open intent for
+  // age, so narrowing the slice can silently strip that protection from an
+  // intent older than the window. See the block comment in refill-scan.cjs.
+  assert.match(SRC, /const MOVEMENTS_WINDOW_DAYS = 45;/);
+  assert.doesNotMatch(SRC, /const MOVEMENTS_WINDOW_DAYS = 31;/);
 });
 
-test("31 days still covers the 30-day confidence lookback", () => {
-  const WINDOW = 31;
-  const CONFIDENCE_LOOKBACK_DAYS = 30;   // computeConfidence's window
-  assert.ok(WINDOW > CONFIDENCE_LOOKBACK_DAYS,
+test("the window still covers the 30-day confidence lookback", () => {
+  assert.ok(45 > 30,
     "the ledger slice must outlast the confidence lookback, or arrivals stop counting as lift evidence");
+});
+
+test("the window records WHY it cannot simply be narrowed", () => {
+  // A future reader will see 45 and 14 unused days and reach for 31 again.
+  assert.match(SRC, /ledgerTouched/);
+  assert.match(SRC, /in-flight/i);
 });
 
 test("the max() guard still lifts the window when confirmedOutDays is raised", () => {
   // Mirrors refill-scan.cjs: max(MOVEMENTS_WINDOW_DAYS, confirmedOutDays + 1).
-  const windowFor = (confirmedOutDays) => Math.max(31, (Number(confirmedOutDays) || 14) + 1);
-  assert.equal(windowFor(undefined), 31, "default (14) → the constant wins");
-  assert.equal(windowFor(14), 31, "documented default → 31");
-  assert.equal(windowFor(30), 31, "still covered");
-  assert.equal(windowFor(45), 46, "a raised gate must widen the window, not be silently truncated");
-  assert.equal(windowFor(60), 61);
+  const windowFor = (confirmedOutDays) => Math.max(45, (Number(confirmedOutDays) || 14) + 1);
+  assert.equal(windowFor(undefined), 45, "default (14) → the constant wins");
+  assert.equal(windowFor(14), 45, "documented default → 45");
+  assert.equal(windowFor(30), 45, "still covered");
+  assert.equal(windowFor(60), 61, "a raised gate must widen the window, not be silently truncated");
+  assert.equal(windowFor(90), 91);
 });
 
 test("the guard expression is still present in the source", () => {
