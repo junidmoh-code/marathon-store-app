@@ -36,6 +36,11 @@ import {
   isKnownStyleCodeFormat,
 } from "../../utils/styleCode";
 import { prepareLabelPhoto } from "../../utils/labelPhoto";
+import {
+  resolveAddStockTarget, classifyLookupOutcome, labelPhotoEvidence,
+  TARGET_READY, TARGET_CHOOSE,
+  BLOCK_CLAIM_UNAVAILABLE, BLOCK_PRODUCT_UNAVAILABLE,
+} from "./styleCodeGateLogic";
 
 const resolveStyleCodeFn = httpsCallable(functions, "resolveStyleCode");
 const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
@@ -101,8 +106,11 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
   const canSubmit = !!normalised && !busy;
   // The photo counts as evidence ONLY while the code still matches the one it
   // was read from. Everything downstream keys off this, not off labelPhoto.
-  const photoMatchesCode = !!labelPhoto && !!photoForCode && photoForCode === normalised;
-  const evidencePhoto = photoMatchesCode ? labelPhoto : null;
+  const evidencePhoto = labelPhotoEvidence({ labelPhoto, photoForCode, normalised });
+  const photoMatchesCode = !!evidencePhoto;
+  // Which product the operator tapped, when a code resolves to more than one.
+  // Null until they choose — there is deliberately no default.
+  const [selectedProductId, setSelectedProductId] = useState(null);
 
   // ── Tier 1–2: photograph the label ────────────────────────────────────────
   async function handleLabelPhoto(e) {
@@ -110,6 +118,10 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     e.target.value = "";
     if (!file) return;
     setError(null); setReadNote(null); setBusy("reading");
+    // CLEAR THE BINDING FIRST. A retake that fails must not leave the NEW photo
+    // paired with the PREVIOUS code — that was the gap the first version of this
+    // guard left open. Nothing is evidence again until a read succeeds.
+    setLabelPhoto(null); setPhotoForCode(null);
     try {
       // Downscaled to 1024px in the browser BEFORE it is sent anywhere.
       const photo = await prepareLabelPhoto(file);
@@ -158,16 +170,26 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       const res = await resolveStyleCodeFn({ code: typed, confusableRetry: !!evidencePhoto });
       const data = (res && res.data) || {};
       setResult(data);
-
-      if (data.claimOrphaned) { setStep("orphan"); return; }
-      // ALREADY OURS — the claim is authority; the product scan is the fallback
-      // for catalogue rows that predate the index.
-      if (data.claim || (data.existingProducts || []).length) { setStep("existing"); return; }
-      setStep(data.found ? "found" : "unknown");
+      setSelectedProductId(null); // a new lookup invalidates any prior choice
+      // ONE place decides what the outcome means, so "the lookup broke" and
+      // "the catalogue has nothing" can never be conflated. See
+      // classifyLookupOutcome — an error is not an absence.
+      setStep(classifyLookupOutcome({ data }));
     } catch (err) {
-      setError((err && (err.message || err.code)) || "Lookup failed. You can still enter this product manually.");
-      setStep("unknown");
-      setResult({ normalised, displayCode: formatStyleCodeForDisplay(normalised), found: false, existingProducts: [] });
+      setError((err && (err.message || err.code)) || "The lookup could not be completed.");
+      setSelectedProductId(null);
+      // The callable never answered, so we know NOTHING. Record that as a real
+      // failure — a result without `errors` would render as "not in the
+      // catalogue", a claim we have not earned, and would offer the create-new
+      // path that produces the duplicate this feature exists to prevent.
+      setResult({
+        normalised,
+        displayCode: formatStyleCodeForDisplay(normalised),
+        found: false,
+        existingProducts: [],
+        errors: [{ provider: "client", message: (err && (err.message || err.code)) || "lookup failed" }],
+      });
+      setStep(classifyLookupOutcome({ threw: true }));
     } finally {
       setBusy(null);
     }
@@ -275,7 +297,13 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
             <input
               placeholder="CT8527-016"
               value={typed}
-              onChange={(e) => setTyped(e.target.value)}
+              onChange={(e) => {
+                setTyped(e.target.value);
+                // Editing the code by hand ends the photo's claim to be its
+                // evidence. The photo stays on screen (flagged) so the operator
+                // can see what happened, but it is no longer attached.
+                setPhotoForCode(null);
+              }}
               onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) lookup(); }}
               style={bigInput}
               autoComplete="off" autoCorrect="off" spellCheck={false}
@@ -302,60 +330,113 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
         </>
       )}
 
-      {/* ── STEP: ALREADY OURS — do NOT open the create form ─────────────── */}
-      {step === "existing" && (
-        <>
-          <Note tone="good">
-            <b>We already have this shoe.</b> Add stock to it rather than creating a second record.
-          </Note>
-
-          {result.duplicate && (
-            <Note tone="warn">
-              <b>⚠️ {existing.length} products share this style code.</b> That's been flagged for review —
-              nothing has been merged or changed. Pick the one you're holding, or ask an admin.
+      {/* ── STEP: ALREADY OURS — do NOT open the create form ─────────────
+          THE TARGET MUST BE CERTAIN. Routing stock to the wrong twin is silent
+          count corruption — a worse outcome than the duplicate product this
+          feature prevents, because a duplicate is visible in the catalogue
+          while a wrong count looks exactly like a normal receipt and surfaces
+          weeks later as a shoe that is somehow always short. So there is no
+          default and no first-match fallback: either the claim settles it, or
+          the operator picks explicitly, or the button stays disabled. */}
+      {step === "existing" && (() => {
+        const target = resolveAddStockTarget({
+          claim: result.claim,
+          existingProducts: existing,
+          products,
+          selectedId: selectedProductId,
+        });
+        const mustChoose = target.kind === TARGET_CHOOSE;
+        const ready = target.kind === TARGET_READY;
+        const cards = existing.length ? existing : (claimedProduct ? [claimedProduct] : []);
+        return (
+          <>
+            <Note tone="good">
+              <b>We already have this shoe.</b> Add stock to it rather than creating a second record.
             </Note>
-          )}
 
-          {(existing.length ? existing : claimedProduct ? [claimedProduct] : []).map((p) => {
-            const full = productById(p.id) || p;
-            return (
-              <div key={p.id} style={{ display: "flex", gap: 14, alignItems: "center",
-                                       background: "rgba(255,255,255,.03)", border: "1px solid rgba(120,150,255,.16)",
-                                       borderRadius: 14, padding: 12 }}>
-                <div style={{ width: 84, height: 84, flexShrink: 0, borderRadius: 12, overflow: "hidden",
-                              background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {full.photoUrl
-                    ? <img src={full.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    : <span style={{ ...meta, fontSize: 9 }}>NO IMAGE</span>}
-                </div>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 15.5, fontWeight: 750, color: "#fff", lineHeight: 1.25 }}>{full.name || "Unnamed product"}</div>
-                  <div style={{ ...meta, marginTop: 4, fontFamily: "ui-monospace, monospace" }}>
-                    {result.displayCode}{full.category ? ` · ${full.category}` : ""}
+            {result.duplicate && (
+              <Note tone="warn">
+                <b>⚠️ {existing.length} products share this style code.</b> That's been flagged for review —
+                nothing has been merged or changed.
+              </Note>
+            )}
+
+            {mustChoose && (
+              <Note tone="warn">
+                <b>Which one are you holding?</b> Tap it. Stock will only go where you say — adding it to
+                the wrong one is very hard to spot later.
+              </Note>
+            )}
+
+            {cards.map((p) => {
+              const full = productById(p.id) || p;
+              const chosen = ready ? target.productId === p.id : selectedProductId === p.id;
+              const selectable = mustChoose && !!productById(p.id);
+              return (
+                <div
+                  key={p.id}
+                  onClick={selectable ? () => setSelectedProductId(p.id) : undefined}
+                  role={selectable ? "button" : undefined}
+                  tabIndex={selectable ? 0 : undefined}
+                  onKeyDown={selectable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedProductId(p.id); } } : undefined}
+                  style={{ display: "flex", gap: 14, alignItems: "center",
+                           background: chosen ? "rgba(74,127,255,.14)" : "rgba(255,255,255,.03)",
+                           border: `${chosen ? 2 : 1}px solid ${chosen ? BLUE : "rgba(120,150,255,.16)"}`,
+                           borderRadius: 14, padding: 12,
+                           cursor: selectable ? "pointer" : "default" }}>
+                  <div style={{ width: 84, height: 84, flexShrink: 0, borderRadius: 12, overflow: "hidden",
+                                background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    {full.photoUrl
+                      ? <img src={full.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      : <span style={{ ...meta, fontSize: 9 }}>NO IMAGE</span>}
                   </div>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 15.5, fontWeight: 750, color: "#fff", lineHeight: 1.25 }}>{full.name || "Unnamed product"}</div>
+                    <div style={{ ...meta, marginTop: 4, fontFamily: "ui-monospace, monospace" }}>
+                      {result.displayCode}{full.category ? ` · ${full.category}` : ""}
+                    </div>
+                    {ready && target.basis === "claim" && target.productId === p.id && (
+                      <div style={{ ...meta, marginTop: 4, color: GREEN }}>✓ This code is registered to this product</div>
+                    )}
+                  </div>
+                  {selectable && (
+                    <span style={{ ...meta, color: chosen ? BLUE : "rgba(233,238,255,.35)", fontWeight: 800 }}>
+                      {chosen ? "SELECTED" : "TAP"}
+                    </span>
+                  )}
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
 
-          {result.claim && !existing.length && !claimedProduct && (
-            <Note tone="warn">
-              This code is reserved by product <b>{result.claim.productId}</b>, which isn't in the list loaded
-              here. Ask an admin to check it before adding anything.
-            </Note>
-          )}
+            {/* FAIL CLOSED. We know a product owns this code but cannot show it,
+                so we refuse to send stock anywhere rather than fall back to a
+                row that merely carries the same code. */}
+            {target.kind === "blocked" && (
+              <Note tone="bad">
+                <b>Can't safely add stock here.</b><br />
+                {target.reason === BLOCK_CLAIM_UNAVAILABLE
+                  ? <>This code is registered to product <b>{target.productId}</b>, which isn't loaded on this
+                     device. Adding stock to anything else risks putting it on the wrong shoe.</>
+                  : target.reason === BLOCK_PRODUCT_UNAVAILABLE
+                    ? <>The matching product isn't loaded on this device, so we can't confirm which shoe it is.</>
+                    : <>No product could be confirmed for this code.</>}
+                <br />Reload, or ask an admin to check it.
+              </Note>
+            )}
 
-          <button type="button"
-            onClick={() => onAddStock((existing[0] && existing[0].id) || (result.claim && result.claim.productId))}
-            style={btn(BLUE, "#fff")}>
-            Add stock to this product
-          </button>
-          <button type="button" onClick={() => { setStep("enter"); setResult(null); }}
-            style={{ ...meta, background: "none", border: "none", cursor: "pointer", padding: 8 }}>
-            ← Different code
-          </button>
-        </>
-      )}
+            <button type="button" disabled={!ready}
+              onClick={ready ? () => onAddStock(target.productId) : undefined}
+              style={btn(ready ? BLUE : "rgba(74,127,255,.14)", ready ? "#fff" : "rgba(233,238,255,.35)",
+                         { cursor: ready ? "pointer" : "not-allowed" })}>
+              {mustChoose ? "Select a product first" : "Add stock to this product"}
+            </button>
+            <button type="button" onClick={() => { setStep("enter"); setResult(null); setSelectedProductId(null); }}
+              style={{ ...meta, background: "none", border: "none", cursor: "pointer", padding: 8 }}>
+              ← Different code
+            </button>
+          </>
+        );
+      })()}
 
       {/* ── STEP: ORPHANED CLAIM ─────────────────────────────────────────── */}
       {step === "orphan" && (
@@ -421,23 +502,46 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
         </>
       )}
 
-      {/* ── STEP: UNKNOWN — manual, code retained ────────────────────────── */}
-      {step === "unknown" && (
+      {/* ── STEP: LOOKUP UNAVAILABLE — no create path ────────────────────
+          An error and an empty answer are NOT the same thing. "Not in the
+          catalogue" is a claim we may only make when the lookup actually
+          succeeded and came back empty. After a failure we do not know, and
+          offering "enter the details" here is what produces the duplicate this
+          whole feature exists to prevent — so the only ways out are retry and
+          back. This mirrors the rule the resolver enforces server-side: a dead
+          vendor is never reported as "no such shoe". */}
+      {step === "unavailable" && (
         <>
-          {(result.errors || []).length ? (
-            <Note tone="warn">
-              <b>The catalogue lookup is unavailable right now</b> — so we can't say whether this shoe is
-              in it. Enter the details by hand; the style code is saved either way.
-            </Note>
-          ) : (
-            <Note>
-              <b>Not in the catalogue.</b> Nothing's wrong — plenty of stock isn't listed. Enter the
-              details by hand; the style code is saved with it.
-            </Note>
-          )}
+          <Note tone="warn">
+            <b>The lookup didn't complete, so we can't tell you whether we already have this shoe.</b><br />
+            Creating it now risks a duplicate with the stock split across two records. Try again in a
+            moment — the style code is kept.
+          </Note>
           {error && <Note tone="bad">{error}</Note>}
           <div style={{ ...meta, fontFamily: "ui-monospace, monospace", fontSize: 15, color: "#fff" }}>
-            {result.displayCode || formatStyleCodeForDisplay(normalised)}
+            {result?.displayCode || formatStyleCodeForDisplay(normalised)}
+          </div>
+          <button type="button" disabled={!!busy} onClick={lookup} style={btn(BLUE, "#fff")}>
+            {busy === "resolving" ? "Checking…" : "Try again"}
+          </button>
+          <button type="button" onClick={() => { setStep("enter"); setResult(null); }}
+            style={{ ...meta, background: "none", border: "none", cursor: "pointer", padding: 8 }}>
+            ← Back
+          </button>
+        </>
+      )}
+
+      {/* ── STEP: UNKNOWN — the lookup ANSWERED, and answered nothing ─────
+          The one case where "not in the catalogue" is an honest statement, and
+          therefore the only one that offers the create path. */}
+      {step === "unknown" && (
+        <>
+          <Note>
+            <b>Not in the catalogue.</b> Nothing's wrong — plenty of stock isn't listed. Enter the
+            details by hand; the style code is saved with it.
+          </Note>
+          <div style={{ ...meta, fontFamily: "ui-monospace, monospace", fontSize: 15, color: "#fff" }}>
+            {result?.displayCode || formatStyleCodeForDisplay(normalised)}
           </div>
           <button type="button" onClick={rejectFetched} style={btn(BLUE, "#fff")}>
             Enter the details
