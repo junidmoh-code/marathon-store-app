@@ -111,9 +111,108 @@ export function readyEventsForPeriod(args) {
 // those views from the immutable insights_log instead (same "today=live,
 // past=log" pattern the Insights OOS Tracker / Stock Depleted tabs already use).
 
-// RTDB-illegal chars → "_". Identical to App.jsx's toKey so the (productKey,size)
-// cells line up with restock_requests responses written by the live path.
-const sanitizeKey = (s) => (s || "").replace(/[.#$[\]/\s]/g, "_");
+// RTDB-illegal chars → "_". Exported as the LEGACY name key: response cells and
+// movement ids written before the pid-key cutover used it, and the dual-read
+// paths still need to derive it. New cells never use it when a productId exists.
+// String()-coerced for the same reason as normalizeName: the log feeds carry no
+// schema, and a non-string productName would throw inside the group builders'
+// useMemo and take the whole Source view down instead of one card.
+export const sourceNameKey = (s) => String(s ?? "").replace(/[.#$[\]/\s]/g, "_");
+const sanitizeKey = sourceNameKey;
+
+// ── THE Source group key — productId first, sanitized name only as fallback ──
+// Duplicate product names are real (three byte-identical "Nike SB Dunk Low
+// Green White" records as of 2026-08-03), so keying by name merged twins into
+// one card, one shared restock_requests response cell and one colliding
+// movement id — the wrong-product deduction bug. The pid is unique; the name
+// key survives ONLY for legacy records that predate the productId field.
+// EVERY Source group builder (computeRestockCounts for Today,
+// restockCountsFromLog for History) MUST use this one function — the two feeds
+// meet at the same restock_requests/{date}/{key}/{size} response paths, so a
+// key divergence between them desynchronizes Today and History.
+// The "Unknown" tail is load-bearing, not defensive dressing: a row with no
+// productId AND no usable name would otherwise sanitize to "", and an empty key
+// makes sourceResponsePath collapse to the DATE NODE — writing a size leaf
+// directly under restock_requests/{date} and corrupting that day's response
+// tree. restockCountsFromLog already defaulted its name to "Unknown"; this puts
+// the guarantee in the shared key builder so both feeds inherit it.
+export function sourceGroupKey(productId, productName) {
+  return productId || sanitizeKey(productName) || "Unknown";
+}
+
+// The one place the Source response/progress cell path is shaped. Two products
+// with the same name now yield two DIFFERENT paths (distinct group keys), so a
+// response to one can no longer close the other's card.
+// The DATE node is exported separately because during the cutover a cell can
+// live under two keys (its pid key and its legacy name key), and clearing both
+// must be ONE multi-path update rooted at their common parent — see
+// clearSourceResponse in App.jsx.
+export function sourceResponseDatePath(date) {
+  return `restock_requests/${date}`;
+}
+export function sourceResponsePath(date, productKey) {
+  return `${sourceResponseDatePath(date)}/${productKey}`;
+}
+
+// Shared duplicate-name tripwire for the group builders. The old collision
+// warning compared NAMES and so could never fire for byte-identical twins —
+// exactly the case that bit in July (three products all named "Nike SB Dunk
+// Low Green White"). This one compares product IDS behind the same name: seen
+// (Map name→pid) accumulates per build. Default handler console.warns once per
+// distinct collision per session; tests inject their own via onNameCollision.
+const _warnedNameCollisions = new Set();
+function noteNameCollision(seen, name, productId, onCollision) {
+  if (!name || !productId) return;
+  const prev = seen.get(name);
+  if (prev == null) { seen.set(name, productId); return; }
+  if (prev === productId) return;
+  const msg = `[Source] Duplicate product name "${name}": ids ${prev} and ${productId}. ` +
+    "Cards are kept separate by id, but rename one product — name-based analytics still merge them.";
+  if (onCollision) { onCollision(msg); return; }
+  const dedupe = `${name}::${prev}::${productId}`;
+  if (_warnedNameCollisions.has(dedupe)) return;
+  _warnedNameCollisions.add(dedupe);
+  console.warn(msg);
+}
+
+// Today's-sales group builder (moved from App.jsx so it sits next to
+// restockCountsFromLog — the two MUST share sourceGroupKey, see above).
+// entries = restock_log/{SA-date} rows the POS writes on every collected order:
+// { productId, productName, photo, photoUrl, size, hub, orderNumber, ... }.
+// Shape out: { key: { productName, productId, nameKey, photo, photoUrl, sizes } }.
+// nameKey rides along so consumers can dual-read response/progress cells and
+// movement ids written under the pre-cutover name key.
+export function computeRestockCounts(entries, { onNameCollision } = {}) {
+  const result = {};
+  const seenNames = new Map();
+  (entries || []).forEach(entry => {
+    if (!entry) return;
+    // Default the name once, then derive BOTH keys from it — mirroring
+    // restockCountsFromLog. A bare `entry.productName` would leave the group
+    // title undefined (SourceTodayTab sorts with .productName.localeCompare and
+    // would throw) and give nameKey "", which then reads as a bogus legacy key.
+    const name = entry.productName || "Unknown";
+    noteNameCollision(seenNames, name, entry.productId, onNameCollision);
+    const key = sourceGroupKey(entry.productId, name);
+    if (!result[key]) result[key] = {
+      productName: name,
+      // `??` not `||`, matching restockCountsFromLog below: the two builders are
+      // required to produce identical group shapes for the same record, and a
+      // silent divergence here is the drift their lock-step comment warns about.
+      productId: entry.productId ?? null,
+      nameKey: sanitizeKey(name),
+      photo: entry.photo || "",
+      photoUrl: entry.photoUrl || null,
+      sizes: {},
+    };
+    // Back-fill both image fields: ProductPhoto renders either, so a group
+    // whose first row carried neither must still pick up a later row's.
+    if (entry.photoUrl && !result[key].photoUrl) result[key].photoUrl = entry.photoUrl;
+    if (entry.photo && !result[key].photo) result[key].photo = entry.photo;
+    if (entry.size) result[key].sizes[entry.size] = (result[key].sizes[entry.size] || 0) + 1;
+  });
+  return result;
+}
 
 // Restock requests that hit READY on a given SA date, for one hub, grouped into
 // the { key: { productName, sizes:{size:count} } } shape SourceTodayTab renders.
@@ -129,23 +228,27 @@ const sanitizeKey = (s) => (s || "").replace(/[.#$[\]/\s]/g, "_");
 // live path (status===READY||COLLECTED) never showed it in the footwear History.
 // Filtering to sneaker reproduces that exactly and keeps clothing refills out of
 // hub2's restock list (clothing has its own "Clothing Sold" tab).
-export function restockCountsFromLog({ log, dateStr, hub, returnedIds }) {
+export function restockCountsFromLog({ log, dateStr, hub, returnedIds, onNameCollision }) {
   const raw = (log || []).filter(
     (e) => e && e.action === "ready" && inferProductType(e) === "sneaker" &&
            saDateOf(e.timestamp) === dateStr && (e.placedAtHub || "hub1") === hub
   );
   const result = {};
+  const seenNames = new Map();
   for (const e of dedupeByOrderNumber(raw)) {
     if (returnedIds && returnedIds.has(e.orderNumber)) continue;
     const size = e.size;
     if (!size) continue;
     const name = e.productName || "Unknown";
-    const key = sanitizeKey(name);
-    if (!result[key]) result[key] = { productName: name, productId: e.productId ?? null, sizes: {} };
-    // productId powers the Source "Transfer & Fulfil" flow. Older log events
-    // predate the field, so take the first one any event in the group carries;
-    // cards without one fall back to name-resolution, then to the plain buttons.
-    if (!result[key].productId && e.productId) result[key].productId = e.productId;
+    noteNameCollision(seenNames, name, e.productId, onNameCollision);
+    // productId is the group key (sourceGroupKey) — identically-named twins get
+    // separate cards. A pid-less legacy event groups under the sanitized name
+    // and its productId stays null ON PURPOSE: the old "adopt the first pid any
+    // same-named event carries" backfill is exactly how a twin's id got bound
+    // to the wrong card. Pid-less cards resolve via the (ambiguity-refusing)
+    // name fallback, else keep the plain buttons.
+    const key = sourceGroupKey(e.productId, name);
+    if (!result[key]) result[key] = { productName: name, productId: e.productId ?? null, nameKey: sanitizeKey(name), sizes: {} };
     result[key].sizes[size] = (result[key].sizes[size] || 0) + 1;
   }
   return result;

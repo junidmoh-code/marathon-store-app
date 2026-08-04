@@ -8,6 +8,10 @@ import {
   readyEventsForPeriod,
   clothingRefillEventsForPeriod,
   restockCountsFromLog,
+  computeRestockCounts,
+  sourceGroupKey,
+  sourceNameKey,
+  sourceResponsePath,
   onHoldEventsFromLog,
   onHoldKey,
 } from "./insights";
@@ -230,15 +234,54 @@ describe("restockCountsFromLog (Source History rebuilt from the durable log)", (
     expect(out.Marathon_Tee).toBeUndefined();
   });
 
-  it("carries productId from any event in the group (Transfer & Fulfil needs it)", () => {
-    // First event predates the productId field; a later event has it — the
-    // group must still end up with the id so the transfer flow can resolve it.
-    const log = [rdy("001", "08"), rdy("002", "09", { productId: "p123" })];
+  it("keys groups by productId — a pid event and a pid-less same-named event do NOT merge", () => {
+    // The old contract ("adopt the first pid any same-named event carries") is
+    // exactly how a twin's id got bound to the wrong card, so it is GONE: the
+    // pid event groups under its id, the pid-less event stays under the name
+    // key with productId null (its card resolves via the ambiguity-refusing
+    // name fallback, else keeps the plain buttons).
+    const log = [rdy("001", "08"), rdy("002", "09", { productId: "p123", size: "9" })];
     const out = restockCountsFromLog({ log, dateStr: DATE, hub: "hub1" });
-    expect(out.Nike_Air.productId).toBe("p123");
-    // No event carries one → null, and the card falls back by name.
+    expect(out.p123).toMatchObject({ productId: "p123", nameKey: "Nike_Air", sizes: { "9": 1 } });
+    expect(out.Nike_Air).toMatchObject({ productId: null, sizes: { "8": 1 } });
+    // No event carries a pid → the whole group stays name-keyed, id null.
     const none = restockCountsFromLog({ log: [rdy("001", "08")], dateStr: DATE, hub: "hub1" });
     expect(none.Nike_Air.productId).toBeNull();
+  });
+
+  it("TWIN SPLIT: identically-named products, same day + hub + size → two separate cards with distinct response paths", () => {
+    // The wrong-deduction incident (2026-08-03): three byte-identical
+    // "Nike SB Dunk Low Green White" records. Same-day same-hub sales of two
+    // twins used to merge into ONE card carrying ONE pid — the fulfil then
+    // deducted the wrong product. Keyed by pid they must never merge, and the
+    // restock_requests/{date}/{KEY}/{size} response cells (keyed by the same
+    // group key) must be distinct so responding to one twin can't close the other.
+    const log = [
+      rdy("001", "08", { size: "9", productId: "pTwinA" }),
+      rdy("002", "09", { size: "9", productId: "pTwinB" }),
+    ];
+    const out = restockCountsFromLog({ log, dateStr: DATE, hub: "hub1" });
+    expect(Object.keys(out).sort()).toEqual(["pTwinA", "pTwinB"]);
+    expect(out.pTwinA.sizes).toEqual({ "9": 1 });
+    expect(out.pTwinB.sizes).toEqual({ "9": 1 });
+    // Distinct group keys ⇒ distinct response cells and distinct movement ids
+    // (both are derived from the group key by the component layer).
+    expect(sourceGroupKey("pTwinA", "Nike Air")).not.toBe(sourceGroupKey("pTwinB", "Nike Air"));
+  });
+
+  it("fires the duplicate-name collision handler for BYTE-IDENTICAL names with different pids", () => {
+    // The old warning compared names (result[key].productName !== order.productName)
+    // so byte-identical twins could never trip it. The tripwire now compares ids.
+    const seen = [];
+    const log = [
+      rdy("001", "08", { productId: "pTwinA" }),
+      rdy("002", "09", { productId: "pTwinB" }),
+    ];
+    restockCountsFromLog({ log, dateStr: DATE, hub: "hub1", onNameCollision: (msg) => seen.push(msg) });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("pTwinA");
+    expect(seen[0]).toContain("pTwinB");
+    expect(seen[0]).toContain('"Nike Air"');
   });
 
   it("dedupes a flapped order (same date+orderNumber counts once)", () => {
@@ -259,6 +302,70 @@ describe("restockCountsFromLog (Source History rebuilt from the durable log)", (
 
   it("tolerates an empty/absent log", () => {
     expect(restockCountsFromLog({ log: null, dateStr: DATE, hub: "hub1" })).toEqual({});
+  });
+});
+
+describe("computeRestockCounts (Source Today built from restock_log sales)", () => {
+  const sale = (extra = {}) => ({ productId: "pA", productName: "Nike Air", size: "8", photo: "", photoUrl: "https://x/a.jpg", hub: "hub1", ...extra });
+
+  it("groups by productId, counting units per size, keeping photo fields", () => {
+    const out = computeRestockCounts([sale(), sale({ size: "9" }), sale({ size: "9" })]);
+    expect(Object.keys(out)).toEqual(["pA"]);
+    expect(out.pA).toMatchObject({ productId: "pA", productName: "Nike Air", nameKey: "Nike_Air", photoUrl: "https://x/a.jpg", sizes: { "8": 1, "9": 2 } });
+  });
+
+  it("TWIN SPLIT: identically-named twins sold the same day stay two separate groups", () => {
+    const out = computeRestockCounts([
+      sale({ productId: "pTwinA", size: "9" }),
+      sale({ productId: "pTwinB", size: "9" }),
+    ]);
+    expect(Object.keys(out).sort()).toEqual(["pTwinA", "pTwinB"]);
+    expect(out.pTwinA.sizes).toEqual({ "9": 1 });
+    expect(out.pTwinB.sizes).toEqual({ "9": 1 });
+  });
+
+  it("pid-less legacy rows fall back to the sanitized-name key (lock-step with restockCountsFromLog)", () => {
+    const out = computeRestockCounts([sale({ productId: undefined })]);
+    expect(Object.keys(out)).toEqual(["Nike_Air"]);
+    expect(out.Nike_Air.productId).toBeNull();
+    // The two builders MUST produce the same key for the same record — they
+    // meet at the same restock_requests/{date}/{key}/{size} response cells.
+    expect(sourceGroupKey("pA", "Nike Air")).toBe("pA");
+    expect(sourceGroupKey(undefined, "Nike Air")).toBe(sourceNameKey("Nike Air"));
+  });
+
+  it("fires the collision handler for byte-identical names with different pids", () => {
+    const seen = [];
+    computeRestockCounts(
+      [sale({ productId: "pTwinA" }), sale({ productId: "pTwinB" })],
+      { onNameCollision: (msg) => seen.push(msg) },
+    );
+    expect(seen).toHaveLength(1);
+  });
+
+  it("tolerates empty/absent entries", () => {
+    expect(computeRestockCounts(null)).toEqual({});
+    expect(computeRestockCounts([null, sale()])).toMatchObject({ pA: { sizes: { "8": 1 } } });
+  });
+
+  it("a row with NEITHER a product id NOR a name never produces an empty key", () => {
+    // An empty key makes sourceResponsePath collapse to the date node, so
+    // saveSourceResponse would write a size leaf straight under
+    // restock_requests/{date} and corrupt that day's response tree.
+    const out = computeRestockCounts([{ size: "9" }, { productId: "", productName: "   ", size: "8" }]);
+    expect(Object.keys(out)).not.toContain("");
+    expect(sourceResponsePath("2026-06-16", sourceGroupKey(undefined, undefined))).toBe("restock_requests/2026-06-16/Unknown");
+    // The group is still usable: named, and safe to sort/render.
+    Object.values(out).forEach(g => expect(typeof g.productName).toBe("string"));
+  });
+
+  it("back-fills BOTH image fields from a later row", () => {
+    const out = computeRestockCounts([
+      { productId: "pA", productName: "Nike Air", size: "8" },
+      { productId: "pA", productName: "Nike Air", size: "9", photo: "👟", photoUrl: "https://x/a.jpg" },
+    ]);
+    expect(out.pA.photoUrl).toBe("https://x/a.jpg");
+    expect(out.pA.photo).toBe("👟");
   });
 });
 
