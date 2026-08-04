@@ -4,7 +4,7 @@
 // refill card for one "Nike SB Dunk Low Green White" deducted stock from a
 // different product of the identical name.
 import { describe, it, expect } from "vitest";
-import { restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceNameKey } from "./insights";
+import { restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath, sourceNameKey } from "./insights";
 import { buildProductIdIndex, resolveProductIdByName, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./productIdentity";
 import { sourceMovementIdSeed } from "../components/stock/sourceMovementDedupe";
 
@@ -69,6 +69,34 @@ describe("twin products in the Source queue (past-day History feed)", () => {
     const fromLog = restockCountsFromLog({ log: [ready("130", "08", TWIN_A)], dateStr: DATE, hub: "hub1" });
     expect(Object.keys(fromLog)).toEqual([TWIN_A]);
     expect(Object.keys(groups)).toContain(TWIN_A);
+  });
+
+  it("both response leaves sit under ONE date node, so an undo can clear them atomically", () => {
+    // handleUndo used to fire two independent removes. If the second failed the
+    // dual-read still found the surviving leaf, so the card stayed completed and
+    // the undo half-applied silently. Both leaves must therefore be reachable as
+    // relative paths under a single common parent — that is what makes one
+    // multi-path update possible.
+    const legacyKey = sourceNameKey(NAME);
+    const parent = sourceResponseDatePath(DATE);
+    expect(sourceResponsePath(DATE, TWIN_A)).toBe(`${parent}/${TWIN_A}`);
+    expect(sourceResponsePath(DATE, legacyKey)).toBe(`${parent}/${legacyKey}`);
+    // The exact patch handleUndo builds: distinct relative paths, one update.
+    const patch = {};
+    [TWIN_A, legacyKey].forEach(k => { patch[`${k}/${SIZE}`] = null; });
+    expect(Object.keys(patch).sort()).toEqual([`${TWIN_A}/${SIZE}`, `${legacyKey}/${SIZE}`].sort());
+    expect(Object.values(patch)).toEqual([null, null]);
+  });
+
+  it("a pid-less group yields ONE key, so undo never writes the same path twice", () => {
+    // key === nameKey there; de-duping keeps the patch a single entry rather
+    // than two identical ones.
+    const groups = restockCountsFromLog({ log: [ready("001", "08", undefined)], dateStr: DATE, hub: "hub1" });
+    const key = Object.keys(groups)[0];
+    expect(key).toBe(sourceNameKey(NAME));
+    expect(groups[key].nameKey).toBe(key);
+    const keys = Array.from(new Set([key, groups[key].nameKey].filter(Boolean)));
+    expect(keys).toEqual([key]);
   });
 
   it("all three twin cards show three different photos", () => {

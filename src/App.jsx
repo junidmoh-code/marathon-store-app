@@ -62,7 +62,7 @@ import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
-import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
+import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { checkSourceMovementDuplicate, sourceMovementIdSeed } from "./components/stock/sourceMovementDedupe";
 import { printOrderSlips } from "./print/orderSlip";
@@ -1051,11 +1051,28 @@ function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
   }).catch(err => console.warn("saveSourceFulfilProgress failed:", err));
 }
 
-// Reverses a Source response — removes the single (size) leaf so the cell
-// returns to the active pending list. Used by Undo on a completed card.
-function clearSourceResponse(date, productKey, size) {
-  return remove(ref(database, `${sourceResponsePath(date, productKey)}/${size}`))
-    .catch(err => console.warn("clearSourceResponse failed:", err));
+// Reverses a Source response — clears the (size) leaf under EVERY key the cell
+// can live under, so it returns to the active pending list. Used by Undo on a
+// completed card.
+//
+// During the pid-key cutover a cell has TWO homes: its productId key and the
+// legacy name key a pre-cutover response was written under. They MUST clear
+// together, in ONE multi-path update rooted at the shared date node. Two
+// independent removes could half-apply — and the failure would be invisible,
+// because the dual-read (SourceTodayTab / SourceHistoryTab / hubBadges) finds
+// the surviving leaf and keeps rendering the card as completed. The user would
+// see Undo do nothing, with only a console line to explain it.
+//
+// Errors REJECT rather than being swallowed: the caller surfaces them. A silent
+// catch here is what let the half-apply hide in the first place.
+function clearSourceResponse(date, productKeys, size) {
+  const keys = Array.from(new Set(
+    (Array.isArray(productKeys) ? productKeys : [productKeys]).filter(Boolean)
+  ));
+  if (!keys.length) return Promise.resolve();
+  const patch = {};
+  keys.forEach(k => { patch[`${k}/${size}`] = null; });
+  return update(ref(database, sourceResponseDatePath(date)), patch);
 }
 
 // ─── CLOTHING-SOLD REFILL: TRANSFERS + SKIPS ──────────────────────────────────
@@ -13084,13 +13101,15 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const handleResponse = (date, productKey, size, response) => {
     saveSourceResponse(date, productKey, size, response);
   };
+  // Both leaves (pid key + any legacy name key) clear atomically — see
+  // clearSourceResponse. A failure is shown to the user rather than logged,
+  // because a half-applied or failed undo leaves the card looking completed and
+  // there is nothing else on screen to say otherwise.
+  // (For a twin-shared legacy cell this can resurrect the twin's card too; that
+  // record was ambiguous to begin with and ages out of the 5-day window.)
   const handleUndo = (date, productKey, size, legacyKey) => {
-    clearSourceResponse(date, productKey, size);
-    // A pre-cutover response lives under the legacy name key — clear that leaf
-    // too, or the dual-read would keep showing the cell as completed. (For a
-    // twin-shared legacy cell this can resurrect the twin's card as well; that
-    // record was ambiguous to begin with and ages out of the 5-day window.)
-    if (legacyKey && legacyKey !== productKey) clearSourceResponse(date, legacyKey, size);
+    clearSourceResponse(date, [productKey, legacyKey], size)
+      .catch(err => alert(`Undo failed: ${err?.message || err}\n\nThe card may still show as completed. Retry, and if it keeps failing check your connection.`));
   };
 
   // Shared between the mobile column and the desktop rail/pane.

@@ -140,8 +140,15 @@ export function sourceGroupKey(productId, productName) {
 // The one place the Source response/progress cell path is shaped. Two products
 // with the same name now yield two DIFFERENT paths (distinct group keys), so a
 // response to one can no longer close the other's card.
+// The DATE node is exported separately because during the cutover a cell can
+// live under two keys (its pid key and its legacy name key), and clearing both
+// must be ONE multi-path update rooted at their common parent — see
+// clearSourceResponse in App.jsx.
+export function sourceResponseDatePath(date) {
+  return `restock_requests/${date}`;
+}
 export function sourceResponsePath(date, productKey) {
-  return `restock_requests/${date}/${productKey}`;
+  return `${sourceResponseDatePath(date)}/${productKey}`;
 }
 
 // Shared duplicate-name tripwire for the group builders. The old collision
@@ -186,7 +193,10 @@ export function computeRestockCounts(entries, { onNameCollision } = {}) {
     const key = sourceGroupKey(entry.productId, name);
     if (!result[key]) result[key] = {
       productName: name,
-      productId: entry.productId || null,
+      // `??` not `||`, matching restockCountsFromLog below: the two builders are
+      // required to produce identical group shapes for the same record, and a
+      // silent divergence here is the drift their lock-step comment warns about.
+      productId: entry.productId ?? null,
       nameKey: sanitizeKey(name),
       photo: entry.photo || "",
       photoUrl: entry.photoUrl || null,
