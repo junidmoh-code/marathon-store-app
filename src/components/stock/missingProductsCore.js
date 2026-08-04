@@ -18,36 +18,54 @@
 // gate the engine uses (storeCarries). That is why a Solve, which seeds qty-0
 // cells, retires a card immediately.
 
+import { TAXONOMY_SEED } from "../../utils/productTaxonomy.js";
+
 const STORES = ["marathon-pe", "trophy"];
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
 const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
 
-// The tab's own grouping. Deliberately NOT the raw catalogue taxonomy: the
-// catalogue has 8 Accessories subcategories, and a chip per subcategory would be
-// mostly empty chips. These are the groups warehouse staff actually sort by.
+// ── GROUPING: one chip per real product type ─────────────────────────────────
+// Owner directive 2026-08-04: "i want to have sneakers watches bags t shirts
+// tracksuit etc." — i.e. what the product IS, not a coarse three-bucket split.
+// So the chips ARE the catalogue's own `subcategory` values: T-Shirts, Jerseys,
+// Bags, Watches, Tracksuits & Sets, Jeans & Denim … plus Sneakers, which keeps
+// its separate list.
 //
-// "other" is a CATCH-ALL AND IS LOAD-BEARING. Every card must land in exactly one
-// group, or stranded stock becomes unreachable — invisible in a tab whose entire
-// job is to surface it. Belts, eyewear, jewellery, gloves and anything added to
-// the catalogue tomorrow fall here rather than nowhere. The chip is hidden when
-// empty, so it costs nothing on a normal day. (Owner asked for bags/watches/
-// clothing; this is the fourth bucket that keeps that request honest.)
-export const MISSING_CATEGORIES = [
-  { key: "clothing", label: "Clothing" },
-  { key: "bags", label: "Bags" },
-  { key: "watches", label: "Watches" },
-  { key: "other", label: "Other" },
-];
+// This is deliberately DATA-DRIVEN. A chip appears because stranded stock of
+// that type exists, so a subcategory added to the taxonomy tomorrow gets a chip
+// with no code change — the same principle as the taxonomy registry itself,
+// which is an RTDB node precisely so adding a category is a data edit.
+//
+// UNCATEGORISED IS ITS OWN CHIP AND MUST STAY VISIBLE. 170 of the 380 stranded
+// products carry subcategory "Clothing — Uncategorized" — 45% of the tab. It is
+// tempting to bury them; that would hide the single largest pile of stranded
+// stock in the business behind a taxonomy gap. It sorts last, but it shows.
 
-// Which chip a product belongs under. Keyed on the catalogue's own
-// category/subcategory fields — the same fields the refill engine's subcategory
-// policy uses, so the tab and the policy can never disagree about what a watch is.
-export function categoryOf(product) {
-  const sub = String(product?.subcategory || "").trim().toLowerCase();
-  if (sub === "watches") return "watches";
-  if (sub === "bags") return "bags";
-  if (String(product?.category || "").trim().toLowerCase() === "clothing") return "clothing";
-  return "other";
+// Canonical chip order, derived from the taxonomy registry's own row order so
+// the row reads the way the Add Product form does, and stays STABLE as counts
+// change. Sorting by count would reshuffle the chips under the operator's finger
+// every time stock moved.
+const CANONICAL_SUBCATEGORIES = [...new Set(
+  Object.values(TAXONOMY_SEED.cats || {})
+    .sort((a, b) => (a.order || 0) - (b.order || 0))
+    .map((c) => c?.legacy?.subcategory)
+    .filter(Boolean),
+)];
+
+const UNCATEGORISED = { key: "uncategorised", label: "Uncategorised" };
+
+// A missing, blank or explicitly-"uncategorized" subcategory all mean the same
+// thing to an operator: nobody has said what this product is. They collapse into
+// one chip rather than several near-identical ones.
+const looksUncategorised = (sub) => !sub || /uncategori[sz]ed/i.test(sub);
+
+// The chip a product belongs under: { key, label }. Keyed on `subcategory` — the
+// same field the refill engine's subcategory policy uses (PR #305) — so the tab
+// and the policy can never disagree about what a watch is.
+export function groupOf(product) {
+  const sub = String(product?.subcategory || "").trim();
+  if (looksUncategorised(sub)) return { ...UNCATEGORISED };
+  return { key: sub.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), label: sub };
 }
 
 // Is this product clothing in the engine's sense? Byte-identical to
@@ -91,20 +109,21 @@ export function computeMissingProducts({ allStock, products } = {}) {
       .sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
     if (!sizes.length) continue;
     const missing = source === "central" ? ["hub2", ...STORES].filter((l) => !carries(l, pid)) : STORES;
+    const group = groupOf(p);
     out.push({
       pid, name: p?.name || pid, photo: p?.photoUrl, source, kind, sizes, missing,
-      category: categoryOf(p),
+      group: group.key, groupLabel: group.label,
       units: sizes.reduce((t, s) => t + s.avail, 0),
     });
   }
   return out.sort((a, b) => b.units - a.units);
 }
 
-// Card counts per chip. Returns every key in MISSING_CATEGORIES (zeros included)
-// so the chip row can decide what to hide without guessing which keys exist.
+// Card counts per chip, keyed by group. Only groups that actually have cards
+// appear — the chip row is built from the stock, not from a fixed list.
 export function countByCategory(cards) {
-  const out = Object.fromEntries(MISSING_CATEGORIES.map((c) => [c.key, 0]));
-  for (const c of cards || []) out[c.category] = (out[c.category] || 0) + 1;
+  const out = {};
+  for (const c of cards || []) out[c.group] = (out[c.group] || 0) + 1;
   return out;
 }
 
@@ -116,16 +135,37 @@ export function countByCategory(cards) {
 // here rather than inline in JSX is what makes them checkable at all.
 // (Senior-architect review, PR #308.)
 
-// Which chips to show, in order, as [key, label, count].
-// An empty category is hidden — nobody needs to stare at "Bags (0)" — EXCEPT
-// Clothing when there is nothing stranded at all, so the screen always has a
-// selected chip and never renders a bare row. Sneakers is unconditional: it owns
-// its own list and is therefore also the guaranteed non-empty fallback.
-export function buildChips(counts, totalCards, sneakerCount) {
+// Which chips to show, in order, as [key, label, count]. Built from the CARDS,
+// so the row shows exactly the product types that actually have stranded stock —
+// no empty chips to scroll past, and a new subcategory needs no code change.
+//
+// ORDER is the taxonomy's own row order (stable), with anything not in the
+// taxonomy after it alphabetically, and Uncategorised last. Deliberately NOT
+// sorted by count: that would reshuffle the chips under the operator's finger
+// every time stock moved.
+//
+// Sneakers is appended unconditionally — it owns a separate list, and it
+// guarantees the row is never empty, which is what makes chips[0] a safe
+// fallback in pickActiveTab.
+export function buildChips(cards, sneakerCount) {
+  const seen = new Map();   // key → { key, label, n }
+  for (const c of cards || []) {
+    const e = seen.get(c.group) || { key: c.group, label: c.groupLabel, n: 0 };
+    e.n += 1;
+    seen.set(c.group, e);
+  }
+  const rank = (label) => {
+    const i = CANONICAL_SUBCATEGORIES.indexOf(label);
+    return i < 0 ? CANONICAL_SUBCATEGORIES.length : i;
+  };
+  const groups = [...seen.values()].sort((a, b) => {
+    if (a.key === UNCATEGORISED.key) return 1;          // always last
+    if (b.key === UNCATEGORISED.key) return -1;
+    const d = rank(a.label) - rank(b.label);
+    return d !== 0 ? d : a.label.localeCompare(b.label);
+  });
   return [
-    ...MISSING_CATEGORIES
-      .filter((c) => (counts?.[c.key] || 0) > 0 || (c.key === "clothing" && !totalCards))
-      .map((c) => [c.key, c.label, counts?.[c.key] || 0]),
+    ...groups.map((g) => [g.key, g.label, g.n]),
     ["sneakers", "Sneakers", sneakerCount || 0],
   ];
 }

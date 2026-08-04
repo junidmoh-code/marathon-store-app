@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  computeMissingProducts, categoryOf, countByCategory, isClothing, MISSING_CATEGORIES,
+  computeMissingProducts, groupOf, countByCategory, isClothing,
   buildChips, pickActiveTab,
 } from "./missingProductsCore";
 
@@ -18,30 +18,31 @@ const PERFUME = { id: "pf1", name: "Queen of Fire", category: "Perfume",   subca
 const PRODUCTS = [TEE, JERSEY, UNCAT, BAG, WATCH, BELT, SNEAKER, PERFUME];
 const cell = (qty) => ({ qty });
 
-describe("categoryOf — the chip a product lands under", () => {
-  it("keys watches and bags off subcategory, everything clothing off category", () => {
-    expect(categoryOf(WATCH)).toBe("watches");
-    expect(categoryOf(BAG)).toBe("bags");
-    expect(categoryOf(TEE)).toBe("clothing");
-    expect(categoryOf(JERSEY)).toBe("clothing");
-    expect(categoryOf(UNCAT)).toBe("clothing");
+describe("groupOf — the chip a product lands under", () => {
+  it("is the product's own subcategory, so the chips read as product types", () => {
+    expect(groupOf(TEE)).toEqual({ key: "t-shirts", label: "T-Shirts" });
+    expect(groupOf(JERSEY)).toEqual({ key: "jerseys", label: "Jerseys" });
+    expect(groupOf(WATCH)).toEqual({ key: "watches", label: "Watches" });
+    expect(groupOf(BAG)).toEqual({ key: "bags", label: "Bags" });
+    expect(groupOf(BELT)).toEqual({ key: "belts", label: "Belts" });
   });
-  it("sends every other accessory to the catch-all rather than nowhere", () => {
-    expect(categoryOf(BELT)).toBe("other");
-    expect(categoryOf({ category: "Accessories", subcategory: "Eyewear" })).toBe("other");
-    expect(categoryOf({ category: "Accessories", subcategory: "Jewellery" })).toBe("other");
-    expect(categoryOf(PERFUME)).toBe("other");
+  it("collapses every flavour of 'nobody said what this is' into one chip", () => {
+    // 170 of 380 live cards are "Clothing — Uncategorized". Missing, blank and
+    // the literal label all mean the same thing to an operator.
+    expect(groupOf(UNCAT).key).toBe("uncategorised");
+    expect(groupOf({ subcategory: "" }).key).toBe("uncategorised");
+    expect(groupOf({ subcategory: "   " }).key).toBe("uncategorised");
+    expect(groupOf({}).key).toBe("uncategorised");
+    expect(groupOf(null).key).toBe("uncategorised");
+    expect(groupOf({ subcategory: "Uncategorised" }).key).toBe("uncategorised");
   });
-  it("is case- and whitespace-insensitive, and survives missing fields", () => {
-    expect(categoryOf({ subcategory: "  watches " })).toBe("watches");
-    expect(categoryOf({ subcategory: "BAGS" })).toBe("bags");
-    expect(categoryOf({ category: "clothing" })).toBe("clothing");
-    expect(categoryOf({})).toBe("other");
-    expect(categoryOf(null)).toBe("other");
+  it("slugs punctuation and spacing so the key is stable and URL-safe", () => {
+    expect(groupOf({ subcategory: "Tracksuits & Sets" })).toEqual({ key: "tracksuits-sets", label: "Tracksuits & Sets" });
+    expect(groupOf({ subcategory: "Jeans & Denim" }).key).toBe("jeans-denim");
+    expect(groupOf({ subcategory: "  Bags  " })).toEqual({ key: "bags", label: "Bags" });
   });
-  it("only ever returns a key the chip row knows about", () => {
-    const keys = new Set(MISSING_CATEGORIES.map((c) => c.key));
-    for (const p of PRODUCTS) expect(keys.has(categoryOf(p))).toBe(true);
+  it("keeps the label exactly as the catalogue spells it", () => {
+    expect(groupOf({ subcategory: "Hoodies & Sweatshirts" }).label).toBe("Hoodies & Sweatshirts");
   });
 });
 
@@ -51,7 +52,7 @@ describe("computeMissingProducts — which products are stranded", () => {
       allStock: { central: { t1: { M: cell(5) } } }, products: PRODUCTS,
     });
     expect(cards).toHaveLength(1);
-    expect(cards[0]).toMatchObject({ pid: "t1", source: "central", kind: "Only in Central", units: 5, category: "clothing" });
+    expect(cards[0]).toMatchObject({ pid: "t1", source: "central", kind: "Only in Central", units: 5, group: "t-shirts", groupLabel: "T-Shirts" });
     expect(cards[0].missing).toEqual(["hub2", "marathon-pe", "trophy"]);
   });
   it("flags Hub 2 stock no shop carries as 'Only in Hub 2'", () => {
@@ -116,79 +117,98 @@ describe("computeMissingProducts — which products are stranded", () => {
 
 describe("countByCategory — the chip numbers", () => {
   const allStock = {
-    central: { t1: { M: cell(4) }, j1: { L: cell(3) }, b1: { _: cell(6) }, w1: { _: cell(2) }, be1: { _: cell(1) } },
+    central: { t1: { M: cell(4) }, j1: { L: cell(3) }, b1: { _: cell(6) }, w1: { _: cell(2) }, be1: { _: cell(1) }, u1: { M: cell(7) } },
   };
-  it("counts cards per chip", () => {
+  it("counts cards per product type", () => {
     const counts = countByCategory(computeMissingProducts({ allStock, products: PRODUCTS }));
-    expect(counts).toEqual({ clothing: 2, bags: 1, watches: 1, other: 1 });
-  });
-  it("reports every chip key even at zero, so the row never guesses", () => {
-    expect(Object.keys(countByCategory([])).sort()).toEqual(MISSING_CATEGORIES.map((c) => c.key).sort());
+    expect(counts).toEqual({ "t-shirts": 1, jerseys: 1, bags: 1, watches: 1, belts: 1, uncategorised: 1 });
   });
   it("THE LOAD-BEARING PROPERTY: the chips account for every single card", () => {
     // If this ever fails, stranded stock is invisible in the one tab meant to
-    // surface it — the whole reason "other" exists.
+    // surface it.
     const cards = computeMissingProducts({ allStock, products: PRODUCTS });
-    const counts = countByCategory(cards);
-    const summed = Object.values(counts).reduce((a, b) => a + b, 0);
+    const summed = Object.values(countByCategory(cards)).reduce((a, b) => a + b, 0);
     expect(summed).toBe(cards.length);
   });
   it("and the count matches the list the tab renders, per chip", () => {
     const cards = computeMissingProducts({ allStock, products: PRODUCTS });
     const counts = countByCategory(cards);
-    for (const { key } of MISSING_CATEGORIES) {
-      expect(cards.filter((c) => c.category === key)).toHaveLength(counts[key]);
+    for (const key of Object.keys(counts)) {
+      expect(cards.filter((c) => c.group === key)).toHaveLength(counts[key]);
     }
   });
 });
 
 describe("buildChips + pickActiveTab — the chip row's state machine", () => {
-  const counts = (o) => ({ clothing: 0, bags: 0, watches: 0, other: 0, ...o });
+  // Cards as the core emits them; buildChips reads group/groupLabel only.
+  const card = (group, label) => ({ group, groupLabel: label });
+  const many = (n, group, label) => Array.from({ length: n }, () => card(group, label));
 
-  it("shows a chip per non-empty category, then Sneakers", () => {
-    const chips = buildChips(counts({ clothing: 304, bags: 39, watches: 35, other: 2 }), 380, 12);
+  it("shows one chip per product type actually stranded, then Sneakers", () => {
+    const chips = buildChips([
+      ...many(35, "t-shirts", "T-Shirts"),
+      ...many(39, "bags", "Bags"),
+      ...many(35, "watches", "Watches"),
+    ], 12);
     expect(chips).toEqual([
-      ["clothing", "Clothing", 304], ["bags", "Bags", 39],
-      ["watches", "Watches", 35], ["other", "Other", 2], ["sneakers", "Sneakers", 12],
+      ["t-shirts", "T-Shirts", 35], ["bags", "Bags", 39],
+      ["watches", "Watches", 35], ["sneakers", "Sneakers", 12],
     ]);
   });
-  it("hides empty categories — no staring at 'Bags (0)'", () => {
-    const chips = buildChips(counts({ clothing: 5, watches: 2 }), 7, 0);
-    expect(chips.map(([k]) => k)).toEqual(["clothing", "watches", "sneakers"]);
+  it("orders by the taxonomy, NOT by count — chips must not reshuffle as stock moves", () => {
+    const chips = buildChips([
+      ...many(1, "watches", "Watches"),
+      ...many(99, "t-shirts", "T-Shirts"),
+      ...many(50, "tracksuits-sets", "Tracksuits & Sets"),
+    ], 0);
+    // T-Shirts precede Tracksuits precede Watches in the taxonomy's own row
+    // order, regardless of 99 vs 50 vs 1.
+    expect(chips.map(([k]) => k)).toEqual(["t-shirts", "tracksuits-sets", "watches", "sneakers"]);
   });
-  it("hides Other on a normal day, shows it the moment a belt strands", () => {
-    expect(buildChips(counts({ clothing: 5 }), 5, 0).map(([k]) => k)).not.toContain("other");
-    expect(buildChips(counts({ clothing: 5, other: 1 }), 6, 0).map(([k]) => k)).toContain("other");
+  it("puts Uncategorised last — visible, but never ahead of a real type", () => {
+    const chips = buildChips([
+      ...many(170, "uncategorised", "Uncategorised"),
+      ...many(2, "watches", "Watches"),
+    ], 0);
+    expect(chips.map(([k]) => k)).toEqual(["watches", "uncategorised", "sneakers"]);
   });
-  it("keeps Clothing visible when NOTHING is stranded, so the row is never bare", () => {
-    const chips = buildChips(counts({}), 0, 0);
-    expect(chips).toEqual([["clothing", "Clothing", 0], ["sneakers", "Sneakers", 0]]);
+  it("a type with nothing stranded gets no chip at all", () => {
+    const chips = buildChips(many(3, "bags", "Bags"), 0);
+    expect(chips.map(([k]) => k)).toEqual(["bags", "sneakers"]);
+  });
+  it("a subcategory the taxonomy has never heard of still gets a chip", () => {
+    // The point of building from cards: no code change when the catalogue grows.
+    const chips = buildChips([card("wetsuits", "Wetsuits"), card("bags", "Bags")], 0);
+    expect(chips.map(([k]) => k)).toEqual(["bags", "wetsuits", "sneakers"]);
   });
   it("is never empty — Sneakers is unconditional, so chips[0] always exists", () => {
-    for (const c of [counts({}), counts({ bags: 1 }), undefined]) {
-      expect(buildChips(c, 0, 0).length).toBeGreaterThan(0);
+    for (const cards of [[], undefined, many(1, "bags", "Bags")]) {
+      expect(buildChips(cards, 0).length).toBeGreaterThan(0);
     }
+    expect(buildChips([], 0)).toEqual([["sneakers", "Sneakers", 0]]);
   });
 
   it("keeps the user's selection while it still exists", () => {
-    const chips = buildChips(counts({ clothing: 5, bags: 2 }), 7, 3);
-    expect(pickActiveTab(chips, "bags")).toBe("bags");
+    const chips = buildChips([...many(5, "bags", "Bags"), ...many(2, "watches", "Watches")], 3);
+    expect(pickActiveTab(chips, "watches")).toBe("watches");
     expect(pickActiveTab(chips, "sneakers")).toBe("sneakers");
   });
   it("THE VANISHING CHIP: solving the last bag while viewing Bags falls back, never blanks", () => {
-    const after = buildChips(counts({ clothing: 5 }), 5, 0);   // bags chip is gone
+    const after = buildChips(many(5, "watches", "Watches"), 0);
     expect(after.map(([k]) => k)).not.toContain("bags");
-    expect(pickActiveTab(after, "bags")).toBe("clothing");     // not undefined, not empty
+    expect(pickActiveTab(after, "bags")).toBe("watches");
   });
-  it("falls back on first mount before any stock has loaded", () => {
-    const chips = buildChips(counts({}), 0, 0);
-    expect(pickActiveTab(chips, "clothing")).toBe("clothing");
-    expect(pickActiveTab(chips, "bags")).toBe("clothing");
+  it("opens on the first chip when nothing has been chosen yet", () => {
+    const chips = buildChips([...many(2, "t-shirts", "T-Shirts"), ...many(9, "bags", "Bags")], 4);
+    expect(pickActiveTab(chips, null)).toBe("t-shirts");
+  });
+  it("falls back to Sneakers when nothing at all is stranded", () => {
+    expect(pickActiveTab(buildChips([], 0), null)).toBe("sneakers");
   });
   it("never returns a key that isn't in the rendered row", () => {
-    const chips = buildChips(counts({ watches: 3 }), 3, 1);
+    const chips = buildChips(many(3, "watches", "Watches"), 1);
     const keys = chips.map(([k]) => k);
-    for (const sel of ["bags", "other", "clothing", "nonsense", undefined, null]) {
+    for (const sel of ["bags", "t-shirts", "nonsense", undefined, null]) {
       expect(keys).toContain(pickActiveTab(chips, sel));
     }
   });

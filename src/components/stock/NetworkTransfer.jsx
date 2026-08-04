@@ -116,7 +116,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // (Senior-architect review, PR #308.)
   const cards = useMemo(() => {
     const all = allCards || computeMissingProducts({ allStock, products });
-    return category && category !== "all" ? all.filter((c) => c.category === category) : all;
+    return category && category !== "all" ? all.filter((c) => c.group === category) : all;
   }, [allCards, allStock, products, category]);
 
   // Catalog sizes to seed. The one-size "_" sentinel is KEPT (it used to be

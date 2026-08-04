@@ -38,7 +38,7 @@ import MoveExcess from "./MoveExcess";
 import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
 import { computeMissingFootwear } from "./missingFootwearCore";
-import { computeMissingProducts, countByCategory, buildChips, pickActiveTab } from "./missingProductsCore";
+import { computeMissingProducts, buildChips, pickActiveTab } from "./missingProductsCore";
 import NoTargetQueue from "./NoTargetQueue";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 
@@ -239,7 +239,12 @@ function groupByProduct(items, keyFields) {
 
 export default function HealthView({ products = [], onExit }) {
   const [screen, setScreen] = useState(null);
-  const [missingTab, setMissingTab] = useState("clothing");   // Missing Products: Clothing | Sneakers
+  // Missing Products chip. null = nothing chosen yet, so pickActiveTab opens on
+  // the first chip in the row. The chips are built from whatever is actually
+  // stranded (T-Shirts, Jerseys, Bags, Watches, …) plus Sneakers, so there is no
+  // fixed key that is safe to hardcode as a default — the old "clothing" default
+  // no longer names a real chip.
+  const [missingTab, setMissingTab] = useState(null);
   const exceptions = useStockExceptions();
   const shadow = useEngineShadow();
   const openEngine = useEngineOpen();
@@ -351,7 +356,6 @@ export default function HealthView({ products = [], onExit }) {
     () => computeMissingProducts({ allStock, products }),
     [allStock, products],
   );
-  const missingByCategory = useMemo(() => countByCategory(missingProductCards), [missingProductCards]);
   const missingProductsClothing = missingProductCards.length;
   // SNEAKERS are computed CLIENT-SIDE from live /stock, deliberately, not from the
   // scan's exception buckets: the engine's Health loop is clothing-only
@@ -420,13 +424,11 @@ export default function HealthView({ products = [], onExit }) {
       //              nearly the whole catalogue and mean nothing. Hub 1 and Hub 2
       //              are where sneaker buffer lives.
       case "missingProducts": {
-        // Chips: the catalogue groups, then Sneakers. "Other" is a catch-all and
-        // appears ONLY when it has cards — every stranded product must be
-        // reachable from some chip, or the tab hides the very stock it exists to
-        // surface. (Belts live there today; anything new to the catalogue lands
-        // there rather than nowhere.) An empty group is hidden the same way, so
-        // a shop with no stranded bags doesn't stare at "Bags (0)".
-        const chips = buildChips(missingByCategory, missingProductCards.length, missingSneakerCards.length);
+        // One chip per product type actually stranded — T-Shirts, Jerseys, Bags,
+        // Watches, Tracksuits & Sets … — then Sneakers. Built from the cards, so
+        // there are no empty chips to scroll past and a subcategory added to the
+        // taxonomy tomorrow gets a chip with no code change.
+        const chips = buildChips(missingProductCards, missingSneakerCards.length);
         const activeTab = pickActiveTab(chips, missingTab);
         return (
           <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts} onBack={back}>
