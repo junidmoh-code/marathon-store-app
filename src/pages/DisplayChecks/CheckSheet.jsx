@@ -18,6 +18,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT, MONO, BLUE, AMBER, INK, PANEL, META } from "./tokens";
 import { formatSaTime } from "./feedModel";
+import StyleCodeCapture from "./StyleCodeCapture";
 
 const completeDisplayCheck = httpsCallable(functions, "completeDisplayCheck");
 const FOCUSABLE = 'button:not([disabled]),[href],input:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -34,7 +35,7 @@ function useIsWide(px = 1024) {
   return w;
 }
 
-export default function CheckSheet({ store, check, onClose }) {
+export default function CheckSheet({ store, check, onClose, styleCodeProgress, product }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [override, setOverride] = useState(null); // { stockQty } when soft-blocked
@@ -149,6 +150,21 @@ export default function CheckSheet({ store, check, onClose }) {
 
         {error && (
           <div style={{ ...META, color: AMBER, fontSize: 11, letterSpacing: "0.08em" }}>{String(error).toUpperCase()}</div>
+        )}
+
+        {/* ── OPTIONAL STYLE-CODE CAPTURE ────────────────────────────────────
+            Here because this is the moment staff are physically holding the
+            shoe. It NEVER blocks the display check: it is collapsed by default,
+            it enqueues independently, and ignoring it costs nothing. A failed
+            capture cannot cost someone their confirmation, and a failed
+            confirmation cannot lose their code. */}
+        {check.productId && !override && (
+          <StyleCodeCapture
+            productId={check.productId}
+            productName={name}
+            existingCode={product && product.styleCodeNormalised}
+            progress={styleCodeProgress}
+          />
         )}
 
         {override ? (

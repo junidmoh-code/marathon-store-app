@@ -40,6 +40,7 @@ Each product is its own node. `productId` is generated client-side as
 | **`styleCodeFetchedAt`** | **number (epoch ms)**      | **no**   | **When the catalogue lookup ran.** |
 | **`styleCodeConfirmedBy`** | **string \| null**      | **no**   | **uid of the human who pressed Confirm. Opaque uid only — never an email; `/products` is readable by every signed-in staff member.** |
 | **`styleCodeLabelPhoto`** | **string (https URL)**    | **no**   | **The actual photo of the actual tongue label the code was read from — the evidence behind the identity. Stored at `products/_intake/{code}/{productId}.jpg`.** |
+| **`pendingStyleCode`** | **object**                   | **no**   | **Suggested catalogue data awaiting a human decision — see the sub-table below. NEVER read as live product data. Its existence NEVER changes `name`, `photoUrl` or `category`.** |
 | **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15 — RETIRED. Was a product-level depletion flag (blurred + un-orderable + Depleted Products tab). The blocking feature is gone: writers no longer set it and readers ignore it; any legacy value is inert. Products are always live & orderable. Safe to ignore / backfill-clear later.** |
 | **`depletedBy`**  | **string \| null**                | **no**   | **Phase 15 — RETIRED (see `depletedAt`). Inert legacy field.** |
 
@@ -270,6 +271,91 @@ rows, each pairing the lowest-sorted id with one of the others.
 **Nothing is ever merged.** No winner is picked, no record is deleted, no field
 is rewritten. An automatic merge here would destroy stock history. The flag is a
 note and a banner — that is all it is.
+
+---
+
+## `/style_code_captures/{captureId}` — the capture queue
+
+Created by **staff** (create-once); decided by **`processStyleCodeCapture`**.
+
+### Why a queue and not a callable
+
+The `displayChecks` subtree is **read-only to the client** — it has `.read` rules
+and **no `.write` rule anywhere**, because every write to it already goes through
+a Cloud Function with the Admin SDK. So the display-check UI cannot write a
+capture there. It enqueues here instead, the same shape as
+`pos/storeCreditQueue`, and the trigger does the rest.
+
+| Field | Type | Notes |
+|---|---|---|
+| `styleCodeNormalised` | string | **Required.** |
+| `capturedBy` | string | **Required**, and the rules require it to equal `auth.uid`. |
+| `capturedAt` | number (epoch ms) | **Required.** |
+| `origin` | `"addSneaker"` \| `"displayCheck"` \| `"receiving"` \| `"admin"` | **Required**, rules-validated enum. |
+| `productId` | string | Which product this code was captured against. |
+| `styleCode` | string | The readable form, as typed. |
+| `labelPhotoUrl` | string | **Must begin with `https://`.** Stored at `products/{productId}/labels/{captureId}.jpg`. |
+| `status` | `"pending"` \| `"autoConfirmed"` \| `"needsReview"` \| `"applied"` \| `"rejected"` | **Written by the server only.** The rules reserve it (and `review`) for admins, and only once the record exists — so the client CANNOT write one, which is exactly right: deciding is the server's job. |
+| `review` | object | Server-written: `{ reason, confidence, stamped, decidedAt }`. |
+
+---
+
+## `/products/{id}/pendingStyleCode` — the suggestion, awaiting a human
+
+| Field | Type | Notes |
+|---|---|---|
+| `styleCodeNormalised` | string | |
+| `status` | `"autoConfirmed"` \| `"needsReview"` | |
+| `reviewReason` | string | `images-agree`, `images-disagree`, `no-catalogue-match`, `product-image-missing`, `catalogue-image-missing`, `code-claimed-elsewhere`. |
+| `suggestedName` / `suggestedBrand` / `suggestedImageUrl` | string \| null | Named "suggested" on purpose. **No reader may treat these as the product's name, brand or photo.** |
+| `labelPhotoUrl` | string \| null | The evidence. |
+| `comparedConfidence` | number \| null | 0–1 from the image comparison. |
+| `comparisonReason` | string \| null | The model's words, capped at 300 chars. |
+| `captureId`, `capturedBy`, `capturedAt`, `origin`, `decidedAt` | | Provenance. |
+| `claimConflictWith` | string \| null | Another product already owns this code. Nothing was stamped. |
+
+### THE BACKFILL SAFETY GUARANTEE
+
+Capturing a code on an **existing** product writes the **code**, the **label
+photo** and the **resolved data into pending fields**. It **never** overwrites
+the live `name`, `photoUrl` or `category` — not on agreement, not at high
+confidence, not ever.
+
+This matters because the capture path is a *backfill*: thousands of records that
+staff and the POS already recognise, touched by an automated process. A catalogue
+that silently renames itself overnight is worse than one with gaps, because
+nobody can trust what they are reading. So the decision splits in two:
+
+* **The code** — an identity key the product did not have. Stamped onto the
+  product, but only into an **empty** slot (`styleCodeNormalised` is immutable by
+  rule), and only after a **create-once claim** on `/style_code_index` succeeds.
+  The Admin SDK bypasses rules, so `claimIndexServerSide` reimplements create-once
+  with a transaction — a plain `set()` would silently steal a code another
+  product owns.
+* **The suggestion** — name, photo, brand from an external catalogue. Goes to
+  `pendingStyleCode` and stays there. **`autoConfirmed` means "a human can
+  approve this quickly", NOT "applied".**
+
+`functions/lib/style-code-capture.cjs` exports `FORBIDDEN_PRODUCT_FIELDS`, and a
+test asserts none of them can appear in the product patch on any branch — the
+guarantee is worth more as an executable check than as a comment.
+
+### The image comparison, and the third outcome
+
+One vision comparison (Gemini 3.6 Flash, structured JSON) of the catalogue image
+against the product's own image. Agreement above **0.8 confidence** marks the
+pending data `autoConfirmed`; disagreement queues it for admin review. The bar is
+deliberately high: a wrong auto-confirm is a mislabelled product nobody
+re-checks, while an unnecessary review costs one person three seconds.
+
+There is a **third** outcome that must not be collapsed into the first: the
+comparison can be **impossible** — the product has no photo, the catalogue
+returned none, or the call failed. "Could not check" routes to review exactly
+like "checked and disagreed". Treating an unverifiable match as agreement would
+auto-confirm precisely the products we have the least evidence about.
+
+**Both outcomes are logged.** A silent auto-confirm is indistinguishable from a
+function that quietly stopped running.
 
 ---
 

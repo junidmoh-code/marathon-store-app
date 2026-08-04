@@ -3167,3 +3167,22 @@ exports.readStyleCodeLabel = require("./styleCode/readStyleCodeLabel.js").readSt
 // mistake in a different costume.
 //   firebase deploy --only functions:reapStyleCodeOcrCache
 exports.reapStyleCodeOcrCache = require("./styleCode/reapOcrCache.js").reapStyleCodeOcrCache;
+
+// ─── STYLE CODE — processStyleCodeCapture (the capture queue worker) ──────────
+// Fires on a new /style_code_captures/{captureId}. The displayChecks subtree is
+// READ-ONLY to the client (it has .read rules and no .write rule anywhere), so
+// the display-check UI cannot write its capture there — it enqueues here
+// instead, the same shape as pos/storeCreditQueue, and this trigger decides.
+//
+// THE GUARANTEE: capturing a code on an EXISTING product writes the CODE, the
+// label photo and the resolved data into PENDING fields. It NEVER overwrites the
+// live name, image or category. The pure decision is in
+// lib/style-code-capture.cjs, where a test asserts the forbidden fields cannot
+// appear in the product patch. One vision comparison of the catalogue image
+// against the product's own image auto-confirms on agreement and queues for
+// admin review on disagreement — BOTH outcomes logged, because a silent
+// auto-confirm is indistinguishable from a function that stopped running.
+//
+// SECRET: GEMINI_API_KEY (the image comparison).
+//   firebase deploy --only functions:processStyleCodeCapture
+exports.processStyleCodeCapture = require("./styleCode/processCapture.js").processStyleCodeCapture;
