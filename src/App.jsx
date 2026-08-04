@@ -9685,6 +9685,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           pulls={laybyPulls}
           nowMs={nowTick}
           initialSub={laybySub}
+          actorRole={crActorRole}
         />
       )}
     </>

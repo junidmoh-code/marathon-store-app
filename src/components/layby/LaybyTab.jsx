@@ -23,6 +23,7 @@ import { labelFor } from "../stock/locations";
 import {
   LAYBY_STATUS, DEFAULT_STORAGE_HUB, DISPOSITION, dispositionOf,
   formatLaybyMoney, isLaybyException, isPullExpired, ageLabel, parseLaybyScan, normalizeInvoiceNo,
+  isLaybyExpired, todayKey,
 } from "./contract";
 
 // Palette — mirrors the warehouse view constants in App.jsx.
@@ -242,7 +243,90 @@ function ExceptionRow({ layby, nowMs }) {
 }
 
 // ── Main tab ───────────────────────────────────────────────────────────────────
-export default function LaybyTab({ selectedHub, laybys = [], pulls = [], nowMs, initialSub }) {
+import { returnExpiredLaybyToStock, loadLaybyLines } from "./expiredReturn";
+
+// ── ONE EXPIRED LAYBY ─────────────────────────────────────────────────────────
+// Hub 1 keeps the parcels, so hub 1 clears them (owner, 2026-08-04). The card
+// shows what is inside BEFORE the clerk commits — a layby record carries only
+// `itemCount`, so the contents are read across from the POS sale, and a parcel
+// whose lines will not resolve says so instead of offering a button that would
+// put a wrong number on the shelf.
+//
+// Money is untouched here by design: issuing store credit stays a POS job.
+function ExpiredCard({ layby, nowMs, actorRole, hubLabel, onDone }) {
+  const [lines, setLines] = useState(null);      // null = not loaded, {ok,...}
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const expand = async () => {
+    const next = !open; setOpen(next);
+    if (next && !lines) setLines(await loadLaybyLines(layby));
+  };
+
+  const confirm = async () => {
+    setBusy(true); setErr("");
+    const res = await returnExpiredLaybyToStock(layby, { actorRole, hubLabel });
+    setBusy(false);
+    if (res.ok) onDone({ ok: true, text: `${layby.invoiceNo || layby.laybyId} — ${res.units} unit${res.units === 1 ? "" : "s"} back on the Hub 1 shelf.` });
+    else { setErr(res.message); if (res.alreadyClaimed) onDone({ ok: false, text: res.message }); }
+  };
+
+  const daysOver = Math.max(0, Math.floor((nowMs - new Date(layby.dueDate + "T00:00:00").getTime()) / 86400000));
+
+  return (
+    <div style={{ position:"relative", background:CARD, borderRadius:12, padding:"11px 13px", marginBottom:9,
+                  border:"1px solid rgba(220,60,60,.35)" }}>
+      <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background:RED, borderRadius:"12px 0 0 12px" }}/>
+      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:14, fontWeight:800, color:"#fff" }}>{layby.invoiceNo || layby.laybyId}</div>
+          <div style={{ fontSize:11.5, color:"rgba(233,238,255,.5)", marginTop:2 }}>
+            {layby.customerName || "—"} · due {layby.dueDate} · <span style={{ color:RED, fontWeight:700 }}>{daysOver} day{daysOver === 1 ? "" : "s"} over</span>
+          </div>
+          <div style={{ fontSize:11.5, color:"rgba(233,238,255,.4)", marginTop:2 }}>
+            {layby.itemCount || "?"} item{layby.itemCount === 1 ? "" : "s"} · balance {formatLaybyMoney(layby.balanceRemaining)}
+          </div>
+        </div>
+        <button onClick={expand} style={{ background:"transparent", border:"1px solid rgba(255,255,255,.18)", color:"rgba(233,238,255,.75)",
+                 borderRadius:9, padding:"8px 12px", fontSize:12, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>
+          {open ? "Hide" : "View items"}
+        </button>
+      </div>
+
+      {open && (
+        <div style={{ marginTop:10, paddingTop:10, borderTop:"1px solid rgba(255,255,255,.08)" }}>
+          {!lines ? (
+            <div style={{ fontSize:12, color:"rgba(233,238,255,.45)" }}>Reading the parcel…</div>
+          ) : !lines.ok ? (
+            <div style={{ fontSize:12, color:"#FF9B9B", lineHeight:1.5 }}>{lines.message}</div>
+          ) : (
+            <>
+              {lines.lines.map((l, i) => (
+                <div key={i} style={{ display:"flex", justifyContent:"space-between", gap:10, fontSize:12.5, color:"#E9EEFF", padding:"3px 0" }}>
+                  <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{l.name}</span>
+                  <span style={{ color:"rgba(233,238,255,.55)", whiteSpace:"nowrap" }}>size {l.size === "_" ? "one" : l.size} · {l.qty}</span>
+                </div>
+              ))}
+              {err && <div style={{ fontSize:12, color:"#FF9B9B", marginTop:8, lineHeight:1.5 }}>{err}</div>}
+              <button onClick={confirm} disabled={busy}
+                style={{ width:"100%", marginTop:10, padding:"12px", borderRadius:10, fontSize:13.5, fontWeight:800,
+                         cursor: busy ? "wait" : "pointer", background:"rgba(220,60,60,.16)",
+                         border:"1px solid rgba(220,60,60,.5)", color:"#FF9B9B", opacity: busy ? .6 : 1 }}>
+                {busy ? "Putting back…" : `Confirm return — ${lines.lines.reduce((t,l)=>t+l.qty,0)} unit${lines.lines.reduce((t,l)=>t+l.qty,0) === 1 ? "" : "s"} to Hub 1`}
+              </button>
+              <div style={{ fontSize:10.5, color:"rgba(233,238,255,.35)", marginTop:6, textAlign:"center" }}>
+                Puts the stock back. Store credit is issued at the till.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function LaybyTab({ selectedHub, laybys = [], pulls = [], nowMs, initialSub, actorRole }) {
   // Pull Requests now live in the MAIN order queue (one queue). This tab keeps the
   // two flows that don't belong in that queue: Receiving (scan parcels in) and
   // Exceptions (missing-in-transit).
@@ -261,6 +345,15 @@ export default function LaybyTab({ selectedHub, laybys = [], pulls = [], nowMs, 
     () => laybys.filter(l => hubOf(l) === selectedHub && isLaybyException(l, nowMs)),
     [laybys, selectedHub, nowMs]
   );
+  // Expired = past due AND still open, derived the same way the POS derives it
+  // (contract.isLaybyExpired mirrors marathon-pos-app isOverdue). Oldest first:
+  // the longest-dead parcel is the one taking up a shelf.
+  const expired = useMemo(() => {
+    const today = todayKey(nowMs);
+    return laybys
+      .filter(l => hubOf(l) === selectedHub && isLaybyExpired(l, today))
+      .sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)));
+  }, [laybys, selectedHub, nowMs]);
 
   // Resolve a scan ({laybyId, invoiceNo}) against ALL laybys (a parcel may be
   // misrouted yet physically arrive here) — laybyId first, then invoiceNo — and
@@ -298,6 +391,7 @@ export default function LaybyTab({ selectedHub, laybys = [], pulls = [], nowMs, 
       <div style={{ display:"flex", gap:7, paddingBottom:12, overflowX:"auto", scrollbarWidth:"none" }}>
         <SubPill active={sub==="receiving"}  label="Receiving"     count={receiving.length}     onClick={() => setSub("receiving")}/>
         <SubPill active={sub==="exceptions"} label="Exceptions"    count={exceptions.length} danger onClick={() => setSub("exceptions")}/>
+        <SubPill active={sub==="expired"}    label="Expired"       count={expired.length}    danger onClick={() => setSub("expired")}/>
       </div>
 
       {flash && (
@@ -350,6 +444,22 @@ export default function LaybyTab({ selectedHub, laybys = [], pulls = [], nowMs, 
                 Dispatched but never scanned in past the deadline. Find {exceptions.length > 1 ? "these" : "this"} today.
               </div>
               {exceptions.map(l => <ExceptionRow key={l.key} layby={l} nowMs={nowMs}/>)}
+            </div>
+      )}
+
+      {sub === "expired" && (
+        expired.length === 0
+          ? emptyBox("Nothing expired — every layby here is still within its due date.")
+          : <div style={{ display:"flex", flexDirection:"column" }}>
+              <div style={{ fontSize:12, color:"#FF9B9B", marginBottom:8, lineHeight:1.5 }}>
+                Past their due date and still on the rack. Check the parcel against the item list, then
+                confirm — the stock goes back to Hub 1 and the till can issue the customer store credit.
+              </div>
+              {expired.map(l => (
+                <ExpiredCard key={l.key || l.laybyId} layby={l} nowMs={nowMs}
+                  actorRole={actorRole} hubLabel={selectedHub}
+                  onDone={(f) => setFlash(f)} />
+              ))}
             </div>
       )}
     </div>
