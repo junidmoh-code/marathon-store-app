@@ -65,6 +65,7 @@ import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositio
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { checkSourceMovementDuplicate, sourceMovementIdSeed } from "./components/stock/sourceMovementDedupe";
+import { clearSourceResponseCells } from "./components/stock/sourceResponseWrites";
 import { printOrderSlips } from "./print/orderSlip";
 // ── New product taxonomy (31 categories, RTDB-backed registry) ───────────────
 // The registry lives at /settings/productTaxonomy and is read LIVE, so adding a
@@ -1065,14 +1066,16 @@ function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
 //
 // Errors REJECT rather than being swallowed: the caller surfaces them. A silent
 // catch here is what let the half-apply hide in the first place.
+//
+// The patch-building and single-update behaviour live in
+// components/stock/sourceResponseWrites so they can be exercised with an
+// injected transport — a regression to two calls fails a test instead of
+// quietly returning.
 function clearSourceResponse(date, productKeys, size) {
-  const keys = Array.from(new Set(
-    (Array.isArray(productKeys) ? productKeys : [productKeys]).filter(Boolean)
-  ));
-  if (!keys.length) return Promise.resolve();
-  const patch = {};
-  keys.forEach(k => { patch[`${k}/${size}`] = null; });
-  return update(ref(database, sourceResponseDatePath(date)), patch);
+  return clearSourceResponseCells({
+    updatePaths: (path, patch) => update(ref(database, path), patch),
+    date, productKeys, size,
+  });
 }
 
 // ─── CLOTHING-SOLD REFILL: TRANSFERS + SKIPS ──────────────────────────────────

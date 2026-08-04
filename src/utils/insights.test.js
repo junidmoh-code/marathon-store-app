@@ -12,7 +12,6 @@ import {
   sourceGroupKey,
   sourceNameKey,
   sourceResponsePath,
-  sourceResponseDatePath,
   onHoldEventsFromLog,
   onHoldKey,
 } from "./insights";
