@@ -108,6 +108,19 @@ const ALLOWED_IMAGE_HOSTS = [
   "cdn.flightclub.com",
 ];
 
+// ── WHY A REFUSED HOST IS TAGGED, NOT JUST DESCRIBED ─────────────────────────
+// This allowlist is a standing hostage to someone else's infrastructure. When
+// KicksDB rotates or adds an image CDN, EVERY affected capture starts failing
+// closed to needsReview — correct behaviour, but with a symptom that looks
+// exactly like a vision or matching problem. Someone would go hunting through
+// model behaviour for a fault that is one missing string in a list up there.
+//
+// So the refusal carries a machine-readable tag and the offending HOST, the
+// caller logs it on its own distinct line, and the host is written into the
+// product's pending record. Diagnosis is then one query — of the logs OR of the
+// data — instead of an investigation.
+const HOST_REFUSED = "IMAGE_HOST_REFUSED";
+
 function assertFetchableImageUrl(raw) {
   let parsed;
   try {
@@ -118,7 +131,10 @@ function assertFetchableImageUrl(raw) {
   if (parsed.protocol !== "https:") throw new Error(`image URL is not https: ${parsed.protocol}`);
   const host = parsed.hostname.toLowerCase();
   if (!ALLOWED_IMAGE_HOSTS.includes(host)) {
-    throw new Error(`image host not allowed: ${host}`);
+    const err = new Error(`image host not allowed: ${host}`);
+    err.code = HOST_REFUSED;   // discriminates a config gap from a genuine failure
+    err.refusedHost = host;    // the one fact needed to fix it
+    throw err;
   }
   return parsed.toString();
 }
@@ -239,6 +255,7 @@ async function runCapture(db, captureId, capture, {
   // routes to review — "could not check" is never "checked and passed".
   let comparison = null;
   let comparisonError = null;
+  let refusedHost = null;
   if (comparable(product, model)) {
     try {
       comparison = compareFn
@@ -246,7 +263,20 @@ async function runCapture(db, captureId, capture, {
         : await compareImages(product.photoUrl, model.imageUrl, geminiKey);
     } catch (err) {
       comparisonError = (err && err.message) || String(err);
-      console.warn(`processStyleCodeCapture: comparison failed for ${captureId}:`, comparisonError);
+      if (err && err.code === HOST_REFUSED) {
+        // A CONFIG GAP, not a model or network failure. Distinct marker so one
+        // grep answers "is a CDN missing from the allowlist, and which?" — the
+        // alternative is reading this as a vision problem and looking in
+        // entirely the wrong place.
+        refusedHost = err.refusedHost || null;
+        console.error(
+          `processStyleCodeCapture: ${HOST_REFUSED} host=${refusedHost} capture=${captureId} ` +
+          `product=${productId} — image blocked by ALLOWED_IMAGE_HOSTS; if this is a legitimate ` +
+          `catalogue CDN, add it to ALLOWED_IMAGE_HOSTS in functions/styleCode/processCapture.js`
+        );
+      } else {
+        console.warn(`processStyleCodeCapture: comparison failed for ${captureId}:`, comparisonError);
+      }
     }
   }
 
@@ -284,6 +314,10 @@ async function runCapture(db, captureId, capture, {
     captureId,
     ...(claimConflict ? { claimConflictWith: claimConflict, status: "needsReview", reviewReason: "code-claimed-elsewhere" } : {}),
     ...(comparisonError ? { comparisonError: String(comparisonError).slice(0, 300) } : {}),
+    // Queryable from the DATA as well as the logs: one scan of
+    // /products/*/pendingStyleCode/comparisonRefusedHost names every CDN the
+    // allowlist is missing, and how many captures each one cost.
+    ...(refusedHost ? { comparisonRefusedHost: refusedHost } : {}),
   });
 
   const finalStatus = claimConflict ? "needsReview" : decision.status;
@@ -312,6 +346,7 @@ async function runCapture(db, captureId, capture, {
 exports.runCapture = runCapture;
 exports.compareImages = compareImages;
 exports.assertFetchableImageUrl = assertFetchableImageUrl;
+exports.HOST_REFUSED = HOST_REFUSED;
 exports.ALLOWED_IMAGE_HOSTS = ALLOWED_IMAGE_HOSTS;
 exports.claimIndexServerSide = claimIndexServerSide;
 exports.COMPARE_MODEL = COMPARE_MODEL;

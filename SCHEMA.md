@@ -325,6 +325,8 @@ capture there. It enqueues here instead, the same shape as
 | `comparisonReason` | string \| null | The model's words, capped at 300 chars. |
 | `captureId`, `capturedBy`, `capturedAt`, `origin`, `decidedAt` | | Provenance. |
 | `claimConflictWith` | string \| null | Another product already owns this code. Nothing was stamped. |
+| `comparisonError` | string \| null | Why the image comparison could not be performed (capped at 300 chars). |
+| `comparisonRefusedHost` | string \| null | **Set only when the image was blocked by the SSRF host allowlist.** The allowlist is a standing hostage to KicksDB's infrastructure: when they rotate or add an image CDN, every affected capture fails closed to `needsReview` with a symptom that looks like a vision or matching problem. One scan of this field names every CDN the allowlist is missing, and how many captures each one cost — the fix is adding the host to `ALLOWED_IMAGE_HOSTS` in `functions/styleCode/processCapture.js`. The same event is logged on its own line tagged `IMAGE_HOST_REFUSED`. |
 
 ### THE BACKFILL SAFETY GUARANTEE
 

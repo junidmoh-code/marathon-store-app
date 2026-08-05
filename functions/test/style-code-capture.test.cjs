@@ -433,3 +433,87 @@ test("adding CDNs did not widen the guard — attacks are still refused", () => 
     assert.throws(() => assertFetchableImageUrl(url), /not https|not allowed/);
   }
 });
+
+// ── A REFUSED HOST MUST BE DIAGNOSABLE IN ONE QUERY ──────────────────────────
+// The allowlist is a standing hostage to KicksDB's infrastructure. When they
+// rotate or add a CDN, every affected capture fails closed to needsReview — a
+// symptom that looks exactly like a vision or matching problem. Without the
+// host named on its own distinct line, someone goes hunting through model
+// behaviour for what is one missing string in a list.
+const { HOST_REFUSED } = require("../styleCode/processCapture.js");
+
+test("a refused host is TAGGED, not merely described in prose", () => {
+  try {
+    assertFetchableImageUrl("https://cdn.brand-new-cdn.com/a.jpg");
+    assert.fail("should have thrown");
+  } catch (err) {
+    assert.strictEqual(err.code, HOST_REFUSED, "a config gap must be discriminable from a real failure");
+    assert.strictEqual(err.refusedHost, "cdn.brand-new-cdn.com", "the one fact needed to fix it");
+  }
+});
+
+test("a NON-host failure is not tagged as a host refusal", () => {
+  for (const url of ["http://images.stockx.com/a.jpg", "not a url", ""]) {
+    try {
+      assertFetchableImageUrl(url);
+      assert.fail(`should have thrown for ${url}`);
+    } catch (err) {
+      assert.notStrictEqual(err.code, HOST_REFUSED, `${url} is not a host-allowlist problem`);
+      assert.strictEqual(err.refusedHost, undefined);
+    }
+  }
+});
+
+test("the refused host lands in the DATA, queryable without reading logs", async () => {
+  // A future KicksDB CDN, not in ALLOWED_IMAGE_HOSTS.
+  // The PRODUCT photo must sit on an ALLOWED host, so the refusal isolates the
+  // model's new CDN. (The default fixture uses "https://p/1.jpg", whose host
+  // "p" is itself refused — which would test the wrong thing.)
+  const db = fakeDb({
+    products: { p1: PRODUCT({ photoUrl: "https://firebasestorage.googleapis.com/p1.jpg" }) },
+    sneaker_models: { CT8527016: MODEL({ imageUrl: "https://cdn.brand-new-cdn.com/x.jpg" }) },
+  });
+  const out = await runCapture(db, "c1", CAPTURE(), { nowMs: NOW, geminiKey: "k" });
+
+  assert.strictEqual(out.status, "needsReview", "still fails closed");
+  const pending = db.data.products.p1.pendingStyleCode;
+  assert.strictEqual(pending.comparisonRefusedHost, "cdn.brand-new-cdn.com",
+    "one scan of pendingStyleCode/comparisonRefusedHost must name every missing CDN");
+  assert.match(pending.comparisonError, /host not allowed/);
+});
+
+test("the refused host is logged on its own DISTINCT line, naming the host", async () => {
+  const errors = [];
+  const origError = console.error, origWarn = console.warn;
+  console.error = (...a) => errors.push(a.join(" "));
+  console.warn = () => {};
+  try {
+    const db = fakeDb({
+      products: { p1: PRODUCT({ photoUrl: "https://firebasestorage.googleapis.com/p1.jpg" }) },
+      sneaker_models: { CT8527016: MODEL({ imageUrl: "https://cdn.brand-new-cdn.com/x.jpg" }) },
+    });
+    await runCapture(db, "c1", CAPTURE(), { nowMs: NOW, geminiKey: "k" });
+  } finally {
+    console.error = origError; console.warn = origWarn;
+  }
+  const line = errors.find((l) => l.includes(HOST_REFUSED));
+  assert.ok(line, "a host refusal must not hide inside the generic 'comparison failed' line");
+  assert.match(line, /host=cdn\.brand-new-cdn\.com/);
+  assert.match(line, /ALLOWED_IMAGE_HOSTS/, "the log must say where to fix it");
+});
+
+test("an ordinary comparison failure does NOT claim a refused host", async () => {
+  const db = fakeDb({ products: { p1: PRODUCT() }, sneaker_models: { CT8527016: MODEL() } });
+  await runCapture(db, "c1", CAPTURE(), {
+    nowMs: NOW, geminiKey: "k", compareFn: async () => { throw new Error("gemini HTTP 503"); },
+  });
+  const pending = db.data.products.p1.pendingStyleCode;
+  assert.strictEqual(pending.comparisonRefusedHost, undefined, "a 503 is not an allowlist problem");
+  assert.match(pending.comparisonError, /503/);
+});
+
+test("a successful comparison records no refused host", async () => {
+  const db = fakeDb({ products: { p1: PRODUCT() }, sneaker_models: { CT8527016: MODEL() } });
+  await runCapture(db, "c1", CAPTURE(), { nowMs: NOW, geminiKey: "k", compareFn: async () => AGREE });
+  assert.strictEqual(db.data.products.p1.pendingStyleCode.comparisonRefusedHost, undefined);
+});
