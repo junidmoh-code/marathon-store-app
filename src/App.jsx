@@ -81,6 +81,14 @@ import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
 import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
+// ── SNEAKER INTAKE — style code first ────────────────────────────────────────
+// Sneakers arrive without boxes, so there is no barcode. The inside-tongue style
+// code is the identity, and it is now the FIRST question intake asks — which is
+// what makes "do we already have this shoe?" answerable BEFORE anyone fills in a
+// form. Uniqueness is CLAIMED (create-once on /style_code_index), never checked:
+// a check-then-write race lets two tablets create two records for one shoe.
+import StyleCodeGate from "./components/admin/StyleCodeGate";
+import { claimStyleCode, claimFailureMessage, CLAIM_OK, CLAIM_TAKEN } from "./utils/styleCodeClaim";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
 // The Meta API cannot be called directly from the browser (CORS). All sends
@@ -503,6 +511,22 @@ async function reserveNextSkuAndBarcode() {
     throw new Error(reserved?.error || "SKU/barcode reservation aborted.");
   }
   return reserved; // { sku, barcode }
+}
+
+// ─── AN ERROR THE OPERATOR IS MEANT TO READ ──────────────────────────────────
+// addProduct's catch block shows a generic "please try again" for anything it
+// does not recognise, because raw failures are noise on a shop floor. Some
+// failures, though, ARE the instruction — "this code is already on another
+// product, add stock to that one instead". Those must survive the filter.
+//
+// It used to decide that by pattern-matching the message text, which silently
+// swallowed every style-code claim message and left the operator retrying an
+// action that could never succeed. Intent is now flagged, not inferred: if the
+// message is written FOR a person, say so here. (CodeRabbit, PR #312.)
+function operatorError(message) {
+  const err = new Error(message);
+  err.showToOperator = true;
+  return err;
 }
 
 function addProductToFirebase(product) {
@@ -4859,6 +4883,13 @@ function AdminView({ products, orders, onExit }) {
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
   const [form, setForm] = useState({ name:"", categoryKey:"", photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
+  // ── STYLE CODE INTAKE (step 1) ──────────────────────────────────────────
+  // While null, "Add Product" shows the style-code gate instead of the create
+  // form. The form only opens once a code has been entered AND a human has
+  // either confirmed the fetched identity or chosen to enter it themselves.
+  // Holds { styleCode, styleCodeNormalised, styleCodeSource, styleCodeFetchedAt,
+  //         labelPhoto, suggestedName, suggestedBrand, suggestedImageUrl, model }.
+  const [intake, setIntake] = useState(null);
   // Opening stock — REQUIRED and always visible (no longer collapsible). An
   // explicit 0 per size is allowed so nothing forces a fake number, but the
   // section cannot be skipped: a destination must be picked before saving.
@@ -4970,6 +5001,27 @@ function AdminView({ products, orders, onExit }) {
         photoUrl = await getDownloadURL(sRef);
       }
 
+      // ── LABEL PHOTO ─────────────────────────────────────────────────────
+      // The evidence behind the style code: the actual photo of the actual
+      // tongue label. Stored under products/ because that is the only Storage
+      // prefix staff may write to (storage.rules has no catch-all), keyed by the
+      // code so it is findable from the code alone. Best-effort — a failed
+      // upload must never block the product, the code is what matters.
+      let labelPhotoUrl = null;
+      if (intake && intake.labelPhoto && intake.labelPhoto.blob) {
+        try {
+          const lRef = storageRef(storage, `products/_intake/${intake.styleCodeNormalised}/${id}.jpg`);
+          await uploadBytes(lRef, intake.labelPhoto.blob, {
+            contentType: "image/jpeg",
+            // The evidence for a code never changes once taken — cache hard.
+            cacheControl: "public, max-age=31536000, immutable",
+          });
+          labelPhotoUrl = await getDownloadURL(lRef);
+        } catch (labelErr) {
+          console.warn("label photo upload failed (product save continues):", labelErr);
+        }
+      }
+
       // ── THE RECORD — legacy derivation lives in buildNewProduct (pure, and
       //    tested against the signed-off table in newProductRecord.test.js).
       //    The chosen category supplies category / subcategory / productType so
@@ -4980,6 +5032,9 @@ function AdminView({ products, orders, onExit }) {
         id,
         photoUrl: photoUrl ?? null,
         brand: brandOf(form.name),
+        // The style code carried through from the gate (step 1). Absent for any
+        // product added without one — the field is omitted, never nulled.
+        styleCode: intake ? intake.styleCode : null,
         // A real photo uploaded with the product stamps the upload time (drives
         // the AI Photo Studio "Recent" view; legacy products fall back to the
         // id-encoded creation time).
@@ -5012,6 +5067,18 @@ function AdminView({ products, orders, onExit }) {
         deviceId: getDeviceId(),
         at: serverNowMs(),
       };
+      // ── STYLE CODE PROVENANCE ───────────────────────────────────────────
+      // Where the suggested data came from and who accepted it. Recorded so a
+      // wrong catalogue match can be traced back later — "who confirmed this,
+      // from what, and against which photo of which label".
+      // styleCodeSource is the /products enum: cache | api | websearch | manual.
+      if (intake) {
+        newProduct.styleCodeSource      = intake.styleCodeSource;
+        newProduct.styleCodeFetchedAt   = intake.styleCodeFetchedAt;
+        newProduct.styleCodeConfirmedBy = auth.currentUser?.uid ?? null;
+        if (labelPhotoUrl) newProduct.styleCodeLabelPhoto = labelPhotoUrl;
+      }
+
       // POS Phase 2: reserve the next sequential sku + barcode atomically
       // BEFORE the product write so two concurrent adds can't collide. If
       // reservation fails (counter exhausted or RTDB error), surface the
@@ -5019,7 +5086,63 @@ function AdminView({ products, orders, onExit }) {
       const { sku, barcode } = await reserveNextSkuAndBarcode();
       newProduct.sku     = sku;
       newProduct.barcode = barcode;
-      await addProductToFirebase(newProduct);
+
+      // ── CLAIM THE STYLE CODE — create-once, IMMEDIATELY before the product ─
+      // Uniqueness is claimed, never checked. Two tablets scanning the same shoe
+      // both race this write; the rules make exactly one win. The loser is told
+      // to add stock to the winner's product instead of creating a second record
+      // for one shoe with its stock split across them.
+      //
+      // This sits as late as possible — the very last thing before the product
+      // write — so the gap in which a claim could outlive a failed product write
+      // is as small as two statements can make it. It cannot be closed entirely
+      // (two writes, no transaction across them); the orphan it can leave is
+      // detected by resolveStyleCode and reported, never pretended away.
+      if (newProduct.styleCodeNormalised) {
+        const outcome = await claimStyleCode(newProduct.styleCodeNormalised, {
+          productId: id,
+          uid: auth.currentUser?.uid ?? null,
+          nowMs: serverNowMs(),
+        });
+        // These messages MUST reach the operator verbatim. The generic catch
+        // below used to decide that by pattern-matching the message text, which
+        // silently swallowed every one of these ("reserve" does not match
+        // "reservation") and showed "please try again" instead. The operator
+        // then retried forever, hitting CLAIM_TAKEN every time, and the one
+        // instruction they needed — add stock to the existing product — was
+        // never shown. Flag intent explicitly rather than describing it in
+        // prose the error handler has to guess at. (CodeRabbit, PR #312.)
+        if (outcome.kind === CLAIM_TAKEN) {
+          // Someone already owns this code. NOTHING has been written yet.
+          throw operatorError(
+            `${claimFailureMessage(outcome)}` +
+            (outcome.productId ? `\n\nExisting product: ${outcome.productId}` : "")
+          );
+        }
+        if (outcome.kind !== CLAIM_OK) {
+          throw operatorError(claimFailureMessage(outcome));
+        }
+      }
+
+      try {
+        await addProductToFirebase(newProduct);
+      } catch (writeErr) {
+        // The claim landed and the product did not. Say so explicitly with the
+        // code and the id — this is the orphan case, and an admin needs both to
+        // clear it. Silently swallowing it would leave a code that looks taken
+        // and is owned by nothing.
+        if (newProduct.styleCodeNormalised) {
+          console.error("addProduct: product write failed AFTER the style-code claim landed", {
+            styleCodeNormalised: newProduct.styleCodeNormalised, productId: id,
+          });
+          throw operatorError(
+            `The product could not be saved, but style code ${newProduct.styleCode} was already ` +
+            `reserved for id ${id}. Ask an admin to clear that reservation before retrying — ` +
+            `the code will otherwise look taken by a product that does not exist.`
+          );
+        }
+        throw writeErr;
+      }
 
       // GUARANTEE ON SAVE: mint a barcode for every size now so the catalog never
       // has gaps (a sizeless/one-size product mints the "_" slot). Best-effort —
@@ -5074,6 +5197,7 @@ function AdminView({ products, orders, onExit }) {
       setShoeboxTouched(false);
       setRecvQtys({});
       setSaveAttempted(false);
+      setIntake(null); // next Add Product starts at the style-code gate again
       // Keep the receiving location — an admin loading a delivery adds several
       // products into the SAME location in a row; re-picking it each time was
       // pure friction and a mis-pick risk.
@@ -5083,7 +5207,11 @@ function AdminView({ products, orders, onExit }) {
       // Surface counter-exhaustion + reservation errors with their actual
       // message so the admin knows what's wrong; everything else gets the
       // generic prompt.
-      const msg = /counter exhausted|reservation|no longer available/i.test(String(err?.message || ""))
+      // `showToOperator` is the explicit signal; the regex is the legacy path
+      // for errors thrown before that flag existed. Deciding what a person is
+      // allowed to read by pattern-matching English is how the claim messages
+      // were lost — new operator-facing errors must set the flag.
+      const msg = err?.showToOperator || /counter exhausted|reservation|no longer available/i.test(String(err?.message || ""))
         ? `Failed to save product:\n${err.message}`
         : "Failed to save product. Please try again.";
       alert(msg);
@@ -5289,8 +5417,40 @@ function AdminView({ products, orders, onExit }) {
 
         <div style={{ padding:"0 14px" }}>
 
-      {showAdd && (
+      {/* ── STEP 1: THE STYLE CODE GATE ──────────────────────────────────────
+          The create form does not open until a style code has been entered and
+          a human has decided what it means. That ordering is what lets us catch
+          "we already have this shoe" BEFORE the work is done rather than after.
+          Confirming a catalogue match prefills name / brand / image; rejecting
+          keeps the code and opens a blank form. Category is set from the form's
+          own selector either way — never inferred from the code, because Nike
+          apparel prints the same format as Nike footwear. */}
+      {showAdd && !intake && (
+        <StyleCodeGate
+          products={products}
+          onCancel={() => setShowAdd(false)}
+          onAddStock={(productId) => {
+            // Already ours → route to the product, do NOT open the create form.
+            setShowAdd(false);
+            setIntake(null);
+            if (productId) window.location.hash = "product/" + productId;
+          }}
+          onProceed={(payload) => {
+            setIntake(payload);
+            // Prefill ONLY from an explicit human confirmation. A rejected match
+            // sends suggestedName "" and leaves the form blank.
+            if (payload.suggestedName) {
+              setForm((f) => ({ ...f, name: payload.suggestedName }));
+            }
+          }}
+        />
+      )}
+
+      {showAdd && intake && (
         <NewProductForm
+          styleCode={intake.styleCode}
+          suggestedImageUrl={intake.suggestedImageUrl}
+          onChangeStyleCode={() => setIntake(null)}
           form={form} setForm={setForm}
           taxonomy={taxonomy} taxonomySource={taxonomySource}
           selectedCat={selectedCat} formSizes={formSizes} formOneSize={formOneSize}

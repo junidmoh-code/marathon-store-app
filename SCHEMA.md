@@ -34,6 +34,13 @@ Each product is its own node. `productId` is generated client-side as
 | **`barcode`**     | **string** (8-digit zero-padded)  | **no**   | **POS Phase 2 (scanner workflow). Auto-assigned at create time from `/products_meta/lastBarcode`. Format: `"00000001"`..`"99999999"`. Wider than `sku` to leave room for future per-(product, size) variants on the same counter.** |
 | **`sku`**         | **string** (4-digit zero-padded)  | **no**   | **POS Phase 2 (scanner workflow). Auto-assigned at create time from `/products_meta/lastSku`. Format: `"0001"`..`"9999"`. Always per-product (no size variants).** |
 | **`barcodes`**    | **`{ [sizeKey]: "00000001" }`**   | **no**   | **Per-(product, size) barcode codes (the size-variant expansion the `barcode` field reserved space for). Each value is an 8-digit code reserved from the SAME `/products_meta/lastBarcode` counter the first time that product+size needs a label, then PERMANENT — reused on every reprint, never regenerated/overwritten. Key is the size run through the ONE canonical encoder (`barcodeSizeKey` → `encodeSizeKey`, shared with `/stock` and the POS: `"5.5"` → `"5_5"`, one-size/null → `"_"`); the raw size is preserved in `/barcodes/{code}`. Reserved/stored by `src/components/stock/barcodeStore.js#ensureBarcode`. Rendered as Code 128.** |
+| **`styleCode`**   | **string**                        | **no**   | **Manufacturer style code off the inside-tongue label, in the human-readable form the brand prints (`"CT8527-016"`). Display only — never match on it.** |
+| **`styleCodeNormalised`** | **string** (`[A-Z0-9]+`)  | **no**   | **THE identity key for sneaker intake: `styleCode` uppercased with every non-alphanumeric stripped (`"CT8527-016"` → `"CT8527016"`). All lookups, the `/sneaker_models` cache key and the duplicate check match on this and only this. Normalisation NEVER truncates — `CT8527-016` and `CT8527-700` are different products. Written by `normaliseStyleCode` (`src/utils/styleCode.js`, server twin `functions/lib/style-code.cjs`). **IMMUTABLE once set** — the live rules let only the super-admin change an existing value; a denial must be shown, never swallowed. Indexed (`.indexOn`) in the live rules.** |
+| **`styleCodeSource`** | **`"cache"` \| `"api"` \| `"websearch"` \| `"manual"`** | **no** | **Rules-validated enum — where the suggested data came from. NOTE: a DIFFERENT enum from `/sneaker_models.source`, which has no `cache` member (a cached row records how it was *originally* obtained, not that it was served from cache).** |
+| **`styleCodeFetchedAt`** | **number (epoch ms)**      | **no**   | **When the catalogue lookup ran.** |
+| **`styleCodeConfirmedBy`** | **string \| null**      | **no**   | **uid of the human who pressed Confirm. Opaque uid only — never an email; `/products` is readable by every signed-in staff member.** |
+| **`styleCodeLabelPhoto`** | **string (https URL)**    | **no**   | **The actual photo of the actual tongue label the code was read from — the evidence behind the identity. Stored at `products/_intake/{code}/{productId}.jpg`.** |
+| **`pendingStyleCode`** | **object**                   | **no**   | **Suggested catalogue data awaiting a human decision — see the sub-table below. NEVER read as live product data. Its existence NEVER changes `name`, `photoUrl` or `category`.** |
 | **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15 — RETIRED. Was a product-level depletion flag (blurred + un-orderable + Depleted Products tab). The blocking feature is gone: writers no longer set it and readers ignore it; any legacy value is inert. Products are always live & orderable. Safe to ignore / backfill-clear later.** |
 | **`depletedBy`**  | **string \| null**                | **no**   | **Phase 15 — RETIRED (see `depletedAt`). Inert legacy field.** |
 
@@ -76,6 +83,358 @@ const hasBox  = (p.productType !== "clothing") && p.hasShoeBoxOption === true; /
 const barcode = typeof p.barcode === "string" && p.barcode.trim().length > 0 ? p.barcode.trim() : null;
 const sku     = typeof p.sku     === "string" && p.sku.trim().length     > 0 ? p.sku.trim()     : null;
 ```
+
+### Style code — the sneaker intake identity key
+
+Sneakers arrive without boxes, so there is **no box barcode to scan**. What every
+shoe does carry is the manufacturer style code on the inside-tongue label, so
+that code is the identity key intake routes on.
+
+**Normalisation is exactly two lossless operations** — uppercase, then drop every
+character that is not `A–Z` or `0–9`:
+
+```js
+normaliseStyleCode("CT8527-016")  // "CT8527016"
+normaliseStyleCode("ct8527 016")  // "CT8527016"  — same shoe, same key
+normaliseStyleCode("CT8527-700")  // "CT8527700"  — DIFFERENT shoe, different key
+```
+
+**It never truncates and never substitutes characters.** `CT8527-016` and
+`CT8527-700` share six characters and are two different products; any prefix
+match, length cap, or `O`→`0` "correction" would merge them into one catalogue
+record and one stock cell, and the damage would only surface weeks later as
+unexplained stock drift. The gate is asserted in `src/utils/styleCode.test.js`
+and `functions/test/style-code.test.cjs`.
+
+Because the output is `[A-Z0-9]+` only, it is always a legal RTDB key.
+
+**Accepted formats** (recognised shapes, used only to sanity-check a code a
+vision model read off a label photo — manual entry is never shape-gated, and the
+resolver rejects a code only when it finds nothing for it):
+
+| Format | Example | Normalised |
+|---|---|---|
+| `nike-alpha-6-3` | `CT8527-016` | `CT8527016` |
+| `numeric-6-3`    | `315122-111` | `315122111` |
+| `puma-6-2`       | `380190-01`  | `38019001` |
+| `new-balance`    | `ML574EVG`   | `ML574EVG` |
+| `adidas-block`   | `IE3437`     | `IE3437` |
+
+#### RTDB index
+
+`/products` already carries `.indexOn: ["styleCodeNormalised"]` in the LIVE
+rules, so `resolveStyleCode`'s
+`products.orderByChild("styleCodeNormalised").equalTo(code)` query is indexed.
+**RTDB rules are console-managed in this project — `database.rules.json` in this
+repo is not the deployed source of truth and must not be edited.**
+
+`styleCodeNormalised` is **IMMUTABLE once set**: the live rules permit only the
+super-admin email to change an existing value. Any write path that could
+re-stamp it must surface the permission denial as a **visible error**, never
+swallow it — a silently-dropped identity change is how two shoes end up sharing
+one record.
+
+`styleCodeSource` on `/products` is an enum: `cache | api | websearch | manual`.
+Note this is a **different** enum from `/sneaker_models.source`, which has no
+`cache` member (a cached row records how it was originally obtained, not that it
+came from the cache).
+
+---
+
+## `/sneaker_models/{NORMALISED_STYLE_CODE}` — the permanent resolve cache
+
+Written **only** by `resolveStyleCode` (Cloud Function, admin SDK). One row per
+style code, keyed on the **normalised** code. This is a cache with no expiry by
+design: resolve a code once and never pay the vendor for it again, for the
+lifetime of the business.
+
+**The cache is load-bearing, not an optimisation.** The KicksDB quota is small,
+so the external API is **never** called for a code that already has a row here.
+Required fields (`styleCode`, `source`, `fetchedAt`) and the `source` enum are
+enforced by the live rules; the node is create-once, and only an admin may
+correct an existing row.
+
+| Field | Type | Notes |
+|---|---|---|
+| `styleCode` | string | The vendor's own readable spelling (`"CT8527-016"`). The **key** stays the normalised form; vendor text never overwrites it. |
+| `brand` | string \| null | e.g. `"Nike"`. |
+| `model` | string \| null | e.g. `"Nike Dunk Low"`. |
+| `colorwayName` | string \| null | e.g. `"Black White"`. |
+| `productType` | string \| null | As the vendor reports it (`"sneakers"`, `"apparel"`). **INFORMATIONAL ONLY** — category is set from the intake entry point, never inferred from a code. Nike apparel uses the same style-code format as Nike footwear. |
+| `imageUrl` | string \| null | Catalog photo. **Must begin with `https://`** or the rules reject the write — a vendor returning `http://` or a protocol-relative URL loses its image rather than taking the whole cache write down. Shown for confirm/reject; **never** written onto a product without a human decision. |
+| `gtin` | string \| null | Variant GTIN/EAN when the catalog returns one. Unusable today (sneakers arrive without boxes, so there is nothing to scan), but a box-barcode lane later is free if we keep the number now and worthless if we discard it. |
+| `source` | `"api"` \| `"websearch"` \| `"manual"` | **Rules-validated enum — the KIND of resolution, not the vendor's name.** KicksDB is an external catalog API, so it writes `"api"`; writing `"kicksdb"` is rejected at write time and looks like a silent no-op. Which vendor actually answered is carried on the resolve response and in `/style_code_misses`, not smuggled into a validated field. |
+| `fetchedAt` | number (epoch ms) | When the external resolve happened. **Required** by the rules. |
+| `raw` | string \| null | The vendor payload **JSON-stringified**, capped at 20 000 chars. Stored as a *string*, never an object: vendor payloads carry price maps keyed by size (`"10.5"`), and a `.` in an RTDB key is illegal and throws at write time. A string cannot contain an illegal key, so the hazard is designed out rather than validated around. |
+
+**Resolution is a three-tier chain behind one signature** (`resolveStyleCode(code)`).
+Callers never learn which tier answered, so tiers can be added, reordered or
+swapped without touching a call site:
+
+| Tier | Provider | Behaviour |
+|---|---|---|
+| 1 | `cache` | Reads this node. Free, instant. |
+| 2 | `kicksdb` | `GET https://api.kicks.dev/v3/unified/products/{identifier}`, `Authorization: Bearer <KICKSDB_API_KEY>`. Key is a **Firebase secret read inside the function** — it never reaches the client, never enters git, and the client never calls the vendor directly. Skipped entirely when tier 1 has the code. |
+| 3 | `web-search` | **Stub.** Always not-found. Wired and ordered now so adding it later touches one function and nothing else. |
+
+A provider that returns `null` means "nothing here, try the next tier". A
+provider that **throws** means "this tier is broken" — the error is recorded and
+the chain continues, and the response distinguishes the two. A dead vendor must
+never be reported to staff as "this shoe does not exist", which would send them
+off to create a duplicate product.
+
+**The anti-collapse guard:** external catalogs fuzzy-match. Ask for `CT8527-016`
+and a catalog may return `CT8527-700` — same silhouette, wrong shoe. A vendor
+record is accepted **only** if its own SKU normalises to the byte-identical key
+we asked for. No prefix match, no similarity score.
+
+---
+
+## `/style_code_index/{NORMALISED_STYLE_CODE}` — the ownership claim
+
+**THE authority on which product owns a style code.** Uniqueness here is
+**claimed, never checked.**
+
+| Field | Type | Notes |
+|---|---|---|
+| `productId` | string | **Required.** The product that owns this code. |
+| `claimedAt` | number (epoch ms) | **Required.** |
+| `claimedBy` | string | Optional, but when present the rules require it to equal `auth.uid`. |
+
+**No other child keys are permitted.** Create-once for any user with a
+`stockRole`; only a `stockRole` admin or the super-admin may overwrite.
+
+### Why claim-first, and never check-then-write
+
+A check ("does any product have this code?") followed by a write is a race with
+a window: two staff scanning the same shoe on two tablets both read "no", both
+create a product, and the catalogue now has two records for one shoe with stock
+split across them. The rules close that window — the **second** create-once
+write loses, deterministically.
+
+So intake does this, in this order:
+
+1. Mint the product id (`"p" + serverNowMs()`).
+2. **Claim** `/style_code_index/{code}` create-once with that id.
+3. Claim succeeded ⇒ create the product and stamp `styleCodeNormalised`.
+4. Claim **failed** (key exists) ⇒ read its `productId`. A *different* product
+   owns this code: write `/duplicate_candidates`, and route the operator to
+   **add stock on the existing product**. Never create a second product.
+
+The claim is made as late as possible — immediately before the product write —
+so the window in which a claim can outlive a failed product write is as small as
+it can be.
+
+### The orphan case
+
+Because the claim precedes the product write, a claim can survive a product
+write that failed: `/style_code_index/{code}` names a `productId` that does not
+exist. `resolveStyleCode` detects this and returns `claimOrphaned: true`. Intake
+must **show** it rather than treat the code as taken — otherwise the code looks
+owned and nothing owns it, and no one can proceed. Clearing an orphan requires
+an admin (the node is create-once for staff).
+
+`/products.styleCodeNormalised` is a *stamp*, not the authority. A scan of
+`/products` still matters — it is how a collision between rows that never
+claimed (catalogue rows predating this index, or a backfill) becomes visible —
+but the index can only ever hold one claim, so ownership questions go to the
+index and collision questions go to the scan. `resolveStyleCode` returns both.
+
+---
+
+## `/duplicate_candidates/{pairId}` — two products, one style code
+
+Written by `resolveStyleCode` and by the intake claim path when a style code is
+found on **more than one** `/products` record. One of them is mislabelled, or the
+same shoe was added twice — either way it is a data problem a human has to look
+at.
+
+**This node is keyed by PAIR, not by code.** The live rules validate it as a pair
+record; a row keyed by style code holding a `productIds` **array** is rejected at
+write time and shows up in the UI as a silent no-op.
+
+| Field | Type | Notes |
+|---|---|---|
+| `productIdA` | string | **Required.** The lower-sorted product id. |
+| `productIdB` | string | **Required.** The other one. |
+| `reason` | `"styleCodeCollision"` \| `"manual"` \| `"heuristic"` | **Required**, rules-validated enum. |
+| `detectedAt` | number (epoch ms) | **Required.** |
+| `status` | `"open"` \| `"merged"` \| `"dismissed"` | Rules-validated enum. A human closes it; nothing else does. |
+| `detectedBy` | string \| null | uid of whoever ran the lookup that surfaced it. |
+| `styleCodeNormalised` | string (≤32 chars) | Context for the banner. The live rule validates this field by name and length. **NOT `styleCode`** — that field name is not validated here, and the normalised form always fits 32 characters. |
+
+The live rule carries an `$other` validator set to `true`, so additional
+children are permitted; `detectedBy` and `styleCodeNormalised` each have their
+own explicit validators.
+
+**Re-detection never reopens a closed pair.** A style-code collision is
+*permanent* until someone merges the products — both records keep the code, so
+every future scan of that shoe re-detects it. A blind `.set()` would therefore
+rewrite `status` to `"open"` on every scan and the duplicate queue could never
+be cleared. An existing row keeps its `status` **and** its original
+`detectedAt` (when the collision was first seen is the useful fact, not when it
+was last re-observed); only a genuinely new row is born `"open"`.
+
+`pairId` is **deterministic**: the two ids sorted and joined with `__`
+(`"p1__p2"`). Re-detecting the same collision rewrites the same row instead of
+piling up duplicates of the duplicate report. N products on one code become N-1
+rows, each pairing the lowest-sorted id with one of the others.
+
+**Nothing is ever merged.** No winner is picked, no record is deleted, no field
+is rewritten. An automatic merge here would destroy stock history. The flag is a
+note and a banner — that is all it is.
+
+---
+
+## `/style_code_captures/{captureId}` — the capture queue
+
+Created by **staff** (create-once); decided by **`processStyleCodeCapture`**.
+
+### Why a queue and not a callable
+
+The `displayChecks` subtree is **read-only to the client** — it has `.read` rules
+and **no `.write` rule anywhere**, because every write to it already goes through
+a Cloud Function with the Admin SDK. So the display-check UI cannot write a
+capture there. It enqueues here instead, the same shape as
+`pos/storeCreditQueue`, and the trigger does the rest.
+
+| Field | Type | Notes |
+|---|---|---|
+| `styleCodeNormalised` | string | **Required.** |
+| `capturedBy` | string | **Required**, and the rules require it to equal `auth.uid`. |
+| `capturedAt` | number (epoch ms) | **Required.** |
+| `origin` | `"addSneaker"` \| `"displayCheck"` \| `"receiving"` \| `"admin"` | **Required**, rules-validated enum. |
+| `productId` | string | Which product this code was captured against. |
+| `styleCode` | string | The readable form, as typed. |
+| `labelPhotoUrl` | string | **Must begin with `https://`.** Stored at `products/{productId}/labels/{captureId}.jpg`. |
+| `status` | `"pending"` \| `"autoConfirmed"` \| `"needsReview"` \| `"applied"` \| `"rejected"` | **Written by the server only.** The rules reserve it (and `review`) for admins, and only once the record exists — so the client CANNOT write one, which is exactly right: deciding is the server's job. |
+| `review` | object | Server-written: `{ reason, confidence, stamped, decidedAt }`. |
+
+---
+
+## `/products/{id}/pendingStyleCode` — the suggestion, awaiting a human
+
+| Field | Type | Notes |
+|---|---|---|
+| `styleCodeNormalised` | string | |
+| `status` | `"autoConfirmed"` \| `"needsReview"` | |
+| `reviewReason` | string | `images-agree`, `images-disagree`, `no-catalogue-match`, `product-image-missing`, `catalogue-image-missing`, `code-claimed-elsewhere`. |
+| `suggestedName` / `suggestedBrand` / `suggestedImageUrl` | string \| null | Named "suggested" on purpose. **No reader may treat these as the product's name, brand or photo.** |
+| `labelPhotoUrl` | string \| null | The evidence. |
+| `comparedConfidence` | number \| null | 0–1 from the image comparison. |
+| `comparisonReason` | string \| null | The model's words, capped at 300 chars. |
+| `captureId`, `capturedBy`, `capturedAt`, `origin`, `decidedAt` | | Provenance. |
+| `claimConflictWith` | string \| null | Another product already owns this code. Nothing was stamped. |
+| `comparisonError` | string \| null | Why the image comparison could not be performed (capped at 300 chars). |
+| `comparisonRefusedHost` | string \| null | **Set only when the image was blocked by the SSRF host allowlist.** The allowlist is a standing hostage to KicksDB's infrastructure: when they rotate or add an image CDN, every affected capture fails closed to `needsReview` with a symptom that looks like a vision or matching problem. One scan of this field names every CDN the allowlist is missing, and how many captures each one cost — the fix is adding the host to `ALLOWED_IMAGE_HOSTS` in `functions/styleCode/processCapture.js`. The same event is logged on its own line tagged `IMAGE_HOST_REFUSED`. |
+
+### THE BACKFILL SAFETY GUARANTEE
+
+Capturing a code on an **existing** product writes the **code**, the **label
+photo** and the **resolved data into pending fields**. It **never** overwrites
+the live `name`, `photoUrl` or `category` — not on agreement, not at high
+confidence, not ever.
+
+This matters because the capture path is a *backfill*: thousands of records that
+staff and the POS already recognise, touched by an automated process. A catalogue
+that silently renames itself overnight is worse than one with gaps, because
+nobody can trust what they are reading. So the decision splits in two:
+
+* **The code** — an identity key the product did not have. Stamped onto the
+  product, but only into an **empty** slot (`styleCodeNormalised` is immutable by
+  rule), and only after a **create-once claim** on `/style_code_index` succeeds.
+  The Admin SDK bypasses rules, so `claimIndexServerSide` reimplements create-once
+  with a transaction — a plain `set()` would silently steal a code another
+  product owns.
+* **The suggestion** — name, photo, brand from an external catalogue. Goes to
+  `pendingStyleCode` and stays there. **`autoConfirmed` means "a human can
+  approve this quickly", NOT "applied".**
+
+`functions/lib/style-code-capture.cjs` exports `FORBIDDEN_PRODUCT_FIELDS`, and a
+test asserts none of them can appear in the product patch on any branch — the
+guarantee is worth more as an executable check than as a comment.
+
+### The image comparison, and the third outcome
+
+One vision comparison (Gemini 3.6 Flash, structured JSON) of the catalogue image
+against the product's own image. Agreement above **0.8 confidence** marks the
+pending data `autoConfirmed`; disagreement queues it for admin review. The bar is
+deliberately high: a wrong auto-confirm is a mislabelled product nobody
+re-checks, while an unnecessary review costs one person three seconds.
+
+There is a **third** outcome that must not be collapsed into the first: the
+comparison can be **impossible** — the product has no photo, the catalogue
+returned none, or the call failed. "Could not check" routes to review exactly
+like "checked and disagreed". Treating an unverifiable match as agreement would
+auto-confirm precisely the products we have the least evidence about.
+
+**Both outcomes are logged.** A silent auto-confirm is indistinguishable from a
+function that quietly stopped running.
+
+---
+
+## `/style_code_ocr_cache/{sha256}` — label-OCR results, 90-day TTL
+
+Written **only** by `readStyleCodeLabel` (Cloud Function, admin SDK). Keyed on a
+**sha256 of the image bytes**, so a staff member who retakes the same photo — or
+two people photographing the same label — never re-bills the OCR.
+
+| Field | Type | Notes |
+|---|---|---|
+| `candidates` | string[] | The extracted **normalised style codes**, capped at 8. An empty array is a valid, useful answer: an unreadable photo must not re-bill on every retry either. |
+| `source` | `"vision"` \| `"gemini"` | Which tier produced them. |
+| `at` | number (epoch ms) | |
+| `expiresAt` | number (epoch ms) | `at + 90 days`. |
+
+### This node stores candidates ONLY — never the Vision payload
+
+A full `DOCUMENT_TEXT_DETECTION` response is tens of kilobytes of per-symbol
+bounding boxes. Multiplied by every photo taken in every shop, and re-downloaded
+on every read, that is exactly the node shape that has already cost this project
+real money in RTDB download bandwidth. `buildOcrCacheRecord` **constructs** the
+row field by field rather than spreading anything into it, so a fat payload
+cannot leak in by accident, and a test asserts one row stays under 200 bytes.
+
+The client also downscales every label photo to **1024px** before upload, for the
+same reason — see `src/utils/labelPhoto.js`.
+
+### Cleanup is two mechanisms, not one
+
+1. **Lazy expiry** — `readStyleCodeLabel` never serves a row past `expiresAt`; it
+   simply re-reads and overwrites. This is what guarantees correctness.
+2. **`reapStyleCodeOcrCache`** (scheduled, 03:00 SAST) — a photo taken once and
+   never retaken is never re-read, so lazy expiry alone would leave its row
+   forever. The sweep removes those.
+
+The sweep is **bounded and cursored**: it walks the node in pages of 500 ordered
+by key and remembers where it stopped in `_cursor` (a reserved child — every real
+key is a 64-char sha256 hex digest, so an underscore-prefixed key can never
+collide). Reading the whole node once a day would be the same bandwidth mistake
+in a different costume. A row with no usable `expiresAt` is **left alone**:
+deleting data we cannot reason about is worse than keeping a few stale rows.
+
+---
+
+## `/style_code_misses/{NORMALISED_STYLE_CODE}` — catalog coverage by brand
+
+Written **only** by `resolveStyleCode` (Cloud Function, admin SDK) when every
+tier comes back empty-handed. The KicksDB free tier is StockX-sourced, so it is
+materially thinner on adidas, Puma and Reebok than on Jordan and Dunk. This node
+exists so that gap can be **measured** per brand rather than guessed at — and so
+the decision to pay for a tier, or to build the tier-3 web-search fallback, is
+made against numbers.
+
+| Field | Type | Notes |
+|---|---|---|
+| `styleCodeNormalised` / `styleCode` | string | The code that missed. |
+| `brandFamily` | string | Brand implied by the code's **shape** (`"Nike/Jordan"`, `"adidas"`, `"New Balance"`, `"Puma"`, `"unknown"`). Observability only — shape NEVER decides what a product is. |
+| `format` | string \| null | Which shape matched. |
+| `misses` | number | Repeat misses of one code update this row rather than flooding the node. |
+| `firstMissedAt` / `lastMissedAt` | number (epoch ms) | |
+| `lastMissedBy` | string \| null | uid. |
+| `lastErrors` | string \| null | JSON of any tier errors. **Non-null means an outage, not a coverage gap** — "the vendor was down" must never be counted as "the catalog lacks this shoe". |
+
+---
 
 ---
 

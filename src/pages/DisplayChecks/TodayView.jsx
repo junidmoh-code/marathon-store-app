@@ -16,6 +16,7 @@ import { FONT, MONO, BLUE, BLUE_SOFT, AMBER, INK, PANEL, META } from "./tokens";
 import { deriveFeed } from "./feedModel";
 import CheckCard from "./CheckCard";
 import CheckSheet from "./CheckSheet";
+import { styleCodeProgressForFootwear } from "../../utils/styleCodeCapture";
 
 function StatTile({ label, value, sub }) {
   return (
@@ -79,10 +80,14 @@ function CardGrid({ children }) {
 
 // Feed arrives as props from the module shell's ONE lifted listener — this view
 // no longer opens its own subscription, so switching tabs never churns it.
-export default function TodayView({ store, active, activeItems, completedItems, ready, error }) {
+export default function TodayView({ store, active, activeItems, completedItems, ready, error, products }) {
   const feed = useMemo(() => deriveFeed(activeItems, completedItems), [activeItems, completedItems]);
   // The check whose confirm sheet is open (PR 7). Null = no sheet.
   const [sheetCheck, setSheetCheck] = useState(null);
+  // Backfill progress, shown where the work happens so it has a finish line
+  // rather than being an open-ended chore. Memoised off the products array the
+  // module is already given — this adds no read.
+  const codeProgress = useMemo(() => styleCodeProgressForFootwear(products), [products]);
   // This view stays mounted-but-hidden when another tab is active. Close any open
   // confirm sheet on leaving Today, so its document-level focus trap can't hijack
   // Tab/Escape on the visible tab (Kimi P2).
@@ -175,7 +180,9 @@ export default function TodayView({ store, active, activeItems, completedItems, 
       )}
 
       {sheetCheck && (
-        <CheckSheet store={store} check={sheetCheck} onClose={() => setSheetCheck(null)} />
+        <CheckSheet store={store} check={sheetCheck} onClose={() => setSheetCheck(null)}
+                    styleCodeProgress={codeProgress}
+                    product={(products || []).find((p) => p && p.id === sheetCheck.productId) || null} />
       )}
     </div>
   );

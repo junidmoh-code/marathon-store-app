@@ -3126,3 +3126,63 @@ exports.wakeHeldChecks = require("./displayChecks/wakeHeldChecks.js").wakeHeldCh
 // decision in displayChecks/lib.cjs; IO in displayChecks/completeCheck.js.
 //   firebase deploy --only functions:completeDisplayCheck
 exports.completeDisplayCheck = require("./displayChecks/completeCheck.js").completeDisplayCheck;
+
+// ─── STYLE CODE — resolveStyleCode (sneaker intake identity lookup) ───────────
+// Sneakers arrive without boxes, so there is no box barcode. The manufacturer
+// style code on the inside-tongue label is the canonical identity key instead.
+// This callable turns a code into a product identity behind ONE signature and a
+// three-tier provider chain — /sneaker_models cache, the KicksDB catalog API,
+// and a reserved web-search stub — so a tier can be swapped without touching a
+// caller. Pure normalisation in lib/style-code.cjs, providers in
+// lib/style-code-providers.cjs (both node-tested); IO in
+// styleCode/resolveStyleCode.js.
+//
+// SECRET: KICKSDB_API_KEY. The key is read inside the function and NEVER ships
+// to the client — the browser only ever calls this callable.
+//   firebase functions:secrets:set KICKSDB_API_KEY
+//   firebase deploy --only functions:resolveStyleCode
+exports.resolveStyleCode = require("./styleCode/resolveStyleCode.js").resolveStyleCode;
+
+// ─── STYLE CODE — readStyleCodeLabel (the four-tier label funnel) ─────────────
+// Photo of an inside-tongue label → a validated style code. A FUNNEL, not one
+// model call: Cloud Vision DOCUMENT_TEXT_DETECTION + regex first (cheap,
+// deterministic), escalating to Gemini 3.6 Flash with structured JSON ONLY on
+// the residual — zero or ambiguous candidates. Confusable-character retry is
+// tier 3 and lives in resolveStyleCode (lookup only, no second vision call);
+// manual entry is tier 4 and is never removed.
+//
+// Results cache on a hash of the IMAGE BYTES so a retake never re-bills, and the
+// cache row holds the extracted CODES ONLY — never the Vision payload, which is
+// tens of KB of bounding boxes per photo.
+//
+// REQUIRES: vision.googleapis.com enabled on the project. SECRET: GEMINI_API_KEY.
+//   firebase deploy --only functions:readStyleCodeLabel
+exports.readStyleCodeLabel = require("./styleCode/readStyleCodeLabel.js").readStyleCodeLabel;
+
+// ─── STYLE CODE — reapStyleCodeOcrCache (the 90-day TTL's other half) ────────
+// readStyleCodeLabel expires cache rows lazily (never serves a stale one), but a
+// photo taken once and never retaken is never re-read, so its row would live
+// forever. This bounded, cursored daily sweep is what actually removes them —
+// bounded because "read the whole node once a day" is the same bandwidth
+// mistake in a different costume.
+//   firebase deploy --only functions:reapStyleCodeOcrCache
+exports.reapStyleCodeOcrCache = require("./styleCode/reapOcrCache.js").reapStyleCodeOcrCache;
+
+// ─── STYLE CODE — processStyleCodeCapture (the capture queue worker) ──────────
+// Fires on a new /style_code_captures/{captureId}. The displayChecks subtree is
+// READ-ONLY to the client (it has .read rules and no .write rule anywhere), so
+// the display-check UI cannot write its capture there — it enqueues here
+// instead, the same shape as pos/storeCreditQueue, and this trigger decides.
+//
+// THE GUARANTEE: capturing a code on an EXISTING product writes the CODE, the
+// label photo and the resolved data into PENDING fields. It NEVER overwrites the
+// live name, image or category. The pure decision is in
+// lib/style-code-capture.cjs, where a test asserts the forbidden fields cannot
+// appear in the product patch. One vision comparison of the catalogue image
+// against the product's own image auto-confirms on agreement and queues for
+// admin review on disagreement — BOTH outcomes logged, because a silent
+// auto-confirm is indistinguishable from a function that stopped running.
+//
+// SECRET: GEMINI_API_KEY (the image comparison).
+//   firebase deploy --only functions:processStyleCodeCapture
+exports.processStyleCodeCapture = require("./styleCode/processCapture.js").processStyleCodeCapture;

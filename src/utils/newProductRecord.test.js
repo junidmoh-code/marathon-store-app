@@ -224,3 +224,62 @@ describe("photo stamp", () => {
     expect(build({}, { photoUploaded: true, photoUpdatedAt: 1700000000000 }).photoUpdatedAt).toBe(1700000000000);
   });
 });
+
+// ─── STYLE CODE ──────────────────────────────────────────────────────────────
+// The manufacturer code off the inside-tongue label. It is the intake identity
+// key for sneakers, so the pair must be written together and normalised the ONE
+// way — a product stamped with a key nothing else computes is a product no
+// future scan will ever find.
+describe("style code", () => {
+  it("writes the pair — readable form plus the normalised identity key", () => {
+    const p = build({}, { styleCode: "CT8527-016" });
+    expect(p.styleCode).toBe("CT8527-016");
+    expect(p.styleCodeNormalised).toBe("CT8527016");
+  });
+
+  it("keeps the operator's spelling but always normalises the key", () => {
+    const p = build({}, { styleCode: "  ct8527 016 " });
+    expect(p.styleCode).toBe("ct8527 016");
+    expect(p.styleCodeNormalised).toBe("CT8527016");
+  });
+
+  it("renders a canonical display form when only a bare code is supplied", () => {
+    expect(build({}, { styleCode: "CT8527016" }).styleCode).toBe("CT8527016");
+    expect(build({}, { styleCode: "CT8527016" }).styleCodeNormalised).toBe("CT8527016");
+  });
+
+  it("OMITS both fields when there is no code — absent means 'no code'", () => {
+    for (const none of [undefined, null, "", "   ", "---"]) {
+      const p = build({}, { styleCode: none });
+      expect("styleCode" in p).toBe(false);
+      expect("styleCodeNormalised" in p).toBe(false);
+    }
+  });
+
+  it("never writes one field without the other", () => {
+    for (const code of ["CT8527-016", "IE3437", "ML574EVG", "380190-01", "", null]) {
+      const p = build({}, { styleCode: code });
+      expect("styleCode" in p).toBe("styleCodeNormalised" in p);
+    }
+  });
+
+  it("THE GATE: sibling colorways get different keys on the product record", () => {
+    const a = build({}, { styleCode: "CT8527-016" });
+    const b = build({}, { styleCode: "CT8527-700" });
+    expect(a.styleCodeNormalised).not.toBe(b.styleCodeNormalised);
+  });
+
+  it("is additive — adding a code changes nothing else on the record", () => {
+    const without = build({});
+    const { styleCode, styleCodeNormalised, ...rest } = build({}, { styleCode: "CT8527-016" });
+    expect(rest).toEqual(without);
+  });
+
+  it("clothing can carry a code too — the field is not footwear-gated here", () => {
+    // Nike apparel prints the same 6+3 format. Category comes from the intake
+    // entry point, never from the code, so the record must not refuse one.
+    const p = build({ categoryKey: "t-shirts", hubs: ["hub2"] }, { styleCode: "DD1391-100" });
+    expect(p.styleCodeNormalised).toBe("DD1391100");
+    expect(p.productType).toBe("clothing");
+  });
+});

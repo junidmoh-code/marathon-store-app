@@ -64,6 +64,7 @@ const textField = {
 };
 
 export default function NewProductForm({
+  styleCode, suggestedImageUrl, onChangeStyleCode,
   form, setForm,
   taxonomy, taxonomySource,
   selectedCat, formSizes, formOneSize, formIsClothing,
@@ -89,7 +90,38 @@ export default function NewProductForm({
     }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
         <span style={{ fontSize: 19, fontWeight: 800, color: "#fff", letterSpacing: "-0.02em" }}>New Product</span>
+        {styleCode && <span style={{ fontSize: 11.5, color: "rgba(233,238,255,.42)" }}>Step 2 of 2</span>}
       </div>
+
+      {/* ── THE STYLE CODE, CARRIED FROM STEP 1 ────────────────────────────
+          Read-only here on purpose. It is the product's identity key and it was
+          already claimed against this session; letting it be edited on the form
+          would let the claim and the stamp disagree. Changing it means going
+          back to step 1, which re-runs the whole lookup. */}
+      {styleCode && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+                      background: "rgba(74,127,255,.08)", border: "1px solid rgba(74,127,255,.30)",
+                      borderRadius: 12, padding: "12px 14px" }}>
+          {suggestedImageUrl && (
+            <img src={suggestedImageUrl} alt="" style={{ width: 44, height: 44, objectFit: "contain",
+                 borderRadius: 8, background: "rgba(255,255,255,.05)" }} />
+          )}
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: ".09em",
+                          textTransform: "uppercase", color: "rgba(233,238,255,.5)" }}>Style code</div>
+            <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                          fontSize: 16, fontWeight: 800, color: "#fff", letterSpacing: ".05em" }}>{styleCode}</div>
+          </div>
+          {onChangeStyleCode && (
+            <button type="button" onClick={onChangeStyleCode}
+              style={{ background: "none", border: "1px solid rgba(120,150,255,.3)", borderRadius: 9,
+                       color: "rgba(233,238,255,.6)", fontSize: 12, fontWeight: 700, padding: "8px 12px",
+                       cursor: "pointer", minHeight: 40 }}>
+              Change
+            </button>
+          )}
+        </div>
+      )}
 
       {/* The live registry could not be read, so the category list is the one
           baked into this build. It can disagree with the console — a category

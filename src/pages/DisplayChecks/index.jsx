@@ -193,7 +193,7 @@ export default function DisplayChecks({ onExit, products }) {
   const bodies = (
     <>
       <div style={{ display: tab === "today" ? "block" : "none" }}>
-        <TodayView store={store} active={tab === "today"} activeItems={feed.activeItems} completedItems={feed.completedItems} ready={feed.ready} error={feed.error} />
+        <TodayView store={store} active={tab === "today"} activeItems={feed.activeItems} completedItems={feed.completedItems} ready={feed.ready} error={feed.error} products={products} />
       </div>
       <div style={{ display: tab === "availability" ? "block" : "none" }}>
         <AvailabilityView store={store} products={products} wide={wide} active={tab === "availability"} />
