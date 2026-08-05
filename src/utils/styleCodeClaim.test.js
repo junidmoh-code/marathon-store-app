@@ -38,6 +38,13 @@ vi.mock("firebase/database", () => ({
     if (nodeAt(r.path) !== undefined && nodeAt(r.path) !== null) {
       throw new Error("PERMISSION_DENIED: create-once");
     }
+    // THE RULE the outage came from: the claim's productId must already exist
+    // under /products. root.child('products').child(productId).exists()
+    if (String(r.path).startsWith("style_code_index/") && value && value.productId) {
+      if (!nodeAt(`products/${value.productId}`)) {
+        throw new Error("PERMISSION_DENIED: validate — product does not exist");
+      }
+    }
     const parts = String(r.path).split("/").filter(Boolean);
     const last = parts.pop();
     let node = store;
@@ -50,7 +57,17 @@ vi.mock("../firebase", () => ({ database: { fake: true } }));
 const { claimStyleCode, readStyleCodeClaim, buildClaim, claimFailureMessage, CLAIM_OK, CLAIM_TAKEN, CLAIM_FAILED } =
   await import("./styleCodeClaim.js");
 
-beforeEach(() => { store = {}; denyWrites = false; denyReads = false; });
+beforeEach(() => {
+  // The live rule requires the claimed product to EXIST, so every test that
+  // expects a successful claim must have written its product first — exactly as
+  // addProduct now does. The fake enforcing this is the point: the previous
+  // version was more permissive than production, which is how a claim ordering
+  // that could never work in the real database passed its whole test suite.
+  store = { products: Object.fromEntries(
+    ["p1", "p2", "p3", "pA", "pB", "pWinner", "pLoser", "pREAL"].map((id) => [id, { id }]),
+  ) };
+  denyWrites = false; denyReads = false;
+});
 
 const NOW = 1754300000000;
 
@@ -177,7 +194,40 @@ describe("readStyleCodeClaim", () => {
   });
 
   it("ignores a malformed row rather than trusting it", async () => {
-    store = { style_code_index: { IE3437: { claimedAt: 1 } } };
+    store.style_code_index = { IE3437: { claimedAt: 1 } };
     expect(await readStyleCodeClaim("IE3437")).toBeNull();
+  });
+});
+
+// ─── THE LIVE RULE REQUIRES THE PRODUCT TO EXIST FIRST ───────────────────────
+// The deployed /style_code_index/$code rule validates:
+//     root.child('products').child(newData.child('productId').val()).exists()
+// so a claim for a product that has not been written yet is REJECTED. The
+// original code claimed BEFORE creating the product, which meant every save
+// carrying a style code was denied and staff could not add products at all.
+//
+// Claim-first was the safer shape — the database arbitrated the race — but the
+// deployed rule makes it impossible, and the rule wins. These pin the ordering
+// requirement so it cannot silently regress.
+describe("the claim requires an EXISTING product (live rule)", () => {
+  it("a claim for a product that does not exist is refused", async () => {
+    // The fake enforces the same validate the live rule does.
+    const out = await claimStyleCode("CT8527-016", { productId: "pGHOST", uid: "u1", nowMs: NOW });
+    expect(out.kind).not.toBe(CLAIM_OK);
+  });
+
+  it("the same claim succeeds once the product exists", async () => {
+    const out = await claimStyleCode("CT8527-016", { productId: "pREAL", uid: "u1", nowMs: NOW });
+    expect(out.kind).toBe(CLAIM_OK);
+    expect(store.style_code_index.CT8527016.productId).toBe("pREAL");
+  });
+
+  it("claimedAt must be a positive number within the server's future window", () => {
+    // The rule: newData.isNumber() && > 0 && <= now + 86400000. A device clock
+    // running more than a day fast produces a REJECTED write.
+    const c = buildClaim({ productId: "pREAL", uid: "u1", nowMs: NOW });
+    expect(typeof c.claimedAt).toBe("number");
+    expect(c.claimedAt).toBeGreaterThan(0);
+    expect(c.claimedAt).toBeLessThanOrEqual(Date.now() + 86400000);
   });
 });
