@@ -231,6 +231,17 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     onProceed({ ...provenance("manual"), suggestedName: "", suggestedBrand: null, suggestedImageUrl: null, model: null });
   }
 
+  // Proceed with NO style code. Everything downstream already tolerates this:
+  // buildNewProduct omits both style-code fields when there is no code, and
+  // addProduct only attempts a claim when styleCodeNormalised is present.
+  function skipCode() {
+    onProceed({
+      styleCode: "", styleCodeNormalised: "", styleCodeSource: "manual",
+      styleCodeFetchedAt: serverNowMs(), labelPhoto: null,
+      suggestedName: "", suggestedBrand: null, suggestedImageUrl: null, model: null,
+    });
+  }
+
   const productById = (id) => (products || []).find((p) => p && p.id === id) || null;
   const existing = result ? (result.existingProducts || []) : [];
   const claimedProduct = result && result.claim ? productById(result.claim.productId) : null;
@@ -329,6 +340,17 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
             style={btn(canSubmit ? BLUE : "rgba(74,127,255,.14)", canSubmit ? "#fff" : "rgba(233,238,255,.35)",
                        { cursor: canSubmit ? "pointer" : "not-allowed" })}>
             {busy === "resolving" ? "Checking…" : "Continue"}
+          </button>
+          {/* NO CODE AT ALL. A worn-off label, a sample, a non-sneaker that
+              reached this entry point — none of those should stop a product
+              being created. The style code is the PREFERRED identity, never a
+              precondition for doing the job. Products saved this way simply
+              carry no styleCode fields (buildNewProduct omits them) and claim
+              nothing, exactly as every product did before this feature. */}
+          <button type="button" onClick={skipCode}
+            style={{ ...meta, background: "none", border: "1px solid rgba(120,150,255,.25)",
+                     borderRadius: 10, cursor: "pointer", padding: "12px", minHeight: 44 }}>
+            No readable code on this shoe — add it without one
           </button>
           <button type="button" onClick={onCancel}
             style={{ ...meta, background: "none", border: "none", cursor: "pointer", padding: 8 }}>
@@ -517,19 +539,38 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
           whole feature exists to prevent — so the only ways out are retry and
           back. This mirrors the rule the resolver enforces server-side: a dead
           vendor is never reported as "no such shoe". */}
+      {/* ── STEP: LOOKUP UNAVAILABLE ──────────────────────────────────────
+          An error and an empty answer are still NOT the same thing, so this
+          step keeps its own honest wording — "we could not check", never "not
+          in the catalogue".
+          ── BUT IT MUST NEVER BE A DEAD END ────────────────────────────────
+          The first version offered only Retry and Back. Combined with a vendor
+          that fails every call, that made it impossible to add ANY new product:
+          staff were locked out of Add Product entirely. A gate whose failure
+          mode is "nobody can work" is worse than the duplicate it was guarding
+          against.
+          And the guard was never load-bearing here anyway. Uniqueness is
+          enforced by the create-once claim on /style_code_index at SAVE time,
+          not by this screen: if this code already belongs to a product, the
+          save is refused and the operator is routed to add stock on it. So the
+          manual path is safe to offer — the database still has the last word. */}
       {step === "unavailable" && (
         <>
           <Note tone="warn">
-            <b>The lookup didn't complete, so we can't tell you whether we already have this shoe.</b><br />
-            Creating it now risks a duplicate with the stock split across two records. Try again in a
-            moment — the style code is kept.
+            <b>Couldn't check the catalogue just now</b> — so we can't tell you whether we already
+            have this shoe. You can still add it: if this style code turns out to belong to an
+            existing product, the save will stop and point you at it.
           </Note>
           {error && <Note tone="bad">{error}</Note>}
           <div style={{ ...meta, fontFamily: "ui-monospace, monospace", fontSize: 15, color: "#fff" }}>
             {result?.displayCode || formatStyleCodeForDisplay(normalised)}
           </div>
           <button type="button" disabled={!!busy} onClick={lookup} style={btn(BLUE, "#fff")}>
-            {busy === "resolving" ? "Checking…" : "Try again"}
+            {busy === "resolving" ? "Checking…" : "Try the lookup again"}
+          </button>
+          <button type="button" onClick={rejectFetched}
+            style={btn("rgba(255,255,255,.06)", "rgba(233,238,255,.9)")}>
+            Add it anyway — enter the details
           </button>
           <button type="button" onClick={() => { setStep("enter"); setResult(null); }}
             style={{ ...meta, background: "none", border: "none", cursor: "pointer", padding: 8 }}>
