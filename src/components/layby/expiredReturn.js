@@ -36,6 +36,7 @@ import { ref, get, child, runTransaction, update } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { applyMovement } from "../stock/applyMovement";
 import { LAYBY_STATUS } from "./contract";
+import { encodeSizeKey } from "../../utils/sizeKey";
 import { serverNowIso } from "../../utils/serverTime";
 
 export const RETURN_REASON = "layby_expired_return";
@@ -54,7 +55,13 @@ export const RETURN_REASON = "layby_expired_return";
 // So: no default. A layby whose storageHub is missing or unrecognised is
 // REFUSED, not guessed. All 185 live laybys carry an explicit storageHub, so
 // nothing legitimate depends on a fallback.
-export const KNOWN_HUBS = ["hub1", "hub2", "hub3", "hubC"];
+// Canonical hubs from /locations (verified 2026-08-05: base, central, hub1,
+// hub2, hub3, in_transit, marathon-pe, marathon-pine, studio, trophy).
+// hubC is NOT among them — it appears in some POS-side constants but has never
+// existed as a location, and the movement rule validates `to` against
+// /locations. Accepting it here would turn a clean up-front refusal into a
+// confusing rules rejection halfway through a parcel. (CodeRabbit, Minor.)
+export const KNOWN_HUBS = ["hub1", "hub2", "hub3"];
 
 export function returnDestFor(layby) {
   const hub = layby?.storageHub;
@@ -62,6 +69,20 @@ export function returnDestFor(layby) {
 }
 
 const claimPath = (laybyId) => `laybys/${laybyId}/expiredReturn`;
+
+// ── THE IDEMPOTENCY KEY (CodeRabbit, CRITICAL) ───────────────────────────────
+// Without this, a retry after a PARTIAL failure re-adds every line that already
+// succeeded. applyMovement mints a fresh push key when no movementId is given,
+// so its "has this movement already landed?" check can never match on a second
+// attempt — and the failure path deliberately RELEASES the claim so the clerk
+// can retry. The claim guards two clerks; it does nothing about one clerk
+// retrying, and only a warning string stood between that and doubled stock.
+//
+// Deterministic per (layby, product, size) — the same shape the rest of the repo
+// uses (`negfix_…`, `rrf_…`, receiveMovementId). Re-running is now a no-op:
+// applyMovement sees the id already exists and returns { ok, idempotent }.
+const returnMovementId = (laybyId, productId, sizeKey) =>
+  `laybyret_${laybyId}_${productId}_${encodeSizeKey(sizeKey)}`;
 
 /**
  * Read the parcel's real contents from the POS sale.
@@ -152,7 +173,18 @@ export async function returnExpiredLaybyToStock(layby, { actorRole, hubLabel } =
 
   // 2. MOVE — one movement per line, each carrying the layby in its provenance
   //    so the shelf can be traced back to the parcel it came from.
+  //
+  // EVERYTHING FROM HERE IS WRAPPED (CodeRabbit, Major): the claim was released
+  // only on a returned {ok:false}. If applyMovement THREW, or the final update
+  // rejected, the claim stayed held forever — no UI can clear it, so the layby
+  // became permanently unreturnable. Worse on the second path: the stock was
+  // already back on the shelf while the layby stayed un-terminal, so the POS
+  // kept offering it AND the retry was blocked.
+  //
+  // Releasing on a throw is only safe because the movement ids above are
+  // deterministic — the retry re-applies nothing.
   const movementIds = [];
+  try {
   for (const line of loaded.lines) {
     const mv = await applyMovement({
       type: "received",
@@ -163,6 +195,7 @@ export async function returnExpiredLaybyToStock(layby, { actorRole, hubLabel } =
       from: null,
       reason: RETURN_REASON,
       actorRole,
+      movementId: returnMovementId(laybyId, line.productId, line.size),
       link: {
         laybyId,
         saleId: layby.saleId || null,
@@ -196,4 +229,17 @@ export async function returnExpiredLaybyToStock(layby, { actorRole, hubLabel } =
 
   const units = loaded.lines.reduce((t, l) => t + l.qty, 0);
   return { ok: true, movementIds, lines: loaded.lines.length, units, dest };
+  } catch (err) {
+    // Release so a retry is possible; deterministic ids make it safe.
+    await update(ref(database), { [claimPath(laybyId)]: null }).catch(() => {});
+    return {
+      ok: false,
+      threw: true,
+      partial: movementIds.length > 0,
+      movementIds,
+      message: movementIds.length
+        ? `Failed after ${movementIds.length} of ${loaded.lines.length} lines (${String(err?.message || err)}). Safe to try again — the lines already moved will not be added twice.`
+        : `Could not return this layby: ${String(err?.message || err)}. Nothing was moved.`,
+    };
+  }
 }

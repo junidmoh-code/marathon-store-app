@@ -24,13 +24,18 @@ const setPath = (p, v) => {
 };
 
 let raceDuringClaim = null;
+let failWritesUnder = null;
 
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path || "" }),
   child: (node, path) => ({ path: node.path ? `${node.path}/${path}` : path }),
   get: async (node) => ({ val: () => getPath(node.path) }),
   update: async (node, updates) => {
-    for (const [k, v] of Object.entries(updates)) setPath(node.path ? `${node.path}/${k}` : k, v);
+    for (const [k, v] of Object.entries(updates)) {
+      const full = node.path ? `${node.path}/${k}` : k;
+      if (failWritesUnder && full.startsWith(failWritesUnder)) throw new Error("PERMISSION_DENIED");
+      setPath(full, v);
+    }
   },
   runTransaction: async (node, fn) => {
     for (let i = 0; i < 5; i++) {
@@ -48,7 +53,16 @@ vi.mock("firebase/database", () => ({
 }));
 vi.mock("../../firebase", () => ({ database: { fake: true }, auth: { currentUser: { uid: "clerk-1" } } }));
 
-const applyMovementMock = vi.fn(async () => ({ ok: true, movementId: `mv${++mvN}` }));
+// Models applyMovement's REAL idempotency: a supplied movementId that already
+// landed is a no-op returning { ok, idempotent }. Without this the critical
+// retry test below would pass for the wrong reason.
+const landed = new Set();
+const applyMovementMock = vi.fn(async (mv) => {
+  const id = mv.movementId || `mv${++mvN}`;
+  if (landed.has(id)) return { ok: true, movementId: id, idempotent: true };
+  landed.add(id);
+  return { ok: true, movementId: id };
+});
 let mvN = 0;
 vi.mock("../stock/applyMovement", () => ({ applyMovement: (...a) => applyMovementMock(...a) }));
 
@@ -63,7 +77,7 @@ const GOOD = [
   { productId: "p2", size: "_", qty: 1, name: "Perfume" },
 ];
 
-beforeEach(() => { store = {}; mvN = 0; raceDuringClaim = null; applyMovementMock.mockClear(); applyMovementMock.mockImplementation(async () => ({ ok: true, movementId: `mv${++mvN}` })); });
+beforeEach(() => { store = {}; mvN = 0; landed.clear(); raceDuringClaim = null; failWritesUnder = null; applyMovementMock.mockClear(); applyMovementMock.mockImplementation(async () => ({ ok: true, movementId: `mv${++mvN}` })); });
 
 describe("the units go back exactly once", () => {
   it("moves every line into hub 1 and marks the layby terminal", async () => {
@@ -168,6 +182,79 @@ describe("an unreadable parcel is refused, never half-returned", () => {
     const res = await returnExpiredLaybyToStock(LAYBY, { actorRole: "warehouse" });
     expect(res.ok).toBe(false);
     expect(res.message).toMatch(/already refunded/);
+  });
+});
+
+describe("CRITICAL: a retry after a partial failure must not re-add the moved lines", () => {
+  it("uses a deterministic movementId per line, so a re-run is a no-op", async () => {
+    seedSale(GOOD);
+    await returnExpiredLaybyToStock(LAYBY, { actorRole: "warehouse" });
+    const ids = applyMovementMock.mock.calls.map(([mv]) => mv.movementId);
+    expect(ids.every(Boolean), "every line must carry an explicit movementId").toBe(true);
+    expect(new Set(ids).size).toBe(2);
+    // Stable across calls — that is what makes the retry safe.
+    applyMovementMock.mockClear();
+    await returnExpiredLaybyToStock({ ...LAYBY }, { actorRole: "warehouse" }).catch(() => {});
+    const again = applyMovementMock.mock.calls.map(([mv]) => mv.movementId);
+    if (again.length) expect(again).toEqual(ids);
+  });
+
+  it("line 1 succeeds, line 2 fails, retry re-applies line 1 as IDEMPOTENT — no double stock", async () => {
+    seedSale(GOOD);
+    let fail = true;
+    applyMovementMock.mockImplementation(async (mv) => {
+      const id = mv.movementId;
+      if (fail && mv.productId === "p2") return { ok: false, reason: "write_failed" };
+      if (landed.has(id)) return { ok: true, movementId: id, idempotent: true };
+      landed.add(id);
+      return { ok: true, movementId: id };
+    });
+
+    const first = await returnExpiredLaybyToStock(LAYBY, { actorRole: "warehouse" });
+    expect(first.ok).toBe(false);
+    expect(first.movementIds).toHaveLength(1);          // p1 landed
+    expect(getPath("laybys/lb1/expiredReturn")).toBeNull();   // claim released for retry
+
+    fail = false;
+    const second = await returnExpiredLaybyToStock(LAYBY, { actorRole: "warehouse" });
+    expect(second.ok).toBe(true);
+
+    // p1 was attempted twice but only ever CREATED once.
+    const p1 = applyMovementMock.mock.calls.filter(([mv]) => mv.productId === "p1");
+    expect(p1.length).toBe(2);
+    expect(new Set(p1.map(([mv]) => mv.movementId)).size).toBe(1);
+    expect(landed.size).toBe(2);                        // two distinct movements total, not three
+  });
+});
+
+describe("a thrown promise must not strand the claim", () => {
+  it("releases the claim when applyMovement THROWS, and says a retry is safe", async () => {
+    seedSale(GOOD);
+    applyMovementMock.mockImplementation(async () => { throw new Error("network down"); });
+    const res = await returnExpiredLaybyToStock(LAYBY, { actorRole: "warehouse" });
+    expect(res.ok).toBe(false);
+    expect(res.threw).toBe(true);
+    expect(getPath("laybys/lb1/expiredReturn")).toBeNull();   // NOT stranded
+    expect(getPath("laybys/lb1/status")).toBeNull();
+  });
+
+  it("releases the claim when the final status update throws", async () => {
+    seedSale(GOOD);
+    failWritesUnder = "laybys/lb1/status";
+    const res = await returnExpiredLaybyToStock(LAYBY, { actorRole: "warehouse" });
+    expect(res.ok).toBe(false);
+    expect(res.threw).toBe(true);
+    expect(getPath("laybys/lb1/expiredReturn")).toBeNull();
+  });
+});
+
+describe("only canonical /locations hubs are accepted", () => {
+  it("rejects hubC — it is not in /locations, so the movement rule would refuse it", async () => {
+    seedSale(GOOD);
+    const res = await returnExpiredLaybyToStock({ ...LAYBY, storageHub: "hubC" }, { actorRole: "warehouse" });
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/no recognised storage hub/);
+    expect(returnDestFor({ storageHub: "hubC" })).toBeNull();
   });
 });
 

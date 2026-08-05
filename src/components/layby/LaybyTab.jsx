@@ -262,17 +262,32 @@ function ExpiredCard({ layby, nowMs, actorRole, hubLabel, onDone }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  // Both handlers await Firebase and must survive a REJECTION, not just an
+  // {ok:false}. Without this the card sticks on "Putting back…" for the rest of
+  // the session with no error and no retry — the state reset only ran after the
+  // await. (CodeRabbit, Major.)
   const expand = async () => {
     const next = !open; setOpen(next);
-    if (next && !lines) setLines(await loadLaybyLines(layby));
+    if (next && !lines) {
+      try {
+        setLines(await loadLaybyLines(layby));
+      } catch (e) {
+        setLines({ ok: false, message: `Could not read the parcel: ${String(e?.message || e)}. Try again.` });
+      }
+    }
   };
 
   const confirm = async () => {
     setBusy(true); setErr("");
-    const res = await returnExpiredLaybyToStock(layby, { actorRole, hubLabel });
-    setBusy(false);
-    if (res.ok) onDone({ ok: true, text: `${layby.invoiceNo || layby.laybyId} — ${res.units} unit${res.units === 1 ? "" : "s"} back on the ${labelFor(res.dest)} shelf.` });
-    else { setErr(res.message); if (res.alreadyClaimed) onDone({ ok: false, text: res.message }); }
+    try {
+      const res = await returnExpiredLaybyToStock(layby, { actorRole, hubLabel });
+      if (res.ok) onDone({ ok: true, text: `${layby.invoiceNo || layby.laybyId} — ${res.units} unit${res.units === 1 ? "" : "s"} back on the ${labelFor(res.dest)} shelf.` });
+      else { setErr(res.message); if (res.alreadyClaimed) onDone({ ok: false, text: res.message }); }
+    } catch (e) {
+      setErr(`Could not complete the return: ${String(e?.message || e)}. Safe to try again — nothing is added twice.`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const daysOver = Math.max(0, Math.floor((nowMs - new Date(layby.dueDate + "T00:00:00").getTime()) / 86400000));
