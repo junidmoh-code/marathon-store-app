@@ -247,3 +247,163 @@ describe("labelPhotoEvidence — a photo is evidence for exactly one code", () =
     expect(labelPhotoEvidence({})).toBeNull();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. CATEGORY SCOPE — we sell more than sneakers
+// ─────────────────────────────────────────────────────────────────────────────
+// The gate used to run BEFORE the operator said what they were adding, so a
+// belt, a watch or a perfume could not be created at all. Only an enforced
+// category sees the gate now, and the list is DATA from /config/styleCode.
+import {
+  isCategoryEnforced, readEnforcedCategories, bypassReadiness,
+  BYPASS_NEEDS_NAME, BYPASS_NEEDS_DUPLICATE_CHECK, BYPASS_NEEDS_REASON, BYPASS_READY,
+} from "./styleCodeGateLogic";
+import { DEFAULT_ENFORCED_CATEGORIES, EXEMPT_REASON_KEYS, FOOTWEAR_CATEGORY_KEYS } from "../../config/styleCode";
+
+describe("isCategoryEnforced — only some categories see the gate", () => {
+  it("sneakers are enforced by default", () => {
+    expect(isCategoryEnforced("sneakers", DEFAULT_ENFORCED_CATEGORIES)).toBe(true);
+  });
+
+  it("NON-SNEAKER categories never reach the gate", () => {
+    // Real registry keys, from TAXONOMY_SEED — not invented.
+    const notEnforced = ["t-shirts", "hoodies", "jeans", "bags", "belts", "watches",
+                         "sunglasses", "perfumes", "fitted-caps", "chains-bracelets", "dresses"];
+    for (const k of notEnforced) {
+      expect(isCategoryEnforced(k, DEFAULT_ENFORCED_CATEGORIES)).toBe(false);
+    }
+  });
+
+  it("other FOOTWEAR is not enforced unless the config says so", () => {
+    // boots/loafers/kids-shoes are footwear but not sneakers. Default is the
+    // narrowest useful set; widening is a console edit.
+    for (const k of FOOTWEAR_CATEGORY_KEYS.filter((k) => k !== "sneakers")) {
+      expect(isCategoryEnforced(k, DEFAULT_ENFORCED_CATEGORIES)).toBe(false);
+      expect(isCategoryEnforced(k, ["sneakers", k])).toBe(true);
+    }
+  });
+
+  it("FAILS OPEN — junk input never blocks a category", () => {
+    for (const bad of [null, undefined, "", 42, {}]) {
+      expect(isCategoryEnforced(bad, ["sneakers"])).toBe(false);
+    }
+    for (const bad of [null, undefined, "sneakers", {}, 42]) {
+      expect(isCategoryEnforced("sneakers", bad)).toBe(false);
+    }
+  });
+});
+
+describe("readEnforcedCategories — the list is data, not code", () => {
+  it("reads the live list", () => {
+    expect(readEnforcedCategories({ enforcedCategories: ["sneakers", "boots"] }, DEFAULT_ENFORCED_CATEGORIES))
+      .toEqual(["sneakers", "boots"]);
+  });
+
+  it("an absent, empty or malformed node falls back to the default", () => {
+    for (const bad of [null, undefined, {}, { enforcedCategories: [] }, { enforcedCategories: "sneakers" }, 42]) {
+      expect(readEnforcedCategories(bad, DEFAULT_ENFORCED_CATEGORIES)).toEqual(DEFAULT_ENFORCED_CATEGORIES);
+    }
+  });
+
+  it("one bad entry cannot disable the whole gate", () => {
+    expect(readEnforcedCategories({ enforcedCategories: ["sneakers", null, 7, "  ", "boots"] }, ["sneakers"]))
+      .toEqual(["sneakers", "boots"]);
+  });
+
+  it("the default is the NARROWEST useful set", () => {
+    expect(DEFAULT_ENFORCED_CATEGORIES).toEqual(["sneakers"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. THE BYPASS — deliberate and countable
+// ─────────────────────────────────────────────────────────────────────────────
+// An exempt product gets NO /style_code_index claim, so the name-based
+// duplicate check is the ONLY duplicate protection it will ever have. Skipping
+// it does not defer the problem, it removes it permanently.
+describe("bypassReadiness", () => {
+  const ok = { name: "Gucci Ace Sneaker", duplicatesShown: true, searchedName: "Gucci Ace Sneaker",
+               reason: "no_code_exists", validReasons: EXEMPT_REASON_KEYS };
+
+  it("is ready only when BOTH the duplicate check and a reason are done", () => {
+    expect(bypassReadiness(ok)).toBe(BYPASS_READY);
+  });
+
+  it("CANNOT complete without a reason", () => {
+    expect(bypassReadiness({ ...ok, reason: null })).toBe(BYPASS_NEEDS_REASON);
+    expect(bypassReadiness({ ...ok, reason: "" })).toBe(BYPASS_NEEDS_REASON);
+    expect(bypassReadiness({ ...ok, reason: "made_up_reason" })).toBe(BYPASS_NEEDS_REASON);
+  });
+
+  it("CANNOT complete without having seen the duplicate results", () => {
+    expect(bypassReadiness({ ...ok, duplicatesShown: false })).toBe(BYPASS_NEEDS_DUPLICATE_CHECK);
+  });
+
+  it("results must belong to the NAME being submitted", () => {
+    // Search "Nike", read "no matches", retype "Gucci Ace", bypass — the search
+    // never looked at Gucci. That must not count.
+    expect(bypassReadiness({ ...ok, searchedName: "Nike" })).toBe(BYPASS_NEEDS_DUPLICATE_CHECK);
+    expect(bypassReadiness({ ...ok, searchedName: "" })).toBe(BYPASS_NEEDS_DUPLICATE_CHECK);
+  });
+
+  it("needs a real name before anything else", () => {
+    for (const n of ["", "  ", "ab", null, undefined, 42]) {
+      expect(bypassReadiness({ ...ok, name: n })).toBe(BYPASS_NEEDS_NAME);
+    }
+  });
+
+  it("every configured reason is accepted, and they are distinguishable", () => {
+    for (const r of EXEMPT_REASON_KEYS) {
+      expect(bypassReadiness({ ...ok, reason: r })).toBe(BYPASS_READY);
+    }
+    // The distinction the metric depends on: "no code" vs "cannot read it".
+    expect(EXEMPT_REASON_KEYS).toContain("no_code_exists");
+    expect(EXEMPT_REASON_KEYS).toContain("label_unreadable");
+    expect(EXEMPT_REASON_KEYS).toContain("label_missing");
+  });
+
+  it("junk input never yields READY", () => {
+    for (const args of [undefined, {}, { name: "x" }, { reason: "no_code_exists" }]) {
+      expect(bypassReadiness(args)).not.toBe(BYPASS_READY);
+    }
+  });
+});
+
+// ── THE DUPLICATE SEARCH FINDS DIGIT-CONTAINING NAMES ───────────────────────
+// Raised in review as a Major: searchProducts is said to take a "code path" for
+// any query containing a digit, so "Nike Air Max 90" would show as no-match and
+// the bypass would create a duplicate with no /style_code_index claim.
+//
+// It does not. The digit branch is `if (hasDigit && codeMatchesQuery) ... else
+// if (nameMatchesQuery)` — when the code match fails, name matching still runs.
+// Verified empirically before rejecting the finding; kept as a permanent guard,
+// because if that `else if` ever became a plain `if`, the ONLY duplicate
+// protection an exempt product has would silently stop working for most sneaker
+// names.
+import { searchProducts } from "../../utils/productSearch";
+
+describe("bypass duplicate search — digit-containing names", () => {
+  const P = [
+    { id: "p1", name: "Nike Air Max 90", sizes: ["8"] },
+    { id: "p2", name: "Jordan 4 Retro Red Thunder", sizes: ["8"] },
+    { id: "p3", name: "New Balance 574", sizes: ["8"], barcode: "00000574" },
+    { id: "p4", name: "Gucci Ace Leather Sneaker", sizes: ["8"] },
+  ];
+
+  it.each([
+    ["Nike Air Max 90", "Nike Air Max 90"],
+    ["Air Max 90", "Nike Air Max 90"],
+    ["Jordan 4", "Jordan 4 Retro Red Thunder"],
+    ["New Balance 574", "New Balance 574"],
+  ])("a name containing digits still finds its product: %s", (query, expected) => {
+    expect(searchProducts(P, query).map((p) => p.name)).toContain(expected);
+  });
+
+  it("names without digits are unaffected", () => {
+    expect(searchProducts(P, "Gucci Ace").map((p) => p.name)).toContain("Gucci Ace Leather Sneaker");
+  });
+
+  it("a genuinely absent product returns nothing — the bypass may proceed", () => {
+    expect(searchProducts(P, "Balenciaga Triple S 2019")).toEqual([]);
+  });
+});

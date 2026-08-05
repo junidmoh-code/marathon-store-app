@@ -283,3 +283,45 @@ describe("style code", () => {
     expect(p.productType).toBe("clothing");
   });
 });
+
+// ─── STYLE CODE EXEMPTION ────────────────────────────────────────────────────
+// Designer and unbranded footwear carries no manufacturer code, so the bypass
+// records WHY. An exempt product gets no /style_code_index claim, so it has no
+// uniqueness guard at all — the reason is what makes that visible and countable.
+describe("style code exemption", () => {
+  const EX = { reason: "no_code_exists", by: "u1", at: 1754300000000 };
+
+  it("writes the flag, the reason, who and when", () => {
+    const p = build({}, { exempt: EX });
+    expect(p.styleCodeExempt).toBe(true);
+    expect(p.styleCodeExemptReason).toBe("no_code_exists");
+    expect(p.styleCodeExemptBy).toBe("u1");
+    expect(p.styleCodeExemptAt).toBe(1754300000000);
+  });
+
+  it("REFUSES to record a bypass with no reason — that is a gap, not a bypass", () => {
+    for (const bad of [undefined, null, {}, { by: "u1", at: 1 }, { reason: "", by: "u1" }, { reason: 7 }]) {
+      const p = build({}, { exempt: bad });
+      expect("styleCodeExempt" in p).toBe(false);
+      expect("styleCodeExemptReason" in p).toBe(false);
+    }
+  });
+
+  it("an exempt product carries NO style code fields", () => {
+    const p = build({}, { exempt: EX });
+    expect("styleCode" in p).toBe(false);
+    expect("styleCodeNormalised" in p).toBe(false);
+  });
+
+  it("a non-finite timestamp becomes null rather than NaN", () => {
+    expect(build({}, { exempt: { reason: "label_missing", by: "u1", at: "soon" } }).styleCodeExemptAt).toBeNull();
+    expect(build({}, { exempt: { reason: "label_missing", by: "u1" } }).styleCodeExemptAt).toBeNull();
+  });
+
+  it("is additive — exempting changes nothing else on the record", () => {
+    const plain = build({});
+    const { styleCodeExempt, styleCodeExemptReason, styleCodeExemptBy, styleCodeExemptAt, ...rest } =
+      build({}, { exempt: EX });
+    expect(rest).toEqual(plain);
+  });
+});

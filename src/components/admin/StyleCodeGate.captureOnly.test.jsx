@@ -18,7 +18,8 @@ globalThis.window = globalThis.window || { addEventListener() {}, removeEventLis
 const resolveMock = vi.fn();
 const flag = { STYLE_CODE_LOOKUP_ENABLED: false };
 
-vi.mock("../../config/styleCode", () => ({
+vi.mock("../../config/styleCode", async () => ({
+  ...(await vi.importActual("../../config/styleCode")),
   get STYLE_CODE_LOOKUP_ENABLED() { return flag.STYLE_CODE_LOOKUP_ENABLED; },
 }));
 vi.mock("firebase/functions", () => ({
@@ -106,10 +107,12 @@ describe("capture-only: the code is saved, nothing is looked up", () => {
     expect(screen).not.toMatch(/Not in the catalogue/i);
   });
 
-  it("the no-readable-code escape still works", async () => {
-    const { r, onProceed } = await mount();
-    await act(async () => { btn(r.root, /No readable code/).props.onClick(); });
-    expect(onProceed.mock.calls[0][0].styleCodeNormalised).toBe("");
+  it("the no-code bypass is reachable, and still makes no vendor call", async () => {
+    const { r } = await mount();
+    await act(async () => { btn(r.root, /no style code/i).props.onClick(); });
+    expect(JSON.stringify(r.toJSON())).toMatch(/Adding without a style code/i);
+    // Opening the panel must not kick off a lookup — without this assertion a
+    // regression that starts one would still pass. (CodeRabbit, PR #320.)
     expect(resolveMock).not.toHaveBeenCalled();
   });
 

@@ -41,6 +41,10 @@ Each product is its own node. `productId` is generated client-side as
 | **`styleCodeConfirmedBy`** | **string \| null**      | **no**   | **uid of the human who pressed Confirm. Opaque uid only — never an email; `/products` is readable by every signed-in staff member.** |
 | **`styleCodeLabelPhoto`** | **string (https URL)**    | **no**   | **The actual photo of the actual tongue label the code was read from — the evidence behind the identity. Stored at `products/_intake/{code}/{productId}.jpg`.** |
 | **`pendingStyleCode`** | **object**                   | **no**   | **Suggested catalogue data awaiting a human decision — see the sub-table below. NEVER read as live product data. Its existence NEVER changes `name`, `photoUrl` or `category`.** |
+| **`styleCodeExempt`** | **`true`**                    | **no**   | **Set only by a deliberate bypass. The product has NO style code and never will, so it also gets no `/style_code_index` claim and therefore no uniqueness guard — the name-based duplicate check shown at bypass time is the only protection it will ever have.** |
+| **`styleCodeExemptReason`** | **`"no_code_exists"` \| `"label_unreadable"` \| `"label_missing"`** | **no** | **Why. The split is what makes the bypass rate diagnosable: a rising `no_code_exists` means the product mix is shifting; a rising `label_*` means something is wrong with how stock reaches us, or how people look for the code.** |
+| **`styleCodeExemptBy`** | **string \| null**           | **no**   | **uid of whoever bypassed. Opaque uid only — never an email.** |
+| **`styleCodeExemptAt`** | **number (epoch ms)**        | **no**   | **`serverNowMs()`, never the device clock.** |
 | **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15 — RETIRED. Was a product-level depletion flag (blurred + un-orderable + Depleted Products tab). The blocking feature is gone: writers no longer set it and readers ignore it; any legacy value is inert. Products are always live & orderable. Safe to ignore / backfill-clear later.** |
 | **`depletedBy`**  | **string \| null**                | **no**   | **Phase 15 — RETIRED (see `depletedAt`). Inert legacy field.** |
 
@@ -83,6 +87,27 @@ const hasBox  = (p.productType !== "clothing") && p.hasShoeBoxOption === true; /
 const barcode = typeof p.barcode === "string" && p.barcode.trim().length > 0 ? p.barcode.trim() : null;
 const sku     = typeof p.sku     === "string" && p.sku.trim().length     > 0 ? p.sku.trim()     : null;
 ```
+
+### Which categories are asked for a style code
+
+**Scoped, and the scope is data.** `/config/styleCode/enforcedCategories` is an
+array of registry category keys, admin-writable (`stockRole === 'admin'`) and
+readable by any signed-in staff member — so widening or narrowing the gate is a
+console edit, not a deploy.
+
+**Default when the node is absent, unreadable or malformed: `["sneakers"]`.**
+This list decides whether someone can do their job, so it **fails open** — every
+bad input resolves to the narrowest enforcement, never the widest. That is the
+opposite of how the duplicate guards fail, deliberately: a wrong product is
+recoverable, a blocked shop floor is not.
+
+Category is chosen **before** the gate appears. It used to run first, which made
+every non-sneaker product impossible to create — a belt was being asked for a
+manufacturer style code it has never had.
+
+Footwear keys in the live registry, for reference when editing the config:
+`sneakers` · `running-shoes` · `boots` · `soccer-boots` · `slides` · `loafers` ·
+`kids-shoes`. Everything else is clothing, accessories or perfume.
 
 ### Style code — the sneaker intake identity key
 

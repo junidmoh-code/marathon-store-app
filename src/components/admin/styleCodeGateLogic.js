@@ -145,3 +145,81 @@ export function labelPhotoEvidence({ labelPhoto, photoForCode, normalised } = {}
   if (!labelPhoto || !photoForCode || !normalised) return null;
   return photoForCode === normalised ? labelPhoto : null;
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. IS THIS CATEGORY ASKED FOR A STYLE CODE AT ALL?
+// ─────────────────────────────────────────────────────────────────────────────
+// The gate used to run BEFORE the operator said what they were adding, which
+// made every non-sneaker product impossible to create. Category comes first now,
+// and only an ENFORCED category sees the gate.
+//
+// FAILS OPEN, on purpose. This list decides whether someone is allowed to do
+// their job, so every unreadable, malformed or missing input resolves to "not
+// enforced" — the failure mode must be "people can add products", never the
+// reverse. That is the opposite of how the duplicate guards fail, and
+// deliberately so: a wrong product is recoverable, a blocked shop floor is not.
+
+/**
+ * @param {string} categoryKey  the chosen registry key, e.g. "sneakers"
+ * @param {unknown} enforced    the live list from /config/styleCode
+ */
+export function isCategoryEnforced(categoryKey, enforced) {
+  if (typeof categoryKey !== "string" || !categoryKey) return false;
+  if (!Array.isArray(enforced)) return false;
+  return enforced.some((k) => typeof k === "string" && k === categoryKey);
+}
+
+/**
+ * Normalise whatever /config/styleCode/enforcedCategories holds into a usable
+ * list. Absent, wrong-typed or empty → the default. A list containing junk keeps
+ * only the strings, so one bad entry cannot disable the whole gate.
+ */
+export function readEnforcedCategories(configValue, fallback) {
+  const def = Array.isArray(fallback) ? fallback : [];
+  if (!configValue || typeof configValue !== "object") return def;
+  const raw = configValue.enforcedCategories;
+  if (!Array.isArray(raw)) return def;
+  const clean = raw.filter((k) => typeof k === "string" && k.trim()).map((k) => k.trim());
+  return clean.length ? clean : def;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. MAY THIS BYPASS BE COMPLETED?
+// ─────────────────────────────────────────────────────────────────────────────
+// Two preconditions, and both exist for the same reason: an exempt product gets
+// NO /style_code_index claim, so the name-based duplicate check is the ONLY
+// duplicate protection it will EVER have. Skipping it does not defer the
+// problem, it removes it permanently.
+//
+//   • a REASON from the fixed list — so the bypass rate is countable, and
+//     "no code exists" stays distinguishable from "I can't read the code"
+//   • the operator must have SEEN the duplicate search results for the name
+//     they are adding — not merely triggered a search, but had it come back
+
+export const BYPASS_NEEDS_NAME = "needs-name";
+export const BYPASS_NEEDS_DUPLICATE_CHECK = "needs-duplicate-check";
+export const BYPASS_NEEDS_REASON = "needs-reason";
+export const BYPASS_READY = "ready";
+
+/**
+ * @param {object} args
+ *   name              what the operator typed as the product name
+ *   duplicatesShown   true only once the search has RETURNED for that exact name
+ *   searchedName      the name the results belong to — guards against typing on
+ *                     after the search, which would show results for a different
+ *                     product than the one being created
+ *   reason            selected reason key
+ *   validReasons      the allowed set
+ */
+export function bypassReadiness({ name, duplicatesShown, searchedName, reason, validReasons } = {}) {
+  const trimmed = typeof name === "string" ? name.trim() : "";
+  if (trimmed.length < 3) return BYPASS_NEEDS_NAME;
+  // The results must belong to the name being submitted. Otherwise an operator
+  // can search "Nike", read "no matches", retype "Gucci Ace" and bypass on the
+  // strength of a search that never looked at Gucci.
+  if (!duplicatesShown || String(searchedName || "").trim() !== trimmed) return BYPASS_NEEDS_DUPLICATE_CHECK;
+  const allowed = Array.isArray(validReasons) ? validReasons : [];
+  if (typeof reason !== "string" || !allowed.includes(reason)) return BYPASS_NEEDS_REASON;
+  return BYPASS_READY;
+}

@@ -125,21 +125,40 @@ export function styleCodeProgress(products) {
   // other out and reported confirmed 0 when the first was confirmed. The
   // Math.max(0, …) clamp hid that rather than fixing it, and the test only
   // passed because neither product in it carried a code. (CodeRabbit #312.)
-  let withCode = 0, needsReview = 0, confirmed = 0;
+  let withCode = 0, needsReview = 0, confirmed = 0, exempt = 0;
+  // Exemptions counted BY REASON. The split is the point: a rising
+  // `no_code_exists` means the product mix is shifting, a rising `label_*`
+  // means something is wrong with how stock reaches us or how people look for
+  // the code. If the bypass rate climbs, this is where it shows.
+  const exemptByReason = {};
   for (const p of list) {
     const hasCode = !!normaliseStyleCode(p.styleCodeNormalised);
     const inReview = !!(p.pendingStyleCode && p.pendingStyleCode.status === "needsReview");
     if (hasCode) withCode++;
     if (inReview) needsReview++;
     if (hasCode && !inReview) confirmed++;
+    if (p.styleCodeExempt === true) {
+      exempt++;
+      const r = typeof p.styleCodeExemptReason === "string" && p.styleCodeExemptReason
+        ? p.styleCodeExemptReason : "unspecified";
+      exemptByReason[r] = (exemptByReason[r] || 0) + 1;
+    }
   }
   const total = list.length;
+  // An exempt product can never carry a code, so counting it as "outstanding"
+  // forever would make the backfill look permanently unfinished. ACCOUNTED FOR
+  // is the honest denominator: coded, or deliberately exempted.
+  const accountedFor = confirmed + exempt;
   return {
     total,
     withCode,
     needsReview,
     confirmed,
-    pct: total ? Math.round((confirmed / total) * 100) : 0,
+    exempt,
+    exemptByReason,
+    accountedFor,
+    exemptPct: total ? Math.round((exempt / total) * 100) : 0,
+    pct: total ? Math.round((accountedFor / total) * 100) : 0,
   };
 }
 

@@ -88,6 +88,10 @@ import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
 // form. Uniqueness is CLAIMED (create-once on /style_code_index), never checked:
 // a check-then-write race lets two tablets create two records for one shoe.
 import StyleCodeGate from "./components/admin/StyleCodeGate";
+import CategoryFirstStep from "./components/admin/CategoryFirstStep";
+import { useStyleCodeConfig } from "./components/admin/useStyleCodeConfig";
+import { isCategoryEnforced } from "./components/admin/styleCodeGateLogic";
+import { styleCodeProgress } from "./utils/styleCodeCapture";
 import { claimStyleCode, claimFailureMessage, CLAIM_OK, CLAIM_TAKEN } from "./utils/styleCodeClaim";
 
 // ─── WHATSAPP — via Firebase Cloud Function (europe-west1) ───────────────────
@@ -4890,6 +4894,18 @@ function AdminView({ products, orders, onExit }) {
   // Holds { styleCode, styleCodeNormalised, styleCodeSource, styleCodeFetchedAt,
   //         labelPhoto, suggestedName, suggestedBrand, suggestedImageUrl, model }.
   const [intake, setIntake] = useState(null);
+  // ── STEP 0: WHAT ARE YOU ADDING? ────────────────────────────────────────
+  // The gate used to run before this was asked, so a belt, a watch or a perfume
+  // could not be created at all — the operator was asked for a manufacturer
+  // style code those products have never had. Category first; only an ENFORCED
+  // category then sees the gate.
+  const [categoryChosen, setCategoryChosen] = useState(false);
+  // The enforced set is DATA, read live from /config/styleCode, so widening the
+  // net is a console edit. Fails open — see useStyleCodeConfig.
+  const styleCodeConfig = useStyleCodeConfig();
+  // Exemption counts, split by reason. Memoised off the products array the view
+  // already holds — no extra read.
+  const styleCodeStats = useMemo(() => styleCodeProgress(products), [products]);
   // Opening stock — REQUIRED and always visible (no longer collapsible). An
   // explicit 0 per size is allowed so nothing forces a fake number, but the
   // section cannot be skipped: a destination must be picked before saving.
@@ -5032,9 +5048,12 @@ function AdminView({ products, orders, onExit }) {
         id,
         photoUrl: photoUrl ?? null,
         brand: brandOf(form.name),
-        // The style code carried through from the gate (step 1). Absent for any
-        // product added without one — the field is omitted, never nulled.
+        // The style code carried through from the gate. Absent for any product
+        // added without one — the field is omitted, never nulled.
         styleCode: intake ? intake.styleCode : null,
+        // The bypass, when one was used. buildNewProduct refuses to record an
+        // exemption with no reason — a bypass with no reason is a gap.
+        exempt: intake ? intake.exempt : null,
         // A real photo uploaded with the product stamps the upload time (drives
         // the AI Photo Studio "Recent" view; legacy products fall back to the
         // id-encoded creation time).
@@ -5204,7 +5223,8 @@ function AdminView({ products, orders, onExit }) {
       setShoeboxTouched(false);
       setRecvQtys({});
       setSaveAttempted(false);
-      setIntake(null); // next Add Product starts at the style-code gate again
+      setIntake(null);
+      setCategoryChosen(false); // next Add Product starts at "what is it?" again
       // Keep the receiving location — an admin loading a delivery adds several
       // products into the SAME location in a row; re-picking it each time was
       // pure friction and a mis-pick risk.
@@ -5412,6 +5432,21 @@ function AdminView({ products, orders, onExit }) {
           <div style={{ display:"flex", alignItems:"center", gap:10 }}>
             <span style={{ fontSize:20, fontWeight:700, color:"#fff" }}>Products</span>
             <span style={{ background:"rgba(60,110,255,.15)", border:"1px solid rgba(60,110,255,.3)", color:"#4A7FFF", fontSize:12, fontWeight:700, padding:"3px 10px", borderRadius:12 }}>{products.length}</span>
+            {/* ── THE BYPASS RATE, WHERE IT CAN BE ACTED ON ──────────────────
+                Shown next to the product count, in the screen where products are
+                added — so a climbing exemption rate is visible to the people
+                creating them, not buried in a report nobody opens. Amber past
+                10%: at that point the bypass has stopped being the exception. */}
+            {styleCodeStats.exempt > 0 && (
+              <span title={Object.entries(styleCodeStats.exemptByReason)
+                            .map(([r, n]) => `${r}: ${n}`).join("  ·  ")}
+                    style={{ background: styleCodeStats.exemptPct >= 10 ? "rgba(251,191,36,.15)" : "rgba(255,255,255,.06)",
+                             border: `1px solid ${styleCodeStats.exemptPct >= 10 ? "rgba(251,191,36,.45)" : "rgba(255,255,255,.12)"}`,
+                             color: styleCodeStats.exemptPct >= 10 ? "#FBBF24" : "rgba(233,238,255,.55)",
+                             fontSize:11, fontWeight:700, padding:"3px 9px", borderRadius:12, cursor:"help" }}>
+                {styleCodeStats.exempt} no-code ({styleCodeStats.exemptPct}%)
+              </span>
+            )}
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
             <button onClick={() => setShowAdd(!showAdd)} style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:10, padding:"10px 18px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:6, boxShadow:"0 0 14px rgba(60,110,255,.3)" }}>
@@ -5424,31 +5459,48 @@ function AdminView({ products, orders, onExit }) {
 
         <div style={{ padding:"0 14px" }}>
 
-      {/* ── STEP 1: THE STYLE CODE GATE ──────────────────────────────────────
-          The create form does not open until a style code has been entered and
-          a human has decided what it means. That ordering is what lets us catch
-          "we already have this shoe" BEFORE the work is done rather than after.
+      {/* ── STEP 0: WHAT ARE YOU ADDING? ──────────────────────────────────
+          Category first. It is the one answer that decides everything after it
+          — sizes, refill behaviour, POS behaviour, and whether a style code is
+          asked for at all. The gate used to run BEFORE this, which made every
+          non-sneaker product impossible to create. */}
+      {showAdd && !categoryChosen && (
+        <CategoryFirstStep
+          taxonomy={taxonomy}
+          taxonomySource={taxonomySource}
+          value={form.categoryKey}
+          onChange={selectCategory}
+          enforced={styleCodeConfig.enforced}
+          configReady={styleCodeConfig.ready}
+          onCancel={() => { setShowAdd(false); setCategoryChosen(false); }}
+          onContinue={() => {
+            setCategoryChosen(true);
+            // NOT ENFORCED → straight to the product form, no gate and no
+            // style-code fields, exactly as before this feature existed.
+            if (!isCategoryEnforced(form.categoryKey, styleCodeConfig.enforced)) {
+              setIntake({ styleCode: "", styleCodeNormalised: "", exempt: null,
+                          suggestedName: "", suggestedBrand: null, suggestedImageUrl: null, model: null });
+            }
+          }}
+        />
+      )}
+
+      {/* ── STEP 1: THE STYLE CODE GATE — enforced categories only ─────────
           Confirming a catalogue match prefills name / brand / image; rejecting
-          keeps the code and opens a blank form. Category is set from the form's
-          own selector either way — never inferred from the code, because Nike
-          apparel prints the same format as Nike footwear. */}
-      {showAdd && !intake && (
+          keeps the code and opens a blank form. Category is already chosen and
+          is never inferred from the code — Nike apparel prints the same format
+          as Nike footwear. */}
+      {showAdd && categoryChosen && !intake && (
         <StyleCodeGate
           products={products}
-          onCancel={() => setShowAdd(false)}
+          onCancel={() => { setShowAdd(false); setCategoryChosen(false); }}
           onAddStock={(productId) => {
-            // Already ours → route to the product, do NOT open the create form.
-            setShowAdd(false);
-            setIntake(null);
+            setShowAdd(false); setIntake(null); setCategoryChosen(false);
             if (productId) window.location.hash = "product/" + productId;
           }}
           onProceed={(payload) => {
             setIntake(payload);
-            // Prefill ONLY from an explicit human confirmation. A rejected match
-            // sends suggestedName "" and leaves the form blank.
-            if (payload.suggestedName) {
-              setForm((f) => ({ ...f, name: payload.suggestedName }));
-            }
+            if (payload.suggestedName) setForm((f) => ({ ...f, name: payload.suggestedName }));
           }}
         />
       )}
