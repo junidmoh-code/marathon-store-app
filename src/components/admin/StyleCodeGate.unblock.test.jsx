@@ -1,4 +1,4 @@
-// ─── THE GATE MUST NEVER BE A DEAD END ───────────────────────────────────────
+// ─── THE GATE MUST NEVER BE A DEAD END (enforcement mode) ────────────────────
 // A live outage: the vendor returned 403 on every call, so every lookup landed
 // on the "unavailable" step — which offered only Retry and Back. Staff could not
 // add ANY new product. A gate whose failure mode is "nobody can work" is worse
@@ -19,6 +19,10 @@ import TestRenderer, { act } from "react-test-renderer";
 globalThis.window = globalThis.window || { addEventListener() {}, removeEventListener() {} };
 
 const resolveMock = vi.fn();
+// These escapes only exist on the LOOKUP path, so this file pins enforcement ON.
+// With it off (the current default) the gate bypasses the lookup entirely and
+// staff go straight to the form — covered in StyleCodeGate.captureOnly.test.jsx.
+vi.mock("../../config/styleCode", () => ({ STYLE_CODE_LOOKUP_ENABLED: true }));
 vi.mock("firebase/functions", () => ({
   httpsCallable: (_fns, name) => (...a) => (name === "resolveStyleCode" ? resolveMock(...a) : Promise.resolve({ data: {} })),
 }));

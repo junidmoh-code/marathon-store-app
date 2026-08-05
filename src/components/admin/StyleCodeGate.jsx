@@ -36,6 +36,7 @@ import {
   isKnownStyleCodeFormat,
 } from "../../utils/styleCode";
 import { prepareLabelPhoto } from "../../utils/labelPhoto";
+import { STYLE_CODE_LOOKUP_ENABLED } from "../../config/styleCode";
 import { serverNowMs } from "../../utils/serverTime";
 import {
   resolveAddStockTarget, classifyLookupOutcome, labelPhotoEvidence,
@@ -163,6 +164,29 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
   // ── Look the code up ──────────────────────────────────────────────────────
   async function lookup() {
     if (!normalised) return;
+
+    // ── CAPTURE-ONLY MODE ────────────────────────────────────────────────────
+    // No round trip, no confirm screen, no comparison. The code goes straight
+    // onto the form. There is nothing to look it up against — no product carries
+    // a code yet — and the vendor route we call 403s regardless, so the only
+    // thing the lookup can produce today is a screen between staff and their
+    // job. See config/styleCode.js for why this is off and what turns it on.
+    //
+    // Uniqueness is unaffected: the create-once claim on /style_code_index still
+    // runs at SAVE time and still refuses a code that already belongs to another
+    // product. This skips the preview, not the guard.
+    if (!STYLE_CODE_LOOKUP_ENABLED) {
+      onProceed({
+        styleCode: formatStyleCodeForDisplay(normalised),
+        styleCodeNormalised: normalised,
+        styleCodeSource: "manual",
+        styleCodeFetchedAt: serverNowMs(),
+        labelPhoto: evidencePhoto,
+        suggestedName: "", suggestedBrand: null, suggestedImageUrl: null, model: null,
+      });
+      return;
+    }
+
     setError(null); setBusy("resolving");
     try {
       // confusableRetry is on ONLY when the code came off a photo — a human who
@@ -259,6 +283,10 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
           <Note>
             Sneakers arrive without boxes, so there's no barcode. Use the <b>style code</b> on the
             inside-tongue label — it's how we tell one colourway from another.
+            {!STYLE_CODE_LOOKUP_ENABLED && <>
+              <br /><br />The code is <b>saved with the product</b>. We're not looking it up against
+              the catalogue yet, so you go straight to the details.
+            </>}
           </Note>
 
           <div>
@@ -339,7 +367,8 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
           <button type="button" disabled={!canSubmit} onClick={lookup}
             style={btn(canSubmit ? BLUE : "rgba(74,127,255,.14)", canSubmit ? "#fff" : "rgba(233,238,255,.35)",
                        { cursor: canSubmit ? "pointer" : "not-allowed" })}>
-            {busy === "resolving" ? "Checking…" : "Continue"}
+            {busy === "resolving" ? "Checking…"
+              : STYLE_CODE_LOOKUP_ENABLED ? "Continue" : "Save this code and continue"}
           </button>
           {/* NO CODE AT ALL. A worn-off label, a sample, a non-sneaker that
               reached this entry point — none of those should stop a product
