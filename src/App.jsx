@@ -5087,43 +5087,16 @@ function AdminView({ products, orders, onExit }) {
       newProduct.sku     = sku;
       newProduct.barcode = barcode;
 
-      // ── CLAIM THE STYLE CODE — create-once, IMMEDIATELY before the product ─
-      // Uniqueness is claimed, never checked. Two tablets scanning the same shoe
-      // both race this write; the rules make exactly one win. The loser is told
-      // to add stock to the winner's product instead of creating a second record
-      // for one shoe with its stock split across them.
+      // ── THE PRODUCT MUST EXIST BEFORE THE CODE CAN BE CLAIMED ─────────────
+      // The live rule on /style_code_index/$code validates:
+      //     root.child('products').child(newData.child('productId').val()).exists()
+      // so a claim for a product that has not been written yet is REJECTED. The
+      // original order claimed first, which meant EVERY save carrying a style
+      // code was denied and staff could not add products at all.
       //
-      // This sits as late as possible — the very last thing before the product
-      // write — so the gap in which a claim could outlive a failed product write
-      // is as small as two statements can make it. It cannot be closed entirely
-      // (two writes, no transaction across them); the orphan it can leave is
-      // detected by resolveStyleCode and reported, never pretended away.
-      if (newProduct.styleCodeNormalised) {
-        const outcome = await claimStyleCode(newProduct.styleCodeNormalised, {
-          productId: id,
-          uid: auth.currentUser?.uid ?? null,
-          nowMs: serverNowMs(),
-        });
-        // These messages MUST reach the operator verbatim. The generic catch
-        // below used to decide that by pattern-matching the message text, which
-        // silently swallowed every one of these ("reserve" does not match
-        // "reservation") and showed "please try again" instead. The operator
-        // then retried forever, hitting CLAIM_TAKEN every time, and the one
-        // instruction they needed — add stock to the existing product — was
-        // never shown. Flag intent explicitly rather than describing it in
-        // prose the error handler has to guess at. (CodeRabbit, PR #312.)
-        if (outcome.kind === CLAIM_TAKEN) {
-          // Someone already owns this code. NOTHING has been written yet.
-          throw operatorError(
-            `${claimFailureMessage(outcome)}` +
-            (outcome.productId ? `\n\nExisting product: ${outcome.productId}` : "")
-          );
-        }
-        if (outcome.kind !== CLAIM_OK) {
-          throw operatorError(claimFailureMessage(outcome));
-        }
-      }
-
+      // Claim-first was the safer shape — the database arbitrated the race — but
+      // the deployed rule makes it impossible, and the rule wins. Product first,
+      // claim second.
       try {
         await addProductToFirebase(newProduct);
       } catch (writeErr) {
@@ -5142,6 +5115,40 @@ function AdminView({ products, orders, onExit }) {
           );
         }
         throw writeErr;
+      }
+
+      // ── CLAIM THE STYLE CODE — after the product, and NEVER fatal ──────────
+      // The product is already saved by this point, so a failed claim must not
+      // be reported as a failed save: the operator's work is done and telling
+      // them otherwise sends them to create it a second time.
+      //
+      // A lost claim means two products can carry one code. That is the
+      // duplicate this guard exists to prevent — but it is now DETECTED rather
+      // than prevented, surfaced by resolveStyleCode's collision scan and
+      // /duplicate_candidates. With the lookup switched off and no product yet
+      // carrying a code, the practical risk is nil; when enforcement is turned
+      // back on this ordering needs revisiting alongside it.
+      if (newProduct.styleCodeNormalised) {
+        try {
+          const outcome = await claimStyleCode(newProduct.styleCodeNormalised, {
+            productId: id,
+            uid: auth.currentUser?.uid ?? null,
+            nowMs: serverNowMs(),
+          });
+          if (outcome.kind === CLAIM_TAKEN) {
+            console.warn(`addProduct: style code ${newProduct.styleCodeNormalised} already claimed by ` +
+              `${outcome.productId || "another product"}; ${id} saved but does not own it`);
+            alert(
+              `Saved.\n\nNote: style code ${newProduct.styleCode} is already on another product` +
+              (outcome.productId ? ` (${outcome.productId})` : "") +
+              `. Both now carry it — an admin should merge them.`
+            );
+          } else if (outcome.kind !== CLAIM_OK) {
+            console.warn(`addProduct: style code claim failed for ${id}:`, claimFailureMessage(outcome));
+          }
+        } catch (claimErr) {
+          console.warn("addProduct: style code claim threw (product already saved):", claimErr);
+        }
       }
 
       // GUARANTEE ON SAVE: mint a barcode for every size now so the catalog never
