@@ -93,8 +93,9 @@ export function computeMissingProducts({ allStock, products } = {}) {
   return out.sort((a, b) => b.units - a.units);
 }
 
-// Card counts per chip, keyed by group. Only groups that actually have cards
-// appear — the chip row is built from the stock, not from a fixed list.
+// Card counts per chip, keyed by group. With the two-chip rule every card lands
+// under "clothing", so this reduces to { clothing: N } — kept generic because
+// the load-bearing test ("chips account for every card") sums it.
 export function countByCategory(cards) {
   const out = {};
   for (const c of cards || []) out[c.group] = (out[c.group] || 0) + 1;
