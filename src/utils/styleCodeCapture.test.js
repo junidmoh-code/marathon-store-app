@@ -224,3 +224,59 @@ describe("styleCodeProgress", () => {
     expect(out.pct).toBe(50);
   });
 });
+
+// ── THE BYPASS RATE, COUNTABLE ──────────────────────────────────────────────
+// If exemptions climb, that has to be visible. The split by reason is the point:
+// "no code exists" and "cannot read the label" are different problems.
+describe("styleCodeProgress — exemptions", () => {
+  const P = (over = {}) => ({ id: "x", productType: "sneaker", ...over });
+
+  it("counts exemptions and splits them BY REASON", () => {
+    const out = styleCodeProgress([
+      P({ id: "a", styleCodeNormalised: "CT8527016" }),
+      P({ id: "b", styleCodeExempt: true, styleCodeExemptReason: "no_code_exists" }),
+      P({ id: "c", styleCodeExempt: true, styleCodeExemptReason: "no_code_exists" }),
+      P({ id: "d", styleCodeExempt: true, styleCodeExemptReason: "label_unreadable" }),
+      P({ id: "e" }),
+    ]);
+    expect(out.exempt).toBe(3);
+    expect(out.exemptByReason).toEqual({ no_code_exists: 2, label_unreadable: 1 });
+    expect(out.exemptPct).toBe(60);
+  });
+
+  it("an exempt product counts as ACCOUNTED FOR, not outstanding forever", () => {
+    // It can never carry a code, so leaving it in the outstanding pile would
+    // make the backfill look permanently unfinished.
+    const out = styleCodeProgress([
+      P({ id: "a", styleCodeNormalised: "CT8527016" }),
+      P({ id: "b", styleCodeExempt: true, styleCodeExemptReason: "no_code_exists" }),
+    ]);
+    expect(out.confirmed).toBe(1);
+    expect(out.exempt).toBe(1);
+    expect(out.accountedFor).toBe(2);
+    expect(out.pct).toBe(100);
+  });
+
+  it("an exemption with no reason is still counted, under 'unspecified'", () => {
+    const out = styleCodeProgress([P({ id: "a", styleCodeExempt: true })]);
+    expect(out.exempt).toBe(1);
+    expect(out.exemptByReason).toEqual({ unspecified: 1 });
+  });
+
+  it("only an explicit true counts — a truthy value is not an exemption", () => {
+    const out = styleCodeProgress([
+      P({ id: "a", styleCodeExempt: "yes" }),
+      P({ id: "b", styleCodeExempt: 1 }),
+      P({ id: "c", styleCodeExempt: false }),
+    ]);
+    expect(out.exempt).toBe(0);
+    expect(out.exemptByReason).toEqual({});
+  });
+
+  it("no exemptions leaves the split empty and the maths unchanged", () => {
+    const out = styleCodeProgress([P({ id: "a", styleCodeNormalised: "CT8527016" }), P({ id: "b" })]);
+    expect(out.exempt).toBe(0);
+    expect(out.exemptByReason).toEqual({});
+    expect(out.pct).toBe(50);
+  });
+});

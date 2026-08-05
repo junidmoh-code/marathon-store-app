@@ -22,7 +22,10 @@ const resolveMock = vi.fn();
 // These escapes only exist on the LOOKUP path, so this file pins enforcement ON.
 // With it off (the current default) the gate bypasses the lookup entirely and
 // staff go straight to the form — covered in StyleCodeGate.captureOnly.test.jsx.
-vi.mock("../../config/styleCode", () => ({ STYLE_CODE_LOOKUP_ENABLED: true }));
+vi.mock("../../config/styleCode", async () => ({
+  ...(await vi.importActual("../../config/styleCode")),
+  STYLE_CODE_LOOKUP_ENABLED: true,
+}));
 vi.mock("firebase/functions", () => ({
   httpsCallable: (_fns, name) => (...a) => (name === "resolveStyleCode" ? resolveMock(...a) : Promise.resolve({ data: {} })),
 }));
@@ -114,28 +117,25 @@ describe("a failed lookup must still let staff add the product", () => {
   });
 });
 
-describe("a shoe with no readable code is still addable", () => {
-  it("the first step offers a no-code escape", async () => {
+describe("a shoe with no code is still addable — but deliberately", () => {
+  // The one-tap escape is GONE on purpose. A bypass that costs the same as
+  // doing the job properly becomes the default path within a week. It is now a
+  // subordinate link opening a panel that demands a duplicate check AND a
+  // reason — see StyleCodeGate.bypass.test.jsx for the full gating.
+  it("the escape is a subordinate LINK, not a button beside scan and type", async () => {
     const { r } = await mount();
-    expect(btn(r.root, /No readable code/)).toBeDefined();
+    const link = btn(r.root, /no style code/i);
+    expect(link).toBeDefined();
+    // Visually subordinate: underlined text, no filled background.
+    expect(link.props.style.textDecoration).toBe("underline");
+    expect(link.props.style.background).toBe("none");
   });
 
-  it("skipping proceeds with NO style code, so nothing is claimed or stamped", async () => {
+  it("tapping it does NOT proceed — it opens the panel that asks why", async () => {
     const { r, onProceed } = await mount();
-    await act(async () => { btn(r.root, /No readable code/).props.onClick(); });
-
-    expect(onProceed).toHaveBeenCalledTimes(1);
-    const p = onProceed.mock.calls[0][0];
-    expect(p.styleCode).toBe("");
-    expect(p.styleCodeNormalised).toBe("");
-    expect(p.labelPhoto).toBeNull();
-  });
-
-  it("skipping uses the server clock, like every other timestamp", async () => {
-    const { onProceed } = await mount();
-    const { r } = await mount(onProceed);
-    await act(async () => { btn(r.root, /No readable code/).props.onClick(); });
-    expect(onProceed.mock.calls[0][0].styleCodeFetchedAt).toBe(1754300000000);
+    await act(async () => { btn(r.root, /no style code/i).props.onClick(); });
+    expect(onProceed).not.toHaveBeenCalled();
+    expect(JSON.stringify(r.toJSON())).toMatch(/Adding without a style code/i);
   });
 });
 

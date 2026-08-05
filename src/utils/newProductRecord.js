@@ -41,7 +41,8 @@ export function cleanHubs(hubs, isClothing) {
  *
  * @param {object}   registry   live taxonomy registry
  * @param {object}   form       { name, categoryKey, photo, hubs, stockPrice, retailPrice, hasShoeBoxOption }
- * @param {object}   extras     { id, photoUrl, brand, photoUploaded, styleCode }
+ * @param {object}   extras     { id, photoUrl, brand, photoUploaded, styleCode,
+ *                                 exempt: { reason, by, at } }
  */
 export function buildNewProduct(registry, form, extras = {}) {
   const cat = catByKey(registry, form && form.categoryKey);
@@ -110,6 +111,30 @@ export function buildNewProduct(registry, form, extras = {}) {
     const typed = String(extras.styleCode || "").trim();
     product.styleCode = typed || formatStyleCodeForDisplay(styleCodeNormalised);
     product.styleCodeNormalised = styleCodeNormalised;
+  }
+
+  // ── STYLE CODE EXEMPTION ──────────────────────────────────────────────────
+  // Some footwear genuinely has no manufacturer style code — designer and
+  // unbranded stock especially. Those products can never satisfy the gate, so
+  // the bypass records WHY rather than leaving a silent hole.
+  //
+  // This matters beyond bookkeeping: an exempt product gets NO
+  // /style_code_index claim, so it has no uniqueness guard at all. The reason
+  // is what makes the bypass rate countable — a rising `no_code_exists` means
+  // the product mix is shifting, a rising `label_*` means something is wrong
+  // with how stock reaches us. Different problems, different fixes.
+  //
+  // Written only when a reason is present; a bypass with no reason is not a
+  // bypass, it is a gap, and buildNewProduct will not create one.
+  const exempt = extras.exempt;
+  if (exempt && typeof exempt.reason === "string" && exempt.reason) {
+    product.styleCodeExempt = true;
+    product.styleCodeExemptReason = exempt.reason;
+    product.styleCodeExemptBy = exempt.by ?? null;
+    // serverNowMs() upstream — never the device clock. /products timestamp
+    // validators compare against the SERVER clock, and a fast tablet writes a
+    // value that is silently rejected.
+    product.styleCodeExemptAt = Number.isFinite(exempt.at) ? exempt.at : null;
   }
 
   return product;

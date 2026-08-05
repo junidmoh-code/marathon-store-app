@@ -37,7 +37,9 @@ import {
 } from "../../utils/styleCode";
 import { prepareLabelPhoto } from "../../utils/labelPhoto";
 import { STYLE_CODE_LOOKUP_ENABLED } from "../../config/styleCode";
+import StyleCodeBypass from "./StyleCodeBypass";
 import { serverNowMs } from "../../utils/serverTime";
+import { auth } from "../../firebase";
 import {
   resolveAddStockTarget, classifyLookupOutcome, labelPhotoEvidence,
   TARGET_READY, TARGET_CHOOSE,
@@ -101,6 +103,9 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
   // and confusableRetry would stay on for a hand-typed code, which the comment
   // in lookup() explicitly says it must not. (CodeRabbit, PR #312.)
   const [photoForCode, setPhotoForCode] = useState(null); // normalised code
+  // The bypass panel. Deliberately NOT a step in the main flow — it is opened
+  // from a subordinate link, and closing it returns to the style code.
+  const [bypassOpen, setBypassOpen] = useState(false);
   const [readNote, setReadNote] = useState(null);
   const fileRef = useRef(null);
 
@@ -262,17 +267,6 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     onProceed({ ...provenance("manual"), suggestedName: "", suggestedBrand: null, suggestedImageUrl: null, model: null });
   }
 
-  // Proceed with NO style code. Everything downstream already tolerates this:
-  // buildNewProduct omits both style-code fields when there is no code, and
-  // addProduct only attempts a claim when styleCodeNormalised is present.
-  function skipCode() {
-    onProceed({
-      styleCode: "", styleCodeNormalised: "", styleCodeSource: "manual",
-      styleCodeFetchedAt: serverNowMs(), labelPhoto: null,
-      suggestedName: "", suggestedBrand: null, suggestedImageUrl: null, model: null,
-    });
-  }
-
   const productById = (id) => (products || []).find((p) => p && p.id === id) || null;
   const existing = result ? (result.existingProducts || []) : [];
   const claimedProduct = result && result.claim ? productById(result.claim.productId) : null;
@@ -377,17 +371,34 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
             {busy === "resolving" ? "Checking…"
               : STYLE_CODE_LOOKUP_ENABLED ? "Continue" : "Save this code and continue"}
           </button>
-          {/* NO CODE AT ALL. A worn-off label, a sample, a non-sneaker that
-              reached this entry point — none of those should stop a product
-              being created. The style code is the PREFERRED identity, never a
-              precondition for doing the job. Products saved this way simply
-              carry no styleCode fields (buildNewProduct omits them) and claim
-              nothing, exactly as every product did before this feature. */}
-          <button type="button" onClick={skipCode}
-            style={{ ...meta, background: "none", border: "1px solid rgba(120,150,255,.25)",
-                     borderRadius: 10, cursor: "pointer", padding: "12px", minHeight: 44 }}>
-            No readable code on this shoe — add it without one
-          </button>
+          {/* ── THE BYPASS ────────────────────────────────────────────────
+              A SUBORDINATE LINK, never a button of equal weight beside scan and
+              manual entry. The one that never fails becomes the default within a
+              week if it looks as easy as doing the job properly — so it reads as
+              an exception, and costs more taps. */}
+          {!bypassOpen && (
+            <button type="button" onClick={() => setBypassOpen(true)}
+              style={{ ...meta, fontSize: 12, background: "none", border: "none",
+                       color: "rgba(233,238,255,.42)", cursor: "pointer", padding: "10px 4px",
+                       textDecoration: "underline", textUnderlineOffset: 3, alignSelf: "center" }}>
+              This shoe has no style code
+            </button>
+          )}
+
+          {bypassOpen && (
+            <StyleCodeBypass
+              products={products}
+              onCancel={() => setBypassOpen(false)}
+              onConfirm={({ name, reason }) => onProceed({
+                styleCode: "", styleCodeNormalised: "", styleCodeSource: "manual",
+                styleCodeFetchedAt: serverNowMs(), labelPhoto: null,
+                // The exemption, recorded so the bypass rate is countable.
+                exempt: { reason, by: auth.currentUser?.uid ?? null, at: serverNowMs() },
+                suggestedName: name, suggestedBrand: null, suggestedImageUrl: null, model: null,
+              })}
+            />
+          )}
+
           <button type="button" onClick={onCancel}
             style={{ ...meta, background: "none", border: "none", cursor: "pointer", padding: 8 }}>
             Cancel
