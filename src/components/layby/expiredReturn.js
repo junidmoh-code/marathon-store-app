@@ -38,8 +38,28 @@ import { applyMovement } from "../stock/applyMovement";
 import { LAYBY_STATUS } from "./contract";
 import { serverNowIso } from "../../utils/serverTime";
 
-export const RETURN_DEST = "hub1";           // the storage hub every layby uses
 export const RETURN_REASON = "layby_expired_return";
+
+// ── WHERE THE UNITS GO: THE LAYBY'S OWN HUB, NEVER A CONSTANT ────────────────
+// This was hardcoded to "hub1" and that was wrong the moment Pine came online.
+// The POS already routes by store — locationIds.js STORE_TO_HUB is
+// { pe: hub1, pine: hub3, trophy: hub1 } — so a Pine layby is stored at hub3 and
+// its units belong back on hub3's shelf.
+//
+// Pine + hub3 are an ISOLATED network (owner: "completely separate from us
+// here"; same split the sneaker sweep encodes). Returning a Pine parcel into
+// hub1 would not be an off-by-one, it would move real goods between buildings
+// that do not trade with each other — and the ledger would look correct.
+//
+// So: no default. A layby whose storageHub is missing or unrecognised is
+// REFUSED, not guessed. All 185 live laybys carry an explicit storageHub, so
+// nothing legitimate depends on a fallback.
+export const KNOWN_HUBS = ["hub1", "hub2", "hub3", "hubC"];
+
+export function returnDestFor(layby) {
+  const hub = layby?.storageHub;
+  return typeof hub === "string" && KNOWN_HUBS.includes(hub) ? hub : null;
+}
 
 const claimPath = (laybyId) => `laybys/${laybyId}/expiredReturn`;
 
@@ -97,6 +117,14 @@ export async function returnExpiredLaybyToStock(layby, { actorRole, hubLabel } =
   const laybyId = layby?.laybyId;
   if (!laybyId) return { ok: false, message: "This layby has no id." };
 
+  const dest = returnDestFor(layby);
+  if (!dest) {
+    return {
+      ok: false,
+      message: `This layby has no recognised storage hub (${layby?.storageHub ?? "none"}), so there is no safe shelf to put it back on. Tell an admin — do not guess.`,
+    };
+  }
+
   const loaded = await loadLaybyLines(layby);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   if (!loaded.lines.length) return { ok: false, message: "Every line on this layby was already refunded — nothing to put back." };
@@ -131,7 +159,7 @@ export async function returnExpiredLaybyToStock(layby, { actorRole, hubLabel } =
       productId: line.productId,
       size: line.size,
       qty: line.qty,
-      to: RETURN_DEST,
+      to: dest,
       from: null,
       reason: RETURN_REASON,
       actorRole,
@@ -167,5 +195,5 @@ export async function returnExpiredLaybyToStock(layby, { actorRole, hubLabel } =
   });
 
   const units = loaded.lines.reduce((t, l) => t + l.qty, 0);
-  return { ok: true, movementIds, lines: loaded.lines.length, units };
+  return { ok: true, movementIds, lines: loaded.lines.length, units, dest };
 }

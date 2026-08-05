@@ -52,10 +52,11 @@ const applyMovementMock = vi.fn(async () => ({ ok: true, movementId: `mv${++mvN}
 let mvN = 0;
 vi.mock("../stock/applyMovement", () => ({ applyMovement: (...a) => applyMovementMock(...a) }));
 
-const { returnExpiredLaybyToStock, loadLaybyLines, RETURN_DEST } = await import("./expiredReturn.js");
+const { returnExpiredLaybyToStock, loadLaybyLines, returnDestFor } = await import("./expiredReturn.js");
 const { LAYBY_STATUS } = await import("./contract.js");
 
-const LAYBY = { laybyId: "lb1", saleId: "s1", invoiceNo: "L-00045", status: "storedAtHub", dueDate: "2026-01-01" };
+const LAYBY = { laybyId: "lb1", saleId: "s1", invoiceNo: "L-00045", status: "storedAtHub", dueDate: "2026-01-01", storageHub: "hub1" };
+const PINE  = { ...LAYBY, laybyId: "lb9", storageHub: "hub3" };
 const seedSale = (lines) => setPath("pos/sales/s1/lineItems", lines);
 const GOOD = [
   { productId: "p1", size: "L", qty: 2, name: "Tracksuit" },
@@ -82,7 +83,7 @@ describe("the units go back exactly once", () => {
     await returnExpiredLaybyToStock(LAYBY, { actorRole: "warehouse" });
     for (const [mv] of applyMovementMock.mock.calls) {
       expect(mv.type).toBe("received");
-      expect(mv.to).toBe(RETURN_DEST);
+      expect(mv.to).toBe("hub1");
       expect(mv.reason).toBe("layby_expired_return");
       expect(mv.link.laybyId).toBe("lb1");
     }
@@ -110,6 +111,35 @@ describe("the units go back exactly once", () => {
   });
 });
 
+describe("the units go back to THEIR OWN hub — Pine and hub3 are a separate network", () => {
+  it("a Pine layby returns to hub3, not hub1", async () => {
+    setPath("pos/sales/s1/lineItems", GOOD);
+    const res = await returnExpiredLaybyToStock(PINE, { actorRole: "warehouse", hubLabel: "Hub 3" });
+    expect(res.ok).toBe(true);
+    expect(res.dest).toBe("hub3");
+    for (const [mv] of applyMovementMock.mock.calls) expect(mv.to).toBe("hub3");
+  });
+
+  it("REFUSES a layby with no recognised storage hub — never guesses a shelf", async () => {
+    setPath("pos/sales/s1/lineItems", GOOD);
+    for (const hub of [undefined, null, "", "hub9", "warehouse", 3]) {
+      applyMovementMock.mockClear();
+      const res = await returnExpiredLaybyToStock({ ...LAYBY, storageHub: hub }, { actorRole: "warehouse" });
+      expect(res.ok, `storageHub ${JSON.stringify(hub)} must be refused`).toBe(false);
+      expect(res.message).toMatch(/no recognised storage hub/);
+      expect(applyMovementMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it("returnDestFor accepts only canonical hubs", () => {
+    expect(returnDestFor({ storageHub: "hub1" })).toBe("hub1");
+    expect(returnDestFor({ storageHub: "hub3" })).toBe("hub3");
+    expect(returnDestFor({ storageHub: "marathon-pine" })).toBeNull();
+    expect(returnDestFor({})).toBeNull();
+    expect(returnDestFor(null)).toBeNull();
+  });
+});
+
 describe("an unreadable parcel is refused, never half-returned", () => {
   it("refuses when a line has no productId", async () => {
     seedSale([{ productId: "p1", size: "L", qty: 1 }, { size: "M", qty: 1, name: "mystery" }]);
@@ -121,7 +151,7 @@ describe("an unreadable parcel is refused, never half-returned", () => {
   });
 
   it("refuses when the sale link is missing or empty", async () => {
-    expect((await returnExpiredLaybyToStock({ laybyId: "lb1" }, {})).message).toMatch(/no linked sale/);
+    expect((await returnExpiredLaybyToStock({ laybyId: "lb1", storageHub: "hub1" }, {})).message).toMatch(/no linked sale/);
     seedSale([]);
     expect((await returnExpiredLaybyToStock(LAYBY, {})).message).toMatch(/no item lines/);
   });

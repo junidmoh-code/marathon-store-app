@@ -243,10 +243,13 @@ function ExceptionRow({ layby, nowMs }) {
 }
 
 // ── Main tab ───────────────────────────────────────────────────────────────────
-import { returnExpiredLaybyToStock, loadLaybyLines } from "./expiredReturn";
+import { returnExpiredLaybyToStock, loadLaybyLines, returnDestFor } from "./expiredReturn";
 
 // ── ONE EXPIRED LAYBY ─────────────────────────────────────────────────────────
-// Hub 1 keeps the parcels, so hub 1 clears them (owner, 2026-08-04). The card
+// The hub that stored the parcel is the hub that clears it (owner, 2026-08-04):
+// PE/Trophy laybys sit at hub 1, Pine laybys at hub 3, and Pine + hub 3 are an
+// ISOLATED network. The destination therefore comes from the layby itself, never
+// from a constant and never from the tab you happen to be looking at. The card
 // shows what is inside BEFORE the clerk commits — a layby record carries only
 // `itemCount`, so the contents are read across from the POS sale, and a parcel
 // whose lines will not resolve says so instead of offering a button that would
@@ -268,11 +271,13 @@ function ExpiredCard({ layby, nowMs, actorRole, hubLabel, onDone }) {
     setBusy(true); setErr("");
     const res = await returnExpiredLaybyToStock(layby, { actorRole, hubLabel });
     setBusy(false);
-    if (res.ok) onDone({ ok: true, text: `${layby.invoiceNo || layby.laybyId} — ${res.units} unit${res.units === 1 ? "" : "s"} back on the Hub 1 shelf.` });
+    if (res.ok) onDone({ ok: true, text: `${layby.invoiceNo || layby.laybyId} — ${res.units} unit${res.units === 1 ? "" : "s"} back on the ${labelFor(res.dest)} shelf.` });
     else { setErr(res.message); if (res.alreadyClaimed) onDone({ ok: false, text: res.message }); }
   };
 
   const daysOver = Math.max(0, Math.floor((nowMs - new Date(layby.dueDate + "T00:00:00").getTime()) / 86400000));
+  // Whose shelf this goes back on — from the layby, not the open tab.
+  const dest = returnDestFor(layby);
 
   return (
     <div style={{ position:"relative", background:CARD, borderRadius:12, padding:"11px 13px", marginBottom:9,
@@ -309,15 +314,21 @@ function ExpiredCard({ layby, nowMs, actorRole, hubLabel, onDone }) {
                 </div>
               ))}
               {err && <div style={{ fontSize:12, color:"#FF9B9B", marginTop:8, lineHeight:1.5 }}>{err}</div>}
-              <button onClick={confirm} disabled={busy}
+              {!dest && (
+                <div style={{ fontSize:12, color:"#FF9B9B", marginTop:8, lineHeight:1.5 }}>
+                  No recognised storage hub on this layby ({String(layby.storageHub ?? "none")}) — there is no safe shelf to
+                  put it back on. Tell an admin rather than guessing.
+                </div>
+              )}
+              {dest && <button onClick={confirm} disabled={busy}
                 style={{ width:"100%", marginTop:10, padding:"12px", borderRadius:10, fontSize:13.5, fontWeight:800,
                          cursor: busy ? "wait" : "pointer", background:"rgba(220,60,60,.16)",
                          border:"1px solid rgba(220,60,60,.5)", color:"#FF9B9B", opacity: busy ? .6 : 1 }}>
-                {busy ? "Putting back…" : `Confirm return — ${lines.lines.reduce((t,l)=>t+l.qty,0)} unit${lines.lines.reduce((t,l)=>t+l.qty,0) === 1 ? "" : "s"} to Hub 1`}
-              </button>
-              <div style={{ fontSize:10.5, color:"rgba(233,238,255,.35)", marginTop:6, textAlign:"center" }}>
-                Puts the stock back. Store credit is issued at the till.
-              </div>
+                {busy ? "Putting back…" : `Confirm return — ${lines.lines.reduce((t,l)=>t+l.qty,0)} unit${lines.lines.reduce((t,l)=>t+l.qty,0) === 1 ? "" : "s"} to ${labelFor(dest)}`}
+              </button>}
+              {dest && <div style={{ fontSize:10.5, color:"rgba(233,238,255,.35)", marginTop:6, textAlign:"center" }}>
+                Puts the stock back on {labelFor(dest)}. Store credit is issued at the till.
+              </div>}
             </>
           )}
         </div>
@@ -453,7 +464,7 @@ export default function LaybyTab({ selectedHub, laybys = [], pulls = [], nowMs, 
           : <div style={{ display:"flex", flexDirection:"column" }}>
               <div style={{ fontSize:12, color:"#FF9B9B", marginBottom:8, lineHeight:1.5 }}>
                 Past their due date and still on the rack. Check the parcel against the item list, then
-                confirm — the stock goes back to Hub 1 and the till can issue the customer store credit.
+                confirm — the stock goes back to the hub that stored it and the till can issue store credit.
               </div>
               {expired.map(l => (
                 <ExpiredCard key={l.key || l.laybyId} layby={l} nowMs={nowMs}
