@@ -5,13 +5,29 @@
 //   1. STYLE_CODE_LOOKUP_ENABLED  — do we LOOK UP a code, or merely CAPTURE it?
 //   2. the ENFORCED CATEGORY SET  — which products are asked for a code at all?
 //
-// ── WHY THE LOOKUP IS CURRENTLY OFF ──────────────────────────────────────────
-// It was pointed at a KicksDB route our plan cannot call (403 on every request),
-// so the step could only ever fail. That is fixed now, but turning it back on is
-// an operational decision — worth doing once enough products carry codes that
-// the extra step earns itself. Flipping this is the whole change; the full flow
-// is still here and still tested in both positions.
-export const STYLE_CODE_LOOKUP_ENABLED = false;
+// ── IT IS ON. WHAT THAT MEANS, AND WHAT IT COST TO GET HERE ──────────────────
+// ON:  scan a code → the catalogue is asked → the shoe's name and photo come
+//      back for an explicit Confirm / Reject, and an already-known code routes
+//      to add-stock instead of creating a second record.
+// OFF: scan a code → straight to the form. The code is still captured.
+//
+// It was off because the adapter pointed at a KicksDB route our plan cannot
+// call — 403 on every request — so the step could only ever fail, and combined
+// with a gate that had no escape it locked staff out of Add Product entirely.
+// Both halves are fixed: the adapter now uses /v3/stockx/products?sku= with
+// GOAT as a fallback, and the gate has escapes on every failure path.
+//
+// ── THE ONE CONDITION THAT IS NOT MET, STATED PLAINLY ────────────────────────
+// Almost no product carries a style code yet, so the "do we already have this
+// shoe?" check has almost nothing to compare against and will mostly answer
+// "no". Enabled anyway as a deliberate call: the value now is the AUTO-FILL —
+// name, brand and photo off the label instead of typed by hand — and the
+// catalogue only fills if the lookup is running. The duplicate-detection value
+// arrives later, on its own, as codes accumulate.
+//
+// If this needs turning off in a hurry, flip it back and redeploy hosting. The
+// capture-only path is still here and still tested; nothing else changes.
+export const STYLE_CODE_LOOKUP_ENABLED = true;
 
 // ── WHICH CATEGORIES ARE ASKED FOR A STYLE CODE ──────────────────────────────
 // We sell far more than sneakers. Asking a belt or a perfume for a manufacturer
