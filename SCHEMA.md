@@ -218,6 +218,31 @@ we asked for. No prefix match, no similarity score.
 
 ---
 
+## `/settings/displayRegister/{store}/{productId}__{sizeKey}` — style code fields
+
+The register gained two optional fields so a row says **which exact shoe** is on
+the floor, not just a name two colourways share:
+
+| Field | Type | Notes |
+|---|---|---|
+| `styleCode` | string | Readable form, copied off the product. |
+| `styleCodeNormalised` | string | The identity key. |
+
+Written **together or not at all**, and **omitted** for a product with no code —
+absent means "this product has no style code". Copied at registration time, so a
+row is readable on its own without joining back to `/products`.
+
+The register also **searches by style code** (exact normalised match, never a
+prefix — `CT8527-016` and `CT8527-700` are different shoes) and offers a
+**tongue-label scan** that fills the search box via `readStyleCodeLabel`. On the
+shop floor the label is the only thing you can read: the box is gone and the
+barcode sticker was on it.
+
+`/settings` has no per-child validators and no `$other` restriction, so these
+fields need no rules change.
+
+---
+
 ## `/style_code_index/{NORMALISED_STYLE_CODE}` — the ownership claim
 
 **THE authority on which product owns a style code.** Uniqueness here is

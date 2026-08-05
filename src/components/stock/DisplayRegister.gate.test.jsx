@@ -44,7 +44,10 @@ vi.mock("firebase/database", () => ({
   update: vi.fn(async () => {}),
   remove: vi.fn(async () => {}),
 }));
-vi.mock("../../firebase.js", () => ({ database: { fake: true } }));
+// `functions` is needed because the register now offers a label scan, which
+// calls the readStyleCodeLabel callable. The gate under test is unaffected.
+vi.mock("../../firebase.js", () => ({ database: { fake: true }, functions: { fake: true } }));
+vi.mock("firebase/functions", () => ({ httpsCallable: () => async () => ({ data: { candidates: [] } }) }));
 vi.mock("./useStock.js", () => ({ useLocations: () => ({}) }));
 vi.mock("../../utils/serverTime.js", () => ({ serverNowIso: () => "2026-08-03T00:00:00.000Z" }));
 

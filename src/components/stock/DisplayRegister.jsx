@@ -24,12 +24,16 @@
 // NOT here: that one writes orders, so it needs its own build and its own
 // review. This is the half that is safe to put in front of staff immediately.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ref, onValue, update, remove } from "firebase/database";
 import { database } from "../../firebase.js";
 import { encodeSizeKey } from "../../utils/sizeKey.js";
 import { serverNowIso } from "../../utils/serverTime.js";
 import { productIsFootwear } from "../../utils/footwearLine.js";
+import { normaliseStyleCode, formatStyleCodeForDisplay, isKnownStyleCodeFormat } from "../../utils/styleCode.js";
+import { prepareLabelPhoto } from "../../utils/labelPhoto.js";
+import { httpsCallable } from "firebase/functions";
+import { functions } from "../../firebase.js";
 import { SizeTag } from "../SizeTag.jsx";
 import { sellableLocations, labelFor } from "./locations.js";
 import { useLocations } from "./useStock.js";
@@ -37,6 +41,7 @@ import { FONT } from "./ui";
 import { usePermissions } from "../PermissionsContext.jsx";
 
 const PANEL = "rgba(12,16,30,.55)";
+const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
 
 // WHY IT LIVES UNDER /settings: the live RTDB rules have no root cascade (removed
 // in PR #57), so a fresh top-level node like /display_register would be denied
@@ -60,6 +65,18 @@ function realSizes(product) {
 }
 
 
+// The style-code fields a register row carries, copied off the product. Written
+// together or not at all — a row with a normalised code but no readable one, or
+// the reverse, is worse than a row with neither.
+export function styleCodeFieldsFor(product) {
+  const norm = normaliseStyleCode(product?.styleCodeNormalised || product?.styleCode);
+  if (!norm) return {};
+  return {
+    styleCode: product.styleCode || formatStyleCodeForDisplay(norm),
+    styleCodeNormalised: norm,
+  };
+}
+
 // ─── REGISTER A DISPLAY PAIR FROM THE SEND ────────────────────────────────────
 // The size the picker chooses when sending a Display Partner request IS the
 // display registration — same physical fact, recorded once. Called from the
@@ -78,6 +95,7 @@ export async function registerDisplayPair({ store, product, size, actorName, ord
       size: String(size),
       registeredAt: serverNowIso(),
       registeredBy: actorName || null,
+      ...styleCodeFieldsFor(product),
       source: "display_partner_send",
       orderId: orderId || null,
     });
@@ -222,6 +240,42 @@ function DisplayRegisterAuthed({ products = [], onExit = null, standalone = fals
     return rows;
   }, [entries]);
 
+  // Label scanning — fills the search box, never registers anything itself.
+  const labelFileRef = useRef(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanNote, setScanNote] = useState(null);
+
+  async function onLabelPhoto(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setScanBusy(true); setScanNote(null);
+    try {
+      // Downscaled to 1024px in the browser before it goes anywhere.
+      const photo = await prepareLabelPhoto(file);
+      const res = await readStyleCodeLabelFn({ imageBase64: photo.base64, mimeType: "image/jpeg" });
+      const codes = Array.isArray(res?.data?.candidates) ? res.data.candidates : [];
+      // VALIDATE BEFORE USE — a vision model that returns prose must not end up
+      // in the search box pretending to be a code.
+      const good = codes.filter((c) => isKnownStyleCodeFormat(c));
+      if (good.length === 1) {
+        const code = formatStyleCodeForDisplay(good[0]);
+        setQ(code);
+        setScanNote({ text: `Read ${code} — showing matches.` });
+      } else if (good.length > 1) {
+        setScanNote({ bad: true, text: `Found ${good.length} possible codes. Type the right one.` });
+      } else if ((res?.data?.errors || []).length) {
+        setScanNote({ bad: true, text: "The label reader is unavailable. Search by name instead." });
+      } else {
+        setScanNote({ bad: true, text: "Couldn't read a code off that photo. Try a closer, straighter shot." });
+      }
+    } catch (err) {
+      setScanNote({ bad: true, text: (err && err.message) || "Couldn't process that photo." });
+    } finally {
+      setScanBusy(false);
+    }
+  }
+
   const registeredKeys = useMemo(() => new Set(Object.keys(entries || {})), [entries]);
 
   // ── SEARCH: name, brand, SKU, and BARCODE — including the last few digits ──
@@ -237,6 +291,21 @@ function DisplayRegisterAuthed({ products = [], onExit = null, standalone = fals
     for (const [size, code] of Object.entries(bs)) if (code) out.push([String(size), String(code)]);
     if (p.sku) out.push(["", String(p.sku)]);
     return out;
+  };
+
+  // ── SEARCH BY MANUFACTURER STYLE CODE ────────────────────────────────────
+  // Walking the floor, the tongue label is the thing you can actually read — the
+  // box is long gone and the barcode sticker is on the box. So the style code has
+  // to find the product here, the same way a barcode does.
+  //
+  // Matched on the NORMALISED form on both sides, so every spelling a person
+  // types finds the same shoe: "CT8527-016", "ct8527016", "CT8527 016". Never a
+  // prefix match — CT8527-016 and CT8527-700 are different shoes, and a partial
+  // match here would put the wrong pair on the register.
+  const styleCodeHit = (p, termNorm) => {
+    if (!termNorm || termNorm.length < 4) return false;
+    const pn = normaliseStyleCode(p.styleCodeNormalised || p.styleCode);
+    return !!pn && pn === termNorm;
   };
   const digitsOnly = (v) => String(v).replace(/\D/g, "");
   const codeHit = (code, term, termDigits) => {
@@ -254,11 +323,12 @@ function DisplayRegisterAuthed({ products = [], onExit = null, standalone = fals
     // No query -> LIST EVERYTHING, so staff can browse the floor and tick things
     // off rather than having to know what to type.
     if (!term) return footwear.slice(0, 400);
+    const termNorm = normaliseStyleCode(q);
     const scored = [];
     for (const p of footwear) {
       const text = `${p.name || ""} ${p.brand || ""} ${p.sku || ""}`.toLowerCase();
       let matchedSize = null;
-      let hit = text.includes(term);
+      let hit = text.includes(term) || styleCodeHit(p, termNorm);
       if (termDigits.length >= 3) {
         for (const [size, code] of codesOf(p)) {
           if (codeHit(code, term, termDigits)) { hit = true; if (size) matchedSize = size; break; }
@@ -283,6 +353,12 @@ function DisplayRegisterAuthed({ products = [], onExit = null, standalone = fals
         size: String(size),
         registeredAt: serverNowIso(),
         registeredBy: actorName || null,
+        // ── THE STYLE CODE, ON THE REGISTER ROW ────────────────────────────
+        // Copied from the product so the register is readable on its own: a row
+        // says WHICH EXACT SHOE is on the floor, not just a name that two
+        // colourways can share. Omitted, never nulled, for products with no
+        // code — absent means "this product has no style code".
+        ...styleCodeFieldsFor(product),
       });
       setPicking(null);
       setQ("");
@@ -350,7 +426,31 @@ function DisplayRegisterAuthed({ products = [], onExit = null, standalone = fals
       {store && !picking ? (
         <>
           <input value={q} onChange={(e) => setQ(e.target.value)}
-                 placeholder="Search a sneaker to register…" style={field} />
+                 placeholder="Search, or scan the tongue label…" style={field} />
+
+          {/* ── SCAN THE TONGUE LABEL ──────────────────────────────────────
+              Walking the floor, the label is the only thing you can actually
+              read: the box is long gone and the barcode sticker was on it. This
+              photographs the label, reads the style code, and drops it into the
+              search — which then matches on the normalised code, so the exact
+              colourway is found rather than a name two colourways share.
+              Best-effort: it fills the box, it never registers anything. */}
+          <input ref={labelFileRef} type="file" accept="image/*" capture="environment"
+                 onChange={onLabelPhoto} style={{ display: "none" }} />
+          <button type="button" disabled={scanBusy}
+                  onClick={() => labelFileRef.current && labelFileRef.current.click()}
+                  style={{ background: "rgba(60,110,255,.06)", border: "1px dashed rgba(60,110,255,.3)",
+                           borderRadius: 10, color: "rgba(233,238,255,.6)", fontSize: 12.5, fontWeight: 700,
+                           padding: "11px 12px", cursor: scanBusy ? "default" : "pointer", minHeight: 44,
+                           opacity: scanBusy ? 0.6 : 1, marginTop: 8, width: "100%" }}>
+            {scanBusy ? "Reading the label…" : "📷  Scan the style code"}
+          </button>
+          {scanNote && (
+            <div style={{ marginTop: 7, fontSize: 12, lineHeight: 1.5,
+                          color: scanNote.bad ? "#FBBF24" : "#4ADE80" }}>
+              {scanNote.text}
+            </div>
+          )}
           {searchResults.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 10 }}>
               {searchResults.map((p) => (
