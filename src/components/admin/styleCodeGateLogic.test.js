@@ -368,3 +368,42 @@ describe("bypassReadiness", () => {
     }
   });
 });
+
+// ── THE DUPLICATE SEARCH FINDS DIGIT-CONTAINING NAMES ───────────────────────
+// Raised in review as a Major: searchProducts is said to take a "code path" for
+// any query containing a digit, so "Nike Air Max 90" would show as no-match and
+// the bypass would create a duplicate with no /style_code_index claim.
+//
+// It does not. The digit branch is `if (hasDigit && codeMatchesQuery) ... else
+// if (nameMatchesQuery)` — when the code match fails, name matching still runs.
+// Verified empirically before rejecting the finding; kept as a permanent guard,
+// because if that `else if` ever became a plain `if`, the ONLY duplicate
+// protection an exempt product has would silently stop working for most sneaker
+// names.
+import { searchProducts } from "../../utils/productSearch";
+
+describe("bypass duplicate search — digit-containing names", () => {
+  const P = [
+    { id: "p1", name: "Nike Air Max 90", sizes: ["8"] },
+    { id: "p2", name: "Jordan 4 Retro Red Thunder", sizes: ["8"] },
+    { id: "p3", name: "New Balance 574", sizes: ["8"], barcode: "00000574" },
+    { id: "p4", name: "Gucci Ace Leather Sneaker", sizes: ["8"] },
+  ];
+
+  it.each([
+    ["Nike Air Max 90", "Nike Air Max 90"],
+    ["Air Max 90", "Nike Air Max 90"],
+    ["Jordan 4", "Jordan 4 Retro Red Thunder"],
+    ["New Balance 574", "New Balance 574"],
+  ])("a name containing digits still finds its product: %s", (query, expected) => {
+    expect(searchProducts(P, query).map((p) => p.name)).toContain(expected);
+  });
+
+  it("names without digits are unaffected", () => {
+    expect(searchProducts(P, "Gucci Ace").map((p) => p.name)).toContain("Gucci Ace Leather Sneaker");
+  });
+
+  it("a genuinely absent product returns nothing — the bypass may proceed", () => {
+    expect(searchProducts(P, "Balenciaga Triple S 2019")).toEqual([]);
+  });
+});

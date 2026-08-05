@@ -20,7 +20,12 @@ export default function CategoryFirstStep({
   taxonomy, taxonomySource, value, onChange, onContinue, onCancel,
   enforced, configReady,
 }) {
-  const chosen = !!value;
+  // BOTH conditions. Continuing before the live config has loaded would route on
+  // the DEFAULT list, so a category the console enforces (anything beyond
+  // sneakers) would slip past the gate entirely. The read-error path also sets
+  // configReady true with its deliberate fallback, so this cannot hang.
+  // (CodeRabbit, PR #320.)
+  const chosen = !!value && !!configReady;
   const willGate = chosen && Array.isArray(enforced) && enforced.includes(value);
 
   return (
@@ -72,7 +77,7 @@ export default function CategoryFirstStep({
                  color: chosen ? "#fff" : "rgba(233,238,255,.35)", borderRadius: 13,
                  padding: "16px 28px", fontSize: 15, fontWeight: 800,
                  cursor: chosen ? "pointer" : "not-allowed", minHeight: 54 }}>
-        Continue
+        {configReady ? "Continue" : "Loading…"}
       </button>
       <button type="button" onClick={onCancel}
         style={{ background: "none", border: "none", color: "rgba(233,238,255,.4)",

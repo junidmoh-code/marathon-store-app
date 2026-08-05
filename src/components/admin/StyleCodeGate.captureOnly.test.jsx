@@ -111,6 +111,8 @@ describe("capture-only: the code is saved, nothing is looked up", () => {
     const { r } = await mount();
     await act(async () => { btn(r.root, /no style code/i).props.onClick(); });
     expect(JSON.stringify(r.toJSON())).toMatch(/Adding without a style code/i);
+    // Opening the panel must not kick off a lookup — without this assertion a
+    // regression that starts one would still pass. (CodeRabbit, PR #320.)
     expect(resolveMock).not.toHaveBeenCalled();
   });
 
