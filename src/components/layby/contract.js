@@ -32,7 +32,47 @@ export const LAYBY_STATUS = {
   RETURNED:       "returned",           // POS: layby cancelled → return-to-stock requested.
                                         // The warehouse RTS action resolves the PULL only and
                                         // deliberately leaves /laybys at "returned".
+  EXPIRED_RETURNED: "expiredReturnedToStock",
+                                        // WAREHOUSE: an EXPIRED layby was pulled off the rack and
+                                        // its units put back on the hub 1 shelf. TERMINAL, and the
+                                        // signal the POS reads to stop offering "Request this
+                                        // layby" — the goods are no longer set aside for anyone.
+                                        // Deliberately NOT `returned`: that one means the CUSTOMER
+                                        // cancelled and is a POS-initiated flow. This is the shop
+                                        // reclaiming goods nobody came back for, and the two must
+                                        // stay tellable apart in history and in the POS message.
 };
+
+// ── EXPIRY ───────────────────────────────────────────────────────────────────
+// "Expired" is DERIVED, never stored: no layby record has ever carried the
+// status, and the contract's own `expired` value is a dormant placeholder. A
+// layby is expired when its due date has passed and it is still open. This
+// mirrors marathon-pos-app's isOverdue() EXACTLY (src/layby/openLaybys.js) —
+// the two apps must agree on which laybys are expired or the warehouse would be
+// returning goods the POS still considers live.
+//
+// dueDate is a "YYYY-MM-DD" local-date string, so a lexical compare is correct.
+// A missing or blank dueDate is NEVER expired: an undated layby is a data gap,
+// and treating a data gap as "expired" would put someone's paid-for goods back
+// on the shelf.
+export const LAYBY_TERMINAL = [
+  LAYBY_STATUS.COLLECTED,
+  LAYBY_STATUS.RETURNED,
+  LAYBY_STATUS.EXPIRED_RETURNED,
+];
+
+export function isLaybyExpired(layby, todayKey) {
+  if (!layby || typeof layby.dueDate !== "string" || !layby.dueDate) return false;
+  if (LAYBY_TERMINAL.includes(layby.status)) return false;
+  return layby.dueDate < todayKey;
+}
+
+/** Local calendar date as "YYYY-MM-DD" — the format dueDate uses. */
+export function todayKey(nowMs = Date.now()) {
+  const d = new Date(nowMs);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
 
 // Pull request state, on /laybyPulls/{pullId}.status.
 export const PULL_STATUS = {
