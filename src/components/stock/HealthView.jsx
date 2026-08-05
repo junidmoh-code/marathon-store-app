@@ -240,10 +240,9 @@ function groupByProduct(items, keyFields) {
 export default function HealthView({ products = [], onExit }) {
   const [screen, setScreen] = useState(null);
   // Missing Products chip. null = nothing chosen yet, so pickActiveTab opens on
-  // the first chip in the row. The chips are built from whatever is actually
-  // stranded (T-Shirts, Jerseys, Bags, Watches, …) plus Sneakers, so there is no
-  // fixed key that is safe to hardcode as a default — the old "clothing" default
-  // no longer names a real chip.
+  // the first chip — Clothing. The row is two FIXED chips (Clothing, Sneakers;
+  // owner directive 2026-08-05), and a stale per-type selection persisted from
+  // the old per-subcategory row ("bags", "watches", …) falls back the same way.
   const [missingTab, setMissingTab] = useState(null);
   const exceptions = useStockExceptions();
   const shadow = useEngineShadow();
@@ -432,10 +431,9 @@ export default function HealthView({ products = [], onExit }) {
       //              nearly the whole catalogue and mean nothing. Hub 1 and Hub 2
       //              are where sneaker buffer lives.
       case "missingProducts": {
-        // One chip per product type actually stranded — T-Shirts, Jerseys, Bags,
-        // Watches, Tracksuits & Sets … — then Sneakers. Built from the cards, so
-        // there are no empty chips to scroll past and a subcategory added to the
-        // taxonomy tomorrow gets a chip with no code change.
+        // Two fixed chips — Clothing (every stranded non-sneaker card, owner
+        // directive 2026-08-05) and Sneakers (its own list). Both always render,
+        // even at 0, so the row never reshuffles under the operator.
         const chips = buildChips(missingProductCards || [], missingSneakerCards.length);
         const activeTab = pickActiveTab(chips, missingTab);
         return (
