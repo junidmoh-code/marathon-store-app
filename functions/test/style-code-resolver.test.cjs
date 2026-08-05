@@ -89,15 +89,16 @@ function fakeDb(initial = {}) {
 }
 
 // ── A fake KicksDB: a SKU → record map, plus a call log. ──
-function fakeKicksDb(bySku, { status = 200, throwOn = null } = {}) {
+function fakeKicksDb(bySku, { status = 200, throwOn = null, byGoat = {} } = {}) {
   const calls = [];
   const fetchImpl = async (url) => {
     calls.push(url);
     if (throwOn && url.includes(throwOn)) throw new Error("ECONNRESET");
     if (status !== 200) return { ok: false, status, async json() { return {}; } };
-    // The code is a QUERY param on the StockX route, not a path segment.
-    const identifier = decodeURIComponent(new URL(url).searchParams.get("sku") || "");
-    const rows = bySku[identifier];
+    // Both routes carry the code as a query param: stockx ?sku=, goat ?query=.
+    const q = new URL(url).searchParams;
+    const identifier = decodeURIComponent(q.get("sku") || q.get("query") || "");
+    const rows = url.includes("/goat/") ? (byGoat[identifier] || null) : bySku[identifier];
     if (!rows) return { ok: false, status: 404, async json() { return {}; } };
     return { ok: true, status: 200, async json() { return { data: rows }; } };
   };
@@ -849,7 +850,7 @@ test("an EMPTY slot is a create, never a correction", async () => {
 // "This route requires a subscription" on our plan — every code, every time.
 // That shipped, and staff could not add products. These pin the working route
 // and the real payload shape so it cannot drift back.
-const { upscaleVendorImage, colorwayFromTitle, IMAGE_TARGET_PX } = require("../lib/style-code-providers.cjs");
+const { upscaleVendorImage, colorwayFromTitle, IMAGE_TARGET_PX, KICKSDB_ROUTES } = require("../lib/style-code-providers.cjs");
 
 test("the adapter calls the StockX route with the code as a QUERY param", async () => {
   const db = fakeDb({});
@@ -963,4 +964,72 @@ test("a gallery-only record is upscaled as well", async () => {
   const kdb = fakeKicksDb({ "IE3437": [rec] });
   const out = await runResolve(db, { code: "IE3437", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
   assert.match(out.model.imageUrl, /w=1000/);
+});
+
+// ── GOAT, THE SECOND FREE ROUTE ─────────────────────────────────────────────
+// Same key, different catalogue, used only for what StockX lacks. Its fuzzy
+// ?query= search is why the anti-collapse guard has to be right.
+const GOAT_RECORD = (sku, name, nickname, brand, model, image) => ({
+  id: 791362, sku, slug: name.toLowerCase().replace(/\s+/g, "-"),
+  name, nickname, brand, model, image_url: image, images: [image],
+  product_type: "sneakers", colorway: nickname, release_date: "2022-01-15T23:59:59.999Z",
+});
+
+test("GOAT answers when StockX has nothing", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({}, { byGoat: {
+    "IE3437": [GOAT_RECORD("IE3437", "adidas Samba OG 'White Collegiate Green Gum'", "White Collegiate Green Gum", "adidas", "Samba", "https://img/g.jpg")],
+  } });
+  const out = await runResolve(db, { code: "IE3437", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+
+  assert.strictEqual(out.found, true);
+  assert.strictEqual(out.model.name, "adidas Samba OG 'White Collegiate Green Gum'");
+  assert.strictEqual(out.model.colorwayName, "White Collegiate Green Gum", "GOAT gives the colourway as a real field");
+  assert.strictEqual(out.model.brand, "adidas");
+});
+
+test("StockX is preferred — GOAT is not called when StockX answers", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb(
+    { "CT8527-016": [KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/s.jpg", "Jordan 4 Retro")] },
+    { byGoat: { "CT8527-016": [GOAT_RECORD("CT8527-016", "GOAT VERSION", "x", "Jordan", "AJ4", "https://img/g.jpg")] } },
+  );
+  const out = await runResolve(db, { code: "CT8527-016", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+  assert.strictEqual(out.model.name, "Jordan 4 Retro Red Thunder");
+  assert.ok(!kdb.calls.some((u) => u.includes("/goat/")), "the exact-SKU route answered, so the fuzzy one must not run");
+});
+
+test("THE GATE ON A FUZZY ROUTE: GOAT's sibling colourways are refused", async () => {
+  // The real hazard. ?query=CT8527-016 returns 20 rows including CT8527 700,
+  // CT8527 400 and CT8527 100. Only the exact normalised SKU may be accepted.
+  const db = fakeDb({});
+  const siblings = ["CT8527 700", "CT8527 400", "CT8527 100", "CT8527 112"]
+    .map((sku) => GOAT_RECORD(sku, `AJ4 ${sku}`, "x", "Jordan", "AJ4", "https://img/x.jpg"));
+  const kdb = fakeKicksDb({}, { byGoat: { "CT8527-016": siblings } });
+  const out = await runResolve(db, { code: "CT8527-016", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+
+  assert.strictEqual(out.found, false, "not one of these is the shoe in the operator's hand");
+  assert.strictEqual(db.data.sneaker_models, undefined, "and nothing may be cached from them");
+});
+
+test("GOAT's space-separated SKU normalises to the same key", async () => {
+  const db = fakeDb({});
+  const rows = [
+    GOAT_RECORD("CT8527 700", "sibling", "x", "Jordan", "AJ4", "https://img/700.jpg"),
+    GOAT_RECORD("CT8527 016", "Air Jordan 4 Retro 'Red Thunder'", "Red Thunder", "Air Jordan", "Air Jordan 4", "https://img/016.jpg"),
+  ];
+  const kdb = fakeKicksDb({}, { byGoat: { "CT8527-016": rows } });
+  const out = await runResolve(db, { code: "CT8527-016", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+
+  assert.strictEqual(out.found, true);
+  assert.strictEqual(out.model.colorwayName, "Red Thunder");
+  assert.strictEqual(out.normalised, "CT8527016");
+  assert.strictEqual(db.data.sneaker_models.CT8527016.imageUrl, "https://img/016.jpg", "the EXACT row, not the first row");
+});
+
+test("the routes we cannot call are not in the list", () => {
+  const paths = KICKSDB_ROUTES.map((r) => r.path("X"));
+  assert.ok(!paths.some((p) => p.includes("/unified/")), "/v3/unified 403s on our plan");
+  assert.ok(!paths.some((p) => p.includes("/shopify/")), "/v3/shopify 403s on our plan");
+  assert.deepStrictEqual(KICKSDB_ROUTES.map((r) => r.name), ["stockx", "goat"]);
 });
