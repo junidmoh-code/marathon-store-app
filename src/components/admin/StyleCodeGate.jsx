@@ -243,7 +243,14 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     const m = result.model || {};
     onProceed({
       ...provenance(result.source === "cache" ? "cache" : result.source === "web-search" ? "websearch" : "api"),
-      suggestedName: [m.brand, m.model, m.colorwayName].filter(Boolean).join(" ").trim() || m.model || "",
+      // PREFER THE VENDOR'S OWN FULL NAME. On the StockX route `model` already
+      // contains the brand ("Jordan 4 Retro"), so composing brand + model reads
+      // "Jordan Jordan 4 Retro". `name` is the complete title
+      // ("Jordan 4 Retro Red Thunder"). The composed form stays as the fallback
+      // for cached rows written by the old endpoint, which carry no `name`.
+      suggestedName: m.name
+        || [m.brand, m.model, m.colorwayName].filter(Boolean).join(" ").trim()
+        || m.model || "",
       suggestedBrand: m.brand || null,
       suggestedImageUrl: m.imageUrl || null,
       model: m,

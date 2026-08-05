@@ -79,11 +79,17 @@ function packRaw(value) {
 
 // RTDB drops undefined and rejects it inside objects; every field is written
 // explicitly as a value or null so a record's shape never varies by provider.
-function buildModel({ styleCode, brand, model, colorwayName, productType, imageUrl, gtin, source, fetchedAt, raw }) {
+function buildModel({ styleCode, brand, model, name, colorwayName, productType, imageUrl, gtin, source, fetchedAt, raw }) {
   return {
     styleCode: styleCode || "",
     brand: brand || null,
     model: model || null,
+    // The vendor's own FULL display name ("Jordan 4 Retro Red Thunder"). This is
+    // what the confirm screen shows, because on the StockX route `model` already
+    // contains the brand — composing "brand + model" reads "Jordan Jordan 4
+    // Retro". Null on cached rows from the old unified endpoint, which had no
+    // equivalent field; readers fall back to the composed form.
+    name: name || null,
     colorwayName: colorwayName || null,
     productType: productType || null,
     imageUrl: httpsImageOrNull(imageUrl),
@@ -129,16 +135,34 @@ function makeCacheProvider(db) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TIER 2 — KicksDB unified catalog.
+// TIER 2 — KicksDB StockX catalog.
 // ─────────────────────────────────────────────────────────────────────────────
-// GET https://api.kicks.dev/v3/unified/products/{identifier}
+// GET https://api.kicks.dev/v3/stockx/products?sku={code}
 //   Authorization: Bearer <KICKSDB_API_KEY>
-//   → { data: [ { name, brand, model, images[], sku, product_type,
-//                 metadata: { colorway, ... } }, ... ] }
-// The identifier may be a SKU, a product id or a slug. Catalogs store the SKU
-// the way the brand prints it, and staff type it both ways, so we ask with each
-// spelling of THE SAME code in turn (styleCodeQueryCandidates) and stop at the
-// first response containing an EXACT normalised SKU match.
+//   → { data: [ { sku, title, brand, model, image, gallery[], product_type,
+//                 category, secondary_category, slug, ... }, ... ] }
+//
+// ── WHY NOT THE UNIFIED ENDPOINT ─────────────────────────────────────────────
+// /v3/unified/products/{id} is what this originally called, and it returns
+//   403 "This route requires a subscription"
+// on our plan — every code, every time, which left staff unable to add products
+// at all. Smoke-tested against the live vendor: the StockX route answers on the
+// SAME key and resolved Jordan, adidas and Puma codes cleanly, so the "free tier
+// is thin outside Jordan/Dunk" worry was unfounded. The key was never the
+// problem; the route was.
+//
+// THE SHAPES DIFFER, and the differences are the interesting part:
+//   • the code is a QUERY param (?sku=), not a path segment
+//   • `title` carries the full name ("Jordan 4 Retro Red Thunder"); `model` is
+//     the silhouette only ("Jordan 4 Retro") and ALREADY INCLUDES THE BRAND —
+//     so "brand + model" would read "Jordan Jordan 4 Retro"
+//   • there is NO metadata.colorway; the colourway lives inside `title`
+//   • `image` is a single URL, pre-sized to a 140x100 THUMBNAIL
+//   • no barcode/ean/upc on this route, so gtin is always null
+//
+// Catalogs store the SKU the way the brand prints it and staff type it both
+// ways, so we still ask with each spelling of THE SAME code in turn
+// (styleCodeQueryCandidates) and stop at the first EXACT normalised SKU match.
 //
 // The API key NEVER reaches the client. It is a Firebase secret read inside the
 // Cloud Function; the browser only ever calls the callable.
@@ -157,13 +181,50 @@ function pickKicksDbRecord(payload, normalised) {
   return exact.find((r) => firstImage(r)) || exact[0];
 }
 
+// StockX serves `image` pre-sized to a 140x100 THUMBNAIL via imgix-style query
+// params. That is far too small for the confirm screen, whose entire job is to
+// show the shoe big enough that a human can catch a wrong match. The size is in
+// the URL, so we ask for a larger render — and if the URL is not the shape we
+// expect, we hand back exactly what we were given rather than corrupting it.
+const IMAGE_TARGET_PX = 1000;
+
+function upscaleVendorImage(url) {
+  if (typeof url !== "string") return url;
+  try {
+    const u = new URL(url);
+    // Only touch URLs that already declare a size. Adding w/h to an arbitrary
+    // image host could break it.
+    if (!u.searchParams.has("w") && !u.searchParams.has("h")) return url;
+    if (u.searchParams.has("w")) u.searchParams.set("w", String(IMAGE_TARGET_PX));
+    if (u.searchParams.has("h")) u.searchParams.set("h", String(IMAGE_TARGET_PX));
+    return u.toString();
+  } catch {
+    return url; // unparseable — the original is still a valid image URL
+  }
+}
+
+// The colourway, which this route does not hand us as a field. `title` is the
+// full name and `model` is its prefix, so the remainder IS the colourway:
+//   "Jordan 4 Retro Red Thunder" minus "Jordan 4 Retro" = "Red Thunder"
+// Returns null rather than a guess when the title does not start with the model.
+function colorwayFromTitle(title, model) {
+  if (typeof title !== "string" || typeof model !== "string") return null;
+  const t = title.trim(), m = model.trim();
+  if (!t || !m) return null;
+  if (!t.toLowerCase().startsWith(m.toLowerCase())) return null;
+  return t.slice(m.length).trim() || null;
+}
+
 function firstImage(rec) {
   if (!rec) return null;
-  const https = httpsImageOrNull(rec.image);
-  if (https) return https;
-  if (Array.isArray(rec.images)) {
-    const hit = rec.images.find((u) => httpsImageOrNull(u));
-    if (hit) return hit;
+  const direct = httpsImageOrNull(rec.image);
+  if (direct) return upscaleVendorImage(direct);
+  // `gallery` is the StockX field; `images` was the unified one. Accept both so
+  // a cached row from either era still resolves an image.
+  for (const list of [rec.gallery, rec.images]) {
+    if (!Array.isArray(list)) continue;
+    const hit = list.find((u) => httpsImageOrNull(u));
+    if (hit) return upscaleVendorImage(hit);
   }
   return null;
 }
@@ -183,13 +244,17 @@ function firstGtin(rec) {
 
 function kicksDbToModel(rec, normalised, nowMs) {
   const meta = (rec && rec.metadata) || {};
+  const title = typeof rec.title === "string" && rec.title.trim() ? rec.title.trim() : null;
+  const model = rec.model || rec.name || title;
   return buildModel({
     // The vendor's own spelling of the SKU is the display form we keep; the
     // NORMALISED code stays the key and is never overwritten by vendor text.
     styleCode: typeof rec.sku === "string" && rec.sku ? rec.sku : formatStyleCodeForDisplay(normalised),
     brand: rec.brand,
-    model: rec.model || rec.name || rec.title,
-    colorwayName: meta.colorway || rec.colorway || null,
+    model,
+    name: title,
+    // No metadata.colorway on this route — derive it from the title instead.
+    colorwayName: meta.colorway || rec.colorway || colorwayFromTitle(title, model),
     // Reported by the vendor, INFORMATIONAL ONLY. Category is set from the
     // intake entry point, never inferred from a code or a vendor string —
     // Nike apparel uses the same style-code format as Nike footwear.
@@ -225,7 +290,7 @@ function makeKicksDbProvider({ apiKey, fetchImpl, baseUrl, nowMs } = {}) {
       }
       let lastError = null;
       for (const candidate of candidates) {
-        const url = `${root}/v3/unified/products/${encodeURIComponent(candidate)}`;
+        const url = `${root}/v3/stockx/products?sku=${encodeURIComponent(candidate)}`;
         let res;
         try {
           res = await doFetch(url, {
@@ -323,6 +388,9 @@ module.exports = {
   SOURCE_MANUAL,
   SOURCE_VALUES,
   httpsImageOrNull,
+  upscaleVendorImage,
+  colorwayFromTitle,
+  IMAGE_TARGET_PX,
   packRaw,
   buildModel,
   verifyStyleCodeMatch,

@@ -158,11 +158,12 @@ correct an existing row.
 |---|---|---|
 | `styleCode` | string | The vendor's own readable spelling (`"CT8527-016"`). The **key** stays the normalised form; vendor text never overwrites it. |
 | `brand` | string \| null | e.g. `"Nike"`. |
-| `model` | string \| null | e.g. `"Nike Dunk Low"`. |
-| `colorwayName` | string \| null | e.g. `"Black White"`. |
+| `model` | string \| null | The silhouette, e.g. `"Jordan 4 Retro"`. **On the StockX route this ALREADY INCLUDES THE BRAND**, so composing `brand + model` reads "Jordan Jordan 4 Retro" — use `name`. |
+| `name` | string \| null | The vendor's full display title, e.g. `"Jordan 4 Retro Red Thunder"`. **This is what the confirm screen shows.** Null on rows cached from the old unified endpoint, which had no equivalent; readers fall back to the composed form. |
+| `colorwayName` | string \| null | e.g. `"Red Thunder"`. The StockX route has **no colourway field** — it is derived as the remainder of `title` after the `model` prefix, and is null rather than a guess when the title is not model-prefixed. |
 | `productType` | string \| null | As the vendor reports it (`"sneakers"`, `"apparel"`). **INFORMATIONAL ONLY** — category is set from the intake entry point, never inferred from a code. Nike apparel uses the same style-code format as Nike footwear. |
 | `imageUrl` | string \| null | Catalog photo. **Must begin with `https://`** or the rules reject the write — a vendor returning `http://` or a protocol-relative URL loses its image rather than taking the whole cache write down. Shown for confirm/reject; **never** written onto a product without a human decision. |
-| `gtin` | string \| null | Variant GTIN/EAN when the catalog returns one. Unusable today (sneakers arrive without boxes, so there is nothing to scan), but a box-barcode lane later is free if we keep the number now and worthless if we discard it. |
+| `gtin` | string \| null | **Always null on the StockX route** — it serves no barcode. Retained for a future route that does. Unusable today (sneakers arrive without boxes, so there is nothing to scan), but a box-barcode lane later is free if we keep the number now and worthless if we discard it. |
 | `source` | `"api"` \| `"websearch"` \| `"manual"` | **Rules-validated enum — the KIND of resolution, not the vendor's name.** KicksDB is an external catalog API, so it writes `"api"`; writing `"kicksdb"` is rejected at write time and looks like a silent no-op. Which vendor actually answered is carried on the resolve response and in `/style_code_misses`, not smuggled into a validated field. |
 | `fetchedAt` | number (epoch ms) | When the external resolve happened. **Required** by the rules. |
 | `raw` | string \| null | The vendor payload **JSON-stringified**, capped at 20 000 chars. Stored as a *string*, never an object: vendor payloads carry price maps keyed by size (`"10.5"`), and a `.` in an RTDB key is illegal and throws at write time. A string cannot contain an illegal key, so the hazard is designed out rather than validated around. |
@@ -174,7 +175,9 @@ swapped without touching a call site:
 | Tier | Provider | Behaviour |
 |---|---|---|
 | 1 | `cache` | Reads this node. Free, instant. |
-| 2 | `kicksdb` | `GET https://api.kicks.dev/v3/unified/products/{identifier}`, `Authorization: Bearer <KICKSDB_API_KEY>`. Key is a **Firebase secret read inside the function** — it never reaches the client, never enters git, and the client never calls the vendor directly. Skipped entirely when tier 1 has the code. |
+| 2 | `kicksdb` | `GET https://api.kicks.dev/v3/stockx/products?sku={code}`, `Authorization: Bearer <KICKSDB_API_KEY>`. Key is a **Firebase secret read inside the function** — it never reaches the client, never enters git, and the client never calls the vendor directly. Skipped entirely when tier 1 has the code. |
+
+> **Do not use `/v3/unified/products/{id}`.** It returns `403 "This route requires a subscription"` on our plan — every code, every time. The adapter originally called it, which left staff unable to add products at all. Smoke-tested against the live vendor: the StockX route answers on the **same key** and resolves Jordan, adidas and Puma cleanly, so the "free tier is thin outside Jordan/Dunk" concern was unfounded. The image it serves is a **140×100 thumbnail**; the adapter rewrites the size params to 1000px, because the confirm screen exists to be looked at.
 | 3 | `web-search` | **Stub.** Always not-found. Wired and ordered now so adding it later touches one function and nothing else. |
 
 A provider that returns `null` means "nothing here, try the next tier". A

@@ -95,8 +95,8 @@ function fakeKicksDb(bySku, { status = 200, throwOn = null } = {}) {
     calls.push(url);
     if (throwOn && url.includes(throwOn)) throw new Error("ECONNRESET");
     if (status !== 200) return { ok: false, status, async json() { return {}; } };
-    // The identifier is the last path segment.
-    const identifier = decodeURIComponent(url.split("/").pop());
+    // The code is a QUERY param on the StockX route, not a path segment.
+    const identifier = decodeURIComponent(new URL(url).searchParams.get("sku") || "");
     const rows = bySku[identifier];
     if (!rows) return { ok: false, status: 404, async json() { return {}; } };
     return { ok: true, status: 200, async json() { return { data: rows }; } };
@@ -104,16 +104,23 @@ function fakeKicksDb(bySku, { status = 200, throwOn = null } = {}) {
   return { fetchImpl, calls };
 }
 
-const KDB_RECORD = (sku, name, image) => ({
-  shop_name: "stockx",
-  slug: name.toLowerCase().replace(/\s+/g, "-"),
-  name,
-  brand: "Nike",
-  model: name,
-  images: [image],
+// The REAL StockX record shape, captured from the live vendor during the
+// emulator smoke test. Note what is NOT here: no `name`, no `images[]`, no
+// `metadata.colorway`, no barcode — the unified endpoint had all four, and
+// coding against it is what shipped a broken adapter.
+const KDB_RECORD = (sku, title, image, model) => ({
+  id: "50b8dfb8-327b-4703-8a9b-e6a344aef7b8",
   sku,
+  title,
+  brand: title.split(" ")[0],
+  model: model || title,
+  gender: "men",
+  image,
+  gallery: [image],
   product_type: "sneakers",
-  metadata: { colorway: name.split(" ").pop(), release_date: "2020-01-01T00:00:00Z" },
+  category: "Air Jordan",
+  secondary_category: "Four",
+  slug: title.toLowerCase().replace(/\s+/g, "-"),
 });
 
 const providersFor = (db, kdb, apiKey = "test-key") => [
@@ -252,18 +259,18 @@ test("THE GATE: pickKicksDbRecord picks the exact SKU out of a mixed result set"
       KDB_RECORD("CT8527-001", "another sibling", "https://img/001.jpg"),
     ],
   };
-  assert.strictEqual(pickKicksDbRecord(payload, "CT8527016").name, "the right one");
+  assert.strictEqual(pickKicksDbRecord(payload, "CT8527016").title, "the right one");
   assert.strictEqual(pickKicksDbRecord(payload, "CT8527999"), null);
 });
 
 test("pickKicksDbRecord prefers an exact match that actually has an image", () => {
   const payload = {
     data: [
-      { ...KDB_RECORD("CT8527-016", "no photo", ""), images: [] },
+      { ...KDB_RECORD("CT8527-016", "no photo", ""), image: "", gallery: [] },
       KDB_RECORD("CT8527-016", "with photo", "https://img/016.jpg"),
     ],
   };
-  assert.strictEqual(pickKicksDbRecord(payload, "CT8527016").name, "with photo");
+  assert.strictEqual(pickKicksDbRecord(payload, "CT8527016").title, "with photo");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -835,4 +842,125 @@ test("an EMPTY slot is a create, never a correction", async () => {
   const out = await runResolve(db, { code: "IE3437", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
   assert.strictEqual(out.cached, true);
   assert.strictEqual(out.cacheCorrected, false);
+});
+
+// ── THE ROUTE AND SHAPE, PINNED TO WHAT THE VENDOR ACTUALLY SERVES ───────────
+// The adapter originally called /v3/unified/products/{id}, which returns 403
+// "This route requires a subscription" on our plan — every code, every time.
+// That shipped, and staff could not add products. These pin the working route
+// and the real payload shape so it cannot drift back.
+const { upscaleVendorImage, colorwayFromTitle, IMAGE_TARGET_PX } = require("../lib/style-code-providers.cjs");
+
+test("the adapter calls the StockX route with the code as a QUERY param", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({ "CT8527-016": [KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/a.jpg", "Jordan 4 Retro")] });
+  await runResolve(db, { code: "CT8527-016", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+
+  assert.ok(kdb.calls.length > 0);
+  for (const u of kdb.calls) {
+    assert.match(u, /\/v3\/stockx\/products\?sku=/, `wrong route: ${u}`);
+    assert.ok(!u.includes("/v3/unified/"), "the unified route 403s on our plan — never call it");
+  }
+});
+
+test("REAL SHAPE: title becomes the display name, and the brand is not duplicated", async () => {
+  // StockX `model` already contains the brand, so composing brand + model reads
+  // "Jordan Jordan 4 Retro". `name` carries the vendor's full title instead.
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({ "CT8527-016": [KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/a.jpg", "Jordan 4 Retro")] });
+  const out = await runResolve(db, { code: "CT8527-016", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+
+  assert.strictEqual(out.model.name, "Jordan 4 Retro Red Thunder");
+  assert.strictEqual(out.model.model, "Jordan 4 Retro");
+  assert.strictEqual(out.model.brand, "Jordan");
+  // The colourway is not a field on this route — it is derived from the title.
+  assert.strictEqual(out.model.colorwayName, "Red Thunder");
+  const composed = [out.model.brand, out.model.model].join(" ");
+  assert.strictEqual(composed, "Jordan Jordan 4 Retro", "this is exactly why `name` exists");
+  assert.notStrictEqual(out.model.name, composed);
+});
+
+test("REAL SHAPE: adidas and Puma map the same way", async () => {
+  const cases = [
+    ["IE3437", "adidas Samba OG Collegiate Green", "adidas Samba OG", "Collegiate Green"],
+    ["396463-01", "Puma Palermo Pele Yellow Club Red", "Puma Palermo", "Pele Yellow Club Red"],
+  ];
+  for (const [sku, title, model, colorway] of cases) {
+    const db = fakeDb({});
+    const kdb = fakeKicksDb({ [sku]: [KDB_RECORD(sku, title, "https://img/x.jpg", model)] });
+    const out = await runResolve(db, { code: sku, providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+    assert.strictEqual(out.found, true, `${sku} should resolve`);
+    assert.strictEqual(out.model.name, title);
+    assert.strictEqual(out.model.colorwayName, colorway);
+  }
+});
+
+test("the 140x100 thumbnail is upscaled — the confirm screen must show the shoe", () => {
+  const thumb = "https://images.stockx.com/images/Air-Jordan-4.jpg?fit=fill&bg=FFFFFF&w=140&h=100&fm=webp&q=90";
+  const big = upscaleVendorImage(thumb);
+  assert.match(big, new RegExp(`w=${IMAGE_TARGET_PX}`));
+  assert.match(big, new RegExp(`h=${IMAGE_TARGET_PX}`));
+  assert.ok(!big.includes("w=140"), "still a thumbnail");
+  // Everything else about the URL survives.
+  assert.match(big, /fit=fill/);
+  assert.match(big, /fm=webp/);
+});
+
+test("a URL with no size params, or an unparseable one, is returned untouched", () => {
+  for (const u of ["https://cdn.example/x.jpg", "https://cdn.example/x.jpg?v=2", "not a url", "", null]) {
+    assert.strictEqual(upscaleVendorImage(u), u);
+  }
+});
+
+test("colorwayFromTitle refuses to guess when the title is not model-prefixed", () => {
+  assert.strictEqual(colorwayFromTitle("Something Else Entirely", "Jordan 4 Retro"), null);
+  assert.strictEqual(colorwayFromTitle("Jordan 4 Retro", "Jordan 4 Retro"), null, "no remainder = no colourway");
+  assert.strictEqual(colorwayFromTitle(null, "x"), null);
+  assert.strictEqual(colorwayFromTitle("x", null), null);
+  // Case-insensitive prefix, exact remainder.
+  assert.strictEqual(colorwayFromTitle("JORDAN 4 RETRO Red Thunder", "Jordan 4 Retro"), "Red Thunder");
+});
+
+test("gtin is null on this route — StockX serves no barcode", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({ "IE3437": [KDB_RECORD("IE3437", "adidas Samba OG Green", "https://img/s.jpg", "adidas Samba OG")] });
+  const out = await runResolve(db, { code: "IE3437", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+  assert.strictEqual(out.model.gtin, null);
+});
+
+test("the anti-collapse guard still holds on the new shape", async () => {
+  // Ask for CT8527-016, vendor hands back the sibling colorway.
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({
+    "CT8527-016": [KDB_RECORD("CT8527-700", "Jordan 4 Retro Varsity Maize", "https://img/700.jpg", "Jordan 4 Retro")],
+    "CT8527016": [KDB_RECORD("CT8527-700", "Jordan 4 Retro Varsity Maize", "https://img/700.jpg", "Jordan 4 Retro")],
+  });
+  const out = await runResolve(db, { code: "CT8527-016", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+  assert.strictEqual(out.found, false, "a different SKU is not a match, whatever the shape");
+  assert.strictEqual(db.data.sneaker_models, undefined);
+});
+
+test("the RESOLVED model carries the upscaled image, not the thumbnail", async () => {
+  // Testing upscaleVendorImage alone does not prove firstImage actually calls
+  // it — this asserts the end-to-end result the confirm screen renders.
+  const thumb = "https://images.stockx.com/images/AJ4.jpg?fit=fill&bg=FFFFFF&w=140&h=100&fm=webp&q=90";
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({ "CT8527-016": [KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", thumb, "Jordan 4 Retro")] });
+  const out = await runResolve(db, { code: "CT8527-016", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+
+  assert.match(out.model.imageUrl, /w=1000/, "the confirm screen must not get a 140px thumbnail");
+  assert.match(out.model.imageUrl, /h=1000/);
+  assert.ok(!out.model.imageUrl.includes("w=140"));
+  // And what was cached is the upscaled one too, so a cache hit is not degraded.
+  assert.match(db.data.sneaker_models.CT8527016.imageUrl, /w=1000/);
+});
+
+test("a gallery-only record is upscaled as well", async () => {
+  const thumb = "https://images.stockx.com/images/S.jpg?fit=fill&w=140&h=100";
+  const rec = KDB_RECORD("IE3437", "adidas Samba OG Green", thumb, "adidas Samba OG");
+  rec.image = ""; // no direct image, only gallery
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({ "IE3437": [rec] });
+  const out = await runResolve(db, { code: "IE3437", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+  assert.match(out.model.imageUrl, /w=1000/);
 });
