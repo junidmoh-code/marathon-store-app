@@ -242,6 +242,48 @@ function firstGtin(rec) {
   return null;
 }
 
+// ── GOAT, the second free route ──────────────────────────────────────────────
+// Same key, different catalogue, and it fills gaps StockX has. Its shape differs
+// again, and mostly for the better: `nickname` is the colourway as a clean
+// field, so nothing has to be derived from a title.
+//
+// ONE HAZARD, and it is the big one: this route is a fuzzy ?query= search that
+// returns 20 rows. Ask for CT8527-016 and the results include CT8527 700,
+// CT8527 400 and CT8527 100 — the SIBLING COLOURWAYS, the exact wrong-shoe
+// failure this feature exists to prevent. verifyStyleCodeMatch is what makes
+// the route safe to use at all. It also writes SKUs space-separated
+// ("CT8527 016"), which normalises to the same key as the hyphenated form.
+function goatToModel(rec, normalised, nowMs) {
+  const name = typeof rec.name === "string" && rec.name.trim() ? rec.name.trim() : null;
+  return buildModel({
+    styleCode: typeof rec.sku === "string" && rec.sku ? rec.sku : formatStyleCodeForDisplay(normalised),
+    brand: rec.brand,
+    model: rec.model || name,
+    name,
+    // A real field here, unlike StockX where it has to come out of the title.
+    colorwayName: rec.nickname || rec.colorway || null,
+    productType: rec.product_type || null,
+    imageUrl: firstImage({ image: rec.image_url, gallery: rec.images }),
+    gtin: firstGtin(rec),
+    source: SOURCE_API,
+    fetchedAt: nowMs,
+    raw: packRaw(rec),
+  });
+}
+
+// The routes this plan can actually call, in preference order. StockX first: it
+// answers by exact ?sku= rather than a fuzzy search, so it is both cheaper and
+// less likely to need the guard. GOAT is the fallback for what StockX lacks.
+//
+// NOT AVAILABLE on our plan — both return 403 "This route requires a
+// subscription", verified against the live API:
+//   /v3/unified/products/{id}     (what this adapter originally called)
+//   /v3/shopify/products
+const KICKSDB_ROUTES = [
+  { name: "stockx", path: (c) => `/v3/stockx/products?sku=${encodeURIComponent(c)}`, toModel: kicksDbToModel },
+  { name: "goat", path: (c) => `/v3/goat/products?query=${encodeURIComponent(c)}`, toModel: goatToModel },
+];
+
 function kicksDbToModel(rec, normalised, nowMs) {
   const meta = (rec && rec.metadata) || {};
   const title = typeof rec.title === "string" && rec.title.trim() ? rec.title.trim() : null;
@@ -289,8 +331,12 @@ function makeKicksDbProvider({ apiKey, fetchImpl, baseUrl, nowMs } = {}) {
         throw new Error("KICKSDB_API_KEY is not configured");
       }
       let lastError = null;
-      for (const candidate of candidates) {
-        const url = `${root}/v3/stockx/products?sku=${encodeURIComponent(candidate)}`;
+      // Every spelling against every route we can call. Ordered so the exact-SKU
+      // route is exhausted before the fuzzy one.
+      const attempts = [];
+      for (const route of KICKSDB_ROUTES) for (const c of candidates) attempts.push({ route, candidate: c });
+      for (const { route, candidate } of attempts) {
+        const url = `${root}${route.path(candidate)}`;
         let res;
         try {
           res = await doFetch(url, {
@@ -316,7 +362,7 @@ function makeKicksDbProvider({ apiKey, fetchImpl, baseUrl, nowMs } = {}) {
           continue;
         }
         const rec = pickKicksDbRecord(payload, normalised);
-        if (rec) return kicksDbToModel(rec, normalised, Number.isFinite(nowMs) ? nowMs : Date.now());
+        if (rec) return route.toModel(rec, normalised, Number.isFinite(nowMs) ? nowMs : Date.now());
         // Responded fine but held no EXACT match — a genuine miss for this
         // spelling (or a fuzzy near-match we correctly refused). Try the next.
       }
@@ -398,6 +444,8 @@ module.exports = {
   firstGtin,
   pickKicksDbRecord,
   kicksDbToModel,
+  goatToModel,
+  KICKSDB_ROUTES,
   makeCacheProvider,
   makeKicksDbProvider,
   makeWebSearchProvider,
