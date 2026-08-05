@@ -429,3 +429,15 @@ test("the reaper on an empty node is a no-op", async () => {
   const out = await runReap(db, { nowMs: NOW, batch: 10 });
   assert.deepStrictEqual([out.scanned, out.deleted, out.wrapped], [0, 0, true]);
 });
+
+// ── mimeType must be REJECTED, not relabelled ────────────────────────────────
+// Silently calling an unsupported type "image/jpeg" sends bytes the providers
+// cannot decode, bills us for the failure, and tells the operator nothing.
+test("the allowed mime list is exactly the three the providers accept", () => {
+  const src = require("node:fs").readFileSync(require.resolve("../styleCode/readStyleCodeLabel.js"), "utf8");
+  assert.match(src, /ALLOWED_MIME = \["image\/jpeg", "image\/png", "image\/webp"\]/);
+  // The relabelling fallback must be gone: an unsupported type throws.
+  assert.match(src, /Unsupported image type/, "an unsupported mimeType must be rejected");
+  assert.ok(!/ALLOWED_MIME\.includes\(mimeType\) \? mimeType : "image\/jpeg"/.test(src),
+    "the silent relabel-to-JPEG fallback must not exist");
+});

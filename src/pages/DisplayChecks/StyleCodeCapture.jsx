@@ -72,17 +72,29 @@ export default function StyleCodeCapture({ productId, productName, existingCode,
 
   async function save() {
     setBusy(true); setError(null);
-    const res = await enqueueStyleCodeCapture({
-      code: typed,
-      productId,
-      uid: auth.currentUser && auth.currentUser.uid,
-      origin: "displayCheck",
-      labelPhoto: photo,
-      nowMs: serverNowMs(),
-    });
-    setBusy(false);
-    if (res.ok) { setDone(true); return; }
-    setError(res.error);
+    // enqueueStyleCodeCapture returns an error RESULT only for the final set().
+    // push(), getDownloadURL() and serverNowMs() run outside that try, so the
+    // promise itself can still reject. Without this catch, setBusy(false) never
+    // ran: the button sat disabled on "Saving…" with no error and no way to
+    // retry, which is the same "a failure the operator cannot see or act on"
+    // problem as the claim messages. `finally` is what actually guarantees the
+    // button comes back. (CodeRabbit, PR #312.)
+    try {
+      const res = await enqueueStyleCodeCapture({
+        code: typed,
+        productId,
+        uid: auth.currentUser && auth.currentUser.uid,
+        origin: "displayCheck",
+        labelPhoto: photo,
+        nowMs: serverNowMs(),
+      });
+      if (res.ok) { setDone(true); return; }
+      setError(res.error);
+    } catch (err) {
+      setError((err && err.message) || "Couldn't save that style code. Nothing was changed on the product.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (!open) {

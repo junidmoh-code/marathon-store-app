@@ -105,6 +105,7 @@ const ALLOWED_IMAGE_HOSTS = [
   "image.goat.com",
   "images.kicks.dev",
   "cdn.kicks.dev",
+  "cdn.flightclub.com",
 ];
 
 function assertFetchableImageUrl(raw) {

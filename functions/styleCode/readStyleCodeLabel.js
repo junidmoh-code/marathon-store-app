@@ -305,7 +305,14 @@ exports.readStyleCodeLabel = onCall(
     if (typeof imageBase64 !== "string" || !imageBase64) {
       throw new HttpsError("invalid-argument", "imageBase64 is required.");
     }
-    const mime = ALLOWED_MIME.includes(mimeType) ? mimeType : "image/jpeg";
+    // REJECT, do not relabel. Silently calling an unsupported type "image/jpeg"
+    // sends bytes the providers cannot decode and bills us for the failure,
+    // while the operator is told nothing useful. An absent mimeType is the one
+    // tolerated case — the client always sends JPEG. (CodeRabbit, PR #312.)
+    if (mimeType != null && !ALLOWED_MIME.includes(mimeType)) {
+      throw new HttpsError("invalid-argument", `Unsupported image type: ${mimeType}`);
+    }
+    const mime = mimeType || "image/jpeg";
 
     // ── SANITISE BEFORE DECODING ──────────────────────────────────────────
     // Buffer.from(x, "base64") does NOT throw on malformed input — it silently

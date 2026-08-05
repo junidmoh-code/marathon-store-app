@@ -40,7 +40,12 @@ export function buildCapture({ normalised, styleCode, productId, uid, nowMs, ori
     capturedAt: Number(nowMs),
     origin,
     productId: String(productId),
-    styleCode: styleCode || formatStyleCodeForDisplay(normalised),
+    // ALWAYS the canonical display form. Passing the raw typed text here made
+    // this fallback dead code (it is always truthy), so "ct8527 016" was
+    // enqueued and then stamped onto the product as its display style code by
+    // style-code-capture.cjs. The normalised value is the single source of the
+    // display form. (CodeRabbit, PR #312.)
+    styleCode: formatStyleCodeForDisplay(normalised),
   };
   // Must be https:// or the rules reject the write. A local blob/data URL that
   // slipped through would fail the whole capture, so it is dropped instead.
@@ -87,7 +92,7 @@ export async function enqueueStyleCodeCapture({ code, productId, uid, origin = "
 
   try {
     await set(captureRef, buildCapture({
-      normalised, styleCode: code, productId, uid, nowMs, origin, labelPhotoUrl,
+      normalised, productId, uid, nowMs, origin, labelPhotoUrl,
     }));
     return { ok: true, captureId, normalised };
   } catch (err) {
@@ -114,13 +119,21 @@ export async function enqueueStyleCodeCapture({ code, productId, uid, origin = "
  */
 export function styleCodeProgress(products) {
   const list = Array.isArray(products) ? products.filter(Boolean) : [];
-  let withCode = 0, needsReview = 0;
+  // COUNT PER PRODUCT. `withCode - needsReview` subtracted across UNRELATED
+  // products: one product carrying a code with no pending record, and a
+  // different product carrying no code but a needsReview record, cancelled each
+  // other out and reported confirmed 0 when the first was confirmed. The
+  // Math.max(0, …) clamp hid that rather than fixing it, and the test only
+  // passed because neither product in it carried a code. (CodeRabbit #312.)
+  let withCode = 0, needsReview = 0, confirmed = 0;
   for (const p of list) {
-    if (normaliseStyleCode(p.styleCodeNormalised)) withCode++;
-    if (p.pendingStyleCode && p.pendingStyleCode.status === "needsReview") needsReview++;
+    const hasCode = !!normaliseStyleCode(p.styleCodeNormalised);
+    const inReview = !!(p.pendingStyleCode && p.pendingStyleCode.status === "needsReview");
+    if (hasCode) withCode++;
+    if (inReview) needsReview++;
+    if (hasCode && !inReview) confirmed++;
   }
   const total = list.length;
-  const confirmed = Math.max(0, withCode - needsReview);
   return {
     total,
     withCode,

@@ -788,3 +788,51 @@ test("a malformed prior status is not trusted — it falls back to open", async 
   assert.strictEqual(row.status, "open");
   assert.strictEqual(row.detectedAt, NOW);
 });
+
+// ── THE CACHE-OCCUPANT SIGNAL ────────────────────────────────────────────────
+// "The stored row is corrupt" must be established by VERIFYING the row, not
+// inferred from `!chain.fromCache` — which also becomes false when tier 1 could
+// not READ at all. Fails closed: a row we cannot verify is treated as absent.
+test("a VALID cache row is left alone when tier 1 merely failed to READ it", async () => {
+  const db = fakeDb({
+    sneaker_models: { IE3437: { styleCode: "IE3437", brand: "adidas", model: "Samba OG", source: "api", fetchedAt: 1 } },
+  });
+  // A cache provider that THROWS (RTDB read error) rather than declining.
+  const brokenCache = { name: "cache", tier: 1, async resolve() { throw new Error("RTDB read failed"); } };
+  const kdb = fakeKicksDb({ "IE3437": [KDB_RECORD("IE3437", "REPLACEMENT", "https://img/x.jpg")] });
+  const providers = [
+    brokenCache,
+    makeKicksDbProvider({ apiKey: "k", fetchImpl: kdb.fetchImpl, baseUrl: "https://api.test", nowMs: NOW }),
+    makeWebSearchProvider(),
+  ];
+  const out = await runResolve(db, { code: "IE3437", providers, actor: ACTOR, nowMs: NOW });
+
+  assert.strictEqual(out.found, true);
+  assert.strictEqual(out.cacheCorrected, false, "nothing was corrected — the stored row is valid");
+  assert.strictEqual(out.cached, false, "a create-once node must not be rewritten without cause");
+  assert.strictEqual(db.data.sneaker_models.IE3437.model, "Samba OG", "the valid row survived");
+  assert.strictEqual(out.errors.length, 1, "the read failure is still reported");
+});
+
+test("an UNVERIFIABLE row is treated as absent and re-fetched", async () => {
+  for (const bad of [
+    { styleCode: "CT8527-700", model: "wrong shoe" }, // wrong code for this key
+    { styleCode: "", model: "blank" },
+    { model: "no styleCode at all" },
+    { styleCode: 42, model: "not a string" },
+  ]) {
+    const db = fakeDb({ sneaker_models: { CT8527016: bad } });
+    const kdb = fakeKicksDb({ "CT8527-016": [KDB_RECORD("CT8527-016", "Nike Dunk Low", "https://img/a.jpg")] });
+    const out = await runResolve(db, { code: "CT8527-016", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+    assert.strictEqual(out.cacheCorrected, true, `must correct ${JSON.stringify(bad)}`);
+    assert.strictEqual(db.data.sneaker_models.CT8527016.model, "Nike Dunk Low");
+  }
+});
+
+test("an EMPTY slot is a create, never a correction", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({ "IE3437": [KDB_RECORD("IE3437", "adidas Samba OG", "https://img/s.jpg")] });
+  const out = await runResolve(db, { code: "IE3437", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+  assert.strictEqual(out.cached, true);
+  assert.strictEqual(out.cacheCorrected, false);
+});

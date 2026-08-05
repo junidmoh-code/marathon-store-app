@@ -114,7 +114,22 @@ describe("enqueueStyleCodeCapture", () => {
   it("every spelling of a code enqueues the same normalised key", async () => {
     await enqueueStyleCodeCapture(args({ code: "ct8527 016" }));
     expect(store[CAPTURES_PATH].cap1.styleCodeNormalised).toBe("CT8527016");
-    expect(store[CAPTURES_PATH].cap1.styleCode).toBe("ct8527 016");
+  });
+
+  it("the DISPLAY code is the canonical form, never the raw typed text", async () => {
+    // The raw string used to be passed through, so "ct8527 016" was enqueued
+    // and then stamped onto the product as its display style code.
+    await enqueueStyleCodeCapture(args({ code: "ct8527 016" }));
+    expect(store[CAPTURES_PATH].cap1.styleCode).toBe("CT8527-016");
+    expect(store[CAPTURES_PATH].cap1.styleCode).not.toBe("ct8527 016");
+  });
+
+  it("every spelling produces the SAME display code", async () => {
+    for (const code of ["CT8527-016", "ct8527016", "  ct8527 016 ", "Ct-8527-016"]) {
+      store = {}; pushN = 0;
+      await enqueueStyleCodeCapture(args({ code }));
+      expect(store[CAPTURES_PATH].cap1.styleCode).toBe("CT8527-016");
+    }
   });
 });
 
@@ -158,12 +173,44 @@ describe("styleCodeProgress", () => {
   });
 
   it("never reports a negative confirmed count", () => {
-    // Defensive: more review flags than stamped codes must not go below zero.
     const out = styleCodeProgress([
       P({ id: "a", pendingStyleCode: { status: "needsReview" } }),
       P({ id: "b", pendingStyleCode: { status: "needsReview" } }),
     ]);
     expect(out.confirmed).toBe(0);
+  });
+
+  it("COUNTS PER PRODUCT — a review on one product never cancels a confirmed other", () => {
+    // The subtraction form (withCode - needsReview) reported 0 here: product A
+    // IS confirmed, and product B's pending review is about a product with no
+    // code at all. The Math.max(0, ...) clamp hid it. The earlier test only
+    // passed because neither product carried a code.
+    const out = styleCodeProgress([
+      P({ id: "a", styleCodeNormalised: "CT8527016" }),                       // confirmed
+      P({ id: "b", pendingStyleCode: { status: "needsReview" } }),            // no code at all
+    ]);
+    expect(out.withCode).toBe(1);
+    expect(out.needsReview).toBe(1);
+    expect(out.confirmed).toBe(1);
+    expect(out.pct).toBe(50);
+  });
+
+  it("a product both coded AND in review is counted once, in review", () => {
+    const out = styleCodeProgress([
+      P({ id: "a", styleCodeNormalised: "CT8527016", pendingStyleCode: { status: "needsReview" } }),
+      P({ id: "b", styleCodeNormalised: "CT8527700" }),
+    ]);
+    expect(out.withCode).toBe(2);
+    expect(out.needsReview).toBe(1);
+    expect(out.confirmed).toBe(1);
+  });
+
+  it("many unrelated reviews cannot drive a real confirmed count to zero", () => {
+    const out = styleCodeProgress([
+      P({ id: "a", styleCodeNormalised: "CT8527016" }),
+      ...Array.from({ length: 5 }, (_, i) => P({ id: `r${i}`, pendingStyleCode: { status: "needsReview" } })),
+    ]);
+    expect(out.confirmed).toBe(1);
   });
 
   it("footwear-only progress ignores clothing, which has no style code", () => {

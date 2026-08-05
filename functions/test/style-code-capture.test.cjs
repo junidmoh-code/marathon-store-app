@@ -416,3 +416,20 @@ test("the Gemini key goes in a header, never the query string", async () => {
   assert.ok(!String(seenUrl).includes("key="));
   assert.strictEqual(seenHeaders["x-goog-api-key"], "SECRET-KEY");
 });
+
+// ── The SSRF allowlist must cover the catalogue CDNs KicksDB actually serves ──
+// A legitimate catalogue image on an unlisted host fails CLOSED (routes to human
+// review), so this is review noise rather than risk — but the noise is real.
+test("the KicksDB CDN set is complete", () => {
+  for (const host of ["images.stockx.com", "image.goat.com", "images.kicks.dev", "cdn.kicks.dev", "cdn.flightclub.com"]) {
+    assert.ok(ALLOWED_IMAGE_HOSTS.includes(host), `${host} missing from the allowlist`);
+    assert.ok(assertFetchableImageUrl(`https://${host}/a.jpg`));
+  }
+});
+
+test("adding CDNs did not widen the guard — attacks are still refused", () => {
+  for (const url of ["https://evil.example.com/x.jpg", "https://cdn.flightclub.com.evil.com/x.jpg",
+                     "http://cdn.flightclub.com/x.jpg", "https://169.254.169.254/"]) {
+    assert.throws(() => assertFetchableImageUrl(url), /not https|not allowed/);
+  }
+});

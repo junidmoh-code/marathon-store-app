@@ -36,6 +36,7 @@ import {
   isKnownStyleCodeFormat,
 } from "../../utils/styleCode";
 import { prepareLabelPhoto } from "../../utils/labelPhoto";
+import { serverNowMs } from "../../utils/serverTime";
 import {
   resolveAddStockTarget, classifyLookupOutcome, labelPhotoEvidence,
   TARGET_READY, TARGET_CHOOSE,
@@ -201,7 +202,13 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       styleCode: result?.displayCode || formatStyleCodeForDisplay(normalised),
       styleCodeNormalised: result?.normalised || normalised,
       styleCodeSource: source,           // enum: cache | api | websearch | manual
-      styleCodeFetchedAt: Date.now(),
+      // SERVER-CORRECTED CLOCK, not the device's. The live rule validates
+      // fetchedAt <= now + 86400000 against the SERVER clock, so a tablet
+      // running fast produces a write that is silently REJECTED — the operator
+      // sees a save that appears to work and a field that never lands. This
+      // repo already carries a server-time anchor precisely because a till with
+      // a wrong clock once corrupted the order counter. (CodeRabbit #312.)
+      styleCodeFetchedAt: serverNowMs(),
       // Only when this photo is still evidence for THIS code (see photoForCode).
       labelPhoto: evidencePhoto,
     };

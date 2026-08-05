@@ -36,6 +36,7 @@ const {
   SNEAKER_MODELS_PATH,
   defaultProviders,
   resolveThroughProviders,
+  verifyStyleCodeMatch,
 } = require("../lib/style-code-providers.cjs");
 const {
   normaliseStyleCode,
@@ -296,13 +297,32 @@ async function runResolve(db, {
     try {
       const slot = db.ref(`${SNEAKER_MODELS_PATH}/${normalised}`);
       const occupant = (await slot.get()).val();
+
+      // ── THE SIGNAL IS THE OCCUPANT, NOT `fromCache` ──────────────────────
+      // The previous version inferred "the stored row is corrupt" from
+      // `!chain.fromCache`, which conflates two different things: tier 1 READ
+      // the row and refused it, versus tier 1 could not read AT ALL (an RTDB
+      // error — resolveThroughProviders records it and walks on). In the second
+      // case the stored row may be perfectly valid, and we would overwrite it
+      // and report `cacheCorrected: true` for a correction that was never
+      // justified. The same happens if an admin fixes the row between the
+      // tier-1 read and this one. So ask the row itself. (CodeRabbit #312.)
+      //
+      // FAIL CLOSED: an occupant we cannot VERIFY — absent, malformed, or
+      // carrying a styleCode that does not normalise to this key — is treated
+      // as ABSENT and re-fetched. It is never treated as valid.
       if (!occupant) {
         await slot.set(chain.model);
         cached = true;
+      } else if (verifyStyleCodeMatch(occupant.styleCode, normalised)) {
+        // A VERIFIED row is left alone. Tier 1 must simply have failed to read
+        // it; overwriting would be an unjustified write to a create-once node.
+        console.warn(`resolveStyleCode: /sneaker_models/${normalised} already holds a valid row ` +
+          `that tier 1 did not serve (likely a read error) — leaving it untouched`);
       } else {
-        // Occupied AND tier 1 refused it ⇒ the stored row is corrupt. Correct
-        // it loudly: this is the only overwrite this function ever performs.
-        console.warn(`resolveStyleCode: CORRECTING corrupt /sneaker_models/${normalised} ` +
+        // Verification failed ⇒ unusable ⇒ treated as absent. This is the only
+        // overwrite this function ever performs, and it is logged loudly.
+        console.warn(`resolveStyleCode: CORRECTING unverifiable /sneaker_models/${normalised} ` +
           `(stored styleCode ${JSON.stringify(occupant.styleCode)} does not match its key)`);
         await slot.set(chain.model);
         cached = true;
