@@ -13,7 +13,7 @@
 // component holds NO merge logic of its own: what you see is a preview, what
 // the server does is the truth, and the server re-reads everything itself.
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { searchProducts } from "../../utils/productSearch";
@@ -22,6 +22,7 @@ import { FONT, CARD, BORDER, GRAY, RED, AMBER, BLUE_L, bGhost, bGray, input } fr
 import { labelFor } from "./locations";
 import { sizeLabelOf } from "./hubCountCore";
 import { locationsHolding } from "./hubCleanupCore";
+import { fetchProductFollowingMerge } from "./hubCleanupStore";
 import CameraScanner from "./CameraScanner.jsx";
 
 const mergeProductsFn = httpsCallable(functions, "mergeProducts");
@@ -55,7 +56,7 @@ function CellList({ product, allStock, registry }) {
 
 export default function MergeProducts({
   initialLoser, initialSurvivor = null, products = [], allStock, registry,
-  viewer, onEnsureStock, onScanLookup, onClose, onMerged,
+  onEnsureStock, onScanLookup, onClose, onMerged,
 }) {
   const [loser, setLoser] = useState(initialLoser);
   const [survivor, setSurvivor] = useState(initialSurvivor);
@@ -64,6 +65,13 @@ export default function MergeProducts({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(null);
+
+  // The confirm screen is unusable without the full stock picture, and not
+  // every entry point pre-loads it (the duplicate banner doesn't) — so this
+  // component asks for it itself rather than trusting its callers.
+  useEffect(() => {
+    if (!allStock && onEnsureStock) onEnsureStock().catch(() => {});
+  }, [allStock, onEnsureStock]);
 
   const candidates = useMemo(() => {
     const pool = products.filter((p) => p && p.id && !isMergedAway(p) && p.id !== loser?.id);
@@ -75,7 +83,12 @@ export default function MergeProducts({
     setError("");
     try {
       const row = onScanLookup ? await onScanLookup(code) : null;
-      const hit = row && row.productId ? products.find((p) => p && p.id === row.productId && !isMergedAway(p)) : null;
+      let hit = row && row.productId ? products.find((p) => p && p.id === row.productId && !isMergedAway(p)) : null;
+      if (!hit && row && row.productId) {
+        // The row may point at a product already merged away — follow the
+        // pointer to its survivor rather than reporting a dead scan.
+        hit = await fetchProductFollowingMerge(row.productId).catch(() => null);
+      }
       if (hit && hit.id !== loser?.id) setSurvivor(hit);
       else setError(hit ? "That scan is the same product you're merging away." : `Nothing owns “${code}” — search by name instead.`);
     } catch (err) {

@@ -40,6 +40,7 @@ import {
 import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
   recordUnresolvedScan, lookupBarcode, loadAllStock, loadDuplicateCandidates,
+  fetchProductFollowingMerge,
 } from "./hubCleanupStore";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
@@ -164,6 +165,14 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   useEffect(() => {
     if (!hub) return;
     let cancelled = false;
+    // A hub switch is a fresh world: the count session, its records, the
+    // all-location snapshot and any open panel all belong to the OLD hub and
+    // must not leak — a stale sessionId here would file the new hub's counts
+    // under the old hub's session.
+    setSession(null);
+    setCounted({});
+    setAllStock(null);
+    setPanel(null);
     setLoading(true);
     setLoadError("");
     setUpdateBusy(true);
@@ -229,7 +238,15 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
     setBusy(true);
     try {
       const barcodeRow = await lookupBarcode(code).catch(() => null);
-      const out = resolveCleanupScan(code, { products, barcodeRow });
+      let out = resolveCleanupScan(code, { products, barcodeRow });
+      if (out.kind === "unresolved" && barcodeRow && barcodeRow.productId) {
+        // A barcode row whose product is not in this session's (filtered)
+        // catalogue: it may have been merged away — before this catalogue
+        // loaded, or on another device minutes ago. Ask /products directly and
+        // follow the mergedInto chain to whoever answers for it today.
+        const survivor = await fetchProductFollowingMerge(barcodeRow.productId).catch(() => null);
+        if (survivor) out = { kind: "product", product: survivor, size: barcodeRow.size != null ? String(barcodeRow.size) : null };
+      }
       if (out.kind === "product") {
         setPanel({ mode: tab === "count" ? "count" : "register", product: out.product, size: out.size, code });
       } else if (out.kind === "duplicate") {
@@ -505,15 +522,21 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       </div>
 
       {/* ── The one panel per product ───────────────────────────────────────── */}
+      {/* Keyed by product+size so a NEW scan REMOUNTS the panel — the hardware
+          listener stays live while a panel is open, and a carried-over size or
+          quantity from the previous product is exactly the mis-registration
+          this screen exists to prevent. */}
       {panel && panel.mode === "register" && (
-        <RegisterPanel panel={panel} hub={hub} registered={registered} duplicates={duplicates}
+        <RegisterPanel key={`reg_${panel.product.id}_${panel.size ?? ""}`}
+                       panel={panel} hub={hub} registered={registered} duplicates={duplicates}
                        products={products} busy={busy}
                        onRegister={doRegister} onExtra={doExtra}
                        onMerge={(loser, other) => setMerge({ loser, other })}
                        onClose={() => setPanel(null)} />
       )}
       {panel && panel.mode === "count" && (
-        <CountPanel panel={panel} hub={hub} hubStock={hubStock || {}} counted={counted}
+        <CountPanel key={`cnt_${panel.product.id}_${panel.size ?? ""}`}
+                    panel={panel} hub={hub} hubStock={hubStock || {}} counted={counted}
                     busy={busy} canAdjust={canAdjust}
                     onRecord={doCount} onClose={() => setPanel(null)} />
       )}
@@ -545,7 +568,6 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       {merge && (
         <MergeProducts initialLoser={merge.loser} initialSurvivor={merge.other}
                        products={products} allStock={allStock} registry={registry}
-                       viewer={viewer}
                        onEnsureStock={ensureAllStock}
                        onScanLookup={lookupBarcode}
                        onClose={() => setMerge(null)}

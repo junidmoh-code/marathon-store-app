@@ -70,6 +70,7 @@ vi.mock("./applyMovement", () => ({ applyMovement: (...a) => applyMovementMock(.
 
 const {
   registerDisplayUnit, addExtraDisplayUnit, recordUnresolvedScan, loadRegister,
+  fetchProductFollowingMerge,
 } = await import("./hubCleanupStore.js");
 
 const HUB = "hub2";
@@ -167,6 +168,45 @@ describe("scope and size discipline", () => {
     expect(mv.size).toBe("6");             // RAW size in — the writer owns encoding
     expect(mv.reason).toBe("display_registration");
     expect(cellQty("6")).toBe(2);
+  });
+});
+
+describe("guards", () => {
+  it("addExtraDisplayUnit refuses a missing product or sentinel size as a result, never a throw", async () => {
+    for (const args of [
+      { hub: HUB, product: null, size: "6" },
+      { hub: HUB, product: {}, size: "6" },
+      { hub: HUB, product: PRODUCT, size: "" },
+      { hub: HUB, product: PRODUCT, size: "Free Size" },
+    ]) {
+      const r = await addExtraDisplayUnit(args);
+      expect(r.ok).toBe(false);
+    }
+    expect(movementCount()).toBe(0);
+  });
+});
+
+describe("historical barcode rows — following a merge done elsewhere", () => {
+  it("a productId merged away resolves to its survivor via /products directly", async () => {
+    setPath("products/pOld", { id: "pOld", name: "Dup", mergedInto: "pMid" });
+    setPath("products/pMid", { id: "pMid", name: "Mid", mergedInto: "pFinal" });
+    setPath("products/pFinal", { id: "pFinal", name: "Real Dunk" });
+    const p = await fetchProductFollowingMerge("pOld");
+    expect(p?.id).toBe("pFinal");
+  });
+
+  it("a live product returns itself; a ghost or dangling chain returns null (fail closed)", async () => {
+    setPath("products/pLive", { id: "pLive", name: "Live" });
+    setPath("products/pDangling", { id: "pDangling", name: "D", mergedInto: "pGone" });
+    expect((await fetchProductFollowingMerge("pLive"))?.id).toBe("pLive");
+    expect(await fetchProductFollowingMerge("pGhost")).toBe(null);
+    expect(await fetchProductFollowingMerge("pDangling")).toBe(null);
+  });
+
+  it("a pointer cycle stops instead of spinning", async () => {
+    setPath("products/pA", { id: "pA", mergedInto: "pB" });
+    setPath("products/pB", { id: "pB", mergedInto: "pA" });
+    expect(await fetchProductFollowingMerge("pA")).toBe(null);
   });
 });
 

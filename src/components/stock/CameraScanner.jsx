@@ -13,6 +13,11 @@ export default function CameraScanner({ title = "Scan", hint = "Point the camera
   const [error, setError] = useState(null);
   const liveRef = useRef(false);
   const handledRef = useRef(false);
+  // The callback rides in a ref so the camera effect runs ONCE — both call
+  // sites pass fresh closures every render, and listing onScan as a dependency
+  // would tear the stream down and restart it on every parent re-render.
+  const onScanRef = useRef(onScan);
+  useEffect(() => { onScanRef.current = onScan; }, [onScan]);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,7 +37,7 @@ export default function CameraScanner({ title = "Scan", hint = "Point the camera
         (decodedText) => {
           if (handledRef.current) return;
           handledRef.current = true;
-          stop().finally(() => { if (!cancelled) onScan(decodedText); });
+          stop().finally(() => { if (!cancelled) onScanRef.current(decodedText); });
         },
         () => { /* per-frame miss — expected */ }
       )
@@ -48,7 +53,7 @@ export default function CameraScanner({ title = "Scan", hint = "Point the camera
       });
 
     return () => { cancelled = true; stop(); };
-  }, [onScan]);
+  }, []);
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.94)", display: "flex", flexDirection: "column" }}>

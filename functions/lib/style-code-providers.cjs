@@ -185,7 +185,10 @@ function kicksDbRowConflict(rows) {
   const imageOf = (r) => {
     const u = firstImage(r);
     if (!u) return "";
-    try { const p = new URL(u); return `${p.origin}${p.pathname}`.toLowerCase(); } catch { return String(u).toLowerCase(); }
+    // Path case is PRESERVED — /One.jpg and /one.jpg can be different files on
+    // a case-sensitive host, and flattening them would hide a real conflict.
+    // URL.origin already normalises the host's case.
+    try { const p = new URL(u); return `${p.origin}${p.pathname}`; } catch { return String(u); }
   };
   for (const [field, of] of [["name", nameOf], ["brand", (r) => norm(r.brand)], ["image", imageOf]]) {
     const seen = new Set(rows.map(of).filter(Boolean));

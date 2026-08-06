@@ -37,12 +37,20 @@ function fakeDb(initial = {}) {
     else node[last] = value;
   };
 
+  let onGet = null; // { match, fn } — fires ONCE after a get whose path includes match
+
   return {
     data,
     updates,
+    afterGetOf(match, fn) { onGet = { match, fn }; },
     ref(path = "") {
       return {
         async get() {
+          // The hook fires BEFORE the value is captured, so a "concurrent
+          // write landing just before this read" is modelled faithfully.
+          if (onGet && String(path).includes(onGet.match)) {
+            const { fn } = onGet; onGet = null; fn({ getPath: at, setPath: put });
+          }
           const v = at(path);
           const val = v === undefined ? null : v;
           return { val: () => val, exists: () => val !== null };
@@ -306,6 +314,45 @@ test("refused: unreadable location registry — never guessed", async () => {
   const w = baseWorld();
   delete w.locations;
   await assertRefused(fakeDb(w), {}, /failed-precondition/, /registry/);
+});
+
+test("refused: an id that is not a legal RTDB key — before any lock or read", async () => {
+  const isBadKeyRefusal = (err) => {
+    assert.ok(err instanceof MergeRefused);
+    assert.strictEqual(err.code, "invalid-argument");
+    assert.match(err.message, /not a legal database key/);
+    return true;
+  };
+  for (const bad of ["a/b", "p.1", "p#1", "p$1", "p[1]", "p 1"]) {
+    const db = fakeDb(baseWorld());
+    await assert.rejects(() => run(db, { loserId: bad }), isBadKeyRefusal);
+    await assert.rejects(() => run(db, { survivorId: bad }), isBadKeyRefusal);
+    assert.strictEqual(db.data.product_merges_locks, undefined, "no lock may be taken for a bad id");
+  }
+});
+
+// ─── THE DRIFT FENCE ─────────────────────────────────────────────────────────
+test("a sale landing on a survivor cell mid-merge REFUSES the merge — never erased", async () => {
+  const db = fakeDb(baseWorld());
+  // Between the merge's initial reads and its pre-commit recheck, a concurrent
+  // POS sale lands on the survivor's hub2 cell (qty −1, v +1) — exactly the
+  // write the absolute-qty update would otherwise silently erase. The hook
+  // fires on the recheck's per-cell read, i.e. AFTER preparation, BEFORE commit.
+  db.afterGetOf("stock/hub2/pSurvivor/6", ({ getPath, setPath }) => {
+    const cell = getPath("stock/hub2/pSurvivor/6");
+    setPath("stock/hub2/pSurvivor/6", { ...cell, qty: cell.qty - 1, v: cell.v + 1 });
+  });
+  await assert.rejects(() => run(db), (err) => {
+    assert.ok(err instanceof MergeRefused);
+    assert.match(err.code, /aborted/);
+    assert.match(err.message, /changed while the merge/);
+    return true;
+  });
+  // Nothing committed: the sale survives, the loser is untouched.
+  assert.strictEqual(db.data.stock.hub2.pSurvivor["6"].qty, 4, "the concurrent sale's write survives");
+  assert.strictEqual(db.data.stock.hub2.pLoser["6"].qty, 2, "loser cells untouched");
+  assert.strictEqual(db.data.products.pLoser.mergedInto, undefined);
+  assert.strictEqual(db.updates.length, 0, "the atomic update never ran");
 });
 
 // ─── THE LOCK ────────────────────────────────────────────────────────────────

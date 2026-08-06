@@ -300,6 +300,12 @@ test("same-SKU rows that disagree on IMAGE (different files) are refused", () =>
   assert.throws(() => pickKicksDbRecord({ data: [a, b] }, "CT8527016"), /disagree on image/);
 });
 
+test("image paths differing only by CASE are different files — a disagreement", () => {
+  const a = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/One.jpg");
+  const b = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/one.jpg");
+  assert.throws(() => pickKicksDbRecord({ data: [a, b] }, "CT8527016"), /disagree on image/);
+});
+
 test("the same image served at two sizes is the SAME image, not a disagreement", () => {
   const a = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/016.jpg?w=140&h=100");
   const b = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/016.jpg?w=800&h=800");

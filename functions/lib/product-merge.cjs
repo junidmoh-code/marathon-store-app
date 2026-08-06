@@ -56,9 +56,13 @@ const PINE_LOCATIONS = ["marathon-pine", "hub3"];
 const MERGE_LOCK_STALE_MS = 10 * 60 * 1000; // takeover window for a crashed merge
 
 // Byte-compatible with src/utils/sizeKey.js — the ONE cross-app encoding.
+// Mirrors the client exactly, including its non-string behaviour (numbers are
+// stringified, anything else passes through untouched); the "_" one-size
+// sentinel belongs to stockSizeKey, not here.
 function encodeSizeKey(size) {
-  const s = String(size == null ? "" : size);
-  return s.replace(/[.#$/\[\]\s]/g, "_");
+  if (typeof size === "number") size = String(size);
+  if (typeof size !== "string") return size;
+  return size.replace(/[.#$/\[\]\s]/g, "_");
 }
 function decodeSizeKey(key) {
   if (typeof key !== "string") return key;
@@ -95,9 +99,18 @@ function sizeCellsOf(node) {
  *             barcodesRepointed, styleCodesRepointed, duplicateRowClosed }}
  * @throws {MergeRefused} on any refusal — nothing is written.
  */
+// A legal RTDB key: no path separators, no forbidden key characters, no
+// whitespace. An id with "/" would resolve reads to a NESTED node (not a
+// product) and an id with ".#$[]" would make the derived write paths throw
+// after the lock is taken — both are refused up front instead.
+const SAFE_KEY = /^[^./#$[\]\s]+$/;
+
 async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
   if (typeof loserId !== "string" || !loserId.trim()) throw new MergeRefused("invalid-argument", "loserId is required.");
   if (typeof survivorId !== "string" || !survivorId.trim()) throw new MergeRefused("invalid-argument", "survivorId is required.");
+  if (!SAFE_KEY.test(loserId) || !SAFE_KEY.test(survivorId)) {
+    throw new MergeRefused("invalid-argument", "A product id is not a legal database key.");
+  }
   if (loserId === survivorId) throw new MergeRefused("invalid-argument", "A product cannot be merged into itself.");
   if (!actor || !actor.uid) throw new MergeRefused("invalid-argument", "actor is required.");
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
@@ -287,6 +300,28 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
         duplicateRow: frozen(dupRow),
       },
     };
+
+    // ── THE DRIFT FENCE ──────────────────────────────────────────────────────
+    // The update above writes ABSOLUTE survivor quantities derived from the
+    // reads at the top — and the Admin SDK bypasses the RTDB rule that rejects
+    // a wrong `v`, so nothing server-side would catch a POS sale or transfer
+    // landing on a survivor cell in between: its quantity would be silently
+    // erased. Re-read every touched survivor cell immediately before the
+    // commit and REFUSE on any drift (v or qty). The remaining window is the
+    // milliseconds between this recheck and the update — down from the full
+    // preparation time — and a refused merge writes nothing and can simply be
+    // retried. (Loser cells are protected by the loser lock above.)
+    for (const [loc, cells] of Object.entries(beforeSurvivorCells)) {
+      for (const [sizeKey, sCell] of Object.entries(cells)) {
+        const live = (await db.ref(`stock/${loc}/${survivorId}/${sizeKey}`).get()).val();
+        const seenV = sCell && typeof sCell.v === "number" ? sCell.v : null;
+        const liveV = live && typeof live.v === "number" ? live.v : null;
+        if (seenV !== liveV || asQty(live) !== asQty(sCell)) {
+          throw new MergeRefused("aborted",
+            `The surviving product's stock at ${loc} changed while the merge was being prepared. Nothing was changed — try again.`);
+        }
+      }
+    }
 
     await db.ref().update(updates);
 

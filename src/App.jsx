@@ -6,7 +6,7 @@ import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
-import { filterMergedProducts } from "./utils/mergedProducts";
+import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import { getDeviceId } from "./device/deviceId";
@@ -431,6 +431,21 @@ function useAuthReady() {
   return ready;
 }
 
+// ── The UNFILTERED product index, for by-id lookups only ─────────────────────
+// useProducts filters merged-away records out of the array every view renders
+// from — but an ORDER stamped with a merged-away productId still has to find
+// its product (the send-size guard, the dispatch-transfer footwear check, the
+// returns classifier all break on `undefined`). This module-level index keeps
+// EVERY record, and resolveProductById follows the mergedInto pointer to the
+// survivor. Module-level (not React state) because the lookup sites live in
+// components across this one file and the index changes exactly when
+// useProducts' subscription fires.
+let ALL_PRODUCTS_BY_ID = {};
+function resolveProductById(id) {
+  if (!id) return null;
+  return followMerge(ALL_PRODUCTS_BY_ID, id);
+}
+
 // Legacy data: earlier versions stored products as { items: [...] } at /products.
 // We migrate that on first read into per-id nodes so existing data isn't lost.
 function useProducts() {
@@ -454,6 +469,7 @@ function useProducts() {
           const patch = { items: null };
           for (const p of validItems) patch[p.id] = p;
           update(productsRef, patch).catch(err => console.warn("Product migration failed:", err));
+          ALL_PRODUCTS_BY_ID = Object.fromEntries(validItems.map(p => [p.id, p]));
           setProducts(filterMergedProducts(validItems));
         }
         // If validItems is empty, do NOT write anything — silently skip.
@@ -471,10 +487,9 @@ function useProducts() {
       // the operator's world without any surface needing its own filter. The
       // record itself stays in RTDB because old sales/movements reference it;
       // by-id lookups follow the pointer via utils/mergedProducts.followMerge.
-      const arr = filterMergedProducts(
-        Object.values(data).filter(v => v && typeof v === "object" && v.id && v.name)
-      );
-      setProducts(arr);
+      const all = Object.values(data).filter(v => v && typeof v === "object" && v.id && v.name);
+      ALL_PRODUCTS_BY_ID = Object.fromEntries(all.map(p => [p.id, p]));
+      setProducts(filterMergedProducts(all));
     }, (err) => {
       console.warn("Firebase read error on /products:", err);
     });
@@ -9032,7 +9047,9 @@ function WarehouseView({ products = [], orders, onExit }) {
     // leaves READY for anything other than COLLECTED, cancel the scheduled refill.
     if (order.requestDisplayPartner) {
       if (status === STATUS.READY) {
-        const product = products.find(p => p.id === order.productId);
+        // Resolved through the UNFILTERED index — an order stamped with a
+        // merged-away productId must still route by its survivor's hubs.
+        const product = resolveProductById(order.productId);
         patch.displayRefillScheduledAt     = now;
         // Phase 14B: refill task routes by where the order was placed —
         // Pine-placed orders go to Hub 3's refill section. Falls back to the
@@ -9189,7 +9206,10 @@ function WarehouseView({ products = [], orders, onExit }) {
     // SIZE to positively agree (see utils/footwearLine.js). Clothing, perfume,
     // bags, an unknown product, a missing size — all fall through and keep
     // writing the transfer exactly as they do today.
-    const orderProduct = products.find((p) => p && p.id === order.productId) || null;
+    // Unfiltered-index lookup: a merged-away id resolves to its survivor, so
+    // the footwear short-circuit below cannot silently fail open into a second
+    // hub→shop deduction for an order placed against the losing record.
+    const orderProduct = resolveProductById(order.productId);
     if (isFootwearLine(orderProduct, sentSize ?? order.size)) {
       return { moved: false, reason: "footwear_sells_from_hub", skipped: true };
     }
@@ -9733,7 +9753,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                   // display is when it sells. The rule itself is pure
                   // (src/utils/displaySend.js) so the "cannot send without a
                   // size" proof tests the exact predicate this button consults.
-                  const guardProduct = products.find((p) => p && p.id === order.productId) || null;
+                  const guardProduct = resolveProductById(order.productId);
                   const needsSentSize = displaySendNeedsSize(order, guardProduct)
                     // Non-display footwear orders keep the original 2026-07-29
                     // rule: demand a size only when the order carries none.
@@ -10115,7 +10135,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
 
   const refillSizeChoices = (order) => {
     const known = order.sentSize || order.size || null;
-    const prod = products.find((p) => p && p.id === order.productId) || null;
+    const prod = resolveProductById(order.productId);
     if (known || !productIsFootwear(prod)) return { needed: false, options: [] };
     const options = (Array.isArray(prod?.sizes) ? prod.sizes : [])
       .map(String).map((x) => x.trim()).filter((x) => x && x !== "_");
@@ -13610,7 +13630,7 @@ function ReturnsView({ orders, products = [], onExit }) {
         // FALLBACK — no recorded dispatch transfer to reverse. Resolve intent.
         // Read the product's stored category (orders don't carry it) so kids sneaker
         // sizes 26–35 aren't misread as clothing by the size-based classifier.
-        const prod = products.find(p => p.id === order.productId);
+        const prod = resolveProductById(order.productId);
         const dest = resolveReturnDestination(order, prod?.category);
         if (dest.mode === "stay") {
           // Clothing / accessory / perfume: never a tracked hub→shop transfer, so

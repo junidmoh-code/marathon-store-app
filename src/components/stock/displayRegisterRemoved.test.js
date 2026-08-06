@@ -48,3 +48,25 @@ describe("the display register is gone", () => {
     expect(app).not.toMatch(/registerDisplayPair/);
   });
 });
+
+describe("the merge redirect wiring holds (review round pins)", () => {
+  const app = () => readFileSync(join(SRC, "App.jsx"), "utf8");
+
+  it("every order→product lookup resolves through the unfiltered index", () => {
+    // The filtered products array must never be used to find an order's
+    // product — a merged-away id would come back undefined and fail open
+    // (double dispatch deduction, skipped size gate, wrong refill hub).
+    expect(app()).not.toMatch(/products\.find\(\(?p\)? *=> *p(?: && p)?\.id === order\.productId\)/);
+    expect((app().match(/resolveProductById\(order\.productId\)/g) || []).length).toBeGreaterThanOrEqual(5);
+    expect(app()).toMatch(/ALL_PRODUCTS_BY_ID = Object\.fromEntries/);
+  });
+
+  it("scan panels remount per scanned product, and the camera effect is render-stable", () => {
+    const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
+    expect(hubCleanup).toMatch(/key=\{`reg_\$\{panel\.product\.id\}/);
+    expect(hubCleanup).toMatch(/key=\{`cnt_\$\{panel\.product\.id\}/);
+    const cam = readFileSync(join(SRC, "components/stock/CameraScanner.jsx"), "utf8");
+    expect(cam).toMatch(/onScanRef\.current\(decodedText\)/);
+    expect(cam).toMatch(/\}, \[\]\);/);
+  });
+});

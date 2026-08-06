@@ -121,8 +121,10 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1 }) {
  */
 export async function addExtraDisplayUnit({ hub, product, size }) {
   if (!isCleanupHub(hub)) return { ok: false, message: "Only Hub 1 and Hub 2 are in scope." };
+  if (!product || !product.id) return { ok: false, message: "No product." };
   const rawSize = String(size ?? "").trim();
   const sizeKey = stockSizeKey(rawSize);
+  if (!rawSize || sizeKey === "_") return { ok: false, message: "Pick the size on the display." };
   const recPath = `${registerPath(hub)}/${registerKey(product.id, sizeKey)}`;
   const existing = await one(recPath);
   if (!existing || !Number.isInteger(Number(existing.qty))) {
@@ -179,6 +181,24 @@ export async function clearUnresolvedScan({ hub, codeKey }) {
   } catch (err) {
     return { ok: false, message: String(err?.message || err) };
   }
+}
+
+/**
+ * Fetch a product straight from /products, following any `mergedInto` chain to
+ * its survivor (bounded, cycle-safe). This is how a HISTORICAL barcode row —
+ * one pointing at a product merged away before this session's catalogue was
+ * loaded, or merged on another device minutes ago — still resolves to the
+ * record that answers for it today. Returns the live survivor, or null.
+ */
+export async function fetchProductFollowingMerge(productId) {
+  let id = productId;
+  for (let hops = 0; hops < 5 && id; hops++) {
+    const p = await one(`products/${String(id).replace(/[.#$/\[\]\s]/g, "_")}`);
+    if (!p) return null;
+    if (!p.mergedInto || p.mergedInto === id) return p.mergedInto ? null : p;
+    id = p.mergedInto;
+  }
+  return null;
 }
 
 /**
