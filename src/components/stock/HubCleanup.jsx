@@ -44,6 +44,7 @@ import { prepareLabelPhoto } from "../../utils/labelPhoto";
 import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/styleCode";
 import { isMergedAway } from "../../utils/mergedProducts";
 import { interpretLabelScan } from "../../utils/labelScan";
+import { mergeFrameTokens } from "../../utils/labelFrames";
 import { Html5Qrcode } from "html5-qrcode";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
@@ -54,7 +55,7 @@ import {
 import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
   recordUnresolvedScan, lookupBarcode, loadAllStock, loadDuplicateCandidates,
-  fetchProductFollowingMerge, lookupStyleClaim,
+  fetchProductFollowingMerge, lookupStyleClaim, matchLabelAlias, addLabelAlias,
 } from "./hubCleanupStore";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
@@ -349,6 +350,51 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
     } finally { setBusy(false); }
   }, [hub, products, flash]);
 
+  // ── The count's LABEL-READING path (owner design fix 2026-08-06) ──────────
+  // A reading with no printed code is matched against the alias store by token
+  // OVERLAP, never re-derived equality. Three bands: HIGH resolves silently;
+  // MID shows the candidate LARGE and asks (a yes files the reading as another
+  // alias, so the next scan of it is silent); LOW is the calm never-registered
+  // path. A network failure is an error, never a false never-registered.
+  const [aliasConfirm, setAliasConfirm] = useState(null);  // { tokens, candidates:[product], index }
+  const handleAliasTokens = useCallback(async (tokens) => {
+    if (!hub) return;
+    setBusy(true);
+    try {
+      let match;
+      try {
+        match = await matchLabelAlias(tokens);
+      } catch (err) {
+        flash("err", `Couldn't check that reading (${err?.message || err}) — try again.`);
+        return;
+      }
+      const resolveCandidate = async (pid) => {
+        const local = products.find((x) => x && x.id === pid && !isMergedAway(x)) || null;
+        return local || await fetchProductFollowingMerge(pid).catch(() => null);
+      };
+      if (match.band === "high" && match.candidates[0]) {
+        const p = await resolveCandidate(match.candidates[0].productId);
+        if (p) { setPanel(countPanelFor(p)); return; }
+      }
+      if (match.band === "high" || match.band === "mid") {
+        const candidates = [];
+        for (const c of match.candidates) {
+          const p = await resolveCandidate(c.productId);
+          if (p) candidates.push(p);
+        }
+        if (candidates.length) { setAliasConfirm({ tokens, candidates, index: 0 }); return; }
+      }
+      const preview = `reading: ${tokens.slice(0, 5).join(" ")}`;
+      const noted = await recordUnresolvedScan({ hub, code: preview, context: "count" });
+      if (noted.ok) {
+        setUnresolved((u) => ({ ...u, [preview.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code: preview, context: "count" } }));
+        flash("warn", "That label isn't registered to anything — noted as never registered. Carry on.");
+      } else {
+        flash("err", `That label isn't registered, but the note could not be saved (${noted.message || "write failed"}) — try again.`);
+      }
+    } finally { setBusy(false); }
+  }, [hub, products, flash]);
+
   useEffect(() => {
     const uninstall = installBarcodeListener();
     const unsub = subscribeBarcode((value) => { handleCode(value); });
@@ -597,7 +643,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
               Pick up a shoe and photograph the label <u>inside the tongue</u> — the style number
               brings up its count. Not the shop barcode sticker, not the box.
             </div>
-            <TongueLabelReader big busy={busy} onCode={(code) => handleStyleNumber(code)} />
+            <TongueLabelReader big busy={busy} onCode={(code) => handleStyleNumber(code)} onTokens={handleAliasTokens} />
 
             {/* Fallback 2 — search by name, small on purpose. */}
             <input value={query} onChange={(e) => setQuery(e.target.value)}
@@ -763,6 +809,47 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                        onMerged={refreshAfterMerge} />
       )}
 
+      {/* MID-BAND CONFIRM — the candidate LARGE, one question, one tap. A yes
+          files this reading as a further alias, so the next scan of it
+          resolves silently; a no moves to the next candidate, then to search. */}
+      {aliasConfirm && (() => {
+        const cand = aliasConfirm.candidates[aliasConfirm.index];
+        if (!cand) return null;
+        return (
+          <Panel title="Is this the shoe?" onClose={() => setAliasConfirm(null)}>
+            <div style={{ textAlign: "center" }}>
+              <Photo url={cand.photoUrl} size={220} radius={20} />
+              <div style={{ fontSize: 22, fontWeight: 900, margin: "16px 0 6px", lineHeight: 1.3 }}>{cand.name}</div>
+              <div style={{ fontSize: 12.5, color: GRAY, marginBottom: 20 }}>
+                Matched by this label's wording — confirm it and this reading files itself for next time.
+              </div>
+              <BigButton tone="green" disabled={busy} style={{ minHeight: 68, fontSize: 19 }}
+                onClick={async () => {
+                  const { tokens } = aliasConfirm;
+                  setAliasConfirm(null);
+                  addLabelAlias({ productId: cand.id, tokens }).catch(() => {});
+                  setPanel(countPanelFor(cand));
+                }}>
+                ✓ YES — this is the shoe
+              </BigButton>
+              <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                <button type="button" disabled={busy}
+                  onClick={() => {
+                    const next = aliasConfirm.index + 1;
+                    if (next < aliasConfirm.candidates.length) setAliasConfirm({ ...aliasConfirm, index: next });
+                    else { setAliasConfirm(null); flash("warn", "None matched — find it by name below, or it was never registered."); }
+                  }}
+                  style={{ ...bGray, flex: 1, minHeight: 52, fontSize: 14 }}>
+                  No — {aliasConfirm.index + 1 < aliasConfirm.candidates.length ? "show the next match" : "none of these"}
+                </button>
+                <button type="button" onClick={() => setAliasConfirm(null)}
+                  style={{ ...bGhost, flex: 1, minHeight: 52, fontSize: 14 }}>Cancel</button>
+              </div>
+            </div>
+          </Panel>
+        );
+      })()}
+
       {cameraOpen && (
         <CameraScanner title={tab === "register" ? "Scan the display" : "Scan the shoe"}
                        onScan={(code) => { setCameraOpen(false); handleCode(code); }}
@@ -770,6 +857,102 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       )}
 
       <Toast msg={toast} />
+    </div>
+  );
+}
+
+// ─── LABEL CAMERA — three frames, not one ────────────────────────────────────
+// Most OCR variance is single-frame noise, so the capture grabs THREE frames
+// ~350ms apart in one press and the reader keeps only tokens seen in at least
+// two (utils/labelFrames.js). Each frame is downscaled to ≤1024px before
+// upload (same budget as prepareLabelPhoto) and the server caches per frame's
+// image hash — so the three frames cost at most three vision calls ONCE, and
+// a retake of any identical frame re-bills nothing.
+function LabelCamera({ onFrames, onFallback, onClose }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [error, setError] = useState(null);
+  const [shooting, setShooting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+      .then((stream) => {
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play().catch(() => {}); }
+      })
+      .catch(() => { if (!cancelled) setError(true); });
+    return () => {
+      cancelled = true;
+      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  const grabFrame = () => new Promise((resolve) => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) { resolve(null); return; }
+    const scale = Math.min(1, 1024 / Math.max(video.videoWidth, video.videoHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob((blob) => {
+      if (!blob) { resolve(null); return; }
+      const reader = new FileReader();
+      reader.onload = () => resolve({ base64: String(reader.result).split(",")[1] || "", blob });
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    }, "image/jpeg", 0.85);
+  });
+
+  const shoot = async () => {
+    setShooting(true);
+    const frames = [];
+    for (let i = 0; i < 3; i++) {
+      const f = await grabFrame();
+      if (f) frames.push(f);
+      if (i < 2) await new Promise((r) => setTimeout(r, 350));
+    }
+    if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+    setShooting(false);
+    if (frames.length) onFrames(frames);
+    else onFallback();
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.96)", display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 18px", color: "#fff" }}>
+        <div style={{ fontWeight: 800, fontSize: 15 }}>The label inside the tongue</div>
+        <button onClick={onClose} style={{ ...bGhost, padding: "10px 16px", fontSize: 13 }}>Close</button>
+      </div>
+      {error ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ textAlign: "center", maxWidth: 320 }}>
+            <div style={{ color: "#FF9B9B", fontSize: 14, lineHeight: 1.5, marginBottom: 14 }}>
+              Camera stream unavailable — take a single photo instead.
+            </div>
+            <button onClick={onFallback} style={{ ...bBlue, minHeight: 50, padding: "0 20px", fontSize: 14 }}>📷 Take one photo</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+            <video ref={videoRef} playsInline muted style={{ maxWidth: "100%", maxHeight: "100%" }} />
+          </div>
+          <div style={{ padding: "14px 18px 30px" }}>
+            <div style={{ color: "rgba(255,255,255,.6)", fontSize: 12.5, textAlign: "center", marginBottom: 10 }}>
+              Fold the tongue forward and fill the frame with the printed label. One press takes three quick frames.
+            </div>
+            <button onClick={shoot} disabled={shooting}
+              style={{ width: "100%", minHeight: 62, borderRadius: 15, fontSize: 17, fontWeight: 800, fontFamily: FONT, cursor: "pointer",
+                       background: "rgba(74,127,255,.2)", border: "2px solid rgba(74,127,255,.6)", color: "#D7E3FF",
+                       opacity: shooting ? 0.6 : 1 }}>
+              {shooting ? "Capturing 3 frames…" : "◉ Capture the label"}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -782,64 +965,80 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
 // re-bills no vision call), with typed entry as the always-available fallback.
 // Copy is explicit on purpose — the operator must never wonder whether this is
 // the shop-barcode scan. It is not.
-function TongueLabelReader({ busy, big = false, onCode }) {
+function TongueLabelReader({ busy, big = false, onCode, onTokens = null }) {
   const [qrId] = useState(() => `label-qr-still-reader-${++qrReaderSeq}`);
   const [reading, setReading] = useState(false);
   const [readNote, setReadNote] = useState(null);          // { text, options? }
   const [typed, setTyped] = useState("");
+  const [cameraOpen, setCameraOpen] = useState(false);
   const fileRef = useRef(null);
+
+  // ── The shared frame pipeline (single photo OR three-frame burst) ─────────
+  // Frames are OCR'd one by one; the FIRST format-valid code short-circuits
+  // (that path is exact and confusable-guarded — unchanged). Only when NO
+  // frame yields a code do the frames' token sets merge (≥2-of-3 agreement)
+  // into a label READING for the alias store. Never a dead end.
+  const processFrames = async (frames) => {
+    setReading(true);
+    setReadNote(null);
+    try {
+      // QR/DataMatrix on the first frame — deterministic beats OCR.
+      try {
+        const f = new File([frames[0].blob], "label.jpg", { type: "image/jpeg" });
+        const scanner = new Html5Qrcode(qrId, false);
+        const decoded = await scanner.scanFile(f, false);
+        try { scanner.clear(); } catch { /* nothing mounted */ }
+        const qr = interpretLabelScan(decoded);
+        if (qr.kind === "code") {
+          onCode(qr.code, { source: "label", labelPhoto: frames[0] });
+          return;
+        }
+      } catch { /* no machine-readable code — OCR takes over */ }
+
+      const frameTokens = [];
+      let sawOptions = null;
+      for (const frame of frames) {
+        const { data } = await readStyleCodeLabelFn({ imageBase64: frame.base64, mimeType: "image/jpeg" });
+        const out = chooseFromLabelRead(data);
+        const formattedChosen = out.kind === "chosen" ? formatStyleCodeForDisplay(out.code) : "";
+        if (out.kind === "chosen" && formattedChosen) {
+          onCode(formattedChosen, { source: "label", labelPhoto: frame });
+          return;
+        }
+        if (out.kind === "options" && !sawOptions) sawOptions = { out, frame };
+        if (out.kind === "tokens") frameTokens.push(out.tokens);
+      }
+      if (sawOptions) {
+        setReadNote({
+          text: "The label shows more than one code-looking number — tap the style number:",
+          options: sawOptions.out.options,
+          labelPhoto: sawOptions.frame,
+        });
+        return;
+      }
+      const merged = mergeFrameTokens(frameTokens);
+      if (merged.length >= 2 && onTokens) {
+        onTokens(merged, { labelPhoto: frames[0] });
+        return;
+      }
+      setReadNote({ text: chooseFromLabelRead({ candidates: [] }).message });
+    } catch (err) {
+      setReadNote({ text: `Could not read that label (${err?.message || err}) — type the style number instead.` });
+    } finally { setReading(false); }
+  };
 
   const handleLabelPhoto = async (e) => {
     const file = e.target.files && e.target.files[0];
     e.target.value = "";
     if (!file) return;
     setReading(true);
-    setReadNote(null);
     try {
       const photo = await prepareLabelPhoto(file);
-
-      // ── QR / DATAMATRIX FIRST — deterministic beats OCR ──────────────────
-      // Lacoste and adidas labels carry one. If it decodes to something STABLE
-      // (a style-code-shaped value, directly or in a URL) it wins outright and
-      // no vision call is billed at all. Per-size GS1/GTIN payloads are
-      // deliberately ignored (utils/labelScan.js) — they would split one shoe
-      // into a product per size. Any decode failure falls through silently.
-      try {
-        const scanner = new Html5Qrcode(qrId, false);
-        const decoded = await scanner.scanFile(file, /* showImage */ false);
-        try { scanner.clear(); } catch { /* nothing mounted */ }
-        const qr = interpretLabelScan(decoded);
-        if (qr.kind === "code") {
-          setReading(false);
-          onCode(qr.code, { source: "label", labelPhoto: photo });
-          return;
-        }
-      } catch { /* no machine-readable code on this label — OCR takes over */ }
-
-      const { data } = await readStyleCodeLabelFn({ imageBase64: photo.base64, mimeType: "image/jpeg" });
-      const out = chooseFromLabelRead(data);
-      const formattedChosen = out.kind === "chosen" ? formatStyleCodeForDisplay(out.code) : "";
-      if (out.kind === "chosen" && formattedChosen) {
-        onCode(formattedChosen, { source: "label", labelPhoto: photo });
-      } else if (out.kind === "chosen") {
-        // A candidate that formats to nothing is not a style number at all.
-        setReadNote({ text: "Couldn't read a style number off that photo — try again closer, or type it." });
-      } else if (out.kind === "options") {
-        setReadNote({
-          text: "The label shows more than one code-looking number — tap the style number:",
-          options: out.options,
-          labelPhoto: photo,
-        });
-      } else if (out.kind === "fingerprint") {
-        // No brand format matched, but the label read cleanly: offer its
-        // stable fingerprint. Accepting it registers/counts like any code.
-        setReadNote({ text: out.message, fingerprint: out.code, labelPhoto: photo });
-      } else {
-        setReadNote({ text: out.message });
-      }
+      await processFrames([photo]);
     } catch (err) {
       setReadNote({ text: `Could not read that photo (${err?.message || err}) — type the style number instead.` });
-    } finally { setReading(false); }
+      setReading(false);
+    }
   };
 
   const applyTyped = () => {
@@ -861,22 +1060,22 @@ function TongueLabelReader({ busy, big = false, onCode }) {
     <div>
       <input ref={fileRef} type="file" accept="image/*" capture="environment"
              onChange={handleLabelPhoto} style={{ display: "none" }} />
-      <BigButton tone="blue" disabled={busy || reading} onClick={() => fileRef.current && fileRef.current.click()}
+      <BigButton tone="blue" disabled={busy || reading} onClick={() => setCameraOpen(true)}
                  style={big ? { minHeight: 84, fontSize: 20 } : { minHeight: 64, fontSize: 17 }}>
         {reading ? "Reading the tongue label…" : "📷 Photograph the tongue label"}
       </BigButton>
+      {cameraOpen && (
+        <LabelCamera
+          onFrames={(frames) => { setCameraOpen(false); processFrames(frames); }}
+          onFallback={() => { setCameraOpen(false); fileRef.current && fileRef.current.click(); }}
+          onClose={() => setCameraOpen(false)} />
+      )}
       <div id={qrId} style={{ display: "none" }} />
       {readNote && (
         <div style={{ marginTop: 10, background: "rgba(251,191,36,.07)", border: "1px solid rgba(251,191,36,.25)",
                       borderRadius: 11, padding: "9px 12px", fontSize: 12.5, color: "#FDE9B0" }}>
           {readNote.text}
-          {readNote.fingerprint && (
-            <button type="button"
-              onClick={() => { const fp = readNote.fingerprint; const photo = readNote.labelPhoto || null; setReadNote(null); onCode(fp, { source: "fingerprint", labelPhoto: photo }); }}
-              style={{ ...bGreen, display: "block", width: "100%", marginTop: 9, minHeight: 48, fontSize: 14 }}>
-              ✓ Use the label fingerprint for this shoe
-            </button>
-          )}
+
           {readNote.options && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
               {readNote.options.map((c) => (
@@ -924,15 +1123,25 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const [labelPhoto, setLabelPhoto] = useState(null);      // prepareLabelPhoto result, evidence
   const [skipReason, setSkipReason] = useState(null);
   const [skipOpen, setSkipOpen] = useState(false);
+  const [aliasTokens, setAliasTokens] = useState(null);    // a label READING (no printed code)
 
   // The shared tongue-label reader hands back the chosen code — one capture
   // path for BOTH passes (owner reversal 2026-08-06), never a second build.
   const takeCode = (code, { source, labelPhoto: photo }) => {
     setChosenCode(code);
     setCodeSource(source);
-    // A photo is evidence for BOTH a label read and a fingerprint — for a
-    // fingerprint it is the only evidence there will ever be.
-    setLabelPhoto(source === "label" || source === "fingerprint" ? photo : null);
+    setLabelPhoto(source === "label" ? photo : null);
+    setAliasTokens(null);
+    setSkipReason(null);
+  };
+  // A reading with no printed article number: filed as an ALIAS on save —
+  // never into styleCodeNormalised, so a product that already carries a code
+  // simply gains another way to be found (no immutability dead end, ever).
+  const takeTokens = (tokens) => {
+    setAliasTokens(tokens);
+    setChosenCode(null);
+    setCodeSource(null);
+    setLabelPhoto(null);
     setSkipReason(null);
   };
 
@@ -942,8 +1151,10 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const styleCodePayload = skipReason
     ? { skipped: skipReason }
     : chosenCode
-      ? { code: chosenCode, source: codeSource || "manual", labelPhoto: (codeSource === "label" || codeSource === "fingerprint") ? labelPhoto : null }
-      : null;
+      ? { code: chosenCode, source: codeSource || "manual", labelPhoto: codeSource === "label" ? labelPhoto : null }
+      : aliasTokens
+        ? { aliasTokens }
+        : null;
   const styleReady = styleStepSatisfied(product, styleCodePayload) && conflictOwners.length === 0;
 
   const regFor = (s) => registered[`${product.id}__${stockSizeKey(s)}`] || null;
@@ -1021,7 +1232,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
         <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
                       padding: "12px 14px", marginBottom: 18, fontSize: 14, color: "#B7F0CC",
                       display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ flex: 1 }}>✓ Style number: <strong>{chosenCode}</strong> <span style={{ color: GRAY, fontSize: 11.5 }}>({codeSource === "fingerprint" ? "label fingerprint — no printed article number" : codeSource === "label" ? "read off the tongue label" : "typed"})</span></span>
+          <span style={{ flex: 1 }}>✓ Style number: <strong>{chosenCode}</strong> <span style={{ color: GRAY, fontSize: 11.5 }}>({codeSource === "label" ? "read off the tongue label" : "typed"})</span></span>
           <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); }}
             style={{ ...bGhost, fontSize: 12, minHeight: 38, padding: "0 12px" }}>✎ Change</button>
         </div>
@@ -1042,6 +1253,15 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
               style={{ ...bGhost, fontSize: 13, minHeight: 44 }}>Re-enter</button>
           </div>
         </div>
+      ) : aliasTokens ? (
+        <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
+                      padding: "12px 14px", marginBottom: 18, fontSize: 14, color: "#B7F0CC",
+                      display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ flex: 1 }}>✓ Label reading captured — no printed article number; the label's own wording
+            ({aliasTokens.slice(0, 4).join(" · ")}{aliasTokens.length > 4 ? " …" : ""}) will identify this shoe.</span>
+          <button type="button" onClick={() => setAliasTokens(null)}
+            style={{ ...bGhost, fontSize: 12, minHeight: 38, padding: "0 12px" }}>✎ Retake</button>
+        </div>
       ) : skipReason ? (
         <div style={{ background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.14)", borderRadius: 13,
                       padding: "12px 14px", marginBottom: 18, fontSize: 13, color: "rgba(233,238,255,.75)",
@@ -1052,7 +1272,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
         </div>
       ) : (
         <div style={{ marginBottom: 18 }}>
-          <TongueLabelReader busy={busy} onCode={takeCode} />
+          <TongueLabelReader busy={busy} onCode={takeCode} onTokens={takeTokens} />
           {!skipOpen ? (
             <button type="button" onClick={() => setSkipOpen(true)}
               style={{ background: "none", border: "none", color: "rgba(233,238,255,.42)", textDecoration: "underline",
@@ -1096,7 +1316,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
           <BigButton tone="green" disabled={busy || !styleReady}
                      onClick={() => onRegister({ product, size, qty, styleCode: styleCodePayload })}
                      style={{ minHeight: 68, fontSize: 19 }}>
-            ✓ REGISTER — size {size}{codeOnFile || chosenCode ? " + style number" : ""}
+            ✓ REGISTER — size {size}{codeOnFile || chosenCode ? " + style number" : aliasTokens ? " + label reading" : ""}
           </BigButton>
           {!styleReady && (
             <div style={{ fontSize: 12, color: AMBER, marginTop: 8 }}>

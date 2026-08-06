@@ -487,6 +487,30 @@ add-product calls can't collide on the same number.
 
 ---
 
+## `/label_aliases/{aliasId}` — fuzzy label identity (many readings, one product)
+
+Written and read ONLY by the `labelAlias` callable (Admin SDK — no client rules
+exist or are needed). A label reading is an **ALIAS, not a key**: identity is
+assigned once at registration and every later scan is a token-overlap LOOKUP
+(containment ≥0.80 + ≥3 shared tokens resolves silently; ≥0.45 asks the human;
+below is the never-registered signal; two products over the silent bar downgrade
+to ask). A confirmed reading is added as a further alias, so accuracy improves
+with use. `styleCodeNormalised` holds real manufacturer codes ONLY — token
+identities never touch it, so its immutability rule can never dead-end a
+registration.
+
+| Field | Type | Notes |
+|---|---|---|
+| `productId` | string | the one product this reading points at (merge pointers followed at write time). |
+| `t` | `{ TOKEN: true }` | the token SET — a **map, never an array** (real RTDB deletes empty arrays). |
+| `n` | number | token count. |
+| `addedAt` / `addedBy` | epoch ms / uid | server-stamped. |
+
+Near-identical readings for the same product (containment ≥0.9) de-duplicate
+instead of piling up. Logic in `functions/lib/label-alias.cjs` (node-tested).
+
+---
+
 ## `/product_merges/{mergeId}` — merge audit + reversal recipe
 
 Written ONLY by the server-side `mergeProducts` callable (Admin SDK; the node

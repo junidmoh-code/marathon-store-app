@@ -329,9 +329,10 @@ test("FINGERPRINT: an empty or all-noise label produces nothing — not a junk i
   assert.strictEqual(labelFingerprint("US 9 UK 8 EUR 42.5\n08/15/19\n12345678"), null);
 });
 
-test("the cache record carries the fingerprint when present, and nothing else new", () => {
-  const rec = buildOcrCacheRecord({ candidates: [], source: "vision", nowMs: NOW, fingerprint: "CLOUDNOVAMONOUNDYEDWHITE" });
-  assert.strictEqual(rec.fingerprint, "CLOUDNOVAMONOUNDYEDWHITE");
+test("the cache record carries the token MAP when present, and nothing else new", () => {
+  const rec = buildOcrCacheRecord({ candidates: [], source: "vision", nowMs: NOW, tokens: ["CLOUDNOVA", "MONO"] });
+  assert.deepStrictEqual(rec.tk, { CLOUDNOVA: true, MONO: true });
+  assert.strictEqual(rec.fpv, 2);
   const bare = buildOcrCacheRecord({ candidates: ["CT8527016"], source: "vision", nowMs: NOW });
   assert.deepStrictEqual(Object.keys(bare).sort(), ["at", "candidates", "expiresAt", "fpv", "source"]);
 });

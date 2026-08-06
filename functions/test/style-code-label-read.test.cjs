@@ -322,7 +322,7 @@ test("a settled EMPTY read still caches — a blank label must not re-bill", asy
   // REAL RTDB deletes an empty-array child, so the stored row has NO candidates
   // key — the fpv marker is what vouches for it (the fake reproduces the drop).
   assert.strictEqual(row.candidates, undefined);
-  assert.strictEqual(row.fpv, 1);
+  assert.strictEqual(row.fpv, 2);
   // The behavioural point: the retake is served from cache, no re-bill.
   const second = await runLabelRead(db, base({
     visionFetch: counting("MADE IN VIETNAM"),
@@ -470,51 +470,51 @@ test("the allowed mime list is exactly the three the providers accept", () => {
 // ─── THE FINGERPRINT IN THE FUNNEL (owner fix 2026-08-06) ────────────────────
 const ON_LABEL = "On\nCLOUDNOVA MONO UNDYED WHITE\nUS M 8.5 UK 8 EU 42 JP 26.5\n1222\nMADE IN VIETNAM";
 
-test("a label with NO known format still answers — with a flagged fingerprint", async () => {
+test("a label with NO known format still answers — with its stable TOKEN SET", async () => {
   const db = fakeDb({});
   const out = await runLabelRead(db, base({
     visionFetch: visionOk(ON_LABEL),
     geminiFetch: geminiOk({}),          // tier 2 fires (0 candidates) and finds nothing
   }));
   assert.deepStrictEqual(out.candidates, []);
-  assert.strictEqual(out.fingerprint, "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC");
+  assert.deepStrictEqual(out.tokens, ["CLOUDNOVA", "MONO", "UNDYED", "WHITE"]);
 });
 
-test("the fingerprint is CACHED — a retake of the same no-format label re-bills nothing", async () => {
+test("the TOKEN SET is CACHED — a retake of the same no-format label re-bills nothing", async () => {
   const db = fakeDb({});
   let visionCalls = 0;
   const counting = (text) => async (...a) => { visionCalls++; return visionOk(text)(...a); };
   const first = await runLabelRead(db, base({ visionFetch: counting(ON_LABEL), geminiFetch: geminiOk({}) }));
-  assert.strictEqual(first.fingerprint, "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC");
+  assert.deepStrictEqual(first.tokens, ["CLOUDNOVA", "MONO", "UNDYED", "WHITE"]);
   assert.strictEqual(visionCalls, 1);
 
   const second = await runLabelRead(db, base({ visionFetch: counting(ON_LABEL), geminiFetch: geminiOk({}) }));
   assert.strictEqual(visionCalls, 1, "the identical photo must not be re-processed");
   assert.strictEqual(second.fromCache, true);
-  assert.strictEqual(second.fingerprint, "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC", "the fingerprint survives the cache round-trip");
+  assert.deepStrictEqual(second.tokens, ["CLOUDNOVA", "MONO", "UNDYED", "WHITE"],
+    "the token set survives the cache round-trip — stored as a MAP, because real RTDB drops empty/array children");
 });
 
-test("a format-valid candidate SUPPRESSES the fingerprint — verified codes always win", async () => {
+test("a format-valid candidate SUPPRESSES the token fallback — verified codes always win", async () => {
   const db = fakeDb({});
   const out = await runLabelRead(db, base({
     visionFetch: visionOk("LACOSTE\nPOWERCOURT 0520 1 SWA\n7-43SMA0033 1R5\nUK 8 US 9"),
     geminiFetch: geminiOk({}),
   }));
   assert.deepStrictEqual(out.candidates, ["743SMA00331R5"]);
-  assert.strictEqual(out.fingerprint, null);
+  assert.deepStrictEqual(out.tokens, []);
 });
 
-test("a PRE-fingerprint zero-candidate cache row upgrades itself on the next read", async () => {
+test("PRE-token cache rows (legacy AND fpv:1 fingerprint-era) upgrade on the next read", async () => {
   const db = fakeDb({});
-  // A legacy row: cached before the fingerprint field existed (no fpv marker).
-  db.data[OCR_CACHE_PATH] = { [HASH]: { candidates: [], source: "vision", at: NOW - 1000, expiresAt: NOW + 1000000 } };
+  // fpv:1 era row — carried a fingerprint string, no token set.
+  db.data[OCR_CACHE_PATH] = { [HASH]: { source: "vision", at: NOW - 1000, expiresAt: NOW + 1000000, fpv: 1, fingerprint: "OLDSTYLE" } };
   let visionCalls = 0;
   const counting = (text) => async (...a) => { visionCalls++; return visionOk(text)(...a); };
   const out = await runLabelRead(db, base({ visionFetch: counting(ON_LABEL), geminiFetch: geminiOk({}) }));
-  assert.strictEqual(visionCalls, 1, "the legacy row is re-read ONCE");
-  assert.ok(out.fingerprint, "…and now offers the fingerprint");
-  // The row is upgraded: a NEW no-fingerprint row would carry fpv and be served.
-  assert.strictEqual(db.data[OCR_CACHE_PATH][HASH].fpv, 1);
+  assert.strictEqual(visionCalls, 1, "the fpv:1 row is re-read ONCE");
+  assert.deepStrictEqual(out.tokens, ["CLOUDNOVA", "MONO", "UNDYED", "WHITE"]);
+  assert.strictEqual(db.data[OCR_CACHE_PATH][HASH].fpv, 2, "…and upgraded in place");
   const again = await runLabelRead(db, base({ visionFetch: counting(ON_LABEL), geminiFetch: geminiOk({}) }));
   assert.strictEqual(visionCalls, 1, "the upgraded row serves from cache");
   assert.strictEqual(again.fromCache, true);

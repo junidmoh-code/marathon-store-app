@@ -170,8 +170,16 @@ const FINGERPRINT_STOPWORDS = new Set([
   "THAILAND", "TURKEY", "PORTUGAL", "ITALY", "ITALIE",
 ]);
 
-function labelFingerprint(text) {
-  if (typeof text !== "string" || !text.trim()) return null;
+/**
+ * The STABLE TOKEN SET of a label — the per-pair variable parts stripped
+ * (sizes in every system, dates numeric and month-name, pure-numeric serials/
+ * GTINs, boilerplate). This is the unit the alias store matches on (owner
+ * design fix 2026-08-06): identity is assigned once and looked up by token
+ * OVERLAP afterwards, never by re-derived string equality.
+ * @returns {string[]} sorted unique tokens; [] when nothing stable survives
+ */
+function labelTokens(text) {
+  if (typeof text !== "string" || !text.trim()) return [];
   // Reuse the SAME masking the extractor trusts — sizes-with-system and dates
   // vanish before tokenisation, exactly once, in one place.
   const masked = maskNonCodeText(text.toUpperCase());
@@ -179,8 +187,13 @@ function labelFingerprint(text) {
     .filter((t) => !/^\d+$/.test(t))                 // every pure-numeric token is per-pair noise here
     .filter((t) => !FINGERPRINT_STOPWORDS.has(t))
     .filter((t) => t.length >= 3 || /\d/.test(t));   // 1-2 letter fragments carry no identity
+  return [...new Set(tokens)].sort();
+}
+
+function labelFingerprint(text) {
+  const tokens = labelTokens(text);
   if (!tokens.length) return null;
-  const unique = [...new Set(tokens)].sort();
+  const unique = tokens;
   // The digest is computed over the DELIMITED token list and ALWAYS appended.
   // Concatenation alone is ambiguous — {"CLOUDNOVA","MONO"} and
   // {"CLOUDNOVAM","ONO"} concatenate identically once sorted, and two
@@ -290,7 +303,7 @@ function imageHash(buffer) {
  * The ONLY shape written to /style_code_ocr_cache. Deliberately tiny, and
  * constructed rather than spread, so a fat payload cannot leak in by accident.
  */
-function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_MS, fingerprint = null }) {
+function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_MS, tokens = null }) {
   const codes = (Array.isArray(candidates) ? candidates : [])
     .map((c) => (typeof c === "string" ? normaliseStyleCode(c) : normaliseStyleCode(c && c.normalised)))
     .filter(Boolean)
@@ -301,27 +314,31 @@ function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_
     source: OCR_SOURCES.includes(source) ? source : "vision",
     at,
     expiresAt: at + ttlMs,
-    // Schema marker: this row was written AFTER the fingerprint field existed.
-    // RTDB drops null children, so "computed and found none" cannot be stored
-    // as fingerprint:null — fpv is how a legacy zero-candidate row (never
-    // fingerprinted) is told apart from a new one that genuinely has nothing.
-    fpv: 1,
+    // Schema version: 2 = the token-set era (owner design fix 2026-08-06).
+    // RTDB drops null/empty children, so "computed and found none" cannot be
+    // stored literally — fpv is how a candidates-less row proves it was
+    // written whole. fpv:1 rows (the brief fingerprint-string era) are
+    // deliberately STALE under v2 so they upgrade to tokens on one re-read.
+    fpv: 2,
   };
-  // The label FINGERPRINT rides the cache like a code (it is one string, no
-  // payload) so a retake of the same no-format label re-bills nothing either.
-  const fp = normaliseStyleCode(fingerprint);
-  if (fp) rec.fingerprint = fp;
+  // The stable TOKEN SET rides the cache (a small map, no payload) so a retake
+  // of the same no-format label re-bills nothing and still matches aliases.
+  if (Array.isArray(tokens) && tokens.length) {
+    const tk = {};
+    for (const t of tokens) if (t) tk[String(t)] = true;
+    if (Object.keys(tk).length) rec.tk = tk;
+  }
   return rec;
 }
 
 /** A cached row is usable only while unexpired — lazy expiry, so we never serve stale. */
 function isOcrCacheFresh(record, nowMs) {
   if (!record) return false;
-  // RTDB DELETES an empty-array child, so a zero-candidate row (fingerprint or
-  // genuinely unreadable) reads back with NO candidates key at all. The fpv
-  // marker vouches for such a row; without it, a candidates-less record is a
-  // legacy/corrupt row and is not fresh.
-  if (!Array.isArray(record.candidates) && record.fpv !== 1) return false;
+  // RTDB DELETES an empty-array child, so a zero-candidate row (token-set or
+  // genuinely unreadable) reads back with NO candidates key at all. An fpv≥2
+  // marker vouches for such a row; anything older (fpv:1 fingerprint-string
+  // era, or unmarked legacy) is deliberately stale and re-reads once.
+  if (!Array.isArray(record.candidates) && !(record.fpv >= 2)) return false;
   const exp = Number(record.expiresAt);
   if (!Number.isFinite(exp)) return false;
   return exp > (Number.isFinite(nowMs) ? nowMs : 0);
@@ -329,6 +346,7 @@ function isOcrCacheFresh(record, nowMs) {
 
 module.exports = {
   labelFingerprint,
+  labelTokens,
   MASK_PATTERNS,
   EXTRACTION_PATTERNS,
   MAX_CANDIDATES,

@@ -39,7 +39,7 @@ const admin = require("firebase-admin");
 const { GoogleAuth } = require("google-auth-library");
 
 const {
-  labelFingerprint,
+  labelTokens,
   OCR_CACHE_PATH,
   extractStyleCodeCandidates,
   imageHash,
@@ -214,15 +214,14 @@ async function runLabelRead(db, {
   // "nothing readable" for its whole TTL when the label actually yields a
   // fingerprint now — treat exactly that shape as a miss, once, so the row
   // upgrades itself. (A row with candidates, or with a fingerprint, is served.)
-  const preFingerprintRow = cachedRow && Array.isArray(cachedRow.candidates)
-    && cachedRow.candidates.length === 0 && !cachedRow.fingerprint && !cachedRow.fpv;
-  if (isOcrCacheFresh(cachedRow, nowMs) && !preFingerprintRow) {
+  // (fpv<2 candidates-less rows are already stale via isOcrCacheFresh)
+  if (isOcrCacheFresh(cachedRow, nowMs)) {
     // RTDB drops an empty candidates array — default it back.
     const cachedCandidates = Array.isArray(cachedRow.candidates) ? cachedRow.candidates : [];
     return {
       candidates: cachedCandidates,
       displayCandidates: cachedCandidates.map(formatStyleCodeForDisplay),
-      fingerprint: typeof cachedRow.fingerprint === "string" && cachedRow.fingerprint ? cachedRow.fingerprint : null,
+      tokens: cachedRow.tk && typeof cachedRow.tk === "object" ? Object.keys(cachedRow.tk).sort() : [],
       source: cachedRow.source, fromCache: true,
       brand: null, size: null, confidence: null, tier2Used: false, errors,
     };
@@ -279,19 +278,18 @@ async function runLabelRead(db, {
   // because every later read of the same photo hits the fresh-cache branch and
   // returns before tier 2 is ever retried. A transient Gemini outage would
   // permanently pin an unresolved label. (CodeRabbit, PR #312.)
-  // ── FINGERPRINT FALLBACK — never reject a label that produced readable ──
-  // text. Only when NO candidate matched a known format: the identity becomes
-  // a deterministic fingerprint of the label's stable tokens (labelFingerprint
-  // strips sizes, dates, serials — see style-code-ocr.cjs). Flagged as such in
-  // the response so the client can say what it is; it claims the index like
-  // any code, so uniqueness is never weakened.
-  const fingerprint = candidates.length === 0 ? labelFingerprint(visionText) : null;
+  // ── TOKEN FALLBACK — never reject a label that produced readable text ──
+  // Only when NO candidate matched a known format: the label's stable TOKEN
+  // SET rides the response for the alias store to match by overlap (owner
+  // design fix 2026-08-06 — identity is assigned at registration and looked
+  // up fuzzily, never re-derived and compared for equality).
+  const tokens = candidates.length === 0 ? labelTokens(visionText) : [];
 
   const tier2Failed = tier2Used && errors.some((e) => e.tier === "gemini");
   const settled = !tier2Failed && (!errors.length || candidates.length === 1);
   if (settled) {
     try {
-      await cacheRef.set(buildOcrCacheRecord({ candidates, source, nowMs, fingerprint }));
+      await cacheRef.set(buildOcrCacheRecord({ candidates, source, nowMs, tokens }));
     } catch (err) {
       console.warn(`readStyleCodeLabel: OCR cache write failed for ${hash}:`, err && err.message);
     }
@@ -300,7 +298,7 @@ async function runLabelRead(db, {
   return {
     candidates,
     displayCandidates: candidates.map(formatStyleCodeForDisplay),
-    fingerprint: fingerprint || null,
+    tokens,
     source, fromCache: false, brand, size, confidence, tier2Used, errors,
   };
 }
