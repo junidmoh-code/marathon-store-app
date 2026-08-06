@@ -206,3 +206,16 @@ test("a redundant near-duplicate alias row changes NO match result — the dedup
   assert.deepStrictEqual(dup.band, single.band);
   assert.deepStrictEqual(dup.candidates, single.candidates);
 });
+
+
+// ─── Review round (#330): reads for assistants, WRITES for stock roles only ──
+test("an assistant may MATCH but never ADD — alias mutations need a write role", () => {
+  const { ALIAS_WRITE_PERMISSIONS } = require("../labelAlias/labelAlias.js");
+  const assistant = { permissions: ["store_assistant", "place_orders"], isSuper: false };
+  const stocker = { permissions: ["stock_add"], isSuper: false };
+  const mayWrite = (actor) => actor.isSuper || ALIAS_WRITE_PERMISSIONS.some((p) => actor.permissions.includes(p));
+  assert.strictEqual(mayWrite(assistant), false, "store_assistant alone must not mutate /label_aliases");
+  assert.strictEqual(mayWrite(stocker), true);
+  assert.strictEqual(mayWrite({ permissions: [], isSuper: true }), true);
+  assert.ok(!ALIAS_WRITE_PERMISSIONS.includes("store_assistant"));
+});

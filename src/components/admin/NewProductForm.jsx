@@ -78,9 +78,25 @@ export default function NewProductForm({
   const catOk = !!selectedCat;
   const hubsOk = form.hubs.length > 0;
   const locOk = !!recvLoc;
-  const canSave = !saving && nameOk && catOk && hubsOk && locOk;
-  const units = totalUnits(recvQtys);
-  const sizeCount = formSizes.length;
+  // ── THE SIZE RUN IS CHOSEN, NOT ASSUMED (owner fix 3, 2026-08-06) ──────────
+  // The category defines what sizes are POSSIBLE; the operator taps the ones
+  // this product actually comes in. Default: nothing selected — a deliberate
+  // act. One-size categories skip the selector ("_" sentinel, unchanged).
+  const sizeRun = Array.isArray(form.sizeRun) ? form.sizeRun : [];
+  const chosenSizes = formOneSize ? formSizes : formSizes.filter((sz) => sizeRun.includes(String(sz)));
+  const sizesOk = formOneSize || chosenSizes.length > 0;
+  const toggleRunSize = (sz) => {
+    setForm((f) => {
+      const cur = Array.isArray(f.sizeRun) ? f.sizeRun : [];
+      return { ...f, sizeRun: cur.includes(sz) ? cur.filter((x) => x !== sz) : [...cur, sz] };
+    });
+    // Deselecting clears the quantity too — the unit total must never count a
+    // size the save will not persist.
+    setRecvQtys((q) => (sizeRun.includes(sz) ? { ...q, [sz]: "" } : q));
+  };
+  const canSave = !saving && nameOk && catOk && hubsOk && locOk && sizesOk;
+  const units = totalUnits(Object.fromEntries(chosenSizes.map((sz) => [sz, recvQtys[sz]])));
+  const sizeCount = chosenSizes.length;
 
   return (
     <div style={{
@@ -210,12 +226,44 @@ export default function NewProductForm({
             </div>
           ) : (
             <>
+              {!formOneSize && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".07em", textTransform: "uppercase",
+                                color: "rgba(233,238,255,.5)", marginBottom: 7 }}>
+                    Which sizes does this product come in? <span style={{ color: "#F87171" }}>*</span>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {formSizes.map((sz) => {
+                      const on = sizeRun.includes(String(sz));
+                      return (
+                        <button key={sz} type="button" onClick={() => toggleRunSize(String(sz))} aria-pressed={on}
+                          style={{ minWidth: 54, minHeight: 46, borderRadius: 11, fontSize: 15, fontWeight: 800, cursor: "pointer",
+                                   background: on ? "rgba(74,222,128,.18)" : "rgba(255,255,255,.04)",
+                                   border: on ? "2px solid rgba(74,222,128,.7)" : "1px solid rgba(255,255,255,.16)",
+                                   color: on ? "#B7F0CC" : "rgba(233,238,255,.6)" }}>
+                          {sz}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ marginTop: 7, fontSize: 11.5, color: "rgba(233,238,255,.42)", lineHeight: 1.45 }}>
+                    Only the sizes you select exist on this product — they alone get stock cells and barcodes.
+                  </div>
+                  {saveAttempted && !sizesOk && (
+                    <div style={{ marginTop: 8, fontSize: 12.5, color: "#F87171", fontWeight: 600 }}>
+                      Tap the sizes this product actually comes in.
+                    </div>
+                  )}
+                </div>
+              )}
+              {(formOneSize || chosenSizes.length > 0) && (
               <SizeQtyBoxes
-                sizes={formSizes}
+                sizes={chosenSizes}
                 oneSize={formOneSize}
                 values={recvQtys}
                 onChange={(s, v) => setRecvQtys((q) => ({ ...q, [s]: v }))}
               />
+              )}
               <div style={{ marginTop: 14, display: "flex", alignItems: "center", justifyContent: "space-between",
                             gap: 10, flexWrap: "wrap", fontSize: 12.5 }}>
                 <span style={{ color: "rgba(233,238,255,.42)" }}>

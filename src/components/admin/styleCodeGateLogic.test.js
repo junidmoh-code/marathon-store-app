@@ -407,3 +407,24 @@ describe("bypass duplicate search — digit-containing names", () => {
     expect(searchProducts(P, "Balenciaga Triple S 2019")).toEqual([]);
   });
 });
+
+// ─── FIX 5 (2026-08-06): soccer boots enforce the gate via CONFIG, not code ──
+// The enforced set is pure data. Nothing here hardcodes "sneakers" beyond the
+// deliberate fail-open DEFAULT; the console value to set is
+//   /config/styleCode/enforcedCategories = ["sneakers", "soccer-boots"]
+// and these tests prove the gate follows it with no code change.
+describe("soccer boots under the config-driven gate", () => {
+  it("with the console value set, soccer-boots is enforced exactly like sneakers", () => {
+    const enforced = readEnforcedCategories({ enforcedCategories: ["sneakers", "soccer-boots"] }, ["sneakers"]);
+    expect(isCategoryEnforced("soccer-boots", enforced)).toBe(true);
+    expect(isCategoryEnforced("sneakers", enforced)).toBe(true);
+    expect(isCategoryEnforced("slides", enforced)).toBe(false);
+    expect(isCategoryEnforced("clothing-tops", enforced)).toBe(false);
+  });
+
+  it("without the console value, the narrow default applies — soccer-boots not yet enforced", () => {
+    const enforced = readEnforcedCategories(null, ["sneakers"]);
+    expect(isCategoryEnforced("soccer-boots", enforced)).toBe(false);
+    expect(isCategoryEnforced("sneakers", enforced)).toBe(true);
+  });
+});

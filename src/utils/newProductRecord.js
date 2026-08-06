@@ -54,8 +54,29 @@ export function buildNewProduct(registry, form, extras = {}) {
   const legacy = legacyFor(registry, form && form.categoryKey);
   if (!cat || !legacy) return null;
 
-  const sizes = sizesOf(cat);
-  if (!sizes.length) return null;
+  const runSizes = sizesOf(cat);
+  if (!runSizes.length) return null;
+
+  // ── THE SIZE RUN IS CHOSEN, NOT ASSUMED (owner fix 3, 2026-08-06) ──────────
+  // For a multi-size category the operator SELECTS which sizes this product
+  // actually comes in; only those become product.sizes — so only those get a
+  // stock cell or a barcode, and the refill engine (which infers what a
+  // location carries from CELL PRESENCE) never learns about a size we will
+  // never stock. Selection is validated against the category's own run,
+  // preserving the run's canonical order. Nothing selected → refuse the save:
+  // choosing the run is a deliberate act, and a shoe with no sizes is not a
+  // product. One-size categories are UNTOUCHED — they stay the "_" sentinel
+  // straight from the taxonomy, never a display label.
+  let sizes;
+  if (runSizes.length === 1 && runSizes[0] === "_") {
+    sizes = runSizes;
+  } else {
+    const chosen = new Set(
+      (Array.isArray(form.sizeRun) ? form.sizeRun : []).map((x) => String(x).trim()).filter(Boolean)
+    );
+    sizes = runSizes.filter((sz) => chosen.has(String(sz)));
+    if (!sizes.length) return null;
+  }
 
   const isClothing = legacy.productType === "clothing";
 

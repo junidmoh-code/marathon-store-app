@@ -62,19 +62,23 @@ describe("the merge redirect wiring holds (review round pins)", () => {
   });
 
   it("review-round pins: junk style input is refused with a note; the barcode shortcut loads stock", () => {
-    const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
+    const reader = readFileSync(join(SRC, "components/stock/TongueLabelReader.jsx"), "utf8");
     // applyTyped must refuse an input that formats to nothing, with an explanation:
-    expect(hubCleanup).toMatch(/if \(!formatted\) \{/);
-    expect(hubCleanup).toMatch(/doesn't look like a style number/);
+    expect(reader).toMatch(/if \(!formatted\) \{/);
+    expect(reader).toMatch(/doesn't look like a style number/);
+    const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
     // the register branch of the barcode shortcut must start the stock-by-location load:
     expect(hubCleanup).toMatch(/setPanel\(registerPanelFor\(out\.product, out\.size\)\);\s*\n\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*ensureAllStock\(\)/);
   });
 
   it("count-pass pins: label-first entry, one shared reader, unresolved fires on the label path", () => {
     const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
-    // ONE shared tongue-label reader component, used by BOTH passes — the count
-    // tab mounts it big as the primary entry, the register panel reuses it:
-    expect((hubCleanup.match(/function TongueLabelReader/g) || []).length).toBe(1);
+    // ONE shared tongue-label reader component (its own module since fix 4,
+    // reused by register, count AND the assistant) — the count tab mounts it
+    // big as the primary entry, the register panel reuses it:
+    const readerFile = readFileSync(join(SRC, "components/stock/TongueLabelReader.jsx"), "utf8");
+    expect((readerFile.match(/export function TongueLabelReader/g) || []).length).toBe(1);
+    expect(hubCleanup).not.toMatch(/function TongueLabelReader/);
     expect(hubCleanup).toMatch(/<TongueLabelReader big busy=\{busy\} onCode=\{\(code\) => handleStyleNumber\(code\)\} onTokens=\{handleAliasTokens\} \/>/);
     expect(hubCleanup).toMatch(/<TongueLabelReader busy=\{busy\} onCode=\{takeCode\} onTokens=\{takeTokens\} \/>/);
     // The count tab must NOT lead with a barcode scan any more:
@@ -120,12 +124,39 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     // The mid-band confirm files the reading as a further alias on YES:
     expect(hubCleanup).toMatch(/addLabelAlias\(\{ productId: cand\.id, tokens \}\)/);
     // Three frames, ≥2-of-3 agreement, through the shared merge helper:
-    expect(hubCleanup).toMatch(/mergeFrameTokens\(frameTokens\)/);
+    expect(readFileSync(join(SRC, "components/stock/TongueLabelReader.jsx"), "utf8")).toMatch(/mergeFrameTokens\(frameTokens\)/);
     // A failed alias match is an ERROR, never a false never-registered:
     expect(hubCleanup).toMatch(/Couldn't check that reading/);
     const store = readFileSync(join(SRC, "components/stock/hubCleanupStore.js"), "utf8");
     // Alias registrations never enqueue a capture and never stamp a code:
     expect(store).toMatch(/aliasTokens \? "label_alias"/);
+  });
+
+  it("fix-4 pins: the assistant finder is wired, explicit about the tongue label, informative on a miss", () => {
+    const app = readFileSync(join(SRC, "App.jsx"), "utf8");
+    expect(app).toMatch(/function AssistantLabelFinder/);
+    expect((app.match(/setLabelFinderOpen\(true\)/g) || []).length).toBe(2);   // mobile + desktop buttons
+    expect(app).toMatch(/Find by the tongue label/);
+    expect(app).toMatch(/Not the shop barcode sticker, not the box/);
+    // A clean read with no registered owner says EXACTLY that — never generic:
+    expect(app).toMatch(/isn't registered to any product — search by name instead/);
+    expect(app).toMatch(/no registered product carries it — search by name instead/);
+  });
+
+  it("fix-3 pins: zero-seeds ride the save through setCellState; the run resets per category", () => {
+    const app = readFileSync(join(SRC, "App.jsx"), "utf8");
+    expect(app).toMatch(/for \(const zSize of zeroEntries\(sizes, recvQtys\)\)/);
+    expect(app).toMatch(/setCellState\(recvLoc, id, zSize, "live"\)/);
+    expect(app).toMatch(/sizeRun: \[\],\n\s*hubs: hubs\.length/);
+    // Review pins (#330): a failed seed is OBSERVED and reported (setCellState
+    // resolves {ok:false}, it never throws), and the finder only ever hands
+    // back records from the CURRENT catalog:
+    expect(app).toMatch(/if \(!seed \|\| !seed\.ok\) failedSeeds\.push\(zSize\);/);
+    expect(app).toMatch(/could not be created/);
+    expect(app).toMatch(/return products\.find\(\(x\) => x && x\.id === fetched\.id\) \|\| null;/);
+    const reader = readFileSync(join(SRC, "components/stock/TongueLabelReader.jsx"), "utf8");
+    // Manual entry can never race a burst still reading:
+    expect(reader).toMatch(/if \(reading \|\| busy\) return;/);
   });
 
   it("scan panels remount per scanned product, and the camera effect is render-stable", () => {

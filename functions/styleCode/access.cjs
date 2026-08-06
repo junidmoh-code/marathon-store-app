@@ -22,8 +22,13 @@ const { HttpsError } = require("firebase-functions/v2/https");
 const ADMIN_EMAIL = "gunidmoh@gmail.com"; // super-admin (mirrors config/displayChecks.js)
 
 // Any ONE of these implies style-code work is part of this person's job:
-// intake (products), the shop-floor display flow, or receiving stock.
-const STYLE_CODE_PERMISSIONS = ["product_admin", "display_checks", "stock_add", "stock_management"];
+// intake (products), the shop-floor display flow, receiving stock — and, since
+// the assistant tongue-label finder (owner fix 4, 2026-08-06), store
+// assistants: their view reads labels to FIND a product a customer is holding.
+// The widening grants label READS and alias lookups; writes stay bounded by
+// what each callable does (capture enqueue is additionally rules-gated on the
+// client side, and the alias store only ever gains human-confirmed readings).
+const STYLE_CODE_PERMISSIONS = ["product_admin", "display_checks", "stock_add", "stock_management", "store_assistant"];
 
 /**
  * Authorise a style-code callable and return the actor to stamp on writes.
