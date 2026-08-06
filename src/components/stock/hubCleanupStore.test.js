@@ -33,7 +33,7 @@ function setPath(path, value) {
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path || "" }),
   child: (node, path) => ({ path: node.path ? `${node.path}/${path}` : path }),
-  get: async (node) => ({ val: () => getPath(node.path), exists: () => getPath(node.path) != null }),
+  get: async (node) => { readLog.push(String(node.path)); return { val: () => getPath(node.path), exists: () => getPath(node.path) != null }; },
   update: async (node, updates) => {
     for (const [k, v] of Object.entries(updates)) setPath(node.path ? `${node.path}/${k}` : k, v);
   },
@@ -47,6 +47,7 @@ vi.mock("firebase/database", () => ({
   },
 }));
 let pushN = 0;
+let readLog = [];
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: () => () => {} }));
 vi.mock("../../firebase", () => ({ database: { fake: true }, auth: { currentUser: { uid: "walker-1" } } }));
 vi.mock("../../device/deviceId", () => ({ getDeviceId: () => "dev-1" }));
@@ -75,7 +76,7 @@ vi.mock("./applyMovement", () => ({ applyMovement: (...a) => applyMovementMock(.
 
 const {
   registerDisplayUnit, addExtraDisplayUnit, recordUnresolvedScan, loadRegister,
-  fetchProductFollowingMerge,
+  fetchProductFollowingMerge, lookupStyleClaim,
 } = await import("./hubCleanupStore.js");
 
 const HUB = "hub2";
@@ -93,6 +94,7 @@ beforeEach(() => {
   pushN = 0;
   applyMovementMock.mockClear();
   enqueueMock.mockClear();
+  readLog = [];
 });
 
 describe("registration is idempotent — the mandatory mutation proof", () => {
@@ -272,6 +274,38 @@ describe("guards", () => {
       expect(r.ok).toBe(false);
     }
     expect(movementCount()).toBe(0);
+  });
+});
+
+// ─── THE COUNT'S LABEL PATH (owner reversal 2026-08-06) ──────────────────────
+// A tongue-label read resolves through the /style_code_index claim — THE
+// authority on who owns a code — and the whole path never goes anywhere near
+// the barcode index. The read log proves it.
+describe("count by tongue label — claim resolution, no barcode anywhere", () => {
+  it("the claim resolves to the right product, and only /style_code_index and /products are read", async () => {
+    setPath("style_code_index/CT8527016", { productId: "p100", claimedAt: 1 });
+    setPath("products/p100", { id: "p100", name: "Nike Dunk Low" });
+    const claim = await lookupStyleClaim("CT8527016");
+    expect(claim.productId).toBe("p100");
+    const p = await fetchProductFollowingMerge(claim.productId);
+    expect(p.name).toBe("Nike Dunk Low");
+    expect(readLog.every((r) => r.startsWith("style_code_index/") || r.startsWith("products/"))).toBe(true);
+    expect(readLog.some((r) => r.startsWith("barcodes"))).toBe(false);
+  });
+
+  it("a claim pointing at a merged-away product follows to the survivor", async () => {
+    setPath("style_code_index/CT8527016", { productId: "pOld", claimedAt: 1 });
+    setPath("products/pOld", { id: "pOld", mergedInto: "pNew" });
+    setPath("products/pNew", { id: "pNew", name: "Real Dunk" });
+    const claim = await lookupStyleClaim("CT8527016");
+    const p = await fetchProductFollowingMerge(claim.productId);
+    expect(p.id).toBe("pNew");
+  });
+
+  it("no claim → null, cleanly — the caller falls back to the catalogue match", async () => {
+    expect(await lookupStyleClaim("ZZ9999999")).toBe(null);
+    expect(await lookupStyleClaim("")).toBe(null);
+    expect(await lookupStyleClaim(null)).toBe(null);
   });
 });
 

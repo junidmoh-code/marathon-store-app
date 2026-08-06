@@ -70,6 +70,21 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     expect(hubCleanup).toMatch(/setPanel\(registerPanelFor\(out\.product, out\.size\)\);\s*\n\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*ensureAllStock\(\)/);
   });
 
+  it("count-pass pins: label-first entry, one shared reader, unresolved fires on the label path", () => {
+    const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
+    // ONE shared tongue-label reader component, used by BOTH passes — the count
+    // tab mounts it big as the primary entry, the register panel reuses it:
+    expect((hubCleanup.match(/function TongueLabelReader/g) || []).length).toBe(1);
+    expect(hubCleanup).toMatch(/<TongueLabelReader big busy=\{busy\} onCode=\{\(code\) => handleStyleNumber\(code\)\} \/>/);
+    expect(hubCleanup).toMatch(/<TongueLabelReader busy=\{busy\} onCode=\{takeCode\} \/>/);
+    // The count tab must NOT lead with a barcode scan any more:
+    expect(hubCleanup).not.toMatch(/SCAN A SHOE/);
+    // The never-registered signal fires on the LABEL path (style-number
+    // resolution), not only on the barcode shortcut:
+    expect(hubCleanup).toMatch(/reads cleanly but nothing owns it/);
+    expect(hubCleanup).toMatch(/recordUnresolvedScan\(\{ hub, code: display, context: "count" \}\)/);
+  });
+
   it("scan panels remount per scanned product, and the camera effect is render-stable", () => {
     const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
     expect(hubCleanup).toMatch(/key=\{`reg_\$\{panel\.product\.id\}/);

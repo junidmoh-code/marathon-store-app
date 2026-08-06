@@ -249,6 +249,24 @@ export async function clearUnresolvedScan({ hub, codeKey }) {
 }
 
 /**
+ * The ownership claim for a style number — /style_code_index is THE authority
+ * on which product owns a code. Fail-soft: the node's live read rule is
+ * console-managed and may not grant clients access, and a denied read must
+ * degrade to the local catalogue match, never to a broken count. (If reads are
+ * denied, the console rule to add is: /style_code_index `.read`:
+ * `auth != null && auth.token.firebase.sign_in_provider !== 'anonymous'`.)
+ */
+export async function lookupStyleClaim(normalised) {
+  const key = String(normalised ?? "").replace(/[.#$/\[\]\s]/g, "");
+  if (!key) return null;
+  try {
+    return await one(`style_code_index/${key}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch a product straight from /products, following any `mergedInto` chain to
  * its survivor (bounded, cycle-safe). This is how a HISTORICAL barcode row —
  * one pointing at a product merged away before this session's catalogue was
