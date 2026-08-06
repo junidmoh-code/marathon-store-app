@@ -33,6 +33,7 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bRed } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { formatDuration, refillAgeTone } from "../../utils/duration";
+import { isFootwearProduct } from "./missingFootwearCore";
 
 const SOURCE_LOC = "central";
 // HUB-AGNOSTIC (2026-07-30). This queue was written when only Hub 2 received
@@ -101,6 +102,11 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   const centralCells = useStockCells(SOURCE_LOC);
   const now = useNowMinute();
   const [view, setView] = useState("open"); // "open" | "history"
+  // Sneakers and clothing are different picking jobs — different shelves, often
+  // different people. One mixed list made the operator read every card to find
+  // theirs. `null` = not chosen yet, so the screen opens on whichever kind
+  // actually has work rather than a confidently empty tab.
+  const [kind, setKind] = useState(null);
   // v9 actionable-only: every card below IS ready to fulfil (the engine only
   // creates a request when Central physically has the stock, and withdraws it
   // if Central sells out). The passive demand — waiting on supplier/upstream —
@@ -159,18 +165,50 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
     });
   }, [openRequests, byId]);
 
-  // Fulfilled history for Hub 2 — total delay (raised → fulfilled), most-recently
-  // fulfilled first, capped so the list can't render thousands. Derived from the
-  // same subscription; no extra read.
+  const isFw = (pid) => isFootwearProduct(byId.get(pid));
+  const splitCards = useMemo(() => ({
+    sneakers: cards.filter((c) => isFw(c.pid)),
+    clothing: cards.filter((c) => !isFw(c.pid)),
+  }), [cards, byId]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fulfilled history — total delay (raised → fulfilled), most-recently fulfilled
+  // first. Derived from the same subscription; no extra read.
+  //
+  // PARTITION BEFORE THE CAP. Capping a MIXED list at 100 and filtering after
+  // meant a lane could be starved to nothing by the other one: 100 sneaker
+  // fulfilments in a row and clothing history rendered empty, looking like there
+  // had never been any. Each lane now gets its own 100. (CodeRabbit #294 — Major.)
   const HISTORY_CAP = 100;
-  const history = useMemo(() => {
-    return allRequests
+  const historyByKind = useMemo(() => {
+    const all = allRequests
       .filter((r) => r.requestingLocation === DEST_LOC && r.status === "fulfilled" && r.createdAt && r.resolvedAt)
       .map((r) => ({ ...r, raisedMs: parseMs(r.createdAt), resolvedMs: parseMs(r.resolvedAt) }))
       .filter((r) => Number.isFinite(r.raisedMs) && Number.isFinite(r.resolvedMs) && r.resolvedMs >= r.raisedMs)
-      .sort((a, b) => b.resolvedMs - a.resolvedMs)
-      .slice(0, HISTORY_CAP);
-  }, [allRequests]);
+      .sort((a, b) => b.resolvedMs - a.resolvedMs);
+    return {
+      sneakers: all.filter((r) => isFw(r.productId)).slice(0, HISTORY_CAP),
+      clothing: all.filter((r) => !isFw(r.productId)).slice(0, HISTORY_CAP),
+    };
+  }, [allRequests, byId]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Which lane opens by default depends on WHICH VIEW you are in: the open queue
+  // and the history can be non-empty for different kinds, and picking the lane
+  // from open cards alone landed History on an empty Sneakers tab while Clothing
+  // history sat there unread. (CodeRabbit #294 — Major.)
+  const laneCounts = view === "history"
+    ? { sneakers: historyByKind.sneakers.length, clothing: historyByKind.clothing.length }
+    : { sneakers: splitCards.sneakers.length, clothing: splitCards.clothing.length };
+  // CLOTHING FIRST when there is clothing work. This queue has always opened on
+  // clothing — it is Central's daily job and the engine fills it automatically.
+  // Sneakers are the new lane and must be opt-in via the pill, never something
+  // that displaces the existing workflow. Measured on live data the day this
+  // shipped: hub2 held 109 open clothing requests against 98 sneaker ones, so a
+  // sneakers-first default would have hidden all 109 behind a pill for the staff
+  // who work them. Sneakers still lead when there is no clothing outstanding, so
+  // an empty clothing lane never shows an empty screen.
+  const activeKind = kind || (laneCounts.clothing ? "clothing" : laneCounts.sneakers ? "sneakers" : "clothing");
+  const shownCards = splitCards[activeKind] || [];
+  const shownHistory = historyByKind[activeKind] || [];
 
   const availOf = (pid, size) => Math.max(Number(centralCells?.[pid]?.[String(size)]?.qty) || 0, 0);
   // A size with counted Central stock is capped by it; a size showing ZERO can
@@ -265,9 +303,25 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
 
   // Open queue ⇄ Fulfilled history toggle — both views come from the one
   // subscription above.
+  const PILLS = { display: "inline-flex", gap: 2, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: 3, margin: "6px 2px 12px" };
+  const pill = (on) => ({ border: "none", cursor: "pointer", borderRadius: 8, padding: "6px 13px", fontSize: 12, fontWeight: 700,
+                          background: on ? "rgba(74,127,255,.22)" : "transparent", color: on ? "#cfe0ff" : GRAY });
+
+  // Sneakers ⇄ Clothing. Counts are always shown so an empty lane is visibly
+  // empty rather than looking like a loading list.
+  const kindToggle = (
+    <div style={{ ...PILLS, marginRight: 8 }}>
+      {[["sneakers", "Sneakers", laneCounts.sneakers], ["clothing", "Clothing", laneCounts.clothing]].map(([k, label, n]) => (
+        <button key={k} type="button" onClick={() => setKind(k)} style={pill(activeKind === k)}>
+          {label} · {n}
+        </button>
+      ))}
+    </div>
+  );
+
   const toggle = (
     <div style={{ display: "inline-flex", gap: 2, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: 3, margin: "6px 2px 12px" }}>
-      {[["open", `Open queue${cards.length ? ` · ${cards.length}` : ""}`], ["history", "Fulfilled history"]].map(([k, label]) => {
+      {[["open", `Open queue${shownCards.length ? ` · ${shownCards.length}` : ""}`], ["history", "Fulfilled history"]].map(([k, label]) => {
         const on = view === k;
         return (
           <button key={k} type="button" onClick={() => setView(k)}
@@ -283,16 +337,16 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   if (view === "history") {
     return (
       <div style={{ paddingBottom: 30 }}>
-        {toggle}
-        {history.length === 0 ? (
-          <div style={{ ...GLASS, padding: 16, color: GRAY, fontSize: 13 }}>{`No fulfilled ${destLabel} refills yet.`}</div>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center" }}>{kindToggle}{toggle}</div>
+        {shownHistory.length === 0 ? (
+          <div style={{ ...GLASS, padding: 16, color: GRAY, fontSize: 13 }}>{`No fulfilled ${destLabel} ${activeKind === "sneakers" ? "sneaker" : "clothing"} refills yet.`}</div>
         ) : (
           <>
             <div style={{ color: GRAY, fontSize: 11.5, margin: "0 2px 10px" }}>
-              Last {history.length} fulfilled — total time from raised to fulfilled. Longest delays flag red (≥24h).
+              Last {shownHistory.length} fulfilled — total time from raised to fulfilled. Longest delays flag red (≥24h).
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {history.map((r) => {
+              {shownHistory.map((r) => {
                 const p = byId.get(r.productId);
                 const delay = r.resolvedMs - r.raisedMs;
                 return (
@@ -315,12 +369,12 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
     );
   }
 
-  if (!cards.length) {
+  if (!shownCards.length) {
     return (
       <div style={{ paddingBottom: 30 }}>
-        {toggle}
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center" }}>{kindToggle}{toggle}</div>
         <div style={{ ...GLASS, padding: 16, margin: "8px 0", color: GRAY, fontSize: 13 }}>
-          {`No refill requests Central can act on right now. When ${destLabel} drops below its`}
+          {`No ${activeKind === "sneakers" ? "sneaker" : "clothing"} refill requests Central can act on right now. When ${destLabel} drops below its`}
           approved targets AND Central has the stock, requests appear here automatically.
           {passiveLine(" In the background: ")}
         </div>
@@ -330,14 +384,14 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
 
   return (
     <div style={{ paddingBottom: 30 }}>
-      {toggle}
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center" }}>{kindToggle}{toggle}</div>
       <div style={{ color: GRAY, fontSize: 11.5, margin: "6px 2px 10px" }}>
-        <b style={{ color: GREEN }}>{cards.length} ready to fulfil</b> — created against live Central stock; if a size
+        <b style={{ color: GREEN }}>{shownCards.length} ready to fulfil</b> — created against live Central stock; if a size
         sold out since, the card withdraws itself on the next scan (≤15 min). Longest-waiting first.
         {" "}{passiveLine("Not shown: ")}
         {!canTransfer && <span style={{ color: AMBER }}> You need a stock role to transfer — viewing only.</span>}
       </div>
-      {cards.map((card) => {
+      {shownCards.map((card) => {
         const p = byId.get(card.pid);
         const totalPick = card.reqs.reduce((t, r) => t + pickOf(r), 0);
         return (

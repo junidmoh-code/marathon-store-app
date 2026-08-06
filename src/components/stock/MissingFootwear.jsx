@@ -46,8 +46,8 @@ import { useStockCells } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { GLASS, GRAY, GREEN, AMBER, BLUE_L, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
-import { serverNowIso } from "../../utils/serverTime";
-import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, sizeKeyOf } from "./missingFootwearCore";
+import { serverNowIso, serverNowMs } from "../../utils/serverTime";
+import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, footwearRequestCoverage, REQUEST_STALE_HOURS, sizeKeyOf } from "./missingFootwearCore";
 import { useRefillRequests } from "./useStock";
 
 const HUBS = ["hub1", "hub2"];
@@ -95,16 +95,55 @@ export default function MissingFootwear({ products = [] }) {
   }, []);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
-  const cards = useMemo(
-    () => computeMissingFootwear({ allStock, products, hubs: HUBS }),
-    [allStock, products],
-  );
+  // A shoe with an OPEN request at either hub is on its way — owner rule
+  // 2026-07-31: "it is no longer missing since they're about to send it". The
+  // card is retired only when EVERY supplyable size is spoken for; a partial
+  // request keeps the row (badged) so the remaining sizes stay reachable, since
+  // this list is the only place they can be requested from.
+  const openSizesByPid = useMemo(() => {
+    const m = new Map();
+    for (const r of allRequests || []) {
+      if (!r || r.status !== "open" || !r.productId) continue;
+      if (!HUBS.includes(r.requestingLocation)) continue;
+      if (!m.has(r.productId)) m.set(r.productId, []);
+      m.get(r.productId).push({ size: r.size, createdAt: r.createdAt });
+    }
+    return m;
+  }, [allRequests]);
+
+  const { cards, awaitingPick } = useMemo(() => {
+    const all = computeMissingFootwear({ allStock, products, hubs: HUBS })
+      .map((c) => ({
+        ...c,
+        cover: footwearRequestCoverage({
+          sizes: c.sizes.map((s) => s.size),
+          openRequests: openSizesByPid.get(c.pid) || [],
+          nowMs: serverNowMs(),
+        }),
+      }));
+    // Counted, not discarded: the empty state must be able to tell "nothing is
+    // stranded" apart from "it is all requested and waiting to be picked".
+    return { cards: all.filter((c) => !c.cover.covered), awaitingPick: all.filter((c) => c.cover.covered).length };
+  }, [allStock, products, openSizesByPid]);
 
   const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter((s) => s && s !== "_");
 
+  // FREE stock for one size — Central's shelf count minus everything already
+  // promised to a hub. `s.avail` off the card is the RAW count, which is the
+  // right number to show as "at Central" but the wrong ceiling for an ask: the
+  // request plan subtracts reservations anyway, so a stepper capped at raw let an
+  // operator type units that were already spoken for and only discover the
+  // shortfall in the result message. Cap and label both use the free number.
+  // (Last open finding from #291.)
+  const freeOf = (card, s) => {
+    const owed = Number(reservedFor(card.pid, allRequests)[s.sizeKey]) || 0;
+    return Math.max(0, (Number(s.avail) || 0) - owed);
+  };
+
   const qtyOf = (card, s) => {
+    const free = freeOf(card, s);
     const v = edits[`${card.pid}|${s.size}`];
-    return Math.max(0, Math.min(v == null ? Math.min(2, s.avail) : v, s.avail));
+    return Math.max(0, Math.min(v == null ? Math.min(2, free) : v, free));
   };
 
   // REQUEST = the operator's own sizes and quantities raised into the hub's
@@ -263,7 +302,16 @@ export default function MissingFootwear({ products = [] }) {
   };
 
   if (!cards.length) {
-    return <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded sneakers — everything at Central is also held by a hub.</div>;
+    // Two very different situations, and saying the wrong one is a lie: a
+    // requested shoe is NOT held by a hub yet — nothing has moved, Central still
+    // has to pick it. (CodeRabbit #294.)
+    return (
+      <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>
+        {awaitingPick
+          ? `Nothing left to request — ${awaitingPick} shoe${awaitingPick === 1 ? " is" : "s are"} already requested and waiting for Central to pick. They come back here only if the request is cancelled; they leave for good once the units reach a hub.`
+          : "No stranded sneakers — everything at Central is also held by a hub."}
+      </div>
+    );
   }
 
   return (
@@ -288,6 +336,12 @@ export default function MissingFootwear({ products = [] }) {
             badges={<>
               <Badge tone={card.kind === "never_introduced" ? AMBER : BLUE_L}>{KIND_LABEL[card.kind]}</Badge>
               <Badge tone={BLUE_L}>{card.centralUnits} units at Central</Badge>
+              {card.cover.requested.length > 0 &&
+                <Badge tone={GREEN}>{`REQUESTED ${card.cover.requested.join(", ")}`}</Badge>}
+              {/* Back on the list because the request was never picked — say so,
+                  otherwise a reappearing card reads as a bug. */}
+              {card.cover.stalled.length > 0 &&
+                <Badge tone={AMBER}>{`NOT PICKED IN ${REQUEST_STALE_HOURS}H · ${card.cover.stalled.join(", ")}`}</Badge>}
               {card.duplicateOf && <Badge tone={AMBER}>SAME NAME ELSEWHERE</Badge>}
             </>}
             sub={[
@@ -335,7 +389,7 @@ export default function MissingFootwear({ products = [] }) {
                     <div style={CHIP_GRID}>
                       {solveLines.map((l) => (
                         <SizeFactChip key={l.size} size={l.size}
-                          value={l.qty < l.want ? `${l.qty} of ${l.want} · only ${l.avail} at Central` : `${l.qty}`}
+                          value={l.qty < l.want ? `${l.qty} of ${l.want} · only ${l.avail} free at Central` : `${l.qty}`}
                           tone={l.qty < l.want ? AMBER : GREEN} />
                       ))}
                     </div>
@@ -360,8 +414,10 @@ export default function MissingFootwear({ products = [] }) {
               <div style={{ marginTop: 10 }}>
                 <div style={CHIP_GRID}>
                   {card.sizes.map((s) => (
-                    <SizeStepperChip key={s.sizeKey} size={s.size} qty={qtyOf(card, s)} max={s.avail}
-                      hint={`${s.avail} at Central`}
+                    <SizeStepperChip key={s.sizeKey} size={s.size} qty={qtyOf(card, s)} max={freeOf(card, s)}
+                      hint={freeOf(card, s) < s.avail
+                        ? `${freeOf(card, s)} free · ${s.avail} at Central`
+                        : `${s.avail} at Central`}
                       onChange={(v) => setEdits((e) => ({ ...e, [`${card.pid}|${s.size}`]: v }))} />
                   ))}
                 </div>

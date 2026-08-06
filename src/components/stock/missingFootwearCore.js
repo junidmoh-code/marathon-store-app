@@ -29,6 +29,8 @@ import { stockSizeKey } from "../../utils/sizeKey";
 // Footwear is CATEGORY, never productType: 1,369 products carry
 // category "Footwear" while only 580 carry productType "sneaker", and 858
 // records have no productType at all. Same predicate the engine uses.
+export const REQUEST_STALE_HOURS = 24;
+
 export const isFootwearProduct = (p) => p?.category === "Footwear";
 
 // THE canonical stock-cell encoder, imported rather than reimplemented.
@@ -39,6 +41,18 @@ export const isFootwearProduct = (p) => p?.category === "Footwear";
 // — both for the Central availability lookup and for the reservation map. One
 // encoder, and it must be the one the cells were written with.
 export const sizeKeyOf = stockSizeKey;
+
+// A "size" that is not a size: the one-size sentinel, blank, or a padded copy of
+// either. TRIMMED on purpose and deliberately NOT sizeKeyOf — stockSizeKey does
+// not trim, so " _ " encodes to "___", a different key that a literal !== "_"
+// compare lets through. Left in, it can never be requested and would therefore
+// block a card from ever reaching full coverage, pinning it to the list forever.
+// One predicate, used by all three planners, so they cannot disagree about what
+// counts as a real size. (CodeRabbit #294.)
+export const isSentinelSize = (s) => {
+  const t = String(s ?? "").trim();
+  return !t || t === "_";
+};
 
 // Numeric-aware size ordering — the clothing SIZE_ORDER table is letters only and
 // ranks every shoe size equal (99), which would render sizes in arbitrary order.
@@ -182,7 +196,7 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
   const alreadyOpen = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
   return (catalogSizes || [])
     .map(String)
-    .filter((s) => s && s !== "_")
+    .filter((s) => !isSentinelSize(s))
     .map((size) => {
       const key = sizeKeyOf(size);
       const want = Number(policy[key]) || 0;
@@ -194,6 +208,50 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
     .filter((l) => l.want > 0 && l.qty > 0 && !alreadyOpen.has(l.key))
     .sort((a, b) => footwearSizeRank(a.size) - footwearSizeRank(b.size))
     .map(({ size, qty, want, avail }) => ({ size, qty, want, avail }));
+}
+
+// ─── REQUEST COVERAGE — is this shoe still "missing"? ─────────────────────────
+// Owner rule 2026-07-31: once the sizes have been requested, the shoe is no
+// longer missing — it is about to be sent — so its card leaves the list.
+//
+// COVERAGE IS ALL-OR-NOTHING ON PURPOSE. Clearing the card on the FIRST request
+// would strand the rest: someone raising size 6 by hand would make sizes 7-11
+// disappear with no way back to them, and the list is the only route to those
+// sizes. So the card goes only when every size Central can supply is spoken for;
+// a partial request keeps the card and reports which sizes are already raised.
+// Solve raises the whole policy run at once, so in the normal flow this clears
+// the card immediately, which is the behaviour that was asked for.
+//
+// A REQUEST ONLY COVERS FOR 24 HOURS (owner, 2026-07-31): "they should disappear
+// immediately, only come back after 24 hours if they don't get refilled, so I
+// don't re-request it again." The card going instantly stops the same shoe being
+// raised twice in a day; the card RETURNING stops a request that was never picked
+// from silently vanishing from the only screen that can chase it. An open request
+// older than the window therefore stops counting as coverage.
+//
+// `sizes` is the card's supplyable sizes (Central has stock); `openRequests` is
+// every OPEN request at any hub as {size, createdAt}. Sizes go through sizeKeyOf
+// so 5.5 and " 8" compare on the same key the /stock cell uses.
+export function footwearRequestCoverage({ sizes = [], openRequests = [], nowMs = 0, staleHours = REQUEST_STALE_HOURS }) {
+  const cutoff = nowMs - staleHours * 3600e3;
+  const fresh = new Set();
+  const stale = new Set();
+  for (const r of openRequests || []) {
+    const key = sizeKeyOf(r?.size);
+    const raised = Date.parse(r?.createdAt || "");
+    // AN UNPARSEABLE TIMESTAMP COUNTS AS STALE, deliberately. The two failure
+    // directions are not equal: treating it as fresh hides the card forever and
+    // the shortage becomes invisible, while treating it as stale shows a card
+    // that may already be handled. Surfacing work that is covered is a nuisance;
+    // hiding work that is not is a stockout.
+    if (Number.isFinite(raised) && raised >= cutoff) fresh.add(key); else stale.add(key);
+  }
+  const list = (sizes || []).map(String).filter((s) => !isSentinelSize(s));
+  const requested = list.filter((s) => fresh.has(sizeKeyOf(s)));
+  // Raised, still open, and past the window — the request was never picked, so
+  // the size is reachable again and the card says why it is back.
+  const stalled = list.filter((s) => !fresh.has(sizeKeyOf(s)) && stale.has(sizeKeyOf(s)));
+  return { requested, stalled, covered: list.length > 0 && requested.length === list.length };
 }
 
 // ─── PICK PLAN — the operator typed the sizes and quantities themselves ───────
@@ -218,7 +276,7 @@ export function footwearPickPlan({ picks = [], centralCells = {}, openSizes = []
   const alreadyOpen = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
   return (picks || [])
     .map((p) => ({ size: String(p?.size ?? ""), asked: Math.floor(Number(p?.qty) || 0) }))
-    .filter((p) => p.size && p.size !== "_" && p.asked > 0)
+    .filter((p) => !isSentinelSize(p.size) && p.asked > 0)
     .map((p) => {
       const key = sizeKeyOf(p.size);
       const onHand = Math.max(Number(centralCells?.[key]?.qty) || 0, 0);
