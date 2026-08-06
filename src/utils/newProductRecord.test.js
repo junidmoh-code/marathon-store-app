@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildNewProduct, cleanHubs } from "./newProductRecord.js";
+import { buildNewProduct, cleanHubs, stampStyleCodeProvenance, isSetSafe } from "./newProductRecord.js";
 import { TAXONOMY_SEED } from "./productTaxonomy.js";
 
 const REG = TAXONOMY_SEED;
@@ -323,5 +323,100 @@ describe("style code exemption", () => {
     const { styleCodeExempt, styleCodeExemptReason, styleCodeExemptBy, styleCodeExemptAt, ...rest } =
       build({}, { exempt: EX });
     expect(rest).toEqual(plain);
+  });
+});
+
+// ─── STYLE CODE PROVENANCE STAMP ─────────────────────────────────────────────
+// The 2026-08-06 outage: the non-enforced Add Product path (watches, clothing,
+// perfume…) seeds a sentinel intake with NO provenance keys, and the save
+// handler copied styleCodeSource / styleCodeFetchedAt off it unconditionally.
+// `undefined` reached the record, the Firebase SDK refused the whole set()
+// client-side, and EVERY non-enforced save died with the generic alert.
+// These tests pin the invariant that fixed it: provenance is stamped only when
+// the record actually carries a style code, and an undefined can never get in.
+
+// The EXACT sentinel App.jsx seeds for a non-enforced category (keep in sync).
+const NON_ENFORCED_INTAKE = {
+  styleCode: "", styleCodeNormalised: "", exempt: null,
+  suggestedName: "", suggestedBrand: null, suggestedImageUrl: null, model: null,
+};
+// A gate payload for an enforced category, provenance included.
+const GATE_INTAKE = {
+  styleCode: "DZ4544-100", styleCodeNormalised: "DZ4544100",
+  styleCodeSource: "manual", styleCodeFetchedAt: 1754300000000, exempt: null,
+};
+const styleCodeKeys = (p) => Object.keys(p).filter((k) => k.startsWith("styleCode"));
+
+describe("stampStyleCodeProvenance", () => {
+  it("a non-enforced product gets NO styleCode field of any kind", () => {
+    const p = build({ categoryKey: "watches", hubs: ["hub2"] },
+                    { styleCode: NON_ENFORCED_INTAKE.styleCode || null, exempt: NON_ENFORCED_INTAKE.exempt });
+    stampStyleCodeProvenance(p, NON_ENFORCED_INTAKE, "uid-mike");
+    expect(styleCodeKeys(p)).toEqual([]);
+  });
+
+  it("never lets undefined into the record — the shape set() rejects outright", () => {
+    const p = build({ categoryKey: "watches", hubs: ["hub2"] }, { styleCode: null });
+    stampStyleCodeProvenance(p, NON_ENFORCED_INTAKE, "uid-mike");
+    expect(isSetSafe(p)).toBe(true);
+    // and specifically none of the three fields the bug wrote as undefined:
+    expect("styleCodeSource" in p).toBe(false);
+    expect("styleCodeFetchedAt" in p).toBe(false);
+    expect("styleCodeConfirmedBy" in p).toBe(false);
+  });
+
+  it("a gated (enforced) product keeps full provenance — regression guard", () => {
+    const p = build({}, { styleCode: GATE_INTAKE.styleCode });
+    stampStyleCodeProvenance(p, GATE_INTAKE, "uid-x");
+    expect(p.styleCodeSource).toBe("manual");
+    expect(p.styleCodeFetchedAt).toBe(1754300000000);
+    expect(p.styleCodeConfirmedBy).toBe("uid-x");
+    expect(isSetSafe(p)).toBe(true);
+    // the shapes the live /products rules validate:
+    expect(p.styleCodeNormalised).toBe(p.styleCodeNormalised.toUpperCase());
+    expect(p.styleCodeNormalised.length).toBeLessThanOrEqual(32);
+    expect(["cache", "api", "websearch", "manual"]).toContain(p.styleCodeSource);
+  });
+
+  it("a signed-out save (null uid) omits styleCodeConfirmedBy rather than nulling it", () => {
+    // The live rule requires a non-empty STRING; null would only survive because
+    // set() prunes nulls — omitting is the honest shape either way.
+    const p = build({}, { styleCode: GATE_INTAKE.styleCode });
+    stampStyleCodeProvenance(p, GATE_INTAKE, null);
+    expect("styleCodeConfirmedBy" in p).toBe(false);
+    expect(isSetSafe(p)).toBe(true);
+  });
+
+  it("an exempt (bypassed) product records the bypass but NO provenance", () => {
+    // The gate's exempt payload carries styleCodeSource:"manual" with an empty
+    // code — provenance of a code the product does not have is meaningless.
+    const exemptPayload = { ...GATE_INTAKE, styleCode: "", styleCodeNormalised: "" };
+    const p = build({}, { exempt: { reason: "no_code_exists", by: "u1", at: 1754300000000 } });
+    stampStyleCodeProvenance(p, exemptPayload, "u1");
+    expect(p.styleCodeExempt).toBe(true);
+    expect("styleCodeSource" in p).toBe(false);
+    expect("styleCodeFetchedAt" in p).toBe(false);
+    expect("styleCodeConfirmedBy" in p).toBe(false);
+    expect(isSetSafe(p)).toBe(true);
+  });
+
+  it("tolerates a null product / null intake without throwing", () => {
+    expect(stampStyleCodeProvenance(null, GATE_INTAKE, "u")).toBeNull();
+    const p = build({});
+    expect(stampStyleCodeProvenance(p, null, "u")).toBe(p);
+    expect(styleCodeKeys(p)).toEqual([]);
+  });
+});
+
+describe("isSetSafe", () => {
+  it("accepts primitives, null and clean trees", () => {
+    for (const v of [null, 0, "", false, { a: 1, b: { c: null } }, [1, "x", null]]) {
+      expect(isSetSafe(v)).toBe(true);
+    }
+  });
+  it("rejects undefined at any depth", () => {
+    expect(isSetSafe(undefined)).toBe(false);
+    expect(isSetSafe({ a: undefined })).toBe(false);
+    expect(isSetSafe({ a: { b: [1, undefined] } })).toBe(false);
   });
 });
