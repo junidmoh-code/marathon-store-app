@@ -5148,25 +5148,12 @@ function AdminView({ products, orders, onExit }) {
       // Claim-first was the safer shape — the database arbitrated the race — but
       // the deployed rule makes it impossible, and the rule wins. Product first,
       // claim second.
-      try {
-        await addProductToFirebase(newProduct);
-      } catch (writeErr) {
-        // The claim landed and the product did not. Say so explicitly with the
-        // code and the id — this is the orphan case, and an admin needs both to
-        // clear it. Silently swallowing it would leave a code that looks taken
-        // and is owned by nothing.
-        if (newProduct.styleCodeNormalised) {
-          console.error("addProduct: product write failed AFTER the style-code claim landed", {
-            styleCodeNormalised: newProduct.styleCodeNormalised, productId: id,
-          });
-          throw operatorError(
-            `The product could not be saved, but style code ${newProduct.styleCode} was already ` +
-            `reserved for id ${id}. Ask an admin to clear that reservation before retrying — ` +
-            `the code will otherwise look taken by a product that does not exist.`
-          );
-        }
-        throw writeErr;
-      }
+      // A failed write propagates as-is: the claim runs AFTER this, so at this
+      // point nothing has been reserved and there is nothing to clean up. (The
+      // old catch here told staff a reservation had landed — a leftover from
+      // the claim-first ordering, and false ever since it flipped. CodeRabbit,
+      // PR #327.)
+      await addProductToFirebase(newProduct);
 
       // ── CLAIM THE STYLE CODE — after the product, and NEVER fatal ──────────
       // The product is already saved by this point, so a failed claim must not

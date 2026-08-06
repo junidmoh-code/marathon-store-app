@@ -34,9 +34,15 @@ export function saveFailureMessage(err) {
     );
   }
   if (/network|offline|disconnected|timeout|unavailable/i.test(`${code} ${raw}`)) {
+    // A network failure does NOT prove the write was lost — RTDB can commit it
+    // server-side without the client ever seeing the acknowledgement, and a
+    // blind re-save then creates a duplicate product and burns another
+    // sku/barcode pair. Say the outcome is unknown and make checking first the
+    // instruction. (CodeRabbit, PR #327.)
     return (
       "Failed to save product: network problem while writing.\n\n" +
-      "The product was not saved. Check the connection and try again.\n\n" +
+      "The save may or may not have gone through. Check the product list for it first — " +
+      "only save again if it is NOT there, or you will create a duplicate.\n\n" +
       `Technical detail for the admin:\n${raw}`
     );
   }
