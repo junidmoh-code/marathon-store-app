@@ -180,6 +180,21 @@ describe("a style number resolves to its product — the claim is the authority"
     expect(resolveStyleNumber("AA111-222", { products: withMerged, claim: null }).kind).toBe("unresolved");
   });
 
+  it("a claim must NOT mask a live twin — a second local owner is a DUPLICATE", () => {
+    // The twin-collision case: a pre-index product carries the same code the
+    // claim points at. Routing silently to the claimed product would hide it.
+    const twins = [...products, P("pTwin", { styleCodeNormalised: "DD1391100" })];
+    const out = resolveStyleNumber("DD1391-100", { products: twins, claim: { productId: "p2" } });
+    expect(out.kind).toBe("duplicate");
+    expect(out.claimProductId).toBe("p2");
+    expect(out.products.map((p) => p.id)).toEqual(["p2", "pTwin"]); // claimed first
+  });
+
+  it("a claim whose only local owner IS the claimed product stays a clean claim", () => {
+    const out = resolveStyleNumber("DD1391-100", { products, claim: { productId: "p2" } });
+    expect(out).toEqual({ kind: "claim", productId: "p2", normalised: "DD1391100" });
+  });
+
   it("junk that normalises to nothing is unresolved without consulting anything", () => {
     expect(resolveStyleNumber("###", { products, claim: { productId: "p1" } }).kind).toBe("unresolved");
   });

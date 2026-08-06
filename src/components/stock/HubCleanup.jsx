@@ -42,6 +42,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { prepareLabelPhoto } from "../../utils/labelPhoto";
 import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/styleCode";
+import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
   buildLeftovers, locationsHolding, registrationProgress, realSizes,
@@ -276,9 +277,13 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       } else if (out.kind === "duplicate") {
         setPanel({ mode: "duplicate", code, claimants: out.products });
       } else if (tab === "count") {
-        await recordUnresolvedScan({ hub, code, context: tab });
-        setUnresolved((u) => ({ ...u, [code.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code, context: tab } }));
-        flash("warn", `Nothing owns “${code}” — noted as never registered. Carry on.`);
+        const noted = await recordUnresolvedScan({ hub, code, context: tab });
+        if (noted.ok) {
+          setUnresolved((u) => ({ ...u, [code.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code, context: tab } }));
+          flash("warn", `Nothing owns “${code}” — noted as never registered. Carry on.`);
+        } else {
+          flash("err", `Nothing owns “${code}”, but the note could not be saved (${noted.message || "write failed"}) — try again.`);
+        }
       } else {
         // The register shortcut missing is no event at all — the primary paths
         // (search, the unregistered list) are right there.
@@ -302,10 +307,25 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       const claim = await lookupStyleClaim(normalised);
       const out = resolveStyleNumber(display, { products, claim });
       if (out.kind === "claim") {
-        const local = products.find((x) => x && x.id === out.productId) || null;
-        const p = local || await fetchProductFollowingMerge(out.productId).catch(() => null);
-        if (p) { setPanel(countPanelFor(p)); return; }
-        // A claim pointing at a ghost record falls through to never-registered.
+        // The visible catalogue is pre-filtered of merged-away records, but the
+        // guard costs nothing and this component must not depend on its caller
+        // for that invariant.
+        const local = products.find((x) => x && x.id === out.productId && !isMergedAway(x)) || null;
+        let p = local;
+        if (!p) {
+          try {
+            p = await fetchProductFollowingMerge(out.productId);
+          } catch (err) {
+            // A FAILED read is not a ghost — recording it as never-registered
+            // would pollute the pass's primary signal with a false positive.
+            flash("err", `Couldn't look that product up (${err?.message || err}) — try again.`);
+            return;
+          }
+        }
+        const cp = countPanelFor(p);
+        if (cp) { setPanel(cp); return; }
+        // A claim pointing at a ghost or id-less record falls through to
+        // never-registered — with the toast, never a silent dead end.
       } else if (out.kind === "product") {
         setPanel(countPanelFor(out.product));
         return;
@@ -313,9 +333,13 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         setPanel({ mode: "duplicate", code: display, claimants: out.products });
         return;
       }
-      await recordUnresolvedScan({ hub, code: display, context: "count" });
-      setUnresolved((u) => ({ ...u, [display.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code: display, context: "count" } }));
-      flash("warn", `${display} reads cleanly but nothing owns it — noted as never registered. Carry on.`);
+      const noted = await recordUnresolvedScan({ hub, code: display, context: "count" });
+      if (noted.ok) {
+        setUnresolved((u) => ({ ...u, [display.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code: display, context: "count" } }));
+        flash("warn", `${display} reads cleanly but nothing owns it — noted as never registered. Carry on.`);
+      } else {
+        flash("err", `${display} isn't owned by anything, but the note could not be saved (${noted.message || "write failed"}) — try the scan again.`);
+      }
     } finally { setBusy(false); }
   }, [hub, products, flash]);
 
@@ -573,9 +597,6 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             <input value={query} onChange={(e) => setQuery(e.target.value)}
                    placeholder="…or search by name"
                    style={{ ...input, width: "100%", boxSizing: "border-box", marginTop: 10, fontSize: 13.5, opacity: 0.85 }} />
-            <input value={query} onChange={(e) => setQuery(e.target.value)}
-                   placeholder="…or search by name (secondary)"
-                   style={{ ...input, width: "100%", boxSizing: "border-box", marginTop: 10, fontSize: 13.5, opacity: 0.85 }} />
             {searchHits.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
                 {searchHits.map((p) => (
@@ -822,7 +843,12 @@ function TongueLabelReader({ busy, big = false, onCode }) {
             <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
               {readNote.options.map((c) => (
                 <button key={c} type="button"
-                  onClick={() => { setReadNote(null); onCode(formatStyleCodeForDisplay(c) || c, { source: "label", labelPhoto: readNote.labelPhoto || null }); }}
+                  onClick={() => {
+                    const f = formatStyleCodeForDisplay(c);
+                    if (!f) { setReadNote({ text: "That one isn't a style number — type it from the label instead." }); return; }
+                    setReadNote(null);
+                    onCode(f, { source: "label", labelPhoto: readNote.labelPhoto || null });
+                  }}
                   style={{ ...bBlue, fontSize: 13.5, minHeight: 42, fontVariantNumeric: "tabular-nums" }}>{c}</button>
               ))}
             </div>

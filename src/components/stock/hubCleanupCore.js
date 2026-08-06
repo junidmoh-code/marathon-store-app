@@ -153,8 +153,19 @@ export function countPanelFor(product, size = null) {
 export function resolveStyleNumber(code, { products = [], claim = null } = {}) {
   const normalised = normaliseStyleCode(code);
   if (!normalised) return { kind: "unresolved", normalised: "" };
-  if (claim && claim.productId) return { kind: "claim", productId: claim.productId, normalised };
   const owners = styleCodeOwners(normalised, products);
+  if (claim && claim.productId) {
+    // A claim does NOT get to mask a twin: codes that pre-date the index can
+    // sit on live catalogue records the claim system never saw (this repo's
+    // own twin-collision incident). Any live owner that is NOT the claimed
+    // product is the duplicate case — surfaced, never silently routed past.
+    const others = owners.filter((p) => p.id !== claim.productId);
+    if (others.length) {
+      const claimed = owners.find((p) => p.id === claim.productId) || null;
+      return { kind: "duplicate", products: claimed ? [claimed, ...others] : others, normalised, claimProductId: claim.productId };
+    }
+    return { kind: "claim", productId: claim.productId, normalised };
+  }
   if (owners.length === 1) return { kind: "product", product: owners[0], normalised };
   if (owners.length > 1) return { kind: "duplicate", products: owners, normalised };
   return { kind: "unresolved", normalised };

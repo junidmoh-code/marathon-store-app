@@ -83,6 +83,16 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     // resolution), not only on the barcode shortcut:
     expect(hubCleanup).toMatch(/reads cleanly but nothing owns it/);
     expect(hubCleanup).toMatch(/recordUnresolvedScan\(\{ hub, code: display, context: "count" \}\)/);
+    // Substitute-review pins (Kimi + Sonnet round):
+    // exactly ONE name-search input on the count tab — the leftover twin is gone:
+    expect((hubCleanup.match(/or search by name/g) || []).length).toBe(1);
+    expect(hubCleanup).not.toMatch(/search by name \(secondary\)/);
+    // a failed product lookup on a claim is an ERROR, never a false never-registered:
+    expect(hubCleanup).toMatch(/Couldn't look that product up/);
+    // the never-registered note only confirms when the write succeeded:
+    expect(hubCleanup).toMatch(/noted\.ok/);
+    // a claim resolving to a ghost/id-less record falls through WITH feedback:
+    expect(hubCleanup).toMatch(/const cp = countPanelFor\(p\);/);
   });
 
   it("scan panels remount per scanned product, and the camera effect is render-stable", () => {
