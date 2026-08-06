@@ -6,6 +6,7 @@ import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
+import { filterMergedProducts } from "./utils/mergedProducts";
 import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import { getDeviceId } from "./device/deviceId";
@@ -35,14 +36,15 @@ import StockView from "./components/stock/StockView";
 // TEMPORARY — hub sneaker stock-take. Both of these render nothing once
 // HUB_SNEAKER_COUNT_ENABLED is flipped off; removing the feature is deleting
 // these three lines plus the two src/components/stock/hubCount* modules.
-import HubSneakerCount from "./components/stock/HubSneakerCount";
-import HubSneakerCountCard from "./components/stock/HubSneakerCountCard";
+import HubCleanup from "./components/stock/HubCleanup";
+import HubCleanupCard from "./components/stock/HubCleanupCard";
 import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 import Hub2RefillQueue from "./components/stock/Hub2RefillQueue";
 import HealthView from "./components/stock/HealthView";
 import AttentionView from "./components/stock/AttentionView";
 import MarketingView from "./components/stock/MarketingView";
-import DisplayRegister, { registerDisplayPair, mayUseDisplayRegister, hasStockAccess } from "./components/stock/DisplayRegister";
+import { hasStockAccess } from "./components/stock/stockAccess";
+import { displaySendNeedsSize } from "./utils/displaySend";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { input as stockInput } from "./components/stock/ui";
@@ -273,7 +275,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", DISPLAY_REGISTER: "display_register", HUB_SNEAKER_COUNT: "hub_sneaker_count" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -452,7 +454,7 @@ function useProducts() {
           const patch = { items: null };
           for (const p of validItems) patch[p.id] = p;
           update(productsRef, patch).catch(err => console.warn("Product migration failed:", err));
-          setProducts(validItems);
+          setProducts(filterMergedProducts(validItems));
         }
         // If validItems is empty, do NOT write anything — silently skip.
         return;
@@ -462,7 +464,16 @@ function useProducts() {
       // filter(Boolean) alone is not enough — Firebase can deserialise a stored
       // array as a plain object {"0":{...},"1":{...}} which passes Boolean but
       // is not a product. Requiring id + name excludes all such artefacts.
-      const arr = Object.values(data).filter(v => v && typeof v === "object" && v.id && v.name);
+      //
+      // MERGED-AWAY products (a `mergedInto` pointer, written by the server-side
+      // mergeProducts) are dropped HERE — the one chokepoint every list, search
+      // and picker renders from — so the losing half of a merge disappears from
+      // the operator's world without any surface needing its own filter. The
+      // record itself stays in RTDB because old sales/movements reference it;
+      // by-id lookups follow the pointer via utils/mergedProducts.followMerge.
+      const arr = filterMergedProducts(
+        Object.values(data).filter(v => v && typeof v === "object" && v.id && v.name)
+      );
       setProducts(arr);
     }, (err) => {
       console.warn("Firebase read error on /products:", err);
@@ -2536,8 +2547,11 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
     email: homeUser?.email,
     stockRole: isSuperAdmin ? "admin" : (homePerm?.stockRole || null),
   });
+  // ONE card for the merged Display Register + Hub Sneaker Count feature
+  // (owner spec 2026-08-06): displays are hub stock now, and registering,
+  // counting and leftovers live behind a single entry point.
   const hubCountCard = hubCountVisible
-    ? <HubSneakerCountCard onOpen={() => onSelect(ROLES.HUB_SNEAKER_COUNT)} />
+    ? <HubCleanupCard onOpen={() => onSelect(ROLES.HUB_SNEAKER_COUNT)} />
     : null;
 
   // Shared, permission-gated role data — rendered as a desktop tile grid or the
@@ -2581,11 +2595,9 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       // (Marketing / Display). Picking happens on the Attention grid; this card
       // is where you review what was picked.
       canAccessStock                                           && { key:"marketing", icon:RoleIcons.insights, name:"Marketing", desc:"Picked for advertising & display", onClick:()=>onSelect(ROLES.MARKETING) },
-      // Stock users OR display staff — the same rule the route gate applies
-      // (mayUseDisplayRegister). Was the literal `true`, which showed the tile to
-      // every signed-in account including POS-only till logins.
-      mayUseDisplayRegister({ canAccessStock, hasPermission })
-                                                               && { key:"display_register", icon:RoleIcons.display, name:"Display Register", desc:"What's on the floor, and in what size", onClick:()=>onSelect(ROLES.DISPLAY_REGISTER) },
+      // The Display Register tile is GONE (owner spec 2026-08-06): displays are
+      // hub stock now, and the register merged into the Hub Count & Displays
+      // card above (HubCleanupCard). We no longer track what is on display.
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
       isSuperAdmin && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc:"Photos · Names · Reorder · Voice", onClick:()=>onSelect(ROLES.AI_STUDIO) },
@@ -9284,18 +9296,11 @@ function WarehouseView({ products = [], orders, onExit }) {
       // never is. Recording it here is what lets the register say what is
       // actually on the floor — and what stops the sale of that pair being
       // unattributable to a hub cell later.
+      // NOTE: this no longer feeds a display register — the register was removed
+      // (owner spec 2026-08-06: displays are hub stock; nothing tracks what is
+      // on display). The size stays on the ORDER, where the POS reads it.
       if (refillSize) {
         patch.displayRefillSize = String(refillSize);
-        // Feed the register from the same action — one physical fact, recorded
-        // once. Fire-and-forget: the refill is what matters and a register write
-        // must never block it.
-        const prod = products.find((p) => p && p.id === order.productId) || null;
-        if (order.destShop && prod) {
-          registerDisplayPair({
-            store: order.destShop, product: prod, size: refillSize,
-            actorName: selectedHub, orderId: order.id,
-          }).catch(() => {});
-        }
       }
     } else if (status === "stockDepleted") {
       patch.displayRefillStockDepletedAt = now;
@@ -9718,23 +9723,21 @@ function WarehouseView({ products = [], orders, onExit }) {
                     setPickerOpenId(null);
                     markSentAndPrint(order, { sentSize: chosen });
                   };
-                  // ── SIZE-LESS DISPLAY PARTNER GUARD (2026-07-29) ───────────
-                  // A Display Partner request is deliberately size-optional —
-                  // the shop wants "a pair for the display", any size. But the
-                  // PAIR THAT ACTUALLY GOES has a size, and until now nobody
-                  // recorded it: 17 of 51 live partner footwear orders (33%)
-                  // carry no size at all. Those orders then fail their dispatch
-                  // transfer with `missing_product_or_size`, and the POS — which
-                  // takes the size from the order and so never prompts — writes
-                  // a sale line with no size. The unit leaves the building and
-                  // the books never lose it.
-                  //
-                  // So the size is captured HERE, at the one moment it becomes a
-                  // fact: when the picker takes a specific pair off the shelf.
-                  // Nothing changes for the shop, and nothing changes for any
-                  // order that already has a size.
+                  // ── DISPLAY SEND — SIZE IS MANDATORY (owner spec 2026-08-06) ─
+                  // On a display pair request the size is captured at SEND time,
+                  // from the picker holding the actual pair — required, not
+                  // optional, EVEN when the order carries a requested size: the
+                  // request is what the shop asked for, sentSize is what
+                  // physically leaves. That captured size is what any deduction
+                  // keys on and what the POS uses to know which size the
+                  // display is when it sells. The rule itself is pure
+                  // (src/utils/displaySend.js) so the "cannot send without a
+                  // size" proof tests the exact predicate this button consults.
                   const guardProduct = products.find((p) => p && p.id === order.productId) || null;
-                  const needsSentSize = !order.size && !order.sentSize && productIsFootwear(guardProduct);
+                  const needsSentSize = displaySendNeedsSize(order, guardProduct)
+                    // Non-display footwear orders keep the original 2026-07-29
+                    // rule: demand a size only when the order carries none.
+                    || (!order.requestDisplayPartner && !order.size && !order.sentSize && productIsFootwear(guardProduct));
                   // Real sizes only — the "_" one-size sentinel is not a choice.
                   const sizeChoices = (Array.isArray(guardProduct?.sizes) ? guardProduct.sizes : [])
                     .map(String).map((s) => s.trim()).filter((s) => s && s !== "_");
@@ -9747,25 +9750,18 @@ function WarehouseView({ products = [], orders, onExit }) {
                             WHICH SIZE ARE YOU SENDING?
                           </div>
                           <div style={{ fontSize:11, color:"rgba(251,191,36,.75)", marginTop:3, lineHeight:1.45 }}>
-                            This display request came through without a size. Pick the pair you are actually sending —
-                            the till needs it to take the sale off the right hub.
+                            Pick the pair you are actually sending — the till needs it to take the sale off the
+                            right hub when the display sells.{order.size ? ` The shop asked for size ${order.size}.` : ""}
                           </div>
                         </div>
                         <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
                           {sizeChoices.length ? sizeChoices.map((s) => (
-                            <button key={s} onClick={() => {
-                                // The size chosen here IS the display registration —
-                                // one physical fact, recorded once. Fire-and-forget so
-                                // it can never hold up the send.
-                                registerDisplayPair({
-                                  store: order.destShop, product: guardProduct, size: s,
-                                  actorName: null, orderId: order.id,
-                                }).catch(() => {});
-                                markSentAndPrint(order, { sentSize: s });
-                              }}
-                              style={{ padding:"10px 14px", borderRadius:10, fontSize:13, fontWeight:800, cursor:"pointer",
-                                       background:"rgba(60,110,255,.14)", border:"1px solid rgba(74,127,255,.45)", color:"#9DBCFF",
-                                       minWidth:52 }}>
+                            <button key={s} onClick={() => markSentAndPrint(order, { sentSize: s })}
+                              style={{ padding:"12px 16px", borderRadius:10, fontSize:14, fontWeight:800, cursor:"pointer",
+                                       background: String(order.size) === s ? "rgba(74,222,128,.16)" : "rgba(60,110,255,.14)",
+                                       border: String(order.size) === s ? "1px solid rgba(74,222,128,.55)" : "1px solid rgba(74,127,255,.45)",
+                                       color: String(order.size) === s ? "#B7F0CC" : "#9DBCFF",
+                                       minWidth:56 }}>
                               <SizeTag size={s} />
                             </button>
                           )) : (
@@ -16743,7 +16739,7 @@ function AppInner() {
   // UI access = a stock PERMISSION (granted in User Management) OR a stock-capable
   // stockRole (so seed counters with stockRole=warehouse keep access without a
   // permission). Actual WRITES are still gated by stockRole in the RTDB rules.
-  // Shared derivation (src/components/stock/DisplayRegister.jsx) so this and the
+  // Shared derivation (src/components/stock/stockAccess.js) so this and the
   // Display Register gate cannot drift apart — two hand-written copies of the
   // same formula was the drift risk both reviewers flagged on PR #306.
   const canAccessStock = hasStockAccess({ permRecord, hasPermission, isSuperAdmin });
@@ -16801,10 +16797,9 @@ function AppInner() {
     // Display Checks is gated on the master flag + module access (not a plain
     // permission map) — drop a stale/persisted role that no longer qualifies.
     if (role === ROLES.DISPLAY_CHECKS && !displayChecksRouteOpen) { setRole(null); return; }
-    // Same for the Display Register: a role persisted before the gate existed
-    // (or before a permission was revoked) must not strand the user on a
-    // refusal screen — send them back to the selector.
-    if (role === ROLES.DISPLAY_REGISTER && !mayUseDisplayRegister({ canAccessStock, hasPermission })) { setRole(null); return; }
+    // A role persisted before the Display Register merged into the hub cleanup
+    // card (2026-08-06) must not strand the user on a dead view.
+    if (role === "display_register") { setRole(null); return; }
     // Same for the temporary count: a persisted role must not survive the master
     // flag being switched off after the stock-take.
     if (role === ROLES.HUB_SNEAKER_COUNT && !hubCountRouteOpen) { setRole(null); return; }
@@ -17057,27 +17052,15 @@ function AppInner() {
   // about ADMIN_EMAIL, so the write gate must be told the truth or it would
   // promise corrections it cannot deliver.
   else if (role === ROLES.HUB_SNEAKER_COUNT) view = hubCountRouteOpen
-    ? <HubSneakerCount products={products} actorRole={stockRole}
+    ? <HubCleanup products={products} actorRole={stockRole}
         viewer={{ email: authUser?.email, stockRole: permRecord?.stockRole || null }}
         onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.ATTENTION) view = canAccessStock ? <AttentionView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.MARKETING) view = canAccessStock ? <MarketingView products={products} onExit={() => setRole(null)} /> : null;
-  // ── THE ROUTE GATE (layer 1 of 2) ────────────────────────────────────────────
-  // A REAL check, not a hidden tile: a refused viewer never gets DisplayRegister
-  // mounted, so its /settings/displayRegister listener is never opened and no
-  // write surface exists. Hiding the tile alone would leave the route reachable
-  // through a persisted role — the exact defect #302 fixed for User Management.
-  //
-  // Layer 2 is the component's own gate, which re-checks the IDENTICAL rule
-  // independently (mayUseDisplayRegister, src/components/stock/DisplayRegister.jsx).
-  // Neither layer relies on the other; deleting either one leaves a working gate.
-  else if (role === ROLES.DISPLAY_REGISTER) {
-    view = mayUseDisplayRegister({ canAccessStock, hasPermission })
-      ? <DisplayRegister products={products} onExit={() => setRole(null)} standalone />
-      : null;
-  }
+  // The Display Register route is GONE (2026-08-06): displays are hub stock and
+  // the register merged into HubCleanup behind ROLES.HUB_SNEAKER_COUNT above.
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);

@@ -45,6 +45,8 @@ Each product is its own node. `productId` is generated client-side as
 | **`styleCodeExemptReason`** | **`"no_code_exists"` \| `"label_unreadable"` \| `"label_missing"`** | **no** | **Why. The split is what makes the bypass rate diagnosable: a rising `no_code_exists` means the product mix is shifting; a rising `label_*` means something is wrong with how stock reaches us, or how people look for the code.** |
 | **`styleCodeExemptBy`** | **string \| null**           | **no**   | **uid of whoever bypassed. Opaque uid only — never an email.** |
 | **`styleCodeExemptAt`** | **number (epoch ms)**        | **no**   | **`serverNowMs()`, never the device clock.** |
+| **`mergedInto`**  | **string (productId)**            | **no**   | **THE REDIRECT POINTER. Written ONLY by the server-side `mergeProducts` callable (`functions/lib/product-merge.cjs`) when this record loses a merge. A product carrying it is INVISIBLE client-side — dropped at the ONE chokepoint (`useProducts` → `filterMergedProducts`) so it is gone from search, every list and every picker. The record itself is NEVER deleted: its id is stamped on old sales, laybys, movements and barcode rows, and by-id lookups follow the pointer (`src/utils/mergedProducts.followMerge`, cycle-guarded). Its stock cells are gone (moved to the survivor at the same locations), its `/barcodes` rows and `/style_code_index` claims repoint to the survivor.** |
+| **`mergedAt`** / **`mergedBy`** | **number (epoch ms) / uid** | **no** | **When and who. Server-stamped beside `mergedInto`.** |
 | **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15 — RETIRED. Was a product-level depletion flag (blurred + un-orderable + Depleted Products tab). The blocking feature is gone: writers no longer set it and readers ignore it; any legacy value is inert. Products are always live & orderable. Safe to ignore / backfill-clear later.** |
 | **`depletedBy`**  | **string \| null**                | **no**   | **Phase 15 — RETIRED (see `depletedAt`). Inert legacy field.** |
 
@@ -485,6 +487,32 @@ add-product calls can't collide on the same number.
 
 ---
 
+## `/product_merges/{mergeId}` — merge audit + reversal recipe
+
+Written ONLY by the server-side `mergeProducts` callable (Admin SDK; the node
+has no client rules and needs none — clients never touch it). One row per
+applied merge, created in the SAME atomic update as the merge itself.
+
+| Field | Type | Notes |
+|---|---|---|
+| `loserId` / `survivorId` | string | the two products. |
+| `at` / `by` / `byEmail` | epoch ms / uid / string\|null | who merged, when. |
+| `moved` | `[{loc, size, qty}]` | every cell quantity that transferred (same location, loser→survivor). |
+| `movementIds` | string[] | the paired `/stock_movements` entries (`merge_{mergeId}_L/S_{loc}_{sizeKey}`, reason `product_merge`). |
+| `before` | object | **the reversal recipe** — everything the update CHANGED, as it was: `loserStock` (full per-location nodes, incl. `_meta` and qty-0 cells), `survivorCells` (only touched cells), `survivorSizes`, `inheritedBarcodes`, `barcodes` (repointed rows as they pointed), `styleCodeIndex`, `duplicateRow`. |
+
+Merge invariants (pinned by `functions/test/product-merge.test.cjs`): per-location
+totals are conserved exactly; the loser's stock nodes are DELETED (a qty-0 cell
+still arms the refill engine, so none may remain); everything lands in ONE atomic
+multi-path update; any stock at Pine (`marathon-pine` / `hub3`) refuses the whole
+merge; anything uncertain refuses (`MergeRefused`), writing nothing.
+
+`/product_merges_locks/{loserId}` — server-side concurrency lock (`{mergeId, at,
+by}`); create-only transaction, stale after 10 min, kept as a tombstone once a
+merge applies.
+
+---
+
 ## `/barcodes/{code}` — barcode reverse index (POS scan-to-sell)
 
 Maps a scanned barcode value back to the product+size it identifies. Written by
@@ -507,7 +535,10 @@ separate POS build; this app writes the index so it will work.**
 written to `/barcodes`, so the POS build must not expect product-level codes to
 resolve here.
 
-**Rules:** create-only (`!data.exists()` → a code can never be re-pointed), write
+**Rules:** create-only (`!data.exists()` → a code can never be re-pointed **under
+client auth**; the ONE legitimate repoint is the server-side `mergeProducts`
+callable on the Admin SDK, which redirects a merged-away product's codes to its
+survivor so physical labels keep scanning), write
 gated on `stockRole` existing, readable by any authed non-anon user (so the POS can
 resolve a scan), validated to require **`productId` + an existing product** with
 `size` **optional** (a per-child `.validate` enforces a non-empty string only when

@@ -3186,3 +3186,15 @@ exports.reapStyleCodeOcrCache = require("./styleCode/reapOcrCache.js").reapStyle
 // SECRET: GEMINI_API_KEY (the image comparison).
 //   firebase deploy --only functions:processStyleCodeCapture
 exports.processStyleCodeCapture = require("./styleCode/processCapture.js").processStyleCodeCapture;
+
+// ─── PRODUCT MERGE — mergeProducts (two records, one shoe) ────────────────────
+// Admin-only callable that joins a duplicated product into its survivor: cells
+// transfer at their own locations (summed on collision, per-location totals
+// conserved), the loser becomes a hidden redirect (`mergedInto`), its barcodes
+// and style-code claims repoint to the survivor, the matching
+// /duplicate_candidates row closes, and the full before-state is recorded at
+// /product_merges/{mergeId}. One atomic multi-path update; Pine stock refuses
+// the merge. All logic in lib/product-merge.cjs (node-tested); auth + IO in
+// productMerge/mergeProducts.js.
+//   firebase deploy --only functions:mergeProducts
+exports.mergeProducts = require("./productMerge/mergeProducts.js").mergeProducts;

@@ -169,6 +169,31 @@ function makeCacheProvider(db) {
 const KICKSDB_BASE_URL = "https://api.kicks.dev";
 const KICKSDB_TIMEOUT_MS = 12000;
 
+// ── THE DISAGREEMENT GUARD ───────────────────────────────────────────────────
+// The ?sku= routes can return MORE THAN ONE row for a single SKU. When the rows
+// agree they are duplicates and any of them will do; when they DISAGREE on name,
+// brand or image, at least one of them is wrong and nothing here can know which.
+// Guessing is how a wrong name gets burned into the permanent cache — so a
+// disagreement is returned to the caller, who records it as a tier error (the
+// same "broken vendor, not missing shoe" path a 5xx takes) instead of picking a
+// row. A null/empty field is MISSING data, not disagreement — only two
+// different non-empty values conflict. Images are compared without their query
+// params: the same file served at two sizes is the same image.
+function kicksDbRowConflict(rows) {
+  const norm = (v) => (typeof v === "string" ? v.trim().toLowerCase() : "");
+  const nameOf = (r) => norm(typeof r.title === "string" && r.title.trim() ? r.title : r.name);
+  const imageOf = (r) => {
+    const u = firstImage(r);
+    if (!u) return "";
+    try { const p = new URL(u); return `${p.origin}${p.pathname}`.toLowerCase(); } catch { return String(u).toLowerCase(); }
+  };
+  for (const [field, of] of [["name", nameOf], ["brand", (r) => norm(r.brand)], ["image", imageOf]]) {
+    const seen = new Set(rows.map(of).filter(Boolean));
+    if (seen.size > 1) return { field, values: [...seen] };
+  }
+  return null;
+}
+
 function pickKicksDbRecord(payload, normalised) {
   const rows = payload && Array.isArray(payload.data) ? payload.data
     : payload && payload.data && typeof payload.data === "object" ? [payload.data]
@@ -178,6 +203,13 @@ function pickKicksDbRecord(payload, normalised) {
   // useless on the confirm screen.
   const exact = rows.filter((r) => r && verifyStyleCodeMatch(r.sku, normalised));
   if (!exact.length) return null;
+  const conflict = kicksDbRowConflict(exact);
+  if (conflict) {
+    throw new Error(
+      `kicksdb returned ${exact.length} records for this code that disagree on ${conflict.field} ` +
+      `(${conflict.values.join(" / ")}) — refusing to guess between them`
+    );
+  }
   return exact.find((r) => firstImage(r)) || exact[0];
 }
 
@@ -361,7 +393,16 @@ function makeKicksDbProvider({ apiKey, fetchImpl, baseUrl, nowMs } = {}) {
           lastError = new Error(`kicksdb returned unparseable JSON: ${(err && err.message) || err}`);
           continue;
         }
-        const rec = pickKicksDbRecord(payload, normalised);
+        let rec;
+        try {
+          rec = pickKicksDbRecord(payload, normalised);
+        } catch (err) {
+          // Same-SKU rows that DISAGREE (see kicksDbRowConflict). Recorded and
+          // surfaced like a broken tier — never guessed past, never reported as
+          // "no such shoe". Another route or tier may still answer cleanly.
+          lastError = err;
+          continue;
+        }
         if (rec) return route.toModel(rec, normalised, Number.isFinite(nowMs) ? nowMs : Date.now());
         // Responded fine but held no EXACT match — a genuine miss for this
         // spelling (or a fuzzy near-match we correctly refused). Try the next.
