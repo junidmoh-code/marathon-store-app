@@ -25,6 +25,14 @@ const STYLE_CODE_FORMATS = [
   { name: "puma-6-2", re: /^\d{8}$/ },                       // 380190-01
   { name: "new-balance", re: /^[A-Z]{1,3}\d{3,4}[A-Z]{1,3}\d{0,2}$/ }, // ML574EVG
   { name: "adidas-block", re: /^[A-Z]{1,2}\d{4,6}$/ },       // IE3437
+  // Lacoste — 2 digits + 3 letters (SMA men / SFA women / SUJ-CUJ kids…) +
+  // 4 digits, often behind a "7-" footwear-category prefix on the tongue label
+  // and often carrying a 2-3 char colour suffix. Researched 2026-08-06 against
+  // live listings: 43SMA0034 · 46SMA0032 · 7-47SMA0057042 · 46SMA0041J18 ·
+  // 7-45SMA0004075. The label form (with the 7) and the web form (without)
+  // normalise DIFFERENTLY — both are accepted; our own system always reads the
+  // label, so identities stay consistent within it.
+  { name: "lacoste-ref", re: /^7?\d{2}(?!(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d)[A-Z]{3}\d{4}(?:[A-Z0-9]{2,3})?$/ },
 ];
 
 // Brand family implied by a code's shape. OBSERVABILITY ONLY — it feeds the
@@ -38,6 +46,7 @@ const BRAND_FAMILY_BY_FORMAT = {
   "puma-6-2": "Puma",
   "new-balance": "New Balance",
   "adidas-block": "adidas",
+  "lacoste-ref": "Lacoste",
 };
 
 /** Best-guess brand family from shape, or "unknown". Observability only. */

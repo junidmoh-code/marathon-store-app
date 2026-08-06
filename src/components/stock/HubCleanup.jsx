@@ -43,6 +43,8 @@ import { functions } from "../../firebase";
 import { prepareLabelPhoto } from "../../utils/labelPhoto";
 import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/styleCode";
 import { isMergedAway } from "../../utils/mergedProducts";
+import { interpretLabelScan } from "../../utils/labelScan";
+import { Html5Qrcode } from "html5-qrcode";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
   buildLeftovers, locationsHolding, registrationProgress, realSizes,
@@ -68,6 +70,10 @@ const qtyOf = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
 
 // The tongue-label OCR — the SAME reader the style-code gate uses at intake.
 const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
+// Hidden mount node for the still-image QR/DataMatrix decode attempt — id is
+// per-instance (a register panel can overlay a mounted count tab, so two
+// readers can exist at once and must not collide on one DOM id).
+let qrReaderSeq = 0;
 
 // ─── Shared bits ─────────────────────────────────────────────────────────────
 
@@ -777,6 +783,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
 // Copy is explicit on purpose — the operator must never wonder whether this is
 // the shop-barcode scan. It is not.
 function TongueLabelReader({ busy, big = false, onCode }) {
+  const [qrId] = useState(() => `label-qr-still-reader-${++qrReaderSeq}`);
   const [reading, setReading] = useState(false);
   const [readNote, setReadNote] = useState(null);          // { text, options? }
   const [typed, setTyped] = useState("");
@@ -790,6 +797,25 @@ function TongueLabelReader({ busy, big = false, onCode }) {
     setReadNote(null);
     try {
       const photo = await prepareLabelPhoto(file);
+
+      // ── QR / DATAMATRIX FIRST — deterministic beats OCR ──────────────────
+      // Lacoste and adidas labels carry one. If it decodes to something STABLE
+      // (a style-code-shaped value, directly or in a URL) it wins outright and
+      // no vision call is billed at all. Per-size GS1/GTIN payloads are
+      // deliberately ignored (utils/labelScan.js) — they would split one shoe
+      // into a product per size. Any decode failure falls through silently.
+      try {
+        const scanner = new Html5Qrcode(qrId, false);
+        const decoded = await scanner.scanFile(file, /* showImage */ false);
+        try { scanner.clear(); } catch { /* nothing mounted */ }
+        const qr = interpretLabelScan(decoded);
+        if (qr.kind === "code") {
+          setReading(false);
+          onCode(qr.code, { source: "label", labelPhoto: photo });
+          return;
+        }
+      } catch { /* no machine-readable code on this label — OCR takes over */ }
+
       const { data } = await readStyleCodeLabelFn({ imageBase64: photo.base64, mimeType: "image/jpeg" });
       const out = chooseFromLabelRead(data);
       const formattedChosen = out.kind === "chosen" ? formatStyleCodeForDisplay(out.code) : "";
@@ -804,6 +830,10 @@ function TongueLabelReader({ busy, big = false, onCode }) {
           options: out.options,
           labelPhoto: photo,
         });
+      } else if (out.kind === "fingerprint") {
+        // No brand format matched, but the label read cleanly: offer its
+        // stable fingerprint. Accepting it registers/counts like any code.
+        setReadNote({ text: out.message, fingerprint: out.code, labelPhoto: photo });
       } else {
         setReadNote({ text: out.message });
       }
@@ -835,10 +865,18 @@ function TongueLabelReader({ busy, big = false, onCode }) {
                  style={big ? { minHeight: 84, fontSize: 20 } : { minHeight: 64, fontSize: 17 }}>
         {reading ? "Reading the tongue label…" : "📷 Photograph the tongue label"}
       </BigButton>
+      <div id={qrId} style={{ display: "none" }} />
       {readNote && (
         <div style={{ marginTop: 10, background: "rgba(251,191,36,.07)", border: "1px solid rgba(251,191,36,.25)",
                       borderRadius: 11, padding: "9px 12px", fontSize: 12.5, color: "#FDE9B0" }}>
           {readNote.text}
+          {readNote.fingerprint && (
+            <button type="button"
+              onClick={() => { const fp = readNote.fingerprint; const photo = readNote.labelPhoto || null; setReadNote(null); onCode(fp, { source: "fingerprint", labelPhoto: photo }); }}
+              style={{ ...bGreen, display: "block", width: "100%", marginTop: 9, minHeight: 48, fontSize: 14 }}>
+              ✓ Use the label fingerprint for this shoe
+            </button>
+          )}
           {readNote.options && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
               {readNote.options.map((c) => (
@@ -892,7 +930,9 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const takeCode = (code, { source, labelPhoto: photo }) => {
     setChosenCode(code);
     setCodeSource(source);
-    setLabelPhoto(source === "label" ? photo : null);
+    // A photo is evidence for BOTH a label read and a fingerprint — for a
+    // fingerprint it is the only evidence there will ever be.
+    setLabelPhoto(source === "label" || source === "fingerprint" ? photo : null);
     setSkipReason(null);
   };
 
@@ -902,7 +942,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const styleCodePayload = skipReason
     ? { skipped: skipReason }
     : chosenCode
-      ? { code: chosenCode, source: codeSource || "manual", labelPhoto: codeSource === "label" ? labelPhoto : null }
+      ? { code: chosenCode, source: codeSource || "manual", labelPhoto: (codeSource === "label" || codeSource === "fingerprint") ? labelPhoto : null }
       : null;
   const styleReady = styleStepSatisfied(product, styleCodePayload) && conflictOwners.length === 0;
 
@@ -981,7 +1021,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
         <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
                       padding: "12px 14px", marginBottom: 18, fontSize: 14, color: "#B7F0CC",
                       display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ flex: 1 }}>✓ Style number: <strong>{chosenCode}</strong> <span style={{ color: GRAY, fontSize: 11.5 }}>({codeSource === "label" ? "read off the tongue label" : "typed"})</span></span>
+          <span style={{ flex: 1 }}>✓ Style number: <strong>{chosenCode}</strong> <span style={{ color: GRAY, fontSize: 11.5 }}>({codeSource === "fingerprint" ? "label fingerprint — no printed article number" : codeSource === "label" ? "read off the tongue label" : "typed"})</span></span>
           <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); }}
             style={{ ...bGhost, fontSize: 12, minHeight: 38, padding: "0 12px" }}>✎ Change</button>
         </div>

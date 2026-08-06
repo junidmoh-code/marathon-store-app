@@ -34,7 +34,17 @@ function fakeDb(initial = {}) {
   };
   const makeRef = (path) => ({
     async get() { const v = at(path); const val = v === undefined ? null : v; return { val: () => val, exists: () => val !== null }; },
-    async set(v) { put(path, v); },
+    async set(v) {
+      // Faithful to real RTDB: empty arrays/objects are DELETED, not stored —
+      // the exact semantics the fingerprint cache row depends on.
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        v = { ...v };
+        for (const [k, x] of Object.entries(v)) {
+          if (Array.isArray(x) && x.length === 0) delete v[k];
+        }
+      }
+      put(path, v);
+    },
     async update(patch) { for (const [k, v] of Object.entries(patch)) put(`${path}/${k}`, v); },
     child(k) { return makeRef(`${path}/${k}`); },
     orderByKey() {
@@ -182,7 +192,7 @@ test("THE CACHE NODE HOLDS CODES ONLY — never the Vision payload", async () =>
   const db = fakeDb({});
   await runLabelRead(db, base({ visionFetch: visionOk(NIKE_LABEL), geminiFetch: geminiOk({}) }));
   const row = db.data[OCR_CACHE_PATH][HASH];
-  assert.deepStrictEqual(Object.keys(row).sort(), ["at", "candidates", "expiresAt", "source"]);
+  assert.deepStrictEqual(Object.keys(row).sort(), ["at", "candidates", "expiresAt", "fpv", "source"]);
   assert.deepStrictEqual(row.candidates, ["CT8527016"]);
   assert.strictEqual(row.expiresAt - row.at, OCR_CACHE_TTL_MS);
   assert.ok(JSON.stringify(row).length < 200, "one row must stay tiny — this node is a bandwidth risk");
@@ -301,11 +311,26 @@ test("a SETTLED single-candidate read still caches", async () => {
 
 test("a settled EMPTY read still caches — a blank label must not re-bill", async () => {
   const db = fakeDb({});
+  let visionCalls = 0;
+  const counting = (text) => async (...a) => { visionCalls++; return visionOk(text)(...a); };
   await runLabelRead(db, base({
-    visionFetch: visionOk("MADE IN VIETNAM"),
+    visionFetch: counting("MADE IN VIETNAM"),
     geminiFetch: geminiOk({ styleCode: "", styleCodeConfidence: 0 }),
   }));
-  assert.deepStrictEqual(db.data[OCR_CACHE_PATH][HASH].candidates, []);
+  const row = db.data[OCR_CACHE_PATH][HASH];
+  assert.ok(row, "the empty outcome is cached");
+  // REAL RTDB deletes an empty-array child, so the stored row has NO candidates
+  // key — the fpv marker is what vouches for it (the fake reproduces the drop).
+  assert.strictEqual(row.candidates, undefined);
+  assert.strictEqual(row.fpv, 1);
+  // The behavioural point: the retake is served from cache, no re-bill.
+  const second = await runLabelRead(db, base({
+    visionFetch: counting("MADE IN VIETNAM"),
+    geminiFetch: geminiOk({ styleCode: "", styleCodeConfidence: 0 }),
+  }));
+  assert.strictEqual(visionCalls, 1, "the identical blank photo must not be re-processed");
+  assert.strictEqual(second.fromCache, true);
+  assert.deepStrictEqual(second.candidates, [], "candidates default back to [] on read");
 });
 
 // ── The reaper ───────────────────────────────────────────────────────────────
@@ -440,4 +465,68 @@ test("the allowed mime list is exactly the three the providers accept", () => {
   assert.match(src, /Unsupported image type/, "an unsupported mimeType must be rejected");
   assert.ok(!/ALLOWED_MIME\.includes\(mimeType\) \? mimeType : "image\/jpeg"/.test(src),
     "the silent relabel-to-JPEG fallback must not exist");
+});
+
+// ─── THE FINGERPRINT IN THE FUNNEL (owner fix 2026-08-06) ────────────────────
+const ON_LABEL = "On\nCLOUDNOVA MONO UNDYED WHITE\nUS M 8.5 UK 8 EU 42 JP 26.5\n1222\nMADE IN VIETNAM";
+
+test("a label with NO known format still answers — with a flagged fingerprint", async () => {
+  const db = fakeDb({});
+  const out = await runLabelRead(db, base({
+    visionFetch: visionOk(ON_LABEL),
+    geminiFetch: geminiOk({}),          // tier 2 fires (0 candidates) and finds nothing
+  }));
+  assert.deepStrictEqual(out.candidates, []);
+  assert.strictEqual(out.fingerprint, "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC");
+});
+
+test("the fingerprint is CACHED — a retake of the same no-format label re-bills nothing", async () => {
+  const db = fakeDb({});
+  let visionCalls = 0;
+  const counting = (text) => async (...a) => { visionCalls++; return visionOk(text)(...a); };
+  const first = await runLabelRead(db, base({ visionFetch: counting(ON_LABEL), geminiFetch: geminiOk({}) }));
+  assert.strictEqual(first.fingerprint, "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC");
+  assert.strictEqual(visionCalls, 1);
+
+  const second = await runLabelRead(db, base({ visionFetch: counting(ON_LABEL), geminiFetch: geminiOk({}) }));
+  assert.strictEqual(visionCalls, 1, "the identical photo must not be re-processed");
+  assert.strictEqual(second.fromCache, true);
+  assert.strictEqual(second.fingerprint, "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC", "the fingerprint survives the cache round-trip");
+});
+
+test("a format-valid candidate SUPPRESSES the fingerprint — verified codes always win", async () => {
+  const db = fakeDb({});
+  const out = await runLabelRead(db, base({
+    visionFetch: visionOk("LACOSTE\nPOWERCOURT 0520 1 SWA\n7-43SMA0033 1R5\nUK 8 US 9"),
+    geminiFetch: geminiOk({}),
+  }));
+  assert.deepStrictEqual(out.candidates, ["743SMA00331R5"]);
+  assert.strictEqual(out.fingerprint, null);
+});
+
+test("a PRE-fingerprint zero-candidate cache row upgrades itself on the next read", async () => {
+  const db = fakeDb({});
+  // A legacy row: cached before the fingerprint field existed (no fpv marker).
+  db.data[OCR_CACHE_PATH] = { [HASH]: { candidates: [], source: "vision", at: NOW - 1000, expiresAt: NOW + 1000000 } };
+  let visionCalls = 0;
+  const counting = (text) => async (...a) => { visionCalls++; return visionOk(text)(...a); };
+  const out = await runLabelRead(db, base({ visionFetch: counting(ON_LABEL), geminiFetch: geminiOk({}) }));
+  assert.strictEqual(visionCalls, 1, "the legacy row is re-read ONCE");
+  assert.ok(out.fingerprint, "…and now offers the fingerprint");
+  // The row is upgraded: a NEW no-fingerprint row would carry fpv and be served.
+  assert.strictEqual(db.data[OCR_CACHE_PATH][HASH].fpv, 1);
+  const again = await runLabelRead(db, base({ visionFetch: counting(ON_LABEL), geminiFetch: geminiOk({}) }));
+  assert.strictEqual(visionCalls, 1, "the upgraded row serves from cache");
+  assert.strictEqual(again.fromCache, true);
+});
+
+test("a NEW genuinely-unreadable photo still caches and never re-bills (fpv row, no fingerprint)", async () => {
+  const db = fakeDb({});
+  let visionCalls = 0;
+  const counting = (text) => async (...a) => { visionCalls++; return visionOk(text)(...a); };
+  await runLabelRead(db, base({ visionFetch: counting("US 9 UK 8"), geminiFetch: geminiOk({}) }));
+  assert.strictEqual(visionCalls, 1);
+  const second = await runLabelRead(db, base({ visionFetch: counting("US 9 UK 8"), geminiFetch: geminiOk({}) }));
+  assert.strictEqual(visionCalls, 1, "unreadable stays cached — the fpv marker keeps it served");
+  assert.strictEqual(second.fromCache, true);
 });

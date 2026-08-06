@@ -120,8 +120,15 @@ describe("the style-number step", () => {
     const many = chooseFromLabelRead({ candidates: ["CT8527016", "DD1391100"], displayCandidates: ["CT8527-016", "DD1391-100"] });
     expect(many.kind).toBe("options");
     expect(many.options).toEqual(["CT8527-016", "DD1391-100"]);
-    expect(chooseFromLabelRead({ candidates: [], errors: [{ tier: "vision", message: "x" }] }).message).toMatch(/unavailable/);
-    expect(chooseFromLabelRead({ candidates: [] }).message).toMatch(/type it/);
+    // The failure copy says what to DO, not just that it failed:
+    expect(chooseFromLabelRead({ candidates: [], errors: [{ tier: "vision", message: "x" }] }).message).toMatch(/Type the style number/);
+    expect(chooseFromLabelRead({ candidates: [] }).message).toMatch(/no readable style number/);
+    // A label with NO known format but readable text yields the FINGERPRINT:
+    const fp = chooseFromLabelRead({ candidates: [], fingerprint: "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC" });
+    expect(fp.kind).toBe("fingerprint");
+    expect(fp.code).toBe("CLOUDNOVAMONOUNDYEDWHITEF90E4BEC");
+    // …and a format-valid candidate always wins over a fingerprint:
+    expect(chooseFromLabelRead({ candidates: ["CT8527016"], displayCandidates: ["CT8527-016"], fingerprint: "X" }).kind).toBe("chosen");
   });
 
   it("a code another live product owns is a conflict; merged-away owners don't count", () => {
@@ -135,6 +142,29 @@ describe("the style-number step", () => {
     expect(styleCodeOwners("ZZ999", products, "pMine")).toEqual([]);
     // The product's own claim is not a conflict with itself:
     expect(styleCodeOwners("CT8527-016", products, "pOther")).toEqual([]);
+  });
+});
+
+// ─── FINGERPRINTS DO NOT WEAKEN UNIQUENESS (owner CRITICAL 2026-08-06) ───────
+// A fingerprint is a styleCodeNormalised like any other: it claims the index,
+// and a collision with a DIFFERENT product is the duplicate case → merge,
+// never silently shared.
+describe("a fingerprint collides exactly like a verified code", () => {
+  const FP = "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC";
+  it("register: a fingerprint another live product owns is a blocking conflict", () => {
+    const products = [P("pMine"), P("pOwner", { styleCodeNormalised: FP })];
+    const owners = styleCodeOwners(FP, products, "pMine");
+    expect(owners.map((p) => p.id)).toEqual(["pOwner"]);   // → merge route, save blocked
+  });
+  it("count: a fingerprint with a claim AND a second live owner is a DUPLICATE", () => {
+    const products = [P("pA", { styleCodeNormalised: FP }), P("pB", { styleCodeNormalised: FP })];
+    const out = resolveStyleNumber(FP, { products, claim: { productId: "pA" } });
+    expect(out.kind).toBe("duplicate");
+  });
+  it("the same fingerprint on the SAME product is no conflict — that is the point", () => {
+    const products = [P("pMine", { styleCodeNormalised: FP })];
+    expect(styleCodeOwners(FP, products, "pMine")).toEqual([]);
+    expect(resolveStyleNumber(FP, { products, claim: { productId: "pMine" } }).kind).toBe("claim");
   });
 });
 
