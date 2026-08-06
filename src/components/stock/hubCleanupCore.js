@@ -87,6 +87,56 @@ export function resolveCleanupScan(raw, { products = [], barcodeRow = null } = {
   return { kind: "unresolved", code };
 }
 
+// ── REGISTRATION ENTRY (owner correction 2026-08-06) ─────────────────────────
+// Nothing is CREATED during registration — every shoe already has a product
+// record. The operator FINDS the shoe first (name search, or the not-yet-
+// registered list; a barcode scan is only an optional shortcut), and the panel
+// then captures TWO facts in one save: the manufacturer style number off the
+// INNER TONGUE LABEL, and the size on display. Every entry path builds its
+// panel through THIS one function, so search, the list and the shortcut are
+// provably the same screen.
+export function registerPanelFor(product, size = null) {
+  if (!product || !product.id) return null;
+  return { mode: "register", product, size: size != null ? String(size) : null, code: null };
+}
+
+// The style-number step's outcome, from a tongue-label read or typing. The
+// register save refuses to complete until one of these holds:
+//   on file  — the product already carries an immutable styleCodeNormalised
+//   captured — a code was read from the label or typed (normalises non-empty)
+//   skipped  — a deliberate, reasoned "this shoe has no readable style number"
+export const STYLE_SKIP_REASONS = Object.freeze(["label_unreadable", "label_missing", "no_code_exists"]);
+
+export function styleStepSatisfied(product, styleCode) {
+  if (product && product.styleCodeNormalised) return true;
+  if (styleCode && typeof styleCode.code === "string" && normaliseStyleCode(styleCode.code)) return true;
+  if (styleCode && STYLE_SKIP_REASONS.includes(styleCode.skipped)) return true;
+  return false;
+}
+
+// What a tongue-label OCR response means for the UI: one clean candidate is
+// chosen outright; several become tap-chips; none falls back to typing.
+export function chooseFromLabelRead(data) {
+  const candidates = Array.isArray(data && data.candidates) ? data.candidates.filter(Boolean) : [];
+  const display = Array.isArray(data && data.displayCandidates) && data.displayCandidates.length === candidates.length
+    ? data.displayCandidates : candidates;
+  if (candidates.length === 1) return { kind: "chosen", code: display[0] };
+  if (candidates.length > 1) return { kind: "options", options: display };
+  const broken = Array.isArray(data && data.errors) && data.errors.length > 0;
+  return { kind: "none", message: broken
+    ? "The label reader is unavailable right now — type the style number instead."
+    : "Couldn't read a style number off that photo — try again closer, or type it." };
+}
+
+// Live products already claiming this code — the duplicate case, surfaced
+// before the save so the operator routes to Merge instead of guessing.
+export function styleCodeOwners(code, products, excludeId = null) {
+  const normalised = normaliseStyleCode(code);
+  if (!normalised) return [];
+  return (products || []).filter((p) =>
+    p && p.id !== excludeId && !isMergedAway(p) && p.styleCodeNormalised === normalised);
+}
+
 // An open /duplicate_candidates row involving this product, if any — the scan
 // flow surfaces it as a Merge entry point.
 export function openDuplicateFor(productId, duplicateRows) {
