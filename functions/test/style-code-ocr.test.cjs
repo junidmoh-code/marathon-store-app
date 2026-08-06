@@ -254,3 +254,76 @@ test("cache candidates de-duplicate and stay capped", () => {
   assert.ok(rec.candidates.length <= MAX_CANDIDATES);
   assert.strictEqual(new Set(rec.candidates).size, rec.candidates.length);
 });
+
+// ─── LACOSTE + THE LABEL FINGERPRINT (owner fix 2026-08-06) ──────────────────
+const { labelFingerprint } = require("../lib/style-code-ocr.cjs");
+
+const LACOSTE_LABEL = [
+  "LACOSTE",
+  "POWERCOURT 0520 1 SWA",
+  "7-43SMA0033 1R5",
+  "UK 8 US 9 EUR 42.5 JP 27",
+  "09/24",
+  "MADE IN VIETNAM",
+].join("\n");
+
+test("a Lacoste label yields its article reference — whole, with the colour suffix", () => {
+  const out = extractStyleCodeCandidates(LACOSTE_LABEL);
+  assert.deepStrictEqual(out.map((c) => c.normalised), ["743SMA00331R5"]);
+  assert.strictEqual(out[0].format, "lacoste-ref");
+});
+
+test("web-form Lacoste references (no 7- prefix) extract too", () => {
+  const out = extractStyleCodeCandidates("L001 124 6 SMA\n47SMA0057 042\nUS 10");
+  assert.deepStrictEqual(out.map((c) => c.normalised), ["47SMA0057042"]);
+});
+
+// The On Cloud size label: sizes and a colourway token, NO article code.
+const ON_LABEL_SIZE_8 = "On\nCLOUDNOVA MONO UNDYED WHITE\nUS M 8.5 UK 8 EU 42 JP 26.5\n1222\nMADE IN VIETNAM";
+const ON_LABEL_SIZE_10 = "On\nCLOUDNOVA MONO UNDYED WHITE\nUS M 10 UK 9.5 EU 44 JP 28\n0521\nMADE IN VIETNAM";
+const ON_OTHER_SHOE = "On\nCLOUDMONSTER 2 EVERGREEN\nUS M 8.5 UK 8 EU 42\n1222\nMADE IN VIETNAM";
+
+test("FINGERPRINT: the same shoe in two different sizes produces the SAME fingerprint", () => {
+  const a = labelFingerprint(ON_LABEL_SIZE_8);
+  const b = labelFingerprint(ON_LABEL_SIZE_10);
+  assert.ok(a, "a readable label must produce an identity");
+  assert.strictEqual(a, b, "size, date and serial tokens must not leak into the identity");
+});
+
+test("FINGERPRINT: two different shoes produce DIFFERENT fingerprints", () => {
+  assert.notStrictEqual(labelFingerprint(ON_LABEL_SIZE_8), labelFingerprint(ON_OTHER_SHOE));
+});
+
+test("FINGERPRINT: satisfies the styleCodeNormalised constraints — own uppercase, ≤32, alnum", () => {
+  for (const text of [ON_LABEL_SIZE_8, ON_OTHER_SHOE, "SOME VERY LONG LABEL WITH MANY MANY DISTINCT MODEL TOKENS ALPHA BRAVO CHARLIE DELTA ECHO FOXTROT GOLF HOTEL"]) {
+    const fp = labelFingerprint(text);
+    assert.ok(fp.length <= 32, `≤32: ${fp}`);
+    assert.strictEqual(fp, fp.toUpperCase());
+    assert.match(fp, /^[A-Z0-9]+$/);
+  }
+});
+
+test("FINGERPRINT: reading order cannot change the identity", () => {
+  const shuffled = "MADE IN VIETNAM\n1222\nUS M 8.5 UK 8 EU 42 JP 26.5\nUNDYED WHITE\nCLOUDNOVA MONO\nOn";
+  assert.strictEqual(labelFingerprint(ON_LABEL_SIZE_8), labelFingerprint(shuffled));
+});
+
+test("FINGERPRINT: two long-but-different labels never merge through truncation", () => {
+  const long1 = "ALPHA BRAVO CHARLIE DELTA ECHO FOXTROT GOLF HOTEL INDIA1 JULIET";
+  const long2 = "ALPHA BRAVO CHARLIE DELTA ECHO FOXTROT GOLF HOTEL INDIA1 KILO";
+  const a = labelFingerprint(long1), b = labelFingerprint(long2);
+  assert.strictEqual(a.length, 32);
+  assert.notStrictEqual(a, b, "the digest tail must keep truncated identities apart");
+});
+
+test("FINGERPRINT: an empty or all-noise label produces nothing — not a junk identity", () => {
+  assert.strictEqual(labelFingerprint(""), null);
+  assert.strictEqual(labelFingerprint("US 9 UK 8 EUR 42.5\n08/15/19\n12345678"), null);
+});
+
+test("the cache record carries the fingerprint when present, and nothing else new", () => {
+  const rec = buildOcrCacheRecord({ candidates: [], source: "vision", nowMs: NOW, fingerprint: "CLOUDNOVAMONOUNDYEDWHITE" });
+  assert.strictEqual(rec.fingerprint, "CLOUDNOVAMONOUNDYEDWHITE");
+  const bare = buildOcrCacheRecord({ candidates: ["CT8527016"], source: "vision", nowMs: NOW });
+  assert.deepStrictEqual(Object.keys(bare).sort(), ["at", "candidates", "expiresAt", "source"]);
+});

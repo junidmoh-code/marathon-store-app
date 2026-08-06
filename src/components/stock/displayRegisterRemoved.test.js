@@ -95,6 +95,20 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     expect(hubCleanup).toMatch(/const cp = countPanelFor\(p\);/);
   });
 
+  it("display-send confirm pins: no inline size commit, banner after commit", () => {
+    const app = readFileSync(join(SRC, "App.jsx"), "utf8");
+    // Size buttons in the display-send guard dispatch PICK_SIZE — they never
+    // call markSentAndPrint directly (the mis-tap-commits defect):
+    expect(app).toMatch(/onClick=\{\(\) => d\(\{ type: "PICK_SIZE", size: s \}\)\}/);
+    expect(app).not.toMatch(/onClick=\{\(\) => markSentAndPrint\(order, \{ sentSize: s \}\)\}/);
+    // The commit runs only through the machine's CONFIRM directive:
+    expect(app).toMatch(/const done = sendFlowReduce\(flow, \{ type: "CONFIRM" \}\);/);
+    expect(app).toMatch(/if \(!done\.commit\) return;/);
+    // OOS goes through its own confirm, and the post-commit banner exists:
+    expect(app).toMatch(/OPEN_OOS/);
+    expect(app).toMatch(/sentBannerCopy\(done\.commit/);
+  });
+
   it("scan panels remount per scanned product, and the camera effect is render-stable", () => {
     const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
     expect(hubCleanup).toMatch(/key=\{`reg_\$\{panel\.product\.id\}/);

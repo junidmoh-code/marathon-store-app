@@ -441,3 +441,40 @@ test("the allowed mime list is exactly the three the providers accept", () => {
   assert.ok(!/ALLOWED_MIME\.includes\(mimeType\) \? mimeType : "image\/jpeg"/.test(src),
     "the silent relabel-to-JPEG fallback must not exist");
 });
+
+// ─── THE FINGERPRINT IN THE FUNNEL (owner fix 2026-08-06) ────────────────────
+const ON_LABEL = "On\nCLOUDNOVA MONO UNDYED WHITE\nUS M 8.5 UK 8 EU 42 JP 26.5\n1222\nMADE IN VIETNAM";
+
+test("a label with NO known format still answers — with a flagged fingerprint", async () => {
+  const db = fakeDb({});
+  const out = await runLabelRead(db, base({
+    visionFetch: visionOk(ON_LABEL),
+    geminiFetch: geminiOk({}),          // tier 2 fires (0 candidates) and finds nothing
+  }));
+  assert.deepStrictEqual(out.candidates, []);
+  assert.strictEqual(out.fingerprint, "CLOUDNOVAMONOUNDYEDWHITE");
+});
+
+test("the fingerprint is CACHED — a retake of the same no-format label re-bills nothing", async () => {
+  const db = fakeDb({});
+  let visionCalls = 0;
+  const counting = (text) => async (...a) => { visionCalls++; return visionOk(text)(...a); };
+  const first = await runLabelRead(db, base({ visionFetch: counting(ON_LABEL), geminiFetch: geminiOk({}) }));
+  assert.strictEqual(first.fingerprint, "CLOUDNOVAMONOUNDYEDWHITE");
+  assert.strictEqual(visionCalls, 1);
+
+  const second = await runLabelRead(db, base({ visionFetch: counting(ON_LABEL), geminiFetch: geminiOk({}) }));
+  assert.strictEqual(visionCalls, 1, "the identical photo must not be re-processed");
+  assert.strictEqual(second.fromCache, true);
+  assert.strictEqual(second.fingerprint, "CLOUDNOVAMONOUNDYEDWHITE", "the fingerprint survives the cache round-trip");
+});
+
+test("a format-valid candidate SUPPRESSES the fingerprint — verified codes always win", async () => {
+  const db = fakeDb({});
+  const out = await runLabelRead(db, base({
+    visionFetch: visionOk("LACOSTE\nPOWERCOURT 0520 1 SWA\n7-43SMA0033 1R5\nUK 8 US 9"),
+    geminiFetch: geminiOk({}),
+  }));
+  assert.deepStrictEqual(out.candidates, ["743SMA00331R5"]);
+  assert.strictEqual(out.fingerprint, null);
+});

@@ -137,7 +137,10 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
     styleCode: codeOnFile
       ? (product.styleCode || formatStyleCodeForDisplay(codeOnFile))
       : (capturedNormalised ? formatStyleCodeForDisplay(capturedNormalised) : null),
-    styleCodeFrom: codeOnFile ? "on_file" : (capturedNormalised ? (styleCode?.source === "label" ? "label" : "manual") : null),
+    styleCodeFrom: codeOnFile ? "on_file"
+      : capturedNormalised
+        ? (styleCode?.source === "fingerprint" ? "fingerprint" : styleCode?.source === "label" ? "label" : "manual")
+        : null,
     styleCodeSkipReason: skipReason,
   };
 

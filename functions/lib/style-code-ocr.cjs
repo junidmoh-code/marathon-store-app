@@ -72,6 +72,10 @@ function maskNonCodeText(upperText) {
 // Each allows the separator the brand prints (hyphen or space) between blocks.
 // `(?<![A-Z0-9])` / `(?![A-Z0-9])` stop a match starting or ending mid-token.
 const EXTRACTION_PATTERNS = [
+  // Lacoste — 7-43SMA0033 1R5 / 47SMA0057042. FIRST: its tail would otherwise
+  // be claimed piecemeal by the broader adidas/NB shapes below. The colour
+  // suffix group is greedy-optional so "43SMA0033 1R5" comes out whole.
+  { format: "lacoste-ref", re: /(?<![A-Z0-9])(?:7[-\s]?)?\d{2}[A-Z]{3}\d{4}(?:[-\s]?[A-Z0-9]{2,3})?(?![A-Z0-9])/g },
   // Nike / Jordan modern — CT8527-016
   { format: "nike-alpha-6-3", re: /(?<![A-Z0-9])[A-Z]{2}\d{4}[-\s]?\d{3}(?![A-Z0-9])/g },
   // Nike / Jordan legacy — 315122-111
@@ -125,6 +129,58 @@ function extractStyleCodeCandidates(text) {
     }
   }
   return found.slice(0, MAX_CANDIDATES);
+}
+
+// ── LABEL FINGERPRINT — identity when no known format matches ────────────────
+// (Owner principle 2026-08-06: we do not need the manufacturer's official
+// article number, we need a STABLE FINGERPRINT — identical on every pair of
+// the same shoe, different on other shoes. Never reject a label that produced
+// readable text.)
+//
+// Construction, deterministic end to end:
+//   1. uppercase, tokenise on everything non-alphanumeric;
+//   2. DROP the per-pair variable parts —
+//        · size-system tokens and their attached numbers (US/UK/EU/JP/CM/CHN…,
+//          already blanked by maskNonCodeText, plus bare size words),
+//        · date/production tokens and EVERY pure-numeric token (dates like
+//          0520 or 1222, per-unit serials, and per-SIZE GTIN/barcodes are all
+//          numeric; a purely numeric article number would have matched a known
+//          format upstream and never reached this fallback),
+//        · boilerplate label words (MADE, IN, country names, SIZE, …);
+//   3. KEEP model-bearing tokens (POWERCOURT, CLOUDNOVA) and article-shaped
+//      mixed tokens (SWA, 0520A-style alnum mixes);
+//   4. SORT + de-dupe so OCR reading order between two photos cannot change
+//      the identity, then join and normalise;
+//   5. cap to the 32-char ceiling styleCodeNormalised must satisfy: 24 chars
+//      of tokens + an 8-hex digest of the FULL token string, so truncation can
+//      never merge two long-but-different labels.
+// The result is a legal styleCodeNormalised (its own uppercase, ≤32, A-Z0-9)
+// and claims /style_code_index like any verified code — uniqueness is NEVER
+// weakened, a collision with another product's claim is a duplicate → merge.
+const FINGERPRINT_STOPWORDS = new Set([
+  "SIZE", "TAILLE", "TALLA", "GROSSE", "GR",
+  "US", "UK", "EU", "EUR", "FR", "JP", "JPN", "CM", "CHN", "CN", "KR", "BR", "MX", "AU", "D",
+  "MADE", "IN", "FABRIQUE", "AU", "HECHO", "EN",
+  "CHINA", "CHINE", "VIETNAM", "INDONESIA", "INDONESIE", "CAMBODIA", "CAMBODGE", "INDIA", "INDE",
+  "THAILAND", "TURKEY", "PORTUGAL", "ITALY", "ITALIE",
+]);
+
+function labelFingerprint(text) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  // Reuse the SAME masking the extractor trusts — sizes-with-system and dates
+  // vanish before tokenisation, exactly once, in one place.
+  const masked = maskNonCodeText(text.toUpperCase());
+  const tokens = masked.split(/[^A-Z0-9]+/).filter(Boolean)
+    .filter((t) => !/^\d+$/.test(t))                 // every pure-numeric token is per-pair noise here
+    .filter((t) => !FINGERPRINT_STOPWORDS.has(t))
+    .filter((t) => t.length >= 3 || /\d/.test(t));   // 1-2 letter fragments carry no identity
+  if (!tokens.length) return null;
+  const joined = [...new Set(tokens)].sort().join("");
+  const base = joined.replace(/[^A-Z0-9]/g, "");
+  if (!base) return null;
+  if (base.length <= 32) return base;
+  const digest = crypto.createHash("sha1").update(base).digest("hex").slice(0, 8).toUpperCase();
+  return base.slice(0, 24) + digest;
 }
 
 // ── Confusable-character retry (tier 3) ──────────────────────────────────────
@@ -220,18 +276,23 @@ function imageHash(buffer) {
  * The ONLY shape written to /style_code_ocr_cache. Deliberately tiny, and
  * constructed rather than spread, so a fat payload cannot leak in by accident.
  */
-function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_MS }) {
+function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_MS, fingerprint = null }) {
   const codes = (Array.isArray(candidates) ? candidates : [])
     .map((c) => (typeof c === "string" ? normaliseStyleCode(c) : normaliseStyleCode(c && c.normalised)))
     .filter(Boolean)
     .slice(0, MAX_CANDIDATES);
   const at = Number.isFinite(nowMs) ? nowMs : 0;
-  return {
+  const rec = {
     candidates: [...new Set(codes)],
     source: OCR_SOURCES.includes(source) ? source : "vision",
     at,
     expiresAt: at + ttlMs,
   };
+  // The label FINGERPRINT rides the cache like a code (it is one string, no
+  // payload) so a retake of the same no-format label re-bills nothing either.
+  const fp = normaliseStyleCode(fingerprint);
+  if (fp) rec.fingerprint = fp;
+  return rec;
 }
 
 /** A cached row is usable only while unexpired — lazy expiry, so we never serve stale. */
@@ -243,6 +304,7 @@ function isOcrCacheFresh(record, nowMs) {
 }
 
 module.exports = {
+  labelFingerprint,
   MASK_PATTERNS,
   EXTRACTION_PATTERNS,
   MAX_CANDIDATES,

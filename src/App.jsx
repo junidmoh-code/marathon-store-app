@@ -45,6 +45,7 @@ import AttentionView from "./components/stock/AttentionView";
 import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
 import { displaySendNeedsSize } from "./utils/displaySend";
+import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from "./utils/sendConfirm";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement } from "./components/stock/applyMovement";
 import { input as stockInput } from "./components/stock/ui";
@@ -8781,6 +8782,20 @@ function WarehouseView({ products = [], orders, onExit }) {
   // refresh was the only way to realign them. dueRefills short-circuits
   // when selectedHub is null so the landing-screen pass is harmless.
   const [pickerOpenId, setPickerOpenId] = useState(null);
+  // ── Display-send confirm flow (owner fix 2026-08-06) ─────────────────────
+  // One machine per order card (src/utils/sendConfirm.js): Send → size prompt
+  // → large-type confirm → commit. NOTHING commits from a size tap. The banner
+  // shows what was just sent for a few seconds after the card leaves.
+  const [sendFlows, setSendFlows] = useState({});          // { orderId: flowState }
+  const [sentBanner, setSentBanner] = useState(null);      // { text, until }
+  const sendFlowDispatch = (orderId, action) => {
+    setSendFlows((m) => ({ ...m, [orderId]: sendFlowReduce(m[orderId] || sendFlowInit(), action) }));
+  };
+  useEffect(() => {
+    if (!sentBanner) return;
+    const t = setTimeout(() => setSentBanner(null), Math.max(0, sentBanner.until - Date.now()));
+    return () => clearTimeout(t);
+  }, [sentBanner]);
   // Which Ready-tab row's ⋮ action menu is open (one at a time). A dispatched
   // order lives in the Ready tab — there is no separate "Sent" tab.
   const [menuOpenId, setMenuOpenId] = useState(null);
@@ -9748,39 +9763,92 @@ function WarehouseView({ products = [], orders, onExit }) {
                   const sizeChoices = (Array.isArray(guardProduct?.sizes) ? guardProduct.sizes : [])
                     .map(String).map((s) => s.trim()).filter((s) => s && s !== "_");
                   if (needsSentSize) {
+                    // ── STAGED, CONFIRMED SEND (owner fix 2026-08-06) ────────
+                    // No inline size buttons: the card shows SEND; sizes appear
+                    // only in the prompt; ONLY the explicit Confirm commits.
+                    const flow = sendFlows[order.id] || sendFlowInit();
+                    const d = (action) => sendFlowDispatch(order.id, action);
+                    const hubLabel = ({ hub1:"Hub 1", hub2:"Hub 2", hub3:"Hub 3" })[order.placedAtHub || order.hub] || selectedHub || "the hub";
+                    const commitFlow = () => {
+                      const done = sendFlowReduce(flow, { type: "CONFIRM" });
+                      d({ type: "CONFIRM" });
+                      if (!done.commit) return;
+                      if (done.commit.kind === "send") {
+                        markSentAndPrint(order, { sentSize: done.commit.size });
+                      } else {
+                        updateStatus(order, STATUS.OUT_OF_STOCK);
+                      }
+                      setSentBanner({
+                        text: sentBannerCopy(done.commit, { productName: order.productName || guardProduct?.name, hubLabel }),
+                        until: Date.now() + 6000,
+                      });
+                    };
                     return (
                       <div style={{ padding:"0 12px 10px 16px" }}>
-                        <div style={{ background:"rgba(251,191,36,.09)", border:"1px solid rgba(251,191,36,.35)",
-                                      borderRadius:10, padding:"9px 11px", marginBottom:8 }}>
-                          <div style={{ fontSize:11.5, fontWeight:800, color:"#FBBF24", letterSpacing:".03em" }}>
-                            WHICH SIZE ARE YOU SENDING?
-                          </div>
-                          <div style={{ fontSize:11, color:"rgba(251,191,36,.75)", marginTop:3, lineHeight:1.45 }}>
-                            Pick the pair you are actually sending — the till needs it to take the sale off the
-                            right hub when the display sells.{order.size ? ` The shop asked for size ${order.size}.` : ""}
-                          </div>
-                        </div>
-                        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                          {sizeChoices.length ? sizeChoices.map((s) => (
-                            <button key={s} onClick={() => markSentAndPrint(order, { sentSize: s })}
-                              style={{ padding:"12px 16px", borderRadius:10, fontSize:14, fontWeight:800, cursor:"pointer",
-                                       background: String(order.size) === s ? "rgba(74,222,128,.16)" : "rgba(60,110,255,.14)",
-                                       border: String(order.size) === s ? "1px solid rgba(74,222,128,.55)" : "1px solid rgba(74,127,255,.45)",
-                                       color: String(order.size) === s ? "#B7F0CC" : "#9DBCFF",
-                                       minWidth:56 }}>
-                              <SizeTag size={s} />
+                        {flow.step === "idle" && (
+                          <div style={{ display:"flex", gap:8 }}>
+                            <button onClick={() => d({ type: "OPEN_SEND" })}
+                              style={{ flex:2, padding:"14px 10px", borderRadius:10, fontSize:14, fontWeight:800, cursor:"pointer",
+                                       background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.35)", color:"#4ACA7A" }}>
+                              Send display pair…
                             </button>
-                          )) : (
-                            <div style={{ fontSize:11.5, color:"rgba(255,255,255,.45)", fontStyle:"italic" }}>
-                              This product has no sizes on record — fix the product first, then send.
+                            <button onClick={() => d({ type: "OPEN_OOS" })}
+                              style={{ flex:1, padding:"14px 10px", borderRadius:10, fontSize:12.5, fontWeight:700, cursor:"pointer",
+                                       background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B" }}>
+                              Out of Stock…
+                            </button>
+                          </div>
+                        )}
+                        {flow.step === "size" && (
+                          <div>
+                            <div style={{ fontSize:12, fontWeight:800, color:"#FBBF24", marginBottom:8 }}>
+                              WHICH SIZE ARE YOU SENDING?{order.size ? ` (the shop asked for ${order.size})` : ""}
                             </div>
-                          )}
-                          <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)}
-                            style={{ padding:"10px 14px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer",
-                                     background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B" }}>
-                            Out of Stock
-                          </button>
-                        </div>
+                            <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                              {sizeChoices.length ? sizeChoices.map((s) => (
+                                <button key={s} onClick={() => d({ type: "PICK_SIZE", size: s })}
+                                  style={{ padding:"12px 16px", borderRadius:10, fontSize:14, fontWeight:800, cursor:"pointer",
+                                           background: String(order.size) === s ? "rgba(74,222,128,.16)" : "rgba(60,110,255,.14)",
+                                           border: String(order.size) === s ? "1px solid rgba(74,222,128,.55)" : "1px solid rgba(74,127,255,.45)",
+                                           color: String(order.size) === s ? "#B7F0CC" : "#9DBCFF", minWidth:56 }}>
+                                  <SizeTag size={s} />
+                                </button>
+                              )) : (
+                                <div style={{ fontSize:11.5, color:"rgba(255,255,255,.45)", fontStyle:"italic" }}>
+                                  This product has no sizes on record — fix the product first, then send.
+                                </div>
+                              )}
+                              <button onClick={() => d({ type: "CANCEL" })}
+                                style={{ padding:"12px 14px", borderRadius:10, fontSize:12.5, fontWeight:700, cursor:"pointer",
+                                         background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.16)", color:"rgba(255,255,255,.65)" }}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        {(flow.step === "confirm" || flow.step === "oos-confirm") && (
+                          <div style={{ background:"rgba(12,16,30,.75)", border:"1px solid rgba(120,150,255,.3)", borderRadius:12, padding:"14px 14px" }}>
+                            <div style={{ fontSize:17, fontWeight:800, color:"#fff", lineHeight:1.4, marginBottom:12 }}>
+                              {flow.step === "confirm"
+                                ? sendConfirmCopy({ productName: order.productName || guardProduct?.name, size: flow.size, hubLabel })
+                                : `Mark ${order.productName || guardProduct?.name || "this product"} as Out of Stock?`}
+                            </div>
+                            <div style={{ display:"flex", gap:8 }}>
+                              <button onClick={commitFlow}
+                                style={{ flex:2, padding:"14px 10px", borderRadius:10, fontSize:14.5, fontWeight:800, cursor:"pointer",
+                                         background: flow.step === "confirm" ? "rgba(0,150,70,.25)" : "rgba(150,20,20,.22)",
+                                         border: flow.step === "confirm" ? "1px solid rgba(0,180,80,.5)" : "1px solid rgba(180,40,40,.45)",
+                                         color: flow.step === "confirm" ? "#4ACA7A" : "#FF8B8B" }}>
+                                {flow.step === "confirm" ? "✓ CONFIRM SEND" : "✓ Confirm Out of Stock"}
+                              </button>
+                              <button onClick={() => d({ type: "CANCEL" })}
+                                style={{ flex:1, padding:"14px 10px", borderRadius:10, fontSize:13, fontWeight:700, cursor:"pointer",
+                                         background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.16)", color:"rgba(255,255,255,.7)" }}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   }
@@ -10001,6 +10069,16 @@ function WarehouseView({ products = [], orders, onExit }) {
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, maxWidth:430, margin:"0 auto", overflowX:"hidden", paddingBottom:40 }}>
+      {/* What was just sent — visible for a few seconds after the card leaves,
+          so the operator can SEE what they did (owner fix 2026-08-06). */}
+      {sentBanner && (
+        <div style={{ position:"sticky", top:0, zIndex:60, margin:"0 10px", padding:"12px 14px",
+                      background:"rgba(0,150,70,.95)", borderRadius:"0 0 12px 12px",
+                      fontSize:14, fontWeight:800, color:"#fff", textAlign:"center",
+                      boxShadow:"0 8px 24px rgba(0,0,0,.45)" }}>
+          ✓ {sentBanner.text}
+        </div>
+      )}
       {/* Dispatch-label print toast — auto-print result on "Mark as Sent" (non-blocking). */}
       {printToast && (
         <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",

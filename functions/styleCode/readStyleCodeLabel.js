@@ -39,6 +39,7 @@ const admin = require("firebase-admin");
 const { GoogleAuth } = require("google-auth-library");
 
 const {
+  labelFingerprint,
   OCR_CACHE_PATH,
   extractStyleCodeCandidates,
   imageHash,
@@ -213,6 +214,7 @@ async function runLabelRead(db, {
     return {
       candidates: cachedRow.candidates,
       displayCandidates: cachedRow.candidates.map(formatStyleCodeForDisplay),
+      fingerprint: typeof cachedRow.fingerprint === "string" && cachedRow.fingerprint ? cachedRow.fingerprint : null,
       source: cachedRow.source, fromCache: true,
       brand: null, size: null, confidence: null, tier2Used: false, errors,
     };
@@ -220,9 +222,10 @@ async function runLabelRead(db, {
 
   // ── TIER 1 ──
   let candidates = [];
+  let visionText = "";
   try {
-    const text = await runVisionOcr(base64, { fetchImpl: visionFetch, tokenFn });
-    candidates = extractStyleCodeCandidates(text).map((c) => c.normalised);
+    visionText = await runVisionOcr(base64, { fetchImpl: visionFetch, tokenFn });
+    candidates = extractStyleCodeCandidates(visionText).map((c) => c.normalised);
   } catch (err) {
     errors.push({ tier: "vision", message: (err && err.message) || String(err) });
   }
@@ -268,11 +271,19 @@ async function runLabelRead(db, {
   // because every later read of the same photo hits the fresh-cache branch and
   // returns before tier 2 is ever retried. A transient Gemini outage would
   // permanently pin an unresolved label. (CodeRabbit, PR #312.)
+  // ── FINGERPRINT FALLBACK — never reject a label that produced readable ──
+  // text. Only when NO candidate matched a known format: the identity becomes
+  // a deterministic fingerprint of the label's stable tokens (labelFingerprint
+  // strips sizes, dates, serials — see style-code-ocr.cjs). Flagged as such in
+  // the response so the client can say what it is; it claims the index like
+  // any code, so uniqueness is never weakened.
+  const fingerprint = candidates.length === 0 ? labelFingerprint(visionText) : null;
+
   const tier2Failed = tier2Used && errors.some((e) => e.tier === "gemini");
   const settled = !tier2Failed && (!errors.length || candidates.length === 1);
   if (settled) {
     try {
-      await cacheRef.set(buildOcrCacheRecord({ candidates, source, nowMs }));
+      await cacheRef.set(buildOcrCacheRecord({ candidates, source, nowMs, fingerprint }));
     } catch (err) {
       console.warn(`readStyleCodeLabel: OCR cache write failed for ${hash}:`, err && err.message);
     }
@@ -281,6 +292,7 @@ async function runLabelRead(db, {
   return {
     candidates,
     displayCandidates: candidates.map(formatStyleCodeForDisplay),
+    fingerprint: fingerprint || null,
     source, fromCache: false, brand, size, confidence, tier2Used, errors,
   };
 }

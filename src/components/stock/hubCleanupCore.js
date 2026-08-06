@@ -115,17 +115,27 @@ export function styleStepSatisfied(product, styleCode) {
 }
 
 // What a tongue-label OCR response means for the UI: one clean candidate is
-// chosen outright; several become tap-chips; none falls back to typing.
+// chosen outright; several become tap-chips; NO known format but readable text
+// offers the label FINGERPRINT (a stable identity built from the label's
+// non-variable tokens — never a rejection); nothing readable falls back to
+// typing, with copy that says what to DO next, not just that it failed.
 export function chooseFromLabelRead(data) {
   const candidates = Array.isArray(data && data.candidates) ? data.candidates.filter(Boolean) : [];
   const display = Array.isArray(data && data.displayCandidates) && data.displayCandidates.length === candidates.length
     ? data.displayCandidates : candidates;
   if (candidates.length === 1) return { kind: "chosen", code: display[0] };
   if (candidates.length > 1) return { kind: "options", options: display };
+  const fingerprint = data && typeof data.fingerprint === "string" && data.fingerprint ? data.fingerprint : null;
+  if (fingerprint) {
+    return {
+      kind: "fingerprint", code: fingerprint,
+      message: "No brand article number on this label — but the label itself gives a stable identity for this shoe.",
+    };
+  }
   const broken = Array.isArray(data && data.errors) && data.errors.length > 0;
   return { kind: "none", message: broken
-    ? "The label reader is unavailable right now — type the style number instead."
-    : "Couldn't read a style number off that photo — try again closer, or type it." };
+    ? "The label reader is down right now. Type the style number from the tongue label below — that always works."
+    : "Nothing readable on that photo. Get closer and fill the frame with the label — or type the style number below. If this brand prints no code at all, use “This shoe has no readable style number”." };
 }
 
 // ── COUNT ENTRY (owner reversal 2026-08-06) ──────────────────────────────────
