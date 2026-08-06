@@ -783,8 +783,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
 // Copy is explicit on purpose — the operator must never wonder whether this is
 // the shop-barcode scan. It is not.
 function TongueLabelReader({ busy, big = false, onCode }) {
-  const qrIdRef = useRef(null);
-  if (!qrIdRef.current) qrIdRef.current = `label-qr-still-reader-${++qrReaderSeq}`;
+  const [qrId] = useState(() => `label-qr-still-reader-${++qrReaderSeq}`);
   const [reading, setReading] = useState(false);
   const [readNote, setReadNote] = useState(null);          // { text, options? }
   const [typed, setTyped] = useState("");
@@ -806,7 +805,7 @@ function TongueLabelReader({ busy, big = false, onCode }) {
       // deliberately ignored (utils/labelScan.js) — they would split one shoe
       // into a product per size. Any decode failure falls through silently.
       try {
-        const scanner = new Html5Qrcode(qrIdRef.current, false);
+        const scanner = new Html5Qrcode(qrId, false);
         const decoded = await scanner.scanFile(file, /* showImage */ false);
         try { scanner.clear(); } catch { /* nothing mounted */ }
         const qr = interpretLabelScan(decoded);
@@ -866,7 +865,7 @@ function TongueLabelReader({ busy, big = false, onCode }) {
                  style={big ? { minHeight: 84, fontSize: 20 } : { minHeight: 64, fontSize: 17 }}>
         {reading ? "Reading the tongue label…" : "📷 Photograph the tongue label"}
       </BigButton>
-      <div id={qrIdRef.current} style={{ display: "none" }} />
+      <div id={qrId} style={{ display: "none" }} />
       {readNote && (
         <div style={{ marginTop: 10, background: "rgba(251,191,36,.07)", border: "1px solid rgba(251,191,36,.25)",
                       borderRadius: 11, padding: "9px 12px", fontSize: 12.5, color: "#FDE9B0" }}>
@@ -931,7 +930,9 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const takeCode = (code, { source, labelPhoto: photo }) => {
     setChosenCode(code);
     setCodeSource(source);
-    setLabelPhoto(source === "label" ? photo : null);
+    // A photo is evidence for BOTH a label read and a fingerprint — for a
+    // fingerprint it is the only evidence there will ever be.
+    setLabelPhoto(source === "label" || source === "fingerprint" ? photo : null);
     setSkipReason(null);
   };
 
@@ -941,7 +942,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const styleCodePayload = skipReason
     ? { skipped: skipReason }
     : chosenCode
-      ? { code: chosenCode, source: codeSource || "manual", labelPhoto: codeSource === "label" ? labelPhoto : null }
+      ? { code: chosenCode, source: codeSource || "manual", labelPhoto: (codeSource === "label" || codeSource === "fingerprint") ? labelPhoto : null }
       : null;
   const styleReady = styleStepSatisfied(product, styleCodePayload) && conflictOwners.length === 0;
 

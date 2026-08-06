@@ -6,14 +6,21 @@ describe("what a decoded label code may mean", () => {
   it("a style-code-shaped value is used directly — deterministic beats OCR", () => {
     expect(interpretLabelScan("CT8527-016")).toMatchObject({ kind: "code", code: "CT8527-016" });
     expect(interpretLabelScan("IE3437")).toMatchObject({ kind: "code" });
-    expect(interpretLabelScan("7-43SMA00331R5")).toMatchObject({ kind: "code" });
   });
 
-  it("a URL carrying a shaped token yields that token", () => {
+  it("form-varying brands are NOT taken from the QR — the printed reference stays canonical", () => {
+    // Lacoste's label prints 7-43SMA0033 1R5; its web/QR form is the bare
+    // 43SMA0034. Accepting either from a QR would give one shoe two identities
+    // depending on whether the QR decoded — so the OCR path decides.
+    expect(interpretLabelScan("7-43SMA00331R5")).toMatchObject({ kind: "ignore", reason: "brand_form_varies" });
+    expect(interpretLabelScan("43SMA0034")).toMatchObject({ kind: "ignore", reason: "brand_form_varies" });
+  });
+
+  it("a URL carrying a stable shaped token yields that token; form-varying brands don't", () => {
     expect(interpretLabelScan("https://www.adidas.com/us/shoe/IE3437.html"))
       .toMatchObject({ kind: "code", code: "IE3437" });
     expect(interpretLabelScan("https://www.lacoste.com/us/lacoste/men/43SMA0034.html"))
-      .toMatchObject({ kind: "code" });
+      .toMatchObject({ kind: "ignore", reason: "url_without_code" });
     expect(interpretLabelScan("https://example.com/help")).toMatchObject({ kind: "ignore", reason: "url_without_code" });
   });
 

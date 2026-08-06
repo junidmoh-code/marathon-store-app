@@ -8786,10 +8786,17 @@ function WarehouseView({ products = [], orders, onExit }) {
   // One machine per order card (src/utils/sendConfirm.js): Send → size prompt
   // → large-type confirm → commit. NOTHING commits from a size tap. The banner
   // shows what was just sent for a few seconds after the card leaves.
-  const [sendFlows, setSendFlows] = useState({});          // { orderId: flowState }
+  // Keyed by id+createdAt, NEVER bare order.id: the order counter resets daily
+  // and reuses the same /orders/{id} path (the 2026-07-17 counter incident), so
+  // a flow left sitting at the confirm step overnight must not attach itself to
+  // the NEXT day's unrelated order at the same id — that would resurrect the
+  // exact mis-tap-commits defect this machine removes.
+  const [sendFlows, setSendFlows] = useState({});          // { `${id}::${createdAt}`: flowState }
   const [sentBanner, setSentBanner] = useState(null);      // { text, until }
-  const sendFlowDispatch = (orderId, action) => {
-    setSendFlows((m) => ({ ...m, [orderId]: sendFlowReduce(m[orderId] || sendFlowInit(), action) }));
+  const sendFlowKey = (order) => `${order.id}::${order.createdAt ?? ""}`;
+  const sendFlowDispatch = (order, action) => {
+    const k = sendFlowKey(order);
+    setSendFlows((m) => ({ ...m, [k]: sendFlowReduce(m[k] || sendFlowInit(), action) }));
   };
   useEffect(() => {
     if (!sentBanner) return;
@@ -9766,8 +9773,8 @@ function WarehouseView({ products = [], orders, onExit }) {
                     // ── STAGED, CONFIRMED SEND (owner fix 2026-08-06) ────────
                     // No inline size buttons: the card shows SEND; sizes appear
                     // only in the prompt; ONLY the explicit Confirm commits.
-                    const flow = sendFlows[order.id] || sendFlowInit();
-                    const d = (action) => sendFlowDispatch(order.id, action);
+                    const flow = sendFlows[sendFlowKey(order)] || sendFlowInit();
+                    const d = (action) => sendFlowDispatch(order, action);
                     const hubLabel = ({ hub1:"Hub 1", hub2:"Hub 2", hub3:"Hub 3" })[order.placedAtHub || order.hub] || selectedHub || "the hub";
                     const commitFlow = () => {
                       const done = sendFlowReduce(flow, { type: "CONFIRM" });

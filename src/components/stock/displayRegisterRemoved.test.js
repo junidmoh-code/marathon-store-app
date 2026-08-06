@@ -107,6 +107,20 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     // OOS goes through its own confirm, and the post-commit banner exists:
     expect(app).toMatch(/OPEN_OOS/);
     expect(app).toMatch(/sentBannerCopy\(done\.commit/);
+    // Flow state is keyed id+createdAt, never bare order.id — the counter
+    // resets daily and reuses ids, and a stale confirm step must not attach
+    // itself to the NEXT day's unrelated order (substitute-review CRITICAL):
+    expect(app).toMatch(/sendFlowKey = \(order\) => `\$\{order\.id\}::\$\{order\.createdAt \?\? ""\}`/);
+    expect(app).toMatch(/sendFlows\[sendFlowKey\(order\)\]/);
+    expect(app).not.toMatch(/sendFlows\[order\.id\]/);
+  });
+
+  it("a fingerprint keeps its evidence photo end to end", () => {
+    const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
+    // takeCode and the save payload both treat a fingerprint like a label read
+    // for evidence purposes — the photo is the ONLY evidence a fingerprint has.
+    expect((hubCleanup.match(/source === "label" \|\| source === "fingerprint"/g) || []).length).toBe(1);
+    expect((hubCleanup.match(/codeSource === "label" \|\| codeSource === "fingerprint"/g) || []).length).toBe(1);
   });
 
   it("scan panels remount per scanned product, and the camera effect is render-stable", () => {

@@ -210,10 +210,18 @@ async function runLabelRead(db, {
 
   // ── CACHE — a retake of the same photo must never re-bill ──
   const cachedRow = (await cacheRef.get()).val();
-  if (isOcrCacheFresh(cachedRow, nowMs)) {
+  // A zero-candidate row from BEFORE the fingerprint field existed would pin
+  // "nothing readable" for its whole TTL when the label actually yields a
+  // fingerprint now — treat exactly that shape as a miss, once, so the row
+  // upgrades itself. (A row with candidates, or with a fingerprint, is served.)
+  const preFingerprintRow = cachedRow && Array.isArray(cachedRow.candidates)
+    && cachedRow.candidates.length === 0 && !cachedRow.fingerprint && !cachedRow.fpv;
+  if (isOcrCacheFresh(cachedRow, nowMs) && !preFingerprintRow) {
+    // RTDB drops an empty candidates array — default it back.
+    const cachedCandidates = Array.isArray(cachedRow.candidates) ? cachedRow.candidates : [];
     return {
-      candidates: cachedRow.candidates,
-      displayCandidates: cachedRow.candidates.map(formatStyleCodeForDisplay),
+      candidates: cachedCandidates,
+      displayCandidates: cachedCandidates.map(formatStyleCodeForDisplay),
       fingerprint: typeof cachedRow.fingerprint === "string" && cachedRow.fingerprint ? cachedRow.fingerprint : null,
       source: cachedRow.source, fromCache: true,
       brand: null, size: null, confidence: null, tier2Used: false, errors,

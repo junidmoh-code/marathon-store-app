@@ -124,9 +124,9 @@ describe("the style-number step", () => {
     expect(chooseFromLabelRead({ candidates: [], errors: [{ tier: "vision", message: "x" }] }).message).toMatch(/Type the style number/);
     expect(chooseFromLabelRead({ candidates: [] }).message).toMatch(/no readable style number/);
     // A label with NO known format but readable text yields the FINGERPRINT:
-    const fp = chooseFromLabelRead({ candidates: [], fingerprint: "CLOUDNOVAMONOUNDYEDWHITE" });
+    const fp = chooseFromLabelRead({ candidates: [], fingerprint: "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC" });
     expect(fp.kind).toBe("fingerprint");
-    expect(fp.code).toBe("CLOUDNOVAMONOUNDYEDWHITE");
+    expect(fp.code).toBe("CLOUDNOVAMONOUNDYEDWHITEF90E4BEC");
     // …and a format-valid candidate always wins over a fingerprint:
     expect(chooseFromLabelRead({ candidates: ["CT8527016"], displayCandidates: ["CT8527-016"], fingerprint: "X" }).kind).toBe("chosen");
   });
@@ -150,7 +150,7 @@ describe("the style-number step", () => {
 // and a collision with a DIFFERENT product is the duplicate case → merge,
 // never silently shared.
 describe("a fingerprint collides exactly like a verified code", () => {
-  const FP = "CLOUDNOVAMONOUNDYEDWHITE";
+  const FP = "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC";
   it("register: a fingerprint another live product owns is a blocking conflict", () => {
     const products = [P("pMine"), P("pOwner", { styleCodeNormalised: FP })];
     const owners = styleCodeOwners(FP, products, "pMine");

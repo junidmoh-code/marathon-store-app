@@ -197,7 +197,7 @@ test("THE CACHE RECORD HOLDS CANDIDATES ONLY — never the Vision payload", () =
     source: "vision",
     nowMs: NOW,
   });
-  assert.deepStrictEqual(Object.keys(rec).sort(), ["at", "candidates", "expiresAt", "source"]);
+  assert.deepStrictEqual(Object.keys(rec).sort(), ["at", "candidates", "expiresAt", "fpv", "source"]);
   assert.deepStrictEqual(rec.candidates, ["CT8527016"]);
   assert.strictEqual(rec.source, "vision");
   assert.strictEqual(rec.at, NOW);
@@ -308,6 +308,14 @@ test("FINGERPRINT: reading order cannot change the identity", () => {
   assert.strictEqual(labelFingerprint(ON_LABEL_SIZE_8), labelFingerprint(shuffled));
 });
 
+test("FINGERPRINT: adjacent-token re-splits never collide across labels (the delimiter digest)", () => {
+  // {"CLOUDNOVA","MONO"} and {"CLOUDNOVAM","ONO"} concatenate identically once
+  // sorted — the digest over the DELIMITED token list must keep them apart.
+  const a = labelFingerprint("CLOUDNOVA MONO UNDYED WHITE");
+  const b = labelFingerprint("CLOUDNOVAM ONO UNDYED WHITE");
+  assert.notStrictEqual(a, b, "different token sets must never share an identity");
+});
+
 test("FINGERPRINT: two long-but-different labels never merge through truncation", () => {
   const long1 = "ALPHA BRAVO CHARLIE DELTA ECHO FOXTROT GOLF HOTEL INDIA1 JULIET";
   const long2 = "ALPHA BRAVO CHARLIE DELTA ECHO FOXTROT GOLF HOTEL INDIA1 KILO";
@@ -325,5 +333,19 @@ test("the cache record carries the fingerprint when present, and nothing else ne
   const rec = buildOcrCacheRecord({ candidates: [], source: "vision", nowMs: NOW, fingerprint: "CLOUDNOVAMONOUNDYEDWHITE" });
   assert.strictEqual(rec.fingerprint, "CLOUDNOVAMONOUNDYEDWHITE");
   const bare = buildOcrCacheRecord({ candidates: ["CT8527016"], source: "vision", nowMs: NOW });
-  assert.deepStrictEqual(Object.keys(bare).sort(), ["at", "candidates", "expiresAt", "source"]);
+  assert.deepStrictEqual(Object.keys(bare).sort(), ["at", "candidates", "expiresAt", "fpv", "source"]);
+});
+
+// ─── Substitute-review round (Kimi): month-name production dates ─────────────
+test("a month-name date is never offered as a style code (01JAN2024 fits the Lacoste shape)", () => {
+  const out = extractStyleCodeCandidates("ADIDAS\nIE3437\nMFG 01JAN2024\nUS 9");
+  assert.deepStrictEqual(out.map((c) => c.normalised), ["IE3437"], "the date must not become a candidate");
+});
+
+test("month-name dates never split the same shoe's fingerprint across production runs", () => {
+  const run1 = labelFingerprint("SOME SHOE X1\n01JAN2024\nMADE IN CHINA");
+  const run2 = labelFingerprint("SOME SHOE X1\n15MAY2023\nMADE IN CHINA");
+  const bare = labelFingerprint("SOME SHOE X1\nDEC 2023\nMADE IN CHINA");
+  assert.strictEqual(run1, run2, "numeric-attached month dates are per-run noise");
+  assert.strictEqual(run1, bare, "bare month tokens are per-run noise too");
 });

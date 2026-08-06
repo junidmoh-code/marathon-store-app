@@ -54,6 +54,10 @@ const MASK_PATTERNS = [
   /\b(?:US|UK|EU|EUR|FR|JP|JPN|CM|BR|MX|CN|KR|AU)\s*[-:]?\s*\d+(?:[.,]\d+)?\b/g,
   // "SIZE 9" / "SIZE: 42.5"
   /\bSIZE\s*[-:]?\s*\d+(?:[.,]\d+)?\b/g,
+  // Month-name production dates — 01JAN2024, 15 MAY 23, DEC2024. These would
+  // otherwise fit the Lacoste dd+AAA+dddd shape and leak into fingerprints,
+  // splitting the same shoe per manufacturing run.
+  /\b\d{0,2}\s?(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s?\d{2,4}\b/g,
 ];
 
 /**
@@ -75,7 +79,7 @@ const EXTRACTION_PATTERNS = [
   // Lacoste — 7-43SMA0033 1R5 / 47SMA0057042. FIRST: its tail would otherwise
   // be claimed piecemeal by the broader adidas/NB shapes below. The colour
   // suffix group is greedy-optional so "43SMA0033 1R5" comes out whole.
-  { format: "lacoste-ref", re: /(?<![A-Z0-9])(?:7[-\s]?)?\d{2}[A-Z]{3}\d{4}(?:[-\s]?[A-Z0-9]{2,3})?(?![A-Z0-9])/g },
+  { format: "lacoste-ref", re: /(?<![A-Z0-9])(?:7[-\s]?)?\d{2}(?!(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d)[A-Z]{3}\d{4}(?:[-\s]?[A-Z0-9]{2,3})?(?![A-Z0-9])/g },
   // Nike / Jordan modern — CT8527-016
   { format: "nike-alpha-6-3", re: /(?<![A-Z0-9])[A-Z]{2}\d{4}[-\s]?\d{3}(?![A-Z0-9])/g },
   // Nike / Jordan legacy — 315122-111
@@ -161,6 +165,7 @@ const FINGERPRINT_STOPWORDS = new Set([
   "SIZE", "TAILLE", "TALLA", "GROSSE", "GR",
   "US", "UK", "EU", "EUR", "FR", "JP", "JPN", "CM", "CHN", "CN", "KR", "BR", "MX", "AU", "D",
   "MADE", "IN", "FABRIQUE", "AU", "HECHO", "EN",
+  "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
   "CHINA", "CHINE", "VIETNAM", "INDONESIA", "INDONESIE", "CAMBODIA", "CAMBODGE", "INDIA", "INDE",
   "THAILAND", "TURKEY", "PORTUGAL", "ITALY", "ITALIE",
 ]);
@@ -175,12 +180,21 @@ function labelFingerprint(text) {
     .filter((t) => !FINGERPRINT_STOPWORDS.has(t))
     .filter((t) => t.length >= 3 || /\d/.test(t));   // 1-2 letter fragments carry no identity
   if (!tokens.length) return null;
-  const joined = [...new Set(tokens)].sort().join("");
-  const base = joined.replace(/[^A-Z0-9]/g, "");
-  if (!base) return null;
-  if (base.length <= 32) return base;
-  const digest = crypto.createHash("sha1").update(base).digest("hex").slice(0, 8).toUpperCase();
-  return base.slice(0, 24) + digest;
+  const unique = [...new Set(tokens)].sort();
+  // The digest is computed over the DELIMITED token list and ALWAYS appended.
+  // Concatenation alone is ambiguous — {"CLOUDNOVA","MONO"} and
+  // {"CLOUDNOVAM","ONO"} concatenate identically once sorted, and two
+  // different shoes silently sharing one identity is the failure this whole
+  // feature forbids. The tradeoff is deliberate and fail-closed: an OCR pass
+  // that SPLITS the same label's words differently now produces a DIFFERENT
+  // fingerprint (a recoverable "never registered" false signal) instead of two
+  // different labels ever producing the SAME one (an unrecoverable silent
+  // merge). Uniqueness wins.
+  const delimited = unique.join("|");
+  const concat = unique.join("").replace(/[^A-Z0-9]/g, "");
+  if (!concat) return null;
+  const digest = crypto.createHash("sha1").update(delimited).digest("hex").slice(0, 8).toUpperCase();
+  return concat.slice(0, 24) + digest;
 }
 
 // ── Confusable-character retry (tier 3) ──────────────────────────────────────
@@ -287,6 +301,11 @@ function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_
     source: OCR_SOURCES.includes(source) ? source : "vision",
     at,
     expiresAt: at + ttlMs,
+    // Schema marker: this row was written AFTER the fingerprint field existed.
+    // RTDB drops null children, so "computed and found none" cannot be stored
+    // as fingerprint:null — fpv is how a legacy zero-candidate row (never
+    // fingerprinted) is told apart from a new one that genuinely has nothing.
+    fpv: 1,
   };
   // The label FINGERPRINT rides the cache like a code (it is one string, no
   // payload) so a retake of the same no-format label re-bills nothing either.
@@ -297,7 +316,12 @@ function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_
 
 /** A cached row is usable only while unexpired — lazy expiry, so we never serve stale. */
 function isOcrCacheFresh(record, nowMs) {
-  if (!record || !Array.isArray(record.candidates)) return false;
+  if (!record) return false;
+  // RTDB DELETES an empty-array child, so a zero-candidate row (fingerprint or
+  // genuinely unreadable) reads back with NO candidates key at all. The fpv
+  // marker vouches for such a row; without it, a candidates-less record is a
+  // legacy/corrupt row and is not fresh.
+  if (!Array.isArray(record.candidates) && record.fpv !== 1) return false;
   const exp = Number(record.expiresAt);
   if (!Number.isFinite(exp)) return false;
   return exp > (Number.isFinite(nowMs) ? nowMs : 0);

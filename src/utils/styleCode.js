@@ -55,7 +55,7 @@ export const STYLE_CODE_FORMATS = [
   // 7-45SMA0004075. The label form (with the 7) and the web form (without)
   // normalise DIFFERENTLY — both are accepted; our own system always reads the
   // label, so identities stay consistent within it.
-  { name: "lacoste-ref", re: /^7?\d{2}[A-Z]{3}\d{4}(?:[A-Z0-9]{2,3})?$/ },
+  { name: "lacoste-ref", re: /^7?\d{2}(?!(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d)[A-Z]{3}\d{4}(?:[A-Z0-9]{2,3})?$/ },
 ];
 
 // Which brand family a code shape implies. Used ONLY for observability — the
