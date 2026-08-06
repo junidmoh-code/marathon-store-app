@@ -624,7 +624,37 @@ function computeRefillPlan(snapshot) {
         const sourceLoc = entry.source || routes[dest];
         const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
-        if (needGone || unfillable || sourceEmpty) {
+        // LOST ANCHOR self-heal (production find 2026-07-16): every close
+        // branch below is anchored to the lock's own records — but the daily
+        // R-number recycle OVERWRITES a still-open engine order (orders/{R###-i}
+        // is written by set() on a reused key), and cleanup scripts can delete
+        // a request record. The orderIsOurs guard rightly refuses the foreign
+        // node, yet nothing then resolved the lock: it survived as permanent
+        // phantom inbound, silently starving its cell (26 live cells found).
+        // A lock whose anchor is gone can never be resolved by any status
+        // write → withdraw it here. Self-withdrawal ⇒ cancelReason ⇒ NO
+        // cooldown, and the release loop after this pass frees the inbound so
+        // the true residual deficit re-asks in this very plan (the L3
+        // self-healing promise, kept for lost anchors). The foreign order
+        // node is NEVER touched (no removeOrderId).
+        // (No inFlight gate here, deliberately: movements link the RECYCLED
+        // key, so physicallyTouched can't tell the old order's pick from the
+        // new one's — gating would re-zombify any cell whose R-number is
+        // reused by a busy card. If the old pick landed, destHave already
+        // reflects the stock and the deficit loop simply won't re-ask; a
+        // wrong label on an already-destroyed order never beats a starved
+        // cell. A falsy rr status counts as "open": a half-damaged record
+        // must not park the lock in the very limbo this branch removes.)
+        const anchorLost =
+          (entry.orderId && !orderIsOurs && (!rr || !rr.status || rr.status === "open")) ||
+          (!entry.orderId && !rr);
+        if (anchorLost) {
+          closes.push({
+            dest, pid, sizeKey, refillId: entry.refillId || null,
+            reason: "anchor_lost", cancelReason: "anchor_lost",
+            rrStatus: "cancelled",
+          });
+        } else if (needGone || unfillable || sourceEmpty) {
           const why = needGone ? "no_longer_needed" : unfillable ? "unfillable" : "awaiting_upstream";
           closes.push({
             dest, pid, sizeKey, refillId: entry.refillId,

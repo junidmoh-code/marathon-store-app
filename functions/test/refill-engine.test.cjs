@@ -274,6 +274,7 @@ test("negative store qty counts as 0 available, never inflates deficit", () => {
 test("existing open intent suppresses a duplicate and reserves source stock", () => {
   const plan = computeRefillPlan(base({
     openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", qty: 2, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", qty: 2, requestingLocation: "marathon-pe" } },
   }));
   assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0);
 });
@@ -882,6 +883,69 @@ test("PURGE: open engine request that became unfillable is withdrawn from the qu
   assert.equal(c.removeOrderId, "R002-4", "the queue card is deleted, not left for staff to reject");
 });
 
+test("LOST ANCHOR: R-number recycle overwrote the order → lock withdrawn, foreign node untouched, deficit re-asks same plan", () => {
+  const plan = computeRefillPlan(base({
+    // Our lock from 30h ago points at R002-1 — but today's scan reused that
+    // number for a DIFFERENT product's order (set() on the recycled key).
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R002-1", orderCreatedAt: iso(30), qty: 2, source: "hub2", createdAt: iso(30) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", qty: 2, requestingLocation: "marathon-pe", createdAt: iso(30) } },
+    orders: { "R002-1": { customerName: "Shop Refill", autoRefill: true, productId: "p9", size: "M", qty: 1, createdAt: iso(1), clothingRefillStatus: null, status: "incoming" } },
+  }));
+  const c = plan.closes.find((x) => x.reason === "anchor_lost");
+  assert.ok(c, "unresolvable lock withdrawn");
+  assert.equal(c.refillId, "r1");
+  assert.equal(c.rrStatus, "cancelled");
+  assert.equal(c.cancelReason, "anchor_lost", "self-withdrawal — must never impose a cooldown");
+  assert.ok(!c.removeOrderId, "the recycled order belongs to someone else — never deleted");
+  const again = plan.intents.find((x) => x.dest === "marathon-pe" && x.sizeKey === "M");
+  assert.ok(again, "released inbound lets the real deficit re-ask in the same plan");
+  assert.equal(again.qty, 2); // target 3 − have 1
+});
+
+test("LOST ANCHOR: a half-damaged request record (falsy status) does not park the lock in limbo", () => {
+  const plan = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R002-1", orderCreatedAt: iso(30), qty: 2, source: "hub2", createdAt: iso(30) } } } },
+    refillRequests: { r1: { status: null, productId: "p1", size: "M", qty: 2, requestingLocation: "marathon-pe", createdAt: iso(30) } },
+    orders: { "R002-1": { customerName: "Shop Refill", autoRefill: true, productId: "p9", size: "M", qty: 1, createdAt: iso(1), clothingRefillStatus: null, status: "incoming" } },
+  }));
+  assert.ok(plan.closes.some((x) => x.reason === "anchor_lost"),
+    "order recycled + rr status cleared by damage → still withdrawn, never a permanent zombie");
+});
+
+test("LOST ANCHOR: hub2 lock whose request record was deleted → lock withdrawn, deficit re-asks", () => {
+  const plan = computeRefillPlan(base({
+    targets: { hub2: { p1: { M: { target: 3, minQty: 1 } } } },
+    stock: { "marathon-pe": {}, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(5) } }, trophy: {} },
+    openIndex: { hub2: { p1: { M: { refillId: "rGone", qty: 3, source: "central", createdAt: iso(30) } } } },
+    refillRequests: {},   // cleanup deleted the record; the lock survived
+  }));
+  const c = plan.closes.find((x) => x.reason === "anchor_lost");
+  assert.ok(c, "orphaned hub2 lock withdrawn");
+  assert.equal(c.refillId, "rGone");
+  const again = plan.intents.find((x) => x.dest === "hub2" && x.sizeKey === "M");
+  assert.ok(again, "hub2 deficit re-asks in the same plan");
+  assert.equal(again.qty, 3);
+});
+
+test("LOST ANCHOR does not fire on healthy locks, and defers to a resolved request's own close", () => {
+  // Healthy store leg (order alive and ours) → reconciled by the normal branches only.
+  const healthy = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R003-2", orderCreatedAt: iso(1), qty: 2, source: "hub2", createdAt: iso(1) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", qty: 2, requestingLocation: "marathon-pe" } },
+    orders: { "R003-2": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: null, status: "incoming" } },
+  }));
+  assert.ok(!healthy.closes.some((x) => x.reason === "anchor_lost"), "live anchors are never treated as lost");
+  // Order lost but the request already carries its final status → the plain
+  // lock-removal close owns it (keeps the human-written status untouched).
+  const resolved = computeRefillPlan(base({
+    openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R002-1", orderCreatedAt: iso(30), qty: 2, source: "hub2", createdAt: iso(30) } } } },
+    refillRequests: { r1: { status: "fulfilled", productId: "p1", size: "M", qty: 2, requestingLocation: "marathon-pe" } },
+    orders: {},
+  }));
+  const c = resolved.closes.find((x) => x.dest === "marathon-pe");
+  assert.ok(c && c.reason === "fulfilled" && !c.rrStatus, "lock-only close; the request's own status stands");
+});
+
 test("TWO-LEG MOVE EXCESS: store overage splits deficit-first to Hub 2, remainder to Central, in one card", () => {
   // The Shambeen case: PE M 7/2 (raw 5), hub2 M 0/3 (deficit 3) →
   // ONE card moving all 5: 3 → Hub 2 (Cortez preserved), 2 → Central.
@@ -979,13 +1043,21 @@ test("resolved order closes its lock (fulfilled on available, cancelled on rejec
   assert.ok(c); assert.equal(c.reason, "fulfilled");
 });
 
-test("recycled R-number (createdAt mismatch) does NOT close the lock; it goes stale instead", () => {
+test("recycled R-number (createdAt mismatch): the foreign status is NEVER ours — withdrawn as anchor_lost, not 'fulfilled'", () => {
+  // The original safety property stands: the recycled node's "available" must
+  // not be misread as OUR fulfilment. What changed (2026-07-16): instead of
+  // letting the unresolvable lock rot as stale phantom inbound, the engine
+  // withdraws its own side and the deficit re-asks.
   const plan = computeRefillPlan(base({
     openIndex: { "marathon-pe": { p1: { M: { refillId: "r1", orderId: "R004-1", orderCreatedAt: iso(80), qty: 2, source: "hub2", createdAt: iso(80) } } } },
+    refillRequests: { r1: { status: "open", productId: "p1", size: "M", qty: 2, requestingLocation: "marathon-pe", createdAt: iso(80) } },
     orders: { "R004-1": { customerName: "Shop Refill", autoRefill: true, productId: "p1", size: "M", createdAt: iso(1), clothingRefillStatus: "available", status: "incoming" } },
   }));
-  assert.equal(plan.closes.length, 0);
-  assert.ok(plan.exceptions.stuckRefills.count >= 1, "80h old lock is stale");
+  assert.ok(!plan.closes.some((x) => x.reason === "fulfilled"), "foreign 'available' never counts as our fulfilment");
+  const c = plan.closes.find((x) => x.reason === "anchor_lost");
+  assert.ok(c, "unresolvable lock withdrawn instead of rotting stale");
+  assert.equal(c.rrStatus, "cancelled");
+  assert.ok(!c.removeOrderId, "foreign order node untouched");
 });
 
 test("circuit breaker is FAIR across destinations (no store starves another)", () => {
