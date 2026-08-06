@@ -23,12 +23,15 @@ import { ref, child, get, update, runTransaction } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { stockSizeKey } from "../../utils/sizeKey";
-import { serverNowIso } from "../../utils/serverTime";
+import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { getDeviceId } from "../../device/deviceId";
 import { HUB_COUNT_ROOT } from "../../config/hubSneakerCount";
 import { forgivingBarcodeCandidates } from "./scanResolve";
+import { normaliseStyleCode, formatStyleCodeForDisplay } from "../../utils/styleCode";
+import { enqueueStyleCodeCapture } from "../../utils/styleCodeCapture";
 import {
   isCleanupHub, registerKey, registerMovementId, extraUnitMovementId,
+  STYLE_SKIP_REASONS,
 } from "./hubCleanupCore";
 
 const one = async (path) => (await get(child(ref(database), path))).val();
@@ -54,8 +57,28 @@ export async function loadUnresolved(hub) {
  *     collapses inside applyMovement;
  *   • an existing record returns { already: true } WITHOUT writing anything —
  *     the UI shows the registered state and offers "+1 more" deliberately.
+ *
+ * ── STYLE CODE — the second fact, same action (owner correction 2026-08-06) ──
+ * Registration attaches TWO facts to an existing product: the manufacturer
+ * style number off the INNER TONGUE LABEL, and the size on display. Both are
+ * saved by this ONE call. `styleCode` is one of:
+ *   { code, source: "label" | "manual", labelPhoto? }     a read or typed code
+ *                                                         (labelPhoto is the
+ *                                                         prepareLabelPhoto
+ *                                                         result; the enqueue
+ *                                                         uploads .blob and
+ *                                                         mints the URL itself)
+ *   { skipped: "label_unreadable" | "label_missing" | "no_code_exists" }
+ *   null / undefined                                      product already has
+ *                                                         a code on file
+ * A NEW code (product has none on file, or a different one) is enqueued to
+ * /style_code_captures — the same server-decided queue the style-code gate and
+ * display checks use — so claiming, collision detection and pending-field
+ * writes stay the server's job, exactly as everywhere else. The enqueue rides
+ * the same save: a failure is reported as a warning, never a lost registration
+ * (the stock unit is the fact that must not be dropped).
  */
-export async function registerDisplayUnit({ hub, product, size, qty = 1 }) {
+export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCode = null }) {
   if (!isCleanupHub(hub)) return { ok: false, message: "Only Hub 1 and Hub 2 are in scope." };
   if (!product || !product.id) return { ok: false, message: "No product." };
   const n = Number(qty);
@@ -66,6 +89,18 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1 }) {
   // label mint a phantom "_" cell; a display always has a real size.
   const sizeKey = stockSizeKey(rawSize);
   if (!rawSize || sizeKey === "_") return { ok: false, message: "Pick the size on the display." };
+
+  // ── THE STYLE-NUMBER FACT — required before anything writes ────────────────
+  // On file, captured, or deliberately skipped with a reason. Anything else
+  // refuses the whole save: the two facts are one action, and a registration
+  // without its style number is exactly the half-record this rework removes.
+  const codeOnFile = product.styleCodeNormalised || null;
+  const capturedNormalised = styleCode && typeof styleCode.code === "string" ? normaliseStyleCode(styleCode.code) : "";
+  const skipReason = styleCode && STYLE_SKIP_REASONS.includes(styleCode.skipped) ? styleCode.skipped : null;
+  if (!codeOnFile && !capturedNormalised && !skipReason) {
+    return { ok: false, message: "Read the style number off the tongue label (or type it) before saving." };
+  }
+
   const key = registerKey(product.id, sizeKey);
   const recPath = `${registerPath(hub)}/${key}`;
 
@@ -97,13 +132,43 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1 }) {
     at: serverNowIso(),
     by: user ? user.uid : null,
     movementId: res.movementId,
+    // The style-number fact, alongside the size — both from the same save.
+    styleCodeNormalised: codeOnFile || capturedNormalised || null,
+    styleCode: codeOnFile
+      ? (product.styleCode || formatStyleCodeForDisplay(codeOnFile))
+      : (capturedNormalised ? formatStyleCodeForDisplay(capturedNormalised) : null),
+    styleCodeFrom: codeOnFile ? "on_file" : (capturedNormalised ? (styleCode?.source === "label" ? "label" : "manual") : null),
+    styleCodeSkipReason: skipReason,
   };
+
+  // A code the product does not carry yet goes to /style_code_captures — the
+  // same server-decided queue every other capture surface uses, so claiming,
+  // collision handling and pending-field writes stay the server's job. Rides
+  // the SAME save; a failure downgrades to a warning because the stock unit
+  // must never be lost to a queue hiccup.
+  let captureWarning = null;
+  if (capturedNormalised && capturedNormalised !== codeOnFile) {
+    try {
+      const q = await enqueueStyleCodeCapture({
+        code: capturedNormalised,
+        productId: product.id,
+        uid: user ? user.uid : null,
+        origin: "displayCheck",
+        labelPhoto: styleCode?.labelPhoto || null,
+        nowMs: serverNowMs(),
+      });
+      if (!q || !q.ok) captureWarning = `Registered, but the style number could not be queued (${q?.error || "write failed"}) — capture it again from the panel.`;
+    } catch (err) {
+      captureWarning = `Registered, but the style number could not be queued (${String(err?.message || err)}) — capture it again from the panel.`;
+    }
+  }
+
   // Create-once: if another device registered the same slot in the race window,
   // their record stands (the movement was shared anyway — one id, one unit).
   try {
     const txn = await runTransaction(ref(database, recPath), (cur) => (cur === null ? rec : undefined));
     const committed = txn && txn.committed;
-    return { ok: true, record: committed ? rec : (txn.snapshot ? txn.snapshot.val() : rec), already: !committed, idempotent: !!res.idempotent };
+    return { ok: true, record: committed ? rec : (txn.snapshot ? txn.snapshot.val() : rec), already: !committed, idempotent: !!res.idempotent, warning: captureWarning || undefined };
   } catch (err) {
     return {
       ok: true, record: rec,

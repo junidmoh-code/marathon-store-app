@@ -7,6 +7,7 @@ import {
   CLEANUP_HUBS, isCleanupHub, registerMovementId, extraUnitMovementId,
   resolveCleanupScan, openDuplicateFor, buildLeftovers, locationsHolding,
   registrationProgress, realSizes,
+  registerPanelFor, styleStepSatisfied, chooseFromLabelRead, styleCodeOwners,
 } from "./hubCleanupCore";
 
 const P = (id, over = {}) => ({ id, name: `Product ${id}`, category: "Footwear", sizes: ["6", "7"], ...over });
@@ -79,6 +80,60 @@ describe("scan resolution", () => {
     const withMerged = [P("pOld", { styleCodeNormalised: "ZZ111222", mergedInto: "p2" }), ...products];
     const out = resolveCleanupScan("ZZ111-222", { products: withMerged });
     expect(out.kind).toBe("unresolved");
+  });
+});
+
+// ─── THE REGISTRATION ENTRY (owner correction 2026-08-06) ────────────────────
+describe("every way in lands on the SAME panel", () => {
+  const product = P("p1");
+  it("search, the unregistered list, and the barcode shortcut build identical panels", () => {
+    const fromSearch = registerPanelFor(product);
+    const fromList = registerPanelFor(product);
+    const fromShortcut = registerPanelFor(product, "7");
+    expect(fromSearch).toEqual({ mode: "register", product, size: null, code: null });
+    expect(fromList).toEqual(fromSearch);
+    expect(fromShortcut).toEqual({ ...fromSearch, size: "7" });
+  });
+  it("no product, no panel", () => {
+    expect(registerPanelFor(null)).toBe(null);
+    expect(registerPanelFor({})).toBe(null);
+  });
+});
+
+describe("the style-number step", () => {
+  it("is satisfied by a code on file, a captured code, or a reasoned skip — nothing else", () => {
+    expect(styleStepSatisfied(P("p1", { styleCodeNormalised: "CT8527016" }), null)).toBe(true);
+    expect(styleStepSatisfied(P("p1"), { code: "CT8527-016" })).toBe(true);
+    expect(styleStepSatisfied(P("p1"), { code: "ct8527 016" })).toBe(true);   // typing is never shape-gated
+    expect(styleStepSatisfied(P("p1"), { skipped: "label_unreadable" })).toBe(true);
+    expect(styleStepSatisfied(P("p1"), { skipped: "label_missing" })).toBe(true);
+    expect(styleStepSatisfied(P("p1"), { skipped: "no_code_exists" })).toBe(true);
+    expect(styleStepSatisfied(P("p1"), null)).toBe(false);
+    expect(styleStepSatisfied(P("p1"), { code: "###" })).toBe(false);         // normalises to nothing
+    expect(styleStepSatisfied(P("p1"), { skipped: "dunno" })).toBe(false);
+  });
+
+  it("a tongue-label read: one clean candidate is chosen, several become options, none says why", () => {
+    expect(chooseFromLabelRead({ candidates: ["CT8527016"], displayCandidates: ["CT8527-016"] }))
+      .toEqual({ kind: "chosen", code: "CT8527-016" });
+    const many = chooseFromLabelRead({ candidates: ["CT8527016", "DD1391100"], displayCandidates: ["CT8527-016", "DD1391-100"] });
+    expect(many.kind).toBe("options");
+    expect(many.options).toEqual(["CT8527-016", "DD1391-100"]);
+    expect(chooseFromLabelRead({ candidates: [], errors: [{ tier: "vision", message: "x" }] }).message).toMatch(/unavailable/);
+    expect(chooseFromLabelRead({ candidates: [] }).message).toMatch(/type it/);
+  });
+
+  it("a code another live product owns is a conflict; merged-away owners don't count", () => {
+    const products = [
+      P("pMine"),
+      P("pOther", { styleCodeNormalised: "CT8527016" }),
+      P("pDead", { styleCodeNormalised: "CT8527016", mergedInto: "pOther" }),
+    ];
+    const owners = styleCodeOwners("CT8527-016", products, "pMine");
+    expect(owners.map((p) => p.id)).toEqual(["pOther"]);
+    expect(styleCodeOwners("ZZ999", products, "pMine")).toEqual([]);
+    // The product's own claim is not a conflict with itself:
+    expect(styleCodeOwners("CT8527-016", products, "pOther")).toEqual([]);
   });
 });
 

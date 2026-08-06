@@ -4,10 +4,15 @@
 // five people in parallel — so the size picker dominates, hit areas are big,
 // and every flow is one decision per screen.
 //
-//   REGISTER (pass one)  Scan a display, confirm its size, and that unit is
-//                        ADDED to the hub's existing quantity for that size —
-//                        a `received` movement through applyMovement with a
-//                        deterministic id (idempotent; see hubCleanupStore).
+//   REGISTER (pass one)  FIND the shoe first — name search or the not-yet-
+//                        registered list (a barcode scan is only an optional
+//                        shortcut; nothing is created, every shoe already has
+//                        a product record). One panel then captures TWO facts
+//                        in ONE save: the style number off the label INSIDE
+//                        the tongue (readStyleCodeLabel OCR or typed), and the
+//                        size on display. The unit is ADDED to the hub's
+//                        quantity — a `received` movement through
+//                        applyMovement with a deterministic id (idempotent).
 //   COUNT (pass two)     Scan-first stock count. Scan → confirm quantity →
 //                        continue. A scan nothing owns is NOT an error — it is
 //                        how we learn the item was never registered; it goes to
@@ -28,14 +33,20 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { setUpdateBusy } from "../../update/updateChecker";
 import { searchProducts } from "../../utils/productSearch";
 import { SizeTag } from "../SizeTag.jsx";
-import { FONT, BG, CARD, BORDER, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGray, bGhost, input, tabOn, tabOff } from "./ui";
+import { FONT, BG, CARD, BORDER, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bBlue, bGray, bGhost, input, tabOn, tabOff } from "./ui";
 import { Toast } from "./widgets";
 import { labelFor } from "./locations";
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import { canAdjustHubCount } from "../../config/hubSneakerCount";
+import { httpsCallable } from "firebase/functions";
+import { functions } from "../../firebase";
+import { prepareLabelPhoto } from "../../utils/labelPhoto";
+import { formatStyleCodeForDisplay } from "../../utils/styleCode";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
   buildLeftovers, locationsHolding, registrationProgress, realSizes,
+  registerPanelFor, styleStepSatisfied, chooseFromLabelRead, styleCodeOwners,
+  STYLE_SKIP_REASONS,
 } from "./hubCleanupCore";
 import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
@@ -53,6 +64,9 @@ import MergeProducts from "./MergeProducts.jsx";
 import HubSneakerCount from "./HubSneakerCount.jsx";
 
 const qtyOf = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
+
+// The tongue-label OCR — the SAME reader the style-code gate uses at intake.
+const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
 
 // ─── Shared bits ─────────────────────────────────────────────────────────────
 
@@ -248,18 +262,30 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         if (survivor) out = { kind: "product", product: survivor, size: barcodeRow.size != null ? String(barcodeRow.size) : null };
       }
       if (out.kind === "product") {
-        setPanel({ mode: tab === "count" ? "count" : "register", product: out.product, size: out.size, code });
+        // Register mode builds its panel through registerPanelFor — the SAME
+        // constructor the search results and the unregistered list use, so the
+        // optional barcode shortcut lands on the identical screen.
+        if (tab === "count") {
+          setPanel({ mode: "count", product: out.product, size: out.size, code });
+        } else {
+          setPanel(registerPanelFor(out.product, out.size));
+          // The panel shows stock by location — the shortcut must start that
+          // load just like the search and list paths do.
+          ensureAllStock().catch(() => {});
+        }
       } else if (out.kind === "duplicate") {
         setPanel({ mode: "duplicate", code, claimants: out.products });
-      } else {
+      } else if (tab === "count") {
         await recordUnresolvedScan({ hub, code, context: tab });
         setUnresolved((u) => ({ ...u, [code.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code, context: tab } }));
-        flash("warn", tab === "count"
-          ? `Nothing owns “${code}” — noted as never registered. Carry on.`
-          : `“${code}” isn't in the system — noted. Carry on.`);
+        flash("warn", `Nothing owns “${code}” — noted as never registered. Carry on.`);
+      } else {
+        // The register shortcut missing is no event at all — the primary paths
+        // (search, the unregistered list) are right there.
+        flash("warn", `No product matches “${code}” — find the shoe by name instead.`);
       }
     } finally { setBusy(false); }
-  }, [hub, tab, products, flash]);
+  }, [hub, tab, products, flash, ensureAllStock]);
 
   useEffect(() => {
     const uninstall = installBarcodeListener();
@@ -302,10 +328,11 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   }, [hub]);
 
   // ── Registration writes ────────────────────────────────────────────────────
-  const doRegister = useCallback(async ({ product, size, qty }) => {
+  const doRegister = useCallback(async ({ product, size, qty, styleCode = null }) => {
     setBusy(true);
     try {
-      const res = await registerDisplayUnit({ hub, product, size, qty });
+      // BOTH facts ride this one call — the size AND the style number.
+      const res = await registerDisplayUnit({ hub, product, size, qty, styleCode });
       if (!res.ok) { flash("err", res.message || "Could not register."); return; }
       setRegistered(await loadRegister(hub));
       setHubStock(await loadHubStock(hub));
@@ -414,12 +441,95 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         {loading && <div style={{ color: GRAY, fontSize: 13, padding: "18px 2px" }}>Loading {CLEANUP_HUB_LABELS[hub]}…</div>}
         {loadError && <div style={{ color: RED, fontSize: 13, padding: "10px 2px" }}>Could not load: {loadError}</div>}
 
-        {/* ── REGISTER + COUNT share the scan-first entry ─────────────────── */}
-        {!loading && (tab === "register" || tab === "count") && (
+        {/* ── REGISTER — find the shoe FIRST (owner correction 2026-08-06) ──
+            Nothing is created here: every shoe already has a product record.
+            The two equal ways in are the name search and the not-yet-registered
+            list; both build their panel through registerPanelFor. A barcode
+            scan survives only as a clearly-subordinate shortcut. ─────────── */}
+        {!loading && tab === "register" && (
+          <>
+            <input value={query} onChange={(e) => setQuery(e.target.value)}
+                   placeholder="Search the catalogue by name…"
+                   autoFocus={false}
+                   style={{ ...input, width: "100%", boxSizing: "border-box", minHeight: 58, fontSize: 17, fontWeight: 600 }} />
+            {searchHits.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 10 }}>
+                {searchHits.map((p) => (
+                  <button key={p.id} type="button"
+                    onClick={() => { setPanel(registerPanelFor(p)); setQuery(""); ensureAllStock().catch(() => {}); }}
+                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 12px", textAlign: "left", cursor: "pointer",
+                             background: CARD, border: BORDER, borderRadius: 13 }}>
+                    <Photo url={p.photoUrl} size={52} radius={10} />
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                      <div style={{ fontSize: 11.5, color: GRAY }}>
+                        {p.styleCodeNormalised ? `style № on file · ` : ""}{realSizes(p).length} sizes
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* The other equal way in: what this hub holds that nobody has
+                registered yet. Tap a shoe you are holding. */}
+            {!query.trim() && (
+              <div style={{ marginTop: 18 }}>
+                <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase",
+                              color: "rgba(233,238,255,.55)", marginBottom: 8 }}>
+                  Not yet registered — holds stock at {CLEANUP_HUB_LABELS[hub]}
+                </div>
+                {leftovers.length === 0 && (
+                  <div style={{ fontSize: 13, color: GRAY, padding: "8px 2px" }}>
+                    Everything holding stock here has been registered. Search above for anything else on the floor.
+                  </div>
+                )}
+                <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                  {leftovers.map(({ product, hubQty }) => (
+                    <button key={product.id} type="button"
+                      onClick={() => { setPanel(registerPanelFor(product)); ensureAllStock().catch(() => {}); }}
+                      style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 12px", textAlign: "left", cursor: "pointer",
+                               background: "rgba(12,16,30,.7)", border: "1px solid rgba(120,150,255,.22)", borderRadius: 13 }}>
+                      <Photo url={product.photoUrl} size={52} radius={10} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{product.name}</div>
+                        <div style={{ fontSize: 11.5, color: GRAY }}>{hubQty} in stock here · not seen on the floor yet</div>
+                      </div>
+                      <span style={{ fontSize: 12, fontWeight: 800, color: BLUE_L }}>Register →</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Optional shortcut only — never the default, never required. */}
+            <div style={{ marginTop: 22, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,.07)" }}>
+              <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.45)", marginBottom: 8 }}>
+                Shortcut, if this shoe happens to carry one of our shop barcode stickers:
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" disabled={busy} onClick={() => setCameraOpen(true)}
+                  style={{ ...bGhost, fontSize: 12.5, minHeight: 42, padding: "0 14px" }}>
+                  Scan a shop barcode
+                </button>
+                <form onSubmit={(e) => { e.preventDefault(); const v = manual.trim(); setManual(""); if (v) handleCode(v); }}
+                      style={{ display: "flex", gap: 6, flex: 1 }}>
+                  <input value={manual} onChange={(e) => setManual(e.target.value)}
+                         placeholder="…or type its digits"
+                         style={{ ...input, flex: 1, minHeight: 42, fontSize: 12.5, opacity: 0.85 }} />
+                  <button type="submit" style={{ ...bGhost, minHeight: 42, padding: "0 12px", fontSize: 12.5 }}>Go</button>
+                </form>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ── COUNT — stays SCAN-FIRST as built ───────────────────────────── */}
+        {!loading && tab === "count" && (
           <>
             <BigButton tone="blue" disabled={busy} onClick={() => setCameraOpen(true)}
                        style={{ minHeight: 84, fontSize: 21 }}>
-              📷 SCAN {tab === "register" ? "A DISPLAY" : "A SHOE"}
+              📷 SCAN A SHOE
             </BigButton>
             <form onSubmit={(e) => { e.preventDefault(); const v = manual.trim(); setManual(""); if (v) handleCode(v); }}
                   style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -437,7 +547,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
                 {searchHits.map((p) => (
                   <button key={p.id} type="button"
-                    onClick={() => { setPanel({ mode: tab, product: p, size: null, code: null }); setQuery(""); }}
+                    onClick={() => { setPanel({ mode: "count", product: p, size: null, code: null }); setQuery(""); }}
                     style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", textAlign: "left", cursor: "pointer",
                              background: CARD, border: BORDER, borderRadius: 12 }}>
                     <Photo url={p.photoUrl} size={40} radius={9} />
@@ -450,12 +560,10 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
               </div>
             )}
 
-            {tab === "count" && (
-              <button type="button" onClick={() => setFullList(true)}
-                style={{ ...bGhost, width: "100%", marginTop: 14, minHeight: 46, borderRadius: 12, fontSize: 13 }}>
-                Full list &amp; variance (browse every cell) →
-              </button>
-            )}
+            <button type="button" onClick={() => setFullList(true)}
+              style={{ ...bGhost, width: "100%", marginTop: 14, minHeight: 46, borderRadius: 12, fontSize: 13 }}>
+              Full list &amp; variance (browse every cell) →
+            </button>
 
             {/* The calm "never registered" list — the point of pass two's misses. */}
             {Object.keys(unresolved).length > 0 && (
@@ -530,6 +638,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         <RegisterPanel key={`reg_${panel.product.id}_${panel.size ?? ""}`}
                        panel={panel} hub={hub} registered={registered} duplicates={duplicates}
                        products={products} busy={busy}
+                       allStock={allStock} registry={registry}
                        onRegister={doRegister} onExtra={doExtra}
                        onMerge={(loser, other) => setMerge({ loser, other })}
                        onClose={() => setPanel(null)} />
@@ -585,12 +694,92 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   );
 }
 
-// ─── REGISTER PANEL — scan → size (dominant) → quantity → done ───────────────
-function RegisterPanel({ panel, hub, registered, duplicates, products, busy, onRegister, onExtra, onMerge, onClose }) {
+// ─── REGISTER PANEL — one screen, two facts, one save ────────────────────────
+// The operator found the shoe already (search / the unregistered list / the
+// optional barcode shortcut). This panel attaches BOTH facts to the existing
+// product in a single action: the manufacturer STYLE NUMBER read off the label
+// INSIDE the tongue, and the SIZE currently on display. The size grid stays
+// visually dominant; nothing here creates a product.
+function RegisterPanel({ panel, hub, registered, duplicates, products, busy, allStock, registry,
+                         onRegister, onExtra, onMerge, onClose }) {
   const { product } = panel;
   const sizes = realSizes(product);
   const [size, setSize] = useState(panel.size && sizes.includes(String(panel.size)) ? String(panel.size) : null);
   const [qty, setQty] = useState(1);
+
+  // ── The style-number step's state ──────────────────────────────────────────
+  const codeOnFile = product.styleCodeNormalised || null;
+  const [chosenCode, setChosenCode] = useState(null);      // display form, chosen or typed
+  const [codeSource, setCodeSource] = useState(null);      // "label" | "manual"
+  const [labelPhoto, setLabelPhoto] = useState(null);      // prepareLabelPhoto result, evidence
+  const [skipReason, setSkipReason] = useState(null);
+  const [skipOpen, setSkipOpen] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [readNote, setReadNote] = useState(null);          // { text, options? }
+  const [typed, setTyped] = useState("");
+  const fileRef = useRef(null);
+
+  const handleLabelPhoto = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setReading(true);
+    setReadNote(null);
+    // A retake must never stay bound to the previous read.
+    setChosenCode(null); setCodeSource(null); setSkipReason(null);
+    try {
+      const photo = await prepareLabelPhoto(file);
+      setLabelPhoto(photo);
+      const { data } = await readStyleCodeLabelFn({ imageBase64: photo.base64, mimeType: "image/jpeg" });
+      const out = chooseFromLabelRead(data);
+      const formattedChosen = out.kind === "chosen" ? formatStyleCodeForDisplay(out.code) : "";
+      if (out.kind === "chosen" && formattedChosen) {
+        setChosenCode(formattedChosen);
+        setCodeSource("label");
+      } else if (out.kind === "chosen") {
+        // A candidate that formats to nothing is not a style number at all.
+        setReadNote({ text: "Couldn't read a style number off that photo — try again closer, or type it." });
+      } else if (out.kind === "options") {
+        setReadNote({ text: "The label shows more than one code-looking number — tap the style number:", options: out.options });
+      } else {
+        setReadNote({ text: out.message });
+      }
+    } catch (err) {
+      setReadNote({ text: `Could not read that photo (${err?.message || err}) — type the style number instead.` });
+    } finally { setReading(false); }
+  };
+
+  const pickOption = (c) => {
+    setChosenCode(formatStyleCodeForDisplay(c));
+    setCodeSource("label");
+    setReadNote(null);
+  };
+
+  const applyTyped = () => {
+    const v = typed.trim();
+    if (!v) return;
+    const formatted = formatStyleCodeForDisplay(v);
+    if (!formatted) {
+      // Normalises to nothing (punctuation only, etc.) — say so instead of
+      // silently arming a blank code that disables the save with no explanation.
+      setReadNote({ text: `“${v}” doesn't look like a style number — check the label inside the tongue.` });
+      return;
+    }
+    setChosenCode(formatted);
+    setCodeSource("manual");
+    setSkipReason(null);
+    setReadNote(null);
+  };
+
+  // The duplicate fence: a code some OTHER live product already carries means
+  // one of the two records is a twin — route to Merge, never save into it.
+  const conflictOwners = chosenCode ? styleCodeOwners(chosenCode, products, product.id) : [];
+  const styleCodePayload = skipReason
+    ? { skipped: skipReason }
+    : chosenCode
+      ? { code: chosenCode, source: codeSource || "manual", labelPhoto: codeSource === "label" ? labelPhoto : null }
+      : null;
+  const styleReady = styleStepSatisfied(product, styleCodePayload) && conflictOwners.length === 0;
 
   const regFor = (s) => registered[`${product.id}__${stockSizeKey(s)}`] || null;
   const marks = {};
@@ -600,15 +789,36 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, onR
   const dupOther = dup ? products.find((p) => p && p.id === dup.otherId) : null;
   const existing = size ? regFor(size) : null;
 
+  const stockLocs = allStock ? locationsHolding(product.id, allStock) : null;
+
+  const SKIP_LABELS = {
+    label_unreadable: "Label is there but unreadable",
+    label_missing: "Tongue label is missing",
+    no_code_exists: "This brand prints no style number",
+  };
+
   return (
     <Panel title="Register display" onClose={onClose}>
-      {/* Photo visible but SECONDARY — the size picker below is the decision. */}
-      <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 18 }}>
+      {/* The shoe the operator selected — photo, name, where its stock is. */}
+      <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 10 }}>
         <Photo url={product.photoUrl} size={84} />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 19, fontWeight: 800, lineHeight: 1.25 }}>{product.name}</div>
           <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>Adds to {CLEANUP_HUB_LABELS[hub]} stock for the size you pick</div>
         </div>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
+        {stockLocs === null && <span style={{ fontSize: 11.5, color: GRAY }}>Loading stock by location…</span>}
+        {stockLocs && stockLocs.length === 0 && <span style={{ fontSize: 11.5, color: GRAY }}>No stock recorded anywhere yet.</span>}
+        {(stockLocs || []).map(({ loc, qty: q }) => (
+          <span key={loc} style={{ fontSize: 12, fontWeight: 800, padding: "5px 10px", borderRadius: 9,
+                                   fontVariantNumeric: "tabular-nums",
+                                   background: q < 0 ? "rgba(248,113,113,.12)" : "rgba(74,127,255,.1)",
+                                   border: q < 0 ? "1px solid rgba(248,113,113,.35)" : "1px solid rgba(74,127,255,.28)",
+                                   color: q < 0 ? "#FFC9C9" : "#CFE0FF" }}>
+            {labelFor(loc, registry)} · {q}
+          </span>
+        ))}
       </div>
 
       {dup && (
@@ -616,15 +826,114 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, onR
                       padding: "11px 13px", marginBottom: 16 }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: AMBER }}>Possible duplicate</div>
           <div style={{ fontSize: 12.5, color: "rgba(253,233,176,.85)", margin: "4px 0 9px" }}>
-            This product shares a style code with {dupOther ? <strong>{dupOther.name}</strong> : "another product"}.
+            This product shares a style number with {dupOther ? <strong>{dupOther.name}</strong> : "another product"}.
           </div>
           <button type="button" onClick={() => onMerge(product, dupOther)}
             style={{ ...bGray, fontSize: 13, minHeight: 42 }}>⇄ Review &amp; merge…</button>
         </div>
       )}
 
-      <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: ".05em", color: "#fff", margin: "0 0 10px" }}>
-        WHICH SIZE IS ON DISPLAY?
+      {/* ── FACT 1 — THE STYLE NUMBER, off the label INSIDE the tongue ──────
+          NOT a shop barcode sticker and NOT the box label. Copy stays explicit
+          everywhere so the operator can never confuse the two scans. */}
+      <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: ".05em", margin: "0 0 4px" }}>
+        1 · STYLE NUMBER — the label <u>inside the tongue</u>
+      </div>
+      <div style={{ fontSize: 12, color: GRAY, marginBottom: 10 }}>
+        Fold the tongue forward: the small printed label with a code like CT8527-016.
+        Not the shop barcode sticker, not the box.
+      </div>
+
+      {codeOnFile ? (
+        <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
+                      padding: "12px 14px", marginBottom: 18, fontSize: 14, color: "#B7F0CC" }}>
+          ✓ Style number already on file: <strong>{product.styleCode || formatStyleCodeForDisplay(codeOnFile)}</strong>
+          <div style={{ fontSize: 11.5, color: GRAY, marginTop: 4 }}>
+            Nothing to capture — check it matches the tongue label of the shoe in your hand.
+          </div>
+        </div>
+      ) : chosenCode && conflictOwners.length === 0 ? (
+        <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
+                      padding: "12px 14px", marginBottom: 18, fontSize: 14, color: "#B7F0CC",
+                      display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ flex: 1 }}>✓ Style number: <strong>{chosenCode}</strong> <span style={{ color: GRAY, fontSize: 11.5 }}>({codeSource === "label" ? "read off the tongue label" : "typed"})</span></span>
+          <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); setTyped(""); }}
+            style={{ ...bGhost, fontSize: 12, minHeight: 38, padding: "0 12px" }}>✎ Change</button>
+        </div>
+      ) : chosenCode && conflictOwners.length > 0 ? (
+        <div style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.4)", borderRadius: 13,
+                      padding: "12px 14px", marginBottom: 18 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 800, color: AMBER }}>
+            {chosenCode} already belongs to {conflictOwners[0].name}
+          </div>
+          <div style={{ fontSize: 12.5, color: "rgba(253,233,176,.85)", margin: "5px 0 10px", lineHeight: 1.5 }}>
+            Two records, one shoe — this is the duplicate case. Merge them (or go back and
+            register under {conflictOwners[0].name} instead). Saving this code here is blocked.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" onClick={() => onMerge(product, conflictOwners[0])}
+              style={{ ...bGray, fontSize: 13, minHeight: 44, flex: 1 }}>⇄ Review &amp; merge…</button>
+            <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); setTyped(""); }}
+              style={{ ...bGhost, fontSize: 13, minHeight: 44 }}>Re-enter</button>
+          </div>
+        </div>
+      ) : skipReason ? (
+        <div style={{ background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.14)", borderRadius: 13,
+                      padding: "12px 14px", marginBottom: 18, fontSize: 13, color: "rgba(233,238,255,.75)",
+                      display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ flex: 1 }}>No style number — {SKIP_LABELS[skipReason]}</span>
+          <button type="button" onClick={() => setSkipReason(null)}
+            style={{ ...bGhost, fontSize: 12, minHeight: 38, padding: "0 12px" }}>✎ Change</button>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 18 }}>
+          <input ref={fileRef} type="file" accept="image/*" capture="environment"
+                 onChange={handleLabelPhoto} style={{ display: "none" }} />
+          <BigButton tone="blue" disabled={busy || reading} onClick={() => fileRef.current && fileRef.current.click()}
+                     style={{ minHeight: 64, fontSize: 17 }}>
+            {reading ? "Reading the tongue label…" : "📷 Photograph the tongue label"}
+          </BigButton>
+          {readNote && (
+            <div style={{ marginTop: 10, background: "rgba(251,191,36,.07)", border: "1px solid rgba(251,191,36,.25)",
+                          borderRadius: 11, padding: "9px 12px", fontSize: 12.5, color: "#FDE9B0" }}>
+              {readNote.text}
+              {readNote.options && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
+                  {readNote.options.map((c) => (
+                    <button key={c} type="button" onClick={() => pickOption(c)}
+                      style={{ ...bBlue, fontSize: 13.5, minHeight: 42, fontVariantNumeric: "tabular-nums" }}>{c}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <form onSubmit={(e) => { e.preventDefault(); applyTyped(); }}
+                style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <input value={typed} onChange={(e) => setTyped(e.target.value)}
+                   placeholder="…or type it, e.g. CT8527-016"
+                   style={{ ...input, flex: 1, minHeight: 48, fontSize: 15 }} />
+            <button type="submit" disabled={!typed.trim()} style={{ ...bGray, minHeight: 48, padding: "0 16px" }}>Set</button>
+          </form>
+          {!skipOpen ? (
+            <button type="button" onClick={() => setSkipOpen(true)}
+              style={{ background: "none", border: "none", color: "rgba(233,238,255,.42)", textDecoration: "underline",
+                       fontSize: 12, marginTop: 10, cursor: "pointer", fontFamily: FONT }}>
+              This shoe has no readable style number
+            </button>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 10 }}>
+              {STYLE_SKIP_REASONS.map((r) => (
+                <button key={r} type="button" onClick={() => { setSkipReason(r); setSkipOpen(false); }}
+                  style={{ ...bGhost, fontSize: 12.5, minHeight: 42 }}>{SKIP_LABELS[r]}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── FACT 2 — THE SIZE ON DISPLAY (the dominant control) ───────────── */}
+      <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: ".05em", margin: "0 0 10px" }}>
+        2 · WHICH SIZE IS ON DISPLAY?
       </div>
       <SizeGrid sizes={sizes} chosen={size} onPick={setSize} marks={marks} disabled={busy} />
 
@@ -642,10 +951,21 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, onR
                 style={{ ...bGray, minWidth: 52, minHeight: 52, fontSize: 22, borderRadius: 13 }}>+</button>
             </div>
           </div>
-          <BigButton tone="green" disabled={busy} onClick={() => onRegister({ product, size, qty })}
+          {/* ONE action, BOTH facts. Disabled until the style-number step is
+              satisfied (on file, captured, or deliberately skipped) AND a size
+              is picked — never split into a second screen. */}
+          <BigButton tone="green" disabled={busy || !styleReady}
+                     onClick={() => onRegister({ product, size, qty, styleCode: styleCodePayload })}
                      style={{ minHeight: 68, fontSize: 19 }}>
-            ✓ REGISTER — add {qty} to {CLEANUP_HUB_LABELS[hub]}
+            ✓ REGISTER — size {size}{codeOnFile || chosenCode ? " + style number" : ""}
           </BigButton>
+          {!styleReady && (
+            <div style={{ fontSize: 12, color: AMBER, marginTop: 8 }}>
+              {conflictOwners.length > 0
+                ? "Resolve the duplicate above first."
+                : "Capture the style number off the tongue label first (or mark it unreadable)."}
+            </div>
+          )}
         </>
       )}
 
@@ -654,7 +974,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, onR
           <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
                         padding: "12px 14px", marginBottom: 12, fontSize: 14, color: "#B7F0CC" }}>
             ✓ Already registered — {existing.qty} unit{existing.qty > 1 ? "s" : ""} of size <SizeTag size={size} />.
-            Scanning it again adds nothing.
+            Registering it again adds nothing.
           </div>
           <BigButton tone="ghost" disabled={busy} onClick={() => onExtra({ product, size })}>
             This is a SECOND physical display — add one more

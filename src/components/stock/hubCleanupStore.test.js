@@ -51,6 +51,11 @@ vi.mock("firebase/auth", () => ({ onAuthStateChanged: () => () => {} }));
 vi.mock("../../firebase", () => ({ database: { fake: true }, auth: { currentUser: { uid: "walker-1" } } }));
 vi.mock("../../device/deviceId", () => ({ getDeviceId: () => "dev-1" }));
 
+// The capture queue is a separate, already-tested module — here we only assert
+// WHEN the register save enqueues and with what.
+const enqueueMock = vi.fn(async () => ({ ok: true, captureId: "cap1", normalised: "CT8527016" }));
+vi.mock("../../utils/styleCodeCapture", () => ({ enqueueStyleCodeCapture: (...a) => enqueueMock(...a) }));
+
 // The fake writer with the REAL writer's idempotency semantic: the movement id
 // is the key. A movement that already exists changes NOTHING and reports
 // { idempotent: true } — byte-for-byte the contract in applyMovement.js:112.
@@ -75,6 +80,8 @@ const {
 
 const HUB = "hub2";
 const PRODUCT = { id: "p100", name: "Nike Dunk Low" };
+// The style-number fact used throughout — typed, no barcode anywhere in sight.
+const STYLE = { code: "CT8527-016", source: "manual" };
 const cellQty = (size = "6") => {
   const c = getPath(stockCellPath(HUB, PRODUCT.id, size));
   return c && typeof c.qty === "number" ? c.qty : 0;
@@ -85,15 +92,16 @@ beforeEach(() => {
   store = {};
   pushN = 0;
   applyMovementMock.mockClear();
+  enqueueMock.mockClear();
 });
 
 describe("registration is idempotent — the mandatory mutation proof", () => {
   it("registering the same display twice adds ONE unit, not two", async () => {
-    const r1 = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });
+    const r1 = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
     expect(r1.ok).toBe(true);
     expect(cellQty("6")).toBe(1);
 
-    const r2 = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });
+    const r2 = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
     expect(r2.ok).toBe(true);
     expect(r2.already).toBe(true);
     expect(cellQty("6")).toBe(1);          // still one unit
@@ -101,31 +109,32 @@ describe("registration is idempotent — the mandatory mutation proof", () => {
   });
 
   it("even with the progress record lost, the movement id blocks a double add", async () => {
-    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
     // Simulate the record vanishing (cleared node, other device's session wipe):
     setPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6`, null);
-    const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });
+    const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
     expect(r.ok).toBe(true);
-    expect(cellQty("6")).toBe(1, "the deterministic movement id is the real guard");
+    // The deterministic movement id is the real guard — the record was gone.
+    expect(cellQty("6")).toBe(1);
   });
 
   it("adds onto the hub's EXISTING quantity — a size 6 display adds 1 to size 6", async () => {
     setPath(stockCellPath(HUB, PRODUCT.id, "6"), { qty: 4, v: 7, mv: "m0" });
-    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
     expect(cellQty("6")).toBe(5);
     const cell = getPath(stockCellPath(HUB, PRODUCT.id, "6"));
     expect(cell.v).toBe(8);                // v moved by exactly 1
   });
 
   it("different sizes are different displays — each registers its own unit", async () => {
-    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });
-    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "8" });
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "8", styleCode: STYLE });
     expect(cellQty("6")).toBe(1);
     expect(cellQty("8")).toBe(1);
   });
 
   it("a deliberate extra unit adds exactly one; replaying it does not", async () => {
-    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
     const r = await addExtraDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });
     expect(r.ok).toBe(true);
     expect(cellQty("6")).toBe(2);
@@ -142,7 +151,7 @@ describe("registration is idempotent — the mandatory mutation proof", () => {
 describe("scope and size discipline", () => {
   it("refuses every hub outside hub1/hub2 — Pine can never be touched", async () => {
     for (const hub of ["hub3", "marathon-pine", "marathon-pe", "trophy", "central"]) {
-      const r = await registerDisplayUnit({ hub, product: PRODUCT, size: "6" });
+      const r = await registerDisplayUnit({ hub, product: PRODUCT, size: "6", styleCode: STYLE });
       expect(r.ok).toBe(false);
       const extra = await addExtraDisplayUnit({ hub, product: PRODUCT, size: "6" });
       expect(extra.ok).toBe(false);
@@ -153,14 +162,14 @@ describe("scope and size discipline", () => {
 
   it("refuses a size that would encode to the one-size sentinel — the Free Size leak", async () => {
     for (const size of ["", "_", "Free Size", null]) {
-      const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size });
+      const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size, styleCode: STYLE });
       expect(r.ok).toBe(false);
     }
     expect(getPath("stock")).toBe(null);
   });
 
   it("stock changes go through applyMovement — the register write path builds a received movement to the hub", async () => {
-    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", qty: 2 });
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", qty: 2, styleCode: STYLE });
     const mv = applyMovementMock.mock.calls[0][0];
     expect(mv.type).toBe("received");
     expect(mv.to).toBe(HUB);
@@ -168,6 +177,86 @@ describe("scope and size discipline", () => {
     expect(mv.size).toBe("6");             // RAW size in — the writer owns encoding
     expect(mv.reason).toBe("display_registration");
     expect(cellQty("6")).toBe(2);
+  });
+});
+
+// ─── THE TWO-FACTS CONTRACT (owner correction 2026-08-06) ────────────────────
+// Registration attaches the STYLE NUMBER and the SIZE in one save. No barcode
+// is involved anywhere: every call in this whole file identifies the product
+// directly (it was found by search or the unregistered list) and none of these
+// paths ever reads /barcodes — that is the proof registration is reachable and
+// completable without one.
+describe("style number + size, one action, no barcode", () => {
+  it("registration completes from {product, size, style number} alone — no barcode anywhere", async () => {
+    const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
+    expect(r.ok).toBe(true);
+    expect(cellQty("6")).toBe(1);
+    expect(getPath("barcodes")).toBe(null);          // nothing ever touched the barcode index
+  });
+
+  it("ONE call saves BOTH facts: the movement, the record's code fields, and the capture", async () => {
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
+    // fact 2 — the unit landed:
+    expect(cellQty("6")).toBe(1);
+    // fact 1 — the code rode the same save:
+    const rec = getPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6`);
+    expect(rec.styleCodeNormalised).toBe("CT8527016");
+    expect(rec.styleCode).toBe("CT8527-016");
+    expect(rec.styleCodeFrom).toBe("manual");
+    // …and went to the server-decided capture queue in the same action:
+    expect(enqueueMock).toHaveBeenCalledTimes(1);
+    expect(enqueueMock.mock.calls[0][0]).toMatchObject({ productId: PRODUCT.id, origin: "displayCheck" });
+  });
+
+  it("without a code, an on-file code, or a reasoned skip, NOTHING is written", async () => {
+    for (const styleCode of [null, undefined, { code: "" }, { code: "###" }, { skipped: "nah" }]) {
+      const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode });
+      expect(r.ok).toBe(false);
+    }
+    expect(movementCount()).toBe(0);
+    expect(enqueueMock).not.toHaveBeenCalled();
+  });
+
+  it("a label-read code and a typed code both satisfy the step", async () => {
+    const label = await registerDisplayUnit({
+      hub: HUB, product: PRODUCT, size: "6",
+      styleCode: { code: "CT8527-016", source: "label", labelPhoto: { blob: {} } },
+    });
+    expect(label.ok).toBe(true);
+    expect(getPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6`).styleCodeFrom).toBe("label");
+    expect(enqueueMock.mock.calls[0][0].labelPhoto).toEqual({ blob: {} });
+
+    const typedR = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "7", styleCode: STYLE });
+    expect(typedR.ok).toBe(true);
+    expect(getPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__7`).styleCodeFrom).toBe("manual");
+  });
+
+  it("a product with the code ON FILE needs no capture — and none is enqueued", async () => {
+    const onFile = { ...PRODUCT, id: "p200", styleCodeNormalised: "DD1391100", styleCode: "DD1391-100" };
+    const r = await registerDisplayUnit({ hub: HUB, product: onFile, size: "6", styleCode: null });
+    expect(r.ok).toBe(true);
+    const rec = getPath(`settings/hubSneakerCount/register/${HUB}/p200__6`);
+    expect(rec.styleCodeNormalised).toBe("DD1391100");
+    expect(rec.styleCodeFrom).toBe("on_file");
+    expect(enqueueMock).not.toHaveBeenCalled();
+  });
+
+  it("a deliberate skip is recorded with its reason, and enqueues nothing", async () => {
+    const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: { skipped: "label_missing" } });
+    expect(r.ok).toBe(true);
+    expect(cellQty("6")).toBe(1);
+    const rec = getPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6`);
+    expect(rec.styleCodeSkipReason).toBe("label_missing");
+    expect(rec.styleCodeNormalised).toBe(null);
+    expect(enqueueMock).not.toHaveBeenCalled();
+  });
+
+  it("a failed capture enqueue downgrades to a warning — the stock unit is never lost", async () => {
+    enqueueMock.mockRejectedValueOnce(new Error("queue down"));
+    const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
+    expect(r.ok).toBe(true);
+    expect(cellQty("6")).toBe(1);
+    expect(r.warning).toMatch(/style number could not be queued/);
   });
 });
 
@@ -212,7 +301,7 @@ describe("historical barcode rows — following a merge done elsewhere", () => {
 
 describe("the register record and unresolved scans", () => {
   it("keeps a per-slot record the count pass and Leftovers read", async () => {
-    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "5.5" });
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "5.5", styleCode: STYLE });
     const reg = await loadRegister(HUB);
     const rec = reg[`${PRODUCT.id}__5_5`];
     expect(rec).toBeTruthy();
