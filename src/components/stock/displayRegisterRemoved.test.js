@@ -61,6 +61,15 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     expect(app()).toMatch(/ALL_PRODUCTS_BY_ID = Object\.fromEntries/);
   });
 
+  it("review-round pins: junk style input is refused with a note; the barcode shortcut loads stock", () => {
+    const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
+    // applyTyped must refuse an input that formats to nothing, with an explanation:
+    expect(hubCleanup).toMatch(/if \(!formatted\) \{/);
+    expect(hubCleanup).toMatch(/doesn't look like a style number/);
+    // the register branch of the barcode shortcut must start the stock-by-location load:
+    expect(hubCleanup).toMatch(/setPanel\(registerPanelFor\(out\.product, out\.size\)\);\s*\n\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*ensureAllStock\(\)/);
+  });
+
   it("scan panels remount per scanned product, and the camera effect is render-stable", () => {
     const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
     expect(hubCleanup).toMatch(/key=\{`reg_\$\{panel\.product\.id\}/);

@@ -62,7 +62,12 @@ export async function loadUnresolved(hub) {
  * Registration attaches TWO facts to an existing product: the manufacturer
  * style number off the INNER TONGUE LABEL, and the size on display. Both are
  * saved by this ONE call. `styleCode` is one of:
- *   { code, source: "label" | "manual", labelPhotoUrl? }  a read or typed code
+ *   { code, source: "label" | "manual", labelPhoto? }     a read or typed code
+ *                                                         (labelPhoto is the
+ *                                                         prepareLabelPhoto
+ *                                                         result; the enqueue
+ *                                                         uploads .blob and
+ *                                                         mints the URL itself)
  *   { skipped: "label_unreadable" | "label_missing" | "no_code_exists" }
  *   null / undefined                                      product already has
  *                                                         a code on file

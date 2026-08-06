@@ -265,9 +265,14 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // Register mode builds its panel through registerPanelFor — the SAME
         // constructor the search results and the unregistered list use, so the
         // optional barcode shortcut lands on the identical screen.
-        setPanel(tab === "count"
-          ? { mode: "count", product: out.product, size: out.size, code }
-          : registerPanelFor(out.product, out.size));
+        if (tab === "count") {
+          setPanel({ mode: "count", product: out.product, size: out.size, code });
+        } else {
+          setPanel(registerPanelFor(out.product, out.size));
+          // The panel shows stock by location — the shortcut must start that
+          // load just like the search and list paths do.
+          ensureAllStock().catch(() => {});
+        }
       } else if (out.kind === "duplicate") {
         setPanel({ mode: "duplicate", code, claimants: out.products });
       } else if (tab === "count") {
@@ -280,7 +285,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         flash("warn", `No product matches “${code}” — find the shoe by name instead.`);
       }
     } finally { setBusy(false); }
-  }, [hub, tab, products, flash]);
+  }, [hub, tab, products, flash, ensureAllStock]);
 
   useEffect(() => {
     const uninstall = installBarcodeListener();
@@ -727,9 +732,13 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
       setLabelPhoto(photo);
       const { data } = await readStyleCodeLabelFn({ imageBase64: photo.base64, mimeType: "image/jpeg" });
       const out = chooseFromLabelRead(data);
-      if (out.kind === "chosen") {
-        setChosenCode(formatStyleCodeForDisplay(out.code));
+      const formattedChosen = out.kind === "chosen" ? formatStyleCodeForDisplay(out.code) : "";
+      if (out.kind === "chosen" && formattedChosen) {
+        setChosenCode(formattedChosen);
         setCodeSource("label");
+      } else if (out.kind === "chosen") {
+        // A candidate that formats to nothing is not a style number at all.
+        setReadNote({ text: "Couldn't read a style number off that photo — try again closer, or type it." });
       } else if (out.kind === "options") {
         setReadNote({ text: "The label shows more than one code-looking number — tap the style number:", options: out.options });
       } else {
@@ -749,7 +758,14 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const applyTyped = () => {
     const v = typed.trim();
     if (!v) return;
-    setChosenCode(formatStyleCodeForDisplay(v));
+    const formatted = formatStyleCodeForDisplay(v);
+    if (!formatted) {
+      // Normalises to nothing (punctuation only, etc.) — say so instead of
+      // silently arming a blank code that disables the save with no explanation.
+      setReadNote({ text: `“${v}” doesn't look like a style number — check the label inside the tongue.` });
+      return;
+    }
+    setChosenCode(formatted);
     setCodeSource("manual");
     setSkipReason(null);
     setReadNote(null);

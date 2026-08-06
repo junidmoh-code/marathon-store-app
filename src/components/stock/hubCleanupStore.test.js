@@ -114,7 +114,8 @@ describe("registration is idempotent — the mandatory mutation proof", () => {
     setPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6`, null);
     const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
     expect(r.ok).toBe(true);
-    expect(cellQty("6")).toBe(1, "the deterministic movement id is the real guard");
+    // The deterministic movement id is the real guard — the record was gone.
+    expect(cellQty("6")).toBe(1);
   });
 
   it("adds onto the hub's EXISTING quantity — a size 6 display adds 1 to size 6", async () => {
