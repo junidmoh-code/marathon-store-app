@@ -74,7 +74,8 @@ import { printOrderSlips } from "./print/orderSlip";
 // category later is a data edit — no code change, no deploy. `legacyFor` is the
 // derivation that keeps newly-created products inside every existing automation.
 import { catByKey, sizesOf, isOneSize, legacyFor, needsAssignment, isAssignable } from "./utils/productTaxonomy";
-import { buildNewProduct } from "./utils/newProductRecord";
+import { buildNewProduct, stampStyleCodeProvenance } from "./utils/newProductRecord";
+import { saveFailureMessage } from "./utils/saveFailureMessage";
 // The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
 // if the two ever disagree, stock is deducted in one app and never credited in the other.
 import { isFootwearLine, productIsFootwear } from "./utils/footwearLine";
@@ -537,8 +538,10 @@ async function reserveNextSkuAndBarcode() {
     return { ...(current || {}), lastSku: nextSku, lastBarcode: nextBarcode };
   });
   if (!tx.committed) {
-    // Transaction was aborted by `return;` (exhaustion) — surface the message.
-    throw new Error(reserved?.error || "SKU/barcode reservation aborted.");
+    // Transaction was aborted by `return;` (exhaustion) — an operator-facing
+    // failure ("contact admin to expand width"), so flag it as one instead of
+    // relying on the catch block to recognise the prose.
+    throw operatorError(reserved?.error || "SKU/barcode reservation aborted.");
   }
   return reserved; // { sku, barcode }
 }
@@ -5090,7 +5093,7 @@ function AdminView({ products, orders, onExit }) {
       // Category vanished mid-save (retired in the console between opening the
       // form and pressing save) — refuse rather than write a product with no
       // legacy fields, which would silently drop out of every automation.
-      if (!newProduct) throw new Error("That category is no longer available. Pick a category again.");
+      if (!newProduct) throw operatorError("That category is no longer available. Pick a category again.");
       const sizes = newProduct.sizes;
       // MERGE NOTE (2026-07-30): prices and the shoebox flag moved INTO
       // buildNewProduct during the form rewrite — main's inline copies of those
@@ -5118,12 +5121,14 @@ function AdminView({ products, orders, onExit }) {
       // wrong catalogue match can be traced back later — "who confirmed this,
       // from what, and against which photo of which label".
       // styleCodeSource is the /products enum: cache | api | websearch | manual.
-      if (intake) {
-        newProduct.styleCodeSource      = intake.styleCodeSource;
-        newProduct.styleCodeFetchedAt   = intake.styleCodeFetchedAt;
-        newProduct.styleCodeConfirmedBy = auth.currentUser?.uid ?? null;
-        if (labelPhotoUrl) newProduct.styleCodeLabelPhoto = labelPhotoUrl;
-      }
+      //
+      // Stamped ONLY when the record carries a style code — the non-enforced
+      // path (watches, clothing, perfume…) seeds a sentinel intake with no
+      // provenance keys, and copying those unconditionally put `undefined`
+      // into the record, which set() rejects client-side and the whole save
+      // failed. See stampStyleCodeProvenance.
+      stampStyleCodeProvenance(newProduct, intake, auth.currentUser?.uid ?? null);
+      if (newProduct.styleCodeNormalised && labelPhotoUrl) newProduct.styleCodeLabelPhoto = labelPhotoUrl;
 
       // POS Phase 2: reserve the next sequential sku + barcode atomically
       // BEFORE the product write so two concurrent adds can't collide. If
@@ -5143,25 +5148,12 @@ function AdminView({ products, orders, onExit }) {
       // Claim-first was the safer shape — the database arbitrated the race — but
       // the deployed rule makes it impossible, and the rule wins. Product first,
       // claim second.
-      try {
-        await addProductToFirebase(newProduct);
-      } catch (writeErr) {
-        // The claim landed and the product did not. Say so explicitly with the
-        // code and the id — this is the orphan case, and an admin needs both to
-        // clear it. Silently swallowing it would leave a code that looks taken
-        // and is owned by nothing.
-        if (newProduct.styleCodeNormalised) {
-          console.error("addProduct: product write failed AFTER the style-code claim landed", {
-            styleCodeNormalised: newProduct.styleCodeNormalised, productId: id,
-          });
-          throw operatorError(
-            `The product could not be saved, but style code ${newProduct.styleCode} was already ` +
-            `reserved for id ${id}. Ask an admin to clear that reservation before retrying — ` +
-            `the code will otherwise look taken by a product that does not exist.`
-          );
-        }
-        throw writeErr;
-      }
+      // A failed write propagates as-is: the claim runs AFTER this, so at this
+      // point nothing has been reserved and there is nothing to clean up. (The
+      // old catch here told staff a reservation had landed — a leftover from
+      // the claim-first ordering, and false ever since it flipped. CodeRabbit,
+      // PR #327.)
+      await addProductToFirebase(newProduct);
 
       // ── CLAIM THE STYLE CODE — after the product, and NEVER fatal ──────────
       // The product is already saved by this point, so a failed claim must not
@@ -5258,17 +5250,11 @@ function AdminView({ products, orders, onExit }) {
       setShowAdd(false);
     } catch (err) {
       console.error("addProduct failed:", err);
-      // Surface counter-exhaustion + reservation errors with their actual
-      // message so the admin knows what's wrong; everything else gets the
-      // generic prompt.
-      // `showToOperator` is the explicit signal; the regex is the legacy path
-      // for errors thrown before that flag existed. Deciding what a person is
-      // allowed to read by pattern-matching English is how the claim messages
-      // were lost — new operator-facing errors must set the flag.
-      const msg = err?.showToOperator || /counter exhausted|reservation|no longer available/i.test(String(err?.message || ""))
-        ? `Failed to save product:\n${err.message}`
-        : "Failed to save product. Please try again.";
-      alert(msg);
+      // Never the bare "please try again" — that swallowed the real error and
+      // staff retried saves that could never succeed. saveFailureMessage shows
+      // operator-flagged messages verbatim, gives recognised failure classes
+      // their instruction, and surfaces the underlying error text for the rest.
+      alert(saveFailureMessage(err));
     } finally {
       setSaving(false);
     }

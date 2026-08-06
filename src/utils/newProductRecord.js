@@ -139,3 +139,38 @@ export function buildNewProduct(registry, form, extras = {}) {
 
   return product;
 }
+
+// ─── STYLE CODE PROVENANCE STAMP ──────────────────────────────────────────────
+// Where the confirmed style code came from and who accepted it — recorded so a
+// wrong catalogue match is traceable later. Split out of the App.jsx save
+// handler because getting this wrong took the whole Add Product flow down for
+// every non-enforced category: the non-enforced path seeds a sentinel intake
+// with NO provenance keys, and copying them unconditionally put `undefined`
+// into the record, which the Firebase SDK rejects client-side BEFORE the write
+// ("contains undefined in property 'products.<id>.styleCodeSource'"). Watches,
+// clothing, perfume — every save failed with the generic alert.
+//
+// The invariant, matching buildNewProduct's own styleCode handling: provenance
+// is written ONLY when the record actually carries a style code, and only from
+// values that exist. No code → no styleCode* field of any kind, ever. A
+// bypassed (exempt) product keeps its attribution in styleCodeExempt* — the
+// provenance of a code it does not have would be meaningless.
+export function stampStyleCodeProvenance(product, intake, confirmedBy) {
+  if (!product || !intake) return product;
+  if (!product.styleCodeNormalised) return product;
+  if (intake.styleCodeSource != null) product.styleCodeSource = intake.styleCodeSource;
+  if (intake.styleCodeFetchedAt != null) product.styleCodeFetchedAt = intake.styleCodeFetchedAt;
+  if (confirmedBy != null) product.styleCodeConfirmedBy = confirmedBy;
+  return product;
+}
+
+// True when a value is safe to hand to RTDB set(): the SDK throws on ANY
+// `undefined` anywhere in the tree, which aborts the save before a single byte
+// reaches the server. Used by tests to prove new-product records stay
+// writeable; cheap enough to reuse anywhere a record is assembled from
+// optional sources.
+export function isSetSafe(value) {
+  if (value === undefined) return false;
+  if (value === null || typeof value !== "object") return true;
+  return Object.values(value).every(isSetSafe);
+}
