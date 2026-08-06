@@ -33,7 +33,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { setUpdateBusy } from "../../update/updateChecker";
 import { searchProducts } from "../../utils/productSearch";
 import { SizeTag } from "../SizeTag.jsx";
-import { FONT, BG, CARD, BORDER, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGray, bGhost, input, tabOn, tabOff } from "./ui";
+import { FONT, BG, CARD, BORDER, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bBlue, bGray, bGhost, input, tabOn, tabOff } from "./ui";
 import { Toast } from "./widgets";
 import { labelFor } from "./locations";
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
@@ -323,10 +323,11 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   }, [hub]);
 
   // ── Registration writes ────────────────────────────────────────────────────
-  const doRegister = useCallback(async ({ product, size, qty }) => {
+  const doRegister = useCallback(async ({ product, size, qty, styleCode = null }) => {
     setBusy(true);
     try {
-      const res = await registerDisplayUnit({ hub, product, size, qty });
+      // BOTH facts ride this one call — the size AND the style number.
+      const res = await registerDisplayUnit({ hub, product, size, qty, styleCode });
       if (!res.ok) { flash("err", res.message || "Could not register."); return; }
       setRegistered(await loadRegister(hub));
       setHubStock(await loadHubStock(hub));
