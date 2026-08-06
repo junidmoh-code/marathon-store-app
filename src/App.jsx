@@ -5212,10 +5212,21 @@ function AdminView({ products, orders, onExit }) {
         // legitimate non-movement cell write, setCellState's rules-permitted
         // seed branch: qty 0, v 0, mv "seed"). This makes "enter 0 — it still
         // saves" TRUE: the cell exists, declaring the size carried, without
-        // inventing a movement for stock that never arrived. Best-effort like
-        // the receives — a denied seed never blocks the save.
+        // inventing a movement for stock that never arrived. setCellState
+        // RESOLVES { ok:false } on a denied write (it never throws), so the
+        // results are awaited and a failed seed is REPORTED — silently missing
+        // cells would read as "not carried" to the refill engine. The product
+        // save itself is never blocked.
+        const failedSeeds = [];
         for (const zSize of zeroEntries(sizes, recvQtys)) {
-          setCellState(recvLoc, id, zSize, "live").catch(() => {});
+          const seed = await setCellState(recvLoc, id, zSize, "live").catch((e) => ({ ok: false, reason: String(e?.message || e) }));
+          if (!seed || !seed.ok) failedSeeds.push(zSize);
+        }
+        if (failedSeeds.length) {
+          alert(
+            `Product saved, but the zero-stock cells for size(s) ${failedSeeds.join(", ")} could not be created ` +
+            `(you may lack stock permission). Those sizes will read as NOT carried until seeded from Stock → Set Quantity.`
+          );
         }
         if (recvEntries.length) {
           const locLabel = labelFor(recvLoc, recvRegistry);
@@ -7450,7 +7461,14 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
 
   const resolveCandidate = async (pid) => {
     const local = products.find((x) => x && x.id === pid) || null;
-    return local || await fetchProductFollowingMerge(pid).catch(() => null);
+    if (local) return local;
+    // A merged loser id resolves through /products to its survivor — but the
+    // assistant may only be offered what the CURRENT catalog (mode + store
+    // rules) contains. The fetch is used solely to follow the pointer; the
+    // record handed back is always the local catalog's own.
+    const fetched = await fetchProductFollowingMerge(pid).catch(() => null);
+    if (!fetched) return null;
+    return products.find((x) => x && x.id === fetched.id) || null;
   };
 
   const handleCode = async (display) => {

@@ -19,8 +19,9 @@ describe("receiveEntries / zeroEntries", () => {
     expect(zeroEntries(SIZES, { 6: "2", 7: "0", 8: "", 9: undefined })).toEqual(["7"]);
   });
 
-  it("junk input seeds nothing", () => {
-    expect(zeroEntries(SIZES, { 6: "abc", 7: "  ", 8: "-0" })).toEqual(["8"]); // parseInt("-0") === -0 → 0? guard:
+  it("junk input seeds nothing — including the parseInt truncation traps (review pin)", () => {
+    expect(zeroEntries(SIZES, { 6: "abc", 7: "  ", 8: "-0" })).toEqual(["8"]);
+    expect(zeroEntries(SIZES, { 6: "0.5", 7: "0abc" })).toEqual([]);   // parseInt would have truncated both to 0
   });
 
   it("an unselected size can never create anything — it is not in the list at all", () => {

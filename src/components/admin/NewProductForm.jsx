@@ -85,12 +85,17 @@ export default function NewProductForm({
   const sizeRun = Array.isArray(form.sizeRun) ? form.sizeRun : [];
   const chosenSizes = formOneSize ? formSizes : formSizes.filter((sz) => sizeRun.includes(String(sz)));
   const sizesOk = formOneSize || chosenSizes.length > 0;
-  const toggleRunSize = (sz) => setForm((f) => {
-    const cur = Array.isArray(f.sizeRun) ? f.sizeRun : [];
-    return { ...f, sizeRun: cur.includes(sz) ? cur.filter((x) => x !== sz) : [...cur, sz] };
-  });
+  const toggleRunSize = (sz) => {
+    setForm((f) => {
+      const cur = Array.isArray(f.sizeRun) ? f.sizeRun : [];
+      return { ...f, sizeRun: cur.includes(sz) ? cur.filter((x) => x !== sz) : [...cur, sz] };
+    });
+    // Deselecting clears the quantity too — the unit total must never count a
+    // size the save will not persist.
+    setRecvQtys((q) => (sizeRun.includes(sz) ? { ...q, [sz]: "" } : q));
+  };
   const canSave = !saving && nameOk && catOk && hubsOk && locOk && sizesOk;
-  const units = totalUnits(recvQtys);
+  const units = totalUnits(Object.fromEntries(chosenSizes.map((sz) => [sz, recvQtys[sz]])));
   const sizeCount = chosenSizes.length;
 
   return (
@@ -231,7 +236,7 @@ export default function NewProductForm({
                     {formSizes.map((sz) => {
                       const on = sizeRun.includes(String(sz));
                       return (
-                        <button key={sz} type="button" onClick={() => toggleRunSize(String(sz))}
+                        <button key={sz} type="button" onClick={() => toggleRunSize(String(sz))} aria-pressed={on}
                           style={{ minWidth: 54, minHeight: 46, borderRadius: 11, fontSize: 15, fontWeight: 800, cursor: "pointer",
                                    background: on ? "rgba(74,222,128,.18)" : "rgba(255,255,255,.04)",
                                    border: on ? "2px solid rgba(74,222,128,.7)" : "1px solid rgba(255,255,255,.16)",

@@ -145,7 +145,9 @@ export function zeroEntries(sizes, values) {
   return sizes.filter((s) => {
     const raw = values[s];
     if (raw == null || String(raw).trim() === "") return false;
-    const n = parseInt(raw, 10);
-    return Number.isFinite(n) && n === 0;
+    // Number(), not parseInt: "0.5" and "0abc" must NOT truncate to a seeded
+    // zero — only an exact 0 declares "carried, none received".
+    const n = Number(String(raw).trim());
+    return n === 0;
   });
 }

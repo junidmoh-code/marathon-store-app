@@ -148,6 +148,15 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     expect(app).toMatch(/for \(const zSize of zeroEntries\(sizes, recvQtys\)\)/);
     expect(app).toMatch(/setCellState\(recvLoc, id, zSize, "live"\)/);
     expect(app).toMatch(/sizeRun: \[\],\n\s*hubs: hubs\.length/);
+    // Review pins (#330): a failed seed is OBSERVED and reported (setCellState
+    // resolves {ok:false}, it never throws), and the finder only ever hands
+    // back records from the CURRENT catalog:
+    expect(app).toMatch(/if \(!seed \|\| !seed\.ok\) failedSeeds\.push\(zSize\);/);
+    expect(app).toMatch(/could not be created/);
+    expect(app).toMatch(/return products\.find\(\(x\) => x && x\.id === fetched\.id\) \|\| null;/);
+    const reader = readFileSync(join(SRC, "components/stock/TongueLabelReader.jsx"), "utf8");
+    // Manual entry can never race a burst still reading:
+    expect(reader).toMatch(/if \(reading \|\| busy\) return;/);
   });
 
   it("scan panels remount per scanned product, and the camera effect is render-stable", () => {

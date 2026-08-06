@@ -91,9 +91,19 @@ async function runLabelAlias(db, { action, tokens, productId, actor, nowMs }) {
 exports.runLabelAlias = runLabelAlias;
 exports.resolveProductId = resolveProductId;
 
+// Reading (match) is open to every style-code role INCLUDING store assistants
+// — their label finder depends on it. MUTATING the alias store is not: an
+// alias shapes identity resolution for everyone, so "add" demands one of the
+// write-capable roles (the pre-assistant set) or the super-admin.
+const ALIAS_WRITE_PERMISSIONS = ["product_admin", "display_checks", "stock_add", "stock_management"];
+
 exports.labelAlias = onCall({ region: "europe-west1" }, async (request) => {
   const db = admin.database();
   const actor = await assertStyleCodeAccess(request, db);
   const { action, tokens, productId } = request.data || {};
+  if (action === "add" && !actor.isSuper && !ALIAS_WRITE_PERMISSIONS.some((p) => actor.permissions.includes(p))) {
+    throw new HttpsError("permission-denied", "Filing label readings needs a stock or display role.");
+  }
   return runLabelAlias(db, { action, tokens, productId, actor, nowMs: Date.now() });
 });
+exports.ALIAS_WRITE_PERMISSIONS = ALIAS_WRITE_PERMISSIONS;

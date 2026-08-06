@@ -231,6 +231,9 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
   };
 
   const applyTyped = () => {
+    // Never while a burst is still reading — a late OCR result must not
+    // replace a manual entry (or vice versa) across register/count/assistant.
+    if (reading || busy) return;
     const v = typed.trim();
     if (!v) return;
     const formatted = formatStyleCodeForDisplay(v);
@@ -286,7 +289,7 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
         <input value={typed} onChange={(e) => setTyped(e.target.value)}
                placeholder="…or type the style number, e.g. CT8527-016"
                style={{ ...input, flex: 1, minHeight: 48, fontSize: 15 }} />
-        <button type="submit" disabled={!typed.trim()} style={{ ...bGray, minHeight: 48, padding: "0 16px" }}>Set</button>
+        <button type="submit" disabled={!typed.trim() || reading || busy} style={{ ...bGray, minHeight: 48, padding: "0 16px" }}>Set</button>
       </form>
     </div>
   );
