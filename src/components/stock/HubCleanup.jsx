@@ -70,8 +70,10 @@ const qtyOf = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
 
 // The tongue-label OCR — the SAME reader the style-code gate uses at intake.
 const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
-// Hidden mount node for the still-image QR/DataMatrix decode attempt.
-const LABEL_QR_READER_ID = "label-qr-still-reader";
+// Hidden mount node for the still-image QR/DataMatrix decode attempt — id is
+// per-instance (a register panel can overlay a mounted count tab, so two
+// readers can exist at once and must not collide on one DOM id).
+let qrReaderSeq = 0;
 
 // ─── Shared bits ─────────────────────────────────────────────────────────────
 
@@ -781,6 +783,8 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
 // Copy is explicit on purpose — the operator must never wonder whether this is
 // the shop-barcode scan. It is not.
 function TongueLabelReader({ busy, big = false, onCode }) {
+  const qrIdRef = useRef(null);
+  if (!qrIdRef.current) qrIdRef.current = `label-qr-still-reader-${++qrReaderSeq}`;
   const [reading, setReading] = useState(false);
   const [readNote, setReadNote] = useState(null);          // { text, options? }
   const [typed, setTyped] = useState("");
@@ -802,7 +806,7 @@ function TongueLabelReader({ busy, big = false, onCode }) {
       // deliberately ignored (utils/labelScan.js) — they would split one shoe
       // into a product per size. Any decode failure falls through silently.
       try {
-        const scanner = new Html5Qrcode(LABEL_QR_READER_ID, false);
+        const scanner = new Html5Qrcode(qrIdRef.current, false);
         const decoded = await scanner.scanFile(file, /* showImage */ false);
         try { scanner.clear(); } catch { /* nothing mounted */ }
         const qr = interpretLabelScan(decoded);
@@ -862,7 +866,7 @@ function TongueLabelReader({ busy, big = false, onCode }) {
                  style={big ? { minHeight: 84, fontSize: 20 } : { minHeight: 64, fontSize: 17 }}>
         {reading ? "Reading the tongue label…" : "📷 Photograph the tongue label"}
       </BigButton>
-      <div id={LABEL_QR_READER_ID} style={{ display: "none" }} />
+      <div id={qrIdRef.current} style={{ display: "none" }} />
       {readNote && (
         <div style={{ marginTop: 10, background: "rgba(251,191,36,.07)", border: "1px solid rgba(251,191,36,.25)",
                       borderRadius: 11, padding: "9px 12px", fontSize: 12.5, color: "#FDE9B0" }}>
