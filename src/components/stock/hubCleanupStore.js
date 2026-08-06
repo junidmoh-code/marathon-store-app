@@ -135,7 +135,19 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   const recPath = `${registerPath(hub)}/${key}`;
 
   const existing = await one(recPath);
-  if (existing) return { ok: true, already: true, record: existing };
+  if (existing) {
+    // The slot is already registered — but a freshly captured READING still
+    // files as an alias. This IS the retry path for a filing that failed on
+    // the first save: open the product, save again, the alias re-attempts.
+    if (aliasTokens) {
+      try {
+        await addLabelAlias({ productId: product.id, tokens: aliasTokens });
+      } catch (err) {
+        return { ok: true, already: true, record: existing, warning: `Already registered, and the label reading STILL could not be filed (${String(err?.message || err)}) — save once more to retry.` };
+      }
+    }
+    return { ok: true, already: true, record: existing };
+  }
 
   const res = await applyMovement({
     type: "received",
@@ -188,9 +200,9 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   if (aliasTokens) {
     try {
       const res = await addLabelAlias({ productId: product.id, tokens: aliasTokens });
-      if (!res || (!res.ok && !res.deduped)) captureWarning = "Registered, but the label reading could not be filed — scan it once in Count to file it.";
+      if (!res || (!res.ok && !res.deduped)) captureWarning = "Registered, but the label reading could not be filed — open this product and save again to retry.";
     } catch (err) {
-      captureWarning = `Registered, but the label reading could not be filed (${String(err?.message || err)}) — scan it once in Count to file it.`;
+      captureWarning = `Registered, but the label reading could not be filed (${String(err?.message || err)}) — open this product and save again to retry.`;
     }
   }
   if (capturedNormalised && capturedNormalised !== codeOnFile) {

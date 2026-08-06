@@ -8,7 +8,7 @@
 
 export function mergeFrameTokens(frameTokenLists) {
   const frames = (frameTokenLists || [])
-    .map((l) => new Set((l || []).map((t) => String(t ?? "").toUpperCase()).filter(Boolean)))
+    .map((l) => new Set((l || []).map((t) => String(t ?? "").trim().toUpperCase()).filter(Boolean)))
     .filter((s) => s.size > 0);
   if (frames.length === 0) return [];
   if (frames.length === 1) return [...frames[0]].sort();

@@ -30,17 +30,30 @@ if (!admin.apps.length) {
 
 /** Follow a mergedInto chain (bounded) to the record that answers today. */
 async function resolveProductId(db, productId) {
-  let id = String(productId ?? "");
+  // Sanitise ONCE and use the sanitised id throughout — looking up "p123 "
+  // as products/p123 but then STORING "p123 " would mint aliases pointing at
+  // an id that does not exist.
+  const clean = (v) => String(v ?? "").replace(/[.#$/\[\]\s]/g, "");
+  let id = clean(productId);
   for (let hops = 0; hops < 5 && id; hops++) {
-    const p = (await db.ref(`products/${id.replace(/[.#$/\[\]\s]/g, "")}`).get()).val();
+    const p = (await db.ref(`products/${id}`).get()).val();
     if (!p) return null;
     if (!p.mergedInto) return id;
-    id = p.mergedInto;
+    id = clean(p.mergedInto);
   }
   return null;
 }
 
 async function runLabelAlias(db, { action, tokens, productId, actor, nowMs }) {
+  // ── WHY A FULL-NODE READ IS THE RIGHT SIZE HERE ────────────────────────────
+  // /label_aliases grows by one row per HUMAN-CONFIRMED reading of a shoe with
+  // no printed code — a bounded, low-hundreds population for this business,
+  // read server-side on the Admin SDK. An index would add write-path
+  // complexity to optimise a node smaller than one product photo. The
+  // check-then-push dedupe below is likewise not atomic ON PURPOSE: the worst
+  // a concurrent double-confirm can produce is one redundant near-duplicate
+  // alias for the SAME product, which scoring treats identically (proven by
+  // test) — never a wrong match, never data loss.
   if (action === "match") {
     const clean = normaliseAliasTokens(tokens);
     if (clean.length < BANDS.MIN_TOKENS) {

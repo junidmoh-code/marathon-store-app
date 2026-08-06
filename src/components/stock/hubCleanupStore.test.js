@@ -307,6 +307,17 @@ describe("registering by label reading — aliases, never styleCodeNormalised", 
     expect(r.warning).toMatch(/reading could not be filed/);
   });
 
+  it("re-registering an existing slot with a fresh reading RE-FILES the alias — the retry path", async () => {
+    const TOK = ["CLOUDNOVA", "MONO", "UNDYED"];
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: { aliasTokens: TOK } });
+    aliasCalls.length = 0;
+    const again = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: { aliasTokens: TOK } });
+    expect(again.ok).toBe(true);
+    expect(again.already).toBe(true);
+    expect(aliasCalls).toEqual([{ action: "add", productId: PRODUCT.id, tokens: TOK }]);
+    expect(cellQty("6")).toBe(1);            // the retry files the alias, never a second unit
+  });
+
   it("fewer than two tokens is not an identity — the save refuses", async () => {
     const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: { aliasTokens: ["ONE"] } });
     expect(r.ok).toBe(false);

@@ -26,6 +26,14 @@ describe("tokens must appear in at least two of three frames", () => {
     expect(mergeFrameTokens([["CLOUDNOVA", "MONO"], [], []])).toEqual(["CLOUDNOVA", "MONO"]);
   });
 
+  it("padding and whitespace-only tokens are normalised before agreement (review pin)", () => {
+    const out = mergeFrameTokens([
+      [" MONO ", "CLOUDNOVA", "  "],
+      ["MONO", " CLOUDNOVA"],
+    ]);
+    expect(out).toEqual(["CLOUDNOVA", "MONO"]);
+  });
+
   it("empty input is empty output", () => {
     expect(mergeFrameTokens([])).toEqual([]);
     expect(mergeFrameTokens([[], []])).toEqual([]);

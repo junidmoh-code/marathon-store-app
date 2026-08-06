@@ -186,8 +186,11 @@ function labelTokens(text) {
   const tokens = masked.split(/[^A-Z0-9]+/).filter(Boolean)
     .filter((t) => !/^\d+$/.test(t))                 // every pure-numeric token is per-pair noise here
     .filter((t) => !FINGERPRINT_STOPWORDS.has(t))
-    .filter((t) => t.length >= 3 || /\d/.test(t));   // 1-2 letter fragments carry no identity
-  return [...new Set(tokens)].sort();
+    .filter((t) => t.length >= 3 || /\d/.test(t))    // 1-2 letter fragments carry no identity
+    .map((t) => t.slice(0, 24));                     // bound token length
+  // Bounded COUNT too — a noisy Vision response must not balloon the cache
+  // row or the response (the alias store applies the same 40-token policy).
+  return [...new Set(tokens)].sort().slice(0, 40);
 }
 
 function labelFingerprint(text) {

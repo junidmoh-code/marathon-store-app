@@ -997,8 +997,18 @@ function TongueLabelReader({ busy, big = false, onCode, onTokens = null }) {
 
       const frameTokens = [];
       let sawOptions = null;
+      let frameError = null;
       for (const frame of frames) {
-        const { data } = await readStyleCodeLabelFn({ imageBase64: frame.base64, mimeType: "image/jpeg" });
+        // ONE frame failing (a transient request error) must not discard the
+        // other frames' readings — a burst with two usable frames still
+        // resolves; the error only surfaces when NOTHING usable remains.
+        let data;
+        try {
+          ({ data } = await readStyleCodeLabelFn({ imageBase64: frame.base64, mimeType: "image/jpeg" }));
+        } catch (err) {
+          frameError = err;
+          continue;
+        }
         const out = chooseFromLabelRead(data);
         const formattedChosen = out.kind === "chosen" ? formatStyleCodeForDisplay(out.code) : "";
         if (out.kind === "chosen" && formattedChosen) {
@@ -1021,7 +1031,9 @@ function TongueLabelReader({ busy, big = false, onCode, onTokens = null }) {
         onTokens(merged, { labelPhoto: frames[0] });
         return;
       }
-      setReadNote({ text: chooseFromLabelRead({ candidates: [] }).message });
+      setReadNote({ text: frameError && frameTokens.length === 0
+        ? `Could not read that label (${frameError?.message || frameError}) — try again, or type the style number.`
+        : chooseFromLabelRead({ candidates: [] }).message });
     } catch (err) {
       setReadNote({ text: `Could not read that label (${err?.message || err}) — type the style number instead.` });
     } finally { setReading(false); }
@@ -1124,6 +1136,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const [skipReason, setSkipReason] = useState(null);
   const [skipOpen, setSkipOpen] = useState(false);
   const [aliasTokens, setAliasTokens] = useState(null);    // a label READING (no printed code)
+  const [onFileReaderOpen, setOnFileReaderOpen] = useState(false); // optional alias capture for coded products
 
   // The shared tongue-label reader hands back the chosen code — one capture
   // path for BOTH passes (owner reversal 2026-08-06), never a second build.
@@ -1148,6 +1161,8 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   // The duplicate fence: a code some OTHER live product already carries means
   // one of the two records is a twin — route to Merge, never save into it.
   const conflictOwners = chosenCode ? styleCodeOwners(chosenCode, products, product.id) : [];
+  // Order matters: a captured READING outranks the null default even when a
+  // code is on file — the store files it as an alias alongside the code.
   const styleCodePayload = skipReason
     ? { skipped: skipReason }
     : chosenCode
@@ -1221,12 +1236,35 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
       </div>
 
       {codeOnFile ? (
-        <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
-                      padding: "12px 14px", marginBottom: 18, fontSize: 14, color: "#B7F0CC" }}>
-          ✓ Style number already on file: <strong>{product.styleCode || formatStyleCodeForDisplay(codeOnFile)}</strong>
-          <div style={{ fontSize: 11.5, color: GRAY, marginTop: 4 }}>
-            Nothing to capture — check it matches the tongue label of the shoe in your hand.
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
+                        padding: "12px 14px", fontSize: 14, color: "#B7F0CC" }}>
+            ✓ Style number already on file: <strong>{product.styleCode || formatStyleCodeForDisplay(codeOnFile)}</strong>
+            <div style={{ fontSize: 11.5, color: GRAY, marginTop: 4 }}>
+              Nothing to capture — check it matches the tongue label of the shoe in your hand.
+            </div>
           </div>
+          {/* A coded product can STILL gain a label reading as a further way to
+              be found — an alias, never a second code, so the immutability
+              rule cannot object (owner mandate: never a dead end). */}
+          {aliasTokens ? (
+            <div style={{ marginTop: 10, fontSize: 12.5, color: "#B7F0CC" }}>
+              ✓ Label wording captured too ({aliasTokens.slice(0, 4).join(" · ")}{aliasTokens.length > 4 ? " …" : ""}) —
+              it files as an extra way to find this shoe.
+              <button type="button" onClick={() => setAliasTokens(null)}
+                style={{ ...bGhost, fontSize: 11.5, minHeight: 34, padding: "0 10px", marginLeft: 8 }}>✕</button>
+            </div>
+          ) : !onFileReaderOpen ? (
+            <button type="button" onClick={() => setOnFileReaderOpen(true)}
+              style={{ background: "none", border: "none", color: "rgba(233,238,255,.42)", textDecoration: "underline",
+                       fontSize: 12, marginTop: 8, cursor: "pointer", fontFamily: FONT }}>
+              Also capture the label wording (optional)
+            </button>
+          ) : (
+            <div style={{ marginTop: 10 }}>
+              <TongueLabelReader busy={busy} onCode={takeCode} onTokens={takeTokens} />
+            </div>
+          )}
         </div>
       ) : chosenCode && conflictOwners.length === 0 ? (
         <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,

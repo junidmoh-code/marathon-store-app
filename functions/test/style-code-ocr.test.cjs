@@ -350,3 +350,12 @@ test("month-name dates never split the same shoe's fingerprint across production
   assert.strictEqual(run1, run2, "numeric-attached month dates are per-run noise");
   assert.strictEqual(run1, bare, "bare month tokens are per-run noise too");
 });
+
+
+test("labelTokens is BOUNDED — a noisy Vision response cannot balloon the cache row", () => {
+  const { labelTokens } = require("../lib/style-code-ocr.cjs");
+  const noisy = Array.from({ length: 200 }, (_, i) => `NOISETOKEN${i}X`).join(" ") + " " + "A".repeat(100);
+  const out = labelTokens(noisy);
+  assert.ok(out.length <= 40, `count bounded: ${out.length}`);
+  assert.ok(out.every((t) => t.length <= 24), "token length bounded");
+});

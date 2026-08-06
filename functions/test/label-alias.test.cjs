@@ -169,3 +169,40 @@ test("tokensFromNode reads maps and legacy arrays alike", () => {
   assert.deepStrictEqual(tokensFromNode(["MONO", "CLOUDNOVA"]), ["CLOUDNOVA", "MONO"]);
   assert.deepStrictEqual(tokensFromNode(null), []);
 });
+
+
+// ─── Review-round pins (CodeRabbit on #329) ──────────────────────────────────
+test("containment ties break by SHARED tokens — the stronger alias decides the band", () => {
+  const aliases = {
+    a1: { productId: "pShoe", t: { UNDYED: true, WHITE: true }, n: 2 },                      // subset alias, first
+    a2: { productId: "pShoe", t: { CLOUDNOVA: true, MONO: true, UNDYED: true, WHITE: true }, n: 4 }, // exact alias, later
+  };
+  const scored = scoreAliases(["CLOUDNOVA", "MONO", "UNDYED", "WHITE"], aliases);
+  assert.strictEqual(scored[0].shared, 4, "the exact alias's evidence must win the tie");
+  assert.strictEqual(bandFor(scored), "high");
+});
+
+test("a sanitisable product id is stored SANITISED — aliases never point at ghosts", async () => {
+  const db = fakeDb({ products: { p123: { id: "p123" } } });
+  const out = await runLabelAlias(db, { action: "add", productId: "p123 ", tokens: READ_A, actor: ACTOR, nowMs: NOW });
+  assert.strictEqual(out.productId, "p123");
+  assert.strictEqual(Object.values(db.data[LABEL_ALIASES_PATH])[0].productId, "p123");
+});
+
+test("a redundant near-duplicate alias row changes NO match result — the dedupe race is harmless", async () => {
+  const db = fakeDb({
+    products: { pShoe: { id: "pShoe" } },
+    [LABEL_ALIASES_PATH]: {
+      a1: { productId: "pShoe", t: Object.fromEntries(READ_A.map((x) => [x, true])), n: 4 },
+      a2: { productId: "pShoe", t: Object.fromEntries(READ_A.map((x) => [x, true])), n: 4 },  // the race's worst case
+    },
+  });
+  const dup = await runLabelAlias(db, { action: "match", tokens: READ_C, actor: ACTOR, nowMs: NOW });
+  const dbSingle = fakeDb({
+    products: { pShoe: { id: "pShoe" } },
+    [LABEL_ALIASES_PATH]: { a1: { productId: "pShoe", t: Object.fromEntries(READ_A.map((x) => [x, true])), n: 4 } },
+  });
+  const single = await runLabelAlias(dbSingle, { action: "match", tokens: READ_C, actor: ACTOR, nowMs: NOW });
+  assert.deepStrictEqual(dup.band, single.band);
+  assert.deepStrictEqual(dup.candidates, single.candidates);
+});

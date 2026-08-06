@@ -121,7 +121,9 @@ function scoreAliases(scanTokens, aliasesNode) {
     if (!aliasTokens.length) continue;
     const { shared, containment } = overlap(tokens, aliasTokens);
     const prev = best.get(rec.productId);
-    if (!prev || containment > prev.score) {
+    // Ties on containment break by SHARED tokens — a three-token exact alias
+    // must beat a two-token subset alias, or bandFor sees the weaker evidence.
+    if (!prev || containment > prev.score || (containment === prev.score && shared > prev.shared)) {
       best.set(rec.productId, { productId: rec.productId, score: containment, shared, aliasId });
     }
   }
