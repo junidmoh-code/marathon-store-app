@@ -265,13 +265,73 @@ test("THE GATE: pickKicksDbRecord picks the exact SKU out of a mixed result set"
 });
 
 test("pickKicksDbRecord prefers an exact match that actually has an image", () => {
+  // Two rows that AGREE on everything except that one is missing its photo —
+  // that is missing data, not disagreement, and the photo'd row wins.
   const payload = {
     data: [
-      { ...KDB_RECORD("CT8527-016", "no photo", ""), image: "", gallery: [] },
-      KDB_RECORD("CT8527-016", "with photo", "https://img/016.jpg"),
+      { ...KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", ""), image: "", gallery: [] },
+      KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/016.jpg"),
     ],
   };
-  assert.strictEqual(pickKicksDbRecord(payload, "CT8527016").title, "with photo");
+  assert.strictEqual(pickKicksDbRecord(payload, "CT8527016").image, "https://img/016.jpg");
+});
+
+// ── THE DISAGREEMENT GUARD (spec: multiple rows for one SKU must never be ──────
+// guessed between — surface the disagreement or fail closed).
+test("same-SKU rows that disagree on NAME are refused, not guessed between", () => {
+  const payload = {
+    data: [
+      KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/a.jpg"),
+      KDB_RECORD("CT8527-016", "Jordan 4 Retro Black Cat", "https://img/a.jpg"),
+    ],
+  };
+  assert.throws(() => pickKicksDbRecord(payload, "CT8527016"), /disagree on name/);
+});
+
+test("same-SKU rows that disagree on BRAND are refused", () => {
+  const a = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/a.jpg");
+  const b = { ...KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/a.jpg"), brand: "Nike" };
+  assert.throws(() => pickKicksDbRecord({ data: [a, b] }, "CT8527016"), /disagree on brand/);
+});
+
+test("same-SKU rows that disagree on IMAGE (different files) are refused", () => {
+  const a = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/one.jpg");
+  const b = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/two.jpg");
+  assert.throws(() => pickKicksDbRecord({ data: [a, b] }, "CT8527016"), /disagree on image/);
+});
+
+test("image paths differing only by CASE are different files — a disagreement", () => {
+  const a = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/One.jpg");
+  const b = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/one.jpg");
+  assert.throws(() => pickKicksDbRecord({ data: [a, b] }, "CT8527016"), /disagree on image/);
+});
+
+test("the same image served at two sizes is the SAME image, not a disagreement", () => {
+  const a = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/016.jpg?w=140&h=100");
+  const b = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/016.jpg?w=800&h=800");
+  assert.strictEqual(pickKicksDbRecord({ data: [a, b] }, "CT8527016").sku, "CT8527-016");
+});
+
+test("identical duplicate rows are duplicates, not a disagreement", () => {
+  const row = KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/016.jpg");
+  assert.strictEqual(pickKicksDbRecord({ data: [row, { ...row }] }, "CT8527016").title, "Jordan 4 Retro Red Thunder");
+});
+
+test("a disagreement surfaces as a tier ERROR on the resolve response — never 'not found'", async () => {
+  const db = fakeDb({});
+  const kdb = fakeKicksDb({
+    "CT8527-016": [
+      KDB_RECORD("CT8527-016", "Jordan 4 Retro Red Thunder", "https://img/a.jpg"),
+      KDB_RECORD("CT8527-016", "Jordan 4 Retro Black Cat", "https://img/a.jpg"),
+    ],
+  });
+  const out = await runResolve(db, { code: "CT8527-016", providers: providersFor(db, kdb), actor: ACTOR, nowMs: NOW });
+  assert.strictEqual(out.found, false);
+  assert.ok(
+    (out.errors || []).some((e) => /disagree/.test(e.message)),
+    "the disagreement must be recorded on the response, not swallowed as a clean miss"
+  );
+  assert.strictEqual(db.data.sneaker_models, undefined, "nothing may be cached from conflicting rows");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
