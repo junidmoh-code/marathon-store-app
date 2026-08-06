@@ -8,7 +8,7 @@ import {
   resolveCleanupScan, openDuplicateFor, buildLeftovers, locationsHolding,
   registrationProgress, realSizes,
   registerPanelFor, styleStepSatisfied, chooseFromLabelRead, styleCodeOwners,
-  countPanelFor, resolveStyleNumber,
+  countPanelFor, resolveStyleNumber, registerSearchPool,
 } from "./hubCleanupCore";
 
 const P = (id, over = {}) => ({ id, name: `Product ${id}`, category: "Footwear", sizes: ["6", "7"], ...over });
@@ -300,6 +300,34 @@ describe("progress — scanned versus expected for the zone", () => {
     expect(prog.seen).toBe(1);
     expect(prog.expected).toBe(2);
     expect(prog.units).toBe(1);
+  });
+});
+
+// ─── FIXES 1+2: the register search — footwear only, never truncated ─────────
+describe("the register search pool", () => {
+  const soccer = { id: "pSB", name: "Nike Mercurial Vapor", categoryKey: "soccer-boots", sizes: ["6"] };
+  const sneaker = { id: "pSN", name: "Nike Dunk", category: "Footwear", sizes: ["6"] };
+  const shirt = { id: "pSH", name: "Nike Tee", category: "Clothing", productType: "clothing", sizes: ["M"] };
+  const perfume = { id: "pPF", name: "Nike Perfume", categoryKey: "perfume", sizes: [] };
+  const bag = { id: "pBG", name: "Nike Bag", categoryKey: "bags", sizes: [] };
+
+  it("a SOCCER BOOT appears; clothing, perfume and bags never do", () => {
+    const pool = registerSearchPool([soccer, sneaker, shirt, perfume, bag]);
+    expect(pool.map((p) => p.id).sort()).toEqual(["pSB", "pSN"]);
+  });
+
+  it("a merged-away shoe is nobody's search result", () => {
+    const gone = { ...sneaker, id: "pOld", mergedInto: "pSN" };
+    expect(registerSearchPool([sneaker, gone]).map((p) => p.id)).toEqual(["pSN"]);
+  });
+
+  it("a name search with MANY matches returns ALL of them — no truncation", async () => {
+    const { searchProducts } = await import("../../utils/productSearch.js");
+    const many = Array.from({ length: 137 }, (_, i) => ({
+      id: `p${i}`, name: `Nike Air Force ${i}`, category: "Footwear", sizes: ["6"],
+    }));
+    const hits = searchProducts(registerSearchPool(many), "nike air force", { limit: Infinity });
+    expect(hits.length).toBe(137);   // the old { limit: 12 } capped this at 12
   });
 });
 

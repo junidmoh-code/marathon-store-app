@@ -1093,3 +1093,14 @@ test("the routes we cannot call are not in the list", () => {
   assert.ok(!paths.some((p) => p.includes("/shopify/")), "/v3/shopify 403s on our plan");
   assert.deepStrictEqual(KICKSDB_ROUTES.map((r) => r.name), ["stockx", "goat"]);
 });
+
+// ─── FIX 4 (2026-08-06): store assistants may read labels ────────────────────
+test("the style-code access set includes store_assistant — the assistant label finder depends on it", () => {
+  const { STYLE_CODE_PERMISSIONS } = require("../styleCode/access.cjs");
+  assert.ok(STYLE_CODE_PERMISSIONS.includes("store_assistant"),
+    "an assistant preset is [store_assistant, place_orders]; without this the finder's callables all deny");
+  // The widening must not have LOST anyone:
+  for (const p of ["product_admin", "display_checks", "stock_add", "stock_management"]) {
+    assert.ok(STYLE_CODE_PERMISSIONS.includes(p));
+  }
+});

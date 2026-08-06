@@ -135,3 +135,17 @@ export function receiveEntries(sizes, values) {
     .map((s) => [s, parseInt(values[s], 10)])
     .filter(([, n]) => Number.isFinite(n) && n > 0);
 }
+
+// The sizes the operator EXPLICITLY marked as zero (typed "0", not left
+// blank). A selected size at 0 still declares "we carry this size here" —
+// its cell is seeded at qty 0 so the form's "enter 0 — it still saves"
+// promise is actually true, and the refill engine (which reads cell PRESENCE
+// as carried) learns about the size. Blank stays blank: nothing is written.
+export function zeroEntries(sizes, values) {
+  return sizes.filter((s) => {
+    const raw = values[s];
+    if (raw == null || String(raw).trim() === "") return false;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n === 0;
+  });
+}

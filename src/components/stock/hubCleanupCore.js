@@ -206,6 +206,15 @@ export function openDuplicateFor(productId, duplicateRows) {
   return null;
 }
 
+// ── THE REGISTER SEARCH POOL (owner fixes 1+2, 2026-08-06) ───────────────────
+// Footwear ONLY — sneakers, soccer boots and the rest of the footwear group —
+// through the ONE cross-app classifier (productIsFootwear). The classifier is
+// preferred over the raw category field and deliberately not widened here: its
+// byte-identical twin in marathon-pos-app decides hub-vs-shop deduction.
+export function registerSearchPool(products) {
+  return (products || []).filter((p) => p && p.id && productIsFootwear(p) && !isMergedAway(p));
+}
+
 // ── SIZES ────────────────────────────────────────────────────────────────────
 // Real, pickable sizes: the "_" one-size sentinel is never a display size, and
 // the raw size string is what callers hand BACK to the stock layer — the

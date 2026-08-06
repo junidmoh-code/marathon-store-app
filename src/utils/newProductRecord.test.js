@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildNewProduct, cleanHubs, stampStyleCodeProvenance, isSetSafe } from "./newProductRecord.js";
-import { TAXONOMY_SEED } from "./productTaxonomy.js";
+import { TAXONOMY_SEED, sizesOf, catByKey } from "./productTaxonomy.js";
 
 const REG = TAXONOMY_SEED;
 const base = {
@@ -12,8 +12,16 @@ const base = {
   retailPrice: "",
   hasShoeBoxOption: true,
 };
-const build = (over = {}, extras = {}) =>
-  buildNewProduct(REG, { ...base, ...over }, { id: "p123", brand: "Nike", ...extras });
+// Unless a test explicitly exercises the chosen-run rule (fix 3), the helper
+// selects the category's FULL run — the legacy shape tests stay meaningful and
+// the subset behaviour is proven by its own explicit cases below.
+const build = (over = {}, extras = {}) => {
+  const form = { ...base, ...over };
+  if (!("sizeRun" in over)) {
+    form.sizeRun = (sizesOf(catByKey(REG, form.categoryKey)) || []).map(String);
+  }
+  return buildNewProduct(REG, form, { id: "p123", brand: "Nike", ...extras });
+};
 
 // ── The gate classifiers, mirrored EXACTLY as the deployed code applies them ──
 // If a change to the derivation would break one of these, it breaks here first.
@@ -53,9 +61,33 @@ describe("cleanHubs", () => {
 describe("buildNewProduct — core shape", () => {
   it("writes the new categoryKey", () => expect(build().categoryKey).toBe("sneakers"));
   it("trims the name", () => expect(build().name).toBe("Nike Air Force 1 Triple White"));
-  it("takes sizes from the registry, not the form", () => {
+  it("sizes are the SELECTED subset of the registry run — validated, ordered by the run", () => {
     expect(build().sizes).toEqual(["3", "4", "5", "5.5", "6", "7", "8", "9", "10", "11"]);
     expect(build({ categoryKey: "t-shirts" }).sizes).toEqual(["S", "M", "L", "XL", "XXL", "XXXL"]);
+  });
+
+  // ─── FIX 3 (2026-08-06): the size run is CHOSEN, not assumed ───────────────
+  it("only the selected sizes exist on the product — a 6-11 shoe never declares size 3", () => {
+    expect(build({ sizeRun: ["6", "7", "8", "9", "10", "11"] }).sizes)
+      .toEqual(["6", "7", "8", "9", "10", "11"]);
+  });
+  it("selection order does not matter — the category run's order wins", () => {
+    expect(build({ sizeRun: ["11", "6", "8"] }).sizes).toEqual(["6", "8", "11"]);
+  });
+  it("junk selections are ignored; sizes outside the category run cannot be smuggled in", () => {
+    expect(build({ sizeRun: ["6", "44", "XL", "", null] }).sizes).toEqual(["6"]);
+  });
+  it("NOTHING selected refuses the save — choosing the run is a deliberate act", () => {
+    expect(build({ sizeRun: [] })).toBe(null);
+    expect(build({ sizeRun: undefined })).toBe(null);
+  });
+  it("a ONE-SIZE product is untouched — the \"_\" sentinel, no selector involved", () => {
+    const p = build({ categoryKey: "perfumes", sizeRun: [] });
+    expect(p.sizes).toEqual(["_"]);
+  });
+  it("the same rule holds for SOCCER BOOTS", () => {
+    expect(build({ categoryKey: "soccer-boots", sizeRun: ["6", "7"] }).sizes).toEqual(["6", "7"]);
+    expect(build({ categoryKey: "soccer-boots", sizeRun: [] })).toBe(null);
   });
   it("refuses an unknown category rather than half-typing a product", () => {
     expect(build({ categoryKey: "not-real" })).toBeNull();

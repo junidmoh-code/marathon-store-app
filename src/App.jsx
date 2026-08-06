@@ -44,10 +44,14 @@ import HealthView from "./components/stock/HealthView";
 import AttentionView from "./components/stock/AttentionView";
 import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
+import { TongueLabelReader } from "./components/stock/TongueLabelReader";
+import { styleCodeOwners } from "./components/stock/hubCleanupCore";
+import { lookupStyleClaim, matchLabelAlias, fetchProductFollowingMerge } from "./components/stock/hubCleanupStore";
+import { normaliseStyleCode } from "./utils/styleCode";
 import { displaySendNeedsSize } from "./utils/displaySend";
 import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from "./utils/sendConfirm";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
-import { applyMovement } from "./components/stock/applyMovement";
+import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useLocations } from "./components/stock/useStock";
@@ -82,7 +86,7 @@ import { saveFailureMessage } from "./utils/saveFailureMessage";
 import { isFootwearLine, productIsFootwear } from "./utils/footwearLine";
 import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
-import { receiveEntries } from "./components/admin/SizeQtyBoxes";
+import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
 import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
 // ── SNEAKER INTAKE — style code first ────────────────────────────────────────
@@ -4916,7 +4920,7 @@ function AdminView({ products, orders, onExit }) {
   // toggle; once true we stop auto-syncing it from the category.
   // sku + barcode are NOT in form state — they auto-generate at save time via
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
-  const [form, setForm] = useState({ name:"", categoryKey:"", photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   // ── STYLE CODE INTAKE (step 1) ──────────────────────────────────────────
   // While null, "Add Product" shows the style-code gate instead of the create
@@ -5204,6 +5208,15 @@ function AdminView({ products, orders, onExit }) {
       // and can be entered later from Stock.
       try {
         const recvEntries = receiveEntries(sizes, recvQtys);
+        // Selected sizes explicitly entered as 0 seed a qty-0 cell (the one
+        // legitimate non-movement cell write, setCellState's rules-permitted
+        // seed branch: qty 0, v 0, mv "seed"). This makes "enter 0 — it still
+        // saves" TRUE: the cell exists, declaring the size carried, without
+        // inventing a movement for stock that never arrived. Best-effort like
+        // the receives — a denied seed never blocks the save.
+        for (const zSize of zeroEntries(sizes, recvQtys)) {
+          setCellState(recvLoc, id, zSize, "live").catch(() => {});
+        }
         if (recvEntries.length) {
           const locLabel = labelFor(recvLoc, recvRegistry);
           let recOk = 0; const savedItems = []; const failed = [];
@@ -5239,7 +5252,7 @@ function AdminView({ products, orders, onExit }) {
         console.warn("opening-stock receive failed:", recErr);
       }
 
-      setForm({ name:"", categoryKey:"", photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
       setShoeboxTouched(false);
       setRecvQtys({});
       setSaveAttempted(false);
@@ -5285,6 +5298,8 @@ function AdminView({ products, orders, onExit }) {
       return {
         ...f,
         categoryKey: nextKey,
+        // The size run resets with the category — selecting it is deliberate.
+        sizeRun: [],
         hubs: hubs.length ? hubs : (clothing ? ["hub2"] : ["hub1"]),
         // Clothing forces the shoebox off even against a manual toggle (it is a
         // shoebox — clothing does not have one). Footwear only auto-sets it
@@ -6748,7 +6763,7 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 const AD_PAGE = 60;
 
 function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
-                            search, setSearch, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
+                            search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, onSignOut, userEmail, mode, setMode,
                             customerName, setCustomerName, customerPhone, setCustomerPhone,
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
@@ -7034,6 +7049,13 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
           <div className="ad-search">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
             <input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…  ( / )" autoComplete="off" />
+            {onLabelFind && (
+              <button type="button" onClick={onLabelFind} title="Find by the tongue label" aria-label="Find by the tongue label"
+                style={{ background:"rgba(74,127,255,.12)", border:"1px solid rgba(74,127,255,.3)", color:"#9DBCFF",
+                         borderRadius:10, minWidth:38, minHeight:32, fontSize:14, cursor:"pointer", marginLeft:8, flexShrink:0 }}>
+                📷
+              </button>
+            )}
           </div>
           <select className="ad-sel" value={brand} onChange={e => setBrand(e.target.value)} aria-label="Brand">
             {brandOpts.map(([b, n]) => <option key={b} value={b}>{b === "All" ? "All brands" : b} ({n})</option>)}
@@ -7412,7 +7434,119 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   );
 }
 
+// ─── ASSISTANT LABEL FINDER — find a product by its TONGUE LABEL ─────────────
+// (Owner fix 4, 2026-08-06.) A shortcut for when name and barcode both fail:
+// the SAME shared reader the hub cleanup uses (three-frame capture, QR first,
+// image-hash-cached OCR — a retake re-bills nothing). Read-only: it FINDS
+// registered products; it never registers, claims or files anything.
+//   • a format style code → the owning product (claim followed, merge-safe)
+//   • a code-less reading → alias match; HIGH picks it, MID offers candidates
+//   • nothing registered → says exactly that and hands back to name search
+function AssistantLabelFinder({ products, onFound, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null);            // { text, candidates? }
+
+  const finish = (product) => { onFound(product); };
+
+  const resolveCandidate = async (pid) => {
+    const local = products.find((x) => x && x.id === pid) || null;
+    return local || await fetchProductFollowingMerge(pid).catch(() => null);
+  };
+
+  const handleCode = async (display) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const owners = styleCodeOwners(display, products);
+      if (owners.length === 1) { finish(owners[0]); return; }
+      if (owners.length > 1) {
+        setNote({ text: "That style number is on more than one product — tap the right one:", candidates: owners });
+        return;
+      }
+      const claim = await lookupStyleClaim(normaliseStyleCode(display)).catch(() => null);
+      if (claim && claim.productId) {
+        const p = await resolveCandidate(claim.productId);
+        if (p) { finish(p); return; }
+      }
+      setNote({ text: `The label reads ${display}, but no registered product carries it — search by name instead.` });
+    } finally { setBusy(false); }
+  };
+
+  const handleTokens = async (tokens) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      let match;
+      try {
+        match = await matchLabelAlias(tokens);
+      } catch (err) {
+        setNote({ text: `Couldn't check that label (${err?.message || err}) — try again, or search by name.` });
+        return;
+      }
+      if (match.band === "high" && match.candidates[0]) {
+        const p = await resolveCandidate(match.candidates[0].productId);
+        if (p) { finish(p); return; }
+      }
+      if (match.band === "high" || match.band === "mid") {
+        const candidates = [];
+        for (const c of match.candidates) {
+          const p = await resolveCandidate(c.productId);
+          if (p) candidates.push(p);
+        }
+        if (candidates.length) {
+          setNote({ text: "The label wording is close to these — tap the right one:", candidates });
+          return;
+        }
+      }
+      setNote({ text: "The label reads fine, but it isn't registered to any product — search by name instead." });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 900, background: "#05070C", overflowY: "auto",
+                  fontFamily: FONT, color: "#fff" }}>
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "14px 16px 60px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0 10px" }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: "#9DBCFF" }}>Find by the tongue label</div>
+          <button type="button" onClick={onClose}
+            style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.16)", color: "rgba(233,238,255,.75)",
+                     borderRadius: 12, padding: "10px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>✕ Close</button>
+        </div>
+        <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.55)", lineHeight: 1.5, marginBottom: 12 }}>
+          Fold the tongue forward and photograph the printed label <u>inside</u> it — the small one with the
+          style number and sizes. Not the shop barcode sticker, not the box.
+        </div>
+        <TongueLabelReader big busy={busy} onCode={handleCode} onTokens={handleTokens} />
+        {note && (
+          <div style={{ marginTop: 14, background: "rgba(251,191,36,.07)", border: "1px solid rgba(251,191,36,.25)",
+                        borderRadius: 12, padding: "11px 13px", fontSize: 13.5, color: "#FDE9B0", lineHeight: 1.5 }}>
+            {note.text}
+            {note.candidates && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+                {note.candidates.map((p) => (
+                  <button key={p.id} type="button" onClick={() => finish(p)}
+                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", textAlign: "left", cursor: "pointer",
+                             background: "rgba(12,16,30,.7)", border: "1px solid rgba(120,150,255,.25)", borderRadius: 13 }}>
+                    {p.photoUrl
+                      ? <img src={p.photoUrl} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 10 }} />
+                      : <div style={{ width: 56, height: 56, borderRadius: 10, background: "rgba(120,150,255,.08)",
+                                      display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>👟</div>}
+                    <div style={{ fontSize: 14.5, fontWeight: 700, color: "#fff", flex: 1 }}>{p.name}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AssistantView({ products, onExit, orders = [] }) {
+  // The tongue-label finder (owner fix 4): a small overlay, visually secondary
+  // to search — a shortcut, not the main path.
+  const [labelFinderOpen, setLabelFinderOpen] = useState(false);
   const [search, setSearch]                             = useState("");
   // Mode selector — a 2-way toggle (Sneakers / Clothing), both CUSTOMER flows:
   //   "sneaker"  → sneakers, customer order (photo grid + size sheet)
@@ -8084,11 +8218,17 @@ function AssistantView({ products, onExit, orders = [] }) {
           full-screen overlay reusing this view's cart + checkout. Phone/iPad
           + CR fall through to the existing layout below. The shared Checkout
           sheet and photo lightbox (rendered later) surface over it. */}
+      {/* The tongue-label finder overlay — surfaces over BOTH layouts. */}
+      {labelFinderOpen && (
+        <AssistantLabelFinder products={base}
+          onFound={(p) => { setLabelFinderOpen(false); resetSheet(); setSelected(p); }}
+          onClose={() => setLabelFinderOpen(false)} />
+      )}
       {isDesktop && !noStoreAccess && (
         <AssistantDesktop
           products={base} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
           onSelectShop={selectShop} shopRegistry={shopRegistry}
-          search={search} setSearch={setSearch}
+          search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
           onViewPhoto={setFullPhoto} onSwitchView={onExit} onSignOut={assistantSignOut}
           userEmail={assistantUser?.email || ""} mode={mode} setMode={setMode}
@@ -8359,6 +8499,12 @@ function AssistantView({ products, onExit, orders = [] }) {
         <div style={{ background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.3)", borderRadius:22, padding:"12px 16px", display:"flex", alignItems:"center", gap:10 }}>
           <svg width="16" height="16" viewBox="0 0 24 24" stroke="rgba(255,255,255,.35)" fill="none" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products..." style={{ background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:14, flex:1 }}/>
+          <button type="button" onClick={() => setLabelFinderOpen(true)} title="Find by the tongue label"
+            aria-label="Find by the tongue label"
+            style={{ background:"rgba(74,127,255,.12)", border:"1px solid rgba(74,127,255,.3)", color:"#9DBCFF",
+                     borderRadius:14, minWidth:40, minHeight:34, fontSize:15, cursor:"pointer", flexShrink:0 }}>
+            📷
+          </button>
         </div>
       </div>
 
