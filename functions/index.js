@@ -3198,3 +3198,12 @@ exports.processStyleCodeCapture = require("./styleCode/processCapture.js").proce
 // productMerge/mergeProducts.js.
 //   firebase deploy --only functions:mergeProducts
 exports.mergeProducts = require("./productMerge/mergeProducts.js").mergeProducts;
+
+// ─── LABEL ALIASES — labelAlias (fuzzy label identity: match / add) ──────────
+// A label reading is an ALIAS, not a key: identity is assigned once at
+// registration and every later scan is a fuzzy token-overlap LOOKUP with a
+// three-band outcome (silent / ask-the-human / never-registered). The ONLY
+// reader/writer of /label_aliases (Admin SDK — no client rules). Pure logic in
+// lib/label-alias.cjs (node-tested); auth + IO in labelAlias/labelAlias.js.
+//   firebase deploy --only functions:labelAlias
+exports.labelAlias = require("./labelAlias/labelAlias.js").labelAlias;

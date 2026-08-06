@@ -20,7 +20,8 @@
 //   unresolved/{hub}/{codeKey}      { code, at, by, context }
 
 import { ref, child, get, update, runTransaction } from "firebase/database";
-import { database, auth } from "../../firebase";
+import { httpsCallable } from "firebase/functions";
+import { database, auth, functions } from "../../firebase";
 import { applyMovement } from "./applyMovement";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
@@ -40,6 +41,18 @@ const registerPath = (hub) => `${HUB_COUNT_ROOT}/register/${hub}`;
 const unresolvedPath = (hub) => `${HUB_COUNT_ROOT}/unresolved/${hub}`;
 
 export const REGISTER_REASON = "display_registration";
+
+// The alias store's ONE write path — the labelAlias callable on the Admin SDK
+// (no client rules for /label_aliases exist or are needed).
+const labelAliasFn = httpsCallable(functions, "labelAlias");
+export async function addLabelAlias({ productId, tokens }) {
+  const { data } = await labelAliasFn({ action: "add", productId, tokens });
+  return data;
+}
+export async function matchLabelAlias(tokens) {
+  const { data } = await labelAliasFn({ action: "match", tokens });
+  return data;
+}
 
 /** Everything registered at this hub so far → { "pid__sizeKey": record }. */
 export async function loadRegister(hub) {
@@ -68,6 +81,21 @@ export async function loadUnresolved(hub) {
  *                                                         result; the enqueue
  *                                                         uploads .blob and
  *                                                         mints the URL itself)
+ *   { aliasTokens: [...] }                                a label READING with
+ *                                                         no printed article
+ *                                                         number — filed as an
+ *                                                         ALIAS in
+ *                                                         /label_aliases,
+ *                                                         NEVER written into
+ *                                                         styleCodeNormalised
+ *                                                         (aliases, not keys —
+ *                                                         so a product that
+ *                                                         already carries a
+ *                                                         code just gains a
+ *                                                         further alias, and
+ *                                                         immutability can
+ *                                                         never dead-end a
+ *                                                         registration)
  *   { skipped: "label_unreadable" | "label_missing" | "no_code_exists" }
  *   null / undefined                                      product already has
  *                                                         a code on file
@@ -96,8 +124,10 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   // without its style number is exactly the half-record this rework removes.
   const codeOnFile = product.styleCodeNormalised || null;
   const capturedNormalised = styleCode && typeof styleCode.code === "string" ? normaliseStyleCode(styleCode.code) : "";
+  const aliasTokens = styleCode && Array.isArray(styleCode.aliasTokens) && styleCode.aliasTokens.length >= 2
+    ? styleCode.aliasTokens : null;
   const skipReason = styleCode && STYLE_SKIP_REASONS.includes(styleCode.skipped) ? styleCode.skipped : null;
-  if (!codeOnFile && !capturedNormalised && !skipReason) {
+  if (!codeOnFile && !capturedNormalised && !aliasTokens && !skipReason) {
     return { ok: false, message: "Read the style number off the tongue label (or type it) before saving." };
   }
 
@@ -105,7 +135,19 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   const recPath = `${registerPath(hub)}/${key}`;
 
   const existing = await one(recPath);
-  if (existing) return { ok: true, already: true, record: existing };
+  if (existing) {
+    // The slot is already registered — but a freshly captured READING still
+    // files as an alias. This IS the retry path for a filing that failed on
+    // the first save: open the product, save again, the alias re-attempts.
+    if (aliasTokens) {
+      try {
+        await addLabelAlias({ productId: product.id, tokens: aliasTokens });
+      } catch (err) {
+        return { ok: true, already: true, record: existing, warning: `Already registered, and the label reading STILL could not be filed (${String(err?.message || err)}) — save once more to retry.` };
+      }
+    }
+    return { ok: true, already: true, record: existing };
+  }
 
   const res = await applyMovement({
     type: "received",
@@ -138,9 +180,10 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
       ? (product.styleCode || formatStyleCodeForDisplay(codeOnFile))
       : (capturedNormalised ? formatStyleCodeForDisplay(capturedNormalised) : null),
     styleCodeFrom: codeOnFile ? "on_file"
-      : capturedNormalised
-        ? (styleCode?.source === "fingerprint" ? "fingerprint" : styleCode?.source === "label" ? "label" : "manual")
-        : null,
+      : capturedNormalised ? (styleCode?.source === "label" ? "label" : "manual")
+      : aliasTokens ? "label_alias"
+      : null,
+    aliasTokenCount: aliasTokens ? aliasTokens.length : null,
     styleCodeSkipReason: skipReason,
   };
 
@@ -150,6 +193,18 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   // the SAME save; a failure downgrades to a warning because the stock unit
   // must never be lost to a queue hiccup.
   let captureWarning = null;
+  // A label READING becomes an alias — never a capture, never a claim on
+  // styleCodeNormalised. If the product already carries a code (or gains one
+  // later), the reading is simply a further way to find it: registration can
+  // never fail on the immutability rule.
+  if (aliasTokens) {
+    try {
+      const res = await addLabelAlias({ productId: product.id, tokens: aliasTokens });
+      if (!res || (!res.ok && !res.deduped)) captureWarning = "Registered, but the label reading could not be filed — open this product and save again to retry.";
+    } catch (err) {
+      captureWarning = `Registered, but the label reading could not be filed (${String(err?.message || err)}) — open this product and save again to retry.`;
+    }
+  }
   if (capturedNormalised && capturedNormalised !== codeOnFile) {
     try {
       const q = await enqueueStyleCodeCapture({

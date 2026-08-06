@@ -112,6 +112,9 @@ describe("the style-number step", () => {
     expect(styleStepSatisfied(P("p1"), null)).toBe(false);
     expect(styleStepSatisfied(P("p1"), { code: "###" })).toBe(false);         // normalises to nothing
     expect(styleStepSatisfied(P("p1"), { skipped: "dunno" })).toBe(false);
+    // A label READING (token set) satisfies the step — it files as an alias:
+    expect(styleStepSatisfied(P("p1"), { aliasTokens: ["CLOUDNOVA", "MONO"] })).toBe(true);
+    expect(styleStepSatisfied(P("p1"), { aliasTokens: ["ONE"] })).toBe(false);
   });
 
   it("a tongue-label read: one clean candidate is chosen, several become options, none says why", () => {
@@ -123,12 +126,15 @@ describe("the style-number step", () => {
     // The failure copy says what to DO, not just that it failed:
     expect(chooseFromLabelRead({ candidates: [], errors: [{ tier: "vision", message: "x" }] }).message).toMatch(/Type the style number/);
     expect(chooseFromLabelRead({ candidates: [] }).message).toMatch(/no readable style number/);
-    // A label with NO known format but readable text yields the FINGERPRINT:
-    const fp = chooseFromLabelRead({ candidates: [], fingerprint: "CLOUDNOVAMONOUNDYEDWHITEF90E4BEC" });
-    expect(fp.kind).toBe("fingerprint");
-    expect(fp.code).toBe("CLOUDNOVAMONOUNDYEDWHITEF90E4BEC");
-    // …and a format-valid candidate always wins over a fingerprint:
-    expect(chooseFromLabelRead({ candidates: ["CT8527016"], displayCandidates: ["CT8527-016"], fingerprint: "X" }).kind).toBe("chosen");
+    // A label with NO known format but readable text yields its TOKEN SET —
+    // the reading the alias store matches by overlap (never string equality):
+    const tk = chooseFromLabelRead({ candidates: [], tokens: ["CLOUDNOVA", "MONO", "UNDYED", "WHITE"] });
+    expect(tk.kind).toBe("tokens");
+    expect(tk.tokens).toEqual(["CLOUDNOVA", "MONO", "UNDYED", "WHITE"]);
+    // …a format-valid candidate always wins over tokens:
+    expect(chooseFromLabelRead({ candidates: ["CT8527016"], displayCandidates: ["CT8527-016"], tokens: ["X", "Y"] }).kind).toBe("chosen");
+    // …and a single token is not an identity:
+    expect(chooseFromLabelRead({ candidates: [], tokens: ["ONLY"] }).kind).toBe("none");
   });
 
   it("a code another live product owns is a conflict; merged-away owners don't count", () => {

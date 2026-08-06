@@ -75,8 +75,8 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     // ONE shared tongue-label reader component, used by BOTH passes — the count
     // tab mounts it big as the primary entry, the register panel reuses it:
     expect((hubCleanup.match(/function TongueLabelReader/g) || []).length).toBe(1);
-    expect(hubCleanup).toMatch(/<TongueLabelReader big busy=\{busy\} onCode=\{\(code\) => handleStyleNumber\(code\)\} \/>/);
-    expect(hubCleanup).toMatch(/<TongueLabelReader busy=\{busy\} onCode=\{takeCode\} \/>/);
+    expect(hubCleanup).toMatch(/<TongueLabelReader big busy=\{busy\} onCode=\{\(code\) => handleStyleNumber\(code\)\} onTokens=\{handleAliasTokens\} \/>/);
+    expect(hubCleanup).toMatch(/<TongueLabelReader busy=\{busy\} onCode=\{takeCode\} onTokens=\{takeTokens\} \/>/);
     // The count tab must NOT lead with a barcode scan any more:
     expect(hubCleanup).not.toMatch(/SCAN A SHOE/);
     // The never-registered signal fires on the LABEL path (style-number
@@ -115,12 +115,17 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     expect(app).not.toMatch(/sendFlows\[order\.id\]/);
   });
 
-  it("a fingerprint keeps its evidence photo end to end", () => {
+  it("alias-era pins: readings never touch styleCodeNormalised; the mid-band asks a human", () => {
     const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
-    // takeCode and the save payload both treat a fingerprint like a label read
-    // for evidence purposes — the photo is the ONLY evidence a fingerprint has.
-    expect((hubCleanup.match(/source === "label" \|\| source === "fingerprint"/g) || []).length).toBe(1);
-    expect((hubCleanup.match(/codeSource === "label" \|\| codeSource === "fingerprint"/g) || []).length).toBe(1);
+    // The mid-band confirm files the reading as a further alias on YES:
+    expect(hubCleanup).toMatch(/addLabelAlias\(\{ productId: cand\.id, tokens \}\)/);
+    // Three frames, ≥2-of-3 agreement, through the shared merge helper:
+    expect(hubCleanup).toMatch(/mergeFrameTokens\(frameTokens\)/);
+    // A failed alias match is an ERROR, never a false never-registered:
+    expect(hubCleanup).toMatch(/Couldn't check that reading/);
+    const store = readFileSync(join(SRC, "components/stock/hubCleanupStore.js"), "utf8");
+    // Alias registrations never enqueue a capture and never stamp a code:
+    expect(store).toMatch(/aliasTokens \? "label_alias"/);
   });
 
   it("scan panels remount per scanned product, and the camera effect is render-stable", () => {

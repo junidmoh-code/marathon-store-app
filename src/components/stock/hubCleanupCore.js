@@ -110,6 +110,10 @@ export const STYLE_SKIP_REASONS = Object.freeze(["label_unreadable", "label_miss
 export function styleStepSatisfied(product, styleCode) {
   if (product && product.styleCodeNormalised) return true;
   if (styleCode && typeof styleCode.code === "string" && normaliseStyleCode(styleCode.code)) return true;
+  // A LABEL READING (token set) is a full identity too — it becomes an alias
+  // in /label_aliases, never a styleCodeNormalised (owner design fix
+  // 2026-08-06: aliases, not keys — so immutability can never dead-end).
+  if (styleCode && Array.isArray(styleCode.aliasTokens) && styleCode.aliasTokens.length >= 2) return true;
   if (styleCode && STYLE_SKIP_REASONS.includes(styleCode.skipped)) return true;
   return false;
 }
@@ -125,11 +129,11 @@ export function chooseFromLabelRead(data) {
     ? data.displayCandidates : candidates;
   if (candidates.length === 1) return { kind: "chosen", code: display[0] };
   if (candidates.length > 1) return { kind: "options", options: display };
-  const fingerprint = data && typeof data.fingerprint === "string" && data.fingerprint ? data.fingerprint : null;
-  if (fingerprint) {
+  const tokens = Array.isArray(data && data.tokens) ? data.tokens.filter(Boolean) : [];
+  if (tokens.length >= 2) {
     return {
-      kind: "fingerprint", code: fingerprint,
-      message: "No brand article number on this label — but the label itself gives a stable identity for this shoe.",
+      kind: "tokens", tokens,
+      message: "No brand article number on this label — the label's own wording identifies this shoe.",
     };
   }
   const broken = Array.isArray(data && data.errors) && data.errors.length > 0;

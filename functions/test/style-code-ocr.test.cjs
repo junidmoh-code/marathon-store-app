@@ -329,9 +329,10 @@ test("FINGERPRINT: an empty or all-noise label produces nothing — not a junk i
   assert.strictEqual(labelFingerprint("US 9 UK 8 EUR 42.5\n08/15/19\n12345678"), null);
 });
 
-test("the cache record carries the fingerprint when present, and nothing else new", () => {
-  const rec = buildOcrCacheRecord({ candidates: [], source: "vision", nowMs: NOW, fingerprint: "CLOUDNOVAMONOUNDYEDWHITE" });
-  assert.strictEqual(rec.fingerprint, "CLOUDNOVAMONOUNDYEDWHITE");
+test("the cache record carries the token MAP when present, and nothing else new", () => {
+  const rec = buildOcrCacheRecord({ candidates: [], source: "vision", nowMs: NOW, tokens: ["CLOUDNOVA", "MONO"] });
+  assert.deepStrictEqual(rec.tk, { CLOUDNOVA: true, MONO: true });
+  assert.strictEqual(rec.fpv, 2);
   const bare = buildOcrCacheRecord({ candidates: ["CT8527016"], source: "vision", nowMs: NOW });
   assert.deepStrictEqual(Object.keys(bare).sort(), ["at", "candidates", "expiresAt", "fpv", "source"]);
 });
@@ -348,4 +349,13 @@ test("month-name dates never split the same shoe's fingerprint across production
   const bare = labelFingerprint("SOME SHOE X1\nDEC 2023\nMADE IN CHINA");
   assert.strictEqual(run1, run2, "numeric-attached month dates are per-run noise");
   assert.strictEqual(run1, bare, "bare month tokens are per-run noise too");
+});
+
+
+test("labelTokens is BOUNDED — a noisy Vision response cannot balloon the cache row", () => {
+  const { labelTokens } = require("../lib/style-code-ocr.cjs");
+  const noisy = Array.from({ length: 200 }, (_, i) => `NOISETOKEN${i}X`).join(" ") + " " + "A".repeat(100);
+  const out = labelTokens(noisy);
+  assert.ok(out.length <= 40, `count bounded: ${out.length}`);
+  assert.ok(out.every((t) => t.length <= 24), "token length bounded");
 });

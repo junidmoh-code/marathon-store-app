@@ -49,7 +49,15 @@ vi.mock("firebase/database", () => ({
 let pushN = 0;
 let readLog = [];
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: () => () => {} }));
-vi.mock("../../firebase", () => ({ database: { fake: true }, auth: { currentUser: { uid: "walker-1" } } }));
+vi.mock("../../firebase", () => ({ database: { fake: true }, functions: { fake: true }, auth: { currentUser: { uid: "walker-1" } } }));
+
+// The labelAlias callable — the ONLY write path to /label_aliases. Mocked at
+// the httpsCallable seam so the tests assert WHEN the save files an alias.
+const aliasCalls = [];
+let aliasResult = { ok: true, aliasId: "al1" };
+vi.mock("firebase/functions", () => ({
+  httpsCallable: () => async (payload) => { aliasCalls.push(payload); if (aliasResult instanceof Error) throw aliasResult; return { data: aliasResult }; },
+}));
 vi.mock("../../device/deviceId", () => ({ getDeviceId: () => "dev-1" }));
 
 // The capture queue is a separate, already-tested module — here we only assert
@@ -95,6 +103,8 @@ beforeEach(() => {
   applyMovementMock.mockClear();
   enqueueMock.mockClear();
   readLog = [];
+  aliasCalls.length = 0;
+  aliasResult = { ok: true, aliasId: "al1" };
 });
 
 describe("registration is idempotent — the mandatory mutation proof", () => {
@@ -259,6 +269,59 @@ describe("style number + size, one action, no barcode", () => {
     expect(r.ok).toBe(true);
     expect(cellQty("6")).toBe(1);
     expect(r.warning).toMatch(/style number could not be queued/);
+  });
+});
+
+// ─── LABEL READINGS ARE ALIASES, NEVER KEYS (owner design fix 2026-08-06) ────
+describe("registering by label reading — aliases, never styleCodeNormalised", () => {
+  const TOKENS = ["CLOUDNOVA", "MONO", "UNDYED", "WHITE"];
+
+  it("a token registration completes: movement + record + ONE alias add, no capture, no code stamp", async () => {
+    const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: { aliasTokens: TOKENS } });
+    expect(r.ok).toBe(true);
+    expect(cellQty("6")).toBe(1);
+    const rec = getPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6`);
+    expect(rec.styleCodeFrom).toBe("label_alias");
+    expect(rec.styleCodeNormalised).toBe(null);          // NEVER a key
+    expect(rec.aliasTokenCount).toBe(4);
+    expect(aliasCalls).toEqual([{ action: "add", productId: PRODUCT.id, tokens: TOKENS }]);
+    expect(enqueueMock).not.toHaveBeenCalled();          // no capture queue, no claim
+  });
+
+  it("NEVER A DEAD END: a product that already carries an immutable code gains an ALIAS instead of failing", async () => {
+    const withCode = { ...PRODUCT, id: "p300", styleCodeNormalised: "CT8527016", styleCode: "CT8527-016" };
+    const r = await registerDisplayUnit({ hub: HUB, product: withCode, size: "6", styleCode: { aliasTokens: TOKENS } });
+    expect(r.ok).toBe(true);                             // no immutability error, ever
+    expect(cellQty === undefined).toBe(false);
+    const rec = getPath(`settings/hubSneakerCount/register/${HUB}/p300__6`);
+    expect(rec.styleCodeNormalised).toBe("CT8527016");   // the REAL code stays
+    expect(aliasCalls).toEqual([{ action: "add", productId: "p300", tokens: TOKENS }]);
+    expect(enqueueMock).not.toHaveBeenCalled();
+  });
+
+  it("a failed alias filing downgrades to a warning — the stock unit is never lost", async () => {
+    aliasResult = new Error("callable down");
+    const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: { aliasTokens: TOKENS } });
+    expect(r.ok).toBe(true);
+    expect(cellQty("6")).toBe(1);
+    expect(r.warning).toMatch(/reading could not be filed/);
+  });
+
+  it("re-registering an existing slot with a fresh reading RE-FILES the alias — the retry path", async () => {
+    const TOK = ["CLOUDNOVA", "MONO", "UNDYED"];
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: { aliasTokens: TOK } });
+    aliasCalls.length = 0;
+    const again = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: { aliasTokens: TOK } });
+    expect(again.ok).toBe(true);
+    expect(again.already).toBe(true);
+    expect(aliasCalls).toEqual([{ action: "add", productId: PRODUCT.id, tokens: TOK }]);
+    expect(cellQty("6")).toBe(1);            // the retry files the alias, never a second unit
+  });
+
+  it("fewer than two tokens is not an identity — the save refuses", async () => {
+    const r = await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: { aliasTokens: ["ONE"] } });
+    expect(r.ok).toBe(false);
+    expect(movementCount()).toBe(0);
   });
 });
 
