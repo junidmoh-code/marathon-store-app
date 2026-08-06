@@ -41,17 +41,18 @@ import { canAdjustHubCount } from "../../config/hubSneakerCount";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { prepareLabelPhoto } from "../../utils/labelPhoto";
-import { formatStyleCodeForDisplay } from "../../utils/styleCode";
+import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/styleCode";
+import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
   buildLeftovers, locationsHolding, registrationProgress, realSizes,
   registerPanelFor, styleStepSatisfied, chooseFromLabelRead, styleCodeOwners,
-  STYLE_SKIP_REASONS,
+  STYLE_SKIP_REASONS, countPanelFor, resolveStyleNumber,
 } from "./hubCleanupCore";
 import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
   recordUnresolvedScan, lookupBarcode, loadAllStock, loadDuplicateCandidates,
-  fetchProductFollowingMerge,
+  fetchProductFollowingMerge, lookupStyleClaim,
 } from "./hubCleanupStore";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
@@ -266,7 +267,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // constructor the search results and the unregistered list use, so the
         // optional barcode shortcut lands on the identical screen.
         if (tab === "count") {
-          setPanel({ mode: "count", product: out.product, size: out.size, code });
+          setPanel(countPanelFor(out.product, out.size));
         } else {
           setPanel(registerPanelFor(out.product, out.size));
           // The panel shows stock by location — the shortcut must start that
@@ -276,9 +277,13 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       } else if (out.kind === "duplicate") {
         setPanel({ mode: "duplicate", code, claimants: out.products });
       } else if (tab === "count") {
-        await recordUnresolvedScan({ hub, code, context: tab });
-        setUnresolved((u) => ({ ...u, [code.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code, context: tab } }));
-        flash("warn", `Nothing owns “${code}” — noted as never registered. Carry on.`);
+        const noted = await recordUnresolvedScan({ hub, code, context: tab });
+        if (noted.ok) {
+          setUnresolved((u) => ({ ...u, [code.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code, context: tab } }));
+          flash("warn", `Nothing owns “${code}” — noted as never registered. Carry on.`);
+        } else {
+          flash("err", `Nothing owns “${code}”, but the note could not be saved (${noted.message || "write failed"}) — try again.`);
+        }
       } else {
         // The register shortcut missing is no event at all — the primary paths
         // (search, the unregistered list) are right there.
@@ -286,6 +291,57 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       }
     } finally { setBusy(false); }
   }, [hub, tab, products, flash, ensureAllStock]);
+
+  // ── The COUNT pass's primary entry: a STYLE NUMBER off the tongue label ──
+  // (owner reversal 2026-08-06 — the count works exactly like registration
+  // now). Resolution order: the /style_code_index claim (THE authority on who
+  // owns a code, followed through any merge pointer), then the local catalogue
+  // match. A number that reads cleanly but resolves to NOTHING is the
+  // never-registered signal — recorded calmly in its own list, because that
+  // detection is the point of this pass.
+  const handleStyleNumber = useCallback(async (display) => {
+    if (!hub) return;
+    setBusy(true);
+    try {
+      const normalised = normaliseStyleCode(display);
+      const claim = await lookupStyleClaim(normalised);
+      const out = resolveStyleNumber(display, { products, claim });
+      if (out.kind === "claim") {
+        // The visible catalogue is pre-filtered of merged-away records, but the
+        // guard costs nothing and this component must not depend on its caller
+        // for that invariant.
+        const local = products.find((x) => x && x.id === out.productId && !isMergedAway(x)) || null;
+        let p = local;
+        if (!p) {
+          try {
+            p = await fetchProductFollowingMerge(out.productId);
+          } catch (err) {
+            // A FAILED read is not a ghost — recording it as never-registered
+            // would pollute the pass's primary signal with a false positive.
+            flash("err", `Couldn't look that product up (${err?.message || err}) — try again.`);
+            return;
+          }
+        }
+        const cp = countPanelFor(p);
+        if (cp) { setPanel(cp); return; }
+        // A claim pointing at a ghost or id-less record falls through to
+        // never-registered — with the toast, never a silent dead end.
+      } else if (out.kind === "product") {
+        setPanel(countPanelFor(out.product));
+        return;
+      } else if (out.kind === "duplicate") {
+        setPanel({ mode: "duplicate", code: display, claimants: out.products });
+        return;
+      }
+      const noted = await recordUnresolvedScan({ hub, code: display, context: "count" });
+      if (noted.ok) {
+        setUnresolved((u) => ({ ...u, [display.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code: display, context: "count" } }));
+        flash("warn", `${display} reads cleanly but nothing owns it — noted as never registered. Carry on.`);
+      } else {
+        flash("err", `${display} isn't owned by anything, but the note could not be saved (${noted.message || "write failed"}) — try the scan again.`);
+      }
+    } finally { setBusy(false); }
+  }, [hub, products, flash]);
 
   useEffect(() => {
     const uninstall = installBarcodeListener();
@@ -524,30 +580,28 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           </>
         )}
 
-        {/* ── COUNT — stays SCAN-FIRST as built ───────────────────────────── */}
+        {/* ── COUNT — the TONGUE LABEL is the way in (owner reversal
+            2026-08-06; this replaces barcode-scan-first). Same shared reader
+            as registration: photo of the label inside the tongue, typed style
+            number as the built-in fallback. Then name search, then the
+            subordinate barcode shortcut. ───────────────────────────────────── */}
         {!loading && tab === "count" && (
           <>
-            <BigButton tone="blue" disabled={busy} onClick={() => setCameraOpen(true)}
-                       style={{ minHeight: 84, fontSize: 21 }}>
-              📷 SCAN A SHOE
-            </BigButton>
-            <form onSubmit={(e) => { e.preventDefault(); const v = manual.trim(); setManual(""); if (v) handleCode(v); }}
-                  style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <input value={manual} onChange={(e) => setManual(e.target.value)}
-                     placeholder="Type a barcode or style code…"
-                     style={{ ...input, flex: 1, minHeight: 48, fontSize: 15 }} />
-              <button type="submit" style={{ ...bGray, minHeight: 48, padding: "0 18px" }}>Go</button>
-            </form>
+            <div style={{ fontSize: 12, color: GRAY, margin: "0 2px 10px" }}>
+              Pick up a shoe and photograph the label <u>inside the tongue</u> — the style number
+              brings up its count. Not the shop barcode sticker, not the box.
+            </div>
+            <TongueLabelReader big busy={busy} onCode={(code) => handleStyleNumber(code)} />
 
-            {/* Search by name — the SECONDARY path, small on purpose. */}
+            {/* Fallback 2 — search by name, small on purpose. */}
             <input value={query} onChange={(e) => setQuery(e.target.value)}
-                   placeholder="…or search by name (secondary)"
+                   placeholder="…or search by name"
                    style={{ ...input, width: "100%", boxSizing: "border-box", marginTop: 10, fontSize: 13.5, opacity: 0.85 }} />
             {searchHits.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
                 {searchHits.map((p) => (
                   <button key={p.id} type="button"
-                    onClick={() => { setPanel({ mode: "count", product: p, size: null, code: null }); setQuery(""); }}
+                    onClick={() => { setPanel(countPanelFor(p)); setQuery(""); }}
                     style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", textAlign: "left", cursor: "pointer",
                              background: CARD, border: BORDER, borderRadius: 12 }}>
                     <Photo url={p.photoUrl} size={40} radius={9} />
@@ -559,6 +613,26 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                 ))}
               </div>
             )}
+
+            {/* Fallback 3 — the shop-barcode shortcut. Optional, never the default. */}
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,.07)" }}>
+              <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.45)", marginBottom: 8 }}>
+                Shortcut, if this shoe happens to carry one of our shop barcode stickers:
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" disabled={busy} onClick={() => setCameraOpen(true)}
+                  style={{ ...bGhost, fontSize: 12.5, minHeight: 42, padding: "0 14px" }}>
+                  Scan a shop barcode
+                </button>
+                <form onSubmit={(e) => { e.preventDefault(); const v = manual.trim(); setManual(""); if (v) handleCode(v); }}
+                      style={{ display: "flex", gap: 6, flex: 1 }}>
+                  <input value={manual} onChange={(e) => setManual(e.target.value)}
+                         placeholder="…or type its digits"
+                         style={{ ...input, flex: 1, minHeight: 42, fontSize: 12.5, opacity: 0.85 }} />
+                  <button type="submit" style={{ ...bGhost, minHeight: 42, padding: "0 12px", fontSize: 12.5 }}>Go</button>
+                </form>
+              </div>
+            </div>
 
             <button type="button" onClick={() => setFullList(true)}
               style={{ ...bGhost, width: "100%", marginTop: 14, minHeight: 46, borderRadius: 12, fontSize: 13 }}>
@@ -694,6 +768,104 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   );
 }
 
+// ─── TONGUE LABEL READER — the ONE style-number capture, shared by both passes ─
+// Registration and the count bring a shoe's style number in identically: a
+// photo of the label INSIDE the tongue goes through the same readStyleCodeLabel
+// callable the intake gate uses (client-side downscale via prepareLabelPhoto;
+// the server caches on the image-byte hash, so a retake of the same photo
+// re-bills no vision call), with typed entry as the always-available fallback.
+// Copy is explicit on purpose — the operator must never wonder whether this is
+// the shop-barcode scan. It is not.
+function TongueLabelReader({ busy, big = false, onCode }) {
+  const [reading, setReading] = useState(false);
+  const [readNote, setReadNote] = useState(null);          // { text, options? }
+  const [typed, setTyped] = useState("");
+  const fileRef = useRef(null);
+
+  const handleLabelPhoto = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setReading(true);
+    setReadNote(null);
+    try {
+      const photo = await prepareLabelPhoto(file);
+      const { data } = await readStyleCodeLabelFn({ imageBase64: photo.base64, mimeType: "image/jpeg" });
+      const out = chooseFromLabelRead(data);
+      const formattedChosen = out.kind === "chosen" ? formatStyleCodeForDisplay(out.code) : "";
+      if (out.kind === "chosen" && formattedChosen) {
+        onCode(formattedChosen, { source: "label", labelPhoto: photo });
+      } else if (out.kind === "chosen") {
+        // A candidate that formats to nothing is not a style number at all.
+        setReadNote({ text: "Couldn't read a style number off that photo — try again closer, or type it." });
+      } else if (out.kind === "options") {
+        setReadNote({
+          text: "The label shows more than one code-looking number — tap the style number:",
+          options: out.options,
+          labelPhoto: photo,
+        });
+      } else {
+        setReadNote({ text: out.message });
+      }
+    } catch (err) {
+      setReadNote({ text: `Could not read that photo (${err?.message || err}) — type the style number instead.` });
+    } finally { setReading(false); }
+  };
+
+  const applyTyped = () => {
+    const v = typed.trim();
+    if (!v) return;
+    const formatted = formatStyleCodeForDisplay(v);
+    if (!formatted) {
+      // Normalises to nothing (punctuation only, etc.) — say so instead of
+      // silently arming a blank code that disables the save with no explanation.
+      setReadNote({ text: `“${v}” doesn't look like a style number — check the label inside the tongue.` });
+      return;
+    }
+    setTyped("");
+    setReadNote(null);
+    onCode(formatted, { source: "manual", labelPhoto: null });
+  };
+
+  return (
+    <div>
+      <input ref={fileRef} type="file" accept="image/*" capture="environment"
+             onChange={handleLabelPhoto} style={{ display: "none" }} />
+      <BigButton tone="blue" disabled={busy || reading} onClick={() => fileRef.current && fileRef.current.click()}
+                 style={big ? { minHeight: 84, fontSize: 20 } : { minHeight: 64, fontSize: 17 }}>
+        {reading ? "Reading the tongue label…" : "📷 Photograph the tongue label"}
+      </BigButton>
+      {readNote && (
+        <div style={{ marginTop: 10, background: "rgba(251,191,36,.07)", border: "1px solid rgba(251,191,36,.25)",
+                      borderRadius: 11, padding: "9px 12px", fontSize: 12.5, color: "#FDE9B0" }}>
+          {readNote.text}
+          {readNote.options && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
+              {readNote.options.map((c) => (
+                <button key={c} type="button"
+                  onClick={() => {
+                    const f = formatStyleCodeForDisplay(c);
+                    if (!f) { setReadNote({ text: "That one isn't a style number — type it from the label instead." }); return; }
+                    setReadNote(null);
+                    onCode(f, { source: "label", labelPhoto: readNote.labelPhoto || null });
+                  }}
+                  style={{ ...bBlue, fontSize: 13.5, minHeight: 42, fontVariantNumeric: "tabular-nums" }}>{c}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <form onSubmit={(e) => { e.preventDefault(); applyTyped(); }}
+            style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <input value={typed} onChange={(e) => setTyped(e.target.value)}
+               placeholder="…or type the style number, e.g. CT8527-016"
+               style={{ ...input, flex: 1, minHeight: 48, fontSize: 15 }} />
+        <button type="submit" disabled={!typed.trim()} style={{ ...bGray, minHeight: 48, padding: "0 16px" }}>Set</button>
+      </form>
+    </div>
+  );
+}
+
 // ─── REGISTER PANEL — one screen, two facts, one save ────────────────────────
 // The operator found the shoe already (search / the unregistered list / the
 // optional barcode shortcut). This panel attaches BOTH facts to the existing
@@ -714,61 +886,14 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const [labelPhoto, setLabelPhoto] = useState(null);      // prepareLabelPhoto result, evidence
   const [skipReason, setSkipReason] = useState(null);
   const [skipOpen, setSkipOpen] = useState(false);
-  const [reading, setReading] = useState(false);
-  const [readNote, setReadNote] = useState(null);          // { text, options? }
-  const [typed, setTyped] = useState("");
-  const fileRef = useRef(null);
 
-  const handleLabelPhoto = async (e) => {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = "";
-    if (!file) return;
-    setReading(true);
-    setReadNote(null);
-    // A retake must never stay bound to the previous read.
-    setChosenCode(null); setCodeSource(null); setSkipReason(null);
-    try {
-      const photo = await prepareLabelPhoto(file);
-      setLabelPhoto(photo);
-      const { data } = await readStyleCodeLabelFn({ imageBase64: photo.base64, mimeType: "image/jpeg" });
-      const out = chooseFromLabelRead(data);
-      const formattedChosen = out.kind === "chosen" ? formatStyleCodeForDisplay(out.code) : "";
-      if (out.kind === "chosen" && formattedChosen) {
-        setChosenCode(formattedChosen);
-        setCodeSource("label");
-      } else if (out.kind === "chosen") {
-        // A candidate that formats to nothing is not a style number at all.
-        setReadNote({ text: "Couldn't read a style number off that photo — try again closer, or type it." });
-      } else if (out.kind === "options") {
-        setReadNote({ text: "The label shows more than one code-looking number — tap the style number:", options: out.options });
-      } else {
-        setReadNote({ text: out.message });
-      }
-    } catch (err) {
-      setReadNote({ text: `Could not read that photo (${err?.message || err}) — type the style number instead.` });
-    } finally { setReading(false); }
-  };
-
-  const pickOption = (c) => {
-    setChosenCode(formatStyleCodeForDisplay(c));
-    setCodeSource("label");
-    setReadNote(null);
-  };
-
-  const applyTyped = () => {
-    const v = typed.trim();
-    if (!v) return;
-    const formatted = formatStyleCodeForDisplay(v);
-    if (!formatted) {
-      // Normalises to nothing (punctuation only, etc.) — say so instead of
-      // silently arming a blank code that disables the save with no explanation.
-      setReadNote({ text: `“${v}” doesn't look like a style number — check the label inside the tongue.` });
-      return;
-    }
-    setChosenCode(formatted);
-    setCodeSource("manual");
+  // The shared tongue-label reader hands back the chosen code — one capture
+  // path for BOTH passes (owner reversal 2026-08-06), never a second build.
+  const takeCode = (code, { source, labelPhoto: photo }) => {
+    setChosenCode(code);
+    setCodeSource(source);
+    setLabelPhoto(source === "label" ? photo : null);
     setSkipReason(null);
-    setReadNote(null);
   };
 
   // The duplicate fence: a code some OTHER live product already carries means
@@ -857,7 +982,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
                       padding: "12px 14px", marginBottom: 18, fontSize: 14, color: "#B7F0CC",
                       display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ flex: 1 }}>✓ Style number: <strong>{chosenCode}</strong> <span style={{ color: GRAY, fontSize: 11.5 }}>({codeSource === "label" ? "read off the tongue label" : "typed"})</span></span>
-          <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); setTyped(""); }}
+          <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); }}
             style={{ ...bGhost, fontSize: 12, minHeight: 38, padding: "0 12px" }}>✎ Change</button>
         </div>
       ) : chosenCode && conflictOwners.length > 0 ? (
@@ -873,7 +998,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
           <div style={{ display: "flex", gap: 8 }}>
             <button type="button" onClick={() => onMerge(product, conflictOwners[0])}
               style={{ ...bGray, fontSize: 13, minHeight: 44, flex: 1 }}>⇄ Review &amp; merge…</button>
-            <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); setTyped(""); }}
+            <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); }}
               style={{ ...bGhost, fontSize: 13, minHeight: 44 }}>Re-enter</button>
           </div>
         </div>
@@ -887,33 +1012,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
         </div>
       ) : (
         <div style={{ marginBottom: 18 }}>
-          <input ref={fileRef} type="file" accept="image/*" capture="environment"
-                 onChange={handleLabelPhoto} style={{ display: "none" }} />
-          <BigButton tone="blue" disabled={busy || reading} onClick={() => fileRef.current && fileRef.current.click()}
-                     style={{ minHeight: 64, fontSize: 17 }}>
-            {reading ? "Reading the tongue label…" : "📷 Photograph the tongue label"}
-          </BigButton>
-          {readNote && (
-            <div style={{ marginTop: 10, background: "rgba(251,191,36,.07)", border: "1px solid rgba(251,191,36,.25)",
-                          borderRadius: 11, padding: "9px 12px", fontSize: 12.5, color: "#FDE9B0" }}>
-              {readNote.text}
-              {readNote.options && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
-                  {readNote.options.map((c) => (
-                    <button key={c} type="button" onClick={() => pickOption(c)}
-                      style={{ ...bBlue, fontSize: 13.5, minHeight: 42, fontVariantNumeric: "tabular-nums" }}>{c}</button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          <form onSubmit={(e) => { e.preventDefault(); applyTyped(); }}
-                style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <input value={typed} onChange={(e) => setTyped(e.target.value)}
-                   placeholder="…or type it, e.g. CT8527-016"
-                   style={{ ...input, flex: 1, minHeight: 48, fontSize: 15 }} />
-            <button type="submit" disabled={!typed.trim()} style={{ ...bGray, minHeight: 48, padding: "0 16px" }}>Set</button>
-          </form>
+          <TongueLabelReader busy={busy} onCode={takeCode} />
           {!skipOpen ? (
             <button type="button" onClick={() => setSkipOpen(true)}
               style={{ background: "none", border: "none", color: "rgba(233,238,255,.42)", textDecoration: "underline",

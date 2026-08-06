@@ -128,6 +128,49 @@ export function chooseFromLabelRead(data) {
     : "Couldn't read a style number off that photo — try again closer, or type it." };
 }
 
+// ── COUNT ENTRY (owner reversal 2026-08-06) ──────────────────────────────────
+// The count pass brings a shoe up the SAME way registration does: read the
+// style number off the INNER TONGUE LABEL. Every count entry path — the label
+// read, manual style-number entry, name search, and the subordinate barcode
+// shortcut — builds its panel through THIS one constructor, so all of them are
+// provably the same screen.
+export function countPanelFor(product, size = null) {
+  if (!product || !product.id) return null;
+  return { mode: "count", product, size: size != null ? String(size) : null, code: null };
+}
+
+// Resolve a STYLE NUMBER (label-read or typed) to its product, in count mode.
+// /style_code_index is THE authority on who owns a code, so a claim row wins;
+// the local catalogue match is the fallback for codes carried on products that
+// pre-date the index. Outcomes:
+//   { kind: "claim", productId }         the index answered — caller follows
+//                                        the id (and any merge pointer)
+//   { kind: "product", product }         a single live catalogue owner
+//   { kind: "duplicate", products }      two live owners — route to merge
+//   { kind: "unresolved", normalised }   a CLEAN read that nothing owns: the
+//                                        never-registered signal, the primary
+//                                        detector of this whole pass
+export function resolveStyleNumber(code, { products = [], claim = null } = {}) {
+  const normalised = normaliseStyleCode(code);
+  if (!normalised) return { kind: "unresolved", normalised: "" };
+  const owners = styleCodeOwners(normalised, products);
+  if (claim && claim.productId) {
+    // A claim does NOT get to mask a twin: codes that pre-date the index can
+    // sit on live catalogue records the claim system never saw (this repo's
+    // own twin-collision incident). Any live owner that is NOT the claimed
+    // product is the duplicate case — surfaced, never silently routed past.
+    const others = owners.filter((p) => p.id !== claim.productId);
+    if (others.length) {
+      const claimed = owners.find((p) => p.id === claim.productId) || null;
+      return { kind: "duplicate", products: claimed ? [claimed, ...others] : others, normalised, claimProductId: claim.productId };
+    }
+    return { kind: "claim", productId: claim.productId, normalised };
+  }
+  if (owners.length === 1) return { kind: "product", product: owners[0], normalised };
+  if (owners.length > 1) return { kind: "duplicate", products: owners, normalised };
+  return { kind: "unresolved", normalised };
+}
+
 // Live products already claiming this code — the duplicate case, surfaced
 // before the save so the operator routes to Merge instead of guessing.
 export function styleCodeOwners(code, products, excludeId = null) {

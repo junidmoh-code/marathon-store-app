@@ -8,6 +8,7 @@ import {
   resolveCleanupScan, openDuplicateFor, buildLeftovers, locationsHolding,
   registrationProgress, realSizes,
   registerPanelFor, styleStepSatisfied, chooseFromLabelRead, styleCodeOwners,
+  countPanelFor, resolveStyleNumber,
 } from "./hubCleanupCore";
 
 const P = (id, over = {}) => ({ id, name: `Product ${id}`, category: "Footwear", sizes: ["6", "7"], ...over });
@@ -134,6 +135,68 @@ describe("the style-number step", () => {
     expect(styleCodeOwners("ZZ999", products, "pMine")).toEqual([]);
     // The product's own claim is not a conflict with itself:
     expect(styleCodeOwners("CT8527-016", products, "pOther")).toEqual([]);
+  });
+});
+
+// ─── THE COUNT ENTRY (owner reversal 2026-08-06: tongue label, not barcode) ──
+describe("count entry — every way in lands on the SAME panel", () => {
+  const product = P("p1");
+  it("label read, manual entry, name search and the shortcut build identical panels", () => {
+    expect(countPanelFor(product)).toEqual({ mode: "count", product, size: null, code: null });
+    expect(countPanelFor(product)).toEqual(countPanelFor(product));
+    expect(countPanelFor(product, "7")).toEqual({ mode: "count", product, size: "7", code: null });
+    expect(countPanelFor(null)).toBe(null);
+  });
+});
+
+describe("a style number resolves to its product — the claim is the authority", () => {
+  const products = [P("p1"), P("p2", { styleCodeNormalised: "DD1391100" })];
+
+  it("the /style_code_index claim wins, even when no local record carries the code", () => {
+    const out = resolveStyleNumber("CT8527-016", { products, claim: { productId: "p1", claimedAt: 1 } });
+    expect(out).toEqual({ kind: "claim", productId: "p1", normalised: "CT8527016" });
+  });
+
+  it("without a claim, a single live catalogue owner answers", () => {
+    const out = resolveStyleNumber("DD1391-100", { products, claim: null });
+    expect(out.kind).toBe("product");
+    expect(out.product.id).toBe("p2");
+  });
+
+  it("two live owners are a DUPLICATE — routed to merge, never guessed", () => {
+    const twins = [...products, P("p9", { styleCodeNormalised: "DD1391100" })];
+    const out = resolveStyleNumber("DD1391-100", { products: twins, claim: null });
+    expect(out.kind).toBe("duplicate");
+    expect(out.products.map((p) => p.id).sort()).toEqual(["p2", "p9"]);
+  });
+
+  it("a CLEAN read that nothing owns is the never-registered signal", () => {
+    const out = resolveStyleNumber("ZZ9999-999", { products, claim: null });
+    expect(out).toEqual({ kind: "unresolved", normalised: "ZZ9999999" });
+  });
+
+  it("a merged-away catalogue owner does not answer for a code", () => {
+    const withMerged = [P("pOld", { styleCodeNormalised: "AA111222", mergedInto: "p1" }), ...products];
+    expect(resolveStyleNumber("AA111-222", { products: withMerged, claim: null }).kind).toBe("unresolved");
+  });
+
+  it("a claim must NOT mask a live twin — a second local owner is a DUPLICATE", () => {
+    // The twin-collision case: a pre-index product carries the same code the
+    // claim points at. Routing silently to the claimed product would hide it.
+    const twins = [...products, P("pTwin", { styleCodeNormalised: "DD1391100" })];
+    const out = resolveStyleNumber("DD1391-100", { products: twins, claim: { productId: "p2" } });
+    expect(out.kind).toBe("duplicate");
+    expect(out.claimProductId).toBe("p2");
+    expect(out.products.map((p) => p.id)).toEqual(["p2", "pTwin"]); // claimed first
+  });
+
+  it("a claim whose only local owner IS the claimed product stays a clean claim", () => {
+    const out = resolveStyleNumber("DD1391-100", { products, claim: { productId: "p2" } });
+    expect(out).toEqual({ kind: "claim", productId: "p2", normalised: "DD1391100" });
+  });
+
+  it("junk that normalises to nothing is unresolved without consulting anything", () => {
+    expect(resolveStyleNumber("###", { products, claim: { productId: "p1" } }).kind).toBe("unresolved");
   });
 });
 

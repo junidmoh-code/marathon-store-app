@@ -70,6 +70,31 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     expect(hubCleanup).toMatch(/setPanel\(registerPanelFor\(out\.product, out\.size\)\);\s*\n\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*ensureAllStock\(\)/);
   });
 
+  it("count-pass pins: label-first entry, one shared reader, unresolved fires on the label path", () => {
+    const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
+    // ONE shared tongue-label reader component, used by BOTH passes — the count
+    // tab mounts it big as the primary entry, the register panel reuses it:
+    expect((hubCleanup.match(/function TongueLabelReader/g) || []).length).toBe(1);
+    expect(hubCleanup).toMatch(/<TongueLabelReader big busy=\{busy\} onCode=\{\(code\) => handleStyleNumber\(code\)\} \/>/);
+    expect(hubCleanup).toMatch(/<TongueLabelReader busy=\{busy\} onCode=\{takeCode\} \/>/);
+    // The count tab must NOT lead with a barcode scan any more:
+    expect(hubCleanup).not.toMatch(/SCAN A SHOE/);
+    // The never-registered signal fires on the LABEL path (style-number
+    // resolution), not only on the barcode shortcut:
+    expect(hubCleanup).toMatch(/reads cleanly but nothing owns it/);
+    expect(hubCleanup).toMatch(/recordUnresolvedScan\(\{ hub, code: display, context: "count" \}\)/);
+    // Substitute-review pins (Kimi + Sonnet round):
+    // exactly ONE name-search input on the count tab — the leftover twin is gone:
+    expect((hubCleanup.match(/or search by name/g) || []).length).toBe(1);
+    expect(hubCleanup).not.toMatch(/search by name \(secondary\)/);
+    // a failed product lookup on a claim is an ERROR, never a false never-registered:
+    expect(hubCleanup).toMatch(/Couldn't look that product up/);
+    // the never-registered note only confirms when the write succeeded:
+    expect(hubCleanup).toMatch(/noted\.ok/);
+    // a claim resolving to a ghost/id-less record falls through WITH feedback:
+    expect(hubCleanup).toMatch(/const cp = countPanelFor\(p\);/);
+  });
+
   it("scan panels remount per scanned product, and the camera effect is render-stable", () => {
     const hubCleanup = readFileSync(join(SRC, "components/stock/HubCleanup.jsx"), "utf8");
     expect(hubCleanup).toMatch(/key=\{`reg_\$\{panel\.product\.id\}/);
