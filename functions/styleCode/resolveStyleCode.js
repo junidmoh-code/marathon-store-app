@@ -46,6 +46,7 @@ const {
   brandFamilyForStyleCode,
 } = require("../lib/style-code.cjs");
 const { confusableVariants } = require("../lib/style-code-ocr.cjs");
+const { claimOwnerIds, partitionPairs } = require("../lib/style-code-siblings.cjs");
 const { assertStyleCodeAccess } = require("./access.cjs");
 
 if (!admin.apps.length) {
@@ -77,13 +78,22 @@ const STYLE_CODE_MISSES_PATH = "style_code_misses";
 // intake must be told — otherwise the code looks taken and nothing owns it.
 const STYLE_CODE_INDEX_PATH = "style_code_index";
 
+// A claim can now name SEVERAL owners: the primary claimant plus registered
+// colourway siblings (see lib/style-code-siblings.cjs — one printed code on
+// two real colourways is manufacturer behaviour, not a data error). A legacy
+// claim with no siblings child reads as exactly one owner, so nothing that
+// consumed the old shape changes meaning. The RAW node rides along so the
+// duplicate partition below can ask "are these two both owners?".
 async function readClaim(db, normalised) {
   const val = (await db.ref(`${STYLE_CODE_INDEX_PATH}/${normalised}`).get()).val();
   if (!val || typeof val.productId !== "string" || !val.productId) return null;
+  const owners = claimOwnerIds(val);
   return {
     productId: val.productId,
     claimedAt: Number(val.claimedAt) || null,
     claimedBy: val.claimedBy || null,
+    siblingIds: owners.slice(1),
+    node: val,
   };
 }
 
@@ -142,8 +152,13 @@ async function findProductsByStyleCode(db, normalised) {
 // look at — one of them is mislabelled, or the same shoe was added twice. We
 // record the pair(s) and raise a banner. We never merge, never pick a winner,
 // and never delete: an automatic merge here would destroy stock history.
-async function flagDuplicates(db, normalised, matches, actor, nowMs) {
-  const pairs = duplicatePairs(matches.map((m) => m.id));
+//
+// UNLESS the two are registered SIBLINGS of the code. A human already answered
+// "different colourway" for that pair (or its ownership was registered through
+// intake's sibling path), so the sharing is legitimate and flagging it would
+// re-open a question that was settled — sibling pairs are filtered OUT before
+// this function is called. See lib/style-code-siblings.cjs.
+async function flagDuplicates(db, normalised, pairs, actor, nowMs) {
   await Promise.all(pairs.map(async ({ pairId, productIdA, productIdB }) => {
     const ref = db.ref(`${DUPLICATE_CANDIDATES_PATH}/${pairId}`);
     const prior = (await ref.get()).val();
@@ -361,11 +376,18 @@ async function runResolve(db, {
     }
   }
 
-  const duplicate = existingProducts.length > 1;
+  // ── SIBLINGS ARE NOT DUPLICATES ────────────────────────────────────────────
+  // Same code + registered as a different colourway = two real products, by
+  // design. Only the pairs the index does NOT vouch for are flagged. `duplicate`
+  // in the response now means "an UNEXPLAINED collision exists" — the thing a
+  // human still needs to look at — never "several colourways share a code".
+  const allPairs = duplicatePairs(existingProducts.map((m) => m.id));
+  const { collision: collisionPairs } = partitionPairs(claim && claim.node, allPairs);
+  const duplicate = collisionPairs.length > 0;
   let duplicatePairIds = [];
   if (duplicate) {
     try {
-      duplicatePairIds = await flagDuplicates(db, normalised, existingProducts, actor, nowMs);
+      duplicatePairIds = await flagDuplicates(db, normalised, collisionPairs, actor, nowMs);
     } catch (err) {
       // The banner is driven off THIS response, not off the node, so a failed
       // flag write still surfaces to the person looking at the screen.
@@ -393,8 +415,19 @@ async function runResolve(db, {
     // ── AUTHORITY ──────────────────────────────────────────────────────────
     // claim: who owns this code, per /style_code_index. null = unclaimed, so
     // intake may attempt the create-once claim. Non-null = DO NOT create a new
-    // product; route to the named product instead.
-    claim,
+    // product; route to the named product — or, when several owners exist,
+    // make the human pick which colourway they are holding. The raw node stays
+    // server-side; the client gets the digested shape.
+    claim: claim ? {
+      productId: claim.productId,
+      claimedAt: claim.claimedAt,
+      claimedBy: claim.claimedBy,
+      siblingIds: claim.siblingIds,
+    } : null,
+    // Every registered owner of this code, primary first. Length > 1 means
+    // colourway siblings — the UI must show them side by side and ask, never
+    // resolve silently. See lib/style-code-siblings.cjs.
+    owners: claim ? claimOwnerIds(claim.node) : [],
     // A claim pointing at a product that does not exist. The claim landed and
     // the product write then failed. Intake must show this rather than treat
     // the code as taken by something it can route to.
@@ -430,7 +463,7 @@ exports.resolveStyleCode = onCall(
     const db = admin.database();
     const actor = await assertStyleCodeAccess(request, db);
 
-    const { code } = request.data || {};
+    const { code, confusableRetry } = request.data || {};
     if (typeof code !== "string" || !code.trim()) {
       throw new HttpsError("invalid-argument", "code is required.");
     }
@@ -444,7 +477,10 @@ exports.resolveStyleCode = onCall(
       nowMs,
     });
 
-    const out = await runResolve(db, { code, providers, actor, nowMs });
+    // The client sends confusableRetry ONLY when the code came off a photo (a
+    // typed code was not misread). It was previously dropped here, so tier 3
+    // never fired in production — coerced to a strict boolean and passed on.
+    const out = await runResolve(db, { code, providers, actor, nowMs, confusableRetry: confusableRetry === true });
     if (out.kind === "reject") {
       throw new HttpsError("invalid-argument", out.code);
     }

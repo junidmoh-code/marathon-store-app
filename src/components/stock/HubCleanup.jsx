@@ -45,14 +45,17 @@ import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
   buildLeftovers, locationsHolding, registrationProgress, realSizes,
-  registerPanelFor, styleStepSatisfied, styleCodeOwners,
+  registerPanelFor, styleStepSatisfied, styleCodeOwners, collisionQuestion,
   STYLE_SKIP_REASONS, countPanelFor, resolveStyleNumber, registerSearchPool,
 } from "./hubCleanupCore";
 import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
   recordUnresolvedScan, lookupBarcode, loadAllStock, loadDuplicateCandidates,
   fetchProductFollowingMerge, lookupStyleClaim, matchLabelAlias, addLabelAlias,
+  answerStyleCodeSibling,
 } from "./hubCleanupStore";
+import { allRegisteredSiblings } from "../../utils/styleCodeSiblings";
+import { extractDominantColours, orderByColourAffinity } from "../../utils/dominantColours";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
   confirmCell, adjustCell, flagCell, useLocationRegistryOnce, rememberHub, rememberedHub,
@@ -273,7 +276,16 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           ensureAllStock().catch(() => {});
         }
       } else if (out.kind === "duplicate") {
-        setPanel({ mode: "duplicate", code, claimants: out.products });
+        // 2+ products answer to this code. NEVER resolve silently — the picker
+        // shows them side by side. The index says whether they are registered
+        // colourway SIBLINGS (legitimate, no merge banner) or an unexplained
+        // collision (merge stays on offer).
+        const claim = await lookupStyleClaim(normaliseStyleCode(code)).catch(() => null);
+        setPanel({
+          mode: "choose", code, claimants: out.products,
+          siblings: allRegisteredSiblings(claim, out.products.map((p) => p.id)),
+          unloadedIds: [],
+        });
       } else if (tab === "count") {
         const noted = await recordUnresolvedScan({ hub, code, context: tab });
         if (noted.ok) {
@@ -327,8 +339,14 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       } else if (out.kind === "product") {
         setPanel(countPanelFor(out.product));
         return;
-      } else if (out.kind === "duplicate") {
-        setPanel({ mode: "duplicate", code: display, claimants: out.products });
+      } else if (out.kind === "choose") {
+        // 2+ owners — colourway siblings or a genuine collision, the picker
+        // shows them LARGE and the operator picks. Never silent (owner spec
+        // 2026-08-07): a wrong silent pick is count corruption.
+        setPanel({
+          mode: "choose", code: display, claimants: out.products,
+          siblings: out.siblings, unloadedIds: out.unloadedIds || [],
+        });
         return;
       }
       const noted = await recordUnresolvedScan({ hub, code: display, context: "count" });
@@ -795,29 +813,35 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                     busy={busy} canAdjust={canAdjust}
                     onRecord={doCount} onClose={() => setPanel(null)} />
       )}
-      {panel && panel.mode === "duplicate" && (
-        <Panel title="One code, two products" onClose={() => setPanel(null)}>
-          <div style={{ fontSize: 14.5, color: "#FDE9B0", lineHeight: 1.5, marginBottom: 16 }}>
-            “{panel.code}” is claimed by <strong>{panel.claimants.length}</strong> different products.
-            One of them is a duplicate — merge them rather than guessing.
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {panel.claimants.map((p) => (
-              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: 12,
-                                       background: CARD, border: BORDER, borderRadius: 14 }}>
-                <Photo url={p.photoUrl} size={56} radius={10} />
-                <div style={{ flex: 1, minWidth: 0, fontSize: 14.5, fontWeight: 700 }}>{p.name}</div>
-              </div>
-            ))}
-          </div>
-          <div style={{ marginTop: 16 }}>
-            <BigButton tone="blue" onClick={async () => {
-              await ensureAllStock().catch(() => {});
-              setMerge({ loser: panel.claimants[0], other: panel.claimants[1] || null });
-              setPanel(null);
-            }}>⇄ Merge these…</BigButton>
-          </div>
-        </Panel>
+      {/* ── THE PICKER — one code, several products, the HUMAN decides ──────
+          (Owner spec 2026-08-07.) A code owning 2+ products NEVER resolves
+          silently: every candidate is shown LARGE with its photo, side by
+          side, and the operator taps the shoe in their hand or says "none of
+          these". When the index vouches for all of them (registered colourway
+          siblings) this is routine, not an error, and no merge banner appears;
+          an UNexplained collision keeps the merge route available — but
+          subordinate, because counting the shoe is the job at hand. */}
+      {panel && panel.mode === "choose" && (
+        <ChoosePanel panel={panel} tab={tab} busy={busy}
+                     onPick={(p) => {
+                       if (tab === "count") { setPanel(countPanelFor(p)); }
+                       else { setPanel(registerPanelFor(p)); ensureAllStock().catch(() => {}); }
+                     }}
+                     onNone={async () => {
+                       // "None of these — new colourway." Creating products
+                       // happens in Add Sneaker (admin), not here — record the
+                       // sighting so the pass's ledger knows, and say what to do.
+                       const label = `${panel.code} (new colourway)`;
+                       await recordUnresolvedScan({ hub, code: label, context: tab }).catch(() => {});
+                       setPanel(null);
+                       flash("warn", `Noted — “${panel.code}” on a colourway we don't have. Register it in Admin → Add Sneaker; the code will attach as a sibling.`);
+                     }}
+                     onMerge={async () => {
+                       await ensureAllStock().catch(() => {});
+                       setMerge({ loser: panel.claimants[0], other: panel.claimants[1] || null });
+                       setPanel(null);
+                     }}
+                     onClose={() => setPanel(null)} />
       )}
 
       {merge && (
@@ -881,6 +905,99 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   );
 }
 
+// ─── CHOOSE PANEL — one code, several products, side by side, LARGE ──────────
+// The one decision on this screen: WHICH of these is the shoe in your hand?
+// Photos dominate (the products differ by COLOUR, and colour lives in the
+// photo, not the name), one tap picks, and "none of these" is always present —
+// because a colourway we have no record for is a real answer, not a failure.
+//
+// The optional quick photo of the shoe re-ORDERS the list by dominant-colour
+// affinity so the likely match sits first. Ordering is its entire effect: it
+// never selects, never hides, never disables a candidate (owner spec
+// 2026-08-07 — colour is a hint for the eye, the human is the authority).
+function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
+  const [photoColours, setPhotoColours] = useState(null);
+  const [shooting, setShooting] = useState(false);
+  const fileRef = useRef(null);
+  const ordered = photoColours ? orderByColourAffinity(panel.claimants, photoColours) : panel.claimants;
+  const siblings = !!panel.siblings;
+
+  async function handleShoePhoto(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setShooting(true);
+    try {
+      const colours = await extractDominantColours(file);
+      setPhotoColours(colours.length ? colours : null);
+    } finally { setShooting(false); }
+  }
+
+  return (
+    <Panel title={siblings ? "Which colourway is it?" : "One code, more than one product"} onClose={onClose}>
+      <div style={{ fontSize: 14.5, color: siblings ? "#CFE0FF" : "#FDE9B0", lineHeight: 1.5, marginBottom: 14 }}>
+        {siblings ? (
+          <>“{panel.code}” is on <strong>{panel.claimants.length} colourways</strong> — the label can't
+            tell them apart, but you can. Tap the shoe in your hand.</>
+        ) : (
+          <>“{panel.code}” is on <strong>{panel.claimants.length + (panel.unloadedIds?.length || 0)} products</strong>.
+            Tap the one in your hand — nothing is guessed for you.</>
+        )}
+      </div>
+
+      <input ref={fileRef} type="file" accept="image/*" capture="environment"
+             onChange={handleShoePhoto} style={{ display: "none" }} />
+      <button type="button" disabled={busy || shooting} onClick={() => fileRef.current && fileRef.current.click()}
+        style={{ ...bGhost, fontSize: 12.5, minHeight: 44, marginBottom: 12, width: "100%" }}>
+        {shooting ? "Reading the colours…"
+          : photoColours ? "📷 Photo taken — likely match is first. Retake?"
+          : "📷 Quick photo of the shoe (optional) — puts the likely match first"}
+      </button>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {ordered.map((p, i) => (
+          <button key={p.id} type="button" disabled={busy} onClick={() => onPick(p)}
+            style={{ display: "flex", alignItems: "center", gap: 14, padding: 14, width: "100%",
+                     background: CARD, border: photoColours && i === 0 ? "2px solid rgba(74,127,255,.55)" : BORDER,
+                     borderRadius: 16, cursor: "pointer", textAlign: "left", fontFamily: FONT, color: "inherit" }}>
+            <Photo url={p.photoUrl} size={120} radius={14} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 17, fontWeight: 800, lineHeight: 1.3 }}>{p.name}</div>
+              {photoColours && i === 0 && (
+                <div style={{ fontSize: 11.5, color: BLUE_L, marginTop: 4 }}>Closest colour match — check it, don't trust it</div>
+              )}
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 900, color: BLUE_L }}>TAP</span>
+          </button>
+        ))}
+      </div>
+
+      {(panel.unloadedIds || []).length > 0 && (
+        <div style={{ fontSize: 12, color: AMBER, marginTop: 10, lineHeight: 1.5 }}>
+          {panel.unloadedIds.length} more product{panel.unloadedIds.length > 1 ? "s" : ""} own this code but
+          {panel.unloadedIds.length > 1 ? " aren't" : " isn't"} loaded on this device — reload before trusting this list.
+        </div>
+      )}
+
+      <div style={{ marginTop: 14 }}>
+        <BigButton tone="ghost" disabled={busy} onClick={onNone}>
+          None of these — it's a new colourway
+        </BigButton>
+      </div>
+
+      {/* The merge route survives ONLY for unexplained collisions. Registered
+          siblings are two real products — offering to merge them invites
+          destroying a colourway. */}
+      {!siblings && (
+        <button type="button" disabled={busy} onClick={onMerge}
+          style={{ ...bGhost, fontSize: 12.5, minHeight: 44, marginTop: 10, width: "100%" }}>
+          ⇄ These are the SAME product twice — review &amp; merge…
+        </button>
+      )}
+    </Panel>
+  );
+}
+
 // ─── REGISTER PANEL — one screen, two facts, one save ────────────────────────
 // The operator found the shoe already (search / the unregistered list / the
 // optional barcode shortcut). This panel attaches BOTH facts to the existing
@@ -924,9 +1041,39 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
     setSkipReason(null);
   };
 
-  // The duplicate fence: a code some OTHER live product already carries means
-  // one of the two records is a twin — route to Merge, never save into it.
+  // The collision fence — but no longer a wall. A code some OTHER live product
+  // carries CHANGES MEANING here (owner spec 2026-08-07): the operator has
+  // already found and selected this product, a human has vouched for the
+  // identity, so the collision is a QUESTION — "same shoe, or a different
+  // colourway?" — never an automatic duplicate and never a silent save.
+  //   same shoe          → the genuine duplicate: route to the existing merge.
+  //   different colourway → registered as a SIBLING owner via styleCodeSibling;
+  //                         both keep the code, neither is flagged.
   const conflictOwners = chosenCode ? styleCodeOwners(chosenCode, products, product.id) : [];
+  // Answered "different colourway" for THIS code (or the index already lists
+  // this product as a sibling owner — checked below). Keyed by the normalised
+  // code so re-entering a different code re-asks.
+  const [siblingOkFor, setSiblingOkFor] = useState(null);
+  const [siblingBusy, setSiblingBusy] = useState(false);
+  const [siblingErr, setSiblingErr] = useState(null);
+  const chosenNormalised = chosenCode ? normaliseStyleCode(chosenCode) : null;
+  const siblingOk = !!chosenNormalised && siblingOkFor === chosenNormalised;
+
+  // If the index ALREADY registers this product and the conflicting owner(s)
+  // as siblings of this code — a previously answered pair — don't re-ask.
+  useEffect(() => {
+    let stale = false;
+    if (!chosenNormalised || !conflictOwners.length || siblingOk) return undefined;
+    lookupStyleClaim(chosenNormalised).then((claim) => {
+      if (stale || !claim) return;
+      const ids = [product.id, ...conflictOwners.map((p) => p.id)];
+      if (allRegisteredSiblings(claim, ids)) setSiblingOkFor(chosenNormalised);
+    }).catch(() => {});
+    return () => { stale = true; };
+    // conflictOwners is derived from chosenCode+products; the code is the key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chosenNormalised, product.id, siblingOk]);
+
   // Order matters: a captured READING outranks the null default even when a
   // code is on file — the store files it as an alias alongside the code.
   const styleCodePayload = skipReason
@@ -936,7 +1083,8 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
       : aliasTokens
         ? { aliasTokens }
         : null;
-  const styleReady = styleStepSatisfied(product, styleCodePayload) && conflictOwners.length === 0;
+  const styleReady = styleStepSatisfied(product, styleCodePayload)
+    && collisionQuestion({ conflictOwners, siblingOk }) !== "ask";
 
   const regFor = (s) => registered[`${product.id}__${stockSizeKey(s)}`] || null;
   const marks = {};
@@ -1040,22 +1188,78 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
           <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); }}
             style={{ ...bGhost, fontSize: 12, minHeight: 38, padding: "0 12px" }}>✎ Change</button>
         </div>
-      ) : chosenCode && conflictOwners.length > 0 ? (
-        <div style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.4)", borderRadius: 13,
-                      padding: "12px 14px", marginBottom: 18 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 800, color: AMBER }}>
-            {chosenCode} already belongs to {conflictOwners[0].name}
+      ) : chosenCode && conflictOwners.length > 0 && !siblingOk ? (
+        /* ── THE COLLISION QUESTION (owner spec 2026-08-07) ─────────────────
+           The operator has the shoe in hand and has already vouched for the
+           product above. The code being on another product is therefore ONE
+           question, answered by a human, recorded either way — never a block,
+           never an automatic merge, never silent. Both products are shown
+           LARGE with photos: colour lives in the photo, not the name. */
+        <div style={{ background: "rgba(74,127,255,.06)", border: "1px solid rgba(74,127,255,.35)", borderRadius: 13,
+                      padding: "14px", marginBottom: 18 }}>
+          <div style={{ fontSize: 14.5, fontWeight: 800, marginBottom: 10 }}>
+            {chosenCode} is already on this shoe:
           </div>
-          <div style={{ fontSize: 12.5, color: "rgba(253,233,176,.85)", margin: "5px 0 10px", lineHeight: 1.5 }}>
-            Two records, one shoe — this is the duplicate case. Merge them (or go back and
-            register under {conflictOwners[0].name} instead). Saving this code here is blocked.
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
+            {[conflictOwners[0], product].map((p, i) => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: 12,
+                                       background: CARD, border: BORDER, borderRadius: 14 }}>
+                <Photo url={p.photoUrl} size={110} radius={12} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 15.5, fontWeight: 800, lineHeight: 1.3 }}>{p.name}</div>
+                  <div style={{ fontSize: 11.5, color: GRAY, marginTop: 3 }}>
+                    {i === 0 ? "Already carries this code" : "The product you selected"}
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button type="button" onClick={() => onMerge(product, conflictOwners[0])}
-              style={{ ...bGray, fontSize: 13, minHeight: 44, flex: 1 }}>⇄ Review &amp; merge…</button>
-            <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); }}
-              style={{ ...bGhost, fontSize: 13, minHeight: 44 }}>Re-enter</button>
+          <div style={{ fontSize: 13.5, color: "#CFE0FF", lineHeight: 1.55, marginBottom: 12 }}>
+            <strong>Is that the same shoe, or a different colourway?</strong> The tongue label prints no
+            colour, so one code on two colourways is normal — look at the photos.
           </div>
+          {siblingErr && (
+            <div style={{ fontSize: 12.5, color: RED, marginBottom: 10 }}>{siblingErr}</div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <BigButton tone="blue" disabled={busy || siblingBusy}
+              onClick={async () => {
+                // DIFFERENT COLOURWAY → registered as a sibling, both keep the
+                // code, neither is flagged. The answer is recorded server-side.
+                setSiblingBusy(true); setSiblingErr(null);
+                try {
+                  await answerStyleCodeSibling({
+                    action: "differentColourway", code: chosenNormalised,
+                    productId: product.id, otherId: conflictOwners[0].id,
+                  });
+                  setSiblingOkFor(chosenNormalised);
+                } catch (err) {
+                  setSiblingErr(`Couldn't record that (${err?.message || err}) — try again.`);
+                } finally { setSiblingBusy(false); }
+              }}>
+              {siblingBusy ? "Recording…" : "DIFFERENT colourway — keep both"}
+            </BigButton>
+            <BigButton tone="ghost" disabled={busy || siblingBusy}
+              onClick={async () => {
+                // SAME SHOE → the genuine duplicate. Record the answer, then the
+                // EXISTING merge flow takes over — nothing merges from here.
+                answerStyleCodeSibling({
+                  action: "sameShoe", code: chosenNormalised,
+                  productId: product.id, otherId: conflictOwners[0].id,
+                }).catch(() => {});
+                onMerge(product, conflictOwners[0]);
+              }}>
+              SAME shoe — review &amp; merge…
+            </BigButton>
+            <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); setSiblingErr(null); }}
+              style={{ ...bGhost, fontSize: 13, minHeight: 44 }}>Re-enter the code</button>
+          </div>
+        </div>
+      ) : chosenCode && conflictOwners.length > 0 && siblingOk ? (
+        <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
+                      padding: "12px 14px", marginBottom: 18, fontSize: 14, color: "#B7F0CC" }}>
+          ✓ Style number: <strong>{chosenCode}</strong> — shared with {conflictOwners[0].name} as a
+          <strong> different colourway</strong>. Both keep the code; neither is flagged.
         </div>
       ) : aliasTokens ? (
         <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
@@ -1124,8 +1328,8 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
           </BigButton>
           {!styleReady && (
             <div style={{ fontSize: 12, color: AMBER, marginTop: 8 }}>
-              {conflictOwners.length > 0
-                ? "Resolve the duplicate above first."
+              {conflictOwners.length > 0 && !siblingOk
+                ? "Answer the question above first — same shoe, or a different colourway?"
                 : "Capture the style number off the tongue label first (or mark it unreadable)."}
             </div>
           )}

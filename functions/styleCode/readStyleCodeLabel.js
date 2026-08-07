@@ -42,6 +42,8 @@ const {
   labelTokens,
   OCR_CACHE_PATH,
   extractStyleCodeCandidates,
+  extractLabelExtras,
+  detectColourwayLine,
   imageHash,
   buildOcrCacheRecord,
   isOcrCacheFresh,
@@ -96,6 +98,15 @@ const TIER2_PROMPT = [
   "shorten it, do not drop the block after the hyphen, and do not invent one.",
   "If you cannot read a style code, return an empty string for styleCode with",
   "confidence 0 — never a guess, never a placeholder.",
+  "",
+  "SOME labels also print, as separate lines: a MODEL NAME (e.g. \"DUNK GENESIS\"),",
+  "and under it a COLOURWAY of slash-separated colour words (e.g.",
+  "\"WOLF GREY/PHOTO BLUE\"). Most labels print NEITHER. Return each one only",
+  "when it is literally printed on the label — an empty string means not",
+  "printed. Never infer a colourway from the shoe itself, and never put a",
+  "colourway, a model name or a UPC in the styleCode field.",
+  "If a 12-14 digit barcode number (UPC/EAN) is printed, return its digits in",
+  "the upc field; otherwise an empty string.",
 ].join("\n");
 
 const TIER2_SCHEMA = {
@@ -104,6 +115,9 @@ const TIER2_SCHEMA = {
     styleCode: { type: "STRING" },
     brand: { type: "STRING" },
     size: { type: "STRING" },
+    modelName: { type: "STRING" },
+    colorway: { type: "STRING" },
+    upc: { type: "STRING" },
     styleCodeConfidence: { type: "NUMBER" },
     brandConfidence: { type: "NUMBER" },
     sizeConfidence: { type: "NUMBER" },
@@ -181,11 +195,22 @@ async function runGeminiRead(base64, mimeType, apiKey, { fetchImpl } = {}) {
   const code = raw && isKnownStyleCodeFormat(raw) ? normaliseStyleCode(raw) : null;
   let confidence = Number(parsed.styleCodeConfidence);
   if (!Number.isFinite(confidence)) confidence = 0;
+  // Extras are validated the same way the code is — a value that does not look
+  // like what it claims to be is DROPPED, not passed downstream. The colourway
+  // must survive the same conservative slash-and-lexicon gate the tier-1 text
+  // parse uses; the UPC must be a bare 12-14 digit run; the model name is
+  // bounded and letters-led. Missing stays null — never a guess.
+  const cwRaw = typeof parsed.colorway === "string" ? parsed.colorway.trim() : "";
+  const upcRaw = typeof parsed.upc === "string" ? parsed.upc.replace(/\D/g, "") : "";
+  const mnRaw = typeof parsed.modelName === "string" ? parsed.modelName.trim() : "";
   return {
     code,
     rejectedRead: raw && !code ? raw : null, // surfaced for logging, never used
     brand: typeof parsed.brand === "string" && parsed.brand.trim() ? parsed.brand.trim() : null,
     size: typeof parsed.size === "string" && parsed.size.trim() ? parsed.size.trim() : null,
+    colorway: cwRaw ? detectColourwayLine(cwRaw) : null,
+    upc: /^\d{12,14}$/.test(upcRaw) ? upcRaw : null,
+    modelName: mnRaw && /^[A-Za-z]/.test(mnRaw) ? mnRaw.slice(0, 64) : null,
     confidence: Math.max(0, Math.min(1, confidence)),
   };
 }
@@ -222,6 +247,11 @@ async function runLabelRead(db, {
       candidates: cachedCandidates,
       displayCandidates: cachedCandidates.map(formatStyleCodeForDisplay),
       tokens: cachedRow.tk && typeof cachedRow.tk === "object" ? Object.keys(cachedRow.tk).sort() : [],
+      // Label extras ride the cache under short keys (cw/upc/mn) — see
+      // buildOcrCacheRecord. Older rows simply have none, which reads as null.
+      colorway: typeof cachedRow.cw === "string" ? cachedRow.cw : null,
+      upc: typeof cachedRow.upc === "string" ? cachedRow.upc : null,
+      modelName: typeof cachedRow.mn === "string" ? cachedRow.mn : null,
       source: cachedRow.source, fromCache: true,
       brand: null, size: null, confidence: null, tier2Used: false, errors,
     };
@@ -236,6 +266,16 @@ async function runLabelRead(db, {
   } catch (err) {
     errors.push({ tier: "vision", message: (err && err.message) || String(err) });
   }
+
+  // ── LABEL EXTRAS — colourway line / UPC, off the tier-1 text ──────────────
+  // Read regardless of whether a code was found: a label can print a colourway
+  // and no readable code, or vice versa. Tier 2 may fill gaps below; a tier-1
+  // read is never overwritten by tier 2 (the deterministic parse saw the
+  // actual printed line; the model is the fallback, not the authority).
+  const tier1Extras = extractLabelExtras(visionText);
+  let colorway = tier1Extras.colourway;
+  let upc = tier1Extras.upc;
+  let modelName = null; // only tier 2 can see layout well enough to name this line
 
   // ── TIER 2 — ONLY on the residual: zero candidates, or an ambiguous many ──
   let brand = null, size = null, confidence = null, tier2Used = false;
@@ -262,6 +302,12 @@ async function runLabelRead(db, {
         source = "gemini";
         brand = g.brand; size = g.size; confidence = g.confidence;
       }
+      // Extras: tier 2 only FILLS GAPS tier 1 left. Both were validated
+      // through the same gates (lexicon line / digit run), and a code-less
+      // tier-2 answer can still carry a perfectly good colourway.
+      if (!colorway && g.colorway) colorway = g.colorway;
+      if (!upc && g.upc) upc = g.upc;
+      if (!modelName && g.modelName) modelName = g.modelName;
     } catch (err) {
       errors.push({ tier: "gemini", message: (err && err.message) || String(err) });
     }
@@ -289,7 +335,10 @@ async function runLabelRead(db, {
   const settled = !tier2Failed && (!errors.length || candidates.length === 1);
   if (settled) {
     try {
-      await cacheRef.set(buildOcrCacheRecord({ candidates, source, nowMs, tokens }));
+      await cacheRef.set(buildOcrCacheRecord({
+        candidates, source, nowMs, tokens,
+        extras: { colourway: colorway, upc, modelName },
+      }));
     } catch (err) {
       console.warn(`readStyleCodeLabel: OCR cache write failed for ${hash}:`, err && err.message);
     }
@@ -299,6 +348,7 @@ async function runLabelRead(db, {
     candidates,
     displayCandidates: candidates.map(formatStyleCodeForDisplay),
     tokens,
+    colorway, upc, modelName,
     source, fromCache: false, brand, size, confidence, tier2Used, errors,
   };
 }

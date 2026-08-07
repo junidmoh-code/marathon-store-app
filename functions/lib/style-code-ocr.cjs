@@ -213,6 +213,89 @@ function labelFingerprint(text) {
   return concat.slice(0, 24) + digest;
 }
 
+// ── LABEL EXTRAS — everything ELSE the label offers ──────────────────────────
+// (Owner evidence 2026-08-07.) The standard Nike tongue label prints NO
+// colourway text — but some labels DO: RTFKT-style Nike labels print a
+// colourway line under the model name ("WOLF GREY/PHOTO BLUE"), and we were
+// discarding it. Brand research (2026-08-07, PR notes) says the wider picture:
+// Nike/Jordan/Asics/UA encode colour as a numeric suffix INSIDE the style code
+// and print a colourway sentence only on the BOX label; adidas/Puma/NB/
+// Converse never print one at all. So a printed colourway line is a BONUS
+// signal — extracted when present, used to ORDER candidates and prefill a
+// name, never required and never trusted as identity.
+//
+// The UPC is likewise captured but NON-AUTHORITATIVE: a genuine UPC is per
+// size-SKU, yet this stock reuses one UPC across a size run (HF5509-002 across
+// US 7/8/8.5), so the system must never assume one code — style or UPC —
+// means one shoe. The UPC is stored as evidence, never used as a key and
+// never written to /barcodes (which is our own internally-minted namespace).
+//
+// Colourway detection is deliberately conservative: a line qualifies only when
+// it is slash-separated segments whose words are mostly known colour words.
+// A model name ("DUNK GENESIS") never matches; an address never matches. The
+// model-name line is NOT regex-guessed here — only tier 2 (a vision model that
+// can see the layout) may propose one.
+const COLOUR_LEXICON = new Set([
+  "BLACK", "WHITE", "GREY", "GRAY", "RED", "BLUE", "GREEN", "YELLOW", "ORANGE",
+  "PURPLE", "PINK", "BROWN", "TAN", "BEIGE", "CREAM", "NAVY", "TEAL", "AQUA",
+  "VOLT", "CRIMSON", "OBSIDIAN", "SAIL", "BONE", "PLATINUM", "SILVER", "GOLD",
+  "GUM", "INFRARED", "BRED", "ROYAL", "TURQUOISE", "LIME", "OLIVE", "KHAKI",
+  "MAROON", "BURGUNDY", "CORAL", "SALMON", "MINT", "LAVENDER", "MAGENTA",
+  "CYAN", "IVORY", "CHARCOAL", "STONE", "SAND", "TAUPE", "MULTI", "PHOTO",
+  "WOLF", "COOL", "DARK", "LIGHT", "PALE", "DEEP", "BRIGHT", "PURE", "OFF",
+  "UNIVERSITY", "VARSITY", "TOTAL", "HYPER", "RACER", "COURT", "GAME", "TRUE",
+  "MIDNIGHT", "SUMMIT", "PHANTOM", "ANTHRACITE", "SMOKE", "DUSTY", "ICED",
+  "METALLIC", "GLACIER", "OCEAN", "DESERT", "CACTUS", "PINE", "FOREST",
+  "CANYON", "LASER", "ATOMIC", "ELECTRIC", "NEON", "PASTEL", "VINTAGE",
+  "UNDYED", "MONO", "TRIPLE", "CORE", "CLOUD", "CHALK", "FROST", "ARCTIC",
+]);
+
+// A UPC/EAN/GTIN digit run: 12 (UPC-A), 13 (EAN-13) or 14 (GTIN-14 — the
+// photographed labels print "00197859117222", a zero-padded 14) digits,
+// standing alone. Taken from the RAW text, not the masked text — masking can
+// eat digits that belong to dates, but a 12-14 digit run never matches the
+// date shapes.
+const UPC_RE = /(?<!\d)(\d{12,14})(?!\d)/;
+
+/**
+ * Is this OCR line a printed colourway line? ("WOLF GREY/PHOTO BLUE")
+ * Conservative on purpose: slash-separated segments, every segment 1-4 words,
+ * and a MAJORITY of words drawn from the colour lexicon. Fails to null, never
+ * to a guess.
+ * @returns {string|null} the cleaned line, or null
+ */
+function detectColourwayLine(line) {
+  if (typeof line !== "string") return null;
+  const clean = line.toUpperCase().replace(/[^A-Z/ ]/g, " ").replace(/\s+/g, " ").trim();
+  if (!clean.includes("/")) return null;
+  const segments = clean.split("/").map((s) => s.trim()).filter(Boolean);
+  if (segments.length < 2 || segments.length > 5) return null;
+  const words = segments.flatMap((s) => s.split(" ")).filter(Boolean);
+  if (!words.length || words.length > 12) return null;
+  const colourWords = words.filter((w) => COLOUR_LEXICON.has(w)).length;
+  // Majority rule: at least half the words must be colour words, and every
+  // segment must contain at least one — "AIR/MAX 90" never qualifies.
+  if (colourWords * 2 < words.length) return null;
+  if (!segments.every((s) => s.split(" ").some((w) => COLOUR_LEXICON.has(w)))) return null;
+  return segments.join("/");
+}
+
+/**
+ * Everything beyond the style code that a label's OCR text offers.
+ * @param {unknown} text  full OCR text
+ * @returns {{colourway: string|null, upc: string|null}}
+ */
+function extractLabelExtras(text) {
+  if (typeof text !== "string" || !text.trim()) return { colourway: null, upc: null };
+  let colourway = null;
+  for (const line of text.split(/\r?\n/)) {
+    const hit = detectColourwayLine(line);
+    if (hit) { colourway = hit; break; }
+  }
+  const upcMatch = UPC_RE.exec(text.replace(/[\s-](?=\d)/g, "")) || UPC_RE.exec(text);
+  return { colourway, upc: upcMatch ? upcMatch[1] : null };
+}
+
 // ── Confusable-character retry (tier 3) ──────────────────────────────────────
 // OCR reliably confuses these glyph pairs on a small printed label. When a
 // candidate misses in BOTH the cache and the catalog, we retry the LOOKUP with
@@ -306,7 +389,7 @@ function imageHash(buffer) {
  * The ONLY shape written to /style_code_ocr_cache. Deliberately tiny, and
  * constructed rather than spread, so a fat payload cannot leak in by accident.
  */
-function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_MS, tokens = null }) {
+function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_MS, tokens = null, extras = null }) {
   const codes = (Array.isArray(candidates) ? candidates : [])
     .map((c) => (typeof c === "string" ? normaliseStyleCode(c) : normaliseStyleCode(c && c.normalised)))
     .filter(Boolean)
@@ -331,6 +414,15 @@ function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_
     for (const t of tokens) if (t) tk[String(t)] = true;
     if (Object.keys(tk).length) rec.tk = tk;
   }
+  // Label extras (colourway line / UPC / model name) ride the cache too, in
+  // short keys and bounded lengths — a retake must not re-bill to re-learn a
+  // line the first read already extracted. Absent values are OMITTED, never
+  // stored as null (RTDB drops nulls; omit-don't-copy is the house rule).
+  if (extras && typeof extras === "object") {
+    if (typeof extras.colourway === "string" && extras.colourway) rec.cw = extras.colourway.slice(0, 64);
+    if (typeof extras.upc === "string" && extras.upc) rec.upc = extras.upc.slice(0, 14);
+    if (typeof extras.modelName === "string" && extras.modelName) rec.mn = extras.modelName.slice(0, 64);
+  }
   return rec;
 }
 
@@ -350,6 +442,9 @@ function isOcrCacheFresh(record, nowMs) {
 module.exports = {
   labelFingerprint,
   labelTokens,
+  COLOUR_LEXICON,
+  detectColourwayLine,
+  extractLabelExtras,
   MASK_PATTERNS,
   EXTRACTION_PATTERNS,
   MAX_CANDIDATES,

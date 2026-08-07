@@ -13,6 +13,7 @@
 import { normaliseStyleCode } from "../../utils/styleCode.js";
 import { isMergedAway } from "../../utils/mergedProducts.js";
 import { productIsFootwear } from "../../utils/footwearLine.js";
+import { claimOwnerIds, allRegisteredSiblings } from "../../utils/styleCodeSiblings.js";
 
 // The ONLY hubs this feature touches. A closed list, deliberately NOT derived
 // from the location registry: the registry contains hub3 (Pine's lane), and
@@ -154,35 +155,88 @@ export function countPanelFor(product, size = null) {
 }
 
 // Resolve a STYLE NUMBER (label-read or typed) to its product, in count mode.
-// /style_code_index is THE authority on who owns a code, so a claim row wins;
-// the local catalogue match is the fallback for codes carried on products that
-// pre-date the index. Outcomes:
-//   { kind: "claim", productId }         the index answered — caller follows
-//                                        the id (and any merge pointer)
+// /style_code_index is THE authority on who owns a code — and a code may now
+// own SEVERAL products (colourway siblings, utils/styleCodeSiblings.js). The
+// ONE unbreakable rule (owner spec 2026-08-07): a code that resolves to MORE
+// THAN ONE product NEVER resolves silently. The operator sees every candidate
+// side by side and picks, or says "none of these". A code owning exactly one
+// product still resolves in one step, exactly as before. Outcomes:
+//   { kind: "claim", productId }         the index named ONE owner — caller
+//                                        follows the id (and any merge pointer)
 //   { kind: "product", product }         a single live catalogue owner
-//   { kind: "duplicate", products }      two live owners — route to merge
+//   { kind: "choose", products,          2+ candidates — the human picks.
+//     siblings, unloadedIds }            `siblings` true = the index vouches
+//                                        for ALL of them (colourways, no
+//                                        merge banner); false = at least one
+//                                        pairing is an unexplained collision.
 //   { kind: "unresolved", normalised }   a CLEAN read that nothing owns: the
 //                                        never-registered signal, the primary
 //                                        detector of this whole pass
 export function resolveStyleNumber(code, { products = [], claim = null } = {}) {
   const normalised = normaliseStyleCode(code);
   if (!normalised) return { kind: "unresolved", normalised: "" };
-  const owners = styleCodeOwners(normalised, products);
+
+  // Candidates from BOTH directions: products STAMPED with the code (codes
+  // that pre-date the index — this repo's own twin-collision incident), and
+  // products the INDEX names as owners (primary + siblings), resolved against
+  // the loaded catalogue. Neither alone sees everything.
+  const stamped = styleCodeOwners(normalised, products);
+  const indexOwnerIds = claimOwnerIds(claim);
+  const byId = new Map(stamped.map((p) => [p.id, p]));
+  const unloadedIds = [];
+  for (const id of indexOwnerIds) {
+    if (byId.has(id)) continue;
+    const p = (products || []).find((x) => x && x.id === id && !isMergedAway(x));
+    if (p) byId.set(id, p);
+    else unloadedIds.push(id); // named by the index but not visible here
+  }
+  const candidates = [...byId.values()];
+
+  if (candidates.length === 1 && !unloadedIds.length) {
+    // Exactly one visible candidate and the index names nothing else: the
+    // one-owner fast path, unchanged.
+    const only = candidates[0];
+    if (claim && claim.productId === only.id) return { kind: "claim", productId: only.id, normalised };
+    if (!indexOwnerIds.length) return { kind: "product", product: only, normalised };
+    // The index names exactly this product (as primary or sibling) — follow it.
+    return { kind: "claim", productId: only.id, normalised };
+  }
+
+  if (candidates.length + unloadedIds.length > 1) {
+    return {
+      kind: "choose",
+      products: candidates,
+      normalised,
+      claimProductId: claim && claim.productId ? claim.productId : null,
+      // True only when the index vouches for EVERY candidate — then this is a
+      // set of registered colourways, and no merge banner belongs on it.
+      siblings: allRegisteredSiblings(claim, candidates.map((p) => p.id)) && !unloadedIds.length,
+      unloadedIds,
+    };
+  }
+
   if (claim && claim.productId) {
-    // A claim does NOT get to mask a twin: codes that pre-date the index can
-    // sit on live catalogue records the claim system never saw (this repo's
-    // own twin-collision incident). Any live owner that is NOT the claimed
-    // product is the duplicate case — surfaced, never silently routed past.
-    const others = owners.filter((p) => p.id !== claim.productId);
-    if (others.length) {
-      const claimed = owners.find((p) => p.id === claim.productId) || null;
-      return { kind: "duplicate", products: claimed ? [claimed, ...others] : others, normalised, claimProductId: claim.productId };
-    }
+    // The index names one owner we cannot see locally — follow it anyway; the
+    // caller fetches the product (and its merge pointer) by id.
     return { kind: "claim", productId: claim.productId, normalised };
   }
-  if (owners.length === 1) return { kind: "product", product: owners[0], normalised };
-  if (owners.length > 1) return { kind: "duplicate", products: owners, normalised };
   return { kind: "unresolved", normalised };
+}
+
+// ── THE REGISTRATION COLLISION QUESTION (owner spec 2026-08-07) ──────────────
+// At registration the operator has ALREADY selected the product — a human has
+// vouched for the identity — so a code owned by a DIFFERENT product is a
+// QUESTION, never an automatic anything:
+//   "none"     no collision — save proceeds
+//   "ask"      collision, unanswered — the save is HELD until the human says
+//              "same shoe" (→ merge flow) or "different colourway" (→ sibling)
+//   "resolved" answered "different colourway" (or the index already registers
+//              the pair as siblings) — save proceeds, both keep the code
+// Silence is not an outcome. There is no branch that resolves a collision
+// without an answer, and the test suite mutation-proves that.
+export function collisionQuestion({ conflictOwners = [], siblingOk = false } = {}) {
+  if (!conflictOwners || !conflictOwners.length) return "none";
+  return siblingOk ? "resolved" : "ask";
 }
 
 // Live products already claiming this code — the duplicate case, surfaced

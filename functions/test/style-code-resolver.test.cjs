@@ -644,7 +644,10 @@ test("the claim is read and reported as authority", async () => {
   });
   const out = await runResolve(db, { code: "IE3437", providers: providersFor(db, fakeKicksDb({})), actor: ACTOR, nowMs: NOW });
 
-  assert.deepStrictEqual(out.claim, { productId: "p3", claimedAt: 123, claimedBy: "u9" });
+  // siblingIds joined the claim shape when one code became able to own several
+  // colourways (style-code-siblings.cjs); a legacy one-owner claim reads as [].
+  assert.deepStrictEqual(out.claim, { productId: "p3", claimedAt: 123, claimedBy: "u9", siblingIds: [] });
+  assert.deepStrictEqual(out.owners, ["p3"]);
   assert.strictEqual(out.claimOrphaned, false);
 });
 
