@@ -16,15 +16,26 @@ import TestRenderer, { act } from "react-test-renderer";
 // i.e. the half-open window [2026-08-05T22:00Z, 2026-08-06T22:00Z).
 const NOW = Date.parse("2026-08-07T07:00:00.000Z");
 
+// ── THE MOCK KEEPS THE QUERY, NOT JUST THE PATH ──────────────────────────────
+// A mock that throws away orderByChild/startAt/endAt cannot tell a range-scoped
+// read from a whole-node one, so the two things this view exists to guarantee —
+// movements are date-bounded against the `ts` index, and the unindexed request
+// fallback is read ONCE per mount rather than on every chip tap — would both
+// pass after a regression. On a project already billed hundreds of dollars for
+// an unindexed whole-node read, that is the assertion worth having.
+// (CodeRabbit, PR #332.)
 const reads = {};
+const readCalls = [];
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
-  query: (r) => r,
-  orderByChild: () => ({}),
-  startAt: () => ({}),
-  endAt: () => ({}),
-  get: (r) => Promise.resolve({ val: () => reads[r.path] ?? null }),
+  query: (r, ...constraints) => ({ ...r, constraints }),
+  orderByChild: (field) => ({ kind: "orderByChild", field }),
+  startAt: (value) => ({ kind: "startAt", value }),
+  endAt: (value) => ({ kind: "endAt", value }),
+  get: (r) => { readCalls.push(r); return Promise.resolve({ val: () => reads[r.path] ?? null }); },
 }));
+const callsTo = (path) => readCalls.filter((r) => r.path === path);
+const constraintsOf = (r) => Object.fromEntries((r.constraints || []).map((c) => [c.kind, c.field ?? c.value]));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => NOW, serverNowIso: () => new Date(NOW).toISOString() }));
 
@@ -58,6 +69,7 @@ const clickRange = async (tree, label) => {
 
 beforeEach(() => {
   for (const k of Object.keys(reads)) delete reads[k];
+  readCalls.length = 0;
   reads["refill_requests"] = {
     // IN RANGE, rejected by a human — no cancelReason, with a role and a uid.
     rej: {
@@ -145,6 +157,53 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     expect(out).toContain("2026-08-01");
     expect(out).toContain("Refilled");
     expect(out).toContain("size 9");
+  });
+
+  // ── BANDWIDTH, ASSERTED RATHER THAN COMMENTED ──────────────────────────────
+  it("movements are read DATE-RANGED against the ts index, never as a whole node", async () => {
+    await render();
+    const mv = callsTo("stock_movements");
+    expect(mv).toHaveLength(1);
+    const c = constraintsOf(mv[0]);
+    expect(c.orderByChild).toBe("ts");
+    // today, SA — the half-open window, sent to the server rather than filtered here
+    expect(c.startAt).toBe("2026-08-06T22:00:00.000Z");
+    expect(c.endAt).toBe("2026-08-07T22:00:00.000Z");
+  });
+
+  it("a range change re-queries MOVEMENTS but does NOT re-read the whole request node", async () => {
+    // The unindexed fallback reads all ~11,800 requests and filters in memory,
+    // so the range is not part of that query. Re-reading on every chip tap would
+    // pull ~3.7 MB each time — the exact spend this view exists to avoid.
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
+    await act(async () => {});
+    expect(callsTo("refill_requests")).toHaveLength(1);
+    expect(callsTo("stock_movements")).toHaveLength(1);
+
+    await clickRange(tree, "Yesterday");
+    await clickRange(tree, "Last 7 days");
+    await clickRange(tree, "This month");
+    tree.unmount();
+
+    expect(callsTo("refill_requests"), "one whole-node read per mount, not per range").toHaveLength(1);
+    expect(callsTo("stock_movements").length, "movements re-query per range — that is what the index is for").toBeGreaterThan(1);
+    // and every movement read stayed bounded
+    for (const r of callsTo("stock_movements")) {
+      const c = constraintsOf(r);
+      expect(c.orderByChild).toBe("ts");
+      expect(typeof c.startAt).toBe("string");
+      expect(typeof c.endAt).toBe("string");
+    }
+  });
+
+  it("the unindexed request read carries NO query constraints — it is honest about being a full read", async () => {
+    await render();
+    const rr = callsTo("refill_requests");
+    expect(rr).toHaveLength(1);
+    // REQUESTS_INDEXED is false, so there is no index to order by. Firing an
+    // orderByChild here would make RTDB ship the whole node AND sort it.
+    expect(rr[0].constraints ?? []).toEqual([]);
   });
 
   it("the hub filter narrows the list", async () => {
