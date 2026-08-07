@@ -68,6 +68,20 @@ function fakeDb(initial = {}) {
           writes.push({ path, value });
           put(path, value);
         },
+        // Real RTDB transaction semantics, reduced to what the resolver needs:
+        // the callback sees the CURRENT value and returning undefined aborts.
+        // flagDuplicates moved from read-then-set to a transaction (PR #331
+        // re-review — a racing same-shoe answer must never be erased), so the
+        // fake must speak it.
+        async transaction(fn) {
+          if (failWritesMatching && path.includes(failWritesMatching)) throw new Error("simulated write failure");
+          const cur = at(path);
+          const out = fn(cur === undefined ? null : cur);
+          if (out === undefined) return { committed: false, snapshot: { val: () => (cur === undefined ? null : cur) } };
+          writes.push({ path, value: out });
+          put(path, out);
+          return { committed: true, snapshot: { val: () => out } };
+        },
         orderByChild(field) {
           return {
             equalTo(target) {
