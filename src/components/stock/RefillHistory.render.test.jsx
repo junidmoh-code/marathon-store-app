@@ -216,14 +216,44 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     expect(c.endAt).toBe("2026-08-07T22:00:00.000Z");
   });
 
-  it("a range change re-queries MOVEMENTS but does NOT re-read the whole request node", async () => {
-    // The unindexed fallback reads all ~11,800 requests and filters in memory,
-    // so the range is not part of that query. Re-reading on every chip tap would
-    // pull ~3.7 MB each time — the exact spend this view exists to avoid.
+  // ── THE TEST THAT FAILS IF THE FLAG IS FLIPPED BACK ───────────────────────
+  // This is the whole point of the index going live: /refill_requests must be
+  // read through a RANGE-SCOPED orderByChild, never as a whole node. Setting
+  // REQUESTS_INDEXED back to false makes the component issue one unconstrained
+  // get() instead, and every assertion below fails.
+  it("requests are read DATE-RANGED against the createdAt/resolvedAt index, NEVER as a whole node", async () => {
+    await render();
+    const rr = callsTo("refill_requests");
+    // TWO queries: a request raised last month and fulfilled yesterday belongs
+    // in yesterday's history, and one index cannot answer both ends.
+    expect(rr).toHaveLength(2);
+
+    const fields = rr.map((r) => constraintsOf(r).orderByChild).sort();
+    expect(fields).toEqual(["createdAt", "resolvedAt"]);
+
+    for (const r of rr) {
+      const c = constraintsOf(r);
+      // NOT A WHOLE-NODE READ: every query carries an ordering AND both bounds.
+      // An unconstrained read is exactly what the fallback did.
+      expect(c.orderByChild, "an unordered read of this node is a full download").toBeTruthy();
+      // today, SA — the half-open window, sent to the SERVER rather than
+      // filtered here
+      expect(c.startAt).toBe("2026-08-06T22:00:00.000Z");
+      expect(c.endAt).toBe("2026-08-07T22:00:00.000Z");
+    }
+    // and nothing read the node without constraints
+    expect(rr.filter((r) => (r.constraints ?? []).length === 0)).toEqual([]);
+  });
+
+  it("a range change re-queries BOTH nodes, and every query stays bounded", async () => {
+    // With the index live the range IS the query, so a new range means a new
+    // read — of both nodes. That is correct and cheap: each read is bounded by
+    // the window. The old fallback re-read nothing because it had already pulled
+    // everything.
     let tree;
     await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
     await act(async () => {});
-    expect(callsTo("refill_requests")).toHaveLength(1);
+    expect(callsTo("refill_requests")).toHaveLength(2);   // createdAt + resolvedAt
     expect(callsTo("stock_movements")).toHaveLength(1);
 
     await clickRange(tree, "Yesterday");
@@ -231,24 +261,27 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     await clickRange(tree, "This month");
     tree.unmount();
 
-    expect(callsTo("refill_requests"), "one whole-node read per mount, not per range").toHaveLength(1);
-    expect(callsTo("stock_movements").length, "movements re-query per range — that is what the index is for").toBeGreaterThan(1);
-    // and every movement read stayed bounded
-    for (const r of callsTo("stock_movements")) {
+    expect(callsTo("refill_requests").length, "requests re-query per range — that is what the index is for").toBeGreaterThan(2);
+    expect(callsTo("stock_movements").length, "movements too").toBeGreaterThan(1);
+
+    // EVERY read of either node, across every range, stayed range-scoped.
+    for (const r of [...callsTo("refill_requests"), ...callsTo("stock_movements")]) {
       const c = constraintsOf(r);
-      expect(c.orderByChild).toBe("ts");
+      expect(c.orderByChild, `unbounded read of ${r.path}`).toBeTruthy();
       expect(typeof c.startAt).toBe("string");
       expect(typeof c.endAt).toBe("string");
     }
   });
 
-  it("the unindexed request read carries NO query constraints — it is honest about being a full read", async () => {
-    await render();
-    const rr = callsTo("refill_requests");
-    expect(rr).toHaveLength(1);
-    // REQUESTS_INDEXED is false, so there is no index to order by. Firing an
-    // orderByChild here would make RTDB ship the whole node AND sort it.
-    expect(rr[0].constraints ?? []).toEqual([]);
+  it("no unconstrained read of either node is ever issued", async () => {
+    // The single sentence this whole feature's cost story rests on.
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
+    await act(async () => {});
+    await clickRange(tree, "Last 7 days");
+    tree.unmount();
+    const unbounded = readCalls.filter((r) => (r.constraints ?? []).length === 0);
+    expect(unbounded.map((r) => r.path)).toEqual([]);
   });
 
   // ── ACCESSIBILITY, ASSERTED ────────────────────────────────────────────────

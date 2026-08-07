@@ -400,10 +400,18 @@ describe("totalsFor", () => {
 });
 
 describe("bandwidth guard", () => {
-  it("ships with the unindexed /refill_requests query OFF", () => {
-    // Flipping this true while the rules lack ".indexOn": ["createdAt",
-    // "resolvedAt"] makes every range query download all ~11,800 records — the
-    // exact unindexed whole-node read this project has already been billed for.
-    expect(REQUESTS_INDEXED).toBe(false);
+  it("uses the INDEX-BACKED range query for /refill_requests", () => {
+    // The index went live in the console on 2026-08-07:
+    //     "refill_requests": { ".indexOn": ["createdAt", "resolvedAt"], ... }
+    // Verified before flipping: a ranged REST query on createdAt returned 125
+    // rows and on resolvedAt 175, while the same query on an unindexed field
+    // (productId) failed with HTTP 400 "Index not defined" — so the check really
+    // does distinguish an indexed field from an unindexed one.
+    //
+    // Flipping this back to false without ALSO removing the index would silently
+    // restore a full read of ~11,800 records per mount. The queries themselves
+    // are asserted in RefillHistory.render.test.jsx, which is what actually
+    // fails if this is reverted; this line states the intent.
+    expect(REQUESTS_INDEXED).toBe(true);
   });
 });
