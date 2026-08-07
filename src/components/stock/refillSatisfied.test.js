@@ -218,14 +218,18 @@ describe("engineSizeKey is a faithful mirror of the engine's encodeSizeKey", () 
       "one\tsize", "one\nsize", 5.5, 8,             // other whitespace, and numbers
     ];
     for (const s of inputs) {
-      // coverableSize() is TRUE exactly when the two encoders agree, so it is
-      // the honest predicate to assert against — not an assumption that they
-      // always match (they deliberately do not, for "Free Size").
-      const agrees = engineSizeKey_(s) === stockKey_(s);
-      expect(coverableSize(s), `coverableSize must report agreement for ${JSON.stringify(s)}`).toBe(agrees);
-      if (agrees) {
-        expect(engineSizeKey_(s), `mirror must equal the engine for ${JSON.stringify(s)}`).toBe(encodeSizeKey(s));
-      }
+      // TWO SEPARATE CLAIMS, both asserted UNCONDITIONALLY. Guarding the mirror
+      // check behind "the encoders agree" skipped it on exactly the inputs that
+      // matter — the disagreement cases are where a drifting mirror would do its
+      // damage, because those are the ones coverableSize() has to refuse.
+      // (CodeRabbit, PR #332.)
+      //
+      // 1. the mirror IS the engine, on every input
+      expect(engineSizeKey_(s), `mirror must equal the engine encoder for ${JSON.stringify(s)}`)
+        .toBe(encodeSizeKey(s));
+      // 2. coverableSize reports agreement between the engine and the CLIENT
+      expect(coverableSize(s), `coverableSize must report engine/client agreement for ${JSON.stringify(s)}`)
+        .toBe(encodeSizeKey(s) === stockKey_(s));
     }
   });
 
