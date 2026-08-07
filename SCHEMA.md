@@ -45,6 +45,10 @@ Each product is its own node. `productId` is generated client-side as
 | **`styleCodeExemptReason`** | **`"no_code_exists"` \| `"label_unreadable"` \| `"label_missing"`** | **no** | **Why. The split is what makes the bypass rate diagnosable: a rising `no_code_exists` means the product mix is shifting; a rising `label_*` means something is wrong with how stock reaches us, or how people look for the code.** |
 | **`styleCodeExemptBy`** | **string \| null**           | **no**   | **uid of whoever bypassed. Opaque uid only — never an email.** |
 | **`styleCodeExemptAt`** | **number (epoch ms)**        | **no**   | **`serverNowMs()`, never the device clock.** |
+| **`labelColorway`** | **string (≤64)**                  | **no**   | **The colourway line as PRINTED on the tongue label, when the label prints one ("WOLF GREY/PHOTO BLUE" — RTFKT-style Nike does, the standard label does not). Evidence + ordering signal + name prefill; NEVER identity. Extracted through a conservative slash-and-colour-lexicon gate (`extractLabelExtras`, `functions/lib/style-code-ocr.cjs`); omitted when absent.** |
+| **`labelUpc`** | **string (12-14 digits)**              | **no**   | **The UPC/EAN/GTIN digits printed on the label. NON-AUTHORITATIVE by design: a genuine UPC is per size-SKU, yet this stock reuses one UPC across a size run (HF5509-002 across US 7/8/8.5), so nothing may ever key on it, and it is NEVER written to `/barcodes` (our own minted namespace). Omitted when absent.** |
+| **`labelModelName`** | **string (≤64)**                 | **no**   | **The model-name line off the label when tier 2 could read one ("DUNK GENESIS"). Prefill and ordering only. Omitted when absent.** |
+| **`dominantColours`** | **`[{r,g,b,w}]` (≤3)**          | **no**   | **Top colour swatches off a photo of the shoe (`src/utils/dominantColours.js`, coarse quantisation — deliberately NOT embeddings). ORDERS the sibling-colourway candidate picker so the likely match sits first; NEVER auto-selects (mutation-proved). Omitted when no photo was taken.** |
 | **`mergedInto`**  | **string (productId)**            | **no**   | **THE REDIRECT POINTER. Written ONLY by the server-side `mergeProducts` callable (`functions/lib/product-merge.cjs`) when this record loses a merge. A product carrying it is INVISIBLE client-side — dropped at the ONE chokepoint (`useProducts` → `filterMergedProducts`) so it is gone from search, every list and every picker. The record itself is NEVER deleted: its id is stamped on old sales, laybys, movements and barcode rows, and by-id lookups follow the pointer (`src/utils/mergedProducts.followMerge`, cycle-guarded). Its stock cells are gone (moved to the survivor at the same locations), its `/barcodes` rows and `/style_code_index` claims repoint to the survivor.** |
 | **`mergedAt`** / **`mergedBy`** | **number (epoch ms) / uid** | **no** | **When and who. Server-stamped beside `mergedInto`.** |
 | **`depletedAt`**  | **ISO string \| null**            | **no**   | **Phase 15 — RETIRED. Was a product-level depletion flag (blurred + un-orderable + Depleted Products tab). The blocking feature is gone: writers no longer set it and readers ignore it; any legacy value is inert. Products are always live & orderable. Safe to ignore / backfill-clear later.** |
@@ -227,12 +231,49 @@ we asked for. No prefix match, no similarity score.
 
 | Field | Type | Notes |
 |---|---|---|
-| `productId` | string | **Required.** The product that owns this code. |
+| `productId` | string | **Required.** The PRIMARY claimant — the first product to own this code. |
 | `claimedAt` | number (epoch ms) | **Required.** |
 | `claimedBy` | string | Optional, but when present the rules require it to equal `auth.uid`. |
+| `siblings` | `{ {productId}: {addedAt, addedBy?, origin?} }` | **Server-written ONLY** (the `styleCodeSibling` callable, Admin SDK — the client claim rule permits no extra children, by design). Each key is a further product that legitimately OWNS this code as a **colourway sibling**. |
 
-**No other child keys are permitted.** Create-once for any user with a
-`stockRole`; only a `stockRole` admin or the super-admin may overwrite.
+**From the client, no other child keys are permitted** — create-once for any
+user with a `stockRole`; only a `stockRole` admin or the super-admin may
+overwrite. (Note: an admin overwrite via the client `set()`s the whole node
+and would drop `siblings` — prefer the callable or a targeted console edit.)
+
+### One code may own SEVERAL products (colourway siblings, 2026-08-07)
+
+Owner evidence: three Nike size labels — white US 7, white US 8, BLACK US 8.5 —
+all print the SAME style code `HF5509-002`, the SAME UPC and the same factory
+code. The standard Nike tongue label carries **no colourway text**, so the
+label cannot distinguish colourways, and printed codes on this stock are
+**non-authoritative**: the system must never assume one code means one shoe.
+
+- **The OWNERS of a code** = `productId` + every key of `siblings`
+  (`claimOwnerIds` — `functions/lib/style-code-siblings.cjs`, client twin
+  `src/utils/styleCodeSiblings.js`, parity-pinned by test).
+- A **legacy claim with no `siblings` child reads as exactly one owner** — the
+  old shape IS the one-owner case of the new shape, which is why **no data
+  migration exists or was needed**.
+- Two owners sharing a code are **NOT duplicates**: `resolveStyleCode` excludes
+  sibling pairs from `/duplicate_candidates` flagging; only unexplained
+  collisions are flagged.
+- **A code owning 2+ products NEVER resolves silently** — counting shows every
+  candidate side by side (photos LARGE) and the human picks or answers "none
+  of these"; a code owning exactly one product resolves in one step as before.
+- At **registration**, a collision with an existing claim asks ONE question —
+  *"same shoe, or a different colourway?"* — recorded via the
+  `styleCodeSibling` callable: `sameShoe` upserts the `/duplicate_candidates`
+  pair (the existing merge flow takes over); `differentColourway` registers a
+  sibling. Neither direction ever resolves silently.
+- Every answer lands in `/style_code_sibling_events` (Admin-SDK only, no
+  client rules): `{code, productId, otherId, answer, by, at, flagged,
+  flagReasons?}`. Unusually fast sibling growth (≥4 owners, or 2 added in
+  24 h) and repeated `different-colourway` answers for the same pair set
+  `flagged: true` — **logged, never acted on**.
+- `mergeProducts` repoints sibling entries too, and never leaves a survivor
+  listed twice (a primary that merges into its own sibling promotes the
+  survivor to primary and drops its sibling entry).
 
 ### Why claim-first, and never check-then-write
 
