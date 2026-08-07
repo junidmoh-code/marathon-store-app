@@ -30,9 +30,22 @@
 //     orderByChild would be the worst possible outcome: RTDB answers it by
 //     shipping the ENTIRE node and sorting on the client — the exact spend this
 //     view is supposed to avoid, silently. So the ranged query is gated behind
-//     REQUESTS_INDEXED below and stays OFF until the rule is pasted. Until then
-//     the view reads the subscription the Source screen already holds, which
-//     costs nothing extra, and says so on screen.
+//     REQUESTS_INDEXED below and stays OFF until the rule is pasted.
+//
+// WHAT THE FALLBACK COSTS — stated plainly, because an earlier version of this
+// comment was WRONG. It claimed the fallback rode a subscription the Source
+// screen already held. It does not: Hub2RefillQueue, the other consumer of
+// /refill_requests, mounts only on the `clothing` and `hub1refill` tabs, and the
+// history is its own tab. So the fallback is a real, full read of the node
+// (~11,800 rows, ~3.7 MB), filtered in memory.
+//
+// Two things keep that honest rather than cheap-sounding:
+//   • it is a ONE-SHOT get(), not a live onValue listener — a listener would
+//     re-materialise the whole node on every append for as long as the tab is open
+//   • it does NOT re-read when the date range changes, because the range is
+//     applied in memory; one read per mount, not one per chip tap
+// The on-screen banner says the same thing. Pasting the index below replaces
+// this with a genuinely range-scoped query.
 //
 // See REQUESTS_INDEXED for the exact rule line.
 

@@ -201,6 +201,77 @@ describe("lockedRefillIds", () => {
 });
 
 // ─── ENCODER AGREEMENT ───────────────────────────────────────────────────────
+// coverableSize() is only trustworthy if `engineSizeKey` here really is what the
+// engine does. It is a hand-written mirror of encodeSizeKey in
+// functions/lib/refill-engine.cjs and the two regex literals are NOT textually
+// identical, so "it looks the same" is not evidence. This imports the REAL
+// engine encoder and compares them on shared input. (CodeRabbit, PR #332.)
+describe("engineSizeKey is a faithful mirror of the engine's encodeSizeKey", () => {
+  it("agrees with functions/lib/refill-engine.cjs on every representative size", async () => {
+    const { encodeSizeKey } = await import("../../../functions/lib/refill-engine.cjs");
+    const inputs = [
+      "3", "6", "10", "11", "5.5", "6.5",           // shoe sizes, incl. half sizes
+      "S", "M", "L", "XL", "XXL", "XXXL",           // clothing
+      "_", "", " ", "  ", null, undefined,          // one-size and blanks
+      "Free Size", "Free  Size", " 8", "8 ",        // whitespace and the label
+      "a.b", "a#b", "a$b", "a[b", "a]b", "a/b",     // every RTDB-illegal character
+      "one\tsize", "one\nsize", 5.5, 8,             // other whitespace, and numbers
+    ];
+    for (const s of inputs) {
+      // coverableSize() is TRUE exactly when the two encoders agree, so it is
+      // the honest predicate to assert against — not an assumption that they
+      // always match (they deliberately do not, for "Free Size").
+      const agrees = engineSizeKey_(s) === stockKey_(s);
+      expect(coverableSize(s), `coverableSize must report agreement for ${JSON.stringify(s)}`).toBe(agrees);
+      if (agrees) {
+        expect(engineSizeKey_(s), `mirror must equal the engine for ${JSON.stringify(s)}`).toBe(encodeSizeKey(s));
+      }
+    }
+  });
+
+  // ── THE TWO REAL DIVERGENCES ────────────────────────────────────────────────
+  // Written down because this test FOUND the second one. The engine's
+  // encodeSizeKey and the client's stockSizeKey differ on exactly two inputs:
+  //
+  //   "Free Size" — stockSizeKey folds it to "_"; the engine makes "Free_Size".
+  //                 The client is right: real one-size stock lives in "_", and a
+  //                 "Free_Size" cell is the phantom that cost hub negatives and
+  //                 orphaned shop stock once already.
+  //   " 8"        — the ENGINE TRIMS before encoding and the client does not.
+  //                 The client is right again, and for the same reason: /stock
+  //                 cells are keyed by stockSizeKey, so a size stored as " 8"
+  //                 physically lives in the cell "_8" while the engine would
+  //                 look up "8" and read straight past it. (The same trap is
+  //                 documented in missingFootwearCore.js, where a local trimming
+  //                 copy of the encoder was removed for exactly this reason.)
+  //
+  // Neither is fixed here — the engine's encoder is shared by every cell read in
+  // the refill pipeline and changing it is a separate, evidence-led change. What
+  // matters for THIS feature is that coverableSize() refuses both, so the client
+  // never promises a withdrawal the engine cannot deliver. Reported in the PR.
+  it("the disagreements are exactly the two known ones — nothing else drifted", async () => {
+    const { encodeSizeKey } = await import("../../../functions/lib/refill-engine.cjs");
+    const disagreeing = ["3", "5.5", "M", "_", "", " ", null, "Free Size", " 8", "8 ", "a.b", 8]
+      .filter((s) => encodeSizeKey(s) !== stockKey_(s));
+    expect(disagreeing).toEqual(["Free Size", " 8", "8 "]);
+    // and coverableSize refuses every one of them
+    for (const s of disagreeing) expect(coverableSize(s)).toBe(false);
+  });
+});
+
+// Local copies of the two encoders, so the parity test can compare them without
+// exporting internals. engineSizeKey_ mirrors refillSatisfied.js's mirror;
+// stockKey_ is the shipped client encoder.
+const engineSizeKey_ = (size) => {
+  const s = String(size == null ? "" : size).trim();
+  return s ? s.replace(/[.#$/[\]\s]/g, "_") : "_";
+};
+const stockKey_ = (size) => {
+  if (size == null || size === "" || size === "Free Size") return "_";
+  const s = typeof size === "number" ? String(size) : size;
+  return typeof s === "string" ? s.replace(/[.#$[\]/\s]/g, "_") : s;
+};
+
 describe("coverableSize", () => {
   it("agrees with the engine on every size that appears in live data", () => {
     for (const s of ["3", "6", "10", "5.5", "S", "M", "XXXL", "_", "", null]) {
