@@ -232,6 +232,100 @@ async function applyResizes({ db, resizes, startedAt, setFn }) {
   return { resized, resizeDrops };
 }
 
+// ─── APPLY: SATISFIED-BY-STOCK WITHDRAWALS ───────────────────────────────────
+// The lock-less half of reconciliation (see the long note above
+// `satisfiedClosures` in refill-engine.cjs). Each closure writes exactly ONE
+// node — the request's own status. It must never touch
+// /refill_engine/open/{dest}/{pid}/{sizeKey}: some OTHER live lock may sit on
+// the same cell, and nulling it would strand a request the engine is waiting on.
+//
+// LIVE CELL RE-CHECK. The transaction guards the STATUS, not the stock condition
+// that justified the withdrawal, and the plan came from a snapshot that may be a
+// minute old. If the covering units sold or moved in that gap, cancelling is
+// wrong AND — for a Missing Sneakers request — unrecoverable: that screen only
+// shows products with zero units at BOTH hubs, so nothing ever re-raises the
+// ask. An engine-created request would self-heal on the next scan; these do not,
+// so they get the extra read. Withdrawals are rare (10 on the day this shipped).
+//
+// ONE UNIT STILL SATISFIES ONE REQUEST — even here. The plan allocates a cell
+// oldest-first across siblings, but this loop re-reads the LIVE cell
+// independently per closure, and a naive `live >= s.qty` test would re-open the
+// very hole the plan's allocation closes: two siblings each asking 2 against a
+// cell the plan saw holding 4, with the live cell since dropped to 2, would BOTH
+// pass, and the second would be cancelled against units the first already
+// claimed. `consumed` carries the allocation into the apply pass. A closure that
+// fails the check consumes nothing — being stale must not deprive a later
+// sibling of stock that is genuinely there. (CodeRabbit, PR #332.)
+//
+// A closure consumes on passing the check, not on the transaction committing. An
+// aborted transaction means the request was resolved by someone else in the gap;
+// re-crediting its units would need a second pass for a case whose only cost is
+// that one sibling stays visible as work for another 15 minutes — the safe
+// direction, and self-healing.
+//
+// db is injected so the whole apply path is testable without firebase-admin.
+// TIME-BOXED, like the intent loop. Two serial RTDB round trips per closure, and
+// this pass runs BEFORE the intent apply — so an unbounded version could spend
+// the whole function budget here and defer every refill of the day. The scenario
+// is not hypothetical: it is precisely this PR's own subject. A bulk manual
+// transfer covering hundreds of lock-less requests is exactly what produces a
+// large satisfiedClosures list.
+//
+// Stopping early loses nothing — the plan is recomputed from scratch every scan,
+// so an unprocessed withdrawal simply re-decides next run. The break is reported
+// rather than silent, so the run record never implies the pass completed.
+// (CodeRabbit, PR #332.)
+async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }) {
+  let satisfied = 0, stale = 0, deferred = 0;
+  const errors = [];
+  const consumed = new Map();
+  for (let i = 0; i < closures.length; i++) {
+    const s = closures[i];
+    if (Date.now() > deadlineMs) {
+      // Count from the INDEX, not from satisfied+stale — a closure can also end
+      // in neither (a transaction that threw is an error, not a stale skip), so
+      // deriving the remainder arithmetically would under-report.
+      deferred = closures.length - i;
+      errors.push(`satisfied pass hit its time budget — ${deferred} withdrawal(s) defer to the next scan`);
+      break;
+    }
+    const cellKey = `${s.dest}|${s.pid}|${s.sizeKey}`;
+    const already = consumed.get(cellKey) || 0;
+    try {
+      const live = (await db.ref(`stock/${s.dest}/${s.pid}/${s.sizeKey}/qty`).once("value")).val();
+      if (!(Math.max(Number(live) || 0, 0) >= already + s.qty)) { stale++; continue; }
+    } catch {
+      // Read failed — we cannot prove the units are still there, so we do not
+      // cancel. The next scan re-decides from truth.
+      stale++; continue;
+    }
+    consumed.set(cellKey, already + s.qty);
+    try {
+      const res = await db.ref(`refill_requests/${s.refillId}`).transaction((cur) => {
+        // NULL-TOLERANT (the #199 lesson): the first pass runs against the cold
+        // local cache and sees null even when the node exists. Returning
+        // undefined there ABORTS permanently — how 2,304 status writes were once
+        // silently lost. Returning null re-probes; a missing node no-ops.
+        if (cur === null) return null;
+        if (cur.status && cur.status !== "open") return;      // resolved meanwhile — leave it
+        return {
+          ...cur,
+          status: s.rrStatus,
+          resolvedAt: startedAt,
+          cancelReason: s.cancelReason,
+          // The audit trail a human needs to believe the withdrawal: what the
+          // cell held at the moment the engine decided the ask was met.
+          satisfiedBy: { location: s.dest, onHand: s.have, requested: s.qty },
+        };
+      });
+      if (res?.committed && res.snapshot?.val()?.status === s.rrStatus) satisfied++;
+    } catch (e) {
+      errors.push(`satisfied ${s.refillId}: ${e?.message || e}`);
+    }
+  }
+  return { satisfied, stale, deferred, errors };
+}
+
 async function runScan() {
   const db = admin.database();
   const nowMs = Date.now();
@@ -387,6 +481,38 @@ async function runScan() {
       }
       counts.closes = applied;
       if (withdrawn) counts.withdrawn = withdrawn;
+    }
+
+    // ── apply satisfied-by-stock withdrawals ─────────────────────────────────
+    // The lock-less half of reconciliation (see the long note above
+    // `satisfiedClosures` in refill-engine.cjs). These requests have NO entry in
+    // /refill_engine/open, so this loop deliberately writes exactly ONE node
+    // each — the request's own status. It must never touch
+    // /refill_engine/open/{dest}/{pid}/{sizeKey}: some OTHER live lock may sit
+    // on the same cell, and nulling it would strand a request the engine is
+    // still waiting on.
+    //
+    // Same null-tolerant conditional transaction as the close path, and for the
+    // same reason (#199): the first callback pass runs against a cold local
+    // cache and sees null even when the node exists — returning `undefined`
+    // there aborts permanently, which is how 2,304 status writes were once
+    // silently lost. Returning null re-probes; a genuinely absent node no-ops.
+    //
+    // The `status === "open"` guard is the whole safety story for the race with
+    // a picker: if Central fulfilled or rejected the request in the snapshot
+    // gap, that write wins and this one stands down. The next scan re-decides
+    // from truth, exactly like every other reconciliation here.
+    if (plan.satisfiedClosures?.length) {
+      // Half the function's apply budget, so a huge satisfied list can never
+      // starve the intent loop that follows (which takes the other half).
+      const r = await applySatisfied({
+        db, closures: plan.satisfiedClosures, startedAt, deadlineMs: nowMs + 100e3,
+      });
+      if (r.satisfied) counts.satisfied = r.satisfied;
+      // Reported so a run record never asserts a withdrawal that did not happen.
+      if (r.stale) counts.satisfiedStale = r.stale;
+      if (r.deferred) counts.satisfiedDeferred = r.deferred;
+      counts.errors.push(...r.errors);
     }
 
     // ── apply the deficit-loop's self-heal streak resets ──────────────────────
@@ -720,4 +846,5 @@ exports.refillHealthScan = onSchedule(
 );
 exports._runScan = runScan; // exported for one-off manual invocation in tests/smoke
 exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/resize-drop-observability.test.cjs
-exports._applyResizes = applyResizes;         // db + writer injected — apply-path accounting is testable with a fake ref
+exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
+exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin

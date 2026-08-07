@@ -702,6 +702,126 @@ function computeRefillPlan(snapshot) {
       }
     }
   }
+  // ─── SATISFIED-BY-STOCK WITHDRAWAL (2026-08-07) ────────────────────────────
+  // WHY THIS PASS EXISTS — the bug it fixes, stated plainly.
+  //
+  // Everything above walks `openIndex` (/refill_engine/open). That is the
+  // engine's OWN lock table, and it is the only thing the reconcile loop can
+  // see. `needGone` on line ~603 already implements the owner's self-reversal
+  // rule ("stock can arrive by paths the engine didn't plan — withdraw the
+  // ask"), and it works correctly — but ONLY for a request the engine itself
+  // created and locked.
+  //
+  // A /refill_requests row can exist with NO lock, and then nothing on earth
+  // closes it but a human. Two populations do exactly that:
+  //
+  //   1. MISSING SNEAKERS (MissingFootwear.jsx `solve` / `request`) writes
+  //      /refill_requests directly — by design, since sneakers must never be
+  //      auto-generated. It never claims a lock, so the engine has never once
+  //      looked at those rows.
+  //   2. ORPHANED ENGINE REQUESTS — a lock removed while its request survived
+  //      (a close whose rr transaction bailed, a partially-applied run). Same
+  //      end state: an immortal "open".
+  //
+  // Measured live 2026-08-07: 146 open requests, 26 with no lock, 10 of those
+  // already fully covered by stock at their own destination. Timberland Premium
+  // 6-Inch Wheat was the reported case — 5 sizes raised into Hub 1 at 20:50 on
+  // 2026-08-06, then MANUALLY TRANSFERRED central→hub1 (transfer
+  // -OzQ4L7BrRds21dcNgkB, 3 units × 5 sizes) at 07:17 the next morning. The
+  // stock was on the shelf; the requests stayed open, and Central kept being
+  // told to pick them.
+  //
+  // SATISFACTION IS A FUNCTION OF THE CELL, NOT OF THE CODE PATH. This pass
+  // asks one question of the destination cell — "does it already hold what this
+  // request asked for?" — and never asks how it got there. A manual transfer, a
+  // supplier receive, a customer return and an engine fulfilment are all the
+  // same answer.
+  //
+  // WHY IT CANNOT CHURN OR LOOP:
+  //  • It only ever CANCELS. It never creates work, so it cannot feed itself.
+  //  • Cancellation is terminal — a cancelled row is never re-opened by any
+  //    code path, and the transaction in refill-scan only fires while the live
+  //    row still reads "open". Each request is withdrawn at most once, ever.
+  //  • The withdrawal condition is monotone in the right direction: it fires
+  //    on stock ARRIVING. A later sale lowering the cell cannot un-cancel
+  //    anything, so there is no oscillation.
+  //  • It cannot fight the deficit loop below. A re-proposal needs a genuine
+  //    target deficit, and this pass only withdraws a request whose need is
+  //    already met — the two can never both be true of one cell in one scan.
+  //  • It cannot fight the MISSING SNEAKERS screen either: that screen only
+  //    shows products with ZERO units at BOTH hubs, and a satisfied cell means
+  //    units > 0, so the card that raised this request cannot even be rendered.
+  //  • ONE UNIT SATISFIES ONE REQUEST. `claimed` below allocates the cell
+  //    oldest-request-first, so two sibling requests on the same cell can never
+  //    both be retired by the same physical pair.
+  //
+  // WHY IT DOES NOT TOUCH LOCKED REQUESTS. A locked request already has
+  // `needGone`, which is strictly better informed: it uses the approved TARGET
+  // and nets off other inbound, so it keeps a request alive when the shelf has
+  // 1 of a target of 3. Withdrawing on the raw request quantity there would
+  // silently downgrade the target policy. Locked cells stay with the loop above.
+  //
+  // WHY IT DOES NOT TOUCH /refill_engine/open. There is no lock to remove — and
+  // blindly nulling the lock path for a request that merely SHARES a cell with
+  // some other live lock would delete a lock the engine is still relying on.
+  // This is applied by its own loop in refill-scan.cjs that writes exactly one
+  // node: the request's own status.
+  const satisfiedClosures = [];
+  {
+    // Locked refillIds are owned by the reconcile loop above — skip them here.
+    const lockedIds = new Set();
+    for (const byPid of Object.values(openIndex)) {
+      for (const bySize of Object.values(byPid || {})) {
+        for (const entry of Object.values(bySize || {})) {
+          if (entry?.refillId) lockedIds.add(entry.refillId);
+        }
+      }
+    }
+    // OLDEST FIRST — a deterministic, replayable allocation. Ties break on the
+    // request id so two rows stamped in the same millisecond (the engine writes
+    // a whole run with one timestamp) still order identically on every scan.
+    const openRows = Object.entries(refillRequests)
+      .filter(([id, r]) => r && r.status === "open" && !lockedIds.has(id) &&
+        r.requestingLocation && r.productId && r.size != null && !r.shadow)
+      .sort((a, b) => String(a[1].createdAt || "").localeCompare(String(b[1].createdAt || "")) || a[0].localeCompare(b[0]));
+    // LOCKED SIBLINGS CLAIM THEIR UNITS FIRST. A lock on the same cell means
+    // those units are already spoken for by a request this pass is not allowed
+    // to touch, so an unlocked sibling must not be retired against them. Being
+    // over-conservative here costs one extra card on a queue; being
+    // under-conservative cancels an ask that — for a Missing Sneakers row —
+    // nothing will ever raise again (that screen only shows products with zero
+    // units at BOTH hubs, so a covered cell hides the card that created it).
+    // (Kimi review, PR #332.)
+    const claimed = new Map();
+    for (const [dest, byPid] of Object.entries(openIndex)) {
+      for (const [pid, bySize] of Object.entries(byPid || {})) {
+        for (const [sizeKey, entry] of Object.entries(bySize || {})) {
+          if (!entry?.refillId) continue;
+          const k = `${dest}|${pid}|${sizeKey}`;
+          claimed.set(k, (claimed.get(k) || 0) + Math.max(num(entry.qty) || 1, 1));
+        }
+      }
+    }
+    for (const [id, r] of openRows) {
+      const dest = r.requestingLocation;
+      const sizeKey = encodeSizeKey(r.size);
+      // A destination the scan did not load has NO stock in `stock` and would
+      // read as 0 — silence, not a wrong withdrawal. Being explicit anyway, so
+      // a future route change can never turn "not loaded" into "not needed".
+      if (!Object.prototype.hasOwnProperty.call(stock, dest)) continue;
+      const k = `${dest}|${r.productId}|${sizeKey}`;
+      const free = avail(cellQty(stock, dest, r.productId, r.size)) - (claimed.get(k) || 0);
+      const want = Math.max(num(r.qty) || 1, 1);
+      if (free < want) continue;
+      claimed.set(k, (claimed.get(k) || 0) + want);
+      satisfiedClosures.push({
+        refillId: id, dest, pid: r.productId, sizeKey, size: r.size,
+        qty: want, have: avail(cellQty(stock, dest, r.productId, r.size)),
+        rrStatus: "cancelled", cancelReason: "already_in_stock",
+      });
+    }
+  }
+
   // Manual refill lines stuck too long are equally worth surfacing.
   for (const [id, o] of Object.entries(orders)) {
     if (!o || o.customerName !== "Shop Refill" || o.autoRefill) continue;
@@ -1625,6 +1745,9 @@ function computeRefillPlan(snapshot) {
   return {
     intents: plannedIntents,
     closes,
+    // Lock-less open requests whose destination cell already holds what they
+    // asked for. Applied by its own loop (status write only, no lock touch).
+    satisfiedClosures,
     resizes,
     streakOps,
     retryOps,

@@ -24,8 +24,8 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, update, get } from "firebase/database";
-import { database } from "../../firebase";
-import { useRefillRequests, useStockCells, useStockExceptions } from "./useStock";
+import { database, auth } from "../../firebase";
+import { useRefillRequests, useStockCells, useStockExceptions, useEngineOpen } from "./useStock";
 import { sizeRank } from "./hubSizeRank";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
@@ -33,6 +33,7 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bRed } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { formatDuration, refillAgeTone } from "../../utils/duration";
+import { partitionSatisfied, lockedRefillIds } from "./refillSatisfied";
 
 const SOURCE_LOC = "central";
 // HUB-AGNOSTIC (2026-07-30). This queue was written when only Hub 2 received
@@ -99,6 +100,28 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   const allRequests = useRefillRequests();
   const openRequests = useMemo(() => allRequests.filter((r) => r.status === "open"), [allRequests]);
   const centralCells = useStockCells(SOURCE_LOC);
+  // ── ALREADY IN STOCK (2026-08-07) ──────────────────────────────────────────
+  // The DESTINATION's own cells, so a request the shelf has already answered
+  // stops being presented as work. This is the visible half of the fix for
+  // requests that outlived their need: items ordered to Hub 1 and then manually
+  // transferred stayed on this queue indefinitely, because until now nothing
+  // reconciled a request that carries no /refill_engine/open lock (Missing
+  // Sneakers writes /refill_requests directly, by design). The engine now
+  // withdraws them for real — see satisfiedClosures in refill-engine.cjs — but
+  // that runs every 15 minutes, and nobody should re-pick finished work while
+  // waiting for a scan.
+  //
+  // COST: one extra scoped subscription (stock/{dest}: ~0.4 MB hub1, ~1.0 MB
+  // hub2) on a screen that already subscribes to all of /refill_requests
+  // (~3.7 MB) and stock/central. Scoped by location deliberately — never the
+  // whole /stock node.
+  const destCells = useStockCells(DEST_LOC);
+  // The engine's LOCK table (~20 KB). A locked request is owned by the engine's
+  // needGone rule, which nets against the approved TARGET and correctly keeps a
+  // request the raw quantity alone would retire. Hiding one of those would make
+  // real work invisible to everyone — see partitionSatisfied's long note.
+  const engineOpen = useEngineOpen();
+  const lockedIds = useMemo(() => lockedRefillIds(engineOpen), [engineOpen]);
   const now = useNowMinute();
   const [view, setView] = useState("open"); // "open" | "history"
   // v9 actionable-only: every card below IS ready to fulfil (the engine only
@@ -129,10 +152,21 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const canTransfer = ["store", "warehouse", "admin"].includes(actorRole);
 
+  // Requests for THIS destination, split into work that is still real and work
+  // the destination's own shelf has already answered (see refillSatisfied.js).
+  // Shadow previews are excluded from the split: they are read-only pictures of
+  // what Live Mode would do, and "already covered" is a statement about a real
+  // ask. They stay in the card list exactly as before.
+  const { actionable, covered } = useMemo(() => {
+    const mine = openRequests.filter((r) => r.requestingLocation === DEST_LOC && r.productId);
+    const shadows = mine.filter((r) => r.shadow);
+    const split = partitionSatisfied(mine.filter((r) => !r.shadow), destCells, lockedIds);
+    return { actionable: [...split.actionable, ...shadows], covered: split.covered };
+  }, [openRequests, destCells, lockedIds, DEST_LOC]);
+
   const cards = useMemo(() => {
     const byPid = new Map();
-    for (const r of openRequests) {
-      if (r.requestingLocation !== DEST_LOC || !r.productId) continue;
+    for (const r of actionable) {
       if (!byPid.has(r.productId)) byPid.set(r.productId, []);
       byPid.get(r.productId).push(r);
     }
@@ -157,7 +191,7 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
       const bm = Number.isFinite(b.raisedMs) ? b.raisedMs : Infinity;
       return am - bm; // ascending createdAt = oldest (longest waiting) first
     });
-  }, [openRequests, byId]);
+  }, [actionable]);
 
   // Fulfilled history for Hub 2 — total delay (raised → fulfilled), most-recently
   // fulfilled first, capped so the list can't render thousands. Derived from the
@@ -237,6 +271,20 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
             [`refill_requests/${r.id}/status`]: "fulfilled",
             [`refill_requests/${r.id}/fulfilledBy`]: { movementId: `rrf_${r.id}`, qty, ...(counted ? {} : { uncounted: true }) },
             [`refill_requests/${r.id}/resolvedAt`]: serverNowIso(),
+            // A withdrawal that landed in the gap between the live re-read above
+            // and this write would leave its cancelReason sitting on a row now
+            // marked fulfilled — a record that reads "withdrawn because the
+            // destination already held enough" AND "picked and sent". The stock
+            // move is real, so fulfilled is the true status; clear the stale
+            // reason so the audit trail says one thing. (Kimi review, PR #332.)
+            [`refill_requests/${r.id}/cancelReason`]: null,
+            // WHO, not just what role (2026-08-07). `rejectedBy`/`fulfilledBy`
+            // recorded only "warehouse"/"admin", which cannot answer "who
+            // rejected this?" — the question the refill history has to answer.
+            // The uid is the durable identity; the history resolves it against
+            // /users for a name. Omitted (never written as undefined) when
+            // there is no signed-in user, per the omit-don't-copy rule.
+            ...(auth.currentUser?.uid ? { [`refill_requests/${r.id}/resolvedBy`]: auth.currentUser.uid } : {}),
           });
           ok += qty;
         } catch { fail += 1; }
@@ -246,10 +294,15 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
     if (denied.length) {
       const upd = {};
       const nowIso = serverNowIso();
+      const uid = auth.currentUser?.uid || null;
       for (const r of denied) {
         upd[`refill_requests/${r.id}/status`] = "cancelled";
         upd[`refill_requests/${r.id}/resolvedAt`] = nowIso;
         upd[`refill_requests/${r.id}/rejectedBy`] = actorRole || "unknown";
+        // WHO rejected it, not just which role (2026-08-07) — see the fulfil
+        // path above. `rejectedBy` keeps its role meaning for the 440 rows that
+        // already carry it; this is the person.
+        if (uid) upd[`refill_requests/${r.id}/resolvedBy`] = uid;
         // Deliberately NO cancelReason — that field marks engine self-withdrawals.
       }
       try { await update(ref(database), upd); rejected = denied.length; }
@@ -315,10 +368,40 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
     );
   }
 
+  // ALREADY COVERED — requests this destination's own shelf has answered, by
+  // whatever route the stock took. Stated, never silently dropped: the note
+  // names the products and says exactly what happens next, so a picker who
+  // remembers raising them can see why they left the queue.
+  const coveredNote = covered.length ? (
+    <div style={{ ...GLASS, padding: "12px 14px", margin: "0 0 12px", borderColor: "rgba(74,222,128,.3)" }}>
+      <div style={{ color: GREEN, fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
+        {covered.length} request{covered.length === 1 ? "" : "s"} already covered by stock at {destLabel}
+      </div>
+      {/* NO TIME GUARANTEE. The scan is `every 15 minutes from 07:00 to 19:00`
+          SAST — it does not run overnight, and the case that prompted this
+          feature was raised at 20:50. Promising "within 15 minutes" would have
+          been false for the very requests it was written for. */}
+      <div style={{ color: GRAY, fontSize: 11.5, lineHeight: 1.5 }}>
+        The units are on the shelf — however they got there (manual transfer, receive, return).
+        Nothing to pick. The engine withdraws these when it next runs (it scans through the
+        trading day, not overnight).
+      </div>
+      <div style={{ color: GRAY, fontSize: 11.5, marginTop: 7, display: "flex", flexWrap: "wrap", gap: "3px 10px" }}>
+        {covered.map((r) => (
+          <span key={r.id} style={{ whiteSpace: "nowrap" }}>
+            <b style={{ color: "rgba(255,255,255,.8)" }}>{byId.get(r.productId)?.name || r.productId}</b>
+            {" "}size {String(r.size)} — asked ×{r.qty || 1}, {r.onHand} here
+          </span>
+        ))}
+      </div>
+    </div>
+  ) : null;
+
   if (!cards.length) {
     return (
       <div style={{ paddingBottom: 30 }}>
         {toggle}
+        {coveredNote}
         <div style={{ ...GLASS, padding: 16, margin: "8px 0", color: GRAY, fontSize: 13 }}>
           {`No refill requests Central can act on right now. When ${destLabel} drops below its`}
           approved targets AND Central has the stock, requests appear here automatically.
@@ -331,6 +414,7 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   return (
     <div style={{ paddingBottom: 30 }}>
       {toggle}
+      {coveredNote}
       <div style={{ color: GRAY, fontSize: 11.5, margin: "6px 2px 10px" }}>
         <b style={{ color: GREEN }}>{cards.length} ready to fulfil</b> — created against live Central stock; if a size
         sold out since, the card withdraws itself on the next scan (≤15 min). Longest-waiting first.

@@ -40,6 +40,7 @@ import HubCleanup from "./components/stock/HubCleanup";
 import HubCleanupCard from "./components/stock/HubCleanupCard";
 import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 import Hub2RefillQueue from "./components/stock/Hub2RefillQueue";
+import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
 import AttentionView from "./components/stock/AttentionView";
 import MarketingView from "./components/stock/MarketingView";
@@ -13332,8 +13333,11 @@ const SOURCE_TAB_ICON = {
   // Hub 1 lane — a shoe, since this lane exists for sneakers. (CodeRabbit #291:
   // a missing entry renders an empty <svg> rather than falling back.)
   hub1refill: <><path d="M2 17h20v2a1 1 0 01-1 1H3a1 1 0 01-1-1v-2z"/><path d="M2 17l1.5-5A2 2 0 015.4 10.6L9 10l3 3h6a4 4 0 014 4"/></>,
+  // Refill history — a calendar, since this lane is chosen by DATE RANGE. The
+  // "history" glyph above is already taken by the customer-request history.
+  refillhistory: <><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></>,
 };
-const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"],["hub1refill","Hub 1 Refill"]];
+const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"],["hub1refill","Hub 1 Refill"],["refillhistory","Refill History"]];
 
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [tab, setTab] = usePersistedTab("source", "today");
@@ -13657,8 +13661,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     <>
       {/* Hidden on the two refill tabs as well: each is already scoped to ONE
           hub, so a Hub 1 / Hub 2 pill above it does nothing and reads as though
-          the queue below could be switched. (CodeRabbit, PR #291 — Minor.) */}
-      {tab !== "clothing" && tab !== "onhold" && tab !== "hub1refill" && (
+          the queue below could be switched. (CodeRabbit, PR #291 — Minor.)
+          Refill History is hidden for the opposite reason: it carries its OWN
+          hub filter (and can show BOTH at once), so two competing hub controls
+          on one screen would be a coin-flip about which one is in charge. */}
+      {tab !== "clothing" && tab !== "onhold" && tab !== "hub1refill" && tab !== "refillhistory" && (
       <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
         {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
           const active = hub === val;
@@ -13727,6 +13734,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             not kept at Hub 1 — not because Hub 1 lacks refills. Sneakers make it
             the bigger buffer, so it gets its own lane off the same component. */}
         {tab==="hub1refill" && <Hub2RefillQueue products={products} dest="hub1" />}
+        {/* Refill History (2026-08-07). The queue's own "Fulfilled history" shows
+            only successes, only for its own hub, and only the last 100 — so a
+            rejection, a withdrawal or a park leaves no trace anywhere. This is
+            both hubs, a chosen date range, and every outcome. */}
+        {tab==="refillhistory" && <RefillHistory products={products} />}
     </>
   );
 
@@ -13812,9 +13824,14 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           devices the shop floor actually uses. Never re-inline this list.
           (CodeRabbit, PR #291 — Major.) */}
       <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8, overflowX:"auto" }}>
+        {/* flex:"0 0 auto" + nowrap, NOT flex:1. The container is overflowX:auto,
+            but a flex:1 item SHRINKS before its container ever scrolls — so with
+            six tabs the labels compress and "Refill History" wraps on a 430px
+            phone instead of the strip scrolling. Adding the sixth tab is what
+            made this reachable. (CodeRabbit, PR #332.) */}
         {SOURCE_TABS.map(([key, label]) => (
           <div key={key} onClick={() => setTab(key)}
-               style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
+               style={{ flex:"0 0 auto", whiteSpace:"nowrap", padding:"10px 11px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
             {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
           </div>
         ))}

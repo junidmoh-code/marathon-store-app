@@ -26,6 +26,32 @@ describe("the rule — Central has it, neither hub does", () => {
     expect(run({ central: { sh1: { 6: cell(9) } }, hub2: { sh1: { 6: cell(1) } } })).toHaveLength(0);
   });
 
+  // ── THE MANUAL-TRANSFER CASE, live 2026-08-07 ─────────────────────────────
+  // Timberland Premium 6-Inch Wheat was requested into Hub 1 from this screen,
+  // then MANUALLY TRANSFERRED central→hub1 (transfer -OzQ4L7BrRds21dcNgkB, 3
+  // units each of 7/8/9/10/11) instead of being picked through the refill queue.
+  // The engine could not withdraw the requests — that half is fixed in
+  // refill-engine.cjs — but the LIST is unit-based, so the card must already
+  // clear the moment real units land, whatever route they took.
+  //
+  // The cells below are the shape a manual transfer leaves: lastType
+  // "transfer_out" on the RECEIVING side, an mv id keyed by transferId, and no
+  // link to any refill request. Detection must not care about any of that.
+  it("a manually transferred shoe leaves the list — the rule reads UNITS, not the route", () => {
+    const manual = (qty) => ({ qty, v: 1, lastType: "transfer_out", mv: "-OzQ4L7BrRds21dcNgkB:sh1:7" });
+    expect(run({ central: { sh1: { 7: cell(44) } } })).toHaveLength(1);        // before the transfer
+    expect(run({ central: { sh1: { 7: cell(44) } }, hub1: { sh1: { 7: manual(3) } } })).toHaveLength(0);
+  });
+
+  it("every arrival route clears the card identically", () => {
+    // A refill pick, a manual transfer, a supplier receive and a customer return
+    // all leave different ledger traces and must all produce the same answer.
+    for (const lastType of ["transfer_out", "received", "return", "adjustment"]) {
+      const cards = run({ central: { sh1: { 7: cell(9) } }, hub1: { sh1: { 7: { qty: 2, lastType } } } });
+      expect(cards, `arrival via ${lastType} must clear the card`).toHaveLength(0);
+    }
+  });
+
   it("ignores a shoe with no Central stock — nothing to assign", () => {
     expect(run({ central: { sh1: { 6: cell(0) } } })).toHaveLength(0);
   });
