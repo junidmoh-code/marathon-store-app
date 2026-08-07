@@ -161,7 +161,6 @@ async function findProductsByStyleCode(db, normalised) {
 async function flagDuplicates(db, normalised, pairs, actor, nowMs) {
   await Promise.all(pairs.map(async ({ pairId, productIdA, productIdB }) => {
     const ref = db.ref(`${DUPLICATE_CANDIDATES_PATH}/${pairId}`);
-    const prior = (await ref.get()).val();
 
     // ── NEVER REOPEN A PAIR A HUMAN HAS CLOSED ──────────────────────────────
     // pairId is deterministic, so re-detecting the same collision targets the
@@ -173,33 +172,38 @@ async function flagDuplicates(db, normalised, pairs, actor, nowMs) {
     // contradicts SCHEMA.md's "a human closes it; nothing else does".
     // (CodeRabbit, PR #312.)
     //
+    // ── AND NEVER FROM A STALE SNAPSHOT ─────────────────────────────────────
+    // A TRANSACTION, not read-then-set: styleCodeSibling can write a same-shoe
+    // answer onto this row between a read and a rewrite, and a set() built
+    // from the earlier snapshot would erase it — the strongest evidence the
+    // row can carry, gone in a race. The transaction derives status,
+    // detectedAt and the answered-same-shoe fields from the row's CURRENT
+    // value at commit time. (CodeRabbit, PR #331 re-review.)
+    //
     // So: an existing row keeps its status AND its original detectedAt (when
     // the collision was first seen is the useful fact, not when it was last
     // re-observed). Only a genuinely new row is born "open".
-    const status = prior && typeof prior.status === "string" ? prior.status : "open";
-    const detectedAt = prior && Number.isFinite(Number(prior.detectedAt)) ? Number(prior.detectedAt) : nowMs;
-    // A human's "same shoe" answer (styleCodeSibling) is the strongest
-    // evidence this row can carry — stronger than any scan collision. It must
-    // survive re-detection exactly like status and detectedAt do, or the next
-    // scan of the same code erases it.
-    const answeredSameShoeBy = prior && prior.answeredSameShoeBy ? prior.answeredSameShoeBy : null;
-    const answeredSameShoeAt = prior && Number.isFinite(Number(prior.answeredSameShoeAt))
-      ? Number(prior.answeredSameShoeAt) : null;
-
-    await ref.set({
-      ...(answeredSameShoeBy ? { answeredSameShoeBy } : {}),
-      ...(answeredSameShoeAt ? { answeredSameShoeAt } : {}),
-      productIdA,
-      productIdB,
-      reason: DUP_REASON_STYLE_CODE, // enum: styleCodeCollision | manual | heuristic
-      status,                        // enum: open | merged | dismissed — a human closes it
-      detectedAt,
-      // Context. The live rule permits additional children ($other validator is
-      // true) and validates both of these explicitly. NOTE the field is
-      // styleCodeNormalised, NOT styleCode — the rule validates a string of at
-      // most 32 characters, which the normalised form always satisfies.
-      styleCodeNormalised: normalised,
-      detectedBy: actor ? actor.uid : null,
+    await ref.transaction((prior) => {
+      const status = prior && typeof prior.status === "string" ? prior.status : "open";
+      const detectedAt = prior && Number.isFinite(Number(prior.detectedAt)) ? Number(prior.detectedAt) : nowMs;
+      const answeredSameShoeBy = prior && prior.answeredSameShoeBy ? prior.answeredSameShoeBy : null;
+      const answeredSameShoeAt = prior && Number.isFinite(Number(prior.answeredSameShoeAt))
+        ? Number(prior.answeredSameShoeAt) : null;
+      return {
+        ...(answeredSameShoeBy ? { answeredSameShoeBy } : {}),
+        ...(answeredSameShoeAt ? { answeredSameShoeAt } : {}),
+        productIdA,
+        productIdB,
+        reason: DUP_REASON_STYLE_CODE, // enum: styleCodeCollision | manual | heuristic
+        status,                        // enum: open | merged | dismissed — a human closes it
+        detectedAt,
+        // Context. The live rule permits additional children ($other validator is
+        // true) and validates both of these explicitly. NOTE the field is
+        // styleCodeNormalised, NOT styleCode — the rule validates a string of at
+        // most 32 characters, which the normalised form always satisfies.
+        styleCodeNormalised: normalised,
+        detectedBy: actor ? actor.uid : null,
+      };
     });
   }));
   return pairs.map((p) => p.pairId);

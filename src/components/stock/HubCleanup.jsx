@@ -837,8 +837,19 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                        // "None of these — new colourway." Creating products
                        // happens in Add Sneaker (admin), not here — record the
                        // sighting so the pass's ledger knows, and say what to do.
+                       // A FAILED write must not be confirmed as "Noted": the
+                       // panel stays open and says so, because a sighting that
+                       // silently vanished is a hole in the pass's ledger.
                        const label = `${panel.code} (new colourway)`;
-                       await recordUnresolvedScan({ hub, code: label, context: tab }).catch(() => {});
+                       const noted = await recordUnresolvedScan({ hub, code: label, context: tab }).catch((e) => ({ ok: false, message: String(e?.message || e) }));
+                       if (!noted?.ok) {
+                         flash("err", `Couldn't save the new-colourway sighting (${noted?.message || "write failed"}) — try again.`);
+                         return;
+                       }
+                       setUnresolved((u) => ({
+                         ...u,
+                         [label.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code: label, context: tab },
+                       }));
                        setPanel(null);
                        flash("warn", `Noted — “${panel.code}” on a colourway we don't have. Register it in Admin → Add Sneaker; the code will attach as a sibling.`);
                      }}

@@ -500,3 +500,38 @@ test("three-way: answering per pair registers the stamped-but-unindexed OTHER to
   // And nothing was flagged as a duplicate.
   assert.strictEqual(db.data[DUPLICATE_CANDIDATES_PATH], undefined);
 });
+
+test("RACE: a same-shoe answer landing between detection and the pair rewrite SURVIVES (transaction, not stale set)", async () => {
+  const db = fakeDb({
+    products: productsFixture(),
+    [STYLE_CODE_INDEX_PATH]: { [CODE]: { productId: "pWhite", claimedAt: 1 } },
+  });
+  // Interleave: the instant the resolver's pair-row transaction runs, a
+  // same-shoe answer has ALREADY landed on the row (written after the
+  // resolver read its snapshot). A stale-snapshot set() would erase it; the
+  // transaction derives from the current value and must keep it.
+  const realRef = db.ref.bind(db);
+  db.ref = (path) => {
+    const r = realRef(path);
+    if (path === `${DUPLICATE_CANDIDATES_PATH}/pBlack__pWhite`) {
+      const realTxn = r.transaction.bind(r);
+      r.transaction = async (fn) => {
+        await runSibling(db2Passthrough, {
+          action: "sameShoe", code: CODE, productId: "pBlack", otherId: "pWhite",
+          actor: { uid: "uAnswerer" }, nowMs: NOW - 10,
+        });
+        return realTxn(fn);
+      };
+    }
+    return r;
+  };
+  // runSibling needs the UNwrapped ref (or it would recurse into the interleave).
+  const db2Passthrough = { ...db, ref: realRef };
+
+  const out = await runResolve(db, { code: CODE, providers: noProviders, actor, nowMs: NOW });
+  assert.strictEqual(out.duplicate, true);
+  const row = db.data[DUPLICATE_CANDIDATES_PATH]["pBlack__pWhite"];
+  assert.strictEqual(row.answeredSameShoeBy, "uAnswerer"); // the racing answer survived
+  assert.strictEqual(row.answeredSameShoeAt, NOW - 10);
+  assert.strictEqual(row.status, "open");
+});
