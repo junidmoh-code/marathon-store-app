@@ -233,15 +233,17 @@ describe("engineSizeKey is a faithful mirror of the engine's encodeSizeKey", () 
     }
   });
 
-  // ── THE TWO REAL DIVERGENCES ────────────────────────────────────────────────
-  // Written down because this test FOUND the second one. The engine's
-  // encodeSizeKey and the client's stockSizeKey differ on exactly two inputs:
+  // ── THE TWO DIVERGENCE CLASSES ──────────────────────────────────────────────
+  // Written down because this test FOUND the second class. The engine's
+  // encodeSizeKey and the client's stockSizeKey differ in exactly two ways —
+  // the LABEL FOLD and UNTRIMMED WHITESPACE. The whitespace class covers both
+  // leading and trailing space, so three inputs below disagree, not two:
   //
   //   "Free Size" — stockSizeKey folds it to "_"; the engine makes "Free_Size".
   //                 The client is right: real one-size stock lives in "_", and a
   //                 "Free_Size" cell is the phantom that cost hub negatives and
   //                 orphaned shop stock once already.
-  //   " 8"        — the ENGINE TRIMS before encoding and the client does not.
+  //   " 8" / "8 " — the ENGINE TRIMS before encoding and the client does not.
   //                 The client is right again, and for the same reason: /stock
   //                 cells are keyed by stockSizeKey, so a size stored as " 8"
   //                 physically lives in the cell "_8" while the engine would
@@ -253,7 +255,7 @@ describe("engineSizeKey is a faithful mirror of the engine's encodeSizeKey", () 
   // the refill pipeline and changing it is a separate, evidence-led change. What
   // matters for THIS feature is that coverableSize() refuses both, so the client
   // never promises a withdrawal the engine cannot deliver. Reported in the PR.
-  it("the disagreements are exactly the two known ones — nothing else drifted", async () => {
+  it("the disagreements are exactly the two known classes — nothing else drifted", async () => {
     const { encodeSizeKey } = await import("../../../functions/lib/refill-engine.cjs");
     const disagreeing = ["3", "5.5", "M", "_", "", " ", null, "Free Size", " 8", "8 ", "a.b", 8]
       .filter((s) => encodeSizeKey(s) !== stockKey_(s));

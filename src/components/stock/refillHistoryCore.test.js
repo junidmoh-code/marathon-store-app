@@ -331,6 +331,30 @@ describe("mergeRows", () => {
     expect(rows.map((r) => r.refillId)).toEqual(["late", "early"]);
   });
 
+  it("ACCUMULATES several movements for one request instead of keeping only the last", () => {
+    // A request answered by more than one pick is a real shape here: the Source
+    // fulfil panel writes `${seed}_${alreadySent}` per partial send, several
+    // movements under one link.refillId. Overwriting would report only the LAST
+    // pick's quantity — and the totals are the number people act on.
+    const rows = mergeRows(
+      requestRows([rr({ qty: 5 })], range, ["hub1"]),
+      movementRows([
+        mv({ id: "rrf_r1", qty: 2, ts: "2026-08-06T10:00:00.000Z" }),
+        mv({ id: "rrf_r1_2", qty: 3, ts: "2026-08-06T12:00:00.000Z" }),
+      ], range, ["hub1"]));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].movedQty).toBe(5);
+    expect(rows[0].movementIds).toEqual(["rrf_r1", "rrf_r1_2"]);
+    expect(rows[0].movementId).toBe("rrf_r1");        // stable single-id display
+    expect(totalsFor(rows).fulfilled).toEqual({ rows: 1, units: 5 });
+  });
+
+  it("a single movement still reports its own quantity, not a sum of one", () => {
+    const rows = mergeRows(requestRows([rr({ qty: 2 })], range, ["hub1"]), movementRows([mv({ qty: 2 })], range, ["hub1"]));
+    expect(rows[0].movedQty).toBe(2);
+    expect(rows[0].movementIds).toEqual(["rrf_r1"]);
+  });
+
   it("does not mutate its inputs — the same input twice gives the same output", () => {
     const req = requestRows([rr()], range, ["hub1"]);
     const mvs = movementRows([mv({ from: "hub2" })], range, ["hub1"]);

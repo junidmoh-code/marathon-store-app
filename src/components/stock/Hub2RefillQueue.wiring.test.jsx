@@ -106,6 +106,18 @@ describe("Hub2RefillQueue passes the engine lock index into the covered split", 
     expect(out).toContain("already covered by stock at Hub 1");
   });
 
+  it("the covered note promises NO withdrawal deadline", () => {
+    // The scan is `every 15 minutes from 07:00 to 19:00` SAST — it does not run
+    // overnight. The Timberland requests that prompted this whole feature were
+    // raised at 20:50, so a "within 15 minutes" promise would have been false
+    // for the very case it was written for. (CodeRabbit, PR #332.)
+    paths["refill_engine/open"] = null;
+    const out = renderQueue();
+    expect(out).toContain("already covered by stock at Hub 1");
+    expect(out).not.toContain("15 minutes");
+    expect(out).toContain("when it next runs");
+  });
+
   it("a still-short cell keeps its card whether locked or not", () => {
     paths["stock/hub1"] = { boot: { 7: { qty: 1 } } };     // asked 2, only 1 there
     for (const lock of [null, { hub1: { boot: { 7: { refillId: "r1", qty: 2 } } } }]) {

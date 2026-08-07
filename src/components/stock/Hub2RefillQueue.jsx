@@ -377,9 +377,14 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
       <div style={{ color: GREEN, fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
         {covered.length} request{covered.length === 1 ? "" : "s"} already covered by stock at {destLabel}
       </div>
+      {/* NO TIME GUARANTEE. The scan is `every 15 minutes from 07:00 to 19:00`
+          SAST — it does not run overnight, and the case that prompted this
+          feature was raised at 20:50. Promising "within 15 minutes" would have
+          been false for the very requests it was written for. */}
       <div style={{ color: GRAY, fontSize: 11.5, lineHeight: 1.5 }}>
         The units are on the shelf — however they got there (manual transfer, receive, return).
-        Nothing to pick. The engine withdraws these on its next scan (within 15 minutes).
+        Nothing to pick. The engine withdraws these when it next runs (it scans through the
+        trading day, not overnight).
       </div>
       <div style={{ color: GRAY, fontSize: 11.5, marginTop: 7, display: "flex", flexWrap: "wrap", gap: "3px 10px" }}>
         {covered.map((r) => (

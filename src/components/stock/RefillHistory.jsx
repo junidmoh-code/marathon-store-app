@@ -174,10 +174,15 @@ export default function RefillHistory({ products = [] }) {
     <div style={{ paddingBottom: 40, fontFamily: FONT }}>
       {/* ── RANGE ── */}
       <div style={ROW_WRAP}>
+        {/* aria-pressed, because these chips carry their state ONLY in colour —
+            a screen reader would otherwise announce every one identically and
+            the operator could not tell which range is active. */}
         {QUICK_RANGES.map((r) => (
-          <button key={r.key} type="button" onClick={() => setRangeKey(r.key)} style={chip(rangeKey === r.key)}>{r.label}</button>
+          <button key={r.key} type="button" aria-pressed={rangeKey === r.key}
+                  onClick={() => setRangeKey(r.key)} style={chip(rangeKey === r.key)}>{r.label}</button>
         ))}
-        <button type="button" onClick={() => setRangeKey("custom")} style={chip(rangeKey === "custom")}>Custom</button>
+        <button type="button" aria-pressed={rangeKey === "custom"}
+                onClick={() => setRangeKey("custom")} style={chip(rangeKey === "custom")}>Custom</button>
       </div>
       {rangeKey === "custom" && (
         <div style={{ ...ROW_WRAP, alignItems: "center" }}>
@@ -195,9 +200,11 @@ export default function RefillHistory({ products = [] }) {
       {/* ── HUB ── */}
       <div style={ROW_WRAP}>
         {HUBS.map((h) => (
-          <button key={h} type="button" onClick={() => toggleHub(h)} style={chip(hubs.includes(h))}>{loc(h)}</button>
+          <button key={h} type="button" aria-pressed={hubs.includes(h)}
+                  onClick={() => toggleHub(h)} style={chip(hubs.includes(h))}>{loc(h)}</button>
         ))}
-        <button type="button" onClick={() => setHubs(HUBS)} style={chip(hubs.length === 2)}>Both</button>
+        <button type="button" aria-pressed={hubs.length === 2}
+                onClick={() => setHubs(HUBS)} style={chip(hubs.length === 2)}>Both</button>
       </div>
 
       <div style={{ fontSize: 12.5, color: GRAY, margin: "0 2px 12px", lineHeight: 1.5 }}>

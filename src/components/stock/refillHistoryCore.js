@@ -342,8 +342,16 @@ export function mergeRows(reqRows = [], mvRows = []) {
       // WHO moved them; keep the request's own fields when the ledger is silent.
       twin.source = m.source || twin.source;
       twin.actorUid = twin.actorUid || m.actorUid;
-      twin.movementId = m.movementId;
-      twin.movedQty = m.qty;
+      // ACCUMULATE, NEVER OVERWRITE. One request answered by more than one
+      // movement is a real shape in this codebase — the Source fulfil panel
+      // writes `${seed}_${alreadySent}` per partial send, several movements
+      // under one link.refillId. Hub2RefillQueue's own `rrf_{id}` is currently
+      // one-per-request, so today this is defensive; overwriting would silently
+      // report only the LAST pick's quantity the moment that stops being true,
+      // and the totals are the number people act on. (CodeRabbit, PR #332.)
+      twin.movementIds = [...(twin.movementIds || []), m.movementId];
+      twin.movementId = twin.movementIds[0];       // first pick, for a stable single-id display
+      twin.movedQty = (twin.movedQty || 0) + (Number(m.qty) || 0);
       continue;
     }
     out.push(m);
