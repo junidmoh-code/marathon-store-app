@@ -37,9 +37,11 @@
 //
 // It is a ONE-SHOT get(), not a live onValue subscription, and that difference
 // matters: a listener re-materialises the whole node on every append for as long
-// as the tab is open. One read per range change is the smallest honest cost
-// available without the index. The banner on screen says so rather than implying
-// the view is free. (Kimi review, PR #332.)
+// as the tab is open. It is also read ONCE PER MOUNT, not once per range change —
+// the range is applied in memory, so tapping Today → Yesterday → Last 7 costs
+// nothing extra (asserted in RefillHistory.render.test.jsx). The banner on screen
+// says so rather than implying the view is free. (Kimi review, PR #332; wording
+// corrected by CodeRabbit, which caught this comment contradicting the code.)
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, query, orderByChild, startAt, endAt, get } from "firebase/database";
 import { database } from "../../firebase";

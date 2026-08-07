@@ -126,9 +126,43 @@ describe("partitionSatisfied", () => {
     expect(ids(covered)).toEqual(["r1"]);
   });
 
-  it("skips malformed rows rather than guessing", () => {
+  it("keeps an unclassifiable row VISIBLE as work rather than dropping it", () => {
+    // This test previously asserted BOTH lists were empty — pinning a bug. A row
+    // with a productId but no size fell out of the partition entirely, so the
+    // card vanished from the only screen that shows it and nothing else would
+    // ever surface it. The engine's identical guard is safe (a skip means "no
+    // withdrawal"); here a skip means "invisible work". (CodeRabbit, PR #332.)
     const { actionable, covered } = partitionSatisfied(
-      [null, { id: "x" }, { id: "y", productId: "boot" }], { boot: cells({ 7: 9 }) });
+      [{ id: "y", productId: "boot" }], { boot: cells({ 7: 9 }) });
+    expect(covered).toEqual([]);
+    expect(ids(actionable)).toEqual(["y"]);
+  });
+
+  it("EVERY input row lands in exactly one list — nothing silently disappears", () => {
+    // The invariant behind the fix above: this function partitions a queue, so a
+    // row it was given must always be somewhere the operator can see it.
+    const rows = [
+      req({ id: "covered", qty: 1 }),                       // covered
+      req({ id: "short", qty: 9 }),                         // still work
+      req({ id: "locked", qty: 1 }),                        // locked
+      { id: "noSize", productId: "boot" },                  // unclassifiable
+      { id: "noPid", size: "7", qty: 1 },                   // unclassifiable
+      req({ id: "freeSize", size: "Free Size", qty: 1 }),   // encoders disagree
+    ];
+    const { actionable, covered } = partitionSatisfied(rows, { boot: cells({ 7: 4, _: 9 }) }, new Set(["locked"]));
+    const seen = [...ids(covered), ...ids(actionable)].sort();
+    expect(seen).toEqual(rows.map((r) => r.id).sort());
+    expect(covered.length + actionable.length).toBe(rows.length);
+    // AND each lands in the RIGHT list. Membership alone is not enough: an
+    // unclassifiable row must never be called "already covered". `noSize` has no
+    // size, so it would resolve to the one-size "_" cell — which holds 9 here —
+    // and be wrongly retired as satisfied if it were allowed into the split.
+    expect(ids(covered)).toEqual(["covered"]);
+    expect(ids(actionable).sort()).toEqual(["freeSize", "locked", "noPid", "noSize", "short"]);
+  });
+
+  it("a null row is dropped, since there is nothing to render", () => {
+    const { actionable, covered } = partitionSatisfied([null, undefined], { boot: cells({ 7: 9 }) });
     expect(covered).toEqual([]);
     expect(actionable).toEqual([]);
   });

@@ -108,8 +108,16 @@ export function partitionSatisfied(requests = [], destCells = {}, lockedIds = ne
     claimed.set(k, (claimed.get(k) || 0) + Math.max(Number(r.qty) || 1, 1));
   }
 
+  // EVERY ROW LANDS SOMEWHERE. This function partitions a queue, so a row it
+  // cannot classify must fall to `actionable` — still visible as work — not out
+  // of both lists. The engine has the same `size != null` guard, but there a
+  // skip means "no withdrawal", which is safe; here a skip would delete the card
+  // from the only screen that shows it, and nothing else would ever surface it.
+  // (CodeRabbit, PR #332 — it also caught that the old test PINNED the wrong
+  // behaviour by asserting both lists were empty.)
+  const classifiable = (r) => r && r.productId && r.size != null;
   const ordered = [...(requests || [])]
-    .filter((r) => r && r.productId && r.size != null && !isLocked(r))
+    .filter((r) => classifiable(r) && !isLocked(r))
     // Oldest first, id as the tie-break — the engine stamps a whole run with one
     // createdAt, so without the second key the split would be order-dependent.
     .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.id).localeCompare(String(b.id)));
@@ -129,7 +137,13 @@ export function partitionSatisfied(requests = [], destCells = {}, lockedIds = ne
     }
   }
   // Locked requests were removed before the split; they are always real work.
-  for (const r of requests || []) if (r && r.productId && r.size != null && isLocked(r)) actionable.push(r);
+  // So is anything unclassifiable — see the note above. Together with `ordered`
+  // this covers every input row exactly once, which is the invariant the tests
+  // assert: nothing a queue was given may silently disappear from it.
+  for (const r of requests || []) {
+    if (!r) continue;
+    if (isLocked(r) || !classifiable(r)) actionable.push(r);
+  }
   return { actionable, covered };
 }
 
