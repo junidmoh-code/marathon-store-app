@@ -188,6 +188,59 @@ describe("requestRows", () => {
     expect(requestRows([rr()], range, ["hub1"])[0].source).toBe("central");
   });
 
+  // ── WHO RESOLVED IT vs WHO RAISED IT ───────────────────────────────────────
+  // createdFrom.engine says the engine RAISED the request. It says nothing about
+  // who answered it. Conflating the two credited a machine for a person's work
+  // on the one screen built to answer "who did this".
+  it("an ENGINE-RAISED request fulfilled by staff credits the STAFF, not the engine", () => {
+    const rows = requestRows([rr({
+      status: "fulfilled",
+      createdFrom: { engine: true, source: "central" },
+      resolvedBy: "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+    })], range, ["hub1"]);
+    expect(rows[0].actorUid).toBe("vWfHqbLEPvRMItXhH0B9NvYW0LG3");
+    expect(rows[0].actorRole).toBeNull();      // no role claimed on a fulfil
+    expect(rows[0].byEngine).toBe(false);      // a person did this
+    expect(rows[0].auto).toBe(true);           // the ORIGIN is still recorded
+  });
+
+  it("an engine-raised request rejected by a human credits the human", () => {
+    const rows = requestRows([rr({
+      status: "cancelled", createdFrom: { engine: true, source: "central" },
+      rejectedBy: "warehouse", resolvedBy: "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+    })], range, ["hub1"]);
+    expect(rows[0].actorRole).toBe("warehouse");
+    expect(rows[0].byEngine).toBe(false);
+  });
+
+  it("an engine SELF-WITHDRAWAL is the one case that names the engine", () => {
+    // The server stamps a cancelReason and no human actor — that shape, and only
+    // that shape, is genuinely the engine's own doing.
+    const rows = requestRows([rr({
+      status: "cancelled", cancelReason: "already_in_stock",
+      createdFrom: { engine: true, source: "central" },
+    })], range, ["hub1"]);
+    expect(rows[0].byEngine).toBe(true);
+    expect(rows[0].actorUid).toBeNull();
+    expect(rows[0].actorRole).toBeNull();
+  });
+
+  it("an OPEN engine-raised request names nobody — nothing has been done to it yet", () => {
+    const rows = requestRows([rr({ status: "open", resolvedAt: null, createdFrom: { engine: true, source: "central" } })], range, ["hub1"]);
+    expect(rows[0].byEngine).toBe(false);
+    expect(rows[0].actorRole).toBeNull();
+    expect(rows[0].auto).toBe(true);
+  });
+
+  it("a manual request withdrawn by the engine still names the engine", () => {
+    const rows = requestRows([rr({
+      status: "cancelled", cancelReason: "already_in_stock",
+      createdFrom: { manual: true, source: "central", via: "missing_sneakers" },
+    })], range, ["hub1"]);
+    expect(rows[0].byEngine).toBe(true);
+    expect(rows[0].auto).toBe(false);
+  });
+
   it("does not mistake a short role string for a uid", () => {
     // resolvedBy held free-text actor names before uids ("zombie-cleanup-…").
     // A uid is 28 chars; anything shorter must not be rendered as one.

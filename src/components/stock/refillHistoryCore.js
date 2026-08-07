@@ -226,7 +226,17 @@ export function requestRows(requests = [], range, hubs = []) {
       // older role-only field, kept as a fallback so the 440 rows that predate
       // the uid still say something true rather than nothing.
       actorUid: typeof r.resolvedBy === "string" && r.resolvedBy.length > 20 ? r.resolvedBy : null,
-      actorRole: r.rejectedBy || (r.createdFrom?.engine ? "engine" : null),
+      // WHO RESOLVED IT — never who created it. `createdFrom.engine` says the
+      // engine RAISED the request; it says nothing about who answered it. Using
+      // it here made an engine-raised request that a warehouse picker fulfilled
+      // display "by the engine", crediting a machine for a person's work on the
+      // one screen built to answer "who did this". The origin is already carried
+      // by `auto`, which is where it belongs. (CodeRabbit, PR #332.)
+      actorRole: r.rejectedBy || null,
+      // The engine resolved it ITSELF: a self-withdrawal always stamps a
+      // cancelReason and never has a human actor. That is the only case where
+      // naming the engine as the actor is true.
+      byEngine: !!r.cancelReason && !r.rejectedBy && !r.resolvedBy,
       reason: r.cancelReason || null,
       auto: !!r.createdFrom?.engine,
       via: r.createdFrom?.via || null,
@@ -299,6 +309,7 @@ export function movementRows(movements = [], range, hubs = []) {
       status: "fulfilled",
       actorUid: m.actor || null,
       actorRole: null,
+      byEngine: false,                       // a ledger movement always had a human behind it
       reason: m.reason || null,
       auto: false,
       via: null,

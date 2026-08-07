@@ -270,14 +270,19 @@ export default function RefillHistory({ products = [] }) {
                 </div>
                 {/* WHY and WHO — a rejection with no reason and no name is the
                     thing this whole view was built to stop. */}
-                {(r.reason || r.actorUid || r.actorRole || r.auto || r.uncounted || r.via) && (
+                {(r.reason || r.actorUid || r.actorRole || r.byEngine || r.auto || r.uncounted || r.via) && (
                   <div style={{ fontSize: 12.5, color: GRAY, marginTop: 9, lineHeight: 1.5, borderTop: "1px solid rgba(255,255,255,.06)", paddingTop: 8 }}>
                     {r.status === "rejected" && <span style={{ color: RED, fontWeight: 700 }}>Rejected — marked not available on the shelf. </span>}
                     {r.reason && <span>{REASON_TEXT[r.reason] || r.reason}. </span>}
-                    {(r.actorUid || r.actorRole) && (
-                      <span>by <b style={{ color: "rgba(255,255,255,.8)" }}>{r.actorRole && r.actorRole !== "engine" ? r.actorRole : (r.auto ? "the engine" : "staff")}</b>
+                    {/* A PERSON, or the engine — never one labelled as the other.
+                        A human actor always wins: `byEngine` is only true for a
+                        self-withdrawal, which by construction has no human on it. */}
+                    {(r.actorUid || r.actorRole) ? (
+                      <span>by <b style={{ color: "rgba(255,255,255,.8)" }}>{r.actorRole || "staff"}</b>
                         {r.actorUid ? ` (${String(r.actorUid).slice(0, 8)})` : ""}. </span>
-                    )}
+                    ) : r.byEngine ? (
+                      <span>Withdrawn by <b style={{ color: "rgba(255,255,255,.8)" }}>the engine</b>. </span>
+                    ) : null}
                     {r.auto && !r.reason && <span>Raised automatically. </span>}
                     {r.via === "missing_sneakers" && <span>Raised from Missing Sneakers (policy quantity). </span>}
                     {r.via === "missing_sneakers_pick" && <span>Raised from Missing Sneakers (operator chose the sizes). </span>}

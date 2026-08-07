@@ -133,6 +133,51 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     expect(out).not.toContain("size 9");
   });
 
+  it("credits the PERSON who fulfilled an engine-raised request, never 'the engine'", async () => {
+    // The misattribution this guards: an engine-RAISED request picked by a
+    // warehouse staff member rendered "by the engine", crediting a machine for a
+    // person's work on the one screen built to answer "who did this".
+    reads["refill_requests"] = {
+      staffPick: {
+        productId: "tee", size: "M", qty: 2, requestingLocation: "hub2", status: "fulfilled",
+        createdAt: "2026-08-06T08:00:00.000Z", resolvedAt: "2026-08-06T12:00:00.000Z",
+        createdFrom: { engine: true, source: "central" },
+        resolvedBy: "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+      },
+    };
+    reads["stock_movements"] = null;
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
+    await act(async () => {});
+    await clickRange(tree, "Yesterday");
+    const out = textOf(tree.toJSON());
+    tree.unmount();
+    expect(out).toContain("by staff");
+    expect(out).toContain("vWfHqbL");
+    expect(out).not.toContain("the engine");
+  });
+
+  it("names the engine only for its own self-withdrawal", async () => {
+    reads["refill_requests"] = {
+      wdr: {
+        productId: "tee", size: "M", qty: 2, requestingLocation: "hub2", status: "cancelled",
+        cancelReason: "already_in_stock",
+        createdAt: "2026-08-06T08:00:00.000Z", resolvedAt: "2026-08-06T12:00:00.000Z",
+        createdFrom: { engine: true, source: "central" },
+      },
+    };
+    reads["stock_movements"] = null;
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
+    await act(async () => {});
+    await clickRange(tree, "Yesterday");
+    const out = textOf(tree.toJSON());
+    tree.unmount();
+    expect(out).toContain("Withdrawn by");
+    expect(out).toContain("the engine");
+    expect(out).not.toContain("by staff");
+  });
+
   it("counts each outcome separately in the totals", async () => {
     let tree;
     await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
