@@ -185,13 +185,17 @@ export default function RefillHistory({ products = [] }) {
                 onClick={() => setRangeKey("custom")} style={chip(rangeKey === "custom")}>Custom</button>
       </div>
       {rangeKey === "custom" && (
+        // htmlFor/id pairs the labels to their inputs: without them a screen
+        // reader announces two bare date fields, and tapping the word "From"
+        // does nothing — on a phone, that label is a touch target people
+        // reach for. (CodeRabbit, PR #332.)
         <div style={{ ...ROW_WRAP, alignItems: "center" }}>
-          <label style={{ fontSize: 13, color: GRAY, minWidth: 42 }}>From</label>
-          <input type="date" max={todayStr} value={custom.from || todayStr}
+          <label htmlFor="refill-history-from" style={{ fontSize: 13, color: GRAY, minWidth: 42 }}>From</label>
+          <input id="refill-history-from" type="date" max={todayStr} value={custom.from || todayStr}
                  onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))}
                  style={{ ...input, minHeight: 44, colorScheme: "dark", flex: "1 1 140px" }} />
-          <label style={{ fontSize: 13, color: GRAY, minWidth: 24 }}>to</label>
-          <input type="date" max={todayStr} value={custom.to || custom.from || todayStr}
+          <label htmlFor="refill-history-to" style={{ fontSize: 13, color: GRAY, minWidth: 24 }}>to</label>
+          <input id="refill-history-to" type="date" max={todayStr} value={custom.to || custom.from || todayStr}
                  onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))}
                  style={{ ...input, minHeight: 44, colorScheme: "dark", flex: "1 1 140px" }} />
         </div>

@@ -251,6 +251,47 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     expect(rr[0].constraints ?? []).toEqual([]);
   });
 
+  // ── ACCESSIBILITY, ASSERTED ────────────────────────────────────────────────
+  // This screen is read on a phone standing in a hub. Both of these carry real
+  // usability weight there, not just audit compliance.
+  it("the custom date labels are ASSOCIATED with their inputs", async () => {
+    // Without htmlFor/id a screen reader announces two bare date fields, and
+    // tapping the word "From" does nothing — on a phone that label is a target
+    // people reach for. (CodeRabbit, PR #332.)
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
+    await act(async () => {});
+    await clickRange(tree, "Custom");
+    const labels = tree.root.findAll((n) => n.type === "label");
+    const inputs = tree.root.findAll((n) => n.type === "input" && n.props.type === "date");
+    expect(labels).toHaveLength(2);
+    expect(inputs).toHaveLength(2);
+    for (const l of labels) {
+      expect(l.props.htmlFor, `label "${textOf(l.props.children)}" must name an input`).toBeTruthy();
+      expect(inputs.some((i) => i.props.id === l.props.htmlFor),
+        `no input has id="${l.props.htmlFor}"`).toBe(true);
+    }
+    // and the two pairs are distinct, not both pointing at one field
+    expect(new Set(labels.map((l) => l.props.htmlFor)).size).toBe(2);
+    tree.unmount();
+  });
+
+  it("the range and hub chips report their pressed state", async () => {
+    // The chips carry state ONLY in colour; without aria-pressed a screen reader
+    // announces every one identically.
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
+    await act(async () => {});
+    const pressed = (label) => tree.root.findAll((n) => n.type === "button" && textOf(n.children) === label)[0]?.props["aria-pressed"];
+    expect(pressed("Today")).toBe(true);
+    expect(pressed("Yesterday")).toBe(false);
+    expect(pressed("Hub 1")).toBe(true);
+    await clickRange(tree, "Yesterday");
+    expect(pressed("Today")).toBe(false);
+    expect(pressed("Yesterday")).toBe(true);
+    tree.unmount();
+  });
+
   it("the hub filter narrows the list", async () => {
     let tree;
     await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });

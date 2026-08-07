@@ -6,6 +6,7 @@
 // agrees with it — same allocation, same tie-break, same floor-at-zero rule.
 import { describe, it, expect } from "vitest";
 import { partitionSatisfied, onHandFor, coverableSize, lockedRefillIds } from "./refillSatisfied.js";
+import { stockSizeKey } from "../../utils/sizeKey.js";
 
 // useStockCells() DECODES size keys, so a client-side cell map is keyed by the
 // raw size ("5.5"), not the stored key ("5_5"). The fixtures use that shape.
@@ -272,11 +273,14 @@ const engineSizeKey_ = (size) => {
   const s = String(size == null ? "" : size).trim();
   return s ? s.replace(/[.#$/[\]\s]/g, "_") : "_";
 };
-const stockKey_ = (size) => {
-  if (size == null || size === "" || size === "Free Size") return "_";
-  const s = typeof size === "number" ? String(size) : size;
-  return typeof s === "string" ? s.replace(/[.#$[\]/\s]/g, "_") : s;
-};
+// THE SHIPPED CLIENT ENCODER, IMPORTED — never a copy. A local reimplementation
+// would drift the moment src/utils/sizeKey.js changes, and a parity test that
+// compares two stale copies of the thing it is meant to be checking is worse
+// than no test: it would keep passing while the real encoders diverged.
+// engineSizeKey_ above stays local ON PURPOSE — it is the mirror under test, and
+// it is asserted against the REAL engine encoder imported from
+// functions/lib/refill-engine.cjs. (CodeRabbit, PR #332.)
+const stockKey_ = stockSizeKey;
 
 describe("coverableSize", () => {
   it("agrees with the engine on every size that appears in live data", () => {
