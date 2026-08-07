@@ -428,3 +428,43 @@ describe("soccer boots under the config-driven gate", () => {
     expect(isCategoryEnforced("sneakers", enforced)).toBe(true);
   });
 });
+
+// ─── ORDERING BY THE LABEL'S COLOURWAY LINE (owner spec 2026-08-07) ──────────
+// Ordering is the function's ENTIRE effect: it must reorder the list and must
+// NEVER change what resolveAddStockTarget decides — selection stays fail-closed
+// with the human.
+import { orderCandidatesByColourway } from "./styleCodeGateLogic";
+
+describe("orderCandidatesByColourway", () => {
+  const grey = { id: "pGrey", name: "Dunk Genesis Wolf Grey White" };
+  const blue = { id: "pBlue", name: "Dunk Genesis", labelColorway: "WOLF GREY/PHOTO BLUE" };
+
+  it("PROOF: the colourway line reorders — the matching candidate moves first", () => {
+    const out = orderCandidatesByColourway([grey, blue], "WOLF GREY/PHOTO BLUE");
+    expect(out[0].id).toBe("pBlue"); // matches on its own stored labelColorway
+    const out2 = orderCandidatesByColourway([blue, grey], "WOLF GREY/WHITE");
+    expect(out2.map((p) => p.id)).toEqual(["pGrey", "pBlue"]);
+  });
+
+  it("PROOF: ordering never drops, mutates, or selects", () => {
+    const input = [grey, blue];
+    const before = JSON.stringify(input);
+    const out = orderCandidatesByColourway(input, "WOLF GREY/PHOTO BLUE");
+    expect(out).toHaveLength(2);
+    expect(JSON.stringify(input)).toBe(before);
+  });
+
+  it("PROOF: the target decision is unmoved by ordering — 2+ candidates still force a human choice", () => {
+    const products = [grey, blue];
+    const ordered = orderCandidatesByColourway(products, "WOLF GREY/PHOTO BLUE");
+    const a = resolveAddStockTarget({ claim: null, existingProducts: products, products, selectedId: null });
+    const b = resolveAddStockTarget({ claim: null, existingProducts: ordered, products, selectedId: null });
+    expect(a.kind).toBe("choose");
+    expect(b.kind).toBe("choose");
+    expect([...a.options].sort()).toEqual([...b.options].sort());
+  });
+
+  it("no colourway → untouched order", () => {
+    expect(orderCandidatesByColourway([grey, blue], null).map((p) => p.id)).toEqual(["pGrey", "pBlue"]);
+  });
+});

@@ -134,6 +134,34 @@ export function buildNewProduct(registry, form, extras = {}) {
     product.styleCodeNormalised = styleCodeNormalised;
   }
 
+  // ── LABEL EXTRAS — what else the tongue label printed ─────────────────────
+  // (Owner spec 2026-08-07.) A colourway line when the label carries one
+  // (RTFKT-style Nike prints "WOLF GREY/PHOTO BLUE"; the standard label prints
+  // none), the model-name line, and the UPC. All three are EVIDENCE, not keys:
+  // the UPC especially is NON-AUTHORITATIVE — this stock reuses one UPC across
+  // a size run, so nothing may ever assume one UPC means one shoe, and it is
+  // never written to /barcodes (our own minted namespace). OMITTED when
+  // absent, never null — an `undefined` anywhere in the record aborts the
+  // whole save client-side (the 2026-08-06 outage).
+  if (typeof extras.labelColorway === "string" && extras.labelColorway.trim()) {
+    product.labelColorway = extras.labelColorway.trim().slice(0, 64);
+  }
+  if (typeof extras.labelUpc === "string" && /^\d{12,14}$/.test(extras.labelUpc)) {
+    product.labelUpc = extras.labelUpc;
+  }
+  if (typeof extras.labelModelName === "string" && extras.labelModelName.trim()) {
+    product.labelModelName = extras.labelModelName.trim().slice(0, 64);
+  }
+  // Dominant colours off a photo of the shoe — an ORDERING signal for the
+  // sibling-colourway picker, never a selector (utils/dominantColours.js).
+  if (Array.isArray(extras.dominantColours) && extras.dominantColours.length) {
+    const clean = extras.dominantColours
+      .filter((s) => s && Number.isFinite(s.r) && Number.isFinite(s.g) && Number.isFinite(s.b))
+      .slice(0, 3)
+      .map((s) => ({ r: s.r, g: s.g, b: s.b, w: Number.isFinite(s.w) ? s.w : 0 }));
+    if (clean.length) product.dominantColours = clean;
+  }
+
   // ── STYLE CODE EXEMPTION ──────────────────────────────────────────────────
   // Some footwear genuinely has no manufacturer style code — designer and
   // unbranded stock especially. Those products can never satisfy the gate, so

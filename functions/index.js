@@ -3207,3 +3207,17 @@ exports.mergeProducts = require("./productMerge/mergeProducts.js").mergeProducts
 // lib/label-alias.cjs (node-tested); auth + IO in labelAlias/labelAlias.js.
 //   firebase deploy --only functions:labelAlias
 exports.labelAlias = require("./labelAlias/labelAlias.js").labelAlias;
+
+// ─── STYLE CODE SIBLINGS — styleCodeSibling (the collision question, answered) ─
+// One printed style code can legitimately own SEVERAL colourway products — the
+// standard Nike tongue label carries no colourway text, so the label cannot
+// tell black from white (owner evidence 2026-08-07, HF5509-002). When a
+// registration collides with an existing claim, the UI asks "same shoe, or a
+// different colourway?" and THIS callable records the answer: same-shoe routes
+// to the existing merge flow via /duplicate_candidates; different-colourway
+// registers a SIBLING under /style_code_index/{code}/siblings (Admin SDK only —
+// the client claim rule never permits that child, by design). Velocity and
+// repeat answers are logged to /style_code_sibling_events, never acted on.
+// Pure logic in lib/style-code-siblings.cjs (node-tested).
+//   firebase deploy --only functions:styleCodeSibling
+exports.styleCodeSibling = require("./styleCode/styleCodeSibling.js").styleCodeSibling;

@@ -85,6 +85,31 @@ export function resolveAddStockTarget({ claim, existingProducts, products, selec
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 1b. ORDERING CANDIDATES BY THE LABEL'S OWN COLOURWAY LINE
+// ─────────────────────────────────────────────────────────────────────────────
+// Some labels (RTFKT-style Nike) print a colourway line — "WOLF GREY/PHOTO
+// BLUE". When a code resolves to several products, that line can put the
+// likely match FIRST. Ordering is this function's ENTIRE effect (owner spec
+// 2026-08-07): it never selects, never filters, never breaks resolveAddStock-
+// Target's fail-closed rules — the operator still taps the shoe they hold.
+// Matching is bag-of-words overlap against the candidate's name and its own
+// stored labelColorway; zero-overlap candidates keep their original order.
+
+export function orderCandidatesByColourway(candidates, colourway) {
+  const list = Array.isArray(candidates) ? [...candidates] : [];
+  const words = String(colourway || "").toUpperCase().split(/[^A-Z]+/).filter((w) => w.length >= 3);
+  if (!words.length) return list;
+  const score = (p) => {
+    const hay = `${p && p.name ? p.name : ""} ${p && p.labelColorway ? p.labelColorway : ""}`.toUpperCase();
+    return words.reduce((n, w) => n + (hay.includes(w) ? 1 : 0), 0);
+  };
+  return list
+    .map((c, i) => ({ c, i, s: score(c) }))
+    .sort((x, y) => (y.s - x.s) || (x.i - y.i)) // stable — ties keep their order
+    .map((x) => x.c);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 2. DID THE LOOKUP FAIL, OR DID IT ANSWER "NOTHING"?
 // ─────────────────────────────────────────────────────────────────────────────
 // These two must be distinguishable EVERYWHERE they surface. "Not in the

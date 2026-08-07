@@ -54,6 +54,19 @@ export async function matchLabelAlias(tokens) {
   return data;
 }
 
+// ── THE COLLISION QUESTION'S ONE WRITE PATH ─────────────────────────────────
+// styleCodeSibling (Admin SDK) records how the operator answered "same shoe,
+// or a different colourway?". differentColourway registers the product as a
+// SIBLING owner of the code (both keep it, neither is flagged); sameShoe
+// records the answer and upserts the duplicate pair so the existing merge flow
+// takes over. Neither is ever resolved silently — this is only ever called
+// from a screen where the operator tapped an answer.
+const styleCodeSiblingFn = httpsCallable(functions, "styleCodeSibling");
+export async function answerStyleCodeSibling({ action, code, productId, otherId }) {
+  const { data } = await styleCodeSiblingFn({ action, code, productId, otherId });
+  return data;
+}
+
 /** Everything registered at this hub so far → { "pid__sizeKey": record }. */
 export async function loadRegister(hub) {
   return (await one(registerPath(hub))) || {};
