@@ -5233,6 +5233,27 @@ function AdminView({ products, orders, onExit }) {
           }
         } catch (claimErr) {
           console.warn("addProduct: style code claim threw (product already saved):", claimErr);
+          // The operator answered "new colourway" in the gate. A thrown claim
+          // (network, permission) must not silently discard that answer — try
+          // the sibling registration anyway (the callable handles both a
+          // claimed and an unclaimed code), and say so if it also fails.
+          if (intake && intake.sibling) {
+            try {
+              await answerStyleCodeSibling({
+                action: "differentColourway",
+                code: newProduct.styleCodeNormalised,
+                productId: id,
+                otherId: intake.sibling.primaryId || null,
+              });
+            } catch (sibErr) {
+              console.warn("addProduct: sibling registration after claim failure also failed:", sibErr);
+              alert(
+                `Saved.\n\nBut recording it as a colourway of ${newProduct.styleCode} failed ` +
+                `(${sibErr?.message || sibErr}). Scan it again from Hub Cleanup to answer the ` +
+                `colourway question, or ask an admin.`
+              );
+            }
+          }
         }
       }
 

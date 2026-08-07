@@ -29,8 +29,14 @@ const BUCKET = 32;           // channel quantisation step (8 levels/channel)
  * the image cannot be decoded — extraction failing must never block anything.
  */
 export async function extractDominantColours(source) {
+  // The blob URL is revoked in `finally` — a decode failure, a null canvas
+  // context or a getImageData throw would otherwise leak the Blob for the
+  // document lifetime, and the picker lets the operator retake repeatedly on
+  // memory-constrained shop tablets.
+  let url = null;
+  const owned = typeof source !== "string";
   try {
-    const url = typeof source === "string" ? source : URL.createObjectURL(source);
+    url = owned ? URL.createObjectURL(source) : source;
     const img = await new Promise((resolve, reject) => {
       const el = new Image();
       el.onload = () => resolve(el);
@@ -43,7 +49,6 @@ export async function extractDominantColours(source) {
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     ctx.drawImage(img, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE);
     const { data } = ctx.getImageData(0, 0, SAMPLE_SIZE, SAMPLE_SIZE);
-    if (typeof source !== "string") URL.revokeObjectURL(url);
     const pixels = [];
     for (let i = 0; i < data.length; i += 4) {
       if (data[i + 3] < 128) continue; // ignore transparency
@@ -52,6 +57,8 @@ export async function extractDominantColours(source) {
     return quantiseColours(pixels);
   } catch {
     return [];
+  } finally {
+    if (owned && url) URL.revokeObjectURL(url);
   }
 }
 

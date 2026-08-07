@@ -275,7 +275,15 @@ async function runLabelRead(db, {
   const tier1Extras = extractLabelExtras(visionText);
   let colorway = tier1Extras.colourway;
   let upc = tier1Extras.upc;
-  let modelName = null; // only tier 2 can see layout well enough to name this line
+  // modelName is a TIER-2-RESIDUAL bonus, by DESIGN and by cost: only a
+  // layout-aware model can tell the model-name line from an address line, and
+  // tier 2 fires only when tier 1 could not settle the code. A label whose
+  // code reads cleanly in tier 1 therefore returns modelName null — that is
+  // the documented contract (SCHEMA.md `labelModelName`), not a gap. Paying a
+  // Gemini call on EVERY clean read to fill a prefill-only field would invert
+  // the funnel's whole cost design. Colourway and UPC don't have this limit:
+  // their tier-1 text gates are deterministic.
+  let modelName = null;
 
   // ── TIER 2 — ONLY on the residual: zero candidates, or an ambiguous many ──
   let brand = null, size = null, confidence = null, tier2Used = false;

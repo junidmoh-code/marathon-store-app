@@ -49,21 +49,30 @@ console.log(`\nTotal shared-code groups: ${sharedGroups}`);
 
 // ── 2. Alias pairs differing only by colour words ───────────────────────────
 console.log("\n═══ 2. LABEL-ALIAS PAIRS DIFFERING ONLY BY COLOUR WORDS ═══");
+const stripColours = (set) => [...set].filter((t) => !COLOUR_LEXICON.has(t)).sort().join("|");
 const aliasRows = Object.entries(aliases)
   .map(([aid, a]) => a && a.productId && a.t ? {
     aid, productId: a.productId,
     tokens: new Set(Object.keys(a.t)),
   } : null)
-  .filter(Boolean);
-const stripColours = (set) => [...set].filter((t) => !COLOUR_LEXICON.has(t)).sort().join("|");
+  .filter(Boolean)
+  // Pre-compute the colour-stripped key once per alias, and only compare
+  // within groups sharing it — the population is small by design, but the
+  // grouped scan keeps this linear-ish rather than all-pairs.
+  .map((r) => ({ ...r, key: stripColours(r.tokens) }));
+const byStripped = new Map();
+for (const r of aliasRows) {
+  if (!byStripped.has(r.key)) byStripped.set(r.key, []);
+  byStripped.get(r.key).push(r);
+}
 let colourPairs = 0;
-for (let i = 0; i < aliasRows.length; i++) {
-  for (let j = i + 1; j < aliasRows.length; j++) {
-    const a = aliasRows[i], b = aliasRows[j];
+for (const group of byStripped.values()) {
+  for (let i = 0; i < group.length; i++) {
+  for (let j = i + 1; j < group.length; j++) {
+    const a = group[i], b = group[j];
     if (a.productId === b.productId) continue;
     const sameEitherWay = a.tokens.size === b.tokens.size && [...a.tokens].every((t) => b.tokens.has(t));
     if (sameEitherWay) continue; // identical sets are a different problem, not a colour split
-    if (stripColours(a.tokens) !== stripColours(b.tokens)) continue;
     colourPairs++;
     const aColours = [...a.tokens].filter((t) => COLOUR_LEXICON.has(t));
     const bColours = [...b.tokens].filter((t) => COLOUR_LEXICON.has(t));
@@ -71,25 +80,32 @@ for (let i = 0; i < aliasRows.length; i++) {
     console.log(`\n${a.aid} (${a.productId} ${nameOf(a.productId)})  colours: ${aColours.join(" ") || "—"}`);
     console.log(`${b.aid} (${b.productId} ${nameOf(b.productId)})  colours: ${bColours.join(" ") || "—"}`);
   }
+  }
 }
 if (!colourPairs) console.log("(none — no two aliases of different products differ only by colour words)");
 console.log(`\nTotal colour-only alias pairs: ${colourPairs}`);
 
 // ── 3. Claim verification — nothing orphaned ─────────────────────────────────
 console.log("\n═══ 3. CLAIM VERIFICATION (/style_code_index) ═══");
-let ok = 0, orphaned = 0, unstamped = 0, mismatched = 0, withSiblings = 0;
+let ok = 0, orphaned = 0, unstamped = 0, mismatched = 0, stale = 0, withSiblings = 0;
 for (const [code, node] of Object.entries(index)) {
   const owners = claimOwnerIds(node);
   if ((node.siblings && Object.keys(node.siblings).length) > 0) withSiblings++;
   for (const pid of owners) {
     const p = products[pid];
     if (!p) { orphaned++; console.log(`ORPHAN     ${code} → ${pid} (product does not exist)`); continue; }
+    // A merged-away owner is a STALE claim — the merge should have repointed
+    // it to the survivor. Counting it as ok would hide a failed repoint.
+    if (p.mergedInto) { stale++; console.log(`STALE      ${code} → ${pid} merged into ${p.mergedInto} — claim not repointed`); continue; }
     if (!p.styleCodeNormalised) { unstamped++; console.log(`UNSTAMPED  ${code} → ${pid} (${p.name || "?"}) — owner not stamped`); continue; }
     if (String(p.styleCodeNormalised) !== code) { mismatched++; console.log(`MISMATCH   ${code} → ${pid} stamped ${p.styleCodeNormalised}`); continue; }
     ok++;
   }
 }
 console.log(`\nClaims: ${Object.keys(index).length} codes, ${withSiblings} with siblings`);
-console.log(`Owner entries — ok: ${ok}, orphaned: ${orphaned}, unstamped: ${unstamped}, mismatched: ${mismatched}`);
+console.log(`Owner entries — ok: ${ok}, orphaned: ${orphaned}, stale(merged): ${stale}, unstamped: ${unstamped}, mismatched: ${mismatched}`);
 console.log("\nAUDIT COMPLETE — zero writes performed.");
-process.exit(0);
+// Graceful shutdown: process.exit() can truncate piped stdout mid-flush.
+// Deleting the app closes the RTDB connection so Node exits on its own.
+await admin.app().delete();
+process.exitCode = 0;

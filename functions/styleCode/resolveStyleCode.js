@@ -178,8 +178,17 @@ async function flagDuplicates(db, normalised, pairs, actor, nowMs) {
     // re-observed). Only a genuinely new row is born "open".
     const status = prior && typeof prior.status === "string" ? prior.status : "open";
     const detectedAt = prior && Number.isFinite(Number(prior.detectedAt)) ? Number(prior.detectedAt) : nowMs;
+    // A human's "same shoe" answer (styleCodeSibling) is the strongest
+    // evidence this row can carry — stronger than any scan collision. It must
+    // survive re-detection exactly like status and detectedAt do, or the next
+    // scan of the same code erases it.
+    const answeredSameShoeBy = prior && prior.answeredSameShoeBy ? prior.answeredSameShoeBy : null;
+    const answeredSameShoeAt = prior && Number.isFinite(Number(prior.answeredSameShoeAt))
+      ? Number(prior.answeredSameShoeAt) : null;
 
     await ref.set({
+      ...(answeredSameShoeBy ? { answeredSameShoeBy } : {}),
+      ...(answeredSameShoeAt ? { answeredSameShoeAt } : {}),
       productIdA,
       productIdB,
       reason: DUP_REASON_STYLE_CODE, // enum: styleCodeCollision | manual | heuristic

@@ -125,14 +125,19 @@ function siblingVelocity(claimNode, nowMs) {
  * Has this exact pair already been answered "different colourway" before?
  * A repeat answer for the same pair is worth a flag (someone keeps hitting the
  * same collision), and — like every flag here — is logged, never acted on.
- * @param {object|null} eventsNode  the whole /style_code_sibling_events node
+ * @param {object|null} eventsNode  the PER-CODE events node —
+ *   /style_code_sibling_events/{code}. Keying events by code is what keeps
+ *   this read bounded to one code's history for the life of the deployment.
+ *   Rows need no `code` field (the path is the code); one carrying a
+ *   DIFFERENT code is refused as malformed.
  */
 function repeatAnswerCount(eventsNode, code, idA, idB) {
   if (!eventsNode || typeof eventsNode !== "object") return 0;
   const [a, b] = [String(idA), String(idB)].sort();
   let n = 0;
   for (const ev of Object.values(eventsNode)) {
-    if (!ev || ev.code !== code || ev.answer !== ANSWER_DIFFERENT_COLOURWAY) continue;
+    if (!ev || ev.answer !== ANSWER_DIFFERENT_COLOURWAY) continue;
+    if (ev.code && ev.code !== code) continue;
     const ids = [String(ev.productId || ""), String(ev.otherId || "")].sort();
     if (ids[0] === a && ids[1] === b) n++;
   }

@@ -186,8 +186,14 @@ export function resolveStyleNumber(code, { products = [], claim = null } = {}) {
   const unloadedIds = [];
   for (const id of indexOwnerIds) {
     if (byId.has(id)) continue;
-    const p = (products || []).find((x) => x && x.id === id && !isMergedAway(x));
-    if (p) byId.set(id, p);
+    const known = (products || []).find((x) => x && x.id === id);
+    // A merged-away owner is neither a candidate NOR unloaded: the claim still
+    // names an id whose SURVIVOR answers for it now (a failed or in-flight
+    // merge repoint leaves this state). Counting it as unloaded would push a
+    // one-live-owner code off the one-step path and offer a merge banner for
+    // a set that is not a collision — so it is dropped here.
+    if (known && isMergedAway(known)) continue;
+    if (known) byId.set(id, known);
     else unloadedIds.push(id); // named by the index but not visible here
   }
   const candidates = [...byId.values()];

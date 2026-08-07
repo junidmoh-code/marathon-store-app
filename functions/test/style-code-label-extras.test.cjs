@@ -157,3 +157,27 @@ test("runLabelRead: tier-1 text yields code + colourway + UPC, caches them, and 
   assert.strictEqual(again.colorway, "WOLF GREY/PHOTO BLUE");
   assert.strictEqual(again.upc, "00197859117222");
 });
+
+test("a clean tier-1 read returns modelName null BY DESIGN — tier 2 (and its cost) never fires", async () => {
+  // The documented contract (SCHEMA.md labelModelName): the model-name line is
+  // a tier-2-residual bonus. A label whose code settles in tier 1 must not pay
+  // a Gemini call to fill a prefill-only field.
+  const db = fakeDb();
+  const out = await runLabelRead(db, {
+    buffer: Buffer.from("clean-tier1-photo"),
+    base64: "clean-tier1-photo",
+    mimeType: "image/jpeg",
+    nowMs: NOW,
+    geminiKey: "unused",
+    visionFetch: async () => ({
+      ok: true,
+      json: async () => ({ responses: [{ fullTextAnnotation: { text: RTFKT_LABEL } }] }),
+    }),
+    tokenFn: async () => "token",
+    geminiFetch: async () => { throw new Error("tier 2 must not fire on a clean tier-1 read"); },
+  });
+  assert.deepStrictEqual(out.candidates, ["DV3853001"]);
+  assert.strictEqual(out.tier2Used, false);
+  assert.strictEqual(out.modelName, null);       // the documented limit, pinned
+  assert.strictEqual(out.colorway, "WOLF GREY/PHOTO BLUE"); // tier-1 extras unaffected
+});

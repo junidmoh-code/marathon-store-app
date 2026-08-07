@@ -93,3 +93,16 @@ describe("registration: the collision asks — never blocks, never merges, never
     }
   });
 });
+
+describe("merged-away owners (CodeRabbit, PR #331)", () => {
+  const CODE2 = "HF5509002";
+  it("a claim naming a merged-away sibling plus ONE live owner stays on the one-step path", () => {
+    const live = P("pWhite", { styleCodeNormalised: CODE2 });
+    const gone = P("pOld", { styleCodeNormalised: CODE2, mergedInto: "pWhite" });
+    const claim = { productId: "pWhite", claimedAt: 1, siblings: { pOld: { addedAt: 2 } } };
+    const out = resolveStyleNumber(CODE2, { products: [live, gone], claim });
+    // The merged-away owner is neither a candidate nor "unloaded" — its
+    // survivor answers for it. One live owner = one step, no picker.
+    expect(out).toEqual({ kind: "claim", productId: "pWhite", normalised: CODE2 });
+  });
+});

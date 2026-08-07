@@ -54,7 +54,7 @@ import {
   fetchProductFollowingMerge, lookupStyleClaim, matchLabelAlias, addLabelAlias,
   answerStyleCodeSibling,
 } from "./hubCleanupStore";
-import { allRegisteredSiblings } from "../../utils/styleCodeSiblings";
+import { allRegisteredSiblings, claimOwnerIds } from "../../utils/styleCodeSiblings";
 import { extractDominantColours, orderByColourAffinity } from "../../utils/dominantColours";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
@@ -281,10 +281,16 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // colourway SIBLINGS (legitimate, no merge banner) or an unexplained
         // collision (merge stays on offer).
         const claim = await lookupStyleClaim(normaliseStyleCode(code)).catch(() => null);
+        // Index owners this device has not loaded must be SURFACED, exactly as
+        // the style-number path surfaces them — otherwise this entry point
+        // presents a partial list as a complete one.
+        const loadedIds = new Set(out.products.map((p) => p.id));
+        const unloadedIds = claimOwnerIds(claim).filter((id) =>
+          !loadedIds.has(id) && !(products || []).some((x) => x && x.id === id));
         setPanel({
           mode: "choose", code, claimants: out.products,
-          siblings: allRegisteredSiblings(claim, out.products.map((p) => p.id)),
-          unloadedIds: [],
+          siblings: allRegisteredSiblings(claim, out.products.map((p) => p.id)) && !unloadedIds.length,
+          unloadedIds,
         });
       } else if (tab === "count") {
         const noted = await recordUnresolvedScan({ hub, code, context: tab });
@@ -1198,25 +1204,29 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
         <div style={{ background: "rgba(74,127,255,.06)", border: "1px solid rgba(74,127,255,.35)", borderRadius: 13,
                       padding: "14px", marginBottom: 18 }}>
           <div style={{ fontSize: 14.5, fontWeight: 800, marginBottom: 10 }}>
-            {chosenCode} is already on this shoe:
+            {chosenCode} is already on {conflictOwners.length > 1 ? `${conflictOwners.length} shoes` : "this shoe"}:
           </div>
+          {/* EVERY conflicting owner is shown — the answer below covers all of
+              them, so the operator must see all of them. Showing one of three
+              and resolving three would be a silent decision about the other two. */}
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
-            {[conflictOwners[0], product].map((p, i) => (
+            {[...conflictOwners, product].map((p, i) => (
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: 12,
                                        background: CARD, border: BORDER, borderRadius: 14 }}>
                 <Photo url={p.photoUrl} size={110} radius={12} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 15.5, fontWeight: 800, lineHeight: 1.3 }}>{p.name}</div>
                   <div style={{ fontSize: 11.5, color: GRAY, marginTop: 3 }}>
-                    {i === 0 ? "Already carries this code" : "The product you selected"}
+                    {i < conflictOwners.length ? "Already carries this code" : "The product you selected"}
                   </div>
                 </div>
               </div>
             ))}
           </div>
           <div style={{ fontSize: 13.5, color: "#CFE0FF", lineHeight: 1.55, marginBottom: 12 }}>
-            <strong>Is that the same shoe, or a different colourway?</strong> The tongue label prints no
-            colour, so one code on two colourways is normal — look at the photos.
+            <strong>Is {conflictOwners.length > 1 ? "any of those the same shoe" : "that the same shoe"}, or a
+            different colourway?</strong> The tongue label prints no colour, so one code on several
+            colourways is normal — look at the photos.
           </div>
           {siblingErr && (
             <div style={{ fontSize: 12.5, color: RED, marginBottom: 10 }}>{siblingErr}</div>
@@ -1228,16 +1238,24 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
                 // code, neither is flagged. The answer is recorded server-side.
                 setSiblingBusy(true); setSiblingErr(null);
                 try {
-                  await answerStyleCodeSibling({
-                    action: "differentColourway", code: chosenNormalised,
-                    productId: product.id, otherId: conflictOwners[0].id,
-                  });
+                  // ONE answer per conflicting owner: with three products on a
+                  // code, "different colourway" must register this product
+                  // against EVERY one of them, or the unanswered pairs would be
+                  // resolved silently the moment styleReady opens. (The first
+                  // call registers the sibling; the rest are idempotent
+                  // alreadyOwner confirmations that record the answer.)
+                  for (const other of conflictOwners) {
+                    await answerStyleCodeSibling({
+                      action: "differentColourway", code: chosenNormalised,
+                      productId: product.id, otherId: other.id,
+                    });
+                  }
                   setSiblingOkFor(chosenNormalised);
                 } catch (err) {
                   setSiblingErr(`Couldn't record that (${err?.message || err}) — try again.`);
                 } finally { setSiblingBusy(false); }
               }}>
-              {siblingBusy ? "Recording…" : "DIFFERENT colourway — keep both"}
+              {siblingBusy ? "Recording…" : conflictOwners.length > 1 ? "DIFFERENT colourway to ALL of these — keep them all" : "DIFFERENT colourway — keep both"}
             </BigButton>
             <BigButton tone="ghost" disabled={busy || siblingBusy}
               onClick={async () => {
@@ -1249,7 +1267,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
                 }).catch(() => {});
                 onMerge(product, conflictOwners[0]);
               }}>
-              SAME shoe — review &amp; merge…
+              {conflictOwners.length > 1 ? "SAME as one of these — review & merge…" : "SAME shoe — review & merge…"}
             </BigButton>
             <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); setSiblingErr(null); }}
               style={{ ...bGhost, fontSize: 13, minHeight: 44 }}>Re-enter the code</button>
@@ -1258,8 +1276,9 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
       ) : chosenCode && conflictOwners.length > 0 && siblingOk ? (
         <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
                       padding: "12px 14px", marginBottom: 18, fontSize: 14, color: "#B7F0CC" }}>
-          ✓ Style number: <strong>{chosenCode}</strong> — shared with {conflictOwners[0].name} as a
-          <strong> different colourway</strong>. Both keep the code; neither is flagged.
+          ✓ Style number: <strong>{chosenCode}</strong> — shared with{" "}
+          {conflictOwners.map((p) => p.name).join(", ")} as a
+          <strong> different colourway</strong>. All keep the code; none is flagged.
         </div>
       ) : aliasTokens ? (
         <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,

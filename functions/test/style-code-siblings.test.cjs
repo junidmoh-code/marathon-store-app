@@ -235,7 +235,7 @@ test("differentColourway registers a sibling, stamps the empty slot, writes NO d
   // NOTHING landed in /duplicate_candidates.
   assert.strictEqual(db.data[DUPLICATE_CANDIDATES_PATH], undefined);
   // The answer was recorded.
-  const events = Object.values(db.data[SIBLING_EVENTS_PATH]);
+  const events = Object.values(db.data[SIBLING_EVENTS_PATH][CODE]);
   assert.strictEqual(events.length, 1);
   assert.strictEqual(events[0].answer, ANSWER_DIFFERENT_COLOURWAY);
   assert.strictEqual(events[0].flagged, false);
@@ -257,7 +257,7 @@ test("sameShoe records the answer and upserts the pair row the merge flow feeds 
   assert.strictEqual(row.answeredSameShoeBy, "uStaff");
   // NO sibling was created — same-shoe is the merge path, not the sibling path.
   assert.strictEqual(db.data[STYLE_CODE_INDEX_PATH][CODE].siblings, undefined);
-  const events = Object.values(db.data[SIBLING_EVENTS_PATH]);
+  const events = Object.values(db.data[SIBLING_EVENTS_PATH][CODE]);
   assert.strictEqual(events[0].answer, ANSWER_SAME_SHOE);
 });
 
@@ -339,7 +339,7 @@ test("PROOF 6 — velocity flags are LOGGED, never acted on: the 4th owner still
   const out = await runSibling(db, { action: "differentColourway", code: CODE, productId: "p4", actor, nowMs: NOW });
   assert.strictEqual(out.registered, true);   // NOT blocked
   assert.strictEqual(out.flagged, true);      // but flagged for a human's eyes
-  const ev = Object.values(db.data[SIBLING_EVENTS_PATH]).find((e) => e.productId === "p4");
+  const ev = Object.values(db.data[SIBLING_EVENTS_PATH][CODE]).find((e) => e.productId === "p4");
   assert.strictEqual(ev.flagged, true);
   assert.ok(ev.flagReasons.length >= 1);
 });
@@ -425,4 +425,78 @@ test("a legacy one-owner claim resolves exactly as before — same owner, no fla
   assert.strictEqual(out.duplicate, false);
   // The node itself was not migrated, rewritten or touched.
   assert.deepStrictEqual(db.data[STYLE_CODE_INDEX_PATH][CODE], legacyNode);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CodeRabbit findings, PR #331 — each fix pinned so it cannot regress
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("sameShoe REFUSES a self-pair — a p__p row would offer a self-merge", async () => {
+  const db = fakeDb({
+    products: productsFixture(),
+    [STYLE_CODE_INDEX_PATH]: { [CODE]: { productId: "pWhite", claimedAt: 1 } },
+  });
+  await assert.rejects(
+    runSibling(db, { action: "sameShoe", code: CODE, productId: "pWhite", otherId: "pWhite", actor, nowMs: NOW }),
+    /different product/
+  );
+  assert.strictEqual(db.data[DUPLICATE_CANDIDATES_PATH], undefined);
+});
+
+test("sameShoe REFUSES a phantom or merged-away other — no pair row pointing at nothing", async () => {
+  const db = fakeDb({
+    products: { ...productsFixture(), pGone: { id: "pGone", mergedInto: "pWhite" } },
+    [STYLE_CODE_INDEX_PATH]: { [CODE]: { productId: "pWhite", claimedAt: 1 } },
+  });
+  await assert.rejects(
+    runSibling(db, { action: "sameShoe", code: CODE, productId: "pBlack", otherId: "pNope", actor, nowMs: NOW }),
+    /no longer exists/
+  );
+  await assert.rejects(
+    runSibling(db, { action: "sameShoe", code: CODE, productId: "pBlack", otherId: "pGone", actor, nowMs: NOW }),
+    /merged away/
+  );
+  assert.strictEqual(db.data[DUPLICATE_CANDIDATES_PATH], undefined);
+});
+
+test("the answered-same-shoe evidence SURVIVES re-detection by the resolver", async () => {
+  const db = fakeDb({
+    products: productsFixture(),
+    [STYLE_CODE_INDEX_PATH]: { [CODE]: { productId: "pWhite", claimedAt: 1 } },
+  });
+  await runSibling(db, { action: "sameShoe", code: CODE, productId: "pBlack", otherId: "pWhite", actor, nowMs: NOW });
+  const before = db.data[DUPLICATE_CANDIDATES_PATH]["pBlack__pWhite"];
+  assert.strictEqual(before.answeredSameShoeBy, "uStaff");
+  // A later scan re-detects the same collision and rewrites the same row —
+  // the human's answer must ride through, exactly like status/detectedAt do.
+  const out = await runResolve(db, { code: CODE, providers: noProviders, actor: { uid: "uOther" }, nowMs: NOW + 5000 });
+  assert.strictEqual(out.duplicate, true);
+  const after = db.data[DUPLICATE_CANDIDATES_PATH]["pBlack__pWhite"];
+  assert.strictEqual(after.answeredSameShoeBy, "uStaff");
+  assert.strictEqual(after.answeredSameShoeAt, NOW);
+});
+
+test("three-way: answering per pair registers the stamped-but-unindexed OTHER too, and records each pair", async () => {
+  // Three products stamped with one code; only pA is in the index. The UI
+  // answers once per other: (pNew vs pA), then (pNew vs pB).
+  const db = fakeDb({
+    products: {
+      pA: { id: "pA", styleCodeNormalised: CODE },
+      pB: { id: "pB", styleCodeNormalised: CODE },
+      pNew: { id: "pNew" },
+    },
+    [STYLE_CODE_INDEX_PATH]: { [CODE]: { productId: "pA", claimedAt: 1 } },
+  });
+  await runSibling(db, { action: "differentColourway", code: CODE, productId: "pNew", otherId: "pA", actor, nowMs: NOW });
+  const second = await runSibling(db, { action: "differentColourway", code: CODE, productId: "pNew", otherId: "pB", actor, nowMs: NOW + 1 });
+  assert.strictEqual(second.alreadyOwner, true);
+  assert.strictEqual(second.otherRegistered, true);
+  // ALL THREE are owners now — no pair of them is a collision any more.
+  const node = db.data[STYLE_CODE_INDEX_PATH][CODE];
+  assert.deepStrictEqual(claimOwnerIds(node), ["pA", "pB", "pNew"]);
+  // Both answered pairs are on the record.
+  const events = Object.values(db.data[SIBLING_EVENTS_PATH][CODE]);
+  assert.strictEqual(events.length, 2);
+  // And nothing was flagged as a duplicate.
+  assert.strictEqual(db.data[DUPLICATE_CANDIDATES_PATH], undefined);
 });
