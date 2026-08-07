@@ -41,7 +41,7 @@
 // need to tick, and a listener would re-materialise its result on every append
 // for as long as the tab is open.
 import React, { useEffect, useMemo, useState } from "react";
-import { ref, query, orderByChild, startAt, endAt, get } from "firebase/database";
+import { ref, query, orderByChild, startAt, endBefore, get } from "firebase/database";
 import { database } from "../../firebase";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, FONT, input } from "./ui";
 import { serverNowMs } from "../../utils/serverTime";
@@ -113,7 +113,7 @@ export default function RefillHistory({ products = [] }) {
   useEffect(() => {
     let alive = true;
     setMovements(null); setMvError(null);
-    get(query(ref(database, "stock_movements"), orderByChild("ts"), startAt(range.fromIso), endAt(range.toIso)))
+    get(query(ref(database, "stock_movements"), orderByChild("ts"), startAt(range.fromIso), endBefore(range.toIso)))
       .then((snap) => {
         if (!alive) return;
         const val = snap.val() || {};
@@ -145,7 +145,7 @@ export default function RefillHistory({ products = [] }) {
     // Merged by id. Unindexed: a single unfiltered read, filtered in memory.
     const fetch = REQUESTS_INDEXED
       ? Promise.all(["createdAt", "resolvedAt"].map((field) =>
-          get(query(ref(database, "refill_requests"), orderByChild(field), startAt(range.fromIso), endAt(range.toIso)))
+          get(query(ref(database, "refill_requests"), orderByChild(field), startAt(range.fromIso), endBefore(range.toIso)))
             .then((s) => s.val() || {})))
           .then(([a, b]) => ({ ...a, ...b }))
       : get(ref(database, "refill_requests")).then((s) => s.val() || {});

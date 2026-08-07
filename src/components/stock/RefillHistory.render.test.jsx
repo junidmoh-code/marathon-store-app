@@ -17,13 +17,15 @@ import TestRenderer, { act } from "react-test-renderer";
 const NOW = Date.parse("2026-08-07T07:00:00.000Z");
 
 // ── THE MOCK KEEPS THE QUERY, NOT JUST THE PATH ──────────────────────────────
-// A mock that throws away orderByChild/startAt/endAt cannot tell a range-scoped
-// read from a whole-node one, so the two things this view exists to guarantee —
-// movements are date-bounded against the `ts` index, and the unindexed request
-// fallback is read ONCE per mount rather than on every chip tap — would both
-// pass after a regression. On a project already billed hundreds of dollars for
-// an unindexed whole-node read, that is the assertion worth having.
-// (CodeRabbit, PR #332.)
+// A mock that throws away orderByChild/startAt/endBefore cannot tell a
+// range-scoped read from a whole-node one, so the thing this view exists to
+// guarantee — every read is bounded by the selected range — would pass after a
+// regression. On a project already billed hundreds of dollars for an unindexed
+// whole-node read, that is the assertion worth having. (CodeRabbit, PR #332.)
+//
+// NOTE the mock deliberately does NOT export `endAt`. The component must use
+// `endBefore`, and a mock that offers both would let an inclusive bound slip
+// back in unnoticed — the import would simply resolve. (CodeRabbit, PR #333.)
 const reads = {};
 const readCalls = [];
 vi.mock("firebase/database", () => ({
@@ -31,7 +33,7 @@ vi.mock("firebase/database", () => ({
   query: (r, ...constraints) => ({ ...r, constraints }),
   orderByChild: (field) => ({ kind: "orderByChild", field }),
   startAt: (value) => ({ kind: "startAt", value }),
-  endAt: (value) => ({ kind: "endAt", value }),
+  endBefore: (value) => ({ kind: "endBefore", value }),
   get: (r) => { readCalls.push(r); return Promise.resolve({ val: () => reads[r.path] ?? null }); },
 }));
 const callsTo = (path) => readCalls.filter((r) => r.path === path);
@@ -213,7 +215,7 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     expect(c.orderByChild).toBe("ts");
     // today, SA — the half-open window, sent to the server rather than filtered here
     expect(c.startAt).toBe("2026-08-06T22:00:00.000Z");
-    expect(c.endAt).toBe("2026-08-07T22:00:00.000Z");
+    expect(c.endBefore).toBe("2026-08-07T22:00:00.000Z");
   });
 
   // ── THE TEST THAT FAILS IF THE FLAG IS FLIPPED BACK ───────────────────────
@@ -239,7 +241,7 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
       // today, SA — the half-open window, sent to the SERVER rather than
       // filtered here
       expect(c.startAt).toBe("2026-08-06T22:00:00.000Z");
-      expect(c.endAt).toBe("2026-08-07T22:00:00.000Z");
+      expect(c.endBefore).toBe("2026-08-07T22:00:00.000Z");
     }
     // and nothing read the node without constraints
     expect(rr.filter((r) => (r.constraints ?? []).length === 0)).toEqual([]);
@@ -269,7 +271,27 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
       const c = constraintsOf(r);
       expect(c.orderByChild, `unbounded read of ${r.path}`).toBeTruthy();
       expect(typeof c.startAt).toBe("string");
-      expect(typeof c.endAt).toBe("string");
+      expect(typeof c.endBefore).toBe("string");
+    }
+  });
+
+  it("the end bound is EXCLUSIVE — endBefore, matching the half-open window", async () => {
+    // resolveRange documents a half-open window and requestRows/movementRows
+    // filter `t < toMs`. An inclusive endAt on the server contradicted that: it
+    // fetched the boundary instant (exactly 00:00:00.000 SA of the next day) and
+    // relied on the client filter to drop it again. Harmless today, but it makes
+    // the server query disagree with its own stated contract — and becomes a real
+    // off-by-one the moment someone removes the client filter, reasonably
+    // believing the server already bounded the range. (CodeRabbit, PR #333.)
+    await render();
+    for (const r of readCalls) {
+      const kinds = (r.constraints ?? []).map((c) => c.kind);
+      expect(kinds, `${r.path} must bound the range exclusively`).toContain("endBefore");
+      expect(kinds, `${r.path} must not use an inclusive end bound`).not.toContain("endAt");
+    }
+    // and the exclusive bound is the START of the next SA day, not 23:59:59
+    for (const r of readCalls) {
+      expect(constraintsOf(r).endBefore).toBe("2026-08-07T22:00:00.000Z");
     }
   });
 
