@@ -389,6 +389,50 @@ async function runScan() {
       if (withdrawn) counts.withdrawn = withdrawn;
     }
 
+    // ── apply satisfied-by-stock withdrawals ─────────────────────────────────
+    // The lock-less half of reconciliation (see the long note above
+    // `satisfiedClosures` in refill-engine.cjs). These requests have NO entry in
+    // /refill_engine/open, so this loop deliberately writes exactly ONE node
+    // each — the request's own status. It must never touch
+    // /refill_engine/open/{dest}/{pid}/{sizeKey}: some OTHER live lock may sit
+    // on the same cell, and nulling it would strand a request the engine is
+    // still waiting on.
+    //
+    // Same null-tolerant conditional transaction as the close path, and for the
+    // same reason (#199): the first callback pass runs against a cold local
+    // cache and sees null even when the node exists — returning `undefined`
+    // there aborts permanently, which is how 2,304 status writes were once
+    // silently lost. Returning null re-probes; a genuinely absent node no-ops.
+    //
+    // The `status === "open"` guard is the whole safety story for the race with
+    // a picker: if Central fulfilled or rejected the request in the snapshot
+    // gap, that write wins and this one stands down. The next scan re-decides
+    // from truth, exactly like every other reconciliation here.
+    if (plan.satisfiedClosures?.length) {
+      let satisfied = 0;
+      for (const s of plan.satisfiedClosures) {
+        try {
+          const res = await db.ref(`refill_requests/${s.refillId}`).transaction((cur) => {
+            if (cur === null) return null;
+            if (cur.status && cur.status !== "open") return;      // resolved meanwhile — leave it
+            return {
+              ...cur,
+              status: s.rrStatus,
+              resolvedAt: startedAt,
+              cancelReason: s.cancelReason,
+              // The audit trail a human needs to believe the withdrawal: what
+              // the cell held at the moment the engine decided the ask was met.
+              satisfiedBy: { location: s.dest, onHand: s.have, requested: s.qty },
+            };
+          });
+          if (res?.committed && res.snapshot?.val()?.status === s.rrStatus) satisfied++;
+        } catch (e) {
+          counts.errors.push(`satisfied ${s.refillId}: ${e?.message || e}`);
+        }
+      }
+      if (satisfied) counts.satisfied = satisfied;
+    }
+
     // ── apply the deficit-loop's self-heal streak resets ──────────────────────
     // (Close-derived ops ride inside each close's own update above.) These are
     // recomputed from live state every scan, so a lost write simply reappears.
