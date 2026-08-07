@@ -162,10 +162,11 @@ describe("a fingerprint collides exactly like a verified code", () => {
     const owners = styleCodeOwners(FP, products, "pMine");
     expect(owners.map((p) => p.id)).toEqual(["pOwner"]);   // → merge route, save blocked
   });
-  it("count: a fingerprint with a claim AND a second live owner is a DUPLICATE", () => {
+  it("count: a fingerprint with a claim AND a second live owner NEVER resolves silently", () => {
     const products = [P("pA", { styleCodeNormalised: FP }), P("pB", { styleCodeNormalised: FP })];
     const out = resolveStyleNumber(FP, { products, claim: { productId: "pA" } });
-    expect(out.kind).toBe("duplicate");
+    expect(out.kind).toBe("choose"); // the human picks; siblings=false keeps the merge route
+    expect(out.siblings).toBe(false);
   });
   it("the same fingerprint on the SAME product is no conflict — that is the point", () => {
     const products = [P("pMine", { styleCodeNormalised: FP })];
@@ -199,11 +200,12 @@ describe("a style number resolves to its product — the claim is the authority"
     expect(out.product.id).toBe("p2");
   });
 
-  it("two live owners are a DUPLICATE — routed to merge, never guessed", () => {
+  it("two live owners are a CHOICE — shown side by side, never guessed", () => {
     const twins = [...products, P("p9", { styleCodeNormalised: "DD1391100" })];
     const out = resolveStyleNumber("DD1391-100", { products: twins, claim: null });
-    expect(out.kind).toBe("duplicate");
+    expect(out.kind).toBe("choose");
     expect(out.products.map((p) => p.id).sort()).toEqual(["p2", "p9"]);
+    expect(out.siblings).toBe(false); // no index vouches for them — merge stays offered
   });
 
   it("a CLEAN read that nothing owns is the never-registered signal", () => {
@@ -221,7 +223,7 @@ describe("a style number resolves to its product — the claim is the authority"
     // claim points at. Routing silently to the claimed product would hide it.
     const twins = [...products, P("pTwin", { styleCodeNormalised: "DD1391100" })];
     const out = resolveStyleNumber("DD1391-100", { products: twins, claim: { productId: "p2" } });
-    expect(out.kind).toBe("duplicate");
+    expect(out.kind).toBe("choose");
     expect(out.claimProductId).toBe("p2");
     expect(out.products.map((p) => p.id)).toEqual(["p2", "pTwin"]); // claimed first
   });

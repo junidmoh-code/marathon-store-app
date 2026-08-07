@@ -46,7 +46,8 @@ import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
 import { TongueLabelReader } from "./components/stock/TongueLabelReader";
 import { styleCodeOwners } from "./components/stock/hubCleanupCore";
-import { lookupStyleClaim, matchLabelAlias, fetchProductFollowingMerge } from "./components/stock/hubCleanupStore";
+import { lookupStyleClaim, matchLabelAlias, fetchProductFollowingMerge, answerStyleCodeSibling } from "./components/stock/hubCleanupStore";
+import { extractDominantColours } from "./utils/dominantColours";
 import { normaliseStyleCode } from "./utils/styleCode";
 import { displaySendNeedsSize } from "./utils/displaySend";
 import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from "./utils/sendConfirm";
@@ -5079,6 +5080,14 @@ function AdminView({ products, orders, onExit }) {
       //    the refill sweep, Display Checks and POS treat this product exactly
       //    as they treat one made by the old form. Brand stays auto-parsed from
       //    the name by the shared classifier, as before.
+      // Dominant colours off the product photo — the shoe's own palette, used
+      // to ORDER sibling-colourway candidate lists (never to select). Best-
+      // effort and browser-only; a failed extraction stores nothing.
+      let dominantColours = null;
+      if (form.photoBlob) {
+        try { dominantColours = await extractDominantColours(form.photoBlob); } catch { dominantColours = null; }
+      }
+
       const newProduct = buildNewProduct(taxonomy, form, {
         id,
         photoUrl: photoUrl ?? null,
@@ -5086,6 +5095,13 @@ function AdminView({ products, orders, onExit }) {
         // The style code carried through from the gate. Absent for any product
         // added without one — the field is omitted, never nulled.
         styleCode: intake ? intake.styleCode : null,
+        // Everything else the tongue label printed (colourway line, UPC, model
+        // name) — evidence fields, omitted when the label printed none. The
+        // UPC is NON-AUTHORITATIVE: this stock reuses one UPC across sizes.
+        labelColorway: intake ? intake.labelColorway : null,
+        labelUpc: intake ? intake.labelUpc : null,
+        labelModelName: intake ? intake.labelModelName : null,
+        dominantColours,
         // The bypass, when one was used. buildNewProduct refuses to record an
         // exemption with no reason — a bypass with no reason is a gap.
         exempt: intake ? intake.exempt : null,
@@ -5179,18 +5195,65 @@ function AdminView({ products, orders, onExit }) {
             nowMs: serverNowMs(),
           });
           if (outcome.kind === CLAIM_TAKEN) {
-            console.warn(`addProduct: style code ${newProduct.styleCodeNormalised} already claimed by ` +
-              `${outcome.productId || "another product"}; ${id} saved but does not own it`);
-            alert(
-              `Saved.\n\nNote: style code ${newProduct.styleCode} is already on another product` +
-              (outcome.productId ? ` (${outcome.productId})` : "") +
-              `. Both now carry it — an admin should merge them.`
-            );
+            // ── THE SIBLING PATH (owner spec 2026-08-07) ─────────────────────
+            // The gate showed the claiming product(s) LARGE and the operator
+            // answered "none of these — new colourway". Same code + different
+            // colourway is NOT a duplicate: register this product as a SIBLING
+            // owner. Both keep the code, neither is flagged, nothing lands in
+            // /duplicate_candidates. The answer is recorded server-side.
+            if (intake && intake.sibling) {
+              try {
+                const sib = await answerStyleCodeSibling({
+                  action: "differentColourway",
+                  code: newProduct.styleCodeNormalised,
+                  productId: id,
+                  otherId: intake.sibling.primaryId || outcome.productId || null,
+                });
+                console.log(`addProduct: ${newProduct.styleCodeNormalised} registered as colourway sibling`, sib);
+              } catch (sibErr) {
+                console.warn("addProduct: sibling registration failed (product already saved):", sibErr);
+                alert(
+                  `Saved.\n\nBut recording it as a colourway of ${newProduct.styleCode} failed ` +
+                  `(${sibErr?.message || sibErr}). Scan it again from Hub Cleanup to answer the ` +
+                  `colourway question, or ask an admin.`
+                );
+              }
+            } else {
+              console.warn(`addProduct: style code ${newProduct.styleCodeNormalised} already claimed by ` +
+                `${outcome.productId || "another product"}; ${id} saved but does not own it`);
+              alert(
+                `Saved.\n\nNote: style code ${newProduct.styleCode} is already on another product` +
+                (outcome.productId ? ` (${outcome.productId})` : "") +
+                `. Both now carry it — an admin should look at whether it's the same shoe (merge) ` +
+                `or a different colourway (keep both).`
+              );
+            }
           } else if (outcome.kind !== CLAIM_OK) {
             console.warn(`addProduct: style code claim failed for ${id}:`, claimFailureMessage(outcome));
           }
         } catch (claimErr) {
           console.warn("addProduct: style code claim threw (product already saved):", claimErr);
+          // The operator answered "new colourway" in the gate. A thrown claim
+          // (network, permission) must not silently discard that answer — try
+          // the sibling registration anyway (the callable handles both a
+          // claimed and an unclaimed code), and say so if it also fails.
+          if (intake && intake.sibling) {
+            try {
+              await answerStyleCodeSibling({
+                action: "differentColourway",
+                code: newProduct.styleCodeNormalised,
+                productId: id,
+                otherId: intake.sibling.primaryId || null,
+              });
+            } catch (sibErr) {
+              console.warn("addProduct: sibling registration after claim failure also failed:", sibErr);
+              alert(
+                `Saved.\n\nBut recording it as a colourway of ${newProduct.styleCode} failed ` +
+                `(${sibErr?.message || sibErr}). Scan it again from Hub Cleanup to answer the ` +
+                `colourway question, or ask an admin.`
+              );
+            }
+          }
         }
       }
 

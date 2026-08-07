@@ -260,12 +260,31 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       }
     }
 
-    // Repoint every style-code claim the loser owns.
+    // Repoint every style-code claim the loser owns — primary or SIBLING.
+    // A claim row may now name several owners (colourway siblings — see
+    // lib/style-code-siblings.cjs), and a merge must never leave the same
+    // survivor listed twice: once as primary and once as sibling, the owner
+    // count would read 2 for one product and the count picker would ask a
+    // question with one answer.
     const allClaims = (await db.ref("style_code_index").get()).val() || {};
     const styleCodesRepointed = {};
     for (const [codeKey, row] of Object.entries(allClaims)) {
-      if (row && row.productId === loserId) {
+      if (!row) continue;
+      const siblings = row.siblings && typeof row.siblings === "object" ? row.siblings : {};
+      if (row.productId === loserId) {
         updates[`style_code_index/${codeKey}/productId`] = survivorId;
+        // Survivor was already a sibling of this code → drop its sibling entry
+        // so it appears exactly once, as the new primary.
+        if (siblings[survivorId]) updates[`style_code_index/${codeKey}/siblings/${survivorId}`] = null;
+        styleCodesRepointed[codeKey] = row;
+      } else if (siblings[loserId]) {
+        // The loser was a sibling. Its entry follows the survivor — unless the
+        // survivor already owns the code (as primary or sibling), in which case
+        // the entry simply goes: the ownership it recorded is already present.
+        updates[`style_code_index/${codeKey}/siblings/${loserId}`] = null;
+        if (row.productId !== survivorId && !siblings[survivorId]) {
+          updates[`style_code_index/${codeKey}/siblings/${survivorId}`] = siblings[loserId];
+        }
         styleCodesRepointed[codeKey] = row;
       }
     }

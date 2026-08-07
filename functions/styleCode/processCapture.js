@@ -38,6 +38,7 @@ const {
 } = require("../lib/style-code-capture.cjs");
 const { SNEAKER_MODELS_PATH } = require("../lib/style-code-providers.cjs");
 const { normaliseStyleCode } = require("../lib/style-code.cjs");
+const { claimOwnerIds } = require("../lib/style-code-siblings.cjs");
 const { STYLE_CODE_INDEX_PATH } = require("./resolveStyleCode.js");
 
 if (!admin.apps.length) {
@@ -225,7 +226,13 @@ async function claimIndexServerSide(db, normalised, productId, uid, nowMs) {
   });
   const val = res.snapshot.val();
   const ownerId = val && typeof val.productId === "string" ? val.productId : null;
-  return { claimed: !!res.committed && ownerId === productId, ownerId };
+  // A code may legitimately name SEVERAL owners (colourway siblings — see
+  // lib/style-code-siblings.cjs). A product that is already a registered
+  // owner — primary or sibling — is entitled to carry the code: that is not a
+  // conflict, so stamping proceeds. Only a product the index does NOT vouch
+  // for is refused.
+  const owner = !!res.committed ? ownerId === productId : claimOwnerIds(val).includes(productId);
+  return { claimed: owner, ownerId };
 }
 
 /**

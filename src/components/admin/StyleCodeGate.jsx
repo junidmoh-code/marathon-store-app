@@ -42,6 +42,7 @@ import { serverNowMs } from "../../utils/serverTime";
 import { auth } from "../../firebase";
 import {
   resolveAddStockTarget, classifyLookupOutcome, labelPhotoEvidence,
+  orderCandidatesByColourway,
   TARGET_READY, TARGET_CHOOSE,
   BLOCK_CLAIM_UNAVAILABLE, BLOCK_PRODUCT_UNAVAILABLE,
 } from "./styleCodeGateLogic";
@@ -103,6 +104,12 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
   // and confusableRetry would stay on for a hand-typed code, which the comment
   // in lookup() explicitly says it must not. (CodeRabbit, PR #312.)
   const [photoForCode, setPhotoForCode] = useState(null); // normalised code
+  // Everything ELSE the label offered — colourway line, UPC, model name —
+  // extracted by the same read that produced the code. Evidence from the same
+  // photo, so it follows the photo's binding: cleared on retake, carried only
+  // while the photo still matches the code. The UPC is NON-AUTHORITATIVE by
+  // design (this stock reuses one UPC across a size run) — stored, never keyed.
+  const [labelExtras, setLabelExtras] = useState(null); // { colorway, upc, modelName }
   // The bypass panel. Deliberately NOT a step in the main flow — it is opened
   // from a subordinate link, and closing it returns to the style code.
   const [bypassOpen, setBypassOpen] = useState(false);
@@ -128,7 +135,7 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     // CLEAR THE BINDING FIRST. A retake that fails must not leave the NEW photo
     // paired with the PREVIOUS code — that was the gap the first version of this
     // guard left open. Nothing is evidence again until a read succeeds.
-    setLabelPhoto(null); setPhotoForCode(null);
+    setLabelPhoto(null); setPhotoForCode(null); setLabelExtras(null);
     try {
       // Downscaled to 1024px in the browser BEFORE it is sent anywhere.
       const photo = await prepareLabelPhoto(file);
@@ -136,6 +143,11 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       const res = await readStyleCodeLabelFn({ imageBase64: photo.base64, mimeType: "image/jpeg" });
       const data = (res && res.data) || {};
       const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+      // Whatever else this label printed. Server-validated; null means the
+      // label simply doesn't print it (most don't).
+      if (data.colorway || data.upc || data.modelName) {
+        setLabelExtras({ colorway: data.colorway || null, upc: data.upc || null, modelName: data.modelName || null });
+      }
 
       if (candidates.length === 1) {
         // VALIDATE BEFORE USE — the server already did, this is the client's own
@@ -240,6 +252,11 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       styleCodeFetchedAt: serverNowMs(),
       // Only when this photo is still evidence for THIS code (see photoForCode).
       labelPhoto: evidencePhoto,
+      // The label's own extras follow the same evidence rule: they came off the
+      // photo, so they travel only while the photo still matches the code.
+      labelColorway: (photoMatchesCode && labelExtras && labelExtras.colorway) || null,
+      labelUpc: (photoMatchesCode && labelExtras && labelExtras.upc) || null,
+      labelModelName: (photoMatchesCode && labelExtras && labelExtras.modelName) || null,
     };
   }
 
@@ -423,12 +440,27 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
         });
         const mustChoose = target.kind === TARGET_CHOOSE;
         const ready = target.kind === TARGET_READY;
-        const cards = existing.length ? existing : (claimedProduct ? [claimedProduct] : []);
+        // ORDERED, never filtered: the label's colourway line (when it printed
+        // one) puts the likely match first. Selection stays with the human and
+        // with resolveAddStockTarget's fail-closed rules — ordering is cosmetic
+        // by contract.
+        const cards = orderCandidatesByColourway(
+          existing.length ? existing : (claimedProduct ? [claimedProduct] : []),
+          labelExtras && photoMatchesCode ? labelExtras.colorway : null
+        );
+        const ownerCount = Array.isArray(result.owners) ? result.owners.length : 0;
         return (
           <>
             <Note tone="good">
               <b>We already have this shoe.</b> Add stock to it rather than creating a second record.
             </Note>
+
+            {ownerCount > 1 && !result.duplicate && (
+              <Note>
+                <b>{ownerCount} colourways share this style code</b> — that's how this stock is labelled,
+                nothing is wrong. Pick the one you're holding.
+              </Note>
+            )}
 
             {result.duplicate && (
               <Note tone="warn">
@@ -506,6 +538,30 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
                          { cursor: ready ? "pointer" : "not-allowed" })}>
               {mustChoose ? "Select a product first" : "Add stock to this product"}
             </button>
+            {/* NONE OF THESE — a NEW colourway of an already-claimed code.
+                (Owner spec 2026-08-07: same code + different colourway is NOT
+                a duplicate.) Subordinate on purpose — add-stock is the common
+                case; this is the escape for the shoe the catalogue lacks. The
+                form opens with the code kept and a sibling marker: the save
+                registers this product as a SIBLING owner instead of losing the
+                create-once claim race and alerting about a merge. */}
+            {result.claim && result.claim.productId && (
+              <button type="button"
+                onClick={() => onProceed({
+                  ...provenance("manual"),
+                  sibling: { primaryId: result.claim.productId },
+                  suggestedName: [
+                    (labelExtras && photoMatchesCode && labelExtras.modelName) || "",
+                    (labelExtras && photoMatchesCode && labelExtras.colorway) || "",
+                  ].filter(Boolean).join(" ").trim(),
+                  suggestedBrand: null, suggestedImageUrl: null, model: null,
+                })}
+                style={{ ...meta, fontSize: 12, background: "none", border: "none",
+                         color: "rgba(233,238,255,.42)", cursor: "pointer", padding: "10px 4px",
+                         textDecoration: "underline", textUnderlineOffset: 3, alignSelf: "center" }}>
+                None of these — it's a new colourway of this code
+              </button>
+            )}
             <button type="button" onClick={() => { setStep("enter"); setResult(null); setSelectedProductId(null); }}
               style={{ ...meta, background: "none", border: "none", cursor: "pointer", padding: 8 }}>
               ← Different code
