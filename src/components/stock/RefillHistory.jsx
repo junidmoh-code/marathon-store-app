@@ -127,6 +127,13 @@ export default function RefillHistory({ products = [] }) {
   // on every append for as long as the tab is open.
   const [requests, setRequests] = useState(null);   // null = loading
   const [rrError, setRrError] = useState(null);
+  // THE RANGE IS ONLY A DEPENDENCY WHEN IT ACTUALLY CHANGES THE QUERY.
+  // Indexed, the range IS the query, so a new range means a new read. Unindexed,
+  // the read is the whole node and the range is applied in memory — so keying
+  // the effect on the range would re-download ~3.7 MB every time someone taps
+  // Today → Yesterday → Last 7 → Month. One read per mount instead.
+  // (Sonnet review, PR #332.)
+  const queryKey = REQUESTS_INDEXED ? `${range.fromIso}|${range.toIso}` : "all";
   useEffect(() => {
     let alive = true;
     setRequests(null); setRrError(null);
@@ -143,7 +150,8 @@ export default function RefillHistory({ products = [] }) {
       .then((val) => { if (alive) setRequests(Object.entries(val).map(([id, r]) => ({ id, ...r }))); })
       .catch((e) => { if (alive) { setRequests([]); setRrError(e?.message || "read failed"); } });
     return () => { alive = false; };
-  }, [range.fromIso, range.toIso]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryKey]);
 
   // BOTH sources must have landed. Treating an in-flight request read as "no
   // rows" renders an authoritative-looking empty state that is simply wrong.
