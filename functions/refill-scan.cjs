@@ -264,11 +264,31 @@ async function applyResizes({ db, resizes, startedAt, setFn }) {
 // direction, and self-healing.
 //
 // db is injected so the whole apply path is testable without firebase-admin.
-async function applySatisfied({ db, closures, startedAt }) {
-  let satisfied = 0, stale = 0;
+// TIME-BOXED, like the intent loop. Two serial RTDB round trips per closure, and
+// this pass runs BEFORE the intent apply — so an unbounded version could spend
+// the whole function budget here and defer every refill of the day. The scenario
+// is not hypothetical: it is precisely this PR's own subject. A bulk manual
+// transfer covering hundreds of lock-less requests is exactly what produces a
+// large satisfiedClosures list.
+//
+// Stopping early loses nothing — the plan is recomputed from scratch every scan,
+// so an unprocessed withdrawal simply re-decides next run. The break is reported
+// rather than silent, so the run record never implies the pass completed.
+// (CodeRabbit, PR #332.)
+async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }) {
+  let satisfied = 0, stale = 0, deferred = 0;
   const errors = [];
   const consumed = new Map();
-  for (const s of closures) {
+  for (let i = 0; i < closures.length; i++) {
+    const s = closures[i];
+    if (Date.now() > deadlineMs) {
+      // Count from the INDEX, not from satisfied+stale — a closure can also end
+      // in neither (a transaction that threw is an error, not a stale skip), so
+      // deriving the remainder arithmetically would under-report.
+      deferred = closures.length - i;
+      errors.push(`satisfied pass hit its time budget — ${deferred} withdrawal(s) defer to the next scan`);
+      break;
+    }
     const cellKey = `${s.dest}|${s.pid}|${s.sizeKey}`;
     const already = consumed.get(cellKey) || 0;
     try {
@@ -303,7 +323,7 @@ async function applySatisfied({ db, closures, startedAt }) {
       errors.push(`satisfied ${s.refillId}: ${e?.message || e}`);
     }
   }
-  return { satisfied, stale, errors };
+  return { satisfied, stale, deferred, errors };
 }
 
 async function runScan() {
@@ -483,10 +503,15 @@ async function runScan() {
     // gap, that write wins and this one stands down. The next scan re-decides
     // from truth, exactly like every other reconciliation here.
     if (plan.satisfiedClosures?.length) {
-      const r = await applySatisfied({ db, closures: plan.satisfiedClosures, startedAt });
+      // Half the function's apply budget, so a huge satisfied list can never
+      // starve the intent loop that follows (which takes the other half).
+      const r = await applySatisfied({
+        db, closures: plan.satisfiedClosures, startedAt, deadlineMs: nowMs + 100e3,
+      });
       if (r.satisfied) counts.satisfied = r.satisfied;
       // Reported so a run record never asserts a withdrawal that did not happen.
       if (r.stale) counts.satisfiedStale = r.stale;
+      if (r.deferred) counts.satisfiedDeferred = r.deferred;
       counts.errors.push(...r.errors);
     }
 

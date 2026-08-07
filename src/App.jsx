@@ -13824,9 +13824,14 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           devices the shop floor actually uses. Never re-inline this list.
           (CodeRabbit, PR #291 — Major.) */}
       <div style={{ display:"flex", gap:0, padding:"0 13px 10px", borderBottom:"1px solid rgba(255,255,255,.05)", marginBottom:4, marginTop:8, overflowX:"auto" }}>
+        {/* flex:"0 0 auto" + nowrap, NOT flex:1. The container is overflowX:auto,
+            but a flex:1 item SHRINKS before its container ever scrolls — so with
+            six tabs the labels compress and "Refill History" wraps on a 430px
+            phone instead of the strip scrolling. Adding the sixth tab is what
+            made this reachable. (CodeRabbit, PR #332.) */}
         {SOURCE_TABS.map(([key, label]) => (
           <div key={key} onClick={() => setTab(key)}
-               style={{ flex:1, padding:"10px 6px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
+               style={{ flex:"0 0 auto", whiteSpace:"nowrap", padding:"10px 11px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
             {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
           </div>
         ))}

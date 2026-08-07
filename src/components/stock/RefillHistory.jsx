@@ -66,9 +66,12 @@ const TONE = {
 };
 const KIND_LABEL = { display_in: "Display → hub", display_out: "Display sent out" };
 
-const fmtTime = (ms) => new Date(ms).toLocaleString("en-GB", {
+// One formatter, constructed once. toLocaleString builds a fresh Intl formatter
+// on EVERY call, and a "This month" range calls this up to twice per row.
+const TIME_FMT = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Africa/Johannesburg", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
 });
+const fmtTime = (ms) => TIME_FMT.format(new Date(ms));
 
 // ── phone-first controls ─────────────────────────────────────────────────────
 // 44px minimum height on everything tappable; that is the floor below which a

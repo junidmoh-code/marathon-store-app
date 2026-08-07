@@ -167,6 +167,55 @@ test("the apply path writes ONLY the request node — never a lock", async () =>
     "another live lock may share this cell — nulling it would strand a request the engine is waiting on");
 });
 
+// ─── TIME BUDGET ─────────────────────────────────────────────────────────────
+// Two serial RTDB round trips per closure, and this pass runs BEFORE the intent
+// apply — so without a bound a huge satisfied list could spend the whole
+// function budget and defer every refill of the day. That scenario is this PR's
+// own subject: a bulk manual transfer covering hundreds of lock-less requests is
+// exactly what produces a large list. (CodeRabbit, PR #332.)
+test("the pass stops at its deadline and REPORTS what it deferred", async () => {
+  const db = fakeDb({
+    stock: { "stock/hub1/boot/7/qty": 9, "stock/hub1/boot/8/qty": 9, "stock/hub1/boot/9/qty": 9 },
+    requests: { r1: openReq(), r2: openReq(), r3: openReq() },
+  });
+  const r = await applySatisfied({
+    db, startedAt: START, deadlineMs: 0,          // already past — stop before the first
+    closures: [closure({ refillId: "r1" }), closure({ refillId: "r2", sizeKey: "8" }), closure({ refillId: "r3", sizeKey: "9" })],
+  });
+  assert.strictEqual(r.satisfied, 0);
+  assert.strictEqual(r.deferred, 3, "every unprocessed closure is counted");
+  assert.match(r.errors.join(" "), /time budget/, "a run record must never imply the pass completed");
+  assert.deepStrictEqual(Object.keys(db.writes), [], "nothing written past the deadline");
+});
+
+test("no deadline means no bound — the default cannot silently truncate", async () => {
+  const db = fakeDb({
+    stock: { "stock/hub1/boot/7/qty": 9, "stock/hub1/boot/8/qty": 9 },
+    requests: { r1: openReq(), r2: openReq() },
+  });
+  const r = await applySatisfied({
+    db, startedAt: START,
+    closures: [closure({ refillId: "r1" }), closure({ refillId: "r2", sizeKey: "8" })],
+  });
+  assert.strictEqual(r.satisfied, 2);
+  assert.strictEqual(r.deferred, 0);
+  assert.deepStrictEqual(r.errors, []);
+});
+
+test("deferring loses nothing — the same closures withdraw on the next pass", async () => {
+  // Statelessness is what makes the deadline safe: the plan is recomputed from
+  // scratch every scan, so a deferred withdrawal simply re-decides next run.
+  const stock = { "stock/hub1/boot/7/qty": 3 };
+  const requests = { r1: openReq() };
+  const first = await applySatisfied({ db: fakeDb({ stock, requests }), startedAt: START, deadlineMs: 0, closures: [closure()] });
+  assert.strictEqual(first.satisfied, 0);
+  assert.strictEqual(first.deferred, 1);
+  const db2 = fakeDb({ stock, requests });          // request still open, stock still there
+  const second = await applySatisfied({ db: db2, startedAt: START, closures: [closure()] });
+  assert.strictEqual(second.satisfied, 1);
+  assert.strictEqual(db2.writes["refill_requests/r1"].status, "cancelled");
+});
+
 test("a missing request node no-ops instead of creating one", async () => {
   const db = fakeDb({ stock: { "stock/hub1/boot/7/qty": 3 }, requests: {} });
   const r = await applySatisfied({ db, closures: [closure()], startedAt: START });
