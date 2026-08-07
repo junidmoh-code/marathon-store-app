@@ -18,32 +18,30 @@
 // A fulfilled request and its own rrf_ movement are merged into one row.
 //
 // ─── BANDWIDTH ───────────────────────────────────────────────────────────────
-// Movements are queried against the `ts` index that already exists in the live
-// rules, so the range genuinely bounds the download.
+// BOTH reads are now range-scoped against a live index, so the date range
+// genuinely bounds what comes down the wire:
 //
-// /refill_requests has NO index. An unindexed orderByChild there would make RTDB
-// ship the whole node and sort client-side — the exact cost this view exists to
-// avoid, and silently. So the ranged query is gated behind REQUESTS_INDEXED and
-// stays off until the rule below is pasted.
+//   • movements   → orderByChild("ts")          (stock_movements/.indexOn ["ts"])
+//   • requests    → orderByChild("createdAt")
+//                   orderByChild("resolvedAt")  (refill_requests/.indexOn, live
+//                                                in the console 2026-08-07)
 //
-//   "refill_requests": { ".indexOn": ["createdAt", "resolvedAt"], ... }
+// This replaced a one-shot FULL read of /refill_requests (~11,800 rows, ~3.7 MB)
+// per mount, filtered in memory — the fallback that shipped in #332 while the
+// index was still pending. REQUESTS_INDEXED in refillHistoryCore.js is the
+// switch between the two, and it is only correct as `true` while that index is
+// live. RefillHistory.render.test.jsx asserts the queries are constrained, so
+// flipping it back without also removing the index fails CI.
 //
-// WHAT THE FALLBACK ACTUALLY COSTS — stated honestly, because the first version
-// of this comment was wrong. It claimed the fallback rode "the subscription the
-// Source screen already holds". It does not: Hub2RefillQueue, the other
-// consumer, is mounted only on the `clothing` and `hub1refill` tabs, and this is
-// its own tab. So the fallback is a real read of the whole node (~11,800 rows,
-// ~3.7 MB).
+// Two queries rather than one because a request raised last month and fulfilled
+// yesterday belongs in yesterday's history: one index cannot answer both ends.
+// They are merged by id, so a row matching both appears once.
 //
-// It is a ONE-SHOT get(), not a live onValue subscription, and that difference
-// matters: a listener re-materialises the whole node on every append for as long
-// as the tab is open. It is also read ONCE PER MOUNT, not once per range change —
-// the range is applied in memory, so tapping Today → Yesterday → Last 7 costs
-// nothing extra (asserted in RefillHistory.render.test.jsx). The banner on screen
-// says so rather than implying the view is free. (Kimi review, PR #332; wording
-// corrected by CodeRabbit, which caught this comment contradicting the code.)
+// Still a one-shot get() rather than a live onValue listener: history does not
+// need to tick, and a listener would re-materialise its result on every append
+// for as long as the tab is open.
 import React, { useEffect, useMemo, useState } from "react";
-import { ref, query, orderByChild, startAt, endAt, get } from "firebase/database";
+import { ref, query, orderByChild, startAt, endBefore, get } from "firebase/database";
 import { database } from "../../firebase";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, FONT, input } from "./ui";
 import { serverNowMs } from "../../utils/serverTime";
@@ -115,7 +113,7 @@ export default function RefillHistory({ products = [] }) {
   useEffect(() => {
     let alive = true;
     setMovements(null); setMvError(null);
-    get(query(ref(database, "stock_movements"), orderByChild("ts"), startAt(range.fromIso), endAt(range.toIso)))
+    get(query(ref(database, "stock_movements"), orderByChild("ts"), startAt(range.fromIso), endBefore(range.toIso)))
       .then((snap) => {
         if (!alive) return;
         const val = snap.val() || {};
@@ -147,7 +145,7 @@ export default function RefillHistory({ products = [] }) {
     // Merged by id. Unindexed: a single unfiltered read, filtered in memory.
     const fetch = REQUESTS_INDEXED
       ? Promise.all(["createdAt", "resolvedAt"].map((field) =>
-          get(query(ref(database, "refill_requests"), orderByChild(field), startAt(range.fromIso), endAt(range.toIso)))
+          get(query(ref(database, "refill_requests"), orderByChild(field), startAt(range.fromIso), endBefore(range.toIso)))
             .then((s) => s.val() || {})))
           .then(([a, b]) => ({ ...a, ...b }))
       : get(ref(database, "refill_requests")).then((s) => s.val() || {});

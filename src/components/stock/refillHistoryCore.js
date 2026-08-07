@@ -26,37 +26,31 @@
 //   • MOVEMENTS are queried by `ts` against the index that ALREADY EXISTS
 //     (database.rules.json, stock_movements/.indexOn: ["ts"]). Range-scoped from
 //     the first render, no new rule needed.
-//   • REQUESTS have NO index on /refill_requests. Firing an unindexed
-//     orderByChild would be the worst possible outcome: RTDB answers it by
-//     shipping the ENTIRE node and sorting on the client — the exact spend this
-//     view is supposed to avoid, silently. So the ranged query is gated behind
-//     REQUESTS_INDEXED below and stays OFF until the rule is pasted.
+//   • REQUESTS are queried by `createdAt` / `resolvedAt` against the index that
+//     went live in the console on 2026-08-07. Range-scoped, same as movements.
 //
-// WHAT THE FALLBACK COSTS — stated plainly, because an earlier version of this
-// comment was WRONG. It claimed the fallback rode a subscription the Source
-// screen already held. It does not: Hub2RefillQueue, the other consumer of
-// /refill_requests, mounts only on the `clothing` and `hub1refill` tabs, and the
-// history is its own tab. So the fallback is a real, full read of the node
-// (~11,800 rows, ~3.7 MB), filtered in memory.
+// BOTH HALVES ARE NOW BOUNDED BY THE RANGE. The view no longer reads a whole
+// node at all. What it replaced: a one-shot full read of /refill_requests
+// (~11,800 rows, ~3.7 MB) per mount, filtered in memory — the fallback that
+// shipped in #332 while the index was still pending.
 //
-// Two things keep that honest rather than cheap-sounding:
-//   • it is a ONE-SHOT get(), not a live onValue listener — a listener would
-//     re-materialise the whole node on every append for as long as the tab is open
-//   • it does NOT re-read when the date range changes, because the range is
-//     applied in memory; one read per mount, not one per chip tap
-// The on-screen banner says the same thing. Pasting the index below replaces
-// this with a genuinely range-scoped query.
+// WHY THE FALLBACK EXISTED, since the reasoning still binds anyone who touches
+// this: firing an unindexed orderByChild is the WORST option, not a neutral one.
+// RTDB answers it by shipping the entire node AND sorting client-side — strictly
+// more expensive than the plain full read, and silent about it. So the ranged
+// query stayed gated until the rule was verified live, rather than shipped
+// hopefully. If the index is ever removed, put REQUESTS_INDEXED back to false in
+// the same breath; do not leave the query firing without it.
 //
-// See REQUESTS_INDEXED for the exact rule line.
+// Verified before flipping (2026-08-07): a ranged REST query on createdAt
+// returned 125 rows and on resolvedAt 175, while the same query against an
+// unindexed field (productId) failed with
+//   HTTP 400 — Index not defined, add ".indexOn": "productId"
+// so the check genuinely distinguishes an indexed field from an unindexed one.
 
-// ─── THE RULE TO PASTE ───────────────────────────────────────────────────────
-// Ranged loading of /refill_requests needs an index. Add to the "refill_requests"
-// node in the Firebase console (Realtime Database → Rules), as a SIBLING of the
-// existing ".read":
-//
-//     ".indexOn": ["createdAt", "resolvedAt"],
-//
-// i.e. the node becomes:
+// ─── THE RULE THIS DEPENDS ON — LIVE 2026-08-07 ──────────────────────────────
+// Set in the Firebase console (Realtime Database → Rules) on the
+// "refill_requests" node, as a SIBLING of the existing ".read":
 //
 //     "refill_requests": {
 //       ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
@@ -64,13 +58,17 @@
 //       "$refillId": { ... unchanged ... }
 //     }
 //
-// Two fields because a request raised last month and fulfilled yesterday belongs
-// in yesterday's history: createdAt finds what was ASKED in the range,
-// resolvedAt what was ANSWERED in it, and the two result sets are merged by id.
+// NOT in database.rules.json — the live rules have drifted from that file, and
+// deploying it would regress security. Console only.
 //
-// Flip this to true ONLY after the rule is live. Set true while the index is
-// missing and every range query silently downloads all ~11,800 records.
-export const REQUESTS_INDEXED = false;
+// TWO FIELDS, because a request raised last month and fulfilled yesterday
+// belongs in yesterday's history: createdAt finds what was ASKED in the range,
+// resolvedAt what was ANSWERED in it, and the two result sets are merged by id.
+// Removing EITHER breaks a query this view makes.
+//
+// This flag is the switch between "range-scoped query" and "read the whole node
+// and filter in memory". True is only correct while the index above is live.
+export const REQUESTS_INDEXED = true;
 
 // SA is UTC+2 year-round, no DST — the same constant serverTime.js uses. Every
 // boundary in this file is an SA calendar boundary: "yesterday" means the

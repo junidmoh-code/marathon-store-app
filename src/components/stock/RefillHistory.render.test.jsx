@@ -17,13 +17,15 @@ import TestRenderer, { act } from "react-test-renderer";
 const NOW = Date.parse("2026-08-07T07:00:00.000Z");
 
 // ── THE MOCK KEEPS THE QUERY, NOT JUST THE PATH ──────────────────────────────
-// A mock that throws away orderByChild/startAt/endAt cannot tell a range-scoped
-// read from a whole-node one, so the two things this view exists to guarantee —
-// movements are date-bounded against the `ts` index, and the unindexed request
-// fallback is read ONCE per mount rather than on every chip tap — would both
-// pass after a regression. On a project already billed hundreds of dollars for
-// an unindexed whole-node read, that is the assertion worth having.
-// (CodeRabbit, PR #332.)
+// A mock that throws away orderByChild/startAt/endBefore cannot tell a
+// range-scoped read from a whole-node one, so the thing this view exists to
+// guarantee — every read is bounded by the selected range — would pass after a
+// regression. On a project already billed hundreds of dollars for an unindexed
+// whole-node read, that is the assertion worth having. (CodeRabbit, PR #332.)
+//
+// NOTE the mock deliberately does NOT export `endAt`. The component must use
+// `endBefore`, and a mock that offers both would let an inclusive bound slip
+// back in unnoticed — the import would simply resolve. (CodeRabbit, PR #333.)
 const reads = {};
 const readCalls = [];
 vi.mock("firebase/database", () => ({
@@ -31,7 +33,7 @@ vi.mock("firebase/database", () => ({
   query: (r, ...constraints) => ({ ...r, constraints }),
   orderByChild: (field) => ({ kind: "orderByChild", field }),
   startAt: (value) => ({ kind: "startAt", value }),
-  endAt: (value) => ({ kind: "endAt", value }),
+  endBefore: (value) => ({ kind: "endBefore", value }),
   get: (r) => { readCalls.push(r); return Promise.resolve({ val: () => reads[r.path] ?? null }); },
 }));
 const callsTo = (path) => readCalls.filter((r) => r.path === path);
@@ -213,17 +215,47 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     expect(c.orderByChild).toBe("ts");
     // today, SA — the half-open window, sent to the server rather than filtered here
     expect(c.startAt).toBe("2026-08-06T22:00:00.000Z");
-    expect(c.endAt).toBe("2026-08-07T22:00:00.000Z");
+    expect(c.endBefore).toBe("2026-08-07T22:00:00.000Z");
   });
 
-  it("a range change re-queries MOVEMENTS but does NOT re-read the whole request node", async () => {
-    // The unindexed fallback reads all ~11,800 requests and filters in memory,
-    // so the range is not part of that query. Re-reading on every chip tap would
-    // pull ~3.7 MB each time — the exact spend this view exists to avoid.
+  // ── THE TEST THAT FAILS IF THE FLAG IS FLIPPED BACK ───────────────────────
+  // This is the whole point of the index going live: /refill_requests must be
+  // read through a RANGE-SCOPED orderByChild, never as a whole node. Setting
+  // REQUESTS_INDEXED back to false makes the component issue one unconstrained
+  // get() instead, and every assertion below fails.
+  it("requests are read DATE-RANGED against the createdAt/resolvedAt index, NEVER as a whole node", async () => {
+    await render();
+    const rr = callsTo("refill_requests");
+    // TWO queries: a request raised last month and fulfilled yesterday belongs
+    // in yesterday's history, and one index cannot answer both ends.
+    expect(rr).toHaveLength(2);
+
+    const fields = rr.map((r) => constraintsOf(r).orderByChild).sort();
+    expect(fields).toEqual(["createdAt", "resolvedAt"]);
+
+    for (const r of rr) {
+      const c = constraintsOf(r);
+      // NOT A WHOLE-NODE READ: every query carries an ordering AND both bounds.
+      // An unconstrained read is exactly what the fallback did.
+      expect(c.orderByChild, "an unordered read of this node is a full download").toBeTruthy();
+      // today, SA — the half-open window, sent to the SERVER rather than
+      // filtered here
+      expect(c.startAt).toBe("2026-08-06T22:00:00.000Z");
+      expect(c.endBefore).toBe("2026-08-07T22:00:00.000Z");
+    }
+    // and nothing read the node without constraints
+    expect(rr.filter((r) => (r.constraints ?? []).length === 0)).toEqual([]);
+  });
+
+  it("a range change re-queries BOTH nodes, and every query stays bounded", async () => {
+    // With the index live the range IS the query, so a new range means a new
+    // read — of both nodes. That is correct and cheap: each read is bounded by
+    // the window. The old fallback re-read nothing because it had already pulled
+    // everything.
     let tree;
     await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
     await act(async () => {});
-    expect(callsTo("refill_requests")).toHaveLength(1);
+    expect(callsTo("refill_requests")).toHaveLength(2);   // createdAt + resolvedAt
     expect(callsTo("stock_movements")).toHaveLength(1);
 
     await clickRange(tree, "Yesterday");
@@ -231,24 +263,47 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     await clickRange(tree, "This month");
     tree.unmount();
 
-    expect(callsTo("refill_requests"), "one whole-node read per mount, not per range").toHaveLength(1);
-    expect(callsTo("stock_movements").length, "movements re-query per range — that is what the index is for").toBeGreaterThan(1);
-    // and every movement read stayed bounded
-    for (const r of callsTo("stock_movements")) {
+    expect(callsTo("refill_requests").length, "requests re-query per range — that is what the index is for").toBeGreaterThan(2);
+    expect(callsTo("stock_movements").length, "movements too").toBeGreaterThan(1);
+
+    // EVERY read of either node, across every range, stayed range-scoped.
+    for (const r of [...callsTo("refill_requests"), ...callsTo("stock_movements")]) {
       const c = constraintsOf(r);
-      expect(c.orderByChild).toBe("ts");
+      expect(c.orderByChild, `unbounded read of ${r.path}`).toBeTruthy();
       expect(typeof c.startAt).toBe("string");
-      expect(typeof c.endAt).toBe("string");
+      expect(typeof c.endBefore).toBe("string");
     }
   });
 
-  it("the unindexed request read carries NO query constraints — it is honest about being a full read", async () => {
+  it("the end bound is EXCLUSIVE — endBefore, matching the half-open window", async () => {
+    // resolveRange documents a half-open window and requestRows/movementRows
+    // filter `t < toMs`. An inclusive endAt on the server contradicted that: it
+    // fetched the boundary instant (exactly 00:00:00.000 SA of the next day) and
+    // relied on the client filter to drop it again. Harmless today, but it makes
+    // the server query disagree with its own stated contract — and becomes a real
+    // off-by-one the moment someone removes the client filter, reasonably
+    // believing the server already bounded the range. (CodeRabbit, PR #333.)
     await render();
-    const rr = callsTo("refill_requests");
-    expect(rr).toHaveLength(1);
-    // REQUESTS_INDEXED is false, so there is no index to order by. Firing an
-    // orderByChild here would make RTDB ship the whole node AND sort it.
-    expect(rr[0].constraints ?? []).toEqual([]);
+    for (const r of readCalls) {
+      const kinds = (r.constraints ?? []).map((c) => c.kind);
+      expect(kinds, `${r.path} must bound the range exclusively`).toContain("endBefore");
+      expect(kinds, `${r.path} must not use an inclusive end bound`).not.toContain("endAt");
+    }
+    // and the exclusive bound is the START of the next SA day, not 23:59:59
+    for (const r of readCalls) {
+      expect(constraintsOf(r).endBefore).toBe("2026-08-07T22:00:00.000Z");
+    }
+  });
+
+  it("no unconstrained read of either node is ever issued", async () => {
+    // The single sentence this whole feature's cost story rests on.
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
+    await act(async () => {});
+    await clickRange(tree, "Last 7 days");
+    tree.unmount();
+    const unbounded = readCalls.filter((r) => (r.constraints ?? []).length === 0);
+    expect(unbounded.map((r) => r.path)).toEqual([]);
   });
 
   // ── ACCESSIBILITY, ASSERTED ────────────────────────────────────────────────
