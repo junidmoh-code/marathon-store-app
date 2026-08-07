@@ -297,6 +297,22 @@ test("a malformed request row is skipped, never withdrawn on a guess", () => {
   assert.deepStrictEqual(satisfiedIds(plan), []);
 });
 
+// THE qty >= 1 FLOOR IS THE LOAD-BEARING GUARD. Mutation testing found this:
+// the avail() floor on the cell and the "destination not loaded" check are both
+// defensive-only, because a cell that reads 0 or −3 is below any want of 1 and
+// is skipped either way. Remove the qty floor, however, and a malformed
+// NEGATIVE quantity makes `free < want` true for an empty or oversold cell — the
+// engine would then withdraw a request against a hole in the stock.
+test("a negative or zero qty can never make an empty cell look satisfied", () => {
+  for (const qty of [-5, 0, null, "abc"]) {
+    const plan = computeRefillPlan(base({
+      stock: { hub1: { boot: { 7: cell(-3) } }, hub2: {}, central: {} },
+      refillRequests: { r1: missingSneakerReq({ qty }) },
+    }));
+    assert.deepStrictEqual(satisfiedIds(plan), [], `qty ${JSON.stringify(qty)} must not withdraw against an oversold cell`);
+  }
+});
+
 test("a request with no qty is treated as asking for one unit", () => {
   const plan = computeRefillPlan(base({
     stock: { hub1: { boot: { 7: cell(1) } }, hub2: {}, central: {} },
