@@ -24,16 +24,25 @@
 // /refill_requests has NO index. An unindexed orderByChild there would make RTDB
 // ship the whole node and sort client-side — the exact cost this view exists to
 // avoid, and silently. So the ranged query is gated behind REQUESTS_INDEXED and
-// the view degrades to the subscription the Source screen ALREADY holds
-// (useRefillRequests, whole node, zero marginal cost here) until the rule below
-// is pasted. The banner on screen says which mode is running.
+// stays off until the rule below is pasted.
 //
 //   "refill_requests": { ".indexOn": ["createdAt", "resolvedAt"], ... }
 //
+// WHAT THE FALLBACK ACTUALLY COSTS — stated honestly, because the first version
+// of this comment was wrong. It claimed the fallback rode "the subscription the
+// Source screen already holds". It does not: Hub2RefillQueue, the other
+// consumer, is mounted only on the `clothing` and `hub1refill` tabs, and this is
+// its own tab. So the fallback is a real read of the whole node (~11,800 rows,
+// ~3.7 MB).
+//
+// It is a ONE-SHOT get(), not a live onValue subscription, and that difference
+// matters: a listener re-materialises the whole node on every append for as long
+// as the tab is open. One read per range change is the smallest honest cost
+// available without the index. The banner on screen says so rather than implying
+// the view is free. (Kimi review, PR #332.)
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, query, orderByChild, startAt, endAt, get } from "firebase/database";
 import { database } from "../../firebase";
-import { useRefillRequests } from "./useStock";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, FONT, input } from "./ui";
 import { serverNowMs } from "../../utils/serverTime";
 import {
@@ -111,34 +120,34 @@ export default function RefillHistory({ products = [] }) {
     return () => { alive = false; };
   }, [range.fromIso, range.toIso]);
 
-  // ── requests: whole-node subscription until the index exists ───────────────
-  // This is the SAME hook the refill queue on this screen already uses, so in
-  // fallback mode the view costs nothing extra. When REQUESTS_INDEXED flips
-  // true the ranged fetch below takes over and the subscription is skipped.
-  const subscribed = useRefillRequests(undefined, !REQUESTS_INDEXED);
-  const [ranged, setRanged] = useState(null);
+  // ── requests ───────────────────────────────────────────────────────────────
+  // Indexed: two ranged queries. Unindexed: ONE whole-node get() — see the cost
+  // note at the top of this file. Either way a one-shot, never a live listener:
+  // history does not need to tick, and a listener would re-materialise the node
+  // on every append for as long as the tab is open.
+  const [requests, setRequests] = useState(null);   // null = loading
   const [rrError, setRrError] = useState(null);
   useEffect(() => {
-    if (!REQUESTS_INDEXED) { setRanged(null); return undefined; }
     let alive = true;
-    setRanged(null); setRrError(null);
-    // TWO queries: a request raised last month and picked yesterday belongs in
-    // yesterday's history, and one index cannot answer both ends. Merged by id.
-    Promise.all(["createdAt", "resolvedAt"].map((field) =>
-      get(query(ref(database, "refill_requests"), orderByChild(field), startAt(range.fromIso), endAt(range.toIso)))
-        .then((s) => s.val() || {})))
-      .then(([a, b]) => {
-        if (!alive) return;
-        setRanged(Object.entries({ ...a, ...b }).map(([id, r]) => ({ id, ...r })));
-      })
-      .catch((e) => { if (alive) { setRanged([]); setRrError(e?.message || "read failed"); } });
+    setRequests(null); setRrError(null);
+    // TWO queries when indexed: a request raised last month and picked yesterday
+    // belongs in yesterday's history, and one index cannot answer both ends.
+    // Merged by id. Unindexed: a single unfiltered read, filtered in memory.
+    const fetch = REQUESTS_INDEXED
+      ? Promise.all(["createdAt", "resolvedAt"].map((field) =>
+          get(query(ref(database, "refill_requests"), orderByChild(field), startAt(range.fromIso), endAt(range.toIso)))
+            .then((s) => s.val() || {})))
+          .then(([a, b]) => ({ ...a, ...b }))
+      : get(ref(database, "refill_requests")).then((s) => s.val() || {});
+    fetch
+      .then((val) => { if (alive) setRequests(Object.entries(val).map(([id, r]) => ({ id, ...r }))); })
+      .catch((e) => { if (alive) { setRequests([]); setRrError(e?.message || "read failed"); } });
     return () => { alive = false; };
   }, [range.fromIso, range.toIso]);
 
-  const requests = REQUESTS_INDEXED ? ranged : subscribed;
-  // The fallback hook always returns an array (empty until the snapshot lands),
-  // so only the ranged fetch has a genuine null "still loading" state.
-  const loading = movements === null || (REQUESTS_INDEXED && ranged === null);
+  // BOTH sources must have landed. Treating an in-flight request read as "no
+  // rows" renders an authoritative-looking empty state that is simply wrong.
+  const loading = movements === null || requests === null;
 
   const rows = useMemo(() => {
     if (loading) return [];
@@ -188,8 +197,8 @@ export default function RefillHistory({ products = [] }) {
         {" · "}{range.days} day{range.days === 1 ? "" : "s"} · SA time
         {!REQUESTS_INDEXED && (
           <span style={{ color: AMBER }}>
-            {" · "}request outcomes come from the queue's existing live data (no date index on
-            /refill_requests yet) — movements are date-ranged.
+            {" · "}movements are date-ranged; request outcomes are filtered after a full read
+            of /refill_requests, because that node has no date index yet.
           </span>
         )}
       </div>

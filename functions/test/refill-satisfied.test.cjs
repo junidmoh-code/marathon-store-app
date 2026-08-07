@@ -233,6 +233,41 @@ test("a LOCKED request is left to needGone, which knows the target", () => {
   assert.deepStrictEqual(satisfiedIds(plan), [], "locked requests belong to the reconcile loop");
 });
 
+test("a locked sibling's units are claimed before an unlocked request is judged", () => {
+  // Cell holds 3. A locked request has 2 spoken for, leaving 1 free — not enough
+  // for the unlocked sibling's ask of 2. Cancelling it would retire an ask
+  // against stock another request is already counting on, and a Missing Sneakers
+  // ask is never re-raised once cancelled (that screen needs ZERO at both hubs).
+  // (Kimi review, PR #332.)
+  const plan = computeRefillPlan(base({
+    products: { ...PRODUCTS, tee: { name: "Tee", productType: "clothing", sizes: ["M"] } },
+    stock: { hub1: {}, hub2: { tee: { M: cell(3) } }, central: { tee: { M: cell(9) } } },
+    refillRequests: {
+      locked: { productId: "tee", size: "M", qty: 2, requestingLocation: "hub2", status: "open",
+                createdAt: "2026-08-06T18:00:00.000Z", createdFrom: { engine: true, source: "central" } },
+      free: { productId: "tee", size: "M", qty: 2, requestingLocation: "hub2", status: "open",
+              createdAt: "2026-08-06T19:00:00.000Z", createdFrom: { manual: true, source: "central", via: "missing_sneakers" } },
+    },
+    openIndex: { hub2: { tee: { M: { refillId: "locked", qty: 2, source: "central", createdAt: "2026-08-06T18:00:00.000Z" } } } },
+  }));
+  assert.deepStrictEqual(satisfiedIds(plan), [], "only 1 unit is free — not enough for an ask of 2");
+});
+
+test("an unlocked request IS withdrawn when enough is free after locked claims", () => {
+  const plan = computeRefillPlan(base({
+    products: { ...PRODUCTS, tee: { name: "Tee", productType: "clothing", sizes: ["M"] } },
+    stock: { hub1: {}, hub2: { tee: { M: cell(4) } }, central: { tee: { M: cell(9) } } },
+    refillRequests: {
+      locked: { productId: "tee", size: "M", qty: 2, requestingLocation: "hub2", status: "open",
+                createdAt: "2026-08-06T18:00:00.000Z", createdFrom: { engine: true, source: "central" } },
+      free: { productId: "tee", size: "M", qty: 2, requestingLocation: "hub2", status: "open",
+              createdAt: "2026-08-06T19:00:00.000Z", createdFrom: { manual: true, source: "central", via: "missing_sneakers" } },
+    },
+    openIndex: { hub2: { tee: { M: { refillId: "locked", qty: 2, source: "central", createdAt: "2026-08-06T18:00:00.000Z" } } } },
+  }));
+  assert.deepStrictEqual(satisfiedIds(plan), ["free"]);
+});
+
 test("an ORPHANED engine request — lock gone, row alive — IS withdrawn", () => {
   // Found live on 2026-08-07: two requests created by the 12:30 run with no lock
   // in /refill_engine/open. Same immortal-open state as a Missing Sneakers row,

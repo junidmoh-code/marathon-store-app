@@ -93,12 +93,8 @@ export function useTransfers(status) {
   return status ? arr.filter(t => t.status === status) : arr;
 }
 
-// `enabled` exists for the refill history: when its date-ranged query is live
-// (an index on /refill_requests) this whole-node subscription must NOT also be
-// opened — that would download all ~11,800 records to answer a one-day question.
-// Default true, so every existing caller is unchanged.
-export function useRefillRequests(status, enabled = true) {
-  const val = usePath("refill_requests", enabled);
+export function useRefillRequests(status) {
+  const val = usePath("refill_requests");
   const arr = val ? Object.entries(val).map(([id, r]) => ({ id, ...r })) : [];
   return status ? arr.filter(r => r.status === status) : arr;
 }

@@ -408,9 +408,27 @@ async function runScan() {
     // a picker: if Central fulfilled or rejected the request in the snapshot
     // gap, that write wins and this one stands down. The next scan re-decides
     // from truth, exactly like every other reconciliation here.
+    //
+    // LIVE CELL RE-CHECK before each withdrawal. The transaction below guards
+    // the STATUS, not the stock condition that justified the withdrawal — and
+    // the plan was computed from a snapshot that may be a minute old. If the
+    // covering units sold or were transferred out in that gap, cancelling is
+    // wrong AND, for a Missing Sneakers request, unrecoverable: that screen only
+    // shows products with zero units at BOTH hubs, so nothing ever re-raises the
+    // ask. An engine-created request would self-heal on the next scan; these do
+    // not, so they get the extra read. One read per withdrawal, and withdrawals
+    // are rare (10 on the day this shipped). (Kimi review, PR #332.)
     if (plan.satisfiedClosures?.length) {
-      let satisfied = 0;
+      let satisfied = 0, stale = 0;
       for (const s of plan.satisfiedClosures) {
+        try {
+          const live = (await db.ref(`stock/${s.dest}/${s.pid}/${s.sizeKey}/qty`).once("value")).val();
+          if (!(Math.max(Number(live) || 0, 0) >= s.qty)) { stale++; continue; }
+        } catch {
+          // Read failed — we cannot prove the units are still there, so we do
+          // not cancel. The next scan re-decides from truth.
+          stale++; continue;
+        }
         try {
           const res = await db.ref(`refill_requests/${s.refillId}`).transaction((cur) => {
             if (cur === null) return null;
@@ -431,6 +449,8 @@ async function runScan() {
         }
       }
       if (satisfied) counts.satisfied = satisfied;
+      // Reported so a run record never asserts a withdrawal that did not happen.
+      if (stale) counts.satisfiedStale = stale;
     }
 
     // ── apply the deficit-loop's self-heal streak resets ──────────────────────

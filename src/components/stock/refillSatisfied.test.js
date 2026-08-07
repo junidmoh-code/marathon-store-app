@@ -5,7 +5,7 @@
 // (functions/test/refill-satisfied.test.cjs); these pin that the queue's view
 // agrees with it — same allocation, same tie-break, same floor-at-zero rule.
 import { describe, it, expect } from "vitest";
-import { partitionSatisfied, onHandFor } from "./refillSatisfied.js";
+import { partitionSatisfied, onHandFor, coverableSize, lockedRefillIds } from "./refillSatisfied.js";
 
 // useStockCells() DECODES size keys, so a client-side cell map is keyed by the
 // raw size ("5.5"), not the stored key ("5_5"). The fixtures use that shape.
@@ -134,6 +134,88 @@ describe("partitionSatisfied", () => {
 
   it("covers nothing when the destination has no stock node at all", () => {
     const { actionable, covered } = partitionSatisfied([req()], {});
+    expect(ids(actionable)).toEqual(["r1"]);
+    expect(covered).toEqual([]);
+  });
+});
+
+// ─── LOCKED REQUESTS ─────────────────────────────────────────────────────────
+// The asymmetry that made the first version of this file wrong. The engine
+// refuses to withdraw a LOCKED request on raw quantity because needGone nets
+// against the approved TARGET; the client must refuse for the same reason, or it
+// hides work that nothing will ever surface again.
+describe("locked requests are never covered", () => {
+  it("keeps a locked request visible even when the cell holds its full quantity", () => {
+    // qty 2, cell 2, but the hub's TARGET is 3 — one unit is still real work and
+    // the engine correctly keeps the request. Hiding it here would leave the hub
+    // under target forever with no visible work anywhere: the engine will not
+    // withdraw it (target unmet) and the deficit loop will not re-raise it (its
+    // live lock counts as inbound).
+    const { actionable, covered } = partitionSatisfied(
+      [req({ id: "locked", qty: 2 })], { boot: cells({ 7: 2 }) }, new Set(["locked"]));
+    expect(ids(actionable)).toEqual(["locked"]);
+    expect(covered).toEqual([]);
+  });
+
+  it("a locked request claims its units before an unlocked sibling is judged", () => {
+    // Cell holds 3. A locked request has 2 of them spoken for, so only 1 is
+    // free — not enough for the unlocked sibling's ask of 2. Retiring it would
+    // cancel an ask against stock another request is already counting on, and a
+    // Missing Sneakers ask is never re-raised once cancelled.
+    const { actionable, covered } = partitionSatisfied([
+      req({ id: "locked", qty: 2, createdAt: "2026-08-06T20:00:00.000Z" }),
+      req({ id: "free", qty: 2, createdAt: "2026-08-06T21:00:00.000Z" }),
+    ], { boot: cells({ 7: 3 }) }, new Set(["locked"]));
+    expect(covered).toEqual([]);
+    expect(ids(actionable).sort()).toEqual(["free", "locked"]);
+  });
+
+  it("still covers an unlocked request when enough is free after locked claims", () => {
+    const { covered, actionable } = partitionSatisfied([
+      req({ id: "locked", qty: 2 }),
+      req({ id: "free", qty: 2, createdAt: "2026-08-06T21:00:00.000Z" }),
+    ], { boot: cells({ 7: 4 }) }, new Set(["locked"]));
+    expect(ids(covered)).toEqual(["free"]);
+    expect(ids(actionable)).toEqual(["locked"]);
+  });
+
+  it("with no lock index at all, behaves exactly as before", () => {
+    const { covered } = partitionSatisfied([req()], { boot: cells({ 7: 3 }) });
+    expect(ids(covered)).toEqual(["r1"]);
+  });
+});
+
+describe("lockedRefillIds", () => {
+  it("collects every refillId out of the engine's open index", () => {
+    const ids2 = lockedRefillIds({
+      hub1: { boot: { 7: { refillId: "a", qty: 2 }, 8: { refillId: "b", qty: 1 } } },
+      hub2: { tee: { M: { refillId: "c" } } },
+    });
+    expect([...ids2].sort()).toEqual(["a", "b", "c"]);
+  });
+  it("ignores pending locks that have no refillId, and tolerates junk", () => {
+    expect([...lockedRefillIds({ hub1: { boot: { 7: { pending: true } } } })]).toEqual([]);
+    expect([...lockedRefillIds(null)]).toEqual([]);
+    expect([...lockedRefillIds({ hub1: null })]).toEqual([]);
+  });
+});
+
+// ─── ENCODER AGREEMENT ───────────────────────────────────────────────────────
+describe("coverableSize", () => {
+  it("agrees with the engine on every size that appears in live data", () => {
+    for (const s of ["3", "6", "10", "5.5", "S", "M", "XXXL", "_", "", null]) {
+      expect(coverableSize(s)).toBe(true);
+    }
+  });
+  it("refuses 'Free Size', where the two encoders genuinely disagree", () => {
+    // stockSizeKey folds it to "_"; the engine's encodeSizeKey makes "Free_Size".
+    // Covering it would hide a card the engine can never withdraw — an immortal
+    // open row, the exact bug this change exists to remove.
+    expect(coverableSize("Free Size")).toBe(false);
+  });
+  it("a 'Free Size' request is left visible even on a full cell", () => {
+    const { actionable, covered } = partitionSatisfied(
+      [req({ size: "Free Size", qty: 1 })], { boot: cells({ _: 9 }) });
     expect(ids(actionable)).toEqual(["r1"]);
     expect(covered).toEqual([]);
   });

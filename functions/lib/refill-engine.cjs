@@ -784,7 +784,24 @@ function computeRefillPlan(snapshot) {
       .filter(([id, r]) => r && r.status === "open" && !lockedIds.has(id) &&
         r.requestingLocation && r.productId && r.size != null && !r.shadow)
       .sort((a, b) => String(a[1].createdAt || "").localeCompare(String(b[1].createdAt || "")) || a[0].localeCompare(b[0]));
+    // LOCKED SIBLINGS CLAIM THEIR UNITS FIRST. A lock on the same cell means
+    // those units are already spoken for by a request this pass is not allowed
+    // to touch, so an unlocked sibling must not be retired against them. Being
+    // over-conservative here costs one extra card on a queue; being
+    // under-conservative cancels an ask that — for a Missing Sneakers row —
+    // nothing will ever raise again (that screen only shows products with zero
+    // units at BOTH hubs, so a covered cell hides the card that created it).
+    // (Kimi review, PR #332.)
     const claimed = new Map();
+    for (const [dest, byPid] of Object.entries(openIndex)) {
+      for (const [pid, bySize] of Object.entries(byPid || {})) {
+        for (const [sizeKey, entry] of Object.entries(bySize || {})) {
+          if (!entry?.refillId) continue;
+          const k = `${dest}|${pid}|${sizeKey}`;
+          claimed.set(k, (claimed.get(k) || 0) + Math.max(num(entry.qty) || 1, 1));
+        }
+      }
+    }
     for (const [id, r] of openRows) {
       const dest = r.requestingLocation;
       const sizeKey = encodeSizeKey(r.size);

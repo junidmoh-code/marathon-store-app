@@ -25,7 +25,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, update, get } from "firebase/database";
 import { database, auth } from "../../firebase";
-import { useRefillRequests, useStockCells, useStockExceptions } from "./useStock";
+import { useRefillRequests, useStockCells, useStockExceptions, useEngineOpen } from "./useStock";
 import { sizeRank } from "./hubSizeRank";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
@@ -33,7 +33,7 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bRed } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { formatDuration, refillAgeTone } from "../../utils/duration";
-import { partitionSatisfied } from "./refillSatisfied";
+import { partitionSatisfied, lockedRefillIds } from "./refillSatisfied";
 
 const SOURCE_LOC = "central";
 // HUB-AGNOSTIC (2026-07-30). This queue was written when only Hub 2 received
@@ -116,6 +116,12 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   // (~3.7 MB) and stock/central. Scoped by location deliberately — never the
   // whole /stock node.
   const destCells = useStockCells(DEST_LOC);
+  // The engine's LOCK table (~20 KB). A locked request is owned by the engine's
+  // needGone rule, which nets against the approved TARGET and correctly keeps a
+  // request the raw quantity alone would retire. Hiding one of those would make
+  // real work invisible to everyone — see partitionSatisfied's long note.
+  const engineOpen = useEngineOpen();
+  const lockedIds = useMemo(() => lockedRefillIds(engineOpen), [engineOpen]);
   const now = useNowMinute();
   const [view, setView] = useState("open"); // "open" | "history"
   // v9 actionable-only: every card below IS ready to fulfil (the engine only
@@ -154,9 +160,9 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   const { actionable, covered } = useMemo(() => {
     const mine = openRequests.filter((r) => r.requestingLocation === DEST_LOC && r.productId);
     const shadows = mine.filter((r) => r.shadow);
-    const split = partitionSatisfied(mine.filter((r) => !r.shadow), destCells);
+    const split = partitionSatisfied(mine.filter((r) => !r.shadow), destCells, lockedIds);
     return { actionable: [...split.actionable, ...shadows], covered: split.covered };
-  }, [openRequests, destCells, DEST_LOC]);
+  }, [openRequests, destCells, lockedIds, DEST_LOC]);
 
   const cards = useMemo(() => {
     const byPid = new Map();
@@ -265,6 +271,13 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
             [`refill_requests/${r.id}/status`]: "fulfilled",
             [`refill_requests/${r.id}/fulfilledBy`]: { movementId: `rrf_${r.id}`, qty, ...(counted ? {} : { uncounted: true }) },
             [`refill_requests/${r.id}/resolvedAt`]: serverNowIso(),
+            // A withdrawal that landed in the gap between the live re-read above
+            // and this write would leave its cancelReason sitting on a row now
+            // marked fulfilled — a record that reads "withdrawn because the
+            // destination already held enough" AND "picked and sent". The stock
+            // move is real, so fulfilled is the true status; clear the stale
+            // reason so the audit trail says one thing. (Kimi review, PR #332.)
+            [`refill_requests/${r.id}/cancelReason`]: null,
             // WHO, not just what role (2026-08-07). `rejectedBy`/`fulfilledBy`
             // recorded only "warehouse"/"admin", which cannot answer "who
             // rejected this?" — the question the refill history has to answer.
