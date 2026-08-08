@@ -33,7 +33,7 @@ import { applyMovement } from "./applyMovement";
 import { decodeSizeKey, encodeSizeKey } from "../../utils/sizeKey";
 import { FONT, BG, GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen } from "./ui";
 import { StatCard, DetailShell, ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
-import Hub2RefillQueue from "./Hub2RefillQueue";
+import RefillQueue from "./RefillQueue";
 import MoveExcess from "./MoveExcess";
 import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
@@ -408,7 +408,7 @@ export default function HealthView({ products = [], onExit }) {
       case "central":
         return (
           <DetailShell title="Central → Hub 2 Refills" sub="Also available on the Source card" count={centralQueue} onBack={back}>
-            <Hub2RefillQueue products={products} dest="hub2" />
+            <RefillQueue products={products} dest="hub2" />
           </DetailShell>
         );
       case "excess":

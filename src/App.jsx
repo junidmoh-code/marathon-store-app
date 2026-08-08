@@ -39,7 +39,8 @@ import StockView from "./components/stock/StockView";
 import HubCleanup from "./components/stock/HubCleanup";
 import HubCleanupCard from "./components/stock/HubCleanupCard";
 import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
-import Hub2RefillQueue from "./components/stock/Hub2RefillQueue";
+import RefillQueue from "./components/stock/RefillQueue";
+import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
 import AttentionView from "./components/stock/AttentionView";
@@ -71,10 +72,9 @@ import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
-import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
+import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
-import { checkSourceMovementDuplicate, sourceMovementIdSeed } from "./components/stock/sourceMovementDedupe";
-import { onHoldRefillPlan, holdReleaseUpdate, heldCardVisible } from "./components/stock/onHoldRefill";
+import { onHoldRefillPlan, holdReleaseUpdate } from "./components/stock/onHoldRefill";
 import { clearSourceResponseCells } from "./components/stock/sourceResponseWrites";
 import { printOrderSlips } from "./print/orderSlip";
 // ── New product taxonomy (31 categories, RTDB-backed registry) ───────────────
@@ -1137,7 +1137,7 @@ function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
 // legacy name key a pre-cutover response was written under. They MUST clear
 // together, in ONE multi-path update rooted at the shared date node. Two
 // independent removes could half-apply — and the failure would be invisible,
-// because the dual-read (SourceTodayTab / SourceHistoryTab / hubBadges) finds
+// because the dual-read (the queue's sale rows / hubBadges) finds
 // the surviving leaf and keeps rendering the card as completed. The user would
 // see Undo do nothing, with only a console line to explain it.
 //
@@ -2561,19 +2561,12 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
   const name = homePerm?.displayName || homePerm?.username || homeUser?.email?.split("@")[0] || "there";
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
-  // Source badge = today's restock requests + on-hold (Tomorrow).
-  //
-  // SALE-DRIVEN (2026-07-30), matching the Source list and its hub tabs. It used
-  // to count orders at READY|COLLECTED, so marking an order Sent lit the badge
-  // before any customer had touched the shoe — and with returns gone, nothing
-  // ever took it back down. It now counts restock_log, which the POS writes on a
-  // real sale. On hold = COMING_TOMORROW, unchanged.
+  // Source badge = today's restock requests (sale-driven, 2026-07-30: counts
+  // restock_log, which the POS writes on a real sale). On-holds are no longer
+  // added here — a hold is an ordinary refill request in the hub queue now
+  // (owner spec 2026-08-08), not a separate class of Source work.
   const restockToday = useRestockLogRaw(today);
-  const sourceTodayCount = (restockToday || []).length;
-  const onHold = orders ? orders.filter(o =>
-    o.status === STATUS.COMING_TOMORROW && o.status !== STATUS.OUT_OF_STOCK
-  ).length : 0;
-  const sourceBadge = sourceTodayCount + onHold;
+  const sourceBadge = (restockToday || []).length;
   // assistant badge = today's placed orders
   const assistantBadge = orders ? orders.filter(o =>
     o.createdAt && o.createdAt.slice(0,10) === today
@@ -9366,14 +9359,16 @@ function WarehouseView({ products = [], orders, onExit }) {
     if (status === STATUS.COMING_TOMORROW) patch.comingTomorrowAt = now;
     if (status === STATUS.COLLECTED)       patch.collectedAt = now;
 
-    // ── ON HOLD RAISES A SIZE REFILL REQUEST (owner redesign 2026-08-08) ─────
-    // The source-facing half of a hold is now a real /refill_requests row
-    // against the order's own hub, queued in that hub's refill tab. FAIL
-    // CLOSED on every uncertainty (unroutable hub, no productId/size, write
-    // refused): no request, and the hold stays visible as a held card for a
-    // human — see onHoldRefill.js. Create-if-absent so a re-tap can neither
-    // duplicate the ask nor reopen one the source already rejected. The
-    // customer-facing hold (status, TV, WhatsApp below) is untouched.
+    // ── ON HOLD RAISES A SIZE REFILL REQUEST (owner spec 2026-08-08) ─────────
+    // The source-facing half of a hold is an ORDINARY /refill_requests row
+    // against the order's own hub — indistinguishable in that hub's queue.
+    // FAIL CLOSED on every uncertainty (unroutable hub, no productId/size,
+    // write refused): no request; the order simply remains a warehouse On
+    // Hold order handled by a human — see onHoldRefill.js. Create-if-absent
+    // so a re-tap can neither duplicate the ask nor reopen one the source
+    // already rejected. The customer-facing hold status (warehouse tab, TV
+    // row, status page) is untouched; the "available tomorrow" WhatsApp is
+    // GONE — no customer notification for holds is sent any more.
     if (status === STATUS.COMING_TOMORROW) {
       const plan = onHoldRefillPlan(order, { nowIso: now, saDate: getSADateString() });
       if (plan.ok) {
@@ -9471,8 +9466,10 @@ function WarehouseView({ products = [], orders, onExit }) {
       sendWhatsAppTemplate(order.customerPhone, "order_ready", [order.customerName || "there", order.id]);
     if (status === STATUS.OUT_OF_STOCK)
       sendWhatsAppTemplate(order.customerPhone, "rder_out_of_stock", [order.id]);
-    if (status === STATUS.COMING_TOMORROW)
-      sendWhatsAppTemplate(order.customerPhone, "order_tomorrow", [order.id]);
+    // NO WhatsApp on COMING_TOMORROW (owner spec 2026-08-08): a hold is an
+    // ordinary refill request now, and the customer notification for holds is
+    // not sent any more. The order status itself (warehouse tab, TV row,
+    // status page) is unchanged — this removed only the outbound message.
   };
 
   // Mark an order Sent AND auto-print its dispatch label — but ONLY when the hub→shop
@@ -11991,181 +11988,12 @@ function CompletedTogglePill({ on, count, onClick }) {
   );
 }
 
-// rawCounts  = { productKey: { productName, photo, photoUrl, sizes: { size: count } } }
-// responses  = { productKey: { size: { response, respondedOn } } }  — live from Firebase
-// hub        = "hub1" | "hub2"  — used only for keying/labels; data is already filtered upstream.
-function SourceTodayTab({ rawCounts, responses, date, hub, onResponse, onUndo, wide = false, fulfilCtx, progress, onFulfilProgress }) {
-  // Desktop lays the pending / completed cells in a responsive grid so the wide
-  // pane isn't a single stretched column; mobile stays a vertical stack.
-  const listStyle = wide
-    ? { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(300px, 1fr))", gap:12, alignItems:"start" }
-    : { display:"flex", flexDirection:"column", gap:10 };
-  // Per-hub toggle — each hub remembers whether its completed list is open.
-  const [showCompletedByHub, setShowCompletedByHub] = useState({ hub1: false, hub2: false });
-  const showCompleted = !!showCompletedByHub[hub];
-  const setShowCompleted = (next) => setShowCompletedByHub(prev => ({
-    ...prev,
-    [hub]: typeof next === "function" ? next(!!prev[hub]) : next,
-  }));
-
-  // Build flat cell lists. Sort by product name then numeric size for stable
-  // ordering — keeps cards from jumping when responses flow in.
-  // Response cells are read under the group key (the pid) FIRST, then under the
-  // legacy name key — pre-cutover responses live there, and without the
-  // fallback every already-handled cell would reappear as pending on deploy.
-  const { pending, completed, totalUnits, totalProducts } = useMemo(() => {
-    const pending = [];
-    const completed = [];
-    let totalUnits = 0;
-    const productsSeen = new Set();
-    Object.entries(rawCounts)
-      .sort(([, a], [, b]) => a.productName.localeCompare(b.productName))
-      .forEach(([key, product]) => {
-        const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
-        const sizes = Object.keys(product.sizes || {}).sort((a, b) => Number(a) - Number(b));
-        sizes.forEach(size => {
-          const count = typeof product.sizes[size] === "number" ? product.sizes[size] : 1;
-          totalUnits += count;
-          productsSeen.add(key);
-          const resp = responses[key]?.[size]?.response
-                    || (legacyKey ? responses[legacyKey]?.[size]?.response : undefined);
-          const cell = { key, legacyKey, product, size, count };
-          if (resp) completed.push({ ...cell, response: resp });
-          else pending.push(cell);
-        });
-      });
-    return { pending, completed, totalUnits, totalProducts: productsSeen.size };
-  }, [rawCounts, responses]);
-
-  // True empty state — nothing came in today at all.
-  if (!pending.length && !completed.length) return (
-    <div style={{ textAlign:"center", color:"#444", padding:"4rem" }}>
-      <ProductIcon size={32} opacity={0.5}/>
-      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>No restock requests for this hub yet.</div>
-      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Items collected by customers appear here for restocking.</div>
-    </div>
-  );
-
-  const pendingUnits = pending.reduce((n, c) => n + c.count, 0);
-
-  return (
-    <div>
-      {/* Summary headline — pending units, falls to "all done" tone when zero */}
-      <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,127,255,.35)", borderRadius:16, padding:"14px 16px", marginBottom:14, display:"flex", alignItems:"center", gap:14, boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
-        <div style={{ fontWeight:800, fontSize:36, color:"#4A7FFF", lineHeight:1, letterSpacing:"-1px" }}>{pendingUnits}</div>
-        <div style={{ flex:1 }}>
-          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>Refill Pending</div>
-          <div style={{ color:"rgba(255,255,255,.5)", fontSize:11, marginTop:3, lineHeight:1.4 }}>
-            {totalUnits} item{totalUnits !== 1 ? "s" : ""} sold today · {totalProducts} product{totalProducts !== 1 ? "s" : ""} · {date}
-          </div>
-        </div>
-      </div>
-
-      {/* Show / Hide Completed toggle (session state) */}
-      {completed.length > 0 && (
-        <CompletedTogglePill on={showCompleted} count={completed.length} onClick={() => setShowCompleted(v => !v)} />
-      )}
-
-      {/* Empty-active-but-completed state */}
-      {pending.length === 0 && completed.length > 0 && !showCompleted && (
-        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,222,128,.4)", borderRadius:16, padding:"22px 18px", textAlign:"center", boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
-          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
-            <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
-          </svg>
-          <div style={{ color:"#fff", fontSize:14, fontWeight:700, marginTop:10 }}>All caught up</div>
-          <div style={{ color:"rgba(255,255,255,.55)", fontSize:12, marginTop:4 }}>{completed.length} item{completed.length !== 1 ? "s" : ""} completed in this hub.</div>
-          <button onClick={() => setShowCompleted(true)}
-                  style={{ marginTop:14, padding:"8px 16px", borderRadius:10, border:"1px solid rgba(60,110,255,.5)", background:"rgba(60,110,255,.12)", color:BLUE_L, fontWeight:600, fontSize:12, cursor:"pointer" }}>
-            Show Completed
-          </button>
-        </div>
-      )}
-
-      {/* Active list — pending cells only. Cards vanish on response. */}
-      <div style={listStyle}>
-        {pending.map(cell => (
-          <PendingCard
-            key={`${hub}-${cell.key}-${cell.size}`}
-            product={cell.product}
-            size={cell.size}
-            count={cell.count}
-            fulfil={fulfilCtx ? {
-              enabled: fulfilCtx.canTransfer,
-              productId: fulfilCtx.resolveId(cell.product),
-              destHub: hub,
-              // Partial progress may predate the pid-key cutover — take the
-              // larger of the two leaves so units sent under the old name key
-              // still count as sent.
-              sent: Math.max(
-                progress?.[cell.key]?.[cell.size]?.fulfilledQty || 0,
-                cell.legacyKey ? (progress?.[cell.legacyKey]?.[cell.size]?.fulfilledQty || 0) : 0,
-              ),
-              movementIdSeed: sourceMovementIdSeed(date, cell.key, encodeSizeKey(cell.size)),
-              legacyMovementIdSeed: cell.legacyKey ? sourceMovementIdSeed(date, cell.legacyKey, encodeSizeKey(cell.size)) : null,
-              locationsReg: fulfilCtx.locationsReg,
-              actorRole: fulfilCtx.actorRole,
-              onProgress: (newSent, complete, meta) => onFulfilProgress(date, cell.key, cell.size, newSent, complete, meta),
-            } : null}
-            onAvailable={() => onResponse(cell.key, cell.size, "available")}
-            onOutOfStock={() => onResponse(cell.key, cell.size, "out_of_stock")}
-          />
-        ))}
-      </div>
-
-      {/* Completed list — revealed by toggle */}
-      {showCompleted && completed.length > 0 && (
-        <>
-          <div style={{ marginTop:18, marginBottom:10, display:"flex", alignItems:"center", gap:8 }}>
-            <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
-            <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>COMPLETED</div>
-            <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
-          </div>
-          <div style={listStyle}>
-            {completed.map(cell => (
-              <CompletedCard
-                key={`${hub}-done-${cell.key}-${cell.size}`}
-                product={cell.product}
-                size={cell.size}
-                count={cell.count}
-                response={cell.response}
-                onUndo={() => onUndo(cell.key, cell.size, cell.legacyKey)}
-              />
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ─── SOURCE: TRANSFER & FULFIL ────────────────────────────────────────────────
-// Source is the inventory transfer engine (owner redesign 2026-07-13): fulfilling
-// a refill card MOVES REAL STOCK. The runner picks the supply location, picks the
-// quantity, and "Transfer & Fulfil" fires ONE applyMovement from that location to
-// the requesting hub — no manual inventory adjustment afterwards, ever.
-//
-// Mechanics, all reusing established precedents:
-//   • Counted source cell → `transfer_out` source→hub with allowNegative:true —
-//     the parcel physically leaves whether or not the count is right, and a
-//     resulting negative is the same honest shortage signal a dispatch leaves
-//     (A1 rule in applyMovement).
-//   • Source cell that has never been counted (absent) → `received` into the hub
-//     only, reason source_uncounted_send — the CR-uncounted precedent (#191-193):
-//     the hub gains real stock, nothing phantom is deducted.
-//   • Idempotency: movementId = {seed}_{unitsAlreadySent}. A double-tap resolves
-//     to the same id and applyMovement no-ops; the next partial gets a fresh id.
-//     The seed embeds the group key = PRODUCT ID (pid-key cutover) — the old
-//     name-derived seed made identically-named twins collide to one id, so the
-//     second twin's transfer was silently swallowed. Transfers applied under a
-//     legacy name id must not re-apply under the new id: doTransfer dual-checks
-//     both ids (see sourceMovementDedupe.js) for the retention window.
-//   • Partial fulfilment: fewer units than requested leaves the cell OPEN with a
-//     "n of m sent" badge (progress leaf, see saveSourceFulfilProgress); the
-//     response record only closes it when the last unit ships.
-//   • Users without a stockRole (can't write /stock) and legacy cards with no
-//     resolvable productId keep the original plain buttons — nothing breaks.
-const SOURCE_REFILL_REASON    = "source_refill";
-const SOURCE_UNCOUNTED_REASON = "source_uncounted_send";
+// ─── SOURCE: TRANSFER & FULFIL ───────────────────────────────────────────────
+// The fulfil mechanics (supply chips, counted transfer_out with allowNegative,
+// uncounted received, movement-id idempotency with the twin-safe legacy dedupe)
+// moved to components/stock/RefillQueue.jsx — every request row, whatever
+// raised it, fulfils through the ONE shared panel there (owner spec
+// 2026-08-08: one list, one design).
 const SOURCE_TRANSFER_ROLES   = ["store", "warehouse", "admin"];
 // Catalog collisions already warned about this session. Module-level, matching
 // _warnedNameCollisions in utils/insights.js: the identity index rebuilds on
@@ -12173,621 +12001,13 @@ const SOURCE_TRANSFER_ROLES   = ["store", "warehouse", "admin"];
 // groups — re-printing all of them per rebuild would bury every other console
 // signal, including the per-fulfil legacy-movement warning below.
 const _warnedCatalogCollisions = new Set();
-// Session counter for legacy (name-derived) movement-id matches. Each hit is
-// also persisted as `viaLegacyMovementId: true` on the response record, so
-// "when can the dual-read retire" is answerable from the DB, not from memory.
-let _legacyMvIdHits = 0;
-
-// Inline expandable panel: supply-location chips (with live counted qty), a qty
-// stepper when more than one unit is open, and the Transfer & Fulfil confirm.
-function SourceFulfilPanel({ productId, size, destHub, remaining, alreadySent, movementIdSeed, legacyMovementIdSeed, locationsReg, actorRole, onDone, onCancel, onWithoutTransfer }) {
-  const [avail, setAvail] = useState(null);   // { locId: qty | null } — null = never counted there
-  const [pick, setPick]   = useState(null);
-  const [qty, setQty]     = useState(Math.max(1, remaining));
-  const [busy, setBusy]   = useState(false);
-  const [err, setErr]     = useState(null);
-
-  const sources = useMemo(
-    () => warehouseLocations(locationsReg).filter(l => l.id !== destHub),
-    [locationsReg, destHub]
-  );
-
-  // One targeted read per warehouse for THIS product+size — cheap on phones,
-  // no /stock-wide listener. Best-stocked location is pre-selected.
-  useEffect(() => {
-    let dead = false;
-    (async () => {
-      const out = {};
-      for (const l of sources) {
-        try {
-          const snap = await get(ref(database, stockCellPath(l.id, productId, size)));
-          const cell = snap.val();
-          out[l.id] = cell && typeof cell.qty === "number" ? cell.qty : null;
-        } catch { out[l.id] = null; }
-      }
-      if (dead) return;
-      setAvail(out);
-      setPick(p => {
-        if (p) return p;
-        const best = sources.slice().sort((a, b) => (out[b.id] ?? -1) - (out[a.id] ?? -1))[0];
-        return best ? best.id : null;
-      });
-    })();
-    return () => { dead = true; };
-  }, [productId, size, destHub, sources]);
-
-  const doTransfer = async () => {
-    if (!pick || busy) return;
-    setBusy(true); setErr(null);
-    const counted = !!avail && typeof avail[pick] === "number";
-    const q = Math.max(1, Math.min(Math.round(qty) || 1, remaining));
-    const mvId = `${movementIdSeed}_${alreadySent}`;
-    // Credit progress with what ACTUALLY moved. For a fresh transfer that is the
-    // picked quantity; for a suppressed duplicate it is the quantity the
-    // recorded movement carried, which can be smaller — crediting `q` there
-    // would close the cell over units that never shipped.
-    let res, viaLegacy = false, appliedQty = q;
-    try {
-      // Dual-id duplicate check (pid-key cutover): a transfer already applied
-      // under the legacy NAME-derived id must not re-apply under the new pid
-      // id — but a legacy id left by an identically-named TWIN (different
-      // productId on the movement) is not ours and must not block this one.
-      const dup = await checkSourceMovementDuplicate({
-        getMovement: async (id) => (await get(ref(database, `stock_movements/${id}`))).val(),
-        newId: mvId,
-        legacyId: legacyMovementIdSeed ? `${legacyMovementIdSeed}_${alreadySent}` : null,
-        productId,
-      });
-      if (dup.duplicate) {
-        viaLegacy = dup.viaLegacy;
-        appliedQty = dup.appliedQty;
-        if (viaLegacy) console.warn(`[Source] legacy movement id matched (hit #${++_legacyMvIdHits} this session) — suppressed re-apply of ${legacyMovementIdSeed}_${alreadySent}`);
-        res = { ok: true, idempotent: true };
-      } else {
-        res = await applyMovement(counted ? {
-          type: "transfer_out", productId, size, qty: q,
-          from: pick, to: destHub, actorRole,
-          allowNegative: true,
-          reason: SOURCE_REFILL_REASON,
-          movementId: mvId, link: { refillId: movementIdSeed },
-        } : {
-          type: "received", productId, size, qty: q,
-          to: destHub, actorRole,
-          reason: SOURCE_UNCOUNTED_REASON,
-          movementId: mvId, link: { refillId: movementIdSeed },
-        });
-      }
-    } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
-    setBusy(false);
-    if (res.ok) onDone(appliedQty, pick, counted, viaLegacy);
-    else setErr(`Transfer failed: ${res.reason || "unknown"}. Check your stock access and retry.`);
-  };
-
-  const chip = (l) => {
-    const q = avail ? avail[l.id] : undefined;
-    const active = pick === l.id;
-    return (
-      <button key={l.id} onClick={() => setPick(l.id)} disabled={busy}
-              style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 10px", borderRadius:10,
-                       border: active ? "1px solid rgba(60,110,255,.7)" : "1px solid rgba(255,255,255,.1)",
-                       background: active ? "rgba(60,110,255,.16)" : "rgba(255,255,255,.03)",
-                       color: active ? "#6A9FFF" : "rgba(255,255,255,.65)", fontWeight:700, fontSize:11, cursor:"pointer" }}>
-        {l.label || labelFor(l.id, locationsReg)}
-        <span style={{ fontSize:10, fontWeight:600, color: q == null ? "rgba(255,255,255,.35)" : (q > 0 ? "#4ADE80" : "#F87171") }}>
-          {avail == null ? "…" : (q == null ? "uncounted" : q)}
-        </span>
-      </button>
-    );
-  };
-
-  const pickedUncounted = !!pick && !!avail && avail[pick] == null;
-  return (
-    <div style={{ marginTop:10, borderTop:"1px solid rgba(60,110,255,.15)", paddingTop:10 }}>
-      <div style={{ fontSize:10, fontWeight:700, letterSpacing:".8px", color:"rgba(255,255,255,.45)", marginBottom:7 }}>SUPPLY FROM</div>
-      <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 }}>{sources.map(chip)}</div>
-      {pickedUncounted && (
-        <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", marginBottom:8 }}>
-          Not counted at {labelFor(pick, locationsReg)} — units will be added to {labelFor(destHub, locationsReg)} only.
-        </div>
-      )}
-      {remaining > 1 && (
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-          <span style={{ fontSize:11, color:"rgba(255,255,255,.55)", fontWeight:600 }}>Quantity</span>
-          <button onClick={() => setQty(v => Math.max(1, v - 1))} disabled={busy}
-                  style={{ width:30, height:30, borderRadius:8, border:"1px solid rgba(255,255,255,.14)", background:"rgba(255,255,255,.04)", color:"#fff", fontWeight:800, cursor:"pointer" }}>−</button>
-          <span style={{ minWidth:24, textAlign:"center", fontWeight:800, color:"#fff", fontSize:15 }}>{Math.max(1, Math.min(qty, remaining))}</span>
-          <button onClick={() => setQty(v => Math.min(remaining, v + 1))} disabled={busy}
-                  style={{ width:30, height:30, borderRadius:8, border:"1px solid rgba(255,255,255,.14)", background:"rgba(255,255,255,.04)", color:"#fff", fontWeight:800, cursor:"pointer" }}>+</button>
-          <span style={{ fontSize:10, color:"rgba(255,255,255,.35)" }}>of {remaining} open</span>
-        </div>
-      )}
-      {err && <div style={{ fontSize:11, color:"#F87171", marginBottom:8 }}>{err}</div>}
-      <div style={{ display:"flex", gap:8 }}>
-        <button onClick={doTransfer} disabled={busy || !pick}
-                style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(74,222,128,.5)", background:"rgba(74,222,128,.12)", color:"#4ADE80", fontWeight:700, fontSize:12, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
-          {busy ? "Transferring…" : "Transfer & Fulfil"}
-        </button>
-        <button onClick={onCancel} disabled={busy}
-                style={{ padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.6)", fontWeight:600, fontSize:12, cursor:"pointer" }}>
-          Cancel
-        </button>
-      </div>
-      {onWithoutTransfer && (
-        <button onClick={onWithoutTransfer} disabled={busy}
-                style={{ marginTop:8, width:"100%", padding:"7px", borderRadius:8, border:"none", background:"transparent", color:"rgba(255,255,255,.35)", fontSize:10, fontWeight:600, cursor:"pointer", textDecoration:"underline" }}>
-          Complete without stock transfer
-        </button>
-      )}
-    </div>
-  );
-}
-
-// Single pending (product, size) cell. With transfer access + a resolvable
-// productId, the primary action is Fulfil → SourceFulfilPanel (real stock
-// movement); otherwise the original Available button. Out of Stock unchanged.
-// Local pending state suppresses double-taps while Firebase echoes the write back.
-function PendingCard({ product, size, count, onAvailable, onOutOfStock, fulfil, subtitle }) {
-  const [busy, setBusy] = useState(false);
-  const [open, setOpen] = useState(false);
-  const tap = (fn) => {
-    if (busy) return;
-    setBusy(true);
-    fn();
-    // Card will unmount when responses echo back; this is the belt-and-braces
-    // guard for the tiny window between tap and Firebase round-trip.
-    setTimeout(() => setBusy(false), 1500);
-  };
-  const sent = fulfil?.sent || 0;
-  const remaining = Math.max(1, count - sent);
-  // No resolved product id (unknown name, or an AMBIGUOUS one the identity
-  // index refused to guess at) → no stock transfer, plain Available button.
-  const canFulfil = !!fulfil && canFulfilCard(fulfil);
-  return (
-    <div style={{
-      background:"rgba(4,5,10,1)",
-      border:"1px solid rgba(60,110,255,.6)",
-      borderRadius:14,
-      padding:14,
-      boxShadow:"0 0 10px rgba(60,110,255,.15)",
-      opacity: busy ? 0.7 : 1,
-      transition:"opacity 120ms ease",
-    }}>
-      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
-        <ProductPhoto url={product.photoUrl} photo={product.photo} size={48} radius={10}/>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{product.productName}</div>
-          {subtitle && <div style={{ color:"rgba(255,255,255,.4)", fontSize:10, marginTop:2 }}>{subtitle}</div>}
-        </div>
-      </div>
-      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
-        <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.25)", borderRadius:8, padding:"6px 10px" }}>
-          <span style={{ fontSize:13, fontWeight:700, color:"#fff" }}>Size <SizeTag size={size} /></span>
-          {count > 1 && <span style={{ fontSize:10, color:"#4A7FFF", fontWeight:600 }}>×{count}</span>}
-        </div>
-        {sent > 0 && (
-          <span style={{ fontSize:10, fontWeight:700, color:"#4ADE80", background:"rgba(74,222,128,.1)", border:"1px solid rgba(74,222,128,.3)", borderRadius:999, padding:"3px 9px" }}>
-            {sent} of {count} sent
-          </span>
-        )}
-      </div>
-      <div style={{ display:"flex", gap:8 }}>
-        {canFulfil ? (
-          <button disabled={busy} onClick={() => setOpen(v => !v)}
-                  style={{ flex:1, padding:"10px 12px", borderRadius:10, border: open ? "1px solid rgba(74,222,128,.5)" : "1px solid rgba(255,255,255,.1)", background: open ? "rgba(74,222,128,.08)" : "rgba(255,255,255,.03)", color: open ? "#4ADE80" : "rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>
-            Fulfil
-          </button>
-        ) : (
-          <button disabled={busy} onClick={() => tap(onAvailable)}
-                  style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Available
-          </button>
-        )}
-        <button disabled={busy} onClick={() => tap(onOutOfStock)}
-                style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.1)", background:"rgba(255,255,255,.03)", color:"rgba(255,255,255,.7)", cursor: busy ? "default" : "pointer", fontWeight:600, fontSize:12, display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          Out of Stock
-        </button>
-      </div>
-      {canFulfil && open && (
-        <SourceFulfilPanel
-          productId={fulfil.productId}
-          size={size}
-          destHub={fulfil.destHub}
-          remaining={remaining}
-          alreadySent={sent}
-          movementIdSeed={fulfil.movementIdSeed}
-          legacyMovementIdSeed={fulfil.legacyMovementIdSeed || null}
-          locationsReg={fulfil.locationsReg}
-          actorRole={fulfil.actorRole}
-          onDone={(q, from, counted, viaLegacy) => {
-            setOpen(false);
-            fulfil.onProgress(sent + q, sent + q >= count, { lastFrom: from, counted, ...(viaLegacy ? { viaLegacyMovementId: true } : {}) });
-          }}
-          onCancel={() => setOpen(false)}
-          onWithoutTransfer={() => { setOpen(false); tap(onAvailable); }}
-        />
-      )}
-    </div>
-  );
-}
-
-// Single completed cell — colored indicator + Undo.
-function CompletedCard({ product, size, count, response, onUndo }) {
-  const isAvail = response === "available";
-  const accent  = isAvail ? "rgba(74,222,128,.5)"  : "rgba(248,113,113,.5)";
-  const tint    = isAvail ? "rgba(74,222,128,.08)" : "rgba(248,113,113,.08)";
-  const text    = isAvail ? "#4ADE80"              : "#F87171";
-  return (
-    <div style={{
-      background:"rgba(4,5,10,1)",
-      border:`1px solid ${accent}`,
-      borderLeft:`3px solid ${accent}`,
-      borderRadius:14, padding:14,
-      opacity:0.85,
-    }}>
-      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
-        <ProductPhoto url={product.photoUrl} photo={product.photo} size={48} radius={10}/>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontWeight:700, color:"#fff", fontSize:14 }}>{product.productName}</div>
-          <div style={{ display:"inline-flex", alignItems:"center", gap:5, marginTop:4, padding:"2px 8px", borderRadius:999, background:tint, border:`1px solid ${accent}`, color:text, fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
-              {isAvail ? <polyline points="20 6 9 17 4 12"/> : <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>}
-            </svg>
-            {isAvail ? "Available" : "Out of Stock"}
-          </div>
-        </div>
-      </div>
-      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-        <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.2)", borderRadius:8, padding:"5px 10px" }}>
-          <span style={{ fontSize:12, fontWeight:700, color:"rgba(255,255,255,.7)" }}>Size <SizeTag size={size} /></span>
-          {count > 1 && <span style={{ fontSize:10, color:BLUE, fontWeight:600 }}>×{count}</span>}
-        </div>
-        <div style={{ flex:1 }} />
-        <button onClick={onUndo}
-                style={{ padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
-          </svg>
-          Undo
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // Returns YYYY-MM-DD for `daysAgo` days before today in SA time.
 function getSAPastDateString(daysAgo) {
   const t = serverNowMs() + 2 * 60 * 60 * 1000 - daysAgo * 24 * 60 * 60 * 1000;
   return new Date(t).toISOString().slice(0, 10);
 }
 
-const HISTORY_DAY_LABELS = { 1: "YESTERDAY", 2: "2 DAYS AGO", 3: "3 DAYS AGO", 4: "4 DAYS AGO", 5: "5 DAYS AGO" };
 const HISTORY_RETENTION_DAYS = 5;
-
-// History tab shows pending stragglers from the past 1–5 days (excluding today,
-// which is shown on Today's Request). A "straggler" = a (productKey, size) cell
-// whose order was ready/collected on day-N, not OOS, not returned-on-day-N, and
-// for which restock_requests/{day-N}/{key}/{size} has no response yet.
-//
-// Reactions write to restock_requests/{day-N}/{key}/{size} = { response, respondedOn:NOW }
-// — see saveSourceResponse. The original-day path is what makes resolution
-// stick across page loads; respondedOn carries "today's stamp" for the audit.
-// `cellFilter` (optional): (key, product, size) => bool — the Hub 2 tab's
-// SNEAKERS / CLOTHING split, applied to each pending cell. Absent = everything.
-function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResponse, fulfilCtx, fulfilProgress, onFulfilProgress, cellFilter = null }) {
-  // Default expand: yesterday open, older closed. Stored by daysAgo number.
-  const [openDays, setOpenDays] = useState(() => new Set([1]));
-  const toggle = (d) => setOpenDays(prev => {
-    const next = new Set(prev);
-    next.has(d) ? next.delete(d) : next.add(d);
-    return next;
-  });
-
-  // Per past day: rebuild the rawCounts shape SourceTodayTab uses from the
-  // durable insights_log (action="ready") instead of live /orders — the live
-  // orders that carried these requests were overwritten by the daily orderNumber
-  // rollover. Then strip (key, size) cells that already have a response that day
-  // (checking the legacy name key too — pre-cutover responses live there).
-  // Photos aren't in the log, so join them from the catalog BY PRODUCT ID —
-  // duplicate names are real, and the old name join showed one twin's photo on
-  // the other twin's card (the misleading face of the wrong-deduction bug).
-  const groups = useMemo(() => {
-    return Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => i + 1).map(daysAgo => {
-      const dateStr   = getSAPastDateString(daysAgo);
-      const returned  = returnedOrderIdsOnSADate(returnsLog, dateStr);
-      const rawCounts = restockCountsFromLog({ log, dateStr, hub, returnedIds: returned });
-      const dayResponses = allResponses[dateStr] || {};
-      // Drop responded (key, size) cells; drop products that end up with no pending sizes.
-      const pending = {};
-      let pendingUnits = 0;
-      Object.entries(rawCounts).forEach(([key, product]) => {
-        const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
-        const sizes = {};
-        Object.entries(product.sizes || {}).forEach(([size, count]) => {
-          if (dayResponses[key]?.[size] || (legacyKey && dayResponses[legacyKey]?.[size])) return;
-          if (cellFilter && !cellFilter(key, product, size)) return;
-          sizes[size] = count;
-          pendingUnits += (typeof count === "number" ? count : 1);
-        });
-        if (Object.keys(sizes).length) {
-          const ph = photoFor(product);
-          pending[key] = { ...product, legacyKey, sizes, photoUrl: ph.photoUrl, photo: ph.photo };
-        }
-      });
-      return { daysAgo, dateStr, label: HISTORY_DAY_LABELS[daysAgo], pending, pendingUnits };
-    }).filter(g => g.pendingUnits > 0);
-  }, [log, returnsLog, allResponses, hub, photoFor, cellFilter]);
-
-  if (!groups.length) return (
-    <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem 1.5rem", textAlign:"center", boxShadow:"0 0 16px rgba(60,110,255,.08)" }}>
-      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 8px rgba(74,222,128,.4))" }}>
-        <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
-      </svg>
-      <div style={{ color:"#fff", fontSize:14, fontWeight:600, marginTop:12 }}>Nothing pending for this hub. You're caught up.</div>
-    </div>
-  );
-
-  return (
-    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-      {groups.map(g => {
-        const isOpen = openDays.has(g.daysAgo);
-        return (
-          <div key={g.daysAgo} style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, overflow:"hidden" }}>
-            {/* Header bar */}
-            <div onClick={() => toggle(g.daysAgo)}
-                 style={{ display:"flex", alignItems:"center", padding:"14px 16px", cursor:"pointer", gap:12 }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}>
-                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-              </svg>
-              <div style={{ flex:1, fontWeight:700, fontSize:12, letterSpacing:"1.2px", color:"#fff" }}>{g.label}</div>
-              <div style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"3px 10px", fontSize:11, fontWeight:700 }}>
-                {g.pendingUnits} pending
-              </div>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                   style={{ transition:"transform 150ms ease", transform: isOpen ? "rotate(180deg)" : "rotate(0deg)", flexShrink:0 }}>
-                <polyline points="6 9 12 15 18 9"/>
-              </svg>
-            </div>
-            {/* Animated body */}
-            <div style={{ maxHeight: isOpen ? 5000 : 0, overflow:"hidden", transition:"max-height 150ms ease" }}>
-              <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"12px 14px", display:"flex", flexDirection:"column", gap:10 }}>
-                {Object.entries(g.pending).flatMap(([key, product]) => {
-                  const sizes = Object.keys(product.sizes).sort((a, b) => Number(a) - Number(b));
-                  return sizes.map(size => {
-                    const count = typeof product.sizes[size] === "number" ? product.sizes[size] : 1;
-                    return (
-                      <PendingCard
-                        key={`${hub}-${g.daysAgo}-${key}-${size}`}
-                        product={product}
-                        size={size}
-                        count={count}
-                        subtitle={`Requested ${g.daysAgo === 1 ? "yesterday" : `${g.daysAgo} days ago`}`}
-                        fulfil={fulfilCtx ? {
-                          enabled: fulfilCtx.canTransfer,
-                          productId: fulfilCtx.resolveId(product),
-                          destHub: hub,
-                          sent: Math.max(
-                            fulfilProgress?.[g.dateStr]?.[key]?.[size]?.fulfilledQty || 0,
-                            product.legacyKey ? (fulfilProgress?.[g.dateStr]?.[product.legacyKey]?.[size]?.fulfilledQty || 0) : 0,
-                          ),
-                          movementIdSeed: sourceMovementIdSeed(g.dateStr, key, encodeSizeKey(size)),
-                          legacyMovementIdSeed: product.legacyKey ? sourceMovementIdSeed(g.dateStr, product.legacyKey, encodeSizeKey(size)) : null,
-                          locationsReg: fulfilCtx.locationsReg,
-                          actorRole: fulfilCtx.actorRole,
-                          onProgress: (newSent, complete, meta) => onFulfilProgress(g.dateStr, key, size, newSent, complete, meta),
-                        } : null}
-                        onAvailable={() => onResponse(g.dateStr, key, size, "available")}
-                        onOutOfStock={() => onResponse(g.dateStr, key, size, "out_of_stock")}
-                      />
-                    );
-                  });
-                })}
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── SOURCE: ON-HOLD EXCEPTION ROWS (inside the refill queue) ────────────────
-// The standalone "On hold" section is GONE (owner spec 2026-08-08): a hold that
-// raised a refill request IS a request row in the hub queue now — same list,
-// same work item. What renders here is only the exception tail that CANNOT be a
-// request row, slotted INSIDE the queue's list by Hub2RefillQueue (holdRows):
-//   • fail-closed holds (hub isn't hub1/hub2 — a human routes them),
-//   • legacy holds that predate the hold→request change,
-//   • holds whose request already RESOLVED (fulfilled/rejected) — they return
-//     here with the outcome attached so the customer order is never stranded.
-// Responses are tracked at source_onhold_responses/{key}; cards move to the
-// Completed toggle when responded and Undo brings them back — unchanged.
-function OnHoldExceptionRows({ items, fulfilCtx }) {
-  const [showCompleted, setShowCompleted] = useState(false);
-  // Composite key of the card whose Transfer & Fulfil panel is open (one at a time).
-  const [openComposite, setOpenComposite] = useState(null);
-
-  // `items` is the shared merged on-hold list (live today + durable log for past
-  // days), already newest-first, returned-excluded, with a `responded` flag and
-  // the raw `response` record attached. Split into active vs completed here.
-  const { pending, completed } = useMemo(() => {
-    const pending = [];
-    const completed = [];
-    (items || []).forEach(item => {
-      if (item.responded && item.response?.response) completed.push(item);
-      else pending.push(item);
-    });
-    return { pending, completed };
-  }, [items]);
-
-  // Responses are keyed by the composite date::orderNumber (item.composite) —
-  // orderNumber alone is daily-reused, so a bare key let a past day's handled
-  // order mask a fresh same-numbered one.
-  const handleRespond = (item, response) => {
-    set(ref(database, `source_onhold_responses/${item.composite}`), {
-      orderNumber: item.orderNumber,
-      saDate: item.saDate,
-      productName: item.productName,
-      size: item.size,
-      customerName: item.customerName || null,
-      response,
-      timestamp: serverNowIso(),
-    }).catch(err => console.warn("saveOnHoldResponse failed:", err));
-  };
-
-  const handleUndo = (item) => {
-    remove(ref(database, `source_onhold_responses/${item.composite}`))
-      .catch(err => console.warn("clearOnHoldResponse failed:", err));
-  };
-
-  const fmt = iso => iso ? new Date(iso).toLocaleString([], { day:"numeric", month:"short", hour:"2-digit", minute:"2-digit" }) : "—";
-
-  // Nothing exceptional on hold — this block simply doesn't exist. The queue's
-  // own empty state speaks for the list as a whole.
-  if (!pending.length && !completed.length) return null;
-
-  return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"0.85rem", marginBottom:12 }}>
-      {/* Show / Hide Completed toggle (session state) */}
-      {completed.length > 0 && (
-        <CompletedTogglePill on={showCompleted} count={completed.length} onClick={() => setShowCompleted(v => !v)} />
-      )}
-
-      {/* Active list. Customer info, collection date and the "sent" response
-          record are untouched by the transfer redesign — with transfer access
-          the Sent button becomes Fulfil (real stock movement to the order's
-          hub, then the exact same response write); without it, plain Sent. */}
-      {pending.map(item => {
-        const pid = fulfilCtx ? fulfilCtx.resolveId({ productId: item.productId, productName: item.productName }) : null;
-        // Same refusal gate as PendingCard, plus On Hold's own requirements (a
-        // size, and a hub that is a registered stock location).
-        const canFulfil = canFulfilCard({ enabled: fulfilCtx?.canTransfer, productId: pid })
-          && !!item.size && fulfilCtx.knownLoc(item.hub);
-        const isOpen = openComposite === item.composite;
-        return (
-        <div key={`onhold-${item.composite}`} style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"1.1rem 1.25rem", boxShadow:"0 0 16px rgba(60,110,255,.15)", borderLeft:`3px solid ${BLUE}` }}>
-          <div style={{ display:"flex", alignItems:"center", gap:"1rem", marginBottom:"0.85rem" }}>
-            <ProductPhoto url={item.photoUrl} photo={item.photo} size={48} radius={8}/>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", marginBottom:"0.2rem" }}>
-                <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.4rem", color:BLUE_L, lineHeight:1, letterSpacing:"0.05em" }}>#{item.orderNumber}</span>
-                <span style={{ background:"rgba(60,110,255,.12)", color:BLUE_L, border:BORDER, borderRadius:"999px", padding:"1px 8px", fontSize:"0.7rem", fontWeight:"600" }}>On Hold</span>
-              </div>
-              <div style={{ fontWeight:"600", fontSize:"0.92rem", color:"#fff" }}>{item.productName} — Size <SizeTag size={item.size} /></div>
-              <div style={{ color:"#888", fontSize:"0.8rem" }}>{item.customerName}</div>
-              <div style={{ color:"#444", fontSize:"0.72rem", marginTop:"0.2rem" }}>Put on hold: {fmt(item.ts)}</div>
-              {/* Fail-closed marker: this hold could not raise a refill request
-                  because its hub isn't hub1/hub2 (e.g. hubC) — a human routes it. */}
-              {item.hub !== "hub1" && item.hub !== "hub2" && (
-                <div style={{ color:"#F59E0B", fontSize:"0.72rem", marginTop:"0.2rem", fontWeight:600 }}>
-                  Hub “{item.hub || "unknown"}” — couldn&rsquo;t queue a refill request; handle by hand.
-                </div>
-              )}
-              {/* A hold whose refill request RESOLVED comes back here with the
-                  outcome, so a rejection or an arrival is acted on, never lost. */}
-              {item.refillOutcome === "fulfilled" && (
-                <div style={{ color:"#4ADE80", fontSize:"0.72rem", marginTop:"0.2rem", fontWeight:600 }}>
-                  Refill arrived at {HUB_LABELS[item.hub] || item.hub} — send it on and tap Sent.
-                </div>
-              )}
-              {item.refillOutcome === "cancelled" && (
-                <div style={{ color:"#F87171", fontSize:"0.72rem", marginTop:"0.2rem", fontWeight:600 }}>
-                  The refill ask was closed without stock — check the shelf or tap Out of Stock.
-                </div>
-              )}
-            </div>
-          </div>
-          <div style={{ display:"flex", gap:"0.6rem" }}>
-            <button
-              onClick={() => canFulfil ? setOpenComposite(isOpen ? null : item.composite) : handleRespond(item, "sent")}
-              style={{ ...bGreen, flex:1, padding:"0.55rem", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              {canFulfil ? "Fulfil" : "Sent"}
-            </button>
-            <button
-              onClick={() => handleRespond(item, "out_of_stock")}
-              style={{ ...bRed, flex:1, padding:"0.55rem", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              Out of Stock
-            </button>
-          </div>
-          {canFulfil && isOpen && (
-            <SourceFulfilPanel
-              productId={pid}
-              size={item.size}
-              destHub={item.hub}
-              remaining={1}
-              alreadySent={0}
-              movementIdSeed={`srcoh_${item.composite}`}
-              locationsReg={fulfilCtx.locationsReg}
-              actorRole={fulfilCtx.actorRole}
-              onDone={() => { setOpenComposite(null); handleRespond(item, "sent"); }}
-              onCancel={() => setOpenComposite(null)}
-              onWithoutTransfer={() => { setOpenComposite(null); handleRespond(item, "sent"); }}
-            />
-          )}
-        </div>
-        );
-      })}
-
-      {/* Completed list — revealed by toggle */}
-      {showCompleted && completed.length > 0 && (
-        <>
-          <div style={{ marginTop:8, marginBottom:2, display:"flex", alignItems:"center", gap:8 }}>
-            <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
-            <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.4)", letterSpacing:"1.2px" }}>COMPLETED</div>
-            <div style={{ height:1, flex:1, background:"rgba(255,255,255,.06)" }} />
-          </div>
-          {completed.map(item => {
-            const response = item.response?.response;
-            const isSent = response === "sent";
-            const accent = isSent ? "rgba(74,222,128,.5)"  : "rgba(248,113,113,.5)";
-            const tint   = isSent ? "rgba(74,222,128,.08)" : "rgba(248,113,113,.08)";
-            const text   = isSent ? "#4ADE80"              : "#F87171";
-            return (
-              <div key={`onhold-done-${item.composite}`} style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:"1.1rem 1.25rem", opacity:0.85 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:"1rem", marginBottom:"0.6rem" }}>
-                  <ProductPhoto url={item.photoUrl} photo={item.photo} size={48} radius={8}/>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", marginBottom:"0.2rem" }}>
-                      <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:"800", fontSize:"1.2rem", color:"rgba(255,255,255,.85)", lineHeight:1, letterSpacing:"0.05em" }}>#{item.orderNumber}</span>
-                      <span style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"2px 8px", borderRadius:999, background:tint, border:`1px solid ${accent}`, color:text, fontSize:10, fontWeight:700, letterSpacing:".5px", textTransform:"uppercase" }}>
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
-                          {isSent ? <polyline points="20 6 9 17 4 12"/> : <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>}
-                        </svg>
-                        {isSent ? "Sent" : "Out of Stock"}
-                      </span>
-                    </div>
-                    <div style={{ fontWeight:"600", fontSize:"0.9rem", color:"rgba(255,255,255,.85)" }}>{item.productName} — Size <SizeTag size={item.size} /></div>
-                    <div style={{ color:"#888", fontSize:"0.78rem" }}>{item.customerName}</div>
-                  </div>
-                </div>
-                <div style={{ display:"flex", justifyContent:"flex-end" }}>
-                  <button onClick={() => handleUndo(item)}
-                          style={{ padding:"7px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.12)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.7)", fontWeight:600, fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
-                    </svg>
-                    Undo
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </>
-      )}
-    </div>
-  );
-}
-
-// Returns "YYYY-MM-DD" for yesterday in SA time.
-function getSAYesterdayString() {
-  const now = new Date(serverNowMs() + 2 * 60 * 60 * 1000);
-  now.setUTCDate(now.getUTCDate() - 1);
-  return now.toISOString().slice(0, 10);
-}
 
 // ─── CLOTHING-SOLD REFILL TAB ─────────────────────────────────────────────────
 // One card per (store, product) with a per-size qty breakdown — NOT one per
@@ -13501,7 +12721,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const isWide = !useIsNarrow(1024);
 
   // ── Transfer & Fulfil context (shared by all three tabs) ────────────────────
-  // Same access gate as every other stock-writing surface (Hub2RefillQueue):
+  // Same access gate as every other stock-writing surface (RefillQueue):
   // a stockRole is required to move inventory. Users without one keep the
   // original Available / Sent buttons — the tab never breaks for them.
   const { permRecord, isSuperAdmin } = usePermissions();
@@ -13555,17 +12775,15 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     else saveSourceFulfilProgress(date, key, size, newQty, meta);
   }, []);
 
-  // Immutable insights_log — the durable source for PAST-day History and On Hold.
+  // Immutable insights_log — the durable source for PAST-day straggler cells.
   // Live /orders is keyed by the daily orderNumber (resets each morning), so
-  // today's orders overwrite yesterday's slots; past-day + on-hold requests read
-  // straight from /orders vanished. The log keeps every ready/tomorrow transition
-  // forever, so past days survive. Today's tabs still use live /orders (no lag).
+  // past-day requests read straight from /orders vanished. The log keeps every
+  // ready transition forever, so past days survive.
   //
-  // BOUNDED: this screen only ever looks back HISTORY_RETENTION_DAYS — the
-  // History tab iterates exactly that many days (SourceHistoryTab) and On Hold
-  // uses the same `pastDates` set — so it requests that range instead of the
-  // whole 18.73 MB node. The window is derived from the constant the screen
-  // renders, so changing HISTORY_RETENTION_DAYS moves the query with it.
+  // BOUNDED: this screen only ever looks back HISTORY_RETENTION_DAYS, so it
+  // requests that range instead of the whole 18.73 MB node. The window is
+  // derived from the constant the queue renders, so changing
+  // HISTORY_RETENTION_DAYS moves the query with it.
   const insightsLog = useInsightsLogRecentDays(HISTORY_RETENTION_DAYS);
 
   // Photo lookup for log-reconstructed cards (the log carries no photo).
@@ -13576,26 +12794,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const photoIndex = useMemo(() => buildPhotoIndex(products), [products]);
   const photoFor = useCallback((product) => photoForProduct(photoIndex, product), [photoIndex]);
 
-  // Refill request statuses — the held-card visibility rule needs them: a hold
-  // whose request is OPEN is represented by the queue; a RESOLVED (or deleted)
-  // request hands the ask back to its held card, outcome attached, so a
-  // rejection can never strand the customer order invisibly (Kimi, PR #335).
-  // Same path the mounted hub tab already subscribes to — the SDK shares one
-  // server subscription per path, so this adds no second download.
+  // Open refill requests — the hub tab badges count them next to the sale
+  // cells, since both are rows in the ONE queue now. Same path the mounted
+  // queue already subscribes to — the SDK shares one server subscription per
+  // path, so this adds no second download.
   const allRefillRequests = useRefillRequests();
-  const refillStatusById = useMemo(
-    () => new Map(allRefillRequests.map((r) => [r.id, r.status])), [allRefillRequests]);
-  const refillRequestsLoaded = allRefillRequests.length > 0;
-
-  // On Hold response state — read once here so badges and the On Hold tab
-  // share the same source of truth (no duplicate Firebase listeners).
-  const [onHoldResponses, setOnHoldResponses] = useState({});
-  useEffect(() => {
-    const unsub = onValue(ref(database, "source_onhold_responses"), snap => {
-      setOnHoldResponses(snap.val() || {});
-    });
-    return () => unsub();
-  }, []);
 
   // Returned-today orderIds: same-period subtraction the Insights Net Sales
   // card applies. Returned items are physically back in the warehouse, so
@@ -13669,133 +12872,93 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const lineMatches = useCallback((product, size, mode) =>
     mode === "sneakers" ? isFootwearLine(product, size) : !isFootwearLine(product, size),
   []);
-  // rawCounts shape → same shape, only the cells the predicate keeps.
-  const filterCountsByLine = useCallback((counts, mode) => {
-    const out = {};
-    Object.entries(counts || {}).forEach(([key, product]) => {
-      const sizes = {};
-      Object.entries(product.sizes || {}).forEach(([size, count]) => {
-        if (lineMatches(productForKey(key, product), size, mode)) sizes[size] = count;
-      });
-      if (Object.keys(sizes).length) out[key] = { ...product, sizes };
-    });
-    return out;
-  }, [lineMatches, productForKey]);
-
   // All Source responses: { date: { productKey: { size: { response, respondedOn } } } }
   // History tab derives its straggler list from this + live orders (5-day window).
   // fulfilProgress carries the partial Transfer & Fulfil leaves (same node).
   const { responses: allResponses, progress: fulfilProgress } = useAllSourceResponses();
 
-  // SA-time (UTC+2) YYYY-MM-DD of any timestamp — same convention as orderSaleDate.
-  const saDateOfTs = (ts) => ts ? new Date(new Date(ts).getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10) : null;
+  // ── SALE-DRIVEN ROWS — "today's requests" + the past-day stragglers ────────
+  // Sold cells are ordinary request lines in the ONE queue now (owner spec
+  // 2026-08-08): same layout, same Fulfil / Out of Stock actions as every
+  // /refill_requests row, and the same release windows. Today's cells are
+  // dated by their EARLIEST sale (see earliestSaleTs) so the windows batch
+  // them exactly like engine/manual/former-hold requests; a cell with no
+  // parseable sale time is dated at the SA day start, which behaves released
+  // for the whole trading day. Past-day stragglers predate every window and
+  // are always released.
+  const saDayStart = (dateStr) => Date.parse(`${dateStr}T00:00:00.000Z`) - 2 * 60 * 60 * 1000;
+  const pastDates = useMemo(
+    () => Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => getSAPastDateString(i + 1)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [todayDate]);
+  const saleRowsFor = useCallback((h, cellFilter) => {
+    const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h);
+    const rows = pendingSaleRows({
+      counts: rawCountsByHub[h],
+      responses: allResponses[todayDate] || {},
+      progress: fulfilProgress[todayDate] || {},
+      date: todayDate,
+      tsBySize: earliestSaleTs(hubEntries),
+      fallbackMs: saDayStart(todayDate),
+      cellFilter,
+    });
+    pastDates.forEach((dateStr) => {
+      const returned = returnedOrderIdsOnSADate(returnsLog, dateStr);
+      const counts = restockCountsFromLog({ log: insightsLog, dateStr, hub: h, returnedIds: returned });
+      // The log carries no photo — join it from the catalog BY PRODUCT ID
+      // (name join only for pid-less legacy records, twins refuse to guess).
+      const withPhotos = {};
+      Object.entries(counts).forEach(([key, product]) => {
+        const ph = photoFor(product);
+        withPhotos[key] = { ...product, photoUrl: ph.photoUrl, photo: ph.photo };
+      });
+      rows.push(...pendingSaleRows({
+        counts: withPhotos,
+        responses: allResponses[dateStr] || {},
+        progress: fulfilProgress[dateStr] || {},
+        date: dateStr,
+        tsBySize: null,
+        fallbackMs: saDayStart(dateStr),
+        cellFilter,
+      }));
+    });
+    return rows;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restockLogToday, rawCountsByHub, allResponses, fulfilProgress, todayDate, pastDates, insightsLog, returnsLog, photoFor]);
 
-  // ── On Hold list (shared by the tab, the hub badges AND the top-bar count) ──
-  // Today's on-holds come from live /orders (current status COMING_TOMORROW —
-  // no lag, and an UNDONE on-hold correctly disappears). Past-day on-holds come
-  // from the immutable log (action="tomorrow"), because the live order that held
-  // them was overwritten by the daily orderNumber rollover. Deduped by the
-  // composite date::orderNumber key — orderNumber alone is daily-reused, so a
-  // bare key made yesterday's on-hold collide with today's. Returned orders drop
-  // out (no restock work). `responded` is the source_onhold_responses flag.
-  const onHoldAll = useMemo(() => {
-    const pastDates = Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => getSAPastDateString(i + 1));
-    const byComposite = new Map();
-
-    // Live: every current COMING_TOMORROW order (today + any not-yet-clobbered
-    // past). EVERY hold is kept here, tagged with its linked request id and
-    // whether it renders as a held card: an OPEN request means the hub's refill
-    // queue owns the ask (the request row IS the work item — the queue joins
-    // back to this list via `requestId` to name the waiting customer); a
-    // RESOLVED one hands the ask back to a held card with the outcome
-    // attached, so a rejection or an arrival is acted on rather than vanishing
-    // (Kimi, PR #335). Held cards are therefore: legacy holds, fail-closed
-    // holds, and resolved-request holds.
-    (orders || []).forEach(o => {
-      if (o.status !== STATUS.COMING_TOMORROW) return;
-      const saDate = saDateOfTs(o.comingTomorrowAt || o.updatedAt) || todayDate;
-      const composite = onHoldKey(saDate, o.id);
-      byComposite.set(composite, {
-        composite, orderNumber: o.id, saDate,
-        productName: o.productName, productId: o.productId || null,
-        // hub = the order's own routing (placedAtHub, the field dispatch uses;
-        // o.hub for legacy rows) — the held card files under the hub tab that
-        // would supply it, same rule as onHoldRefillPlan.
-        size: sourceDisplaySize(o), hub: (o.placedAtHub || o.hub || "hub1"),
-        customerName: o.customerName || null,
-        photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
-        ts: o.comingTomorrowAt || o.updatedAt,
-        requestId: o.onHoldRefillRequestId || null,
-        heldVisible: heldCardVisible(o.onHoldRefillRequestId, refillStatusById, refillRequestsLoaded),
-        // The linked request's outcome, when it has one — the card renders it.
-        refillOutcome: o.onHoldRefillRequestId ? (refillStatusById.get(o.onHoldRefillRequestId) || null) : null,
+  // Today's answered cells — the quiet "Completed today" list with Undo.
+  const completedSaleFor = useCallback((h, cellFilter) => {
+    const out = [];
+    const todayResponses = allResponses[todayDate] || {};
+    Object.entries(rawCountsByHub[h] || {}).forEach(([key, product]) => {
+      const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
+      Object.entries(product.sizes || {}).forEach(([size, count]) => {
+        const resp = todayResponses[key]?.[size]?.response
+                  || (legacyKey ? todayResponses[legacyKey]?.[size]?.response : undefined);
+        if (!resp) return;
+        if (cellFilter && !cellFilter(key, product, size)) return;
+        out.push({ date: todayDate, key, legacyKey, size: String(size),
+                   qty: typeof count === "number" ? count : 1,
+                   productName: product.productName, photo: product.photo || "",
+                   photoUrl: product.photoUrl || null, response: resp });
       });
     });
+    return out;
+  }, [rawCountsByHub, allResponses, todayDate]);
 
-    // Log (past days only): fill in on-holds whose live order was overwritten.
-    onHoldEventsFromLog({ log: insightsLog, dates: pastDates }).forEach(e => {
-      const composite = onHoldKey(e.saDate, e.orderNumber);
-      if (byComposite.has(composite)) return;
-      const ph = photoFor(e);
-      byComposite.set(composite, {
-        composite, orderNumber: e.orderNumber, saDate: e.saDate,
-        productName: e.productName, productId: e.productId || null,
-        size: e.size, hub: e.hub,
-        customerName: e.customerName || null,
-        photoUrl: ph.photoUrl, photo: ph.photo, ts: e.timestamp,
-        requestId: e.refillRequestId || null,
-        heldVisible: heldCardVisible(e.refillRequestId, refillStatusById, refillRequestsLoaded),
-        refillOutcome: e.refillRequestId ? (refillStatusById.get(e.refillRequestId) || null) : null,
-      });
-    });
-
-    // Returned-order composites across the window → excluded (no restock needed).
-    const returnedComposites = new Set();
-    [todayDate, ...pastDates].forEach(d =>
-      returnedOrderIdsOnSADate(returnsLog, d).forEach(num => returnedComposites.add(onHoldKey(d, num)))
-    );
-
-    const respondedKeys = new Set(Object.keys(onHoldResponses));
-    const list = [];
-    byComposite.forEach(item => {
-      if (returnedComposites.has(item.composite)) return;
-      item.responded = respondedKeys.has(item.composite);
-      item.response = onHoldResponses[item.composite] || null;
-      list.push(item);
-    });
-    return list.sort((a, b) => tsMs(b.ts) - tsMs(a.ts));
-  }, [insightsLog, orders, onHoldResponses, returnsLog, todayDate, photoFor, refillStatusById, refillRequestsLoaded]);
-
-  // Held-card slice — exactly what the old merged list contained (a hold whose
-  // request is OPEN lives in the queue as a request row, not here). Badges and
-  // counts read this, so their meaning is unchanged.
-  const onHoldMerged = useMemo(() => onHoldAll.filter((i) => i.heldVisible), [onHoldAll]);
-  // requestId → hold context. The queue's request rows and admin backlog use
-  // this to say WHICH customer is waiting behind a hold-origin ask.
-  const holdInfoByRequestId = useMemo(() => {
-    const m = new Map();
-    onHoldAll.forEach((i) => { if (i.requestId && !m.has(i.requestId)) m.set(i.requestId, i); });
-    return m;
-  }, [onHoldAll]);
-
-  // Per-hub pending counts for the Hub 1 / Hub 2 sub-tab badges. Mirrors the
-  // exact same pending logic each tab uses (Today excludes responded cells,
-  // History sums per-day stragglers, On Hold subtracts source_onhold_responses).
+  // Per-hub badge for the Hub 1 / Hub 2 tabs: pending sale cells (today +
+  // stragglers) plus open refill requests — everything the one queue lists.
   const hubBadges = useMemo(() => {
     const counts = { hub1: 0, hub2: 0 };
     const todayResponses = allResponses[todayDate] || {};
 
-    // -- Today: pending = unresponded cells from today's SALES (restock_log).
-    // Must read the same feed the list itself reads, or the badge counts orders
-    // marked Ready while the list shows only what sold — a badge promising work
-    // that is not in the list is worse than no badge.
     ["hub1", "hub2"].forEach(h => {
       const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h);
       const counts2 = computeRestockCounts(hubEntries);
       Object.entries(counts2).forEach(([key, product]) => {
         const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
         Object.entries(product.sizes || {}).forEach(([size, count]) => {
-          // Same dual-read (pid key, then legacy name key) as the Today list —
+          // Same dual-read (pid key, then legacy name key) as the queue rows —
           // the badge must never promise work the list doesn't show.
           if (todayResponses[key]?.[size] || (legacyKey && todayResponses[legacyKey]?.[size])) return;
           counts[h] += (typeof count === "number" ? count : 1);
@@ -13803,8 +12966,6 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       });
     });
 
-    // -- History: pending = unresponded cells per past 1..N days, rebuilt from
-    // the durable log (live /orders is clobbered by the daily orderNumber reset).
     for (let daysAgo = 1; daysAgo <= HISTORY_RETENTION_DAYS; daysAgo++) {
       const dateStr  = getSAPastDateString(daysAgo);
       const returned = returnedOrderIdsOnSADate(returnsLog, dateStr);
@@ -13821,20 +12982,16 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       });
     }
 
-    // -- On Hold: pending (unresponded) on-holds from the shared merged list.
-    onHoldMerged.forEach(item => {
-      if (item.responded) return;
-      if (item.hub === "hub1" || item.hub === "hub2") counts[item.hub] += 1;
+    // Open refill requests — rows in the same queue (holds included: they are
+    // ordinary requests now, so they count here and nowhere else).
+    allRefillRequests.forEach((r) => {
+      if (r.status === "open" && !r.shadow && r.productId &&
+          (r.requestingLocation === "hub1" || r.requestingLocation === "hub2"))
+        counts[r.requestingLocation] += 1;
     });
 
     return counts;
-  }, [restockLogToday, allResponses, todayDate, insightsLog, returnsLog, onHoldMerged]);
-
-  // Top-tab On Hold badge — total pending across ALL hubs (matches old behavior).
-  const onHoldCount = useMemo(
-    () => onHoldMerged.filter(item => !item.responded).length,
-    [onHoldMerged]
-  );
+  }, [restockLogToday, allResponses, todayDate, insightsLog, returnsLog, allRefillRequests]);
 
   // DEBUG — paste in browser console to inspect counted vs leaked orders.
   // Removed once you've verified the math is right. Lives in useEffect so it
@@ -13884,36 +13041,30 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       .catch(err => alert(`Undo failed: ${err?.message || err}\n\nThe card may still show as completed. Retry, and if it keeps failing check your connection.`));
   };
 
-  // ── HUB TAB SECTIONS — everything the three removed tabs showed, re-homed ──
-  // One hub tab = the refill queue (which now CONTAINS the holds — request
-  // rows for holds that raised one, pinned exception rows for the rest) + the
-  // sold-today cells + the 5-day stragglers, all routed to THAT hub. Nothing
-  // the old tabs rendered is dropped: pending/completed sold cells (Today's
-  // Request), per-day straggler groups (History) and pending/completed holds
-  // all keep their actions and undo paths.
-  const heldItemsFor = (h, mode) => onHoldMerged.filter((item) => {
-    const routable = item.hub === "hub1" || item.hub === "hub2";
-    // Unroutable holds (hubC / unknown) appear in BOTH hub tabs — they need a
-    // human, and there is no longer a separate tab to catch them.
-    if (routable && item.hub !== h) return false;
-    if (mode) {
-      const p = item.productId ? productsById.get(item.productId) : productForKey(item.productId || "", item);
-      return lineMatches(p, item.size, mode);
-    }
-    return true;
-  });
-  const sectionHead = (label, hint) => (
-    <div style={{ margin: "18px 2px 10px" }}>
-      <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: ".14em", textTransform: "uppercase", color: "rgba(255,255,255,.55)" }}>{label}</div>
-      {hint && <div style={{ fontSize: 11, color: "rgba(255,255,255,.35)", marginTop: 2 }}>{hint}</div>}
-    </div>
-  );
+  // One hub tab = ONE list (owner spec 2026-08-08). Engine/manual/former-hold
+  // requests and the sale-driven cells all render as identical rows inside
+  // RefillQueue — same layout, same Fulfil / Out of Stock actions, all batched
+  // by the release windows, one quiet status line. The old separate sections
+  // (queue / sold today / earlier days / on hold) are gone.
+  //
+  // The sale rows are memoised for the ACTIVE tab: the 5-day straggler rebuild
+  // (restockCountsFromLog × HISTORY_RETENTION_DAYS + the photo join) is not
+  // free, and calling it inline re-ran it on every unrelated SourceView render
+  // (Sonnet architect, PR #337). Only the active hub's rows are ever needed.
+  const activeHub = tab === "hub1refill" ? "hub1" : tab === "clothing" ? "hub2" : null;
+  const activeMode = activeHub === "hub2" ? hub2Line : null;   // hub1 is footwear by construction
+  const activeCellFilter = useMemo(
+    () => activeMode ? (key, product, size) => lineMatches(productForKey(key, product), size, activeMode) : null,
+    [activeMode, lineMatches, productForKey]);
+  const activeSaleRows = useMemo(
+    () => activeHub ? saleRowsFor(activeHub, activeCellFilter) : [],
+    [activeHub, activeCellFilter, saleRowsFor]);
+  const activeCompletedSale = useMemo(
+    () => activeHub ? completedSaleFor(activeHub, activeCellFilter) : [],
+    [activeHub, activeCellFilter, completedSaleFor]);
   const hubTabContent = (h) => {
-    const mode = h === "hub2" ? hub2Line : null;   // hub1 is footwear by construction
+    const mode = h === "hub2" ? hub2Line : null;
     const lineFilter = mode ? (product, size) => lineMatches(product, size, mode) : null;
-    const cellFilter = mode ? (key, product, size) => lineMatches(productForKey(key, product), size, mode) : null;
-    const counts = mode ? filterCountsByLine(rawCountsByHub[h], mode) : rawCountsByHub[h];
-    const held = heldItemsFor(h, mode);
     return (
       <>
         {h === "hub2" && (
@@ -13932,40 +13083,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             })}
           </div>
         )}
-        {sectionHead("Refill requests", "engine + manual + customer-hold asks, fulfilled from Central — batched into release windows")}
-        {/* Holds live INSIDE the queue (owner spec 2026-08-08): a hold that
-            raised a request IS a queue row (holdInfoByRequestId names the
-            customer on it); the exception tail — fail-closed, legacy, and
-            resolved-request holds — renders as pinned rows in the same list
-            (holdRows), keeping Sent / Out of Stock / Undo. The separate
-            "On hold" section below is gone. */}
-        <Hub2RefillQueue products={products} dest={h} lineFilter={lineFilter}
-          holdInfoByRequestId={holdInfoByRequestId}
-          holdRows={held.length ? <OnHoldExceptionRows items={held} fulfilCtx={fulfilCtx} /> : null} />
-        {sectionHead("Sold today — send replacements", "every sale the POS logged against this hub, until answered")}
-        <SourceTodayTab
-          rawCounts={counts}
-          responses={allResponses[todayDate] || {}}
-          date={todayDate}
-          hub={h}
-          wide={isWide}
-          fulfilCtx={fulfilCtx}
-          progress={fulfilProgress[todayDate] || {}}
-          onFulfilProgress={handleFulfilProgress}
-          onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
-          onUndo={(key, size, legacyKey) => handleUndo(todayDate, key, size, legacyKey)} />
-        {sectionHead("Earlier days", `unanswered sales from the last ${HISTORY_RETENTION_DAYS} days`)}
-        <SourceHistoryTab
-          log={insightsLog}
-          returnsLog={returnsLog}
-          allResponses={allResponses}
-          hub={h}
-          photoFor={photoFor}
-          fulfilCtx={fulfilCtx}
-          fulfilProgress={fulfilProgress}
-          onFulfilProgress={handleFulfilProgress}
-          onResponse={handleResponse}
-          cellFilter={cellFilter} />
+        <RefillQueue products={products} dest={h} lineFilter={lineFilter}
+          saleRows={activeSaleRows}
+          completedSale={activeCompletedSale}
+          onSaleResponse={(row, resp) => handleResponse(row.date, row.key, row.size, resp)}
+          onSaleProgress={(row, newSent, complete, meta) => handleFulfilProgress(row.date, row.key, row.size, newSent, complete, meta)}
+          onSaleUndo={(c) => handleUndo(c.date, c.key, c.size, c.legacyKey)}
+          fulfilCtx={fulfilCtx} />
       </>
     );
   };
@@ -13986,7 +13110,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     const totalPending = (hubBadges.hub1 || 0) + (hubBadges.hub2 || 0);
     const navItem = ([key, label]) => {
       const on = activeTab === key;
-      // Per-hub pending work (sold cells + stragglers + held) on its hub tab.
+      // Per-hub pending work (sold cells + stragglers + open requests) on its hub tab.
       const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : 0;
       return (
         <button key={key} onClick={() => setTab(key)}
@@ -14018,10 +13142,6 @@ function SourceView({ onExit, orders, returnsLog, products }) {
               <div style={{ fontSize:18, fontWeight:800, color: totalPending ? "#9DBCFF" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{totalPending}</div>
               <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>To restock</div>
             </div>
-            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
-              <div style={{ fontSize:18, fontWeight:800, color: onHoldCount ? "#F59E0B" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{onHoldCount}</div>
-              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>On hold</div>
-            </div>
           </div>
         </aside>
         {/* MAIN */}
@@ -14049,12 +13169,9 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
           <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>SOURCE</div>
         </div>
-        {/* Held cards only (legacy + fail-closed holds) — new holds live in the
-            hub refill queues, so this count no longer includes them. */}
-        <div style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.08)", borderRadius:14, padding:"4px 8px" }}>
-          <span style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>Held</span>
-          <span style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", fontSize:10, fontWeight:600, width:20, height:20, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 6px rgba(60,110,255,.25)" }}>{onHoldCount}</span>
-        </div>
+        {/* Right side intentionally empty — the Held pill is gone: a hold is an
+            ordinary refill request in the hub queues now (owner spec 2026-08-08). */}
+        <div style={{ width:44 }} />
       </div>
       <div style={{ height:1, background:"linear-gradient(90deg,transparent,rgba(60,110,255,.25),transparent)", margin:"0 14px" }}/>
       {/* TOP TABS — driven by SOURCE_TABS, the SAME list the desktop nav uses.

@@ -12,8 +12,6 @@ import {
   sourceGroupKey,
   sourceNameKey,
   sourceResponsePath,
-  onHoldEventsFromLog,
-  onHoldKey,
 } from "./insights";
 
 // A one-day window. Timestamps use mid-day UTC so the +2h SA shift never crosses
@@ -369,30 +367,6 @@ describe("computeRestockCounts (Source Today built from restock_log sales)", () 
   });
 });
 
-describe("onHoldEventsFromLog (Source On Hold rebuilt from the durable log)", () => {
-  it("returns tomorrow events within the given dates, deduped, newest fields intact", () => {
-    const log = [tmw("001", "08", { customerName: "Ada" }), tmw("002", "09")];
-    const out = onHoldEventsFromLog({ log, dates: [DATE] });
-    expect(out).toHaveLength(2);
-    const a = out.find(e => e.orderNumber === "001");
-    expect(a).toMatchObject({ productName: "Nike Air", size: "8", hub: "hub1", customerName: "Ada", saDate: DATE });
-  });
-
-  it("ignores dates outside the window and non-tomorrow actions", () => {
-    const log = [tmw("001", "08"), tmw("002", "09", { timestamp: "2026-06-14T09:00:00.000Z" }), rdy("003", "10")];
-    expect(onHoldEventsFromLog({ log, dates: [DATE] }).map(e => e.orderNumber)).toEqual(["001"]);
-  });
-
-  it("dedupes a flapped on-hold to a single entry", () => {
-    expect(onHoldEventsFromLog({ log: [tmw("001", "08"), tmw("001", "09")], dates: new Set([DATE]) })).toHaveLength(1);
-  });
-});
-
-describe("onHoldKey (composite date::orderNumber)", () => {
-  it("distinguishes the same orderNumber on different days", () => {
-    expect(onHoldKey("2026-06-16", "001")).not.toBe(onHoldKey("2026-06-15", "001"));
-  });
-  it("is stable and sanitizes illegal RTDB chars", () => {
-    expect(onHoldKey("2026-06-16", "001")).toBe("2026-06-16::001");
-  });
-});
+// (onHoldEventsFromLog / onHoldKey tests removed 2026-08-08 with the exports —
+// the On Hold surface they rebuilt is abolished; holds are ordinary
+// /refill_requests rows now.)
