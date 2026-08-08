@@ -2553,6 +2553,12 @@ function MiniTile({ icon, name, desc, onClick }) {
 function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessStock, isSuperAdmin }) {
   const isDesktop = !useIsNarrow(1024);
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
+  // Who-am-I, home only (owner directive 2026-08-08): the global "Signed in:"
+  // pill is gone, so the bare name in the hero of BOTH home branches is the one
+  // identity signal in the app. Hoisted above the isDesktop split — it used to
+  // live inside the desktop branch, so the mobile HomeSignOutRow's `name` was
+  // silently resolving to the global window.name (empty string).
+  const name = homePerm?.displayName || homePerm?.username || homeUser?.email?.split("@")[0] || "there";
   const today = getSADateString();
   const incoming = orders ? orders.filter(o => o.status === STATUS.INCOMING).length : 0;
   // Source badge = today's restock requests + on-hold (Tomorrow).
@@ -2654,7 +2660,6 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
   if (isDesktop) {
     const hr = new Date().getHours();
     const greet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
-    const name = homePerm?.displayName || homePerm?.username || homeUser?.email?.split("@")[0] || "there";
     const dateStr = new Date().toLocaleDateString("en-ZA", { weekday: "long", day: "numeric", month: "long" });
     const ops = groups[0].cards;                                   // Operations
     const featured = ops.find(c => c.key === "assistant") || ops[0] || null;
@@ -2784,6 +2789,11 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       <div style={{ position:"relative", height:260, overflow:"hidden" }}>
         <img src="/hero/marathon.jpg" alt="Marathon" style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"contain", objectPosition:"center", zIndex:0 }}/>
         <div style={{ position:"absolute", bottom:0, left:0, right:0, height:100, background:"linear-gradient(transparent,#000)", zIndex:1 }}/>
+        {/* The bare signed-in name, under the Marathon logo — the one who-am-I
+            signal now that the floating "Signed in:" pill is gone. Name only:
+            no wrapper text, no pill chrome, no sign-out (that's the red row at
+            the bottom of this page). */}
+        <div style={{ position:"absolute", bottom:12, left:0, right:0, textAlign:"center", zIndex:2, color:"#f3f6ff", fontSize:15, fontWeight:700, letterSpacing:".01em", textShadow:"0 1px 8px rgba(0,0,0,.8)" }}>{name}</div>
         <div style={{ position:"absolute", top:0, left:0, right:0, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"50px 16px 0", zIndex:5 }}>
           <button style={{ width:34, height:34, borderRadius:"50%", background:"rgba(0,0,0,.5)", backdropFilter:"blur(10px)", border:"none", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
             <svg width="14" height="14" viewBox="0 0 24 24" stroke="rgba(255,255,255,.65)" fill="none" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
@@ -12583,11 +12593,18 @@ function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResp
   );
 }
 
-// ─── SOURCE: ON HOLD TAB ─────────────────────────────────────────────────────
-// Tracks per-order responses at source_onhold_responses/{key}. Cards vanish
-// when responded; the Completed toggle reveals them with green/red indicators
-// and Undo removes the response so the order returns to the active list.
-function SourceOnHoldTab({ items, fulfilCtx }) {
+// ─── SOURCE: ON-HOLD EXCEPTION ROWS (inside the refill queue) ────────────────
+// The standalone "On hold" section is GONE (owner spec 2026-08-08): a hold that
+// raised a refill request IS a request row in the hub queue now — same list,
+// same work item. What renders here is only the exception tail that CANNOT be a
+// request row, slotted INSIDE the queue's list by Hub2RefillQueue (holdRows):
+//   • fail-closed holds (hub isn't hub1/hub2 — a human routes them),
+//   • legacy holds that predate the hold→request change,
+//   • holds whose request already RESOLVED (fulfilled/rejected) — they return
+//     here with the outcome attached so the customer order is never stranded.
+// Responses are tracked at source_onhold_responses/{key}; cards move to the
+// Completed toggle when responded and Undo brings them back — unchanged.
+function OnHoldExceptionRows({ items, fulfilCtx }) {
   const [showCompleted, setShowCompleted] = useState(false);
   // Composite key of the card whose Transfer & Fulfil panel is open (one at a time).
   const [openComposite, setOpenComposite] = useState(null);
@@ -12627,43 +12644,15 @@ function SourceOnHoldTab({ items, fulfilCtx }) {
 
   const fmt = iso => iso ? new Date(iso).toLocaleString([], { day:"numeric", month:"short", hour:"2-digit", minute:"2-digit" }) : "—";
 
-  // True empty — nothing on hold anywhere, completed or otherwise.
-  if (!pending.length && !completed.length) return (
-    <div style={{ textAlign:"center", color:"#444", padding:"4rem" }}>
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeOpacity="0.4" strokeWidth="1.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      <div style={{ fontSize:"1rem", marginTop:"0.75rem" }}>No orders on hold.</div>
-      <div style={{ fontSize:"0.85rem", color:"#333", marginTop:"0.5rem" }}>Orders marked "Coming Tomorrow" appear here in real time.</div>
-    </div>
-  );
+  // Nothing exceptional on hold — this block simply doesn't exist. The queue's
+  // own empty state speaks for the list as a whole.
+  if (!pending.length && !completed.length) return null;
 
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"0.85rem" }}>
-      {/* Instruction note */}
-      <div style={{ background:CARD, border:BORDER_BRIGHT, borderRadius:RADIUS, padding:"0.75rem 1rem", color:BLUE_L, fontSize:"0.82rem", boxShadow:"0 0 12px rgba(60,110,255,.12)" }}>
-        Tap <strong>Sent</strong> or <strong>Out of Stock</strong> to confirm each order
-      </div>
-      <div style={{ color:"#555", fontSize:"0.82rem" }}>
-        {pending.length} order{pending.length !== 1 ? "s" : ""} waiting for next-day stock
-      </div>
-
+    <div style={{ display:"flex", flexDirection:"column", gap:"0.85rem", marginBottom:12 }}>
       {/* Show / Hide Completed toggle (session state) */}
       {completed.length > 0 && (
         <CompletedTogglePill on={showCompleted} count={completed.length} onClick={() => setShowCompleted(v => !v)} />
-      )}
-
-      {/* Empty-active-but-completed state */}
-      {pending.length === 0 && completed.length > 0 && !showCompleted && (
-        <div style={{ background:"rgba(255,255,255,.024)", border:"1px solid rgba(74,222,128,.4)", borderRadius:16, padding:"22px 18px", textAlign:"center", boxShadow:"0 10px 30px -18px rgba(0,0,0,.55)" }}>
-          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ filter:"drop-shadow(0 0 6px rgba(74,222,128,.35))" }}>
-            <circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/>
-          </svg>
-          <div style={{ color:"#fff", fontSize:14, fontWeight:700, marginTop:10 }}>All caught up</div>
-          <div style={{ color:"rgba(255,255,255,.55)", fontSize:12, marginTop:4 }}>{completed.length} order{completed.length !== 1 ? "s" : ""} completed.</div>
-          <button onClick={() => setShowCompleted(true)}
-                  style={{ marginTop:14, padding:"8px 16px", borderRadius:10, border:"1px solid rgba(60,110,255,.5)", background:"rgba(60,110,255,.12)", color:BLUE_L, fontWeight:600, fontSize:12, cursor:"pointer" }}>
-            Show Completed
-          </button>
-        </div>
       )}
 
       {/* Active list. Customer info, collection date and the "sent" response
@@ -13709,20 +13698,21 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // composite date::orderNumber key — orderNumber alone is daily-reused, so a
   // bare key made yesterday's on-hold collide with today's. Returned orders drop
   // out (no restock work). `responded` is the source_onhold_responses flag.
-  const onHoldMerged = useMemo(() => {
+  const onHoldAll = useMemo(() => {
     const pastDates = Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => getSAPastDateString(i + 1));
     const byComposite = new Map();
 
     // Live: every current COMING_TOMORROW order (today + any not-yet-clobbered
-    // past). A hold that raised a refill request (onHoldRefillRequestId,
-    // 2026-08-08) is a held card only while heldCardVisible says so: an OPEN
-    // request means the hub's refill queue owns the ask; a RESOLVED one hands
-    // it back here with the outcome attached, so a rejection or an arrival is
-    // acted on rather than vanishing (Kimi, PR #335). Held cards are
-    // therefore: legacy holds, fail-closed holds, and resolved-request holds.
+    // past). EVERY hold is kept here, tagged with its linked request id and
+    // whether it renders as a held card: an OPEN request means the hub's refill
+    // queue owns the ask (the request row IS the work item — the queue joins
+    // back to this list via `requestId` to name the waiting customer); a
+    // RESOLVED one hands the ask back to a held card with the outcome
+    // attached, so a rejection or an arrival is acted on rather than vanishing
+    // (Kimi, PR #335). Held cards are therefore: legacy holds, fail-closed
+    // holds, and resolved-request holds.
     (orders || []).forEach(o => {
       if (o.status !== STATUS.COMING_TOMORROW) return;
-      if (!heldCardVisible(o.onHoldRefillRequestId, refillStatusById, refillRequestsLoaded)) return;
       const saDate = saDateOfTs(o.comingTomorrowAt || o.updatedAt) || todayDate;
       const composite = onHoldKey(saDate, o.id);
       byComposite.set(composite, {
@@ -13735,6 +13725,8 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         customerName: o.customerName || null,
         photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
         ts: o.comingTomorrowAt || o.updatedAt,
+        requestId: o.onHoldRefillRequestId || null,
+        heldVisible: heldCardVisible(o.onHoldRefillRequestId, refillStatusById, refillRequestsLoaded),
         // The linked request's outcome, when it has one — the card renders it.
         refillOutcome: o.onHoldRefillRequestId ? (refillStatusById.get(o.onHoldRefillRequestId) || null) : null,
       });
@@ -13742,7 +13734,6 @@ function SourceView({ onExit, orders, returnsLog, products }) {
 
     // Log (past days only): fill in on-holds whose live order was overwritten.
     onHoldEventsFromLog({ log: insightsLog, dates: pastDates }).forEach(e => {
-      if (!heldCardVisible(e.refillRequestId, refillStatusById, refillRequestsLoaded)) return;
       const composite = onHoldKey(e.saDate, e.orderNumber);
       if (byComposite.has(composite)) return;
       const ph = photoFor(e);
@@ -13752,6 +13743,8 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         size: e.size, hub: e.hub,
         customerName: e.customerName || null,
         photoUrl: ph.photoUrl, photo: ph.photo, ts: e.timestamp,
+        requestId: e.refillRequestId || null,
+        heldVisible: heldCardVisible(e.refillRequestId, refillStatusById, refillRequestsLoaded),
         refillOutcome: e.refillRequestId ? (refillStatusById.get(e.refillRequestId) || null) : null,
       });
     });
@@ -13772,6 +13765,18 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     });
     return list.sort((a, b) => tsMs(b.ts) - tsMs(a.ts));
   }, [insightsLog, orders, onHoldResponses, returnsLog, todayDate, photoFor, refillStatusById, refillRequestsLoaded]);
+
+  // Held-card slice — exactly what the old merged list contained (a hold whose
+  // request is OPEN lives in the queue as a request row, not here). Badges and
+  // counts read this, so their meaning is unchanged.
+  const onHoldMerged = useMemo(() => onHoldAll.filter((i) => i.heldVisible), [onHoldAll]);
+  // requestId → hold context. The queue's request rows and admin backlog use
+  // this to say WHICH customer is waiting behind a hold-origin ask.
+  const holdInfoByRequestId = useMemo(() => {
+    const m = new Map();
+    onHoldAll.forEach((i) => { if (i.requestId && !m.has(i.requestId)) m.set(i.requestId, i); });
+    return m;
+  }, [onHoldAll]);
 
   // Per-hub pending counts for the Hub 1 / Hub 2 sub-tab badges. Mirrors the
   // exact same pending logic each tab uses (Today excludes responded cells,
@@ -13880,11 +13885,12 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   };
 
   // ── HUB TAB SECTIONS — everything the three removed tabs showed, re-homed ──
-  // One hub tab = the refill queue + the sold-today cells + the 5-day
-  // stragglers + the held cards, all routed to THAT hub. Nothing the old tabs
-  // rendered is dropped: pending/completed sold cells (Today's Request),
-  // per-day straggler groups (History) and pending/completed holds (On Hold)
-  // all keep their exact components, actions and undo paths.
+  // One hub tab = the refill queue (which now CONTAINS the holds — request
+  // rows for holds that raised one, pinned exception rows for the rest) + the
+  // sold-today cells + the 5-day stragglers, all routed to THAT hub. Nothing
+  // the old tabs rendered is dropped: pending/completed sold cells (Today's
+  // Request), per-day straggler groups (History) and pending/completed holds
+  // all keep their actions and undo paths.
   const heldItemsFor = (h, mode) => onHoldMerged.filter((item) => {
     const routable = item.hub === "hub1" || item.hub === "hub2";
     // Unroutable holds (hubC / unknown) appear in BOTH hub tabs — they need a
@@ -13926,8 +13932,16 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             })}
           </div>
         )}
-        {sectionHead("Refill requests", "engine + manual + on-hold asks, fulfilled from Central")}
-        <Hub2RefillQueue products={products} dest={h} lineFilter={lineFilter} />
+        {sectionHead("Refill requests", "engine + manual + customer-hold asks, fulfilled from Central — batched into release windows")}
+        {/* Holds live INSIDE the queue (owner spec 2026-08-08): a hold that
+            raised a request IS a queue row (holdInfoByRequestId names the
+            customer on it); the exception tail — fail-closed, legacy, and
+            resolved-request holds — renders as pinned rows in the same list
+            (holdRows), keeping Sent / Out of Stock / Undo. The separate
+            "On hold" section below is gone. */}
+        <Hub2RefillQueue products={products} dest={h} lineFilter={lineFilter}
+          holdInfoByRequestId={holdInfoByRequestId}
+          holdRows={held.length ? <OnHoldExceptionRows items={held} fulfilCtx={fulfilCtx} /> : null} />
         {sectionHead("Sold today — send replacements", "every sale the POS logged against this hub, until answered")}
         <SourceTodayTab
           rawCounts={counts}
@@ -13952,8 +13966,6 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           onFulfilProgress={handleFulfilProgress}
           onResponse={handleResponse}
           cellFilter={cellFilter} />
-        {sectionHead("On hold", "held for tomorrow — new holds queue above as refill requests; these are the ones that couldn't, or predate the change")}
-        <SourceOnHoldTab items={held} fulfilCtx={fulfilCtx} />
       </>
     );
   };
@@ -17200,8 +17212,8 @@ if (typeof document !== "undefined" && !document.getElementById("__bcast_spin"))
 // account is signed out immediately and an error is shown.
 //
 // While admin is signed in:
-//   • A small pill (top-right) shows "Signed in: gunid · Sign Out".
-//   • All other views render normally.
+//   • All views render normally (the home hero shows the bare name; the one
+//     sign-out is the red row at the bottom of the home page).
 //   • request.auth.token.email === ADMIN_EMAIL → broadcast Cloud Functions
 //     and broadcast-media writes are allowed.
 //
@@ -17261,18 +17273,11 @@ function AdminSignInScreen({ onCancel }) {
   );
 }
 
-// Top-right identity pill for any signed-in non-anonymous user (super-admin
-// via Google OR a staff PIN account). READ-ONLY since 2026-08-08: the "· Sign
-// Out" tap target was removed with every other scattered logout — the ONE
-// sign-out is the red row at the bottom of the home page (HomeSignOutRow).
-// The pill stays because on phone routes it is the only "who am I" indicator.
-function UserIndicator({ label }) {
-  return (
-    <div style={{ position:"fixed", top:10, right:10, zIndex:9998, background:CARD, border:BORDER_BRIGHT, borderRadius:999, padding:"6px 12px", display:"flex", alignItems:"center", gap:8, fontFamily:FONT, fontSize:"0.75rem", boxShadow:GLOW, backdropFilter:"blur(8px)" }}>
-      <span style={{ color:"#9CA3AF" }}>Signed in: <span style={{ color:BLUE_L, fontWeight:600 }}>{label}</span></span>
-    </div>
-  );
-}
+// The "Signed in: {name}" pill is GONE (owner directive 2026-08-08). It floated
+// top-right over every phone route and some desktop ones; the who-am-I signal
+// now lives in exactly one place — the bare name in the home hero (both
+// branches of RoleSelector) — and the one sign-out stays HomeSignOutRow at the
+// bottom of home.
 
 // ─── APP INNER ────────────────────────────────────────────────────────────────
 // The post-AuthGate shell. Auth state + permissions arrive via the
@@ -17321,9 +17326,6 @@ function AppInner() {
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
-  // The desktop Assistant workspace carries its own sign-out in the sidebar, so
-  // the global top-right pill is suppressed there (≥1024px) to avoid two.
-  const isNarrowApp = useIsNarrow(1024);
   const wantAdmin = hash === "#admin";
   // /#admin/users (list) and /#admin/users/<uid> (detail) are the User
   // Management routes. This constant only recognises the HASH — it grants
@@ -17629,24 +17631,12 @@ function AppInner() {
   else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={orders} onExit={() => setRole(null)} />);
   else if (role === ROLES.BROADCAST_GROUPS) view = guard(ROLES.BROADCAST_GROUPS, <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />);
 
-  // The user-indicator pill shows for any signed-in real user (PIN account
-  // OR super-admin). Suppressed on the TV display so it's truly chrome-free.
-  const indicatorLabel = isSuperAdmin
-    ? (authUser?.email?.split("@")[0] || "Admin")
-    : (permRecord?.displayName || permRecord?.username || authUser?.email?.split("@")[0] || "Staff");
-  // On desktop, the redesigned workspaces (home dashboard, Assistant, Barcode
-  // Studio) carry their own top-bar / Home nav, so the global pill is suppressed
-  // there to avoid a stray floating sign-out.
-  const showIndicator = authUser && !authUser.isAnonymous && role !== ROLES.DISPLAY
-    && !(!isNarrowApp && (role === ROLES.ASSISTANT || role === ROLES.BARCODES || role === ROLES.STOCK || role === ROLES.INSIGHTS || role === ROLES.WAREHOUSE || role === ROLES.LABEL_PRINT || role === ROLES.CUSTOMER || role === ROLES.CUSTOMERS_DB || role === ROLES.DISPLAY_CHECKS || role === null))
-    && !(!isNarrowApp && wantUserMgmt);   // desktop User Management carries its own rail Exit
-
   // "This device's clock is wrong" — gated on ROLE, not on tree position. Being a
   // child of AuthGate is NOT enough to mean staff-only: ROLES.DISPLAY renders the
   // SAME TvWithAutoCollect the #tv shell does, right here inside AppInner, so a
-  // tree-placed banner would paint across the customer queue board. Mirrors the
-  // showIndicator rule above — DISPLAY is customer-facing and carries no staff
-  // chrome. Sibling of the boundary, so a crash in `view` still leaves it up.
+  // tree-placed banner would paint across the customer queue board — DISPLAY is
+  // customer-facing and carries no staff chrome. Sibling of the boundary, so a
+  // crash in `view` still leaves it up.
   const showClockWarning = role !== ROLES.DISPLAY;
 
   return (
@@ -17663,7 +17653,6 @@ function AppInner() {
       <InsightsLogProvider authReady={insightsAuthReady}>
         <AppErrorBoundary key={role || "home"}>{view}</AppErrorBoundary>
       </InsightsLogProvider>
-      {showIndicator && <UserIndicator label={indicatorLabel} />}
     </>
   );
 }

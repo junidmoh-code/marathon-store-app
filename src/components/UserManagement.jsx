@@ -351,10 +351,8 @@ function NotFoundView({ onBack }) {
 
 function UserListView({ users, loading, onSelect, onAdd, onExit }) {
   // iOS large-title pattern. The sticky nav bar only contains the back affordance
-  // and a centred small "Staff" label — leaves the top-right corner free for the
-  // globally-fixed UserIndicator pill (Signed in: gunidmoh · Sign Out, zIndex
-  // 9998). The "+ Add staff" action lives in a dedicated large-title row below
-  // the bar, where it can't be covered by that pill at any viewport width.
+  // and a centred small "Staff" label. The "+ Add staff" action lives in a
+  // dedicated large-title row below the bar.
   return (
     <>
       <div style={{ position: "sticky", top: 0, zIndex: 10, background: "rgba(0,0,0,.85)", backdropFilter: "blur(10px)",
