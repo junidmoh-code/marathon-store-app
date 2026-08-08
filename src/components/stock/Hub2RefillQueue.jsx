@@ -181,7 +181,8 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, li
   // engine, MoveExcess, Missing Sneakers, Refill History or the held-card rule
   // read. Config absent → defaults; config === false → gate off entirely.
   const engineConfig = useEngineConfig();
-  const windows = useMemo(() => parseReleaseTimes(engineConfig?.releaseWindows), [engineConfig]);
+  const rawReleaseWindows = engineConfig?.releaseWindows;
+  const windows = useMemo(() => parseReleaseTimes(rawReleaseWindows), [rawReleaseWindows]);
 
   // Requests for THIS destination: released (pickable now) vs waiting (behind
   // the next window), then released split into work that is still real and
@@ -387,6 +388,10 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, li
     return (
       <div style={{ paddingBottom: 30 }}>
         {toggle}
+        {/* The hold exception rows are customers already waiting — they must
+            never disappear behind the Open/History toggle the way they would
+            if only the open view carried them (Sonnet review, PR #336). */}
+        {holdRows}
         {history.length === 0 ? (
           <div style={{ ...GLASS, padding: 16, color: GRAY, fontSize: 13 }}>{`No fulfilled ${destLabel} refills yet.`}</div>
         ) : (

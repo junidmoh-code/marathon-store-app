@@ -203,6 +203,19 @@ describe("a hold is a request row (owner spec 2026-08-08)", () => {
     expect(renderText({ holdRows: marker })).toContain("EXCEPTION-HOLD-ROW-MARKER");
   });
 
+  it("holdRows survive the Fulfilled-history toggle — a waiting customer never hides behind a tab", () => {
+    // Sonnet review, PR #336: only the open view rendered holdRows, so tapping
+    // "Fulfilled history" made fail-closed / resolved holds vanish until the
+    // picker happened to tap back.
+    const marker = <div>EXCEPTION-HOLD-ROW-MARKER</div>;
+    const tree = renderQueue({ holdRows: marker });
+    const historyBtn = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Fulfilled history"));
+    act(() => { historyBtn.props.onClick(); });
+    const out = textOf(tree.toJSON());
+    tree.unmount();
+    expect(out).toContain("EXCEPTION-HOLD-ROW-MARKER");
+  });
+
   it("a waiting hold-origin request is named in the ADMIN backlog too", () => {
     perm.permRecord = { stockRole: "admin" };
     paths["refill_requests"].waiting1.createdFrom = { manual: true, source: "central", via: "on_hold", orderId: "077", orderDate: "2026-08-07" };

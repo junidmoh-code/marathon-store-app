@@ -135,9 +135,15 @@ describe("4 · the release gate changes VISIBILITY only — stock writes are unt
     expect(commitBlock).not.toContain("earlyRelease");
   });
 
-  it("the gate is client-side presentation only — no functions file knows about it", () => {
-    // The engine's whole directory must not mention release windows; the scan
-    // cadence and every engine write stay exactly as deployed.
-    expect(SRC.includes("refillHealthScan")).toBe(false); // App.jsx never calls the scan either
+  it("the gate is client-side presentation only — the engine sources know nothing of it", () => {
+    // Read the ACTUAL engine sources and assert the gate's identifiers never
+    // reached them — the scan cadence and every engine write stay exactly as
+    // deployed. (CodeRabbit, PR #336: the previous assertion here checked an
+    // unrelated string in App.jsx and could not fail if the engine gained
+    // release-window logic.)
+    for (const enginePath of ["../functions/lib/refill-engine.cjs", "../functions/refill-scan.cjs"]) {
+      const ENGINE = readFileSync(join(HERE, enginePath), "utf8");
+      expect(ENGINE).not.toMatch(/releaseWindows|earlyRelease|isReleased|partitionReleased/);
+    }
   });
 });
