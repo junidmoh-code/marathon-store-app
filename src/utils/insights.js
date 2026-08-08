@@ -271,6 +271,9 @@ export function onHoldEventsFromLog({ log, dates }) {
     customerName: e.customerName ?? null,
     timestamp: e.timestamp,
     saDate: saDateOf(e.timestamp),
+    // A hold that raised a refill request (2026-08-08) is represented in the
+    // hub's refill queue — the held-card list uses this to not show it twice.
+    refillRequestId: e.refillRequestId ?? null,
   }));
 }
 

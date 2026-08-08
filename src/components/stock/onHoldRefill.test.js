@@ -1,0 +1,78 @@
+// On-hold → refill request: the routing must come from the ORDER's own
+// dispatch field and FAIL CLOSED on every uncertainty. A request against a
+// guessed hub moves real stock to the wrong building — the failure mode this
+// whole module exists to prevent.
+import { describe, it, expect } from "vitest";
+import { onHoldRefillPlan } from "./onHoldRefill.js";
+
+const CTX = { nowIso: "2026-08-08T10:00:00.000Z", saDate: "2026-08-08" };
+const ORDER = { id: "042", productId: "p1778841820730", size: "9", qty: 1, placedAtHub: "hub1", hub: "hub1" };
+
+describe("onHoldRefillPlan — routes by the order's own hub", () => {
+  it("raises against placedAtHub (the dispatch routing field)", () => {
+    const plan = onHoldRefillPlan(ORDER, CTX);
+    expect(plan.ok).toBe(true);
+    expect(plan.hub).toBe("hub1");
+    expect(plan.record.requestingLocation).toBe("hub1");
+    expect(plan.record.status).toBe("open");
+    expect(plan.record.createdFrom).toMatchObject({ manual: true, via: "on_hold", orderId: "042", orderDate: "2026-08-08" });
+  });
+
+  it("placedAtHub WINS over the legacy hub field — never a hardcoded map", () => {
+    const plan = onHoldRefillPlan({ ...ORDER, placedAtHub: "hub2", hub: "hub1" }, CTX);
+    expect(plan.hub).toBe("hub2");
+  });
+
+  it("falls back to the legacy hub field when placedAtHub is absent", () => {
+    const plan = onHoldRefillPlan({ ...ORDER, placedAtHub: null }, CTX);
+    expect(plan.ok).toBe(true);
+    expect(plan.hub).toBe("hub1");
+  });
+
+  it("the id is deterministic per (day, order) — a re-tap cannot mint a second ask", () => {
+    const a = onHoldRefillPlan(ORDER, CTX);
+    const b = onHoldRefillPlan(ORDER, CTX);
+    expect(a.requestId).toBe(b.requestId);
+    expect(a.requestId).toBe("onhold_2026-08-08_042");
+  });
+
+  it("strips RTDB-illegal characters from the id", () => {
+    const plan = onHoldRefillPlan({ ...ORDER, id: "04.2#x" }, CTX);
+    expect(plan.requestId).not.toMatch(/[.#$/[\]\s:]/);
+  });
+});
+
+describe("onHoldRefillPlan — FAILS CLOSED, never guesses", () => {
+  it("refuses an unroutable hub (hubC, hub3, junk) rather than picking one", () => {
+    for (const bad of ["hubC", "hub3", "central", "marathon-pe", "x"]) {
+      const plan = onHoldRefillPlan({ ...ORDER, placedAtHub: bad, hub: bad }, CTX);
+      expect(plan.ok, `hub ${bad} must fail closed`).toBe(false);
+      expect(plan.reason).toContain(bad);
+    }
+  });
+
+  it("refuses when no hub is recorded at all", () => {
+    expect(onHoldRefillPlan({ ...ORDER, placedAtHub: null, hub: null }, CTX)).toMatchObject({ ok: false, reason: "no_hub" });
+  });
+
+  it("refuses without a productId — a nameless ask cannot enter the queue", () => {
+    expect(onHoldRefillPlan({ ...ORDER, productId: null }, CTX)).toMatchObject({ ok: false, reason: "no_product_id" });
+  });
+
+  it("refuses without a size — this is a SIZE refill request", () => {
+    expect(onHoldRefillPlan({ ...ORDER, size: null }, CTX).ok).toBe(false);
+    expect(onHoldRefillPlan({ ...ORDER, size: "" }, CTX).ok).toBe(false);
+    expect(onHoldRefillPlan({ ...ORDER, size: "  " }, CTX).ok).toBe(false);
+  });
+
+  it("keeps the size as a raw-space VALUE (5.5 stays 5.5 — it is a field, not a key)", () => {
+    const plan = onHoldRefillPlan({ ...ORDER, size: "5.5" }, CTX);
+    expect(plan.ok).toBe(true);
+    expect(plan.record.size).toBe("5.5");
+  });
+
+  it("defaults qty to 1 and floors junk", () => {
+    expect(onHoldRefillPlan({ ...ORDER, qty: undefined }, CTX).record.qty).toBe(1);
+    expect(onHoldRefillPlan({ ...ORDER, qty: 3 }, CTX).record.qty).toBe(3);
+  });
+});

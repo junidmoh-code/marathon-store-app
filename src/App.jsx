@@ -74,6 +74,7 @@ import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositio
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { checkSourceMovementDuplicate, sourceMovementIdSeed } from "./components/stock/sourceMovementDedupe";
+import { onHoldRefillPlan } from "./components/stock/onHoldRefill";
 import { clearSourceResponseCells } from "./components/stock/sourceResponseWrites";
 import { printOrderSlips } from "./print/orderSlip";
 // ── New product taxonomy (31 categories, RTDB-backed registry) ───────────────
@@ -9355,6 +9356,31 @@ function WarehouseView({ products = [], orders, onExit }) {
     if (status === STATUS.COMING_TOMORROW) patch.comingTomorrowAt = now;
     if (status === STATUS.COLLECTED)       patch.collectedAt = now;
 
+    // ── ON HOLD RAISES A SIZE REFILL REQUEST (owner redesign 2026-08-08) ─────
+    // The source-facing half of a hold is now a real /refill_requests row
+    // against the order's own hub, queued in that hub's refill tab. FAIL
+    // CLOSED on every uncertainty (unroutable hub, no productId/size, write
+    // refused): no request, and the hold stays visible as a held card for a
+    // human — see onHoldRefill.js. Create-if-absent so a re-tap can neither
+    // duplicate the ask nor reopen one the source already rejected. The
+    // customer-facing hold (status, TV, WhatsApp below) is untouched.
+    if (status === STATUS.COMING_TOMORROW) {
+      const plan = onHoldRefillPlan(order, { nowIso: now, saDate: getSADateString() });
+      if (plan.ok) {
+        try {
+          const existing = (await get(ref(database, `refill_requests/${plan.requestId}`))).val();
+          if (!existing) await set(ref(database, `refill_requests/${plan.requestId}`), plan.record);
+          // Stamp the order either way — the held-card list hides items that
+          // are represented in a refill queue, new or re-tapped.
+          patch.onHoldRefillRequestId = plan.requestId;
+        } catch (err) {
+          console.warn(`On-hold refill request not raised for #${order.id} (${err?.message || err}) — hold stays visible for a human.`);
+        }
+      } else {
+        console.warn(`On-hold refill request not raised for #${order.id}: ${plan.reason} — hold stays visible for a human.`);
+      }
+    }
+
     // ── Display Partner refill scheduling (Phase 9) ────────────────────────
     // When a Display Partner order is marked READY, schedule a refill task on
     // the hub where it was placed (display requests now route to the product's
@@ -9401,6 +9427,11 @@ function WarehouseView({ products = [], orders, onExit }) {
       action: insightAction,
       placedAtHub: order.placedAtHub || order.hub || "hub1",
       destShop: order.destShop ?? null,
+      // A "tomorrow" event that raised a refill request carries the id, so the
+      // durable log can also suppress the held card after the daily order-number
+      // reset clobbers the live order row.
+      ...(status === STATUS.COMING_TOMORROW && patch.onHoldRefillRequestId
+        ? { refillRequestId: patch.onHoldRefillRequestId } : {}),
     });
     // ── WhatsApp notifications ───────────────────────────────────────────────
     // order_ready template: pass customer_name and order_number ONLY.
@@ -12416,7 +12447,9 @@ const HISTORY_RETENTION_DAYS = 5;
 // Reactions write to restock_requests/{day-N}/{key}/{size} = { response, respondedOn:NOW }
 // — see saveSourceResponse. The original-day path is what makes resolution
 // stick across page loads; respondedOn carries "today's stamp" for the audit.
-function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResponse, fulfilCtx, fulfilProgress, onFulfilProgress }) {
+// `cellFilter` (optional): (key, product, size) => bool — the Hub 2 tab's
+// SNEAKERS / CLOTHING split, applied to each pending cell. Absent = everything.
+function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResponse, fulfilCtx, fulfilProgress, onFulfilProgress, cellFilter = null }) {
   // Default expand: yesterday open, older closed. Stored by daysAgo number.
   const [openDays, setOpenDays] = useState(() => new Set([1]));
   const toggle = (d) => setOpenDays(prev => {
@@ -12447,6 +12480,7 @@ function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResp
         const sizes = {};
         Object.entries(product.sizes || {}).forEach(([size, count]) => {
           if (dayResponses[key]?.[size] || (legacyKey && dayResponses[legacyKey]?.[size])) return;
+          if (cellFilter && !cellFilter(key, product, size)) return;
           sizes[size] = count;
           pendingUnits += (typeof count === "number" ? count : 1);
         });
@@ -12457,7 +12491,7 @@ function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResp
       });
       return { daysAgo, dateStr, label: HISTORY_DAY_LABELS[daysAgo], pending, pendingUnits };
     }).filter(g => g.pendingUnits > 0);
-  }, [log, returnsLog, allResponses, hub, photoFor]);
+  }, [log, returnsLog, allResponses, hub, photoFor, cellFilter]);
 
   if (!groups.length) return (
     <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem 1.5rem", textAlign:"center", boxShadow:"0 0 16px rgba(60,110,255,.08)" }}>
@@ -12638,6 +12672,13 @@ function SourceOnHoldTab({ items, fulfilCtx }) {
               <div style={{ fontWeight:"600", fontSize:"0.92rem", color:"#fff" }}>{item.productName} — Size <SizeTag size={item.size} /></div>
               <div style={{ color:"#888", fontSize:"0.8rem" }}>{item.customerName}</div>
               <div style={{ color:"#444", fontSize:"0.72rem", marginTop:"0.2rem" }}>Put on hold: {fmt(item.ts)}</div>
+              {/* Fail-closed marker: this hold could not raise a refill request
+                  because its hub isn't hub1/hub2 (e.g. hubC) — a human routes it. */}
+              {item.hub !== "hub1" && item.hub !== "hub2" && (
+                <div style={{ color:"#F59E0B", fontSize:"0.72rem", marginTop:"0.2rem", fontWeight:600 }}>
+                  Hub “{item.hub || "unknown"}” — couldn&rsquo;t queue a refill request; handle by hand.
+                </div>
+              )}
             </div>
           </div>
           <div style={{ display:"flex", gap:"0.6rem" }}>
@@ -13406,9 +13447,6 @@ function ClothingSoldView({ products }) {
 
 // Per-tab nav glyphs for the Source desktop workspace rail.
 const SOURCE_TAB_ICON = {
-  today:    <><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></>,
-  history:  <><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></>,
-  onhold:   <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
   clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
   // Hub 1 lane — a shoe, since this lane exists for sneakers. (CodeRabbit #291:
   // a missing entry renders an empty <svg> rather than falling back.)
@@ -13417,12 +13455,29 @@ const SOURCE_TAB_ICON = {
   // "history" glyph above is already taken by the customer-request history.
   refillhistory: <><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></>,
 };
-const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"],["hub1refill","Hub 1 Refill"],["refillhistory","Refill History"]];
+// ── THE SOURCE CONSOLIDATION (owner directive 2026-08-08) ────────────────────
+// Three tabs, down from six. Today's Request, History and On Hold are GONE as
+// tabs — their content did not disappear, it folded into the two hub tabs:
+//   • Hub 1 Refill — the refill queue + today's sold cells + 5-day stragglers
+//     + held cards, everything routed hub1. Sneakers by construction (hub1
+//     holds only footwear buffer).
+//   • Hub 2 Refill — the same four sections routed hub2, split by a SNEAKERS /
+//     CLOTHING toggle on the footwear classifier (utils/footwearLine.js).
+//   • Refill History — unchanged home, redone screen.
+// New holds raise a real refill request against their hub (onHoldRefill.js)
+// and appear in the queue; held cards remain only for legacy holds and
+// fail-closed ones (unroutable hub / no product id / write refused).
+const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],["refillhistory","Refill History"]];
 
 function SourceView({ onExit, orders, returnsLog, products }) {
-  const [tab, setTab] = usePersistedTab("source", "today");
-  // Active hub — shared across all three top tabs. Defaults to Hub 1.
-  const [hub, setHub] = useState("hub1");
+  const [rawTab, setTab] = usePersistedTab("source", "hub1refill");
+  // A device may carry a persisted tab key that no longer exists (today /
+  // history / onhold, removed 2026-08-08) — normalise it once so both layouts
+  // and the content switch agree instead of rendering an empty pane.
+  const tab = SOURCE_TABS.some(([k]) => k === rawTab) ? rawTab : "hub1refill";
+  // Hub 2's SNEAKERS / CLOTHING toggle. "Clothing" = everything that is not
+  // footwear per the isFootwearLine classifier — never a category-name match.
+  const [hub2Line, setHub2Line] = useState("sneakers");
   const todayDate   = getSADateString();
   // Desktop workspace gate (>=1024px). Mobile keeps the single-column layout.
   const isWide = !useIsNarrow(1024);
@@ -13558,11 +13613,45 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // A refused pair simply never generates an entry, which is why no reversal is
   // needed: there is nothing to undo, rather than something to remember to undo.
   const restockLogToday = useRestockLogRaw(todayDate);
-  const restockLogForHub = useMemo(
-    () => (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === hub),
-    [restockLogToday, hub],
-  );
-  const rawCounts = useMemo(() => computeRestockCounts(restockLogForHub), [restockLogForHub]);
+  // Per-hub sold-today counts — each hub tab renders its own slice directly
+  // (the shared Hub 1/Hub 2 selector died with the standalone Today tab).
+  const rawCountsByHub = useMemo(() => {
+    const out = {};
+    ["hub1", "hub2"].forEach((h) => {
+      out[h] = computeRestockCounts((restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h));
+    });
+    return out;
+  }, [restockLogToday]);
+
+  // ── The SNEAKERS / CLOTHING line split (Hub 2 toggle) ──────────────────────
+  // Classified by isFootwearLine on the CATALOGUE record + the line's size —
+  // the same cross-app rule dispatch and the POS deduct on. A product the
+  // catalogue can't resolve classifies as not-footwear, so it lands on the
+  // CLOTHING side (deterministic, and the safe direction: nothing footwear-
+  // routed on a guess).
+  const productsById = useMemo(() => new Map((products || []).map((p) => [p.id, p])), [products]);
+  const productForKey = useCallback((key, cellProduct) => {
+    const direct = productsById.get(key);
+    if (direct) return direct;
+    // pid-less legacy cell — resolve by (refusing-on-twins) name index.
+    const rid = resolveProductId({ productName: cellProduct?.productName }, productIdIndex);
+    return rid ? productsById.get(rid) : undefined;
+  }, [productsById, productIdIndex]);
+  const lineMatches = useCallback((product, size, mode) =>
+    mode === "sneakers" ? isFootwearLine(product, size) : !isFootwearLine(product, size),
+  []);
+  // rawCounts shape → same shape, only the cells the predicate keeps.
+  const filterCountsByLine = useCallback((counts, mode) => {
+    const out = {};
+    Object.entries(counts || {}).forEach(([key, product]) => {
+      const sizes = {};
+      Object.entries(product.sizes || {}).forEach(([size, count]) => {
+        if (lineMatches(productForKey(key, product), size, mode)) sizes[size] = count;
+      });
+      if (Object.keys(sizes).length) out[key] = { ...product, sizes };
+    });
+    return out;
+  }, [lineMatches, productForKey]);
 
   // All Source responses: { date: { productKey: { size: { response, respondedOn } } } }
   // History tab derives its straggler list from this + live orders (5-day window).
@@ -13584,15 +13673,24 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     const pastDates = Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => getSAPastDateString(i + 1));
     const byComposite = new Map();
 
-    // Live: every current COMING_TOMORROW order (today + any not-yet-clobbered past).
+    // Live: every current COMING_TOMORROW order (today + any not-yet-clobbered
+    // past). A hold that raised a refill request (onHoldRefillRequestId,
+    // 2026-08-08) is represented in its hub's refill queue — skip it here so
+    // the same ask never shows as a held card AND a queue card. Held cards are
+    // therefore exactly: legacy holds + fail-closed holds (unroutable / no
+    // product id / write refused).
     (orders || []).forEach(o => {
       if (o.status !== STATUS.COMING_TOMORROW) return;
+      if (o.onHoldRefillRequestId) return;
       const saDate = saDateOfTs(o.comingTomorrowAt || o.updatedAt) || todayDate;
       const composite = onHoldKey(saDate, o.id);
       byComposite.set(composite, {
         composite, orderNumber: o.id, saDate,
         productName: o.productName, productId: o.productId || null,
-        size: sourceDisplaySize(o), hub: (o.hub || "hub1"),
+        // hub = the order's own routing (placedAtHub, the field dispatch uses;
+        // o.hub for legacy rows) — the held card files under the hub tab that
+        // would supply it, same rule as onHoldRefillPlan.
+        size: sourceDisplaySize(o), hub: (o.placedAtHub || o.hub || "hub1"),
         customerName: o.customerName || null,
         photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
         ts: o.comingTomorrowAt || o.updatedAt,
@@ -13601,6 +13699,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
 
     // Log (past days only): fill in on-holds whose live order was overwritten.
     onHoldEventsFromLog({ log: insightsLog, dates: pastDates }).forEach(e => {
+      if (e.refillRequestId) return;              // represented in the refill queue
       const composite = onHoldKey(e.saDate, e.orderNumber);
       if (byComposite.has(composite)) return;
       const ph = photoFor(e);
@@ -13705,7 +13804,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       const returnedOut = candidates.filter(o => orderSaleDate(o) === today && returnedTodayIds.has(o.id));
       const onHold = orders.filter(o => o.status === STATUS.COMING_TOMORROW);
       console.log("=== SOURCE DEBUG ===");
-      console.log("Today:", today, "Active hub:", hub);
+      console.log("Today:", today, "Active tab:", tab);
       console.log("Counted in TODAY's request (all hubs):", counted.length, counted.map(o => ({id:o.id, hub:o.hub || "hub1", status:o.status, readyAt:o.readyAt, collectedAt:o.collectedAt})));
       console.log("Hub badges (pending):", hubBadges);
       console.log("Excluded — no readyAt:", noReadyAt.length);
@@ -13720,7 +13819,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         INCOMING:  orders.filter(o => o.status === STATUS.INCOMING).length,
       });
     };
-  }, [orders, todayDate, returnedTodayIds, hub, hubBadges]);
+  }, [orders, todayDate, returnedTodayIds, tab, hubBadges]);
 
   const handleResponse = (date, productKey, size, response) => {
     saveSourceResponse(date, productKey, size, response);
@@ -13736,100 +13835,103 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       .catch(err => alert(`Undo failed: ${err?.message || err}\n\nThe card may still show as completed. Retry, and if it keeps failing check your connection.`));
   };
 
-  // Shared between the mobile column and the desktop rail/pane.
-  const hubSelector = (
-    <>
-      {/* Hidden on the two refill tabs as well: each is already scoped to ONE
-          hub, so a Hub 1 / Hub 2 pill above it does nothing and reads as though
-          the queue below could be switched. (CodeRabbit, PR #291 — Minor.)
-          Refill History is hidden for the opposite reason: it carries its OWN
-          hub filter (and can show BOTH at once), so two competing hub controls
-          on one screen would be a coin-flip about which one is in charge. */}
-      {tab !== "clothing" && tab !== "onhold" && tab !== "hub1refill" && tab !== "refillhistory" && (
-      <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
-        {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
-          const active = hub === val;
-          const badge = hubBadges[val] || 0;
-          return (
-            <button key={val} onClick={() => setHub(val)}
-                    style={{
-                      flex:1,
-                      padding:"10px 12px",
-                      borderRadius:14,
-                      border: active ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(255,255,255,.08)",
-                      background: active ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.02)",
-                      color: active ? BLUE_L : "rgba(255,255,255,.55)",
-                      fontWeight:700, fontSize:13, cursor:"pointer",
-                      display:"flex", alignItems:"center", justifyContent:"center", gap:8,
-                      boxShadow: active ? "0 0 12px rgba(60,110,255,.18)" : "none",
-                      transition:"background 120ms ease, border-color 120ms ease",
-                    }}>
-              <span>{label}</span>
-              <span style={{
-                background: active ? "rgba(60,110,255,.25)" : "rgba(255,255,255,.06)",
-                color: active ? "#fff" : "rgba(255,255,255,.5)",
-                borderRadius:999,
-                padding:"1px 8px",
-                fontSize:11,
-                fontWeight:700,
-                minWidth:22,
-                textAlign:"center",
-              }}>{badge}</span>
-            </button>
-          );
-        })}
-      </div>
-      )}
-    </>
+  // ── HUB TAB SECTIONS — everything the three removed tabs showed, re-homed ──
+  // One hub tab = the refill queue + the sold-today cells + the 5-day
+  // stragglers + the held cards, all routed to THAT hub. Nothing the old tabs
+  // rendered is dropped: pending/completed sold cells (Today's Request),
+  // per-day straggler groups (History) and pending/completed holds (On Hold)
+  // all keep their exact components, actions and undo paths.
+  const heldItemsFor = (h, mode) => onHoldMerged.filter((item) => {
+    const routable = item.hub === "hub1" || item.hub === "hub2";
+    // Unroutable holds (hubC / unknown) appear in BOTH hub tabs — they need a
+    // human, and there is no longer a separate tab to catch them.
+    if (routable && item.hub !== h) return false;
+    if (mode) {
+      const p = item.productId ? productsById.get(item.productId) : productForKey(item.productId || "", item);
+      return lineMatches(p, item.size, mode);
+    }
+    return true;
+  });
+  const sectionHead = (label, hint) => (
+    <div style={{ margin: "18px 2px 10px" }}>
+      <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: ".14em", textTransform: "uppercase", color: "rgba(255,255,255,.55)" }}>{label}</div>
+      {hint && <div style={{ fontSize: 11, color: "rgba(255,255,255,.35)", marginTop: 2 }}>{hint}</div>}
+    </div>
   );
+  const hubTabContent = (h) => {
+    const mode = h === "hub2" ? hub2Line : null;   // hub1 is footwear by construction
+    const lineFilter = mode ? (product, size) => lineMatches(product, size, mode) : null;
+    const cellFilter = mode ? (key, product, size) => lineMatches(productForKey(key, product), size, mode) : null;
+    const counts = mode ? filterCountsByLine(rawCountsByHub[h], mode) : rawCountsByHub[h];
+    const held = heldItemsFor(h, mode);
+    return (
+      <>
+        {h === "hub2" && (
+          <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+            {[["sneakers", "Sneakers"], ["clothing", "Clothing"]].map(([val, label]) => {
+              const active = hub2Line === val;
+              return (
+                <button key={val} onClick={() => setHub2Line(val)} aria-pressed={active}
+                        style={{ flex: 1, minHeight: 44, padding: "10px 12px", borderRadius: 14, cursor: "pointer",
+                                 border: active ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(255,255,255,.08)",
+                                 background: active ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.02)",
+                                 color: active ? BLUE_L : "rgba(255,255,255,.55)", fontWeight: 700, fontSize: 13 }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {sectionHead("Refill requests", "engine + manual + on-hold asks, fulfilled from Central")}
+        <Hub2RefillQueue products={products} dest={h} lineFilter={lineFilter} />
+        {sectionHead("Sold today — send replacements", "every sale the POS logged against this hub, until answered")}
+        <SourceTodayTab
+          rawCounts={counts}
+          responses={allResponses[todayDate] || {}}
+          date={todayDate}
+          hub={h}
+          wide={isWide}
+          fulfilCtx={fulfilCtx}
+          progress={fulfilProgress[todayDate] || {}}
+          onFulfilProgress={handleFulfilProgress}
+          onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
+          onUndo={(key, size, legacyKey) => handleUndo(todayDate, key, size, legacyKey)} />
+        {sectionHead("Earlier days", `unanswered sales from the last ${HISTORY_RETENTION_DAYS} days`)}
+        <SourceHistoryTab
+          log={insightsLog}
+          returnsLog={returnsLog}
+          allResponses={allResponses}
+          hub={h}
+          photoFor={photoFor}
+          fulfilCtx={fulfilCtx}
+          fulfilProgress={fulfilProgress}
+          onFulfilProgress={handleFulfilProgress}
+          onResponse={handleResponse}
+          cellFilter={cellFilter} />
+        {sectionHead("On hold", "held for tomorrow — new holds queue above as refill requests; these are the ones that couldn't, or predate the change")}
+        <SourceOnHoldTab items={held} fulfilCtx={fulfilCtx} />
+      </>
+    );
+  };
   const content = (
     <>
-        {tab==="today"   && <SourceTodayTab
-                              rawCounts={rawCounts}
-                              responses={allResponses[todayDate] || {}}
-                              date={todayDate}
-                              hub={hub}
-                              wide={isWide}
-                              fulfilCtx={fulfilCtx}
-                              progress={fulfilProgress[todayDate] || {}}
-                              onFulfilProgress={handleFulfilProgress}
-                              onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
-                              onUndo={(key, size, legacyKey) => handleUndo(todayDate, key, size, legacyKey)} />}
-        {tab==="history" && <SourceHistoryTab
-                              log={insightsLog}
-                              returnsLog={returnsLog}
-                              allResponses={allResponses}
-                              hub={hub}
-                              photoFor={photoFor}
-                              fulfilCtx={fulfilCtx}
-                              fulfilProgress={fulfilProgress}
-                              onFulfilProgress={handleFulfilProgress}
-                              onResponse={handleResponse} />}
-        {tab==="onhold"  && <SourceOnHoldTab items={onHoldMerged} fulfilCtx={fulfilCtx} />}
-        {/* "Clothing Sold" (per-store manual worklist) replaced by the Hub 2
-            auto-refill queue — the engine detects sold→below-target itself and
-            Central fulfils from this single tab (owner decision 2026-07-12). */}
-        {tab==="clothing" && <Hub2RefillQueue products={products} dest="hub2" />}
-        {/* Hub 1 lane (2026-07-30). The queue was hub2-only because CLOTHING is
-            not kept at Hub 1 — not because Hub 1 lacks refills. Sneakers make it
-            the bigger buffer, so it gets its own lane off the same component. */}
-        {tab==="hub1refill" && <Hub2RefillQueue products={products} dest="hub1" />}
-        {/* Refill History (2026-08-07). The queue's own "Fulfilled history" shows
-            only successes, only for its own hub, and only the last 100 — so a
-            rejection, a withdrawal or a park leaves no trace anywhere. This is
-            both hubs, a chosen date range, and every outcome. */}
+        {tab==="hub1refill" && hubTabContent("hub1")}
+        {tab==="clothing" && hubTabContent("hub2")}
+        {/* Refill History (2026-08-07, redone 2026-08-08). Every outcome, both
+            hubs and the shops, over a chosen date range. */}
         {tab==="refillhistory" && <RefillHistory products={products} />}
     </>
   );
 
   // ── DESKTOP WORKSPACE (>=1024px) — left rail of restock queues + main pane. ──
   if (isWide) {
-    const activeTab = SOURCE_TABS.some(([k]) => k === tab) ? tab : "today";
-    const activeLabel = (SOURCE_TABS.find(([k]) => k === activeTab) || [null, "Today's Request"])[1];
+    const activeTab = tab;                       // already normalised above
+    const activeLabel = (SOURCE_TABS.find(([k]) => k === activeTab) || [null, "Hub 1 Refill"])[1];
     const totalPending = (hubBadges.hub1 || 0) + (hubBadges.hub2 || 0);
     const navItem = ([key, label]) => {
       const on = activeTab === key;
-      const badge = key === "onhold" ? onHoldCount : 0;
+      // Per-hub pending work (sold cells + stragglers + held) on its hub tab.
+      const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : 0;
       return (
         <button key={key} onClick={() => setTab(key)}
           style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
@@ -13874,7 +13976,6 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           </div>
           <div style={{ flex:1, overflow:"auto", padding:"14px 30px 48px" }}>
             <div style={{ maxWidth:1160, margin:"0 auto", display:"flex", flexDirection:"column", gap:16 }}>
-              <div style={{ maxWidth:380, width:"100%" }}>{hubSelector}</div>
               {content}
             </div>
           </div>
@@ -13892,8 +13993,10 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
           <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>SOURCE</div>
         </div>
+        {/* Held cards only (legacy + fail-closed holds) — new holds live in the
+            hub refill queues, so this count no longer includes them. */}
         <div style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.08)", borderRadius:14, padding:"4px 8px" }}>
-          <span style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>On Hold</span>
+          <span style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>Held</span>
           <span style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", fontSize:10, fontWeight:600, width:20, height:20, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 6px rgba(60,110,255,.25)" }}>{onHoldCount}</span>
         </div>
       </div>
@@ -13909,16 +14012,16 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             six tabs the labels compress and "Refill History" wraps on a 430px
             phone instead of the strip scrolling. Adding the sixth tab is what
             made this reachable. (CodeRabbit, PR #332.) */}
-        {SOURCE_TABS.map(([key, label]) => (
-          <div key={key} onClick={() => setTab(key)}
-               style={{ flex:"0 0 auto", whiteSpace:"nowrap", padding:"10px 11px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
-            {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
-          </div>
-        ))}
+        {SOURCE_TABS.map(([key, label]) => {
+          const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : 0;
+          return (
+            <div key={key} onClick={() => setTab(key)}
+                 style={{ flex:"0 0 auto", whiteSpace:"nowrap", padding:"10px 11px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
+              {label}{badge > 0 && ` ${badge}`}
+            </div>
+          );
+        })}
       </div>
-      {/* HUB SUB-TABS — segmented pill, shared by Today + History. Hidden for
-          Clothing Sold (own store pills) and On Hold (shows all hubs together). */}
-      {hubSelector}
       <div style={{ padding:"1.5rem" }}>
         {content}
       </div>

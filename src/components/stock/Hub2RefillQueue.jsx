@@ -89,7 +89,12 @@ function AgePill({ elapsedMs, raisedIso, prefix }) {
   );
 }
 
-export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) {
+// `lineFilter` (optional): (product, size) => bool — the Hub 2 tab's
+// SNEAKERS / CLOTHING toggle. Applied to open cards AND the fulfilled history
+// so the two views of one queue never disagree about what belongs to the
+// toggle. `product` is the catalogue record (may be undefined for a pid the
+// catalogue lost); absent filter = everything, exactly as before.
+export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, lineFilter = null }) {
   const DEST_LOC = dest;
   const destLabel = HUB_LABEL[dest] || dest;
   const { permRecord, isSuperAdmin } = usePermissions();
@@ -158,11 +163,12 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   // what Live Mode would do, and "already covered" is a statement about a real
   // ask. They stay in the card list exactly as before.
   const { actionable, covered } = useMemo(() => {
-    const mine = openRequests.filter((r) => r.requestingLocation === DEST_LOC && r.productId);
+    let mine = openRequests.filter((r) => r.requestingLocation === DEST_LOC && r.productId);
+    if (lineFilter) mine = mine.filter((r) => lineFilter(byId.get(r.productId), r.size));
     const shadows = mine.filter((r) => r.shadow);
     const split = partitionSatisfied(mine.filter((r) => !r.shadow), destCells, lockedIds);
     return { actionable: [...split.actionable, ...shadows], covered: split.covered };
-  }, [openRequests, destCells, lockedIds, DEST_LOC]);
+  }, [openRequests, destCells, lockedIds, DEST_LOC, lineFilter, byId]);
 
   const cards = useMemo(() => {
     const byPid = new Map();
@@ -200,11 +206,12 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST }) 
   const history = useMemo(() => {
     return allRequests
       .filter((r) => r.requestingLocation === DEST_LOC && r.status === "fulfilled" && r.createdAt && r.resolvedAt)
+      .filter((r) => !lineFilter || lineFilter(byId.get(r.productId), r.size))
       .map((r) => ({ ...r, raisedMs: parseMs(r.createdAt), resolvedMs: parseMs(r.resolvedAt) }))
       .filter((r) => Number.isFinite(r.raisedMs) && Number.isFinite(r.resolvedMs) && r.resolvedMs >= r.raisedMs)
       .sort((a, b) => b.resolvedMs - a.resolvedMs)
       .slice(0, HISTORY_CAP);
-  }, [allRequests]);
+  }, [allRequests, lineFilter, byId]);
 
   const availOf = (pid, size) => Math.max(Number(centralCells?.[pid]?.[String(size)]?.qty) || 0, 0);
   // A size with counted Central stock is capped by it; a size showing ZERO can
