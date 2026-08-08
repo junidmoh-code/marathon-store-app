@@ -128,19 +128,43 @@ export function resolveRange(key, nowMs, custom = {}) {
 }
 
 // ─── OUTCOMES ────────────────────────────────────────────────────────────────
-// Six buckets, because "cancelled" alone tells an operator nothing. The
-// distinction that matters on the floor is WHO said no and whether it comes
-// back: a human refusal is a fact about the shelf, an engine withdrawal is the
-// system correcting itself, and a park is a promise to return.
-export const STATUSES = ["requested", "fulfilled", "rejected", "withdrawn", "parked", "cancelled"];
+// FIVE buckets (2026-08-08 redo — the owner's rule: show what is REAL).
+//
+// STORED vs DERIVED, stated once so nobody mistakes a label for a status:
+// the database stores exactly THREE statuses — open | fulfilled | cancelled
+// (the only values the live rule's regex permits) — plus cancelReason and the
+// actor fields. EVERYTHING displayed here is DERIVED from that:
+//
+//   requested  ← stored "open"
+//   fulfilled  ← stored "fulfilled"
+//   rejected   ← stored "cancelled" with NO cancelReason (the human ✕ shape)
+//   parked     ← stored "cancelled" + cancelReason "awaiting_upstream"
+//   withdrawn  ← stored "cancelled" + ANY OTHER cancelReason — the engine
+//                closed its own request (stock arrived, ask disappeared, order
+//                record lost). One bucket, because "Withdrawn" and "Cancelled"
+//                as two tiles were two names for the same stored value; the
+//                per-row reason still tells the exact story.
+export const STATUSES = ["requested", "fulfilled", "rejected", "withdrawn", "parked"];
 
 export const STATUS_LABEL = {
   requested: "Open",
   fulfilled: "Refilled",
   rejected: "Rejected",
-  withdrawn: "Withdrawn",
+  withdrawn: "No longer needed",
   parked: "Parked",
-  cancelled: "Cancelled",
+};
+
+// One line of warehouse language under each count, so a tile explains itself
+// without a manual. Also states each bucket's stored shape — these are labels
+// over three stored statuses, not statuses themselves.
+export const STATUS_EXPLAIN = {
+  requested: "raised, still waiting — any raise date",
+  fulfilled: "picked and sent",
+  rejected: "a person marked it not on the shelf",
+  withdrawn: "the engine closed its own request — stock arrived or the ask disappeared",
+  parked: "source had none; comes back when it restocks",
+  display_in: "a display shoe registered as hub stock",
+  display_out: "an order dispatched out of a hub — all order types, not just displays",
 };
 
 // cancelReason is the discriminator the engine already writes, and its ABSENCE
@@ -148,18 +172,18 @@ export const STATUS_LABEL = {
 // (Hub2RefillQueue's ✕ deliberately omits the field, and the engine reads that
 // shape as a rejection with a cooldown). Never invent a default here — doing so
 // would relabel 976 live human refusals as engine withdrawals.
-const WITHDRAWN_REASONS = new Set(["no_longer_needed", "unfillable", "order_lost", "already_in_stock"]);
 const PARKED_REASONS = new Set(["awaiting_upstream"]);
 
 export function classifyRequest(r) {
   if (!r) return null;
   if (r.status === "fulfilled") return "fulfilled";
   if (r.status === "open") return "requested";
-  if (r.status !== "cancelled") return "cancelled";
+  if (r.status !== "cancelled") return "withdrawn";           // unknown stored status — closed, not by a human ✕
   if (!r.cancelReason) return "rejected";                     // human ✕ — see above
   if (PARKED_REASONS.has(r.cancelReason)) return "parked";
-  if (WITHDRAWN_REASONS.has(r.cancelReason)) return "withdrawn";
-  return "cancelled";                                         // an unknown reason stays honest
+  // Every other reason — known or new — is the engine closing its own request.
+  // The reason itself is still carried on the row (REASON_TEXT or raw).
+  return "withdrawn";
 }
 
 // Plain-English reason text. Engine reasons are terse identifiers written for
@@ -181,14 +205,27 @@ export const eventMsOf = (r) => Date.parse((r.status === "open" ? r.createdAt : 
 /**
  * @param requests rows with `id`, as useRefillRequests() returns them.
  * @param range from resolveRange().
- * @param hubs which destinations to include, e.g. ["hub1","hub2"].
+ * @param locations which requesting locations to include — hubs AND shops.
+ *   Shop-leg requests (marathon-pe, trophy) are real rows in the same node;
+ *   silently dropping them was why "open network-wide" and this screen could
+ *   never agree.
  *
- * A request is IN RANGE if either end of its life falls inside it — raised in
- * the window, or resolved in it. A refill asked for on Monday and picked on
- * Wednesday is real work on both days and must not vanish from either.
+ * A RESOLVED request is IN RANGE if either end of its life falls inside it —
+ * raised in the window, or resolved in it. A refill asked for on Monday and
+ * picked on Wednesday is real work on both days and must not vanish from
+ * either.
+ *
+ * An OPEN request is a PRESENT FACT, not a past event — it is included
+ * whatever the range, dated by when it was RAISED (the only event it has
+ * had). The old behaviour range-filtered opens like outcomes, so the Open
+ * count read 0 against a backlog of ~150 genuinely open requests: an open row
+ * has no resolvedAt to fall in any window, and its createdAt was usually
+ * before the window too. Counting a still-open ask as "nothing" because it
+ * was raised last week is exactly backwards — the older it is, the more it
+ * needs to be seen.
  */
-export function requestRows(requests = [], range, hubs = []) {
-  const want = new Set(hubs);
+export function requestRows(requests = [], range, locations = []) {
+  const want = new Set(locations);
   const out = [];
   for (const r of requests) {
     if (!r || !want.has(r.requestingLocation)) continue;
@@ -196,7 +233,7 @@ export function requestRows(requests = [], range, hubs = []) {
     const created = Date.parse(r.createdAt || "") || 0;
     const resolved = Date.parse(r.resolvedAt || "") || 0;
     const inRange = (t) => t >= range.fromMs && t < range.toMs;
-    if (!inRange(created) && !inRange(resolved)) continue;
+    if (r.status !== "open" && !inRange(created) && !inRange(resolved)) continue;
     const status = classifyRequest(r);
     // THE ROW IS DATED BY THE EVENT THAT FELL IN THE RANGE, not simply by its
     // outcome. A request raised yesterday and picked this morning is real work

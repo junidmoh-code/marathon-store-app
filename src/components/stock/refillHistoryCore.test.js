@@ -93,8 +93,11 @@ describe("classifyRequest", () => {
   it("awaiting_upstream is parked — it comes back on its own", () => {
     expect(R({ status: "cancelled", cancelReason: "awaiting_upstream" })).toBe("parked");
   });
-  it("an unrecognised reason stays honest rather than being guessed into a bucket", () => {
-    expect(R({ status: "cancelled", cancelReason: "something_new" })).toBe("cancelled");
+  it("an unrecognised reason folds into the one engine-closed bucket, reason carried on the row", () => {
+    // The redo (2026-08-08): "Withdrawn" and "Cancelled" were two tiles over
+    // one stored value. Any cancelReason that is not a park is the engine
+    // closing its own request; the raw reason still renders per-row.
+    expect(R({ status: "cancelled", cancelReason: "something_new" })).toBe("withdrawn");
   });
   it("the new already_in_stock withdrawal is classified", () => {
     // The Part A fix writes this reason; history must name it, not show
@@ -170,14 +173,42 @@ describe("requestRows", () => {
     expect(rows[0].status).toBe("requested");
   });
 
+  it("keeps an OPEN request whatever the range — the backlog is a present fact", () => {
+    // The bug this pins: the Open tile read 0 against ~150 genuinely open
+    // requests, because an open row has no resolvedAt to land in any window
+    // and its createdAt was before the window. Open rows are included whatever
+    // the range, dated by when they were raised.
+    const rows = requestRows([rr({
+      status: "open", resolvedAt: null, createdAt: "2026-07-20T08:00:00.000Z",
+    })], range, ["hub1"]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("requested");
+    expect(rows[0].ts).toBe(Date.parse("2026-07-20T08:00:00.000Z"));   // dated by raise
+  });
+
+  it("a CLOSED request outside the range stays out — only opens ignore the window", () => {
+    const rows = requestRows([rr({
+      status: "cancelled", createdAt: "2026-07-20T08:00:00.000Z", resolvedAt: "2026-07-20T09:00:00.000Z",
+    })], range, ["hub1"]);
+    expect(rows).toEqual([]);
+  });
+
   it("filters by hub", () => {
     const rows = requestRows([rr({ id: "a", requestingLocation: "hub1" }), rr({ id: "b", requestingLocation: "hub2" })], range, ["hub2"]);
     expect(rows.map((r) => r.refillId)).toEqual(["b"]);
   });
 
-  it("excludes stores — this view is about the hubs", () => {
+  it("excludes locations that are not selected", () => {
     const rows = requestRows([rr({ requestingLocation: "marathon-pe" })], range, ["hub1", "hub2"]);
     expect(rows).toEqual([]);
+  });
+
+  it("INCLUDES shop-leg requests when the shop is selected", () => {
+    // Shop requests are real rows in the same node. Silently dropping them was
+    // half of why "open network-wide" and this screen could never agree.
+    const rows = requestRows([rr({ requestingLocation: "marathon-pe" })], range, ["marathon-pe"]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].dest).toBe("marathon-pe");
   });
 
   it("excludes shadow previews", () => {
@@ -379,6 +410,14 @@ describe("totalsFor", () => {
     expect(t.parked).toEqual({ rows: 1, units: 1 });
     expect(t.requested).toEqual({ rows: 1, units: 4 });
     expect(t.withdrawn).toEqual({ rows: 0, units: 0 });
+  });
+
+  it("folds every engine close — known or novel reason — into the one withdrawn bucket", () => {
+    const rows = mergeRows(requestRows([
+      rr({ id: "a", status: "cancelled", cancelReason: "no_longer_needed", qty: 2 }),
+      rr({ id: "b", status: "cancelled", cancelReason: "some_future_reason", qty: 1 }),
+    ], range, ["hub1"]), []);
+    expect(totalsFor(rows).withdrawn).toEqual({ rows: 2, units: 3 });
   });
 
   it("counts a merged row ONCE, using what actually moved", () => {
