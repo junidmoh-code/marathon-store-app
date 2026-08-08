@@ -52,6 +52,8 @@
 
 "use strict";
 
+const { normaliseStyleCode, styleCodeFormat } = require("./style-code.cjs");
+
 const LABEL_ALIASES_PATH = "label_aliases";
 
 const BANDS = Object.freeze({
@@ -157,6 +159,99 @@ function isDuplicateAlias(tokens, productId, aliasesNode) {
   return false;
 }
 
+// ── CODE ALIASES — every code-shaped token on one label IS the same shoe ─────
+// (Owner spec 2026-08-08, the Diesel Big D incident.) Some labels print TWO
+// code-shaped tokens (190935-505 AND 740750-35). There is exactly ONE shoe in
+// the operator's hand, so every token on that label refers to the same
+// product — which token the operator happened to tap must not mint a second
+// identity. The tapped token goes down the normal capture/claim path and may
+// become styleCodeNormalised (still the single canonical code, still
+// immutable); EVERY token on the label is additionally filed here as a CODE
+// ALIAS, so a colleague who later taps or scans the OTHER token resolves to
+// the SAME product.
+//
+// A code-alias record shares /label_aliases with the token-set records but is
+// a different animal: `c` (a map of normalised codes, never an array) instead
+// of `t`, and it is looked up EXACTLY, never fuzzily — a style code either is
+// or is not on a label. Token-set scoring skips these records (no `t`), and
+// exact code lookup skips token records (no `c`); the two kinds cannot bleed
+// into each other's matching.
+//
+// Exact lookup FAILS CLOSED: if two records point one code at two DIFFERENT
+// products (a race two devices could theoretically produce), the lookup
+// answers null and the human decides — never a silent coin-flip.
+
+const MAX_ALIAS_CODES = 8; // same ceiling as OCR candidate extraction
+
+/** Clean a candidate-code list: normalised, format-valid, deduped, capped. */
+function normaliseAliasCodes(codes) {
+  const arr = Array.isArray(codes) ? codes : [];
+  const out = new Set();
+  for (const c of arr) {
+    const norm = normaliseStyleCode(c);
+    if (norm && styleCodeFormat(norm) !== null) out.add(norm);
+    if (out.size >= MAX_ALIAS_CODES) break;
+  }
+  return [...out].sort();
+}
+
+/** Code array → RTDB map, or null when nothing usable survives. */
+function codesToMap(codes) {
+  const clean = normaliseAliasCodes(codes);
+  if (!clean.length) return null;
+  const map = {};
+  for (const c of clean) map[c] = true;
+  return map;
+}
+
+/**
+ * EVERY distinct product the records point this code at. Normally 0 or 1;
+ * 2+ is the write race two devices can produce (the check-then-push attach
+ * is deliberately not transactional) — the callers turn that into a
+ * duplicate-queue entry so a human resolves it; it must never stay a silent
+ * permanent dead end.
+ */
+function codeAliasOwnersAll(code, aliasesNode) {
+  const norm = normaliseStyleCode(code);
+  if (!norm) return [];
+  const owners = new Set();
+  for (const rec of Object.values(aliasesNode || {})) {
+    if (!rec || !rec.productId || !rec.c || typeof rec.c !== "object") continue;
+    if (rec.c[norm]) owners.add(rec.productId);
+  }
+  return [...owners].sort();
+}
+
+/**
+ * EXACT code-alias lookup over the whole node.
+ * @returns {{productId, aliasId}|null} null when unknown OR when two records
+ *          disagree on the owner (fail closed — a human decides, never a race).
+ */
+function codeAliasOwner(code, aliasesNode) {
+  const norm = normaliseStyleCode(code);
+  if (!norm) return null;
+  let hit = null;
+  for (const [aliasId, rec] of Object.entries(aliasesNode || {})) {
+    if (!rec || !rec.productId || !rec.c || typeof rec.c !== "object") continue;
+    if (!rec.c[norm]) continue;
+    if (hit && hit.productId !== rec.productId) return null; // disagreement → fail closed
+    if (!hit) hit = { productId: rec.productId, aliasId };
+  }
+  return hit;
+}
+
+/** Is every one of these codes already filed for this product? */
+function isDuplicateCodeAlias(codes, productId, aliasesNode) {
+  const clean = normaliseAliasCodes(codes);
+  if (!clean.length) return true; // nothing to file is "already filed"
+  const have = new Set();
+  for (const rec of Object.values(aliasesNode || {})) {
+    if (!rec || rec.productId !== productId || !rec.c || typeof rec.c !== "object") continue;
+    for (const k of Object.keys(rec.c)) have.add(k);
+  }
+  return clean.every((c) => have.has(c));
+}
+
 module.exports = {
   LABEL_ALIASES_PATH,
   BANDS,
@@ -169,4 +264,10 @@ module.exports = {
   scoreAliases,
   bandFor,
   isDuplicateAlias,
+  MAX_ALIAS_CODES,
+  normaliseAliasCodes,
+  codesToMap,
+  codeAliasOwner,
+  codeAliasOwnersAll,
+  isDuplicateCodeAlias,
 };

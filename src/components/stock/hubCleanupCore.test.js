@@ -119,7 +119,7 @@ describe("the style-number step", () => {
 
   it("a tongue-label read: one clean candidate is chosen, several become options, none says why", () => {
     expect(chooseFromLabelRead({ candidates: ["CT8527016"], displayCandidates: ["CT8527-016"] }))
-      .toEqual({ kind: "chosen", code: "CT8527-016" });
+      .toEqual({ kind: "chosen", code: "CT8527-016", allCandidates: ["CT8527016"] });
     const many = chooseFromLabelRead({ candidates: ["CT8527016", "DD1391100"], displayCandidates: ["CT8527-016", "DD1391-100"] });
     expect(many.kind).toBe("options");
     expect(many.options).toEqual(["CT8527-016", "DD1391-100"]);
@@ -135,6 +135,27 @@ describe("the style-number step", () => {
     expect(chooseFromLabelRead({ candidates: ["CT8527016"], displayCandidates: ["CT8527-016"], tokens: ["X", "Y"] }).kind).toBe("chosen");
     // …and a single token is not an identity:
     expect(chooseFromLabelRead({ candidates: [], tokens: ["ONLY"] }).kind).toBe("none");
+  });
+
+  it("PROOF: a learned layout rule (autoPick) resolves WITHOUT asking — and carries every token", () => {
+    // The Diesel Big D label: two code-shaped tokens, rule already learned.
+    const read = {
+      candidates: ["190935505", "74075035"],
+      displayCandidates: ["190935-505", "740750-35"],
+      autoPick: "190935505",
+    };
+    const out = chooseFromLabelRead(read);
+    expect(out.kind).toBe("chosen");
+    expect(out.code).toBe("190935-505");
+    expect(out.auto).toBe(true);
+    // ALL tokens ride along so the caller files every one as an identity.
+    expect(out.allCandidates).toEqual(["190935505", "74075035"]);
+    // Fail closed: an autoPick that is NOT one of this read's candidates asks.
+    const stale = chooseFromLabelRead({ ...read, autoPick: "CT8527016" });
+    expect(stale.kind).toBe("options");
+    expect(stale.candidates).toEqual(["190935505", "74075035"]);
+    // No rule → the manual tap fallback, exactly as before.
+    expect(chooseFromLabelRead({ ...read, autoPick: null }).kind).toBe("options");
   });
 
   it("a code another live product owns is a conflict; merged-away owners don't count", () => {

@@ -120,16 +120,28 @@ export function styleStepSatisfied(product, styleCode) {
 }
 
 // What a tongue-label OCR response means for the UI: one clean candidate is
-// chosen outright; several become tap-chips; NO known format but readable text
-// offers the label FINGERPRINT (a stable identity built from the label's
-// non-variable tokens — never a rejection); nothing readable falls back to
-// typing, with copy that says what to DO next, not just that it failed.
+// chosen outright; several become tap-chips — UNLESS a learned LAYOUT RULE
+// already answers "which token is the style number" (server `autoPick`, owner
+// spec 2026-08-08: a question a human has answered for this label layout is
+// not asked twice). An auto-pick still carries every candidate in
+// `allCandidates` so the caller files ALL of them as identities for the
+// resolved product — which token wins can no longer split one shoe in two.
+// NO known format but readable text offers the label FINGERPRINT (a stable
+// identity built from the label's non-variable tokens — never a rejection);
+// nothing readable falls back to typing, with copy that says what to DO next.
 export function chooseFromLabelRead(data) {
   const candidates = Array.isArray(data && data.candidates) ? data.candidates.filter(Boolean) : [];
   const display = Array.isArray(data && data.displayCandidates) && data.displayCandidates.length === candidates.length
     ? data.displayCandidates : candidates;
-  if (candidates.length === 1) return { kind: "chosen", code: display[0] };
-  if (candidates.length > 1) return { kind: "options", options: display };
+  if (candidates.length === 1) return { kind: "chosen", code: display[0], allCandidates: candidates };
+  if (candidates.length > 1) {
+    const autoPick = typeof (data && data.autoPick) === "string" ? data.autoPick : null;
+    const i = autoPick ? candidates.indexOf(autoPick) : -1;
+    // The pick must name one of THIS read's candidates — anything else (a
+    // stale rule, a mismatched response) falls back to asking. Fail closed.
+    if (i >= 0) return { kind: "chosen", code: display[i], auto: true, allCandidates: candidates };
+    return { kind: "options", options: display, candidates };
+  }
   const tokens = Array.isArray(data && data.tokens) ? data.tokens.filter(Boolean) : [];
   if (tokens.length >= 2) {
     return {

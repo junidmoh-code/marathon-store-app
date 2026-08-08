@@ -54,6 +54,27 @@ export async function matchLabelAlias(tokens) {
   return data;
 }
 
+// ── MULTI-TOKEN LABELS (owner spec 2026-08-08) ──────────────────────────────
+// One shoe in the hand → EVERY code-shaped token on its label identifies the
+// chosen product. recordLabelCodes files them all as exact code aliases (a
+// token another product already owns is flagged as a possible duplicate, never
+// attached); lookupCodeAlias is how the OTHER token later resolves; and
+// learnLabelLayout records which token SHAPE the human picked so the same
+// layout stops asking. All three ride the labelAlias callable — Admin SDK,
+// no client rules for any of these nodes exist or are needed.
+export async function recordLabelCodes({ productId, chosenCode, otherCodes }) {
+  const { data } = await labelAliasFn({ action: "recordLabelCodes", productId, chosenCode, otherCodes });
+  return data;
+}
+export async function lookupCodeAlias(code) {
+  const { data } = await labelAliasFn({ action: "codeLookup", code });
+  return data && data.productId ? data.productId : null;
+}
+export async function learnLabelLayout({ codes, chosenCode }) {
+  const { data } = await labelAliasFn({ action: "learnLayout", codes, chosenCode });
+  return data;
+}
+
 // ── THE COLLISION QUESTION'S ONE WRITE PATH ─────────────────────────────────
 // styleCodeSibling (Admin SDK) records how the operator answered "same shoe,
 // or a different colourway?". differentColourway registers the product as a
@@ -64,6 +85,20 @@ export async function matchLabelAlias(tokens) {
 const styleCodeSiblingFn = httpsCallable(functions, "styleCodeSibling");
 export async function answerStyleCodeSibling({ action, code, productId, otherId }) {
   const { data } = await styleCodeSiblingFn({ action, code, productId, otherId });
+  return data;
+}
+
+// ── COLOURWAY ANSWER MEMORY (owner spec 2026-08-08) ─────────────────────────
+// The picker's answered question, stored against the shoe's signature (code +
+// photo palette) so the same physical shoe never asks twice. Matching happens
+// client-side (utils/dominantColours.js matchColourwayAnswers, fail-closed);
+// these are just the callable's storage/lookup doors.
+export async function fetchColourwayAnswers(code) {
+  const { data } = await styleCodeSiblingFn({ action: "colourwayAnswers", code });
+  return data && Array.isArray(data.answers) ? data.answers : [];
+}
+export async function recordColourwayAnswer({ code, productId, palette }) {
+  const { data } = await styleCodeSiblingFn({ action: "answerColourway", code, productId, palette });
   return data;
 }
 
@@ -147,6 +182,29 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   const key = registerKey(product.id, sizeKey);
   const recPath = `${registerPath(hub)}/${key}`;
 
+  // Every code-shaped token this label printed (the tapped/auto-picked one
+  // included). Filed as exact code aliases alongside the save — one shoe, one
+  // identity, however many tokens the label shows (owner spec 2026-08-08).
+  const allCodes = styleCode && Array.isArray(styleCode.allCodes) && styleCode.allCodes.length > 1
+    ? styleCode.allCodes : null;
+  const fileLabelCodes = async () => {
+    if (!allCodes || !capturedNormalised) return null;
+    try {
+      const res = await recordLabelCodes({
+        productId: product.id,
+        chosenCode: capturedNormalised,
+        otherCodes: allCodes.filter((c) => normaliseStyleCode(c) !== capturedNormalised),
+      });
+      if (res && res.conflicts && res.conflicts.length) {
+        const codes = res.conflicts.map((c) => formatStyleCodeForDisplay(c.code) || c.code).join(", ");
+        return `Heads-up: ${codes} on this label already belongs to another product — flagged as a possible duplicate for review (nothing was merged).`;
+      }
+      return null;
+    } catch (err) {
+      return `The label's other code(s) could not be filed (${String(err?.message || err)}) — save once more to retry.`;
+    }
+  };
+
   const existing = await one(recPath);
   if (existing) {
     // The slot is already registered — but a freshly captured READING still
@@ -159,7 +217,8 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
         return { ok: true, already: true, record: existing, warning: `Already registered, and the label reading STILL could not be filed (${String(err?.message || err)}) — save once more to retry.` };
       }
     }
-    return { ok: true, already: true, record: existing };
+    const codesWarning = await fileLabelCodes();
+    return { ok: true, already: true, record: existing, ...(codesWarning ? { warning: codesWarning } : {}) };
   }
 
   const res = await applyMovement({
@@ -205,7 +264,11 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   // collision handling and pending-field writes stay the server's job. Rides
   // the SAME save; a failure downgrades to a warning because the stock unit
   // must never be lost to a queue hiccup.
-  let captureWarning = null;
+  // Warnings ACCUMULATE — the alias filing, the label-code filing and the
+  // capture queue are three independent side-writes of the same save, and any
+  // one clobbering another's warning would hide a failed identity write from
+  // the operator (Kimi review, PR #334).
+  const warnings = [];
   // A label READING becomes an alias — never a capture, never a claim on
   // styleCodeNormalised. If the product already carries a code (or gains one
   // later), the reading is simply a further way to find it: registration can
@@ -213,10 +276,18 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   if (aliasTokens) {
     try {
       const res = await addLabelAlias({ productId: product.id, tokens: aliasTokens });
-      if (!res || (!res.ok && !res.deduped)) captureWarning = "Registered, but the label reading could not be filed — open this product and save again to retry.";
+      if (!res || (!res.ok && !res.deduped)) warnings.push("Registered, but the label reading could not be filed — open this product and save again to retry.");
     } catch (err) {
-      captureWarning = `Registered, but the label reading could not be filed (${String(err?.message || err)}) — open this product and save again to retry.`;
+      warnings.push(`Registered, but the label reading could not be filed (${String(err?.message || err)}) — open this product and save again to retry.`);
     }
+  }
+  // Multi-token label: file EVERY code as an identity of this product. Rides
+  // the same save; a failure downgrades to a warning (the stock unit is the
+  // fact that must never be lost), and a conflict surfaces as the duplicate
+  // flow's banner — never a silent attach.
+  {
+    const codesWarning = await fileLabelCodes();
+    if (codesWarning) warnings.push(codesWarning);
   }
   if (capturedNormalised && capturedNormalised !== codeOnFile) {
     try {
@@ -228,11 +299,12 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
         labelPhoto: styleCode?.labelPhoto || null,
         nowMs: serverNowMs(),
       });
-      if (!q || !q.ok) captureWarning = `Registered, but the style number could not be queued (${q?.error || "write failed"}) — capture it again from the panel.`;
+      if (!q || !q.ok) warnings.push(`Registered, but the style number could not be queued (${q?.error || "write failed"}) — capture it again from the panel.`);
     } catch (err) {
-      captureWarning = `Registered, but the style number could not be queued (${String(err?.message || err)}) — capture it again from the panel.`;
+      warnings.push(`Registered, but the style number could not be queued (${String(err?.message || err)}) — capture it again from the panel.`);
     }
   }
+  const captureWarning = warnings.length ? warnings.join(" ") : null;
 
   // Create-once: if another device registered the same slot in the race window,
   // their record stands (the movement was shared anyway — one id, one unit).

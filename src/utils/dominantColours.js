@@ -1,15 +1,18 @@
-// ─── DOMINANT COLOURS — cheap within-code discrimination, never selection ────
-// (Owner spec 2026-08-07.) When one style code resolves to two or three
-// sibling colourways, the label cannot say which one the operator is holding —
-// but a quick photo of the SHOE can put the likely match first. This module is
-// that, and deliberately nothing more:
+// ─── DOMINANT COLOURS — within-code discrimination from a shoe photo ─────────
+// (Owner spec 2026-08-07, EXTENDED 2026-08-08.) When one style code resolves
+// to two or three sibling colourways, the label cannot say which one the
+// operator is holding — but a quick photo of the SHOE can. This module is:
 //
 //   • dominant-colour extraction (coarse quantisation on a downscaled canvas),
 //     NOT embeddings, NOT open-set recognition — this discriminates black from
 //     white among two or three candidates, which is the entire job;
-//   • an ORDERING signal only. The functions here sort a candidate list; they
-//     never pick, never auto-select, never hide a candidate. The human always
-//     taps the shoe they are holding.
+//   • an ORDERING signal (orderByColourAffinity — sorts, hides nothing), AND —
+//     the 2026-08-08 owner spec — an AUTO-SELECTOR (selectByColourAffinity)
+//     that picks WITHOUT asking, but ONLY when one candidate wins by a clear
+//     margin. Everything about the selector FAILS CLOSED: any missing palette,
+//     any near tie, any washed-out photo falls through to the side-by-side
+//     picker. Asking is always better than a silent wrong match, which routes
+//     stock onto the wrong product and cannot be spotted later.
 //
 // Stored on the product as `dominantColours: [{r,g,b,w}]` (top swatches by
 // pixel weight, w summing ≤1) at registration when the optional shoe photo was
@@ -39,6 +42,12 @@ export async function extractDominantColours(source) {
     url = owned ? URL.createObjectURL(source) : source;
     const img = await new Promise((resolve, reject) => {
       const el = new Image();
+      // A remote product photo (Storage URL) taints the canvas without CORS
+      // opt-in, and getImageData then throws — which read as "no palette" and
+      // silently disabled every comparison against a stored image. The bucket
+      // serves CORS headers (set 2026-05-20); the attribute is what asks for
+      // them. Local blobs/data-URLs are unaffected.
+      if (!owned) el.crossOrigin = "anonymous";
       el.onload = () => resolve(el);
       el.onerror = reject;
       el.src = url;
@@ -113,12 +122,84 @@ export function paletteDistance(a, b) {
   return weight ? sum / weight : Infinity;
 }
 
+// ── AUTO-SELECT THRESHOLDS (owner spec 2026-08-08) ───────────────────────────
+// RGB-Euclidean units, 0–441 scale, on paletteDistance's weighted average.
+// MEASURED 2026-08-08 against every multi-owner code in the live catalogue
+// (12 codes, 26 sibling pairs, product-photo vs product-photo with this exact
+// quantisation): distances run 1–252 with median 30, heavily COMPRESSED by
+// the shared white studio backgrounds — even a black-vs-white pair can sit
+// near 21. The owner's own evidence pair (RTFKT White Photo Blue vs White
+// Gray, HF0438-001) measures 39. So the margin sits at 55: above every
+// near-twin in the catalogue, below the three genuinely separable groups
+// (Bapesta black-vs-white 252, NOCTA 139, Powercourt-vs-Lerond 80). A
+// smaller margin would start auto-picking between pairs the metric provably
+// compresses, which is the silent wrong match this whole design forbids —
+// asking is always the cheaper failure. Expect ~9 of the current 12
+// multi-owner codes to stay in the ask band; the answer memory (below) is
+// what makes those stop asking per-shoe.
+export const AUTO_SELECT_MARGIN = 55;    // runner-up must trail by at least this
+export const AUTO_SELECT_CLOSE_MAX = 150; // and the winner must actually resemble the photo
+export const ANSWER_MATCH_MAX = 40;      // a stored answer counts only this close
+
+/**
+ * PURE: decide a colourway from the shoe photo — or refuse to.
+ * Auto-selects ONLY when (owner spec 2026-08-08):
+ *   • the photo produced a palette, AND
+ *   • EVERY candidate has a stored palette (a missing one could be the true
+ *     match — comparing around it would be a silent guess), AND
+ *   • the best candidate is genuinely close (≤ closeMax), AND
+ *   • the runner-up trails by at least `margin`.
+ * Anything else asks. `ordered` always carries the affinity ordering so the
+ * picker can still put the likely match first.
+ * @returns {{kind:"auto", product, bestD, secondD}|{kind:"ask", ordered}}
+ */
+export function selectByColourAffinity(candidates, photoColours,
+  { margin = AUTO_SELECT_MARGIN, closeMax = AUTO_SELECT_CLOSE_MAX } = {}) {
+  const list = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
+  const ordered = orderByColourAffinity(list, photoColours);
+  if (list.length < 2) return { kind: "ask", ordered };
+  if (!Array.isArray(photoColours) || !photoColours.length) return { kind: "ask", ordered };
+  const scored = list
+    .map((c) => ({ c, d: paletteDistance(photoColours, c && c.dominantColours) }))
+    .sort((x, y) => x.d - y.d);
+  // Infinity = a candidate with no stored palette. ANY such candidate blocks
+  // auto-selection — fail closed, the human looks.
+  if (scored.some((s) => !Number.isFinite(s.d))) return { kind: "ask", ordered };
+  const [best, second] = scored;
+  if (best.d > closeMax) return { kind: "ask", ordered };
+  if (second.d - best.d < margin) return { kind: "ask", ordered };
+  return { kind: "auto", product: best.c, bestD: best.d, secondD: second.d };
+}
+
+/**
+ * PURE: does a previously ANSWERED colourway question decide this photo?
+ * Rows are {productId, p: palette} (the styleCodeSibling "colourwayAnswers"
+ * shape). A row counts only within `maxDistance`; if every counting row names
+ * the SAME product, that product resolves silently — the question is never
+ * asked twice for the same physical shoe. Rows that disagree inside the
+ * radius resolve NOTHING (fail closed — the human decides).
+ * @returns {string|null} productId, or null
+ */
+export function matchColourwayAnswers(rows, photoColours, { maxDistance = ANSWER_MATCH_MAX } = {}) {
+  if (!Array.isArray(photoColours) || !photoColours.length) return null;
+  const list = Array.isArray(rows) ? rows : Object.values(rows || {});
+  let hit = null;
+  for (const rec of list) {
+    if (!rec || typeof rec.productId !== "string" || !rec.productId) continue;
+    const d = paletteDistance(photoColours, rec.p);
+    if (d > maxDistance) continue;
+    if (hit && hit !== rec.productId) return null; // disagreement → ask
+    hit = rec.productId;
+  }
+  return hit;
+}
+
 /**
  * PURE: order candidates so the closest colour match sits FIRST. Candidates
  * without a stored palette keep their relative order, after every candidate
  * with one. The input array is not mutated, nothing is removed, nothing is
- * selected — ordering is the only effect, by contract (owner spec: colours
- * order the list, NEVER auto-select).
+ * selected — ordering is the only effect here; selection is
+ * selectByColourAffinity's job, under its margins.
  * @param {Array<object>} candidates  products (palette read from .dominantColours)
  * @param {Array<{r,g,b,w}>} photoColours  from the operator's quick photo
  */

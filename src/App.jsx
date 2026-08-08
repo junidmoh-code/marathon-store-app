@@ -47,7 +47,7 @@ import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
 import { TongueLabelReader } from "./components/stock/TongueLabelReader";
 import { styleCodeOwners } from "./components/stock/hubCleanupCore";
-import { lookupStyleClaim, matchLabelAlias, fetchProductFollowingMerge, answerStyleCodeSibling } from "./components/stock/hubCleanupStore";
+import { lookupStyleClaim, matchLabelAlias, fetchProductFollowingMerge, answerStyleCodeSibling, lookupCodeAlias, recordLabelCodes } from "./components/stock/hubCleanupStore";
 import { extractDominantColours } from "./utils/dominantColours";
 import { normaliseStyleCode } from "./utils/styleCode";
 import { displaySendNeedsSize } from "./utils/displaySend";
@@ -5258,6 +5258,25 @@ function AdminView({ products, orders, onExit }) {
         }
       }
 
+      // ── FILE THE LABEL'S OTHER CODE TOKENS (owner spec 2026-08-08) ─────────
+      // A multi-token label: EVERY code-shaped token identifies this shoe, so
+      // the untapped one(s) become exact code aliases of the new product — a
+      // colleague who later scans or types the OTHER token lands here, not on
+      // a second record. Server-side, a token another product already owns is
+      // flagged through the duplicate flow instead of attached. Best-effort:
+      // the product is saved either way, and the register/count surfaces retry.
+      if (newProduct.styleCodeNormalised && intake && Array.isArray(intake.labelOtherCodes) && intake.labelOtherCodes.length) {
+        recordLabelCodes({
+          productId: id,
+          chosenCode: newProduct.styleCodeNormalised,
+          otherCodes: intake.labelOtherCodes,
+        }).then((res) => {
+          if (res && res.conflicts && res.conflicts.length) {
+            console.warn(`addProduct: label token(s) ${res.conflicts.map((c) => c.code).join(",")} already owned elsewhere — flagged as possible duplicate`);
+          }
+        }).catch((err) => console.warn("addProduct: filing the label's other codes failed:", err));
+      }
+
       // GUARANTEE ON SAVE: mint a barcode for every size now so the catalog never
       // has gaps (a sizeless/one-size product mints the "_" slot). Best-effort —
       // a creator without stockRole still saves the product; the index heals on
@@ -7548,6 +7567,21 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
       const claim = await lookupStyleClaim(normaliseStyleCode(display)).catch(() => null);
       if (claim && claim.productId) {
         const p = await resolveCandidate(claim.productId);
+        if (p) { finish(p); return; }
+      }
+      // The OTHER token of a multi-token label (owner spec 2026-08-08): the
+      // exact code-alias store resolves it to the same product a colleague
+      // already identified. Read-only lookup — assistants may not write. A
+      // FAILED lookup must not read as "nothing owns it" (CodeRabbit, PR #334).
+      let aliasOwner = null;
+      try {
+        aliasOwner = await lookupCodeAlias(normaliseStyleCode(display));
+      } catch {
+        setNote({ text: `Couldn't check ${display} against the label-code index — try again, or search by name.` });
+        return;
+      }
+      if (aliasOwner) {
+        const p = await resolveCandidate(aliasOwner);
         if (p) { finish(p); return; }
       }
       setNote({ text: `The label reads ${display}, but no registered product carries it — search by name instead.` });

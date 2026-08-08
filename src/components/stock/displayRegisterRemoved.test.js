@@ -79,7 +79,7 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     const readerFile = readFileSync(join(SRC, "components/stock/TongueLabelReader.jsx"), "utf8");
     expect((readerFile.match(/export function TongueLabelReader/g) || []).length).toBe(1);
     expect(hubCleanup).not.toMatch(/function TongueLabelReader/);
-    expect(hubCleanup).toMatch(/<TongueLabelReader big busy=\{busy\} onCode=\{\(code\) => handleStyleNumber\(code\)\} onTokens=\{handleAliasTokens\} \/>/);
+    expect(hubCleanup).toMatch(/<TongueLabelReader big busy=\{busy\} onCode=\{\(code, meta\) => handleStyleNumber\(code, meta\)\} onTokens=\{handleAliasTokens\} \/>/);
     expect(hubCleanup).toMatch(/<TongueLabelReader busy=\{busy\} onCode=\{takeCode\} onTokens=\{takeTokens\} \/>/);
     // The count tab must NOT lead with a barcode scan any more:
     expect(hubCleanup).not.toMatch(/SCAN A SHOE/);
