@@ -15,6 +15,7 @@ import { formatStyleCodeForDisplay } from "../../utils/styleCode";
 import { interpretLabelScan } from "../../utils/labelScan";
 import { mergeFrameTokens } from "../../utils/labelFrames";
 import { chooseFromLabelRead } from "./hubCleanupCore";
+import { learnLabelLayout } from "./hubCleanupStore";
 import { FONT, bBlue, bGray, bGhost, input } from "./ui";
 
 // The tongue-label OCR — the SAME reader the style-code gate uses at intake.
@@ -189,16 +190,27 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
         const out = chooseFromLabelRead(data);
         const formattedChosen = out.kind === "chosen" ? formatStyleCodeForDisplay(out.code) : "";
         if (out.kind === "chosen" && formattedChosen) {
-          onCode(formattedChosen, { source: "label", labelPhoto: frame });
+          // `allCodes` carries EVERY code-shaped token this label printed —
+          // the caller files them all as identities for the resolved product
+          // (owner spec 2026-08-08: one shoe in hand, one identity, however
+          // many tokens the label shows). `auto` marks a learned-layout pick.
+          onCode(formattedChosen, {
+            source: "label", labelPhoto: frame,
+            allCodes: out.allCandidates || null, auto: !!out.auto,
+          });
           return;
         }
         if (out.kind === "options" && !sawOptions) sawOptions = { out, frame };
         if (out.kind === "tokens") frameTokens.push(out.tokens);
       }
       if (sawOptions) {
+        // A layout no rule decides yet — the manual tap is the fallback, and
+        // the tap TEACHES: it learns the layout rule and files every token
+        // (candidates rides along so the tap handler has the full set).
         setReadNote({
           text: "The label shows more than one code-looking number — tap the style number:",
           options: sawOptions.out.options,
+          candidates: sawOptions.out.candidates || null,
           labelPhoto: sawOptions.frame,
         });
         return;
@@ -275,8 +287,18 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
                   onClick={() => {
                     const f = formatStyleCodeForDisplay(c);
                     if (!f) { setReadNote({ text: "That one isn't a style number — type it from the label instead." }); return; }
+                    // The tap is the human's answer for this LAYOUT — record it
+                    // so the same question is not asked twice (best-effort:
+                    // read-only roles may not be allowed to teach, and a failed
+                    // lesson must never block the read itself).
+                    if (readNote.candidates && readNote.candidates.length > 1) {
+                      learnLabelLayout({ codes: readNote.candidates, chosenCode: c }).catch(() => {});
+                    }
                     setReadNote(null);
-                    onCode(f, { source: "label", labelPhoto: readNote.labelPhoto || null });
+                    onCode(f, {
+                      source: "label", labelPhoto: readNote.labelPhoto || null,
+                      allCodes: readNote.candidates || null,
+                    });
                   }}
                   style={{ ...bBlue, fontSize: 13.5, minHeight: 42, fontVariantNumeric: "tabular-nums" }}>{c}</button>
               ))}

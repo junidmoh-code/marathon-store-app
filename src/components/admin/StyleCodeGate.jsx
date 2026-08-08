@@ -46,6 +46,7 @@ import {
   TARGET_READY, TARGET_CHOOSE,
   BLOCK_CLAIM_UNAVAILABLE, BLOCK_PRODUCT_UNAVAILABLE,
 } from "./styleCodeGateLogic";
+import { learnLabelLayout } from "../stock/hubCleanupStore";
 
 const resolveStyleCodeFn = httpsCallable(functions, "resolveStyleCode");
 const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
@@ -110,6 +111,12 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
   // while the photo still matches the code. The UPC is NON-AUTHORITATIVE by
   // design (this stock reuses one UPC across a size run) — stored, never keyed.
   const [labelExtras, setLabelExtras] = useState(null); // { colorway, upc, modelName }
+  // EVERY code-shaped token this label printed (multi-token labels — the
+  // Diesel Big D case, owner spec 2026-08-08). Whichever token becomes the
+  // canonical code, the others ride into the save as labelOtherCodes and are
+  // filed as identities of the same product; evidence-bound to the photo like
+  // everything else read off it.
+  const [labelAllCodes, setLabelAllCodes] = useState(null);
   // The bypass panel. Deliberately NOT a step in the main flow — it is opened
   // from a subordinate link, and closing it returns to the style code.
   const [bypassOpen, setBypassOpen] = useState(false);
@@ -135,7 +142,7 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     // CLEAR THE BINDING FIRST. A retake that fails must not leave the NEW photo
     // paired with the PREVIOUS code — that was the gap the first version of this
     // guard left open. Nothing is evidence again until a read succeeds.
-    setLabelPhoto(null); setPhotoForCode(null); setLabelExtras(null);
+    setLabelPhoto(null); setPhotoForCode(null); setLabelExtras(null); setLabelAllCodes(null);
     try {
       // Downscaled to 1024px in the browser BEFORE it is sent anywhere.
       const photo = await prepareLabelPhoto(file);
@@ -161,11 +168,25 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
           setReadNote({ tone: "good", text: `Read from the label: ${formatStyleCodeForDisplay(code)}. Check it matches the shoe, then continue.` });
         }
       } else if (candidates.length > 1) {
-        setReadNote({
-          tone: "warn",
-          text: `Found ${candidates.length} possible codes — tap the right one, or type it.`,
-          options: candidates,
-        });
+        setLabelAllCodes(candidates);
+        // A learned layout rule answers this question when a human already has
+        // (server autoPick, owner spec 2026-08-08). Fail closed: the pick must
+        // be one of THIS read's candidates or the chips ask as before.
+        if (typeof data.autoPick === "string" && candidates.includes(data.autoPick)) {
+          setTyped(formatStyleCodeForDisplay(data.autoPick));
+          setPhotoForCode(data.autoPick);
+          setReadNote({
+            tone: "good",
+            text: `The label shows ${candidates.length} code-shaped numbers — picked ${formatStyleCodeForDisplay(data.autoPick)} as the style number (learned from earlier labels). Wrong one? Tap the other:`,
+            options: candidates.filter((c) => c !== data.autoPick),
+          });
+        } else {
+          setReadNote({
+            tone: "warn",
+            text: `Found ${candidates.length} possible codes — tap the right one, or type it.`,
+            options: candidates,
+          });
+        }
       } else if ((data.errors || []).length) {
         setReadNote({ tone: "warn", text: "The label reader is unavailable right now. Type the code from the tongue label." });
       } else {
@@ -199,6 +220,10 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
         styleCodeSource: "manual",
         styleCodeFetchedAt: serverNowMs(),
         labelPhoto: evidencePhoto,
+        // Multi-token label: the other tokens ride along (photo-evidence-bound)
+        // so the save can file them as identities of this same product.
+        labelOtherCodes: (photoMatchesCode && labelAllCodes
+          && labelAllCodes.filter((c) => normaliseStyleCode(c) !== normalised)) || null,
         suggestedName: "", suggestedBrand: null, suggestedImageUrl: null, model: null,
       });
       return;
@@ -257,6 +282,12 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       labelColorway: (photoMatchesCode && labelExtras && labelExtras.colorway) || null,
       labelUpc: (photoMatchesCode && labelExtras && labelExtras.upc) || null,
       labelModelName: (photoMatchesCode && labelExtras && labelExtras.modelName) || null,
+      // The label's OTHER code-shaped tokens (multi-token labels). The save
+      // files every one as an identity of the new product — whichever token
+      // was picked can no longer split one shoe into two records (owner spec
+      // 2026-08-08). Same evidence rule as everything read off the photo.
+      labelOtherCodes: (photoMatchesCode && labelAllCodes
+        && labelAllCodes.filter((c) => normaliseStyleCode(c) !== (result?.normalised || normalised))) || null,
     };
   }
 
@@ -341,7 +372,15 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                   {readNote.options.map((c) => (
                     <button key={c} type="button"
-                      onClick={() => { setTyped(formatStyleCodeForDisplay(c)); setPhotoForCode(normaliseStyleCode(c)); setReadNote(null); }}
+                      onClick={() => {
+                        // The tap teaches the layout rule (and an override of an
+                        // auto-pick is exactly how a wrong rule gets corrected,
+                        // then killed — lib/label-layout.cjs). Best-effort.
+                        if (labelAllCodes && labelAllCodes.length > 1) {
+                          learnLabelLayout({ codes: labelAllCodes, chosenCode: c }).catch(() => {});
+                        }
+                        setTyped(formatStyleCodeForDisplay(c)); setPhotoForCode(normaliseStyleCode(c)); setReadNote(null);
+                      }}
                       style={{ background: "rgba(74,127,255,.14)", border: `1px solid ${BLUE}`, color: "#fff",
                                borderRadius: 10, padding: "10px 14px", fontWeight: 800, cursor: "pointer",
                                fontFamily: "ui-monospace, monospace", minHeight: 44 }}>

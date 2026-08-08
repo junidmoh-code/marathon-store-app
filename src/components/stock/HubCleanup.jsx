@@ -52,10 +52,13 @@ import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
   recordUnresolvedScan, lookupBarcode, loadAllStock, loadDuplicateCandidates,
   fetchProductFollowingMerge, lookupStyleClaim, matchLabelAlias, addLabelAlias,
-  answerStyleCodeSibling,
+  answerStyleCodeSibling, lookupCodeAlias, recordLabelCodes,
+  fetchColourwayAnswers, recordColourwayAnswer,
 } from "./hubCleanupStore";
 import { allRegisteredSiblings, claimOwnerIds } from "../../utils/styleCodeSiblings";
-import { extractDominantColours, orderByColourAffinity } from "../../utils/dominantColours";
+import {
+  extractDominantColours, orderByColourAffinity, selectByColourAffinity, matchColourwayAnswers,
+} from "../../utils/dominantColours";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
   confirmCell, adjustCell, flagCell, useLocationRegistryOnce, rememberHub, rememberedHub,
@@ -315,11 +318,29 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   // match. A number that reads cleanly but resolves to NOTHING is the
   // never-registered signal — recorded calmly in its own list, because that
   // detection is the point of this pass.
-  const handleStyleNumber = useCallback(async (display) => {
+  const handleStyleNumber = useCallback(async (display, meta = null) => {
     if (!hub) return;
     setBusy(true);
     try {
       const normalised = normaliseStyleCode(display);
+      // The label printed MORE than one code-shaped token (tapped or
+      // auto-picked). Once the shoe resolves, EVERY token files as an identity
+      // of that product — a conflict (a token another product owns) surfaces
+      // through the duplicate flow, never silently (owner spec 2026-08-08).
+      const fileAllCodes = async (productId) => {
+        const all = meta && Array.isArray(meta.allCodes) && meta.allCodes.length > 1 ? meta.allCodes : null;
+        if (!all || !productId) return;
+        try {
+          const res = await recordLabelCodes({
+            productId, chosenCode: normalised,
+            otherCodes: all.filter((c) => normaliseStyleCode(c) !== normalised),
+          });
+          if (res && res.conflicts && res.conflicts.length) {
+            const codes = res.conflicts.map((c) => formatStyleCodeForDisplay(c.code) || c.code).join(", ");
+            flash("warn", `${codes} on this label already belongs to another product — flagged as a possible duplicate for review.`, 9000);
+          }
+        } catch { /* best-effort — the count itself must never block on this */ }
+      };
       const claim = await lookupStyleClaim(normalised);
       const out = resolveStyleNumber(display, { products, claim });
       if (out.kind === "claim") {
@@ -339,10 +360,11 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           }
         }
         const cp = countPanelFor(p);
-        if (cp) { setPanel(cp); return; }
+        if (cp) { fileAllCodes(p.id); setPanel(cp); return; }
         // A claim pointing at a ghost or id-less record falls through to
         // never-registered — with the toast, never a silent dead end.
       } else if (out.kind === "product") {
+        fileAllCodes(out.product.id);
         setPanel(countPanelFor(out.product));
         return;
       } else if (out.kind === "choose") {
@@ -352,8 +374,20 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         setPanel({
           mode: "choose", code: display, claimants: out.products,
           siblings: out.siblings, unloadedIds: out.unloadedIds || [],
+          allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
         });
         return;
+      }
+      // Nothing claims or carries this code — but it may be the OTHER token of
+      // a multi-token label someone already resolved: the exact code-alias
+      // store answers (owner spec 2026-08-08 — whichever token a colleague
+      // tapped, this one lands on the same product).
+      const aliasOwner = await lookupCodeAlias(normalised).catch(() => null);
+      if (aliasOwner) {
+        const p = products.find((x) => x && x.id === aliasOwner && !isMergedAway(x))
+          || await fetchProductFollowingMerge(aliasOwner).catch(() => null);
+        const cp = p ? countPanelFor(p) : null;
+        if (cp) { fileAllCodes(p.id); setPanel(cp); return; }
       }
       const noted = await recordUnresolvedScan({ hub, code: display, context: "count" });
       if (noted.ok) {
@@ -680,7 +714,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
               Pick up a shoe and photograph the label <u>inside the tongue</u> — the style number
               brings up its count. Not the shop barcode sticker, not the box.
             </div>
-            <TongueLabelReader big busy={busy} onCode={(code) => handleStyleNumber(code)} onTokens={handleAliasTokens} />
+            <TongueLabelReader big busy={busy} onCode={(code, meta) => handleStyleNumber(code, meta)} onTokens={handleAliasTokens} />
 
             {/* Fallback 2 — search by name, small on purpose. */}
             <input value={query} onChange={(e) => setQuery(e.target.value)}
@@ -830,6 +864,16 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       {panel && panel.mode === "choose" && (
         <ChoosePanel panel={panel} tab={tab} busy={busy}
                      onPick={(p) => {
+                       // Whichever way the pick landed (tap, photo auto-select,
+                       // remembered answer), a multi-token label's OTHER codes
+                       // file as identities of the picked product too.
+                       if (panel.allCodes && panel.allCodes.length > 1 && panel.code) {
+                         const chosen = normaliseStyleCode(panel.code);
+                         recordLabelCodes({
+                           productId: p.id, chosenCode: chosen,
+                           otherCodes: panel.allCodes.filter((c) => normaliseStyleCode(c) !== chosen),
+                         }).catch(() => {});
+                       }
                        if (tab === "count") { setPanel(countPanelFor(p)); }
                        else { setPanel(registerPanelFor(p)); ensureAllStock().catch(() => {}); }
                      }}
@@ -922,22 +966,57 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   );
 }
 
-// ─── CHOOSE PANEL — one code, several products, side by side, LARGE ──────────
-// The one decision on this screen: WHICH of these is the shoe in your hand?
-// Photos dominate (the products differ by COLOUR, and colour lives in the
-// photo, not the name), one tap picks, and "none of these" is always present —
-// because a colourway we have no record for is a real answer, not a failure.
+// ─── CHOOSE PANEL — one code, several products: let the MACHINE look first ───
+// (Owner spec 2026-08-08, superseding the 2026-08-07 ordering-only rule for
+// REGISTERED SIBLING sets.) The code alone can never say which colourway the
+// operator is holding — an automatic choice from the code would be wrong half
+// the time, silently. So the decision comes from the SHOE:
 //
-// The optional quick photo of the shoe re-ORDERS the list by dominant-colour
-// affinity so the likely match sits first. Ordering is its entire effect: it
-// never selects, never hides, never disables a candidate (owner spec
-// 2026-08-07 — colour is a hint for the eye, the human is the authority).
+//   1. quick photo → dominant colours (the existing capture + extraction path);
+//   2. a previously ANSWERED question for this code whose stored palette
+//      matches this photo resolves SILENTLY — the same physical shoe is never
+//      asked twice (matchColourwayAnswers, fail-closed on any disagreement);
+//   3. else the photo auto-selects ONLY when one candidate wins by a clear
+//      margin over the runner-up (selectByColourAffinity — any missing stored
+//      palette, washed-out photo or near tie refuses);
+//   4. else the side-by-side picker asks, ordered likeliest-first — and the
+//      human's tap (with its palette) is STORED so step 2 answers next time.
+//
+// UNexplained collisions (siblings=false) keep the human-only flow: those
+// candidates may be the same shoe twice, and the merge question is not one a
+// photo can answer. "None of these" is always present — a colourway we have
+// no record for is a real answer, not a failure.
 function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
   const [photoColours, setPhotoColours] = useState(null);
   const [shooting, setShooting] = useState(false);
+  const [autoNote, setAutoNote] = useState(null);
   const fileRef = useRef(null);
   const ordered = photoColours ? orderByColourAffinity(panel.claimants, photoColours) : panel.claimants;
   const siblings = !!panel.siblings;
+
+  // Earlier answers for this code — fetched once; a failed fetch degrades to
+  // asking (never to a broken picker). Only sibling sets use them.
+  const [answers, setAnswers] = useState(null);
+  useEffect(() => {
+    if (!siblings || !panel.code) return;
+    let cancelled = false;
+    fetchColourwayAnswers(normaliseStyleCode(panel.code))
+      .then((rows) => { if (!cancelled) setAnswers(rows); })
+      .catch(() => { if (!cancelled) setAnswers([]); });
+    return () => { cancelled = true; };
+  }, [siblings, panel.code]);
+
+  // The human's tap IS the answer — store it against the shoe's signature
+  // (code + this photo's palette) so the question is never asked twice for
+  // this physical shoe. Best-effort: a failed store just means one more ask.
+  const pick = (p, { remember = true } = {}) => {
+    if (remember && siblings && panel.code && photoColours) {
+      recordColourwayAnswer({
+        code: normaliseStyleCode(panel.code), productId: p.id, palette: photoColours,
+      }).catch(() => {});
+    }
+    onPick(p);
+  };
 
   async function handleShoePhoto(e) {
     const file = e.target.files && e.target.files[0];
@@ -946,7 +1025,21 @@ function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
     setShooting(true);
     try {
       const colours = await extractDominantColours(file);
-      setPhotoColours(colours.length ? colours : null);
+      if (!colours.length) { setPhotoColours(null); return; }
+      if (siblings) {
+        // Step 2 — the remembered answer. Already human-vouched, so it needs
+        // no re-remembering; fail-closed matching inside.
+        const remembered = matchColourwayAnswers(answers || [], colours);
+        const rememberedProduct = remembered ? panel.claimants.find((c) => c && c.id === remembered) : null;
+        if (rememberedProduct) { pick(rememberedProduct, { remember: false }); return; }
+        // Step 3 — the margin decision. `auto` only on a clear win; the
+        // stored answer comes from the product images, so remember this
+        // photo's palette too — next time it resolves at step 2.
+        const decided = selectByColourAffinity(panel.claimants, colours);
+        if (decided.kind === "auto") { pick(decided.product); return; }
+        setAutoNote("The photo can't separate these on colour — tap the shoe in your hand.");
+      }
+      setPhotoColours(colours);
     } finally { setShooting(false); }
   }
 
@@ -968,12 +1061,16 @@ function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
         style={{ ...bGhost, fontSize: 12.5, minHeight: 44, marginBottom: 12, width: "100%" }}>
         {shooting ? "Reading the colours…"
           : photoColours ? "📷 Photo taken — likely match is first. Retake?"
+          : siblings ? "📷 Photo the shoe — a clear colour match picks it for you"
           : "📷 Quick photo of the shoe (optional) — puts the likely match first"}
       </button>
+      {autoNote && (
+        <div style={{ fontSize: 12, color: AMBER, margin: "-4px 0 10px", lineHeight: 1.5 }}>{autoNote}</div>
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {ordered.map((p, i) => (
-          <button key={p.id} type="button" disabled={busy} onClick={() => onPick(p)}
+          <button key={p.id} type="button" disabled={busy} onClick={() => pick(p)}
             style={{ display: "flex", alignItems: "center", gap: 14, padding: 14, width: "100%",
                      background: CARD, border: photoColours && i === 0 ? "2px solid rgba(74,127,255,.55)" : BORDER,
                      borderRadius: 16, cursor: "pointer", textAlign: "left", fontFamily: FONT, color: "inherit" }}>
@@ -1036,14 +1133,18 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const [skipReason, setSkipReason] = useState(null);
   const [skipOpen, setSkipOpen] = useState(false);
   const [aliasTokens, setAliasTokens] = useState(null);    // a label READING (no printed code)
+  const [allCodes, setAllCodes] = useState(null);          // every code token on a multi-token label
   const [onFileReaderOpen, setOnFileReaderOpen] = useState(false); // optional alias capture for coded products
 
   // The shared tongue-label reader hands back the chosen code — one capture
   // path for BOTH passes (owner reversal 2026-08-06), never a second build.
-  const takeCode = (code, { source, labelPhoto: photo }) => {
+  const takeCode = (code, { source, labelPhoto: photo, allCodes: codes = null }) => {
     setChosenCode(code);
     setCodeSource(source);
     setLabelPhoto(source === "label" ? photo : null);
+    // Every code-shaped token the label printed (multi-token labels) — the
+    // save files them ALL as identities of this product (owner spec 2026-08-08).
+    setAllCodes(Array.isArray(codes) && codes.length > 1 ? codes : null);
     setAliasTokens(null);
     setSkipReason(null);
   };
@@ -1096,7 +1197,8 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const styleCodePayload = skipReason
     ? { skipped: skipReason }
     : chosenCode
-      ? { code: chosenCode, source: codeSource || "manual", labelPhoto: codeSource === "label" ? labelPhoto : null }
+      ? { code: chosenCode, source: codeSource || "manual", labelPhoto: codeSource === "label" ? labelPhoto : null,
+          ...(allCodes ? { allCodes } : {}) }
       : aliasTokens
         ? { aliasTokens }
         : null;

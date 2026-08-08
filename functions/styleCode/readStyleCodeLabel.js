@@ -53,6 +53,7 @@ const {
   isKnownStyleCodeFormat,
   formatStyleCodeForDisplay,
 } = require("../lib/style-code.cjs");
+const { LAYOUT_RULES_PATH, layoutKeyFor, applyLayoutRule } = require("../lib/label-layout.cjs");
 const { assertStyleCodeAccess } = require("./access.cjs");
 
 if (!admin.apps.length) {
@@ -215,6 +216,30 @@ async function runGeminiRead(base64, mimeType, apiKey, { fetchImpl } = {}) {
   };
 }
 
+// ── TIER 2.5 — THE LEARNED LAYOUT RULE (owner spec 2026-08-08) ───────────────
+// When the funnel still holds SEVERAL candidates, a human has possibly already
+// answered "which token is the style number" for this label LAYOUT (the shape
+// multiset of the candidates — lib/label-layout.cjs). If a live rule decides
+// this set, the response carries `autoPick` so the client resolves without
+// asking the same question twice. The candidate list still rides the response
+// in full — the pick is transparent, never a truncation. Consulted on BOTH the
+// cached and the fresh path (a rule can be learned after a row was cached),
+// and never written into the cache row: rules change; cached OCR must not pin
+// a stale answer.
+async function consultLayoutRule(db, candidates) {
+  if (!Array.isArray(candidates) || candidates.length < 2) return { autoPick: null, layoutKey: null };
+  const layoutKey = layoutKeyFor(candidates);
+  if (!layoutKey) return { autoPick: null, layoutKey: null };
+  try {
+    const rule = (await db.ref(`${LAYOUT_RULES_PATH}/${layoutKey}`).get()).val();
+    return { autoPick: applyLayoutRule(rule, candidates), layoutKey };
+  } catch (err) {
+    // A failed rule read degrades to asking — never to a broken read.
+    console.warn(`readStyleCodeLabel: layout rule read failed for ${layoutKey}:`, err && err.message);
+    return { autoPick: null, layoutKey };
+  }
+}
+
 /**
  * The funnel core — injectable IO so tiers 1 and 2 are testable without a
  * network or firebase-admin.
@@ -243,9 +268,13 @@ async function runLabelRead(db, {
   if (isOcrCacheFresh(cachedRow, nowMs)) {
     // RTDB drops an empty candidates array — default it back.
     const cachedCandidates = Array.isArray(cachedRow.candidates) ? cachedRow.candidates : [];
+    const layout = await consultLayoutRule(db, cachedCandidates);
     return {
       candidates: cachedCandidates,
       displayCandidates: cachedCandidates.map(formatStyleCodeForDisplay),
+      autoPick: layout.autoPick,
+      autoPickDisplay: layout.autoPick ? formatStyleCodeForDisplay(layout.autoPick) : null,
+      layoutKey: layout.layoutKey,
       tokens: cachedRow.tk && typeof cachedRow.tk === "object" ? Object.keys(cachedRow.tk).sort() : [],
       // Label extras ride the cache under short keys (cw/upc/mn) — see
       // buildOcrCacheRecord. Older rows simply have none, which reads as null.
@@ -352,9 +381,13 @@ async function runLabelRead(db, {
     }
   }
 
+  const layout = await consultLayoutRule(db, candidates);
   return {
     candidates,
     displayCandidates: candidates.map(formatStyleCodeForDisplay),
+    autoPick: layout.autoPick,
+    autoPickDisplay: layout.autoPick ? formatStyleCodeForDisplay(layout.autoPick) : null,
+    layoutKey: layout.layoutKey,
     tokens,
     colorway, upc, modelName,
     source, fromCache: false, brand, size, confidence, tier2Used, errors,

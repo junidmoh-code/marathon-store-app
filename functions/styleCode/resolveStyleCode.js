@@ -457,6 +457,7 @@ async function runResolve(db, {
 
 exports.runResolve = runResolve;
 exports.findProductsByStyleCode = findProductsByStyleCode;
+exports.flagDuplicates = flagDuplicates;
 exports.duplicatePairId = duplicatePairId;
 exports.duplicatePairs = duplicatePairs;
 exports.readClaim = readClaim;

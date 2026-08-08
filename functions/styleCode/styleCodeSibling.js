@@ -51,6 +51,9 @@ const {
   repeatAnswerCount,
 } = require("../lib/style-code-siblings.cjs");
 const { normaliseStyleCode, formatStyleCodeForDisplay } = require("../lib/style-code.cjs");
+const {
+  COLOURWAY_ANSWERS_PATH, MAX_ANSWERS_PER_CODE, cleanPalette, isDuplicateAnswer,
+} = require("../lib/colourway-answers.cjs");
 const { STYLE_CODE_INDEX_PATH, DUPLICATE_CANDIDATES_PATH, DUP_REASON_STYLE_CODE, duplicatePairId } = require("./resolveStyleCode.js");
 const { assertStyleCodeAccess } = require("./access.cjs");
 
@@ -76,11 +79,51 @@ const SAFE_KEY = /^[^./#$[\]\s]+$/;
  *   { ok:true, registered:false, alreadyOwner:true, owners } (idempotent repeat)
  *   { ok:true, recorded:true, pairId }                     (sameShoe)
  */
-async function runSibling(db, { action, code, productId, otherId, actor, nowMs }) {
+async function runSibling(db, { action, code, productId, otherId, palette, actor, nowMs }) {
   const normalised = normaliseStyleCode(code);
   if (!normalised) throw new HttpsError("invalid-argument", "A style code is required.");
+
+  // ── COLOURWAY ANSWERS (owner spec 2026-08-08) — before the claim gate ──────
+  // Reading answers needs no claim bootstrap and no productId; it is the first
+  // thing the picker does. See lib/colourway-answers.cjs for the model.
+  if (action === "colourwayAnswers") {
+    const rows = (await db.ref(`${COLOURWAY_ANSWERS_PATH}/${normalised}`).get()).val() || {};
+    const answers = Object.values(rows)
+      .filter((r) => r && typeof r.productId === "string" && Array.isArray(r.p))
+      .map((r) => ({ productId: r.productId, p: r.p }));
+    return { ok: true, answers };
+  }
+
   if (typeof productId !== "string" || !SAFE_KEY.test(productId)) {
     throw new HttpsError("invalid-argument", "productId is not a legal id.");
+  }
+
+  if (action === "answerColourway") {
+    // The picked product must be a LIVE registered owner of this code — an
+    // answer naming anything else would teach the store a wrong identity.
+    const clean = cleanPalette(palette);
+    if (!clean) throw new HttpsError("invalid-argument", "A usable colour palette is required.");
+    const claimNode = (await db.ref(`${STYLE_CODE_INDEX_PATH}/${normalised}`).get()).val();
+    if (!claimOwnerIds(claimNode).includes(productId)) {
+      throw new HttpsError("failed-precondition", "That product is not a registered owner of this code.");
+    }
+    const picked = (await db.ref(`products/${productId}`).get()).val();
+    if (!picked || picked.mergedInto) {
+      throw new HttpsError("failed-precondition", "That product is gone or merged — work with its survivor.");
+    }
+    const rowsRef = db.ref(`${COLOURWAY_ANSWERS_PATH}/${normalised}`);
+    const rows = (await rowsRef.get()).val() || {};
+    if (isDuplicateAnswer(rows, productId, clean)) {
+      return { ok: true, deduped: true };
+    }
+    if (Object.keys(rows).length >= MAX_ANSWERS_PER_CODE) {
+      // Bounded on purpose — enough answers exist that matching already works;
+      // refusing quietly here would hide a signal, so say so in the response.
+      return { ok: false, reason: "answer-store-full" };
+    }
+    const ref = rowsRef.push();
+    await ref.set({ productId, p: clean, at: nowMs, by: actor ? actor.uid : null });
+    return { ok: true, answerId: ref.key };
   }
 
   const claimRef = db.ref(`${STYLE_CODE_INDEX_PATH}/${normalised}`);
@@ -277,12 +320,17 @@ async function runSibling(db, { action, code, productId, otherId, actor, nowMs }
 exports.runSibling = runSibling;
 exports.SIBLING_WRITE_PERMISSIONS = SIBLING_WRITE_PERMISSIONS;
 
+// "colourwayAnswers" is a LOOKUP — open to every style-code role, exactly as
+// labelAlias "match" is. Every mutating action keeps the write-capable gate.
+const SIBLING_READ_ACTIONS = ["colourwayAnswers"];
+
 exports.styleCodeSibling = onCall({ region: "europe-west1" }, async (request) => {
   const db = admin.database();
   const actor = await assertStyleCodeAccess(request, db);
-  if (!actor.isSuper && !SIBLING_WRITE_PERMISSIONS.some((p) => actor.permissions.includes(p))) {
+  const { action, code, productId, otherId, palette } = request.data || {};
+  if (!SIBLING_READ_ACTIONS.includes(action)
+      && !actor.isSuper && !SIBLING_WRITE_PERMISSIONS.some((p) => actor.permissions.includes(p))) {
     throw new HttpsError("permission-denied", "Answering a style-code collision needs a stock or display role.");
   }
-  const { action, code, productId, otherId } = request.data || {};
-  return runSibling(db, { action, code, productId, otherId, actor, nowMs: Date.now() });
+  return runSibling(db, { action, code, productId, otherId, palette, actor, nowMs: Date.now() });
 });
