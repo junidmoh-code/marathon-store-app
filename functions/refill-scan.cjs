@@ -636,7 +636,9 @@ async function runScan() {
               wantRrs.add(key);
               const existing = refillRequests[key];
               upd[`refill_requests/${key}`] = {
-                productId: pid, size: sizeKey === "_" ? "" : sizeKey, qty: s.qty,
+                // `size` is a raw-size FIELD, not a key — decode the half-size
+                // ("5_5"→"5.5") so queue availability lookups and the UI match.
+                productId: pid, size: sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2"), qty: s.qty,
                 requestingLocation: "hub2", status: "open", shadow: true,
                 createdFrom: { engine: true, shadow: true, runId, source: s.source },
                 createdAt: existing?.createdAt || startedAt,
@@ -649,7 +651,7 @@ async function runScan() {
               upd[`orders/${key}`] = {
                 id: key, productId: pid, productName: p.name || "Unknown",
                 productPhoto: p.photo || null, productPhotoUrl: p.photoUrl ?? null,
-                size: sizeKey === "_" ? "" : sizeKey, sentSize: null, qty: s.qty,
+                size: sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2"), sentSize: null, qty: s.qty,
                 customerName: "Shop Refill", customerPhone: null,
                 hub: s.source, placedAtHub: s.source,
                 placedStore: UNIVERSE_BY_SHOP[dest] || "central", destShop: dest,

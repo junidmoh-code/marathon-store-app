@@ -49,7 +49,9 @@ export const SIZES_APPAREL = ["S", "M", "L", "XL", "XXL", "XXXL"];
 // FOOTWEAR: includes 5.5 — the live-data check found 460 products and 504 stock
 // cells (325 non-zero, 800 units) on that size. Dropping it would have made the
 // third-most-common shoe size unreceivable.
-export const SIZES_FOOTWEAR = ["3", "4", "5", "5.5", "6", "7", "8", "9", "10", "11"];
+// 12 and 13 added 2026-08-08 (owner ask) — whole sizes only at that end,
+// matching the run's existing top-end pattern (10, 11 carry no halves).
+export const SIZES_FOOTWEAR = ["3", "4", "5", "5.5", "6", "7", "8", "9", "10", "11", "12", "13"];
 
 export const SIZES_KIDS = ["26", "27", "28", "29", "30", "31", "32", "33"];
 export const SIZES_FITTED_CAP = ["55", "56", "57", "58", "59", "60", "61", "62", "63"];

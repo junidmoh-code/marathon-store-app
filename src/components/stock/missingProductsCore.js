@@ -18,9 +18,12 @@
 // gate the engine uses (storeCarries). That is why a Solve, which seeds qty-0
 // cells, retires a card immediately.
 
+// Numeric-aware ordering: letters keep their historical ranks; shoe/waist
+// sizes sort numerically after them instead of tying at 99 and rendering in
+// arbitrary map order (12/13 would otherwise land anywhere).
+import { sizeRank } from "./hubSizeRank";
+
 const STORES = ["marathon-pe", "trophy"];
-const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
-const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
 
 // ── GROUPING: exactly two chips — Sneakers and Clothing ──────────────────────
 // Owner directive 2026-08-05: "remove the rest of the categories and just leave

@@ -7,7 +7,7 @@ import { database, storage, auth, googleProvider, functions, functionsUS } from 
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
 import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
-import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
+import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
@@ -56,7 +56,7 @@ import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useLocations } from "./components/stock/useStock";
+import { useStockCells, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -74,6 +74,7 @@ import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositio
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { checkSourceMovementDuplicate, sourceMovementIdSeed } from "./components/stock/sourceMovementDedupe";
+import { onHoldRefillPlan, holdReleaseUpdate, heldCardVisible } from "./components/stock/onHoldRefill";
 import { clearSourceResponseCells } from "./components/stock/sourceResponseWrites";
 import { printOrderSlips } from "./print/orderSlip";
 // ── New product taxonomy (31 categories, RTDB-backed registry) ───────────────
@@ -311,10 +312,10 @@ const STATUS = { INCOMING: "incoming", READY: "ready", OUT_OF_STOCK: "out_of_sto
 
 // ─── SIZE RANGE + SUBSTITUTE HELPERS ──────────────────────────────────────────
 // Canonical numeric range used to decide whether a ±1 substitute is in bounds.
-// Matches the spread of sizeOptions in AdminView ([3..11]); kept here so the
-// Warehouse picker doesn't have to import it.
+// Matches the spread of SNEAKER_SIZES / SIZES_FOOTWEAR ([3..13] since
+// 2026-08-08); kept here so the Warehouse picker doesn't have to import it.
 const SIZE_MIN = 3;
-const SIZE_MAX = 11;
+const SIZE_MAX = 13;   // run extended to 12/13 (2026-08-08) — substitutes may now offer them
 
 // Given a requested size string, returns { below, above } as size strings
 // representing one FULL size down / up (delta ±1.0). Either side is null when
@@ -1073,7 +1074,11 @@ function useAllSourceResponses() {
           if (key === "createdAt" || key === "date" || key === "products") return;
           if (typeof val !== "object" || val === null) return;
           const sizes = {};
-          Object.entries(val).forEach(([size, raw]) => {
+          Object.entries(val).forEach(([sizeKey, raw]) => {
+            // Stored keys are RTDB-encoded ("5_5"); in-memory maps use the raw
+            // catalogue size ("5.5") so every lookup site compares like with
+            // like. Legacy raw whole/letter keys decode to themselves.
+            const size = decodeSizeKey(sizeKey);
             const norm = normalizeSourceResponse(raw);
             if (norm) sizes[size] = norm;
             else if (raw && typeof raw === "object" && Number(raw.fulfilledQty) > 0) {
@@ -1101,9 +1106,17 @@ function useAllSourceResponses() {
 // `extra` (optional) rides along for the audit trail — e.g. fulfilledQty +
 // transferred flags from Transfer & Fulfil. Readers only consume
 // response/respondedOn, so extras are DB-only forensics.
+// SIZE KEYS ARE ENCODED (half-size fix 2026-08-08). A raw "5.5" used as an
+// update key throws SYNCHRONOUSLY inside Firebase's key validation — before the
+// promise exists — so the .catch below never saw it and the error escaped to
+// the operator AFTER the stock transfer had already applied: stock moved, the
+// cell never closed. Every write below goes through encodeSizeKey ("5.5"→"5_5",
+// whole/letter sizes unchanged), every read through useAllSourceResponses
+// decodes back, so in-memory code keeps comparing raw catalogue sizes. Existing
+// leaves are raw whole/letter sizes, which encode to themselves — no migration.
 function saveSourceResponse(date, productKey, size, response, extra) {
   update(ref(database, sourceResponsePath(date, productKey)), {
-    [size]: { response, respondedOn: serverNowIso(), ...(extra || {}) }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { response, respondedOn: serverNowIso(), ...(extra || {}) }
   }).catch(err => console.warn("saveSourceResponse failed:", err));
 }
 
@@ -1112,7 +1125,7 @@ function saveSourceResponse(date, productKey, size, response, extra) {
 // "n of m sent" badge until the remainder ships and saveSourceResponse closes it.
 function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
   update(ref(database, sourceResponsePath(date, productKey)), {
-    [size]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}) }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}) }
   }).catch(err => console.warn("saveSourceFulfilProgress failed:", err));
 }
 
@@ -1168,8 +1181,9 @@ function useClothingOos() {
         Object.entries(storeNode).forEach(([pid, sizesNode]) => {
           if (!sizesNode || typeof sizesNode !== "object") return;
           const bySize = {};
-          Object.entries(sizesNode).forEach(([size, leaf]) => {
-            if (leaf && typeof leaf === "object" && leaf.outHub) bySize[size] = leaf;
+          Object.entries(sizesNode).forEach(([sizeKey, leaf]) => {
+            // Stored keys are encoded ("5_5"); decode so lookups by raw size match.
+            if (leaf && typeof leaf === "object" && leaf.outHub) bySize[decodeSizeKey(sizeKey)] = leaf;
           });
           if (Object.keys(bySize).length) byProduct[pid] = bySize;
         });
@@ -1186,11 +1200,14 @@ function useClothingOos() {
 function saveClothingOut(store, productId, size, hub) {
   const uid = auth.currentUser?.uid || null;
   update(ref(database, `clothing_sold_refills/${store}/${productId}`), {
-    [String(size)]: { outHub: hub || null, at: serverNowIso(), by: uid }
+    // Encoded key (same half-size fix as saveSourceResponse): a "." size here
+    // threw synchronously; a "." in clearClothingOut's path silently addressed
+    // a child node instead. Reader (useClothingOos) decodes back to raw.
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { outHub: hub || null, at: serverNowIso(), by: uid }
   }).catch(err => console.warn("saveClothingOut failed:", err));
 }
 function clearClothingOut(store, productId, size) {
-  return remove(ref(database, `clothing_sold_refills/${store}/${productId}/${String(size)}`))
+  return remove(ref(database, `clothing_sold_refills/${store}/${productId}/${assertSafeSegment(encodeSizeKey(size), "size key")}`))
     .catch(err => console.warn("clearClothingOut failed:", err));
 }
 
@@ -1221,7 +1238,8 @@ async function reverseClothingRefill({ store, productId, size, qty, hub, batchId
     reason: CLOTHING_REFILL_UNDO_REASON,
     actorRole: actorRole || null,
     link: { refillId: `clth_${store}_${productId}` },
-    movementId: `clthundo_${batchId}_${size}`,
+    // Encoded — a raw "." in a movementId is an illegal /stock_movements key.
+    movementId: `clthundo_${batchId}_${encodeSizeKey(size)}`,
   });
 }
 
@@ -2695,12 +2713,12 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
             <span style={{ fontSize:10, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
             <div style={{ flex:1 }} />
             <span style={{ fontSize:12.5, color:"rgba(233,238,255,.5)" }}>{dateStr}</span>
-            <div style={{ display:"flex", alignItems:"center", gap:9, padding:"6px 8px 6px 6px", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, background:"rgba(255,255,255,.022)" }}>
+            {/* Identity pill only — Sign Out moved to the BOTTOM of this page
+                (owner directive 2026-08-08): the top-right control was too easy
+                to hit in passing, and one logout in one place is the rule now. */}
+            <div style={{ display:"flex", alignItems:"center", gap:9, padding:"6px 12px 6px 6px", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, background:"rgba(255,255,255,.022)" }}>
               <span style={{ width:26, height:26, borderRadius:"50%", background:"rgba(74,127,255,.2)", border:"1px solid rgba(74,127,255,.5)", color:"#9DBCFF", fontSize:11, fontWeight:800, display:"grid", placeItems:"center" }}>{(name[0] || "?").toUpperCase()}</span>
               <span style={{ fontSize:12, fontWeight:700 }}>{name}</span>
-              <button onClick={homeSignOut} title="Sign out" aria-label="Sign out" style={{ border:0, background:"transparent", color:"rgba(233,238,255,.4)", cursor:"pointer", display:"grid", placeItems:"center", padding:2 }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-              </button>
             </div>
           </div>
 
@@ -2754,6 +2772,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
               ))}
             </>
           )}
+          <HomeSignOutRow name={name} onSignOut={homeSignOut} />
         </div>
       </div>
     );
@@ -2797,7 +2816,36 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
             No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
         )}
+        <HomeSignOutRow name={name} onSignOut={homeSignOut} />
       </div>
+    </div>
+  );
+}
+
+// THE one logout in the app (owner directive 2026-08-08): every top-right
+// sign-out control was removed — the global floating pill included — and this
+// row at the BOTTOM of the home page is what replaced them all. 48px tall
+// (thumb-safe), destructive-red on tap-through only, shows who it signs out.
+function HomeSignOutRow({ name, onSignOut }) {
+  // Same cleanup the old top-right pill did: dropping the #admin hash after
+  // sign-out lands super-admin on the Login screen, not the Google popup gate.
+  const signOut = async () => {
+    await onSignOut();
+    if (window.location.hash === "#admin") window.location.hash = "";
+  };
+  return (
+    <div style={{ marginTop: 34, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.07)" }}>
+      <button
+        onClick={signOut}
+        style={{
+          width: "100%", minHeight: 48, borderRadius: 13, cursor: "pointer",
+          border: "1px solid rgba(248,113,113,.35)", background: "rgba(248,113,113,.07)",
+          color: "#F87171", fontSize: 14, fontWeight: 700,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 9,
+        }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        Sign out{name ? ` — ${name}` : ""}
+      </button>
     </div>
   );
 }
@@ -2806,7 +2854,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
 // Sneaker size options (clothing uses CLOTHING_SIZES). Hoisted to module
 // scope so both AdminView's Add Product form and AdminProductDetail's size
 // editor share the same source of truth.
-const SNEAKER_SIZES = ["3","4","5","5.5","6","7","8","9","10","11"];
+const SNEAKER_SIZES = ["3","4","5","5.5","6","7","8","9","10","11","12","13"];
 
 // `#product/{id}` is the detail-page route. Returns null when the hash is
 // anything else (empty, #admin, etc.).
@@ -6858,7 +6906,7 @@ const AD_PAGE = 60;
 
 function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
-                            onViewPhoto, onSwitchView, onSignOut, userEmail, mode, setMode,
+                            onViewPhoto, onSwitchView, userEmail, mode, setMode,
                             customerName, setCustomerName, customerPhone, setCustomerPhone,
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
                             customerIndex, onPickCustomer,
@@ -7124,16 +7172,15 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
           <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M18 2l4 4-9 9H9v-4z"/></svg>
           Switch view
         </button>
+        {/* Identity only — the sign-out icon here was removed with every other
+            scattered logout (owner directive 2026-08-08). The ONE logout lives
+            at the bottom of the home page; leave via "Switch view" to reach it. */}
         <div className="ad-who">
           <span className="ad-av">{(userEmail || "?")[0].toUpperCase()}</span>
           <span style={{ minWidth: 0, flex: 1 }}>
             <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{(userEmail || "").split("@")[0] || "assistant"}</span>
             <span style={{ display: "block", fontSize: 10, color: "rgba(233,238,255,.4)" }}>Store assistant</span>
           </span>
-          <button onClick={onSignOut} title="Sign out" aria-label="Sign out"
-                  style={{ width: 28, height: 28, flexShrink: 0, borderRadius: 8, border: "1px solid rgba(255,255,255,.12)", background: "transparent", color: "rgba(233,238,255,.5)", cursor: "pointer", display: "grid", placeItems: "center" }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-          </button>
         </div>
       </aside>
 
@@ -7707,7 +7754,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // (isSuperAdmin/hasPermission no longer destructured here — their only
   // consumer, the "Shop stock · view only" card's canAccessStock gate, was
   // removed with the card. Owner decision 2026-07-16.)
-  const { user: assistantUser, signOut: assistantSignOut, storeIds: allowedStores, permRecord: stockPermRecord } = usePermissions();
+  const { user: assistantUser, storeIds: allowedStores, permRecord: stockPermRecord } = usePermissions();
   // Desktop workspace kicks in at ≥1024px (laptop); phone + iPad keep tap→sheet.
   const isDesktop = !useIsNarrow(1024);
   // Single-store assignment (destShop) locks the picker to exactly that shop — the
@@ -8346,7 +8393,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           onSelectShop={selectShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
-          onViewPhoto={setFullPhoto} onSwitchView={onExit} onSignOut={assistantSignOut}
+          onViewPhoto={setFullPhoto} onSwitchView={onExit}
           userEmail={assistantUser?.email || ""} mode={mode} setMode={setMode}
           customerName={customerName} setCustomerName={setCustomerName}
           customerPhone={customerPhone} setCustomerPhone={setCustomerPhone}
@@ -9114,7 +9161,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     return { dueRefills: due, completedRefills: completed };
   }, [orders, selectedHub, nowTick]);
   const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
-  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","S","M","L","XL","XXL","XXXL","4XL","28","30","32","34","36","38","40"];
+  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","12","13","S","M","L","XL","XXL","XXXL","4XL","28","30","32","34","36","38","40"];
   const sizeRank = (s) => {
     const i = CANONICAL_SIZE_ORDER.indexOf(s);
     return i === -1 ? 999 : i;
@@ -9309,6 +9356,48 @@ function WarehouseView({ products = [], orders, onExit }) {
     if (status === STATUS.COMING_TOMORROW) patch.comingTomorrowAt = now;
     if (status === STATUS.COLLECTED)       patch.collectedAt = now;
 
+    // ── ON HOLD RAISES A SIZE REFILL REQUEST (owner redesign 2026-08-08) ─────
+    // The source-facing half of a hold is now a real /refill_requests row
+    // against the order's own hub, queued in that hub's refill tab. FAIL
+    // CLOSED on every uncertainty (unroutable hub, no productId/size, write
+    // refused): no request, and the hold stays visible as a held card for a
+    // human — see onHoldRefill.js. Create-if-absent so a re-tap can neither
+    // duplicate the ask nor reopen one the source already rejected. The
+    // customer-facing hold (status, TV, WhatsApp below) is untouched.
+    if (status === STATUS.COMING_TOMORROW) {
+      const plan = onHoldRefillPlan(order, { nowIso: now, saDate: getSADateString() });
+      if (plan.ok) {
+        try {
+          const existing = (await get(ref(database, `refill_requests/${plan.requestId}`))).val();
+          if (!existing) await set(ref(database, `refill_requests/${plan.requestId}`), plan.record);
+          // Stamp the order either way — the held-card list hides items that
+          // are represented in a refill queue, new or re-tapped.
+          patch.onHoldRefillRequestId = plan.requestId;
+        } catch (err) {
+          console.warn(`On-hold refill request not raised for #${order.id} (${err?.message || err}) — hold stays visible for a human.`);
+        }
+      } else {
+        console.warn(`On-hold refill request not raised for #${order.id}: ${plan.reason} — hold stays visible for a human.`);
+      }
+    }
+    // ── RELEASING a hold withdraws its still-open refill ask ─────────────────
+    // (Kimi review, PR #335.) Marking the order Ready/Collected/OOS means the
+    // hold's need is gone; without this the queue keeps asking for stock nobody
+    // wants. Only an OPEN request is touched — a picker's fulfil always wins.
+    // "hold_released" + resolvedBy renders as "No longer needed, by <person>".
+    if (status !== STATUS.COMING_TOMORROW && order.onHoldRefillRequestId) {
+      const rel = holdReleaseUpdate(order, status, { nowIso: now, uid: auth.currentUser?.uid || null });
+      if (rel) {
+        try {
+          const reqRef = ref(database, `refill_requests/${rel.requestId}`);
+          const live = (await get(reqRef)).val();
+          if (live && live.status === "open") await update(reqRef, rel.patch);
+        } catch (err) {
+          console.warn(`On-hold refill request ${rel.requestId} not withdrawn (${err?.message || err}) — the engine's satisfied-sweep will retire it.`);
+        }
+      }
+    }
+
     // ── Display Partner refill scheduling (Phase 9) ────────────────────────
     // When a Display Partner order is marked READY, schedule a refill task on
     // the hub where it was placed (display requests now route to the product's
@@ -9355,6 +9444,11 @@ function WarehouseView({ products = [], orders, onExit }) {
       action: insightAction,
       placedAtHub: order.placedAtHub || order.hub || "hub1",
       destShop: order.destShop ?? null,
+      // A "tomorrow" event that raised a refill request carries the id, so the
+      // durable log can also suppress the held card after the daily order-number
+      // reset clobbers the live order row.
+      ...(status === STATUS.COMING_TOMORROW && patch.onHoldRefillRequestId
+        ? { refillRequestId: patch.onHoldRefillRequestId } : {}),
     });
     // ── WhatsApp notifications ───────────────────────────────────────────────
     // order_ready template: pass customer_name and order_number ONLY.
@@ -12370,7 +12464,9 @@ const HISTORY_RETENTION_DAYS = 5;
 // Reactions write to restock_requests/{day-N}/{key}/{size} = { response, respondedOn:NOW }
 // — see saveSourceResponse. The original-day path is what makes resolution
 // stick across page loads; respondedOn carries "today's stamp" for the audit.
-function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResponse, fulfilCtx, fulfilProgress, onFulfilProgress }) {
+// `cellFilter` (optional): (key, product, size) => bool — the Hub 2 tab's
+// SNEAKERS / CLOTHING split, applied to each pending cell. Absent = everything.
+function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResponse, fulfilCtx, fulfilProgress, onFulfilProgress, cellFilter = null }) {
   // Default expand: yesterday open, older closed. Stored by daysAgo number.
   const [openDays, setOpenDays] = useState(() => new Set([1]));
   const toggle = (d) => setOpenDays(prev => {
@@ -12401,6 +12497,7 @@ function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResp
         const sizes = {};
         Object.entries(product.sizes || {}).forEach(([size, count]) => {
           if (dayResponses[key]?.[size] || (legacyKey && dayResponses[legacyKey]?.[size])) return;
+          if (cellFilter && !cellFilter(key, product, size)) return;
           sizes[size] = count;
           pendingUnits += (typeof count === "number" ? count : 1);
         });
@@ -12411,7 +12508,7 @@ function SourceHistoryTab({ log, returnsLog, allResponses, hub, photoFor, onResp
       });
       return { daysAgo, dateStr, label: HISTORY_DAY_LABELS[daysAgo], pending, pendingUnits };
     }).filter(g => g.pendingUnits > 0);
-  }, [log, returnsLog, allResponses, hub, photoFor]);
+  }, [log, returnsLog, allResponses, hub, photoFor, cellFilter]);
 
   if (!groups.length) return (
     <div style={{ background:"rgba(4,5,10,1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:14, padding:"3rem 1.5rem", textAlign:"center", boxShadow:"0 0 16px rgba(60,110,255,.08)" }}>
@@ -12592,6 +12689,25 @@ function SourceOnHoldTab({ items, fulfilCtx }) {
               <div style={{ fontWeight:"600", fontSize:"0.92rem", color:"#fff" }}>{item.productName} — Size <SizeTag size={item.size} /></div>
               <div style={{ color:"#888", fontSize:"0.8rem" }}>{item.customerName}</div>
               <div style={{ color:"#444", fontSize:"0.72rem", marginTop:"0.2rem" }}>Put on hold: {fmt(item.ts)}</div>
+              {/* Fail-closed marker: this hold could not raise a refill request
+                  because its hub isn't hub1/hub2 (e.g. hubC) — a human routes it. */}
+              {item.hub !== "hub1" && item.hub !== "hub2" && (
+                <div style={{ color:"#F59E0B", fontSize:"0.72rem", marginTop:"0.2rem", fontWeight:600 }}>
+                  Hub “{item.hub || "unknown"}” — couldn&rsquo;t queue a refill request; handle by hand.
+                </div>
+              )}
+              {/* A hold whose refill request RESOLVED comes back here with the
+                  outcome, so a rejection or an arrival is acted on, never lost. */}
+              {item.refillOutcome === "fulfilled" && (
+                <div style={{ color:"#4ADE80", fontSize:"0.72rem", marginTop:"0.2rem", fontWeight:600 }}>
+                  Refill arrived at {HUB_LABELS[item.hub] || item.hub} — send it on and tap Sent.
+                </div>
+              )}
+              {item.refillOutcome === "cancelled" && (
+                <div style={{ color:"#F87171", fontSize:"0.72rem", marginTop:"0.2rem", fontWeight:600 }}>
+                  The refill ask was closed without stock — check the shelf or tap Out of Stock.
+                </div>
+              )}
             </div>
           </div>
           <div style={{ display:"flex", gap:"0.6rem" }}>
@@ -13360,9 +13476,6 @@ function ClothingSoldView({ products }) {
 
 // Per-tab nav glyphs for the Source desktop workspace rail.
 const SOURCE_TAB_ICON = {
-  today:    <><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></>,
-  history:  <><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></>,
-  onhold:   <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
   clothing: <path d="M16 4l-4 4-4-4M3 7l5-3h8l5 3M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7M3 7l4 4M21 7l-4 4"/>,
   // Hub 1 lane — a shoe, since this lane exists for sneakers. (CodeRabbit #291:
   // a missing entry renders an empty <svg> rather than falling back.)
@@ -13371,12 +13484,29 @@ const SOURCE_TAB_ICON = {
   // "history" glyph above is already taken by the customer-request history.
   refillhistory: <><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></>,
 };
-const SOURCE_TABS = [["today","Today's Request"],["history","History"],["onhold","On Hold"],["clothing","Hub 2 Refill"],["hub1refill","Hub 1 Refill"],["refillhistory","Refill History"]];
+// ── THE SOURCE CONSOLIDATION (owner directive 2026-08-08) ────────────────────
+// Three tabs, down from six. Today's Request, History and On Hold are GONE as
+// tabs — their content did not disappear, it folded into the two hub tabs:
+//   • Hub 1 Refill — the refill queue + today's sold cells + 5-day stragglers
+//     + held cards, everything routed hub1. Sneakers by construction (hub1
+//     holds only footwear buffer).
+//   • Hub 2 Refill — the same four sections routed hub2, split by a SNEAKERS /
+//     CLOTHING toggle on the footwear classifier (utils/footwearLine.js).
+//   • Refill History — unchanged home, redone screen.
+// New holds raise a real refill request against their hub (onHoldRefill.js)
+// and appear in the queue; held cards remain only for legacy holds and
+// fail-closed ones (unroutable hub / no product id / write refused).
+const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],["refillhistory","Refill History"]];
 
 function SourceView({ onExit, orders, returnsLog, products }) {
-  const [tab, setTab] = usePersistedTab("source", "today");
-  // Active hub — shared across all three top tabs. Defaults to Hub 1.
-  const [hub, setHub] = useState("hub1");
+  const [rawTab, setTab] = usePersistedTab("source", "hub1refill");
+  // A device may carry a persisted tab key that no longer exists (today /
+  // history / onhold, removed 2026-08-08) — normalise it once so both layouts
+  // and the content switch agree instead of rendering an empty pane.
+  const tab = SOURCE_TABS.some(([k]) => k === rawTab) ? rawTab : "hub1refill";
+  // Hub 2's SNEAKERS / CLOTHING toggle. "Clothing" = everything that is not
+  // footwear per the isFootwearLine classifier — never a category-name match.
+  const [hub2Line, setHub2Line] = useState("sneakers");
   const todayDate   = getSADateString();
   // Desktop workspace gate (>=1024px). Mobile keeps the single-column layout.
   const isWide = !useIsNarrow(1024);
@@ -13457,6 +13587,17 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const photoIndex = useMemo(() => buildPhotoIndex(products), [products]);
   const photoFor = useCallback((product) => photoForProduct(photoIndex, product), [photoIndex]);
 
+  // Refill request statuses — the held-card visibility rule needs them: a hold
+  // whose request is OPEN is represented by the queue; a RESOLVED (or deleted)
+  // request hands the ask back to its held card, outcome attached, so a
+  // rejection can never strand the customer order invisibly (Kimi, PR #335).
+  // Same path the mounted hub tab already subscribes to — the SDK shares one
+  // server subscription per path, so this adds no second download.
+  const allRefillRequests = useRefillRequests();
+  const refillStatusById = useMemo(
+    () => new Map(allRefillRequests.map((r) => [r.id, r.status])), [allRefillRequests]);
+  const refillRequestsLoaded = allRefillRequests.length > 0;
+
   // On Hold response state — read once here so badges and the On Hold tab
   // share the same source of truth (no duplicate Firebase listeners).
   const [onHoldResponses, setOnHoldResponses] = useState({});
@@ -13512,11 +13653,45 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // A refused pair simply never generates an entry, which is why no reversal is
   // needed: there is nothing to undo, rather than something to remember to undo.
   const restockLogToday = useRestockLogRaw(todayDate);
-  const restockLogForHub = useMemo(
-    () => (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === hub),
-    [restockLogToday, hub],
-  );
-  const rawCounts = useMemo(() => computeRestockCounts(restockLogForHub), [restockLogForHub]);
+  // Per-hub sold-today counts — each hub tab renders its own slice directly
+  // (the shared Hub 1/Hub 2 selector died with the standalone Today tab).
+  const rawCountsByHub = useMemo(() => {
+    const out = {};
+    ["hub1", "hub2"].forEach((h) => {
+      out[h] = computeRestockCounts((restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h));
+    });
+    return out;
+  }, [restockLogToday]);
+
+  // ── The SNEAKERS / CLOTHING line split (Hub 2 toggle) ──────────────────────
+  // Classified by isFootwearLine on the CATALOGUE record + the line's size —
+  // the same cross-app rule dispatch and the POS deduct on. A product the
+  // catalogue can't resolve classifies as not-footwear, so it lands on the
+  // CLOTHING side (deterministic, and the safe direction: nothing footwear-
+  // routed on a guess).
+  const productsById = useMemo(() => new Map((products || []).map((p) => [p.id, p])), [products]);
+  const productForKey = useCallback((key, cellProduct) => {
+    const direct = productsById.get(key);
+    if (direct) return direct;
+    // pid-less legacy cell — resolve by (refusing-on-twins) name index.
+    const rid = resolveProductId({ productName: cellProduct?.productName }, productIdIndex);
+    return rid ? productsById.get(rid) : undefined;
+  }, [productsById, productIdIndex]);
+  const lineMatches = useCallback((product, size, mode) =>
+    mode === "sneakers" ? isFootwearLine(product, size) : !isFootwearLine(product, size),
+  []);
+  // rawCounts shape → same shape, only the cells the predicate keeps.
+  const filterCountsByLine = useCallback((counts, mode) => {
+    const out = {};
+    Object.entries(counts || {}).forEach(([key, product]) => {
+      const sizes = {};
+      Object.entries(product.sizes || {}).forEach(([size, count]) => {
+        if (lineMatches(productForKey(key, product), size, mode)) sizes[size] = count;
+      });
+      if (Object.keys(sizes).length) out[key] = { ...product, sizes };
+    });
+    return out;
+  }, [lineMatches, productForKey]);
 
   // All Source responses: { date: { productKey: { size: { response, respondedOn } } } }
   // History tab derives its straggler list from this + live orders (5-day window).
@@ -13538,23 +13713,36 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     const pastDates = Array.from({ length: HISTORY_RETENTION_DAYS }, (_, i) => getSAPastDateString(i + 1));
     const byComposite = new Map();
 
-    // Live: every current COMING_TOMORROW order (today + any not-yet-clobbered past).
+    // Live: every current COMING_TOMORROW order (today + any not-yet-clobbered
+    // past). A hold that raised a refill request (onHoldRefillRequestId,
+    // 2026-08-08) is a held card only while heldCardVisible says so: an OPEN
+    // request means the hub's refill queue owns the ask; a RESOLVED one hands
+    // it back here with the outcome attached, so a rejection or an arrival is
+    // acted on rather than vanishing (Kimi, PR #335). Held cards are
+    // therefore: legacy holds, fail-closed holds, and resolved-request holds.
     (orders || []).forEach(o => {
       if (o.status !== STATUS.COMING_TOMORROW) return;
+      if (!heldCardVisible(o.onHoldRefillRequestId, refillStatusById, refillRequestsLoaded)) return;
       const saDate = saDateOfTs(o.comingTomorrowAt || o.updatedAt) || todayDate;
       const composite = onHoldKey(saDate, o.id);
       byComposite.set(composite, {
         composite, orderNumber: o.id, saDate,
         productName: o.productName, productId: o.productId || null,
-        size: sourceDisplaySize(o), hub: (o.hub || "hub1"),
+        // hub = the order's own routing (placedAtHub, the field dispatch uses;
+        // o.hub for legacy rows) — the held card files under the hub tab that
+        // would supply it, same rule as onHoldRefillPlan.
+        size: sourceDisplaySize(o), hub: (o.placedAtHub || o.hub || "hub1"),
         customerName: o.customerName || null,
         photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
         ts: o.comingTomorrowAt || o.updatedAt,
+        // The linked request's outcome, when it has one — the card renders it.
+        refillOutcome: o.onHoldRefillRequestId ? (refillStatusById.get(o.onHoldRefillRequestId) || null) : null,
       });
     });
 
     // Log (past days only): fill in on-holds whose live order was overwritten.
     onHoldEventsFromLog({ log: insightsLog, dates: pastDates }).forEach(e => {
+      if (!heldCardVisible(e.refillRequestId, refillStatusById, refillRequestsLoaded)) return;
       const composite = onHoldKey(e.saDate, e.orderNumber);
       if (byComposite.has(composite)) return;
       const ph = photoFor(e);
@@ -13564,6 +13752,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         size: e.size, hub: e.hub,
         customerName: e.customerName || null,
         photoUrl: ph.photoUrl, photo: ph.photo, ts: e.timestamp,
+        refillOutcome: e.refillRequestId ? (refillStatusById.get(e.refillRequestId) || null) : null,
       });
     });
 
@@ -13582,7 +13771,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       list.push(item);
     });
     return list.sort((a, b) => tsMs(b.ts) - tsMs(a.ts));
-  }, [insightsLog, orders, onHoldResponses, returnsLog, todayDate, photoFor]);
+  }, [insightsLog, orders, onHoldResponses, returnsLog, todayDate, photoFor, refillStatusById, refillRequestsLoaded]);
 
   // Per-hub pending counts for the Hub 1 / Hub 2 sub-tab badges. Mirrors the
   // exact same pending logic each tab uses (Today excludes responded cells,
@@ -13659,7 +13848,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       const returnedOut = candidates.filter(o => orderSaleDate(o) === today && returnedTodayIds.has(o.id));
       const onHold = orders.filter(o => o.status === STATUS.COMING_TOMORROW);
       console.log("=== SOURCE DEBUG ===");
-      console.log("Today:", today, "Active hub:", hub);
+      console.log("Today:", today, "Active tab:", tab);
       console.log("Counted in TODAY's request (all hubs):", counted.length, counted.map(o => ({id:o.id, hub:o.hub || "hub1", status:o.status, readyAt:o.readyAt, collectedAt:o.collectedAt})));
       console.log("Hub badges (pending):", hubBadges);
       console.log("Excluded — no readyAt:", noReadyAt.length);
@@ -13674,7 +13863,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         INCOMING:  orders.filter(o => o.status === STATUS.INCOMING).length,
       });
     };
-  }, [orders, todayDate, returnedTodayIds, hub, hubBadges]);
+  }, [orders, todayDate, returnedTodayIds, tab, hubBadges]);
 
   const handleResponse = (date, productKey, size, response) => {
     saveSourceResponse(date, productKey, size, response);
@@ -13690,100 +13879,103 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       .catch(err => alert(`Undo failed: ${err?.message || err}\n\nThe card may still show as completed. Retry, and if it keeps failing check your connection.`));
   };
 
-  // Shared between the mobile column and the desktop rail/pane.
-  const hubSelector = (
-    <>
-      {/* Hidden on the two refill tabs as well: each is already scoped to ONE
-          hub, so a Hub 1 / Hub 2 pill above it does nothing and reads as though
-          the queue below could be switched. (CodeRabbit, PR #291 — Minor.)
-          Refill History is hidden for the opposite reason: it carries its OWN
-          hub filter (and can show BOTH at once), so two competing hub controls
-          on one screen would be a coin-flip about which one is in charge. */}
-      {tab !== "clothing" && tab !== "onhold" && tab !== "hub1refill" && tab !== "refillhistory" && (
-      <div style={{ padding:"10px 13px 0", display:"flex", gap:8 }}>
-        {[["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
-          const active = hub === val;
-          const badge = hubBadges[val] || 0;
-          return (
-            <button key={val} onClick={() => setHub(val)}
-                    style={{
-                      flex:1,
-                      padding:"10px 12px",
-                      borderRadius:14,
-                      border: active ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(255,255,255,.08)",
-                      background: active ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.02)",
-                      color: active ? BLUE_L : "rgba(255,255,255,.55)",
-                      fontWeight:700, fontSize:13, cursor:"pointer",
-                      display:"flex", alignItems:"center", justifyContent:"center", gap:8,
-                      boxShadow: active ? "0 0 12px rgba(60,110,255,.18)" : "none",
-                      transition:"background 120ms ease, border-color 120ms ease",
-                    }}>
-              <span>{label}</span>
-              <span style={{
-                background: active ? "rgba(60,110,255,.25)" : "rgba(255,255,255,.06)",
-                color: active ? "#fff" : "rgba(255,255,255,.5)",
-                borderRadius:999,
-                padding:"1px 8px",
-                fontSize:11,
-                fontWeight:700,
-                minWidth:22,
-                textAlign:"center",
-              }}>{badge}</span>
-            </button>
-          );
-        })}
-      </div>
-      )}
-    </>
+  // ── HUB TAB SECTIONS — everything the three removed tabs showed, re-homed ──
+  // One hub tab = the refill queue + the sold-today cells + the 5-day
+  // stragglers + the held cards, all routed to THAT hub. Nothing the old tabs
+  // rendered is dropped: pending/completed sold cells (Today's Request),
+  // per-day straggler groups (History) and pending/completed holds (On Hold)
+  // all keep their exact components, actions and undo paths.
+  const heldItemsFor = (h, mode) => onHoldMerged.filter((item) => {
+    const routable = item.hub === "hub1" || item.hub === "hub2";
+    // Unroutable holds (hubC / unknown) appear in BOTH hub tabs — they need a
+    // human, and there is no longer a separate tab to catch them.
+    if (routable && item.hub !== h) return false;
+    if (mode) {
+      const p = item.productId ? productsById.get(item.productId) : productForKey(item.productId || "", item);
+      return lineMatches(p, item.size, mode);
+    }
+    return true;
+  });
+  const sectionHead = (label, hint) => (
+    <div style={{ margin: "18px 2px 10px" }}>
+      <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: ".14em", textTransform: "uppercase", color: "rgba(255,255,255,.55)" }}>{label}</div>
+      {hint && <div style={{ fontSize: 11, color: "rgba(255,255,255,.35)", marginTop: 2 }}>{hint}</div>}
+    </div>
   );
+  const hubTabContent = (h) => {
+    const mode = h === "hub2" ? hub2Line : null;   // hub1 is footwear by construction
+    const lineFilter = mode ? (product, size) => lineMatches(product, size, mode) : null;
+    const cellFilter = mode ? (key, product, size) => lineMatches(productForKey(key, product), size, mode) : null;
+    const counts = mode ? filterCountsByLine(rawCountsByHub[h], mode) : rawCountsByHub[h];
+    const held = heldItemsFor(h, mode);
+    return (
+      <>
+        {h === "hub2" && (
+          <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+            {[["sneakers", "Sneakers"], ["clothing", "Clothing"]].map(([val, label]) => {
+              const active = hub2Line === val;
+              return (
+                <button key={val} onClick={() => setHub2Line(val)} aria-pressed={active}
+                        style={{ flex: 1, minHeight: 44, padding: "10px 12px", borderRadius: 14, cursor: "pointer",
+                                 border: active ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(255,255,255,.08)",
+                                 background: active ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.02)",
+                                 color: active ? BLUE_L : "rgba(255,255,255,.55)", fontWeight: 700, fontSize: 13 }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {sectionHead("Refill requests", "engine + manual + on-hold asks, fulfilled from Central")}
+        <Hub2RefillQueue products={products} dest={h} lineFilter={lineFilter} />
+        {sectionHead("Sold today — send replacements", "every sale the POS logged against this hub, until answered")}
+        <SourceTodayTab
+          rawCounts={counts}
+          responses={allResponses[todayDate] || {}}
+          date={todayDate}
+          hub={h}
+          wide={isWide}
+          fulfilCtx={fulfilCtx}
+          progress={fulfilProgress[todayDate] || {}}
+          onFulfilProgress={handleFulfilProgress}
+          onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
+          onUndo={(key, size, legacyKey) => handleUndo(todayDate, key, size, legacyKey)} />
+        {sectionHead("Earlier days", `unanswered sales from the last ${HISTORY_RETENTION_DAYS} days`)}
+        <SourceHistoryTab
+          log={insightsLog}
+          returnsLog={returnsLog}
+          allResponses={allResponses}
+          hub={h}
+          photoFor={photoFor}
+          fulfilCtx={fulfilCtx}
+          fulfilProgress={fulfilProgress}
+          onFulfilProgress={handleFulfilProgress}
+          onResponse={handleResponse}
+          cellFilter={cellFilter} />
+        {sectionHead("On hold", "held for tomorrow — new holds queue above as refill requests; these are the ones that couldn't, or predate the change")}
+        <SourceOnHoldTab items={held} fulfilCtx={fulfilCtx} />
+      </>
+    );
+  };
   const content = (
     <>
-        {tab==="today"   && <SourceTodayTab
-                              rawCounts={rawCounts}
-                              responses={allResponses[todayDate] || {}}
-                              date={todayDate}
-                              hub={hub}
-                              wide={isWide}
-                              fulfilCtx={fulfilCtx}
-                              progress={fulfilProgress[todayDate] || {}}
-                              onFulfilProgress={handleFulfilProgress}
-                              onResponse={(key, size, resp) => handleResponse(todayDate, key, size, resp)}
-                              onUndo={(key, size, legacyKey) => handleUndo(todayDate, key, size, legacyKey)} />}
-        {tab==="history" && <SourceHistoryTab
-                              log={insightsLog}
-                              returnsLog={returnsLog}
-                              allResponses={allResponses}
-                              hub={hub}
-                              photoFor={photoFor}
-                              fulfilCtx={fulfilCtx}
-                              fulfilProgress={fulfilProgress}
-                              onFulfilProgress={handleFulfilProgress}
-                              onResponse={handleResponse} />}
-        {tab==="onhold"  && <SourceOnHoldTab items={onHoldMerged} fulfilCtx={fulfilCtx} />}
-        {/* "Clothing Sold" (per-store manual worklist) replaced by the Hub 2
-            auto-refill queue — the engine detects sold→below-target itself and
-            Central fulfils from this single tab (owner decision 2026-07-12). */}
-        {tab==="clothing" && <Hub2RefillQueue products={products} dest="hub2" />}
-        {/* Hub 1 lane (2026-07-30). The queue was hub2-only because CLOTHING is
-            not kept at Hub 1 — not because Hub 1 lacks refills. Sneakers make it
-            the bigger buffer, so it gets its own lane off the same component. */}
-        {tab==="hub1refill" && <Hub2RefillQueue products={products} dest="hub1" />}
-        {/* Refill History (2026-08-07). The queue's own "Fulfilled history" shows
-            only successes, only for its own hub, and only the last 100 — so a
-            rejection, a withdrawal or a park leaves no trace anywhere. This is
-            both hubs, a chosen date range, and every outcome. */}
+        {tab==="hub1refill" && hubTabContent("hub1")}
+        {tab==="clothing" && hubTabContent("hub2")}
+        {/* Refill History (2026-08-07, redone 2026-08-08). Every outcome, both
+            hubs and the shops, over a chosen date range. */}
         {tab==="refillhistory" && <RefillHistory products={products} />}
     </>
   );
 
   // ── DESKTOP WORKSPACE (>=1024px) — left rail of restock queues + main pane. ──
   if (isWide) {
-    const activeTab = SOURCE_TABS.some(([k]) => k === tab) ? tab : "today";
-    const activeLabel = (SOURCE_TABS.find(([k]) => k === activeTab) || [null, "Today's Request"])[1];
+    const activeTab = tab;                       // already normalised above
+    const activeLabel = (SOURCE_TABS.find(([k]) => k === activeTab) || [null, "Hub 1 Refill"])[1];
     const totalPending = (hubBadges.hub1 || 0) + (hubBadges.hub2 || 0);
     const navItem = ([key, label]) => {
       const on = activeTab === key;
-      const badge = key === "onhold" ? onHoldCount : 0;
+      // Per-hub pending work (sold cells + stragglers + held) on its hub tab.
+      const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : 0;
       return (
         <button key={key} onClick={() => setTab(key)}
           style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
@@ -13828,7 +14020,6 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           </div>
           <div style={{ flex:1, overflow:"auto", padding:"14px 30px 48px" }}>
             <div style={{ maxWidth:1160, margin:"0 auto", display:"flex", flexDirection:"column", gap:16 }}>
-              <div style={{ maxWidth:380, width:"100%" }}>{hubSelector}</div>
               {content}
             </div>
           </div>
@@ -13846,8 +14037,10 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A7FFF" strokeWidth="1.6" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
           <div style={{ fontSize:13, fontWeight:600, color:"#fff" }}>SOURCE</div>
         </div>
+        {/* Held cards only (legacy + fail-closed holds) — new holds live in the
+            hub refill queues, so this count no longer includes them. */}
         <div style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(60,110,255,.08)", borderRadius:14, padding:"4px 8px" }}>
-          <span style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>On Hold</span>
+          <span style={{ fontSize:10, color:"rgba(255,255,255,.4)" }}>Held</span>
           <span style={{ background:"rgba(60,110,255,.15)", color:"#4A7FFF", fontSize:10, fontWeight:600, width:20, height:20, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 6px rgba(60,110,255,.25)" }}>{onHoldCount}</span>
         </div>
       </div>
@@ -13863,16 +14056,16 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             six tabs the labels compress and "Refill History" wraps on a 430px
             phone instead of the strip scrolling. Adding the sixth tab is what
             made this reachable. (CodeRabbit, PR #332.) */}
-        {SOURCE_TABS.map(([key, label]) => (
-          <div key={key} onClick={() => setTab(key)}
-               style={{ flex:"0 0 auto", whiteSpace:"nowrap", padding:"10px 11px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
-            {label}{key === "onhold" && onHoldCount > 0 && ` ${onHoldCount}`}
-          </div>
-        ))}
+        {SOURCE_TABS.map(([key, label]) => {
+          const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : 0;
+          return (
+            <div key={key} onClick={() => setTab(key)}
+                 style={{ flex:"0 0 auto", whiteSpace:"nowrap", padding:"10px 11px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
+              {label}{badge > 0 && ` ${badge}`}
+            </div>
+          );
+        })}
       </div>
-      {/* HUB SUB-TABS — segmented pill, shared by Today + History. Hidden for
-          Clothing Sold (own store pills) and On Hold (shows all hubs together). */}
-      {hubSelector}
       <div style={{ padding:"1.5rem" }}>
         {content}
       </div>
@@ -17068,14 +17261,15 @@ function AdminSignInScreen({ onCancel }) {
   );
 }
 
-// Top-right pill shown for any signed-in non-anonymous user (super-admin via
-// Google OR a staff PIN account). Tap "Sign Out" to return to the Login screen.
-function UserIndicator({ label, onSignOut }) {
+// Top-right identity pill for any signed-in non-anonymous user (super-admin
+// via Google OR a staff PIN account). READ-ONLY since 2026-08-08: the "· Sign
+// Out" tap target was removed with every other scattered logout — the ONE
+// sign-out is the red row at the bottom of the home page (HomeSignOutRow).
+// The pill stays because on phone routes it is the only "who am I" indicator.
+function UserIndicator({ label }) {
   return (
     <div style={{ position:"fixed", top:10, right:10, zIndex:9998, background:CARD, border:BORDER_BRIGHT, borderRadius:999, padding:"6px 12px", display:"flex", alignItems:"center", gap:8, fontFamily:FONT, fontSize:"0.75rem", boxShadow:GLOW, backdropFilter:"blur(8px)" }}>
       <span style={{ color:"#9CA3AF" }}>Signed in: <span style={{ color:BLUE_L, fontWeight:600 }}>{label}</span></span>
-      <span style={{ color:"#444" }}>·</span>
-      <span onClick={onSignOut} style={{ color:BLUE, cursor:"pointer", fontWeight:600 }}>Sign Out</span>
     </div>
   );
 }
@@ -17140,10 +17334,8 @@ function AppInner() {
   // hasPermission("broadcast"), but we keep isAdmin for back-compat.
   const isAdmin = isSuperAdmin;
 
-  async function handleAdminSignOut() {
-    await doSignOut();
-    if (window.location.hash === "#admin") window.location.hash = "";
-  }
+  // handleAdminSignOut was removed with the pill's Sign Out tap — the hash
+  // cleanup it did now lives in HomeSignOutRow, the app's one logout.
 
   const [role, setRole] = useState(() => localStorage.getItem("marathon_role") || null);
   useEffect(() => {
@@ -17471,7 +17663,7 @@ function AppInner() {
       <InsightsLogProvider authReady={insightsAuthReady}>
         <AppErrorBoundary key={role || "home"}>{view}</AppErrorBoundary>
       </InsightsLogProvider>
-      {showIndicator && <UserIndicator label={indicatorLabel} onSignOut={handleAdminSignOut} />}
+      {showIndicator && <UserIndicator label={indicatorLabel} />}
     </>
   );
 }

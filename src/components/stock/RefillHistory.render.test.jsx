@@ -34,10 +34,12 @@ vi.mock("firebase/database", () => ({
   orderByChild: (field) => ({ kind: "orderByChild", field }),
   startAt: (value) => ({ kind: "startAt", value }),
   endBefore: (value) => ({ kind: "endBefore", value }),
+  equalTo: (value) => ({ kind: "equalTo", value }),
   get: (r) => { readCalls.push(r); return Promise.resolve({ val: () => reads[r.path] ?? null }); },
 }));
 const callsTo = (path) => readCalls.filter((r) => r.path === path);
-const constraintsOf = (r) => Object.fromEntries((r.constraints || []).map((c) => [c.kind, c.field ?? c.value]));
+const constraintsOf = (r) => Object.fromEntries((r.constraints || []).map((c) => [c.kind, c.kind === "orderByChild" ? c.field : c.value]));
+const isBacklogQuery = (r) => (r.constraints || []).some((c) => c.kind === "equalTo");
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => NOW, serverNowIso: () => new Date(NOW).toISOString() }));
 
@@ -129,7 +131,7 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     expect(out).toContain("Essentials tracksuit olive khaki");
     expect(out).toContain("the destination already held enough");
     // the display movement is present with its true source -> destination
-    expect(out).toContain("Display sent out");
+    expect(out).toContain("Order sent out");
     expect(out).toContain("Marathon PE");
     // and the out-of-range row is absent
     expect(out).not.toContain("size 9");
@@ -156,7 +158,9 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     tree.unmount();
     expect(out).toContain("by staff");
     expect(out).toContain("vWfHqbL");
-    expect(out).not.toContain("the engine");
+    // The tile explainers legitimately mention the engine; the ROW must not
+    // credit it — "Withdrawn by the engine" is the misattribution guarded here.
+    expect(out).not.toContain("Withdrawn by");
   });
 
   it("names the engine only for its own self-withdrawal", async () => {
@@ -187,11 +191,13 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     await clickRange(tree, "Yesterday");
     const out = textOf(tree.toJSON());
     tree.unmount();
-    // Rejected: 1 row / 3 units. Withdrawn: 1 row / 2 units. Neither collapses
-    // into a single "cancelled" bucket, which is the whole point of the view.
-    expect(out).toContain("1Rejected3 units");
-    expect(out).toContain("1Withdrawn2 units");
-    expect(out).toContain("0Refilled0 units");
+    // Rejected: 1 row / 3 units. Engine close: 1 row / 2 units under the one
+    // "No longer needed" tile — "Withdrawn" and "Cancelled" no longer exist as
+    // separate boxes, which is the redo's point.
+    expect(out).toContain("13 unitsRejected");
+    expect(out).toContain("12 unitsNo longer needed");
+    expect(out).toContain("00 unitsRefilled");
+    expect(out).not.toContain("Cancelled");
   });
 
   it("LAST 7 DAYS widens to include the older row", async () => {
@@ -223,26 +229,30 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
   // read through a RANGE-SCOPED orderByChild, never as a whole node. Setting
   // REQUESTS_INDEXED back to false makes the component issue one unconstrained
   // get() instead, and every assertion below fails.
-  it("requests are read DATE-RANGED against the createdAt/resolvedAt index, NEVER as a whole node", async () => {
+  it("requests are read through THREE bounded index queries, NEVER as a whole node", async () => {
     await render();
     const rr = callsTo("refill_requests");
-    // TWO queries: a request raised last month and fulfilled yesterday belongs
-    // in yesterday's history, and one index cannot answer both ends.
-    expect(rr).toHaveLength(2);
+    // createdAt in range, resolvedAt in range, and the open backlog
+    // (resolvedAt equalTo null — the only shape with no resolvedAt is open).
+    expect(rr).toHaveLength(3);
 
-    const fields = rr.map((r) => constraintsOf(r).orderByChild).sort();
-    expect(fields).toEqual(["createdAt", "resolvedAt"]);
-
-    for (const r of rr) {
+    const ranged = rr.filter((r) => !isBacklogQuery(r));
+    expect(ranged.map((r) => constraintsOf(r).orderByChild).sort()).toEqual(["createdAt", "resolvedAt"]);
+    for (const r of ranged) {
       const c = constraintsOf(r);
       // NOT A WHOLE-NODE READ: every query carries an ordering AND both bounds.
-      // An unconstrained read is exactly what the fallback did.
       expect(c.orderByChild, "an unordered read of this node is a full download").toBeTruthy();
-      // today, SA — the half-open window, sent to the SERVER rather than
-      // filtered here
+      // today, SA — the half-open window, sent to the SERVER, not filtered here
       expect(c.startAt).toBe("2026-08-06T22:00:00.000Z");
       expect(c.endBefore).toBe("2026-08-07T22:00:00.000Z");
     }
+
+    const backlog = rr.filter(isBacklogQuery);
+    expect(backlog).toHaveLength(1);
+    const b = constraintsOf(backlog[0]);
+    expect(b.orderByChild).toBe("resolvedAt");
+    expect(b.equalTo).toBeNull();          // equalTo(null) — the open set, indexed
+
     // and nothing read the node without constraints
     expect(rr.filter((r) => (r.constraints ?? []).length === 0)).toEqual([]);
   });
@@ -255,7 +265,7 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     let tree;
     await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
     await act(async () => {});
-    expect(callsTo("refill_requests")).toHaveLength(2);   // createdAt + resolvedAt
+    expect(callsTo("refill_requests")).toHaveLength(3);   // createdAt + resolvedAt + open backlog
     expect(callsTo("stock_movements")).toHaveLength(1);
 
     await clickRange(tree, "Yesterday");
@@ -263,15 +273,20 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     await clickRange(tree, "This month");
     tree.unmount();
 
-    expect(callsTo("refill_requests").length, "requests re-query per range — that is what the index is for").toBeGreaterThan(2);
+    expect(callsTo("refill_requests").length, "requests re-query per range — that is what the index is for").toBeGreaterThan(3);
     expect(callsTo("stock_movements").length, "movements too").toBeGreaterThan(1);
 
-    // EVERY read of either node, across every range, stayed range-scoped.
+    // EVERY read of either node, across every range, stayed index-scoped:
+    // ranged queries carry both bounds; the backlog query carries equalTo(null).
     for (const r of [...callsTo("refill_requests"), ...callsTo("stock_movements")]) {
       const c = constraintsOf(r);
       expect(c.orderByChild, `unbounded read of ${r.path}`).toBeTruthy();
-      expect(typeof c.startAt).toBe("string");
-      expect(typeof c.endBefore).toBe("string");
+      if (isBacklogQuery(r)) {
+        expect(c.equalTo).toBeNull();
+      } else {
+        expect(typeof c.startAt).toBe("string");
+        expect(typeof c.endBefore).toBe("string");
+      }
     }
   });
 
@@ -284,13 +299,14 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     // off-by-one the moment someone removes the client filter, reasonably
     // believing the server already bounded the range. (CodeRabbit, PR #333.)
     await render();
-    for (const r of readCalls) {
+    const ranged = readCalls.filter((r) => !isBacklogQuery(r));
+    for (const r of ranged) {
       const kinds = (r.constraints ?? []).map((c) => c.kind);
       expect(kinds, `${r.path} must bound the range exclusively`).toContain("endBefore");
       expect(kinds, `${r.path} must not use an inclusive end bound`).not.toContain("endAt");
     }
     // and the exclusive bound is the START of the next SA day, not 23:59:59
-    for (const r of readCalls) {
+    for (const r of ranged) {
       expect(constraintsOf(r).endBefore).toBe("2026-08-07T22:00:00.000Z");
     }
   });
@@ -347,15 +363,49 @@ describe("RefillHistory renders the right rows for a chosen range", () => {
     tree.unmount();
   });
 
-  it("the hub filter narrows the list", async () => {
+  it("the OPEN BACKLOG shows under today whatever its raise date, dated by raise", async () => {
+    reads["refill_requests"] = {
+      oldOpen: {
+        productId: "boot", size: "7", qty: 2, requestingLocation: "hub1", status: "open",
+        createdAt: "2026-07-20T08:00:00.000Z",
+        createdFrom: { engine: true, source: "central" },
+      },
+    };
+    reads["stock_movements"] = null;
+    const out = await render();                       // default range: today
+    expect(out).toContain("Timberland Premium 6-Inch Wheat");
+    expect(out).toContain("12 unitsOpen");            // 1 row, 2 units, under the Open tile
+    expect(out).toContain("20 Jul");                  // dated by when it was RAISED
+  });
+
+  it("tapping a tile opens exactly its rows; tapping again clears", async () => {
     let tree;
     await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
     await act(async () => {});
     await clickRange(tree, "Yesterday");
-    await clickRange(tree, "Hub 1");                  // toggles Hub 1 OFF, leaving Hub 2
+    // the Rejected tile is a button whose text carries its label
+    const tile = tree.root.findAll((n) => n.type === "button" && textOf(n.children).includes("Rejected"))[0];
+    await act(async () => { tile.props.onClick(); });
+    let out = textOf(tree.toJSON());
+    expect(out).toContain("Timberland Premium 6-Inch Wheat");      // the rejected row
+    expect(out).not.toContain("Essentials tracksuit olive khaki"); // the withdrawn row is hidden
+    await act(async () => { tile.props.onClick(); });
+    out = textOf(tree.toJSON());
+    expect(out).toContain("Essentials tracksuit olive khaki");     // back to everything
+    tree.unmount();
+  });
+
+  it("the location filter narrows the list", async () => {
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
+    await act(async () => {});
+    await clickRange(tree, "Yesterday");
+    await clickRange(tree, "Hub 1");                  // Hub 1 OFF
+    await clickRange(tree, "Shops");                  // Shops OFF too — the disp_ row's
+                                                      // shop end would otherwise keep it
     const out = textOf(tree.toJSON());
     tree.unmount();
     expect(out).toContain("Essentials tracksuit olive khaki");   // hub2
-    expect(out).not.toContain("Timberland Premium 6-Inch Wheat"); // hub1, now filtered out
+    expect(out).not.toContain("Timberland Premium 6-Inch Wheat"); // hub1/shop rows filtered out
   });
 });

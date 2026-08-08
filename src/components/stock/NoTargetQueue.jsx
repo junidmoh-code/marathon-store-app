@@ -39,14 +39,16 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { computeUnintroduced, stockedStandardSizes, destsFrom, effectiveRun } from "./introduceExistingCore";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
+import { sizeRank } from "./hubSizeRank";
 
 const ALL_LOCS = ["marathon-pe", "trophy", "hub2", "central"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 // Approved standard run (owner policy 2026-07-13, reduced) — single source of
 // truth is introduceExisting.js; this import keeps the wizard prefill aligned.
 const STANDARD_RUN = { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 };
-const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
-const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
+// Numeric-aware ordering via hubSizeRank (imported at top): letters keep their
+// historical ranks; shoe/waist sizes sort numerically after them instead of
+// tying at 99 and rendering in arbitrary map order (12/13 would land anywhere).
 
 const isClothing = (p) =>
   p?.productType === "clothing" ||

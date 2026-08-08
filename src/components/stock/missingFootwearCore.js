@@ -24,7 +24,7 @@
 //
 // Live counts under this rule (2026-07-30): 635 footwear products have Central
 // stock; 121 are missing from both hubs — 95 never introduced, 26 sold out.
-import { stockSizeKey } from "../../utils/sizeKey";
+import { stockSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 
 // Footwear is CATEGORY, never productType: 1,369 products carry
 // category "Footwear" while only 580 carry productType "sneaker", and 858
@@ -39,6 +39,14 @@ export const isFootwearProduct = (p) => p?.category === "Footwear";
 // — both for the Central availability lookup and for the reservation map. One
 // encoder, and it must be the one the cells were written with.
 export const sizeKeyOf = stockSizeKey;
+
+// The key a raw catalogue size has in a DECODED cell map (useStockCells).
+// encode-then-decode, NOT identity: "5.5" → "5_5" → "5.5", but a padded " 8"
+// → "_8" → "_8" (decode only reverses digit_digit), which is exactly how the
+// decoded map keys that cell. Looking up by the raw size alone misses " 8";
+// looking up by the encoded key alone misses every half size. This is the one
+// lookup that matches both.
+export const decodedCellKeyOf = (s) => decodeSizeKey(sizeKeyOf(s));
 
 // Numeric-aware size ordering — the clothing SIZE_ORDER table is letters only and
 // ranks every shoe size equal (99), which would render sizes in arbitrary order.
@@ -142,13 +150,18 @@ export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1"
 // same trap the clothing Solve guards with qualifyingSizes(). When
 // footwearRunByLocation is absent (footwear targeting not configured yet) this
 // is empty by construction and the caller must disable Solve.
+// `allStock` is the DECODED map from useStockCells (cell keys are raw sizes,
+// "5.5" not "5_5") — the same map every caller already holds. `footwearRun`
+// stays ENCODED (it is RTDB config, where "5.5" cannot be a key), so the run
+// lookup encodes and the cell-existence check compares raw-to-raw. Mixing the
+// two spaces here is what made every half size invisible to Solve.
 export function seedableSizes({ allStock, pid, catalogSizes = [], hub, footwearRun }) {
   const run = footwearRun?.[hub] || {};
   const existing = new Set(Object.keys(allStock?.[hub]?.[pid] || {}));
   return catalogSizes
     .map(String)
     .filter((s) => Number(run[sizeKeyOf(s)]) > 0)
-    .filter((s) => !existing.has(sizeKeyOf(s)))
+    .filter((s) => !existing.has(decodedCellKeyOf(s)))
     .sort((a, b) => footwearSizeRank(a) - footwearSizeRank(b));
 }
 
@@ -178,6 +191,11 @@ export function seedableSizes({ allStock, pid, catalogSizes = [], hub, footwearR
 // Returns [{ size, qty, want, avail }] in numeric size order — `want` and `avail`
 // are kept so the UI can explain a short line ("2 wanted, 1 at Central") instead
 // of silently asking for less than policy.
+// `centralCells` is the DECODED per-product map from useStockCells — cells are
+// keyed by raw size ("5.5"). `policy` and `reserved` live in ENCODED key space
+// (policy is RTDB config; reserved is built with sizeKeyOf by the caller), so
+// those lookups encode. Reading the cell by the encoded key on a decoded map
+// returned 0 for every half size — Central showed stock, the plan said none.
 export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells = {}, openSizes = [], reserved = {} }) {
   const alreadyOpen = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
   return (catalogSizes || [])
@@ -186,7 +204,7 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
     .map((size) => {
       const key = sizeKeyOf(size);
       const want = Number(policy[key]) || 0;
-      const onHand = Math.max(Number(centralCells?.[key]?.qty) || 0, 0);
+      const onHand = Math.max(Number(centralCells?.[decodedCellKeyOf(size)]?.qty) || 0, 0);
       const owed = Math.max(Number(reserved?.[key]) || 0, 0);
       const avail = Math.max(onHand - owed, 0);   // free stock, not shelf stock
       return { size, key, want, avail, qty: Math.min(want, avail) };
@@ -214,6 +232,8 @@ export function footwearSolvePlan({ catalogSizes = [], policy = {}, centralCells
 //
 // `asked` is carried through so the UI can say "2 of 3 — Central has 2" rather
 // than silently raising less than the operator typed.
+// Same key-space contract as footwearSolvePlan: centralCells DECODED (raw-size
+// keys), reserved/openSizes ENCODED.
 export function footwearPickPlan({ picks = [], centralCells = {}, openSizes = [], reserved = {} }) {
   const alreadyOpen = new Set((openSizes || []).map((s) => sizeKeyOf(s)));
   return (picks || [])
@@ -221,7 +241,7 @@ export function footwearPickPlan({ picks = [], centralCells = {}, openSizes = []
     .filter((p) => p.size && p.size !== "_" && p.asked > 0)
     .map((p) => {
       const key = sizeKeyOf(p.size);
-      const onHand = Math.max(Number(centralCells?.[key]?.qty) || 0, 0);
+      const onHand = Math.max(Number(centralCells?.[decodedCellKeyOf(p.size)]?.qty) || 0, 0);
       const owed = Math.max(Number(reserved?.[key]) || 0, 0);
       const avail = Math.max(onHand - owed, 0);
       return { ...p, key, avail, qty: Math.min(p.asked, avail) };

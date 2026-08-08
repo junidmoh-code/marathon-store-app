@@ -14,16 +14,21 @@
 // (App.jsx injects the real firebase `update`.)
 
 import { sourceResponseDatePath } from "../../utils/insights";
+import { encodeSizeKey, assertSafeSegment } from "../../utils/sizeKey";
 
-// { "<key>/<size>": null, … } — one entry per distinct key the cell can live
+// { "<key>/<sizeKey>": null, … } — one entry per distinct key the cell can live
 // under. Duplicates collapse: a pid-less group's key IS its nameKey, and the
 // same path must not appear twice. Falsy keys are dropped.
+// The size is RTDB-encoded ("5.5"→"5_5") to match the encoded write side —
+// a raw half size here made the "." a path separator, so Undo silently
+// targeted a child node that never existed.
 export function buildUndoPatch(productKeys, size) {
   const keys = Array.from(new Set(
     (Array.isArray(productKeys) ? productKeys : [productKeys]).filter(Boolean)
   ));
+  const sizeKey = assertSafeSegment(encodeSizeKey(size), "size key");
   const patch = {};
-  keys.forEach((k) => { patch[`${k}/${size}`] = null; });
+  keys.forEach((k) => { patch[`${k}/${sizeKey}`] = null; });
   return patch;
 }
 

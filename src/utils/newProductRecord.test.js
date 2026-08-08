@@ -62,7 +62,7 @@ describe("buildNewProduct — core shape", () => {
   it("writes the new categoryKey", () => expect(build().categoryKey).toBe("sneakers"));
   it("trims the name", () => expect(build().name).toBe("Nike Air Force 1 Triple White"));
   it("sizes are the SELECTED subset of the registry run — validated, ordered by the run", () => {
-    expect(build().sizes).toEqual(["3", "4", "5", "5.5", "6", "7", "8", "9", "10", "11"]);
+    expect(build().sizes).toEqual(["3", "4", "5", "5.5", "6", "7", "8", "9", "10", "11", "12", "13"]);
     expect(build({ categoryKey: "t-shirts" }).sizes).toEqual(["S", "M", "L", "XL", "XXL", "XXXL"]);
   });
 

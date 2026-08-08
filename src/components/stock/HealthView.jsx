@@ -41,12 +41,14 @@ import { computeMissingFootwear } from "./missingFootwearCore";
 import { computeMissingProducts, buildChips, pickActiveTab } from "./missingProductsCore";
 import NoTargetQueue from "./NoTargetQueue";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
+import { sizeRank } from "./hubSizeRank";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 const locLabel = (l) => LOC_LABEL[l] || l || "—";
 const MODE_COLOR = { off: GRAY, shadow: AMBER, live: GREEN };
-const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
-const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
+// Numeric-aware ordering via hubSizeRank (imported at top): letters keep their
+// historical ranks; shoe/waist sizes sort numerically after them instead of
+// tying at 99 and rendering in arbitrary map order (12/13 would land anywhere).
 
 function fmtTs(iso) {
   if (!iso) return "—";
