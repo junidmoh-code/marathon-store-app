@@ -128,3 +128,35 @@ describe("Hub2RefillQueue passes the engine lock index into the covered split", 
     }
   });
 });
+
+describe("the lineFilter prop (Hub 2 SNEAKERS / CLOTHING toggle, 2026-08-08)", () => {
+  const SHOE_PRODUCT = { id: "boot", name: "Timberland Premium 6-Inch Wheat", category: "Footwear", photoUrl: null };
+  const renderWith = (lineFilter) => {
+    let tree;
+    act(() => { tree = TestRenderer.create(<Hub2RefillQueue products={[SHOE_PRODUCT]} dest="hub1" lineFilter={lineFilter} />); });
+    const text = textOf(tree.toJSON());
+    tree.unmount();
+    return text;
+  };
+
+  it("a filter that keeps the line shows the card exactly as before", () => {
+    paths["stock/hub1"] = { boot: { 7: { qty: 0 } } };     // short → actionable
+    paths["refill_engine/open"] = null;
+    const out = renderWith((product, size) => product?.category === "Footwear" && /^\d/.test(String(size)));
+    expect(out).toContain("Timberland Premium 6-Inch Wheat");
+  });
+
+  it("a filter that excludes the line hides its card from the queue", () => {
+    paths["stock/hub1"] = { boot: { 7: { qty: 0 } } };
+    paths["refill_engine/open"] = null;
+    const out = renderWith(() => false);
+    expect(out).not.toContain("Timberland Premium 6-Inch Wheat");
+  });
+
+  it("no filter = everything, byte-for-byte the old behaviour", () => {
+    paths["stock/hub1"] = { boot: { 7: { qty: 0 } } };
+    paths["refill_engine/open"] = null;
+    const out = renderWith(null);
+    expect(out).toContain("Timberland Premium 6-Inch Wheat");
+  });
+});

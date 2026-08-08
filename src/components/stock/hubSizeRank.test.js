@@ -37,3 +37,11 @@ describe("hub queue size ordering", () => {
     for (const v of [null, undefined, ""]) expect(sizeRank(v)).toBe(999);
   });
 });
+
+describe("sizes 12 and 13 (run extension 2026-08-08)", () => {
+  it("sort numerically after 11 — never lexically before 2", () => {
+    expect(sorted(["2", "13", "11", "12", "3"])).toEqual(["2", "3", "11", "12", "13"]);
+    expect(sizeRank("12")).toBeGreaterThan(sizeRank("11"));
+    expect(sizeRank("13")).toBeGreaterThan(sizeRank("12"));
+  });
+});

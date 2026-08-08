@@ -79,3 +79,13 @@ describe("buildUndoPatch", () => {
     expect(buildUndoPatch([null, "", undefined], "9")).toEqual({});
   });
 });
+
+describe("half sizes in the undo patch (2026-08-08)", () => {
+  it("encodes the size segment — a raw '.' made the '.' a path separator and Undo cleared nothing", () => {
+    expect(buildUndoPatch([PID], "5.5")).toEqual({ [`${PID}/5_5`]: null });
+  });
+  it("whole and letter sizes are unchanged", () => {
+    expect(buildUndoPatch([PID], "9")).toEqual({ [`${PID}/9`]: null });
+    expect(buildUndoPatch([PID], "M")).toEqual({ [`${PID}/M`]: null });
+  });
+});
