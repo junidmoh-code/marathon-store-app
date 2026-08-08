@@ -2712,12 +2712,12 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
             <span style={{ fontSize:10, fontWeight:700, letterSpacing:5, color:"#4A7FFF" }}>CLUB</span>
             <div style={{ flex:1 }} />
             <span style={{ fontSize:12.5, color:"rgba(233,238,255,.5)" }}>{dateStr}</span>
-            <div style={{ display:"flex", alignItems:"center", gap:9, padding:"6px 8px 6px 6px", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, background:"rgba(255,255,255,.022)" }}>
+            {/* Identity pill only — Sign Out moved to the BOTTOM of this page
+                (owner directive 2026-08-08): the top-right control was too easy
+                to hit in passing, and one logout in one place is the rule now. */}
+            <div style={{ display:"flex", alignItems:"center", gap:9, padding:"6px 12px 6px 6px", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, background:"rgba(255,255,255,.022)" }}>
               <span style={{ width:26, height:26, borderRadius:"50%", background:"rgba(74,127,255,.2)", border:"1px solid rgba(74,127,255,.5)", color:"#9DBCFF", fontSize:11, fontWeight:800, display:"grid", placeItems:"center" }}>{(name[0] || "?").toUpperCase()}</span>
               <span style={{ fontSize:12, fontWeight:700 }}>{name}</span>
-              <button onClick={homeSignOut} title="Sign out" aria-label="Sign out" style={{ border:0, background:"transparent", color:"rgba(233,238,255,.4)", cursor:"pointer", display:"grid", placeItems:"center", padding:2 }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-              </button>
             </div>
           </div>
 
@@ -2771,6 +2771,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
               ))}
             </>
           )}
+          <HomeSignOutRow name={name} onSignOut={homeSignOut} />
         </div>
       </div>
     );
@@ -2814,7 +2815,36 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
             No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
         )}
+        <HomeSignOutRow name={name} onSignOut={homeSignOut} />
       </div>
+    </div>
+  );
+}
+
+// THE one logout in the app (owner directive 2026-08-08): every top-right
+// sign-out control was removed — the global floating pill included — and this
+// row at the BOTTOM of the home page is what replaced them all. 48px tall
+// (thumb-safe), destructive-red on tap-through only, shows who it signs out.
+function HomeSignOutRow({ name, onSignOut }) {
+  // Same cleanup the old top-right pill did: dropping the #admin hash after
+  // sign-out lands super-admin on the Login screen, not the Google popup gate.
+  const signOut = async () => {
+    await onSignOut();
+    if (window.location.hash === "#admin") window.location.hash = "";
+  };
+  return (
+    <div style={{ marginTop: 34, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.07)" }}>
+      <button
+        onClick={signOut}
+        style={{
+          width: "100%", minHeight: 48, borderRadius: 13, cursor: "pointer",
+          border: "1px solid rgba(248,113,113,.35)", background: "rgba(248,113,113,.07)",
+          color: "#F87171", fontSize: 14, fontWeight: 700,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 9,
+        }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        Sign out{name ? ` — ${name}` : ""}
+      </button>
     </div>
   );
 }
@@ -6875,7 +6905,7 @@ const AD_PAGE = 60;
 
 function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
-                            onViewPhoto, onSwitchView, onSignOut, userEmail, mode, setMode,
+                            onViewPhoto, onSwitchView, userEmail, mode, setMode,
                             customerName, setCustomerName, customerPhone, setCustomerPhone,
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
                             customerIndex, onPickCustomer,
@@ -7141,16 +7171,15 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
           <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M18 2l4 4-9 9H9v-4z"/></svg>
           Switch view
         </button>
+        {/* Identity only — the sign-out icon here was removed with every other
+            scattered logout (owner directive 2026-08-08). The ONE logout lives
+            at the bottom of the home page; leave via "Switch view" to reach it. */}
         <div className="ad-who">
           <span className="ad-av">{(userEmail || "?")[0].toUpperCase()}</span>
           <span style={{ minWidth: 0, flex: 1 }}>
             <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{(userEmail || "").split("@")[0] || "assistant"}</span>
             <span style={{ display: "block", fontSize: 10, color: "rgba(233,238,255,.4)" }}>Store assistant</span>
           </span>
-          <button onClick={onSignOut} title="Sign out" aria-label="Sign out"
-                  style={{ width: 28, height: 28, flexShrink: 0, borderRadius: 8, border: "1px solid rgba(255,255,255,.12)", background: "transparent", color: "rgba(233,238,255,.5)", cursor: "pointer", display: "grid", placeItems: "center" }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-          </button>
         </div>
       </aside>
 
@@ -7724,7 +7753,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // (isSuperAdmin/hasPermission no longer destructured here — their only
   // consumer, the "Shop stock · view only" card's canAccessStock gate, was
   // removed with the card. Owner decision 2026-07-16.)
-  const { user: assistantUser, signOut: assistantSignOut, storeIds: allowedStores, permRecord: stockPermRecord } = usePermissions();
+  const { user: assistantUser, storeIds: allowedStores, permRecord: stockPermRecord } = usePermissions();
   // Desktop workspace kicks in at ≥1024px (laptop); phone + iPad keep tap→sheet.
   const isDesktop = !useIsNarrow(1024);
   // Single-store assignment (destShop) locks the picker to exactly that shop — the
@@ -8363,7 +8392,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           onSelectShop={selectShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
-          onViewPhoto={setFullPhoto} onSwitchView={onExit} onSignOut={assistantSignOut}
+          onViewPhoto={setFullPhoto} onSwitchView={onExit}
           userEmail={assistantUser?.email || ""} mode={mode} setMode={setMode}
           customerName={customerName} setCustomerName={setCustomerName}
           customerPhone={customerPhone} setCustomerPhone={setCustomerPhone}
@@ -17085,14 +17114,15 @@ function AdminSignInScreen({ onCancel }) {
   );
 }
 
-// Top-right pill shown for any signed-in non-anonymous user (super-admin via
-// Google OR a staff PIN account). Tap "Sign Out" to return to the Login screen.
-function UserIndicator({ label, onSignOut }) {
+// Top-right identity pill for any signed-in non-anonymous user (super-admin
+// via Google OR a staff PIN account). READ-ONLY since 2026-08-08: the "· Sign
+// Out" tap target was removed with every other scattered logout — the ONE
+// sign-out is the red row at the bottom of the home page (HomeSignOutRow).
+// The pill stays because on phone routes it is the only "who am I" indicator.
+function UserIndicator({ label }) {
   return (
     <div style={{ position:"fixed", top:10, right:10, zIndex:9998, background:CARD, border:BORDER_BRIGHT, borderRadius:999, padding:"6px 12px", display:"flex", alignItems:"center", gap:8, fontFamily:FONT, fontSize:"0.75rem", boxShadow:GLOW, backdropFilter:"blur(8px)" }}>
       <span style={{ color:"#9CA3AF" }}>Signed in: <span style={{ color:BLUE_L, fontWeight:600 }}>{label}</span></span>
-      <span style={{ color:"#444" }}>·</span>
-      <span onClick={onSignOut} style={{ color:BLUE, cursor:"pointer", fontWeight:600 }}>Sign Out</span>
     </div>
   );
 }
@@ -17157,10 +17187,8 @@ function AppInner() {
   // hasPermission("broadcast"), but we keep isAdmin for back-compat.
   const isAdmin = isSuperAdmin;
 
-  async function handleAdminSignOut() {
-    await doSignOut();
-    if (window.location.hash === "#admin") window.location.hash = "";
-  }
+  // handleAdminSignOut was removed with the pill's Sign Out tap — the hash
+  // cleanup it did now lives in HomeSignOutRow, the app's one logout.
 
   const [role, setRole] = useState(() => localStorage.getItem("marathon_role") || null);
   useEffect(() => {
@@ -17488,7 +17516,7 @@ function AppInner() {
       <InsightsLogProvider authReady={insightsAuthReady}>
         <AppErrorBoundary key={role || "home"}>{view}</AppErrorBoundary>
       </InsightsLogProvider>
-      {showIndicator && <UserIndicator label={indicatorLabel} onSignOut={handleAdminSignOut} />}
+      {showIndicator && <UserIndicator label={indicatorLabel} />}
     </>
   );
 }
