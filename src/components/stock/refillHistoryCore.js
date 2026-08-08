@@ -397,7 +397,14 @@ export function mergeRows(reqRows = [], mvRows = []) {
   for (const r of out) if (r.refillId) byRefill.set(r.refillId, r);
   for (const m of mvRows) {
     const twin = m.refillId ? byRefill.get(m.refillId) : null;
-    if (twin) {
+    // A movement folds into its request row only once the request is CLOSED.
+    // Partial fulfilment (PR #338) creates the new combination of a shipped
+    // tranche + a still-OPEN request: those are two true facts — units that
+    // moved (a Refilled row) and units still outstanding (the Open row's
+    // remaining qty) — and merging them made the Open bucket report the SENT
+    // quantity instead of the outstanding one, differently per day viewed
+    // (Sonnet review, PR #338).
+    if (twin && twin.status !== "requested") {
       // The ledger is the authority on WHERE the units physically came from and
       // WHO moved them; keep the request's own fields when the ledger is silent.
       twin.source = m.source || twin.source;

@@ -24,12 +24,13 @@ const NOW = Date.parse("2026-08-07T10:00:00.000Z");
 
 const paths = {};   // onValue subscriptions
 const gets = {};    // one-shot get() reads
+const rejects = new Set();   // paths whose get() fails (offline simulation)
 const updateMock = vi.fn(() => Promise.resolve());
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   onValue: (r, cb) => { cb({ val: () => paths[r.path] ?? null }); return () => {}; },
   update: (...a) => updateMock(...a),
-  get: (r) => Promise.resolve({ val: () => gets[r.path] ?? null }),
+  get: (r) => rejects.has(r.path) ? Promise.reject(new Error("offline")) : Promise.resolve({ val: () => gets[r.path] ?? null }),
 }));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
@@ -81,6 +82,12 @@ const textOf = (n) => {
 };
 const buttonsOf = (tree, label) =>
   tree.root.findAll((n) => n.type === "button" && textOf(n.props.children).trim() === label);
+const sizeLineOf = (tree, size, origin) =>
+  tree.root.findAll((n) => n.props && n.props["data-size"] === size && n.props["data-origin"] === origin)[0];
+const rowLineOf = (tree, rowKey) =>
+  tree.root.findAll((n) => n.props && n.props["data-row"] === rowKey)[0];
+const lineButton = (line, label) =>
+  line.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).trim() === label);
 function renderQueue(props = {}) {
   let tree;
   act(() => {
@@ -102,6 +109,7 @@ beforeEach(() => {
   for (const k of Object.keys(gets)) delete gets[k];
   updateMock.mockClear();
   applyMovementMock.mockClear();
+  rejects.clear();
   perm.permRecord = { stockRole: "warehouse" };
   perm.isSuperAdmin = false;
   paths["refill_requests"] = {
@@ -128,14 +136,29 @@ beforeEach(() => {
 });
 
 describe("1 · a former hold is an ordinary request line — the worked example, exactly", () => {
-  it("size 5 (sale) and size 7 (hold) are two ordinary lines of the same product in one list", () => {
+  it("size 5 (sale) and size 7 (hold) are two ordinary lines INSIDE ONE CARD of the same product", () => {
     const tree = renderQueue();
     const out = textOf(tree.toJSON());
-    // both lines present — same product, two sizes
-    expect(out.match(/Adidas Adi 2000 White Grey/g)).toHaveLength(2);
-    // both carry the SAME actions; the engine row too (3 pickable rows total)
+    // ONE box per product (owner correction 2026-08-08) — the name renders once
+    expect(out.match(/Adidas Adi 2000 White Grey/g)).toHaveLength(1);
+    // …and both size lines live inside it, indistinguishable by origin
+    expect(sizeLineOf(tree, "5", "sale")).toBeTruthy();
+    expect(sizeLineOf(tree, "7", "request")).toBeTruthy();
+    // every size line carries the SAME actions; the engine row too (3 lines total)
     expect(buttonsOf(tree, "Fulfil")).toHaveLength(3);
     expect(buttonsOf(tree, "Out of Stock")).toHaveLength(3);
+    tree.unmount();
+  });
+
+  it("sizes of one product NEVER split into separate boxes; different products get their own", () => {
+    const tree = renderQueue();
+    // two products on screen (adi grouped incl. both origins, boot) → exactly 2 cards
+    const cards = tree.root.findAll((n) =>
+      n.type === "div" && n.props.style?.background === "rgba(4,5,10,1)" &&
+      n.children.some?.(() => true) && textOf(n.children).includes("size"));
+    const cardTexts = cards.map((c) => textOf(c.children));
+    expect(cardTexts.filter((t) => t.includes("Adidas Adi 2000 White Grey"))).toHaveLength(1);
+    expect(cardTexts.filter((t) => t.includes("Timberland"))).toHaveLength(1);
     tree.unmount();
   });
 
@@ -170,10 +193,7 @@ describe("2 · one list, one design — identical rows, identical actions, ident
 
   it("Fulfil on a REQUEST row keeps the exact movement contract (central, auto_refill reason, rrf_ id)", async () => {
     const tree = renderQueue();
-    // open the boot row's panel: its Fulfil button is inside the card that shows the product name
-    const bootCard = tree.root.findAll((n) =>
-      n.type === "div" && textOf(n.children).includes("Timberland") && n.props.style?.background === "rgba(4,5,10,1)")[0];
-    const fulfilBtn = bootCard.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).trim() === "Fulfil");
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
     await act(async () => { fulfilBtn.props.onClick(); });
     await act(async () => {});   // panel loads availability
     const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
@@ -199,9 +219,7 @@ describe("2 · one list, one design — identical rows, identical actions, ident
   it("Fulfil on a SALE row keeps the Source contract (picked warehouse, source_refill, seeded id)", async () => {
     const onSaleProgress = vi.fn();
     const tree = renderQueue({ onSaleProgress });
-    const adiSaleCard = tree.root.findAll((n) =>
-      n.type === "div" && textOf(n.children).includes("Size 5") && n.props.style?.background === "rgba(4,5,10,1)")[0];
-    const fulfilBtn = adiSaleCard.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).trim() === "Fulfil");
+    const fulfilBtn = lineButton(sizeLineOf(tree, "5", "sale"), "Fulfil");
     await act(async () => { fulfilBtn.props.onClick(); });
     await act(async () => {});
     const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
@@ -219,11 +237,95 @@ describe("2 · one list, one design — identical rows, identical actions, ident
       expect.objectContaining({ counted: true }));
   });
 
+  it("PARTIAL FULFIL deducts the sent tranche — ask ×2, send 1, ×1 stays open (owner correction)", async () => {
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});   // panel loads availability (5 counted at Central)
+    // stepper down from the default full ask (2) to 1
+    const minus = tree.root.findAll((n) => n.type === "button" && textOf(n.props.children) === "−")[0];
+    await act(async () => { minus.props.onClick(); });
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    tree.unmount();
+
+    // one unit moved, under the historic bare id (first tranche)
+    expect(applyMovementMock).toHaveBeenCalledTimes(1);
+    expect(applyMovementMock.mock.calls[0][0]).toMatchObject({ qty: 1, movementId: "rrf_bootreq" });
+    // the request is NOT fulfilled — the remainder is deducted and stays open
+    const patch = updateMock.mock.calls.at(-1)[1];
+    expect(patch["refill_requests/bootreq/qty"]).toBe(1);
+    expect(patch["refill_requests/bootreq/sentQty"]).toBe(1);
+    expect(Object.keys(patch).find((k) => k.includes("/status"))).toBeUndefined();
+  });
+
+  it("the SECOND tranche gets its own idempotent movement id and closes the request with the true total", async () => {
+    // the live record already carries the first tranche: 1 of the original 2 sent
+    paths["refill_requests"].bootreq = { ...paths["refill_requests"].bootreq, qty: 1, sentQty: 1 };
+    gets["refill_requests/bootreq"] = paths["refill_requests"].bootreq;
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    tree.unmount();
+
+    // a FRESH id — the bare rrf_ id already names tranche one; reusing it would
+    // make applyMovement swallow this send as a duplicate
+    expect(applyMovementMock.mock.calls[0][0]).toMatchObject({ qty: 1, movementId: "rrf_bootreq_1" });
+    const patch = updateMock.mock.calls.at(-1)[1];
+    expect(patch["refill_requests/bootreq/status"]).toBe("fulfilled");
+    expect(patch["refill_requests/bootreq/fulfilledBy"]).toEqual({ movementId: "rrf_bootreq_1", qty: 1, totalQty: 2 });
+  });
+
+  it("a FAILED live read aborts the send — never a guessed tranche id (CodeRabbit, PR #338)", async () => {
+    rejects.add("refill_requests/bootreq");
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    const out = textOf(tree.toJSON());
+    tree.unmount();
+    expect(applyMovementMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(out).toContain("Nothing was sent");
+  });
+
+  it("a RETRY after a failed bookkeeping write credits what actually moved, not the new pick", async () => {
+    // Tranche one (1 unit) is already in the ledger under the bare id, but the
+    // qty/sentQty write failed — the request still reads qty 2 / sentQty 0.
+    // The picker retries asking for the full 2: nothing must move again, ONE
+    // unit is credited, and ×1 stays open instead of the request closing over
+    // a unit that never shipped.
+    gets["stock_movements/rrf_bootreq"] = { qty: 1, productId: "boot" };
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    tree.unmount();
+    expect(applyMovementMock).not.toHaveBeenCalled();
+    const patch = updateMock.mock.calls.at(-1)[1];
+    expect(patch["refill_requests/bootreq/qty"]).toBe(1);
+    expect(patch["refill_requests/bootreq/sentQty"]).toBe(1);
+    expect(Object.keys(patch).find((k) => k.includes("/status"))).toBeUndefined();
+  });
+
+  it("a partially-sent request line SHOWS its progress (sentQty renders)", () => {
+    paths["refill_requests"].bootreq = { ...paths["refill_requests"].bootreq, qty: 1, sentQty: 1 };
+    const tree = renderQueue();
+    const line = rowLineOf(tree, "req:bootreq");
+    expect(textOf(line.children)).toContain("1 sent");
+    tree.unmount();
+  });
+
   it("Out of Stock on a REQUEST row is the human rejection — cancelled with NO cancelReason", async () => {
     const tree = renderQueue();
-    const bootCard = tree.root.findAll((n) =>
-      n.type === "div" && textOf(n.children).includes("Timberland") && n.props.style?.background === "rgba(4,5,10,1)")[0];
-    const oosBtn = bootCard.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).trim() === "Out of Stock");
+    const oosBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock");
     await act(async () => { await oosBtn.props.onClick(); });
     tree.unmount();
     expect(updateMock).toHaveBeenCalledTimes(1);
@@ -242,9 +344,7 @@ describe("2 · one list, one design — identical rows, identical actions, ident
   it("a THROWING confirm never wedges the row or the panel at 'Transferring…' (finally reset)", async () => {
     const onSaleProgress = vi.fn(() => { throw new Error("progress write exploded"); });
     const tree = renderQueue({ onSaleProgress });
-    const adiSaleCard = tree.root.findAll((n) =>
-      n.type === "div" && textOf(n.children).includes("Size 5") && n.props.style?.background === "rgba(4,5,10,1)")[0];
-    const fulfilBtn = adiSaleCard.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).trim() === "Fulfil");
+    const fulfilBtn = lineButton(sizeLineOf(tree, "5", "sale"), "Fulfil");
     await act(async () => { fulfilBtn.props.onClick(); });
     await act(async () => {});
     const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
@@ -260,9 +360,7 @@ describe("2 · one list, one design — identical rows, identical actions, ident
   it("Out of Stock on a SALE row writes the response record and moves no stock", async () => {
     const onSaleResponse = vi.fn();
     const tree = renderQueue({ onSaleResponse });
-    const adiSaleCard = tree.root.findAll((n) =>
-      n.type === "div" && textOf(n.children).includes("Size 5") && n.props.style?.background === "rgba(4,5,10,1)")[0];
-    const oosBtn = adiSaleCard.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).trim() === "Out of Stock");
+    const oosBtn = lineButton(sizeLineOf(tree, "5", "sale"), "Out of Stock");
     await act(async () => { oosBtn.props.onClick(); });
     tree.unmount();
     expect(onSaleResponse).toHaveBeenCalledWith(expect.objectContaining({ key: "adi", size: "5", date: "2026-08-07" }), "out_of_stock");
