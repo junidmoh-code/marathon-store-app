@@ -138,9 +138,32 @@ describe("buildNewProduct — shoebox", () => {
   });
 });
 
+// Only ASSIGNABLE categories can produce a record. The six keys retired by the
+// 2026-08-01 merge deliberately cannot — see the retired-key test below.
+const ASSIGNABLE_KEYS = Object.keys(REG.cats).filter((k) => REG.cats[k].active);
+
+describe("retired categories cannot create products", () => {
+  it("buildNewProduct REFUSES a merged-away key rather than half-typing a product", () => {
+    // Refusing is the whole point of legacyFor returning null for a retired
+    // category: a record built from one would carry a categoryKey the picker
+    // cannot show and an operator cannot correct.
+    for (const k of ["jeans", "cargo-pants", "sweaters", "running-shoes", "boots", "loafers"]) {
+      expect(build({ categoryKey: k })).toBeNull();
+    }
+  });
+
+  it("the survivors are all still buildable", () => {
+    for (const k of ["pants", "hoodies", "sneakers", "designer-shoes"]) {
+      expect(build({ categoryKey: k })).not.toBeNull();
+    }
+  });
+});
+
 describe("buildNewProduct — omission vs null", () => {
-  it("omits subcategory where no legacy leaf exists (Loafers, Dresses)", () => {
-    for (const k of ["loafers", "dresses"]) {
+  // Loafers also had no leaf, but was RETIRED by the 2026-08-01 merge and can no
+  // longer be built — see the retired-key test below.
+  it("omits subcategory where no legacy leaf exists (Dresses)", () => {
+    for (const k of ["dresses"]) {
       const p = build({ categoryKey: k });
       expect("subcategory" in p).toBe(false);
     }
@@ -156,7 +179,7 @@ describe("buildNewProduct — omission vs null", () => {
     expect(p.productType).toBe("clothing");
   });
   it("never writes a literal null into subcategory/productType", () => {
-    for (const key of Object.keys(REG.cats)) {
+    for (const key of ASSIGNABLE_KEYS) {
       const p = build({ categoryKey: key });
       if ("subcategory" in p) expect(p.subcategory).not.toBeNull();
       if ("productType" in p) expect(p.productType).not.toBeNull();
@@ -169,16 +192,16 @@ describe("buildNewProduct — omission vs null", () => {
 // with the record this form produces.
 describe("every category lands correctly in every live automation", () => {
   const REFILL_MANAGED = new Set([
-    "t-shirts", "golf-t-shirts", "hoodies", "sweaters", "jackets", "tracksuits", "pants", "jeans",
-    "shorts", "cargo-pants", "basketball-vests", "baseball-shirts", "soccer-jerseys", "dresses",
+    "t-shirts", "golf-t-shirts", "hoodies", "jackets", "tracksuits", "pants",
+    "shorts", "basketball-vests", "baseball-shirts", "soccer-jerseys", "dresses",
     "underwear", "fitted-caps", "gloves",
     // one-size accessories: the engine SEES them (productType clothing) but can
     // never resolve a target for "_", so they only surface in the No-Target queue.
     "bags", "belts", "watches", "chains-bracelets", "sunglasses", "caps-beanies",
   ]);
-  const FOOTWEAR = ["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes"];
+  const FOOTWEAR = ["sneakers", "soccer-boots", "designer-shoes", "slides", "kids-shoes"];
 
-  for (const key of Object.keys(REG.cats)) {
+  for (const key of ASSIGNABLE_KEYS) {
     it(`${key}`, () => {
       const p = build({ categoryKey: key, hubs: ["hub1", "hub2", "hub3"] });
       expect(p).not.toBeNull();
@@ -206,7 +229,7 @@ describe("every category lands correctly in every live automation", () => {
   }
 
   it("perfume is the ONLY category that fires a display check without being refill-managed", () => {
-    const odd = Object.keys(REG.cats).filter((k) => {
+    const odd = ASSIGNABLE_KEYS.filter((k) => {
       const p = build({ categoryKey: k });
       return displayCheckFires(p, p.sizes[0]) && !engineIsClothing(p);
     });
