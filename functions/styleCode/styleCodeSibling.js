@@ -88,9 +88,26 @@ async function runSibling(db, { action, code, productId, otherId, palette, actor
   // thing the picker does. See lib/colourway-answers.cjs for the model.
   if (action === "colourwayAnswers") {
     const rows = (await db.ref(`${COLOURWAY_ANSWERS_PATH}/${normalised}`).get()).val() || {};
-    const answers = Object.values(rows)
-      .filter((r) => r && typeof r.productId === "string" && Array.isArray(r.p))
-      .map((r) => ({ productId: r.productId, p: r.p }));
+    // Answers are served MERGE-RESOLVED: a row stored before its product was
+    // merged away would otherwise hand the picker a hidden record's id and
+    // route stock onto it (CodeRabbit, PR #334). Follow mergedInto to the
+    // live survivor; a row pointing at nothing live is dropped.
+    const followMerge = async (id) => {
+      let cur = String(id ?? "").replace(/[.#$/\[\]\s]/g, "");
+      for (let hops = 0; hops < 5 && cur; hops++) {
+        const p = (await db.ref(`products/${cur}`).get()).val();
+        if (!p) return null;
+        if (!p.mergedInto) return cur;
+        cur = String(p.mergedInto).replace(/[.#$/\[\]\s]/g, "");
+      }
+      return null;
+    };
+    const answers = [];
+    for (const r of Object.values(rows)) {
+      if (!r || typeof r.productId !== "string" || !Array.isArray(r.p)) continue;
+      const live = await followMerge(r.productId);
+      if (live) answers.push({ productId: live, p: r.p });
+    }
     return { ok: true, answers };
   }
 

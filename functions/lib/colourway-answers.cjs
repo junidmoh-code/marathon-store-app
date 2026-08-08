@@ -37,7 +37,10 @@ function cleanPalette(palette) {
     const r = Number(sw.r), g = Number(sw.g), b = Number(sw.b), w = Number(sw.w);
     if (![r, g, b].every((v) => Number.isFinite(v) && v >= 0 && v <= 255)) return null;
     if (!Number.isFinite(w) || w <= 0 || w > 1) return null;
-    out.push({ r: Math.round(r), g: Math.round(g), b: Math.round(b), w: Math.round(w * 100) / 100 });
+    // Clamp the ROUNDED weight positive: w ≤ 0.004 rounds to 0, which breaks
+    // the >0 invariant on re-read and paletteDistance's `|| 1` then hands a
+    // negligible swatch full weight. (CodeRabbit, PR #334.)
+    out.push({ r: Math.round(r), g: Math.round(g), b: Math.round(b), w: Math.max(0.01, Math.round(w * 100) / 100) });
   }
   return out.length ? out : null;
 }

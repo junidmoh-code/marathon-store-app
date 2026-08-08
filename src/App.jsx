@@ -7571,8 +7571,15 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
       }
       // The OTHER token of a multi-token label (owner spec 2026-08-08): the
       // exact code-alias store resolves it to the same product a colleague
-      // already identified. Read-only lookup — assistants may not write.
-      const aliasOwner = await lookupCodeAlias(normaliseStyleCode(display)).catch(() => null);
+      // already identified. Read-only lookup — assistants may not write. A
+      // FAILED lookup must not read as "nothing owns it" (CodeRabbit, PR #334).
+      let aliasOwner = null;
+      try {
+        aliasOwner = await lookupCodeAlias(normaliseStyleCode(display));
+      } catch {
+        setNote({ text: `Couldn't check ${display} against the label-code index — try again, or search by name.` });
+        return;
+      }
       if (aliasOwner) {
         const p = await resolveCandidate(aliasOwner);
         if (p) { finish(p); return; }

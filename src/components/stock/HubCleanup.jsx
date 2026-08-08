@@ -382,7 +382,16 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // a multi-token label someone already resolved: the exact code-alias
       // store answers (owner spec 2026-08-08 — whichever token a colleague
       // tapped, this one lands on the same product).
-      const aliasOwner = await lookupCodeAlias(normalised).catch(() => null);
+      // A FAILED lookup is not "no alias" — swallowing it would write a false
+      // never-registered note for a code the alias store may well know
+      // (CodeRabbit, PR #334).
+      let aliasOwner = null;
+      try {
+        aliasOwner = await lookupCodeAlias(normalised);
+      } catch (err) {
+        flash("err", `Couldn't check ${display} against the label-code index (${err?.message || err}) — try again.`);
+        return;
+      }
       if (aliasOwner) {
         let p = products.find((x) => x && x.id === aliasOwner && !isMergedAway(x)) || null;
         if (!p) {
@@ -1075,11 +1084,13 @@ function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
         if (rememberedProduct) { pick(rememberedProduct, { remember: false }); return; }
         // Step 3 — the margin decision, against every candidate's stored
         // image (palettes computed on the fly where not stored). `auto` only
-        // on a clear win; the human's answer, when asked, is remembered so
-        // next time step 2 resolves this shoe silently.
+        // on a clear win — and an auto pick is NEVER stored as an answer:
+        // the answer store is human decisions only, or a margin-cleared guess
+        // could later bypass the margin through step 2 (CodeRabbit, PR #334).
+        // Only the HUMAN's tap below is remembered.
         const withPalettes = await enrichCandidates();
         const decided = selectByColourAffinity(withPalettes, colours);
-        if (decided.kind === "auto") { pick(decided.product, { palette: colours }); return; }
+        if (decided.kind === "auto") { pick(decided.product, { remember: false }); return; }
         setAutoNote("The photo can't separate these on colour — tap the shoe in your hand.");
       }
       setPhotoColours(colours);

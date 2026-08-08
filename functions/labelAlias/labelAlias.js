@@ -34,7 +34,7 @@ const admin = require("firebase-admin");
 const {
   LABEL_ALIASES_PATH, BANDS, normaliseAliasTokens, tokensToMap,
   scoreAliases, bandFor, isDuplicateAlias,
-  normaliseAliasCodes, codesToMap, codeAliasOwner, codeAliasOwnersAll, isDuplicateCodeAlias,
+  normaliseAliasCodes, codesToMap, codeAliasOwnersAll, isDuplicateCodeAlias,
 } = require("../lib/label-alias.cjs");
 const { LAYOUT_RULES_PATH, layoutKeyFor, learnLayoutTransition } = require("../lib/label-layout.cjs");
 const { normaliseStyleCode, styleCodeFormat } = require("../lib/style-code.cjs");
@@ -161,14 +161,21 @@ async function runLabelAlias(db, { action, tokens, productId, code, chosenCode, 
         // The target itself owns the claim — nothing to alias, nothing wrong.
         continue;
       }
-      const aliased = codeAliasOwner(c, aliases);
-      if (aliased) {
-        const aliasOwner = await resolveProductId(db, aliased.productId);
-        if (aliasOwner && aliasOwner !== targetId) {
-          conflicts.push({ code: c, ownerId: aliasOwner });
+      // ALL alias records for this code, not the collapsed single-owner view:
+      // codeAliasOwner folds "two products dispute this code" into null, and
+      // treating that null as "free" would file a THIRD record for a disputed
+      // token (CodeRabbit, PR #334). Any live holder other than the target —
+      // sole or disputed — makes this a conflict, never an attach.
+      const aliasHolders = codeAliasOwnersAll(c, aliases);
+      if (aliasHolders.length) {
+        const resolved = [...new Set((await Promise.all(aliasHolders.map((o) => resolveProductId(db, o)))).filter(Boolean))];
+        const others = resolved.filter((r) => r !== targetId).sort();
+        if (others.length) {
+          conflicts.push({ code: c, ownerId: others[0] });
           continue;
         }
-        if (aliasOwner === targetId) continue; // already filed
+        if (resolved.includes(targetId)) continue; // already filed
+        // every record points at a dead product — the code is free again
       }
       attachable.push(c);
     }

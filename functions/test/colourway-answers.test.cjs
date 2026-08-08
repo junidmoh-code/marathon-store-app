@@ -118,3 +118,23 @@ test("colourwayAnswers serves the rows the picker matches against", async () => 
   assert.strictEqual(out.answers[0].productId, "pBlue");
   assert.ok(Array.isArray(out.answers[0].p));
 });
+
+test("answers are served MERGE-RESOLVED; rows pointing at nothing live are dropped", async () => {
+  const db = baseDb();
+  await runSibling(db, { action: "answerColourway", code: CODE, productId: "pGray", palette: WHITE_GRAY, actor: ACTOR, nowMs: NOW });
+  // pGray is merged away after the answer was stored — the picker must be
+  // handed the SURVIVOR, never the hidden record (CodeRabbit, PR #334).
+  db.data.products.pGray.mergedInto = "pBlue";
+  const out = await runSibling(db, { action: "colourwayAnswers", code: CODE, actor: ACTOR, nowMs: NOW });
+  assert.strictEqual(out.answers.length, 1);
+  assert.strictEqual(out.answers[0].productId, "pBlue");
+  // …and a row whose product chain dead-ends vanishes rather than misleads.
+  delete db.data.products.pBlue;
+  const gone = await runSibling(db, { action: "colourwayAnswers", code: CODE, actor: ACTOR, nowMs: NOW });
+  assert.deepStrictEqual(gone.answers, []);
+});
+
+test("a sub-1% weight survives rounding as a positive weight, never 0", () => {
+  const clean = cleanPalette([{ r: 10, g: 10, b: 10, w: 0.99 }, { r: 200, g: 200, b: 200, w: 0.004 }]);
+  assert.ok(clean.every((sw) => sw.w > 0), "a stored 0 weight would violate the invariant and distort distances");
+});

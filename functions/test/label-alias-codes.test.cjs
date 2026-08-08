@@ -209,6 +209,27 @@ test("disagreeing alias records fail closed AND land in the duplicate queue — 
   assert.strictEqual(db2.data[DUPLICATE_CANDIDATES_PATH], undefined, "a merge artifact is not a duplicate");
 });
 
+test("a DISPUTED token (two alias records, two products) is a conflict for a third filer — never attached", async () => {
+  const db = baseDb({
+    products: {
+      pDiesel: { id: "pDiesel", name: "Diesel" },
+      pOther: { id: "pOther", name: "Other" },
+      pThird: { id: "pThird", name: "Third" },
+    },
+    [LABEL_ALIASES_PATH]: {
+      a1: { productId: "pDiesel", c: { [TOKEN_B]: true }, n: 1, addedAt: 1, addedBy: "x" },
+      a2: { productId: "pOther", c: { [TOKEN_B]: true }, n: 1, addedAt: 2, addedBy: "y" },
+    },
+  });
+  const res = await runLabelAlias(db, {
+    action: "recordLabelCodes", productId: "pThird",
+    chosenCode: TOKEN_A, otherCodes: [TOKEN_B], actor: ACTOR, nowMs: NOW,
+  });
+  assert.ok(!res.attached.includes(TOKEN_B), "a disputed token must not gain a third record");
+  assert.strictEqual(res.conflicts.length, 1);
+  assert.strictEqual(res.conflicts[0].code, TOKEN_B);
+});
+
 test("token-set scoring and code records cannot bleed into each other", async () => {
   const db = baseDb();
   await runLabelAlias(db, {
