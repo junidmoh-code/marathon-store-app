@@ -38,6 +38,20 @@ describe("ChoosePanel colour wiring (Kimi review PR #334 + owner spec pins)", ()
   });
 });
 
+describe("layout auto-pick visibility (Sonnet review PR #334)", () => {
+  const reader = readFileSync(join(here, "TongueLabelReader.jsx"), "utf8");
+  it("a learned-layout pick is ANNOUNCED with override chips — never invisible", () => {
+    // A wrong rule (one mistaken first tap) can only self-correct if the
+    // surfaces that USE it can generate the disagreeing answer. The reader
+    // proceeds but shows the pick + the other token(s) as chips.
+    expect(reader).toMatch(/if \(out\.auto && Array\.isArray\(out\.allCandidates\) && out\.allCandidates\.length > 1\)/);
+    expect(reader).toMatch(/Wrong\? Tap the right one:/);
+  });
+  it("the override chips run through the SAME tap handler that teaches the rule", () => {
+    expect(reader).toMatch(/learnLabelLayout\(\{ codes: readNote\.candidates, chosenCode: c \}\)/);
+  });
+});
+
 describe("alias-lookup failure handling (CodeRabbit PR #334)", () => {
   it("count flow: a FAILED codeLookup errors-and-returns — never a false never-registered note", () => {
     const branch = src.slice(src.indexOf("aliasOwner = await lookupCodeAlias(normalised)"), src.indexOf("recordUnresolvedScan({ hub, code: display"));

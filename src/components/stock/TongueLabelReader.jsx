@@ -198,6 +198,21 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
             source: "label", labelPhoto: frame,
             allCodes: out.allCandidates || null, auto: !!out.auto,
           });
+          // A learned-layout pick must never be INVISIBLE (Sonnet review,
+          // PR #334): the flow proceeds, but the pick is announced with the
+          // other token(s) as override chips. Tapping one both corrects this
+          // read AND records the disagreement that replaces — and on a second
+          // disagreement permanently disables — the rule (lib/label-layout).
+          // Without this, the counting surface could never generate the
+          // correcting answer a wrong rule needs.
+          if (out.auto && Array.isArray(out.allCandidates) && out.allCandidates.length > 1) {
+            setReadNote({
+              text: `Read ${formattedChosen} as the style number — learned from earlier labels like this one. Wrong? Tap the right one:`,
+              options: out.allCandidates.filter((c) => formatStyleCodeForDisplay(c) !== formattedChosen).map(formatStyleCodeForDisplay),
+              candidates: out.allCandidates,
+              labelPhoto: frame,
+            });
+          }
           return;
         }
         if (out.kind === "options" && !sawOptions) sawOptions = { out, frame };
