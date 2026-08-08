@@ -92,6 +92,30 @@ export const QUICK_RANGES = [
   { key: "month", label: "This month" },
 ];
 
+// ─── DAY STEPPER (owner redo 2026-08-08) ─────────────────────────────────────
+// The view shows ONE SA day at a time: back = the day before, forward = the day
+// after, forward DISABLED at today. Pure so the boundary maths is testable.
+/** One step from `day` by `delta` (±1). Returns the new day string, or null
+ *  when the step would pass `today` — the caller disables the arrow on null. */
+export function shiftDay(day, delta, today) {
+  const next = saDayOf(saDayStartMs(day) + delta * 864e5);
+  if (next > today) return null;
+  return next;
+}
+
+// ─── HUB STEPPER — All / Hub 1 / Hub 2 / Shops, cycling ──────────────────────
+export const HUB_STEPS = [
+  { key: "all",   label: "All",   locs: ["hub1", "hub2", "marathon-pe", "trophy", "marathon-pine", "hub3"] },
+  { key: "hub1",  label: "Hub 1", locs: ["hub1"] },
+  { key: "hub2",  label: "Hub 2", locs: ["hub2"] },
+  { key: "shops", label: "Shops", locs: ["marathon-pe", "trophy", "marathon-pine", "hub3"] },
+];
+/** Cyclic step: from index `i`, ±1 wraps around the four stops. */
+export function stepHub(i, delta) {
+  const n = HUB_STEPS.length;
+  return ((i + delta) % n + n) % n;
+}
+
 /**
  * Resolve a range key to a half-open UTC window [fromMs, toMs) and the SA
  * calendar days it spans, so the same object drives both the RTDB query and the
@@ -148,6 +172,7 @@ export const STATUSES = ["requested", "fulfilled", "rejected", "withdrawn", "par
 
 export const STATUS_LABEL = {
   requested: "Open",
+  queued: "Queued",
   fulfilled: "Refilled",
   rejected: "Rejected",
   withdrawn: "No longer needed",
@@ -159,6 +184,7 @@ export const STATUS_LABEL = {
 // over three stored statuses, not statuses themselves.
 export const STATUS_EXPLAIN = {
   requested: "raised, still waiting — any raise date",
+  queued: "raised, accumulating behind the next release window",
   fulfilled: "picked and sent",
   rejected: "a person marked it not on the shelf",
   withdrawn: "the engine closed its own request — stock arrived or the ask disappeared",
@@ -277,6 +303,11 @@ export function requestRows(requests = [], range, locations = []) {
       auto: !!r.createdFrom?.engine,
       via: r.createdFrom?.via || null,
       uncounted: !!r.fulfilledBy?.uncounted,
+      // The release-window gate (releaseWindows.isReleased) needs these to
+      // split Open into Open (pickable now) vs Queued (behind the next
+      // window). Carried raw, never interpreted here.
+      createdAt: r.createdAt || null,
+      earlyRelease: r.earlyRelease || null,
     });
   }
   return out;

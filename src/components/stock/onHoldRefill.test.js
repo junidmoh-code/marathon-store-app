@@ -78,38 +78,12 @@ describe("onHoldRefillPlan — FAILS CLOSED, never guesses", () => {
 });
 
 // ── the lifecycle half (Kimi review, PR #335): one surface at every moment ──
-import { heldCardVisible, holdReleaseUpdate } from "./onHoldRefill.js";
+import { holdReleaseUpdate } from "./onHoldRefill.js";
 
-describe("heldCardVisible — the queue and the held list never both (or neither) show an ask", () => {
-  const statuses = (o) => new Map(Object.entries(o));
-
-  it("a hold that never raised a request is always a held card", () => {
-    expect(heldCardVisible(null, statuses({}), true)).toBe(true);
-    expect(heldCardVisible(undefined, statuses({}), false)).toBe(true);
-  });
-
-  it("an OPEN request suppresses the held card — the queue owns it", () => {
-    expect(heldCardVisible("onhold_x", statuses({ onhold_x: "open" }), true)).toBe(false);
-  });
-
-  it("a REJECTED request hands the ask BACK to the held card — it must not vanish", () => {
-    // The reviewed bug: unconditional suppression left a rejected ask visible
-    // nowhere while the customer order sat coming_tomorrow forever.
-    expect(heldCardVisible("onhold_x", statuses({ onhold_x: "cancelled" }), true)).toBe(true);
-  });
-
-  it("a FULFILLED request also returns the card (stock arrived — send it on)", () => {
-    expect(heldCardVisible("onhold_x", statuses({ onhold_x: "fulfilled" }), true)).toBe(true);
-  });
-
-  it("a DELETED request row falls back to the held card, never to nowhere", () => {
-    expect(heldCardVisible("onhold_gone", statuses({}), true)).toBe(true);
-  });
-
-  it("while requests are still loading the card stays hidden (no duplicate flash)", () => {
-    expect(heldCardVisible("onhold_x", statuses({}), false)).toBe(false);
-  });
-});
+// heldCardVisible is GONE (owner spec 2026-08-08): there are no held cards or
+// exception rows anywhere on the refill surface any more — a hold that raised
+// a request is an ordinary queue row, and one that could not raise a request
+// exists only as a warehouse On Hold order.
 
 describe("holdReleaseUpdate — leaving on-hold withdraws the still-open ask", () => {
   const CTX2 = { nowIso: "2026-08-08T12:00:00.000Z", uid: "vWfHqbLEPvRMItXhH0B9NvYW0LG3" };

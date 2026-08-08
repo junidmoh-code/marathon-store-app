@@ -6,16 +6,18 @@
 //
 // TWO KINDS OF ON-HOLD, deliberately separated:
 //   • The CUSTOMER-facing hold — order status coming_tomorrow, the TV row, the
-//     WhatsApp "available tomorrow" message, the warehouse On Hold card. That
-//     lifecycle is NOT this module's business and is unchanged.
-//   • The SOURCE-facing work item — "send this size to the hub" — which used to
-//     live as a card on the Source On Hold tab. THAT is what becomes a refill
-//     request here, so it queues with every other ask in the hub's refill tab.
+//     warehouse On Hold status tab, the customer status page. That lifecycle
+//     is NOT this module's business. (The WhatsApp "available tomorrow"
+//     message is GONE — owner spec 2026-08-08: no customer notification for
+//     holds is sent any more.)
+//   • The SOURCE-facing work item — "send this size to the hub" — which
+//     becomes an ORDINARY refill request here and queues indistinguishably
+//     with every other ask in the hub's refill queue.
 //
 // FAIL CLOSED. The hub comes from the order's own routing (placedAtHub, the
 // same field dispatch uses), never a guess: if the hub is not hub1/hub2, or
-// the order has no productId or size, NO request is raised — the caller keeps
-// the hold visible as a held card for a human instead. A request against a
+// the order has no productId or size, NO request is raised — the order simply
+// stays a warehouse On Hold order handled by a human. A request against a
 // guessed hub would move real stock to the wrong building.
 //
 // The request id is DETERMINISTIC — onhold_{saDate}_{orderNumber} — so a
@@ -25,30 +27,18 @@
 
 const VALID_HUBS = new Set(["hub1", "hub2"]);
 
-// ── THE FULL LIFECYCLE, so no ask can go invisible (Kimi review, PR #335) ────
-// A hold that raised a request is represented by EXACTLY ONE surface at every
-// moment:
-//   request OPEN      → the hub refill queue owns it (held card suppressed)
-//   request RESOLVED  → the held card RETURNS, carrying the outcome, so a
-//                       rejection ("not on the shelf") or an arrival is acted
-//                       on rather than silently stranding the customer order
-//   hold RELEASED     → the open request is withdrawn (holdReleaseUpdate), so
-//                       the queue never asks for stock nobody needs any more
+// ── THE LIFECYCLE (owner spec 2026-08-08 — On Hold is ABOLISHED from the
+// refill surface, not relocated) ─────────────────────────────────────────────
+//   hold PLACED    → an ordinary /refill_requests row is raised (below) — no
+//                    badge, no order number, no customer name in the queue
+//   hold RELEASED  → the still-open request is withdrawn (holdReleaseUpdate),
+//                    so the queue never asks for stock nobody needs any more
 //
-// Suppressing the held card unconditionally was the reviewed bug: a rejected
-// request left the queue AND the card stayed hidden — the ask existed nowhere.
-
-/** Should this hold render as a held card (true) or is the queue showing it? */
-export function heldCardVisible(refillRequestId, statusById, requestsLoaded) {
-  if (!refillRequestId) return true;            // never raised a request → held card
-  // Requests not loaded yet: keep the card hidden for the moment rather than
-  // flashing a duplicate next to its own queue card.
-  if (!requestsLoaded) return false;
-  const status = statusById?.get ? statusById.get(refillRequestId) : statusById?.[refillRequestId];
-  // Open → the queue owns it. Resolved, or the request row is gone entirely →
-  // the held card is the only surface left; show it.
-  return status !== "open";
-}
+// There is NO held card and NO exception row any more. A hold whose request
+// resolves without stock is handled on the warehouse orders surface (the On
+// Hold status tab), which is customer-facing and outside this module's remit.
+// A hold this planner fails closed on simply raises nothing — it remains a
+// warehouse order like any other.
 
 /**
  * The withdrawal for a released hold. Returns { requestId, patch } when the
