@@ -56,7 +56,7 @@ import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useLocations } from "./components/stock/useStock";
+import { useStockCells, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -74,7 +74,7 @@ import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositio
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath, onHoldEventsFromLog, onHoldKey } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { checkSourceMovementDuplicate, sourceMovementIdSeed } from "./components/stock/sourceMovementDedupe";
-import { onHoldRefillPlan } from "./components/stock/onHoldRefill";
+import { onHoldRefillPlan, holdReleaseUpdate, heldCardVisible } from "./components/stock/onHoldRefill";
 import { clearSourceResponseCells } from "./components/stock/sourceResponseWrites";
 import { printOrderSlips } from "./print/orderSlip";
 // ── New product taxonomy (31 categories, RTDB-backed registry) ───────────────
@@ -312,8 +312,8 @@ const STATUS = { INCOMING: "incoming", READY: "ready", OUT_OF_STOCK: "out_of_sto
 
 // ─── SIZE RANGE + SUBSTITUTE HELPERS ──────────────────────────────────────────
 // Canonical numeric range used to decide whether a ±1 substitute is in bounds.
-// Matches the spread of sizeOptions in AdminView ([3..11]); kept here so the
-// Warehouse picker doesn't have to import it.
+// Matches the spread of SNEAKER_SIZES / SIZES_FOOTWEAR ([3..13] since
+// 2026-08-08); kept here so the Warehouse picker doesn't have to import it.
 const SIZE_MIN = 3;
 const SIZE_MAX = 13;   // run extended to 12/13 (2026-08-08) — substitutes may now offer them
 
@@ -9380,6 +9380,23 @@ function WarehouseView({ products = [], orders, onExit }) {
         console.warn(`On-hold refill request not raised for #${order.id}: ${plan.reason} — hold stays visible for a human.`);
       }
     }
+    // ── RELEASING a hold withdraws its still-open refill ask ─────────────────
+    // (Kimi review, PR #335.) Marking the order Ready/Collected/OOS means the
+    // hold's need is gone; without this the queue keeps asking for stock nobody
+    // wants. Only an OPEN request is touched — a picker's fulfil always wins.
+    // "hold_released" + resolvedBy renders as "No longer needed, by <person>".
+    if (status !== STATUS.COMING_TOMORROW && order.onHoldRefillRequestId) {
+      const rel = holdReleaseUpdate(order, status, { nowIso: now, uid: auth.currentUser?.uid || null });
+      if (rel) {
+        try {
+          const reqRef = ref(database, `refill_requests/${rel.requestId}`);
+          const live = (await get(reqRef)).val();
+          if (live && live.status === "open") await update(reqRef, rel.patch);
+        } catch (err) {
+          console.warn(`On-hold refill request ${rel.requestId} not withdrawn (${err?.message || err}) — the engine's satisfied-sweep will retire it.`);
+        }
+      }
+    }
 
     // ── Display Partner refill scheduling (Phase 9) ────────────────────────
     // When a Display Partner order is marked READY, schedule a refill task on
@@ -12679,6 +12696,18 @@ function SourceOnHoldTab({ items, fulfilCtx }) {
                   Hub “{item.hub || "unknown"}” — couldn&rsquo;t queue a refill request; handle by hand.
                 </div>
               )}
+              {/* A hold whose refill request RESOLVED comes back here with the
+                  outcome, so a rejection or an arrival is acted on, never lost. */}
+              {item.refillOutcome === "fulfilled" && (
+                <div style={{ color:"#4ADE80", fontSize:"0.72rem", marginTop:"0.2rem", fontWeight:600 }}>
+                  Refill arrived at {HUB_LABELS[item.hub] || item.hub} — send it on and tap Sent.
+                </div>
+              )}
+              {item.refillOutcome === "cancelled" && (
+                <div style={{ color:"#F87171", fontSize:"0.72rem", marginTop:"0.2rem", fontWeight:600 }}>
+                  The refill ask was closed without stock — check the shelf or tap Out of Stock.
+                </div>
+              )}
             </div>
           </div>
           <div style={{ display:"flex", gap:"0.6rem" }}>
@@ -13558,6 +13587,17 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const photoIndex = useMemo(() => buildPhotoIndex(products), [products]);
   const photoFor = useCallback((product) => photoForProduct(photoIndex, product), [photoIndex]);
 
+  // Refill request statuses — the held-card visibility rule needs them: a hold
+  // whose request is OPEN is represented by the queue; a RESOLVED (or deleted)
+  // request hands the ask back to its held card, outcome attached, so a
+  // rejection can never strand the customer order invisibly (Kimi, PR #335).
+  // Same path the mounted hub tab already subscribes to — the SDK shares one
+  // server subscription per path, so this adds no second download.
+  const allRefillRequests = useRefillRequests();
+  const refillStatusById = useMemo(
+    () => new Map(allRefillRequests.map((r) => [r.id, r.status])), [allRefillRequests]);
+  const refillRequestsLoaded = allRefillRequests.length > 0;
+
   // On Hold response state — read once here so badges and the On Hold tab
   // share the same source of truth (no duplicate Firebase listeners).
   const [onHoldResponses, setOnHoldResponses] = useState({});
@@ -13675,13 +13715,14 @@ function SourceView({ onExit, orders, returnsLog, products }) {
 
     // Live: every current COMING_TOMORROW order (today + any not-yet-clobbered
     // past). A hold that raised a refill request (onHoldRefillRequestId,
-    // 2026-08-08) is represented in its hub's refill queue — skip it here so
-    // the same ask never shows as a held card AND a queue card. Held cards are
-    // therefore exactly: legacy holds + fail-closed holds (unroutable / no
-    // product id / write refused).
+    // 2026-08-08) is a held card only while heldCardVisible says so: an OPEN
+    // request means the hub's refill queue owns the ask; a RESOLVED one hands
+    // it back here with the outcome attached, so a rejection or an arrival is
+    // acted on rather than vanishing (Kimi, PR #335). Held cards are
+    // therefore: legacy holds, fail-closed holds, and resolved-request holds.
     (orders || []).forEach(o => {
       if (o.status !== STATUS.COMING_TOMORROW) return;
-      if (o.onHoldRefillRequestId) return;
+      if (!heldCardVisible(o.onHoldRefillRequestId, refillStatusById, refillRequestsLoaded)) return;
       const saDate = saDateOfTs(o.comingTomorrowAt || o.updatedAt) || todayDate;
       const composite = onHoldKey(saDate, o.id);
       byComposite.set(composite, {
@@ -13694,12 +13735,14 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         customerName: o.customerName || null,
         photoUrl: o.productPhotoUrl || null, photo: o.productPhoto || "",
         ts: o.comingTomorrowAt || o.updatedAt,
+        // The linked request's outcome, when it has one — the card renders it.
+        refillOutcome: o.onHoldRefillRequestId ? (refillStatusById.get(o.onHoldRefillRequestId) || null) : null,
       });
     });
 
     // Log (past days only): fill in on-holds whose live order was overwritten.
     onHoldEventsFromLog({ log: insightsLog, dates: pastDates }).forEach(e => {
-      if (e.refillRequestId) return;              // represented in the refill queue
+      if (!heldCardVisible(e.refillRequestId, refillStatusById, refillRequestsLoaded)) return;
       const composite = onHoldKey(e.saDate, e.orderNumber);
       if (byComposite.has(composite)) return;
       const ph = photoFor(e);
@@ -13709,6 +13752,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         size: e.size, hub: e.hub,
         customerName: e.customerName || null,
         photoUrl: ph.photoUrl, photo: ph.photo, ts: e.timestamp,
+        refillOutcome: e.refillRequestId ? (refillStatusById.get(e.refillRequestId) || null) : null,
       });
     });
 
@@ -13727,7 +13771,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       list.push(item);
     });
     return list.sort((a, b) => tsMs(b.ts) - tsMs(a.ts));
-  }, [insightsLog, orders, onHoldResponses, returnsLog, todayDate, photoFor]);
+  }, [insightsLog, orders, onHoldResponses, returnsLog, todayDate, photoFor, refillStatusById, refillRequestsLoaded]);
 
   // Per-hub pending counts for the Hub 1 / Hub 2 sub-tab badges. Mirrors the
   // exact same pending logic each tab uses (Today excludes responded cells,

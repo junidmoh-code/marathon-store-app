@@ -25,6 +25,52 @@
 
 const VALID_HUBS = new Set(["hub1", "hub2"]);
 
+// ── THE FULL LIFECYCLE, so no ask can go invisible (Kimi review, PR #335) ────
+// A hold that raised a request is represented by EXACTLY ONE surface at every
+// moment:
+//   request OPEN      → the hub refill queue owns it (held card suppressed)
+//   request RESOLVED  → the held card RETURNS, carrying the outcome, so a
+//                       rejection ("not on the shelf") or an arrival is acted
+//                       on rather than silently stranding the customer order
+//   hold RELEASED     → the open request is withdrawn (holdReleaseUpdate), so
+//                       the queue never asks for stock nobody needs any more
+//
+// Suppressing the held card unconditionally was the reviewed bug: a rejected
+// request left the queue AND the card stayed hidden — the ask existed nowhere.
+
+/** Should this hold render as a held card (true) or is the queue showing it? */
+export function heldCardVisible(refillRequestId, statusById, requestsLoaded) {
+  if (!refillRequestId) return true;            // never raised a request → held card
+  // Requests not loaded yet: keep the card hidden for the moment rather than
+  // flashing a duplicate next to its own queue card.
+  if (!requestsLoaded) return false;
+  const status = statusById?.get ? statusById.get(refillRequestId) : statusById?.[refillRequestId];
+  // Open → the queue owns it. Resolved, or the request row is gone entirely →
+  // the held card is the only surface left; show it.
+  return status !== "open";
+}
+
+/**
+ * The withdrawal for a released hold. Returns { requestId, patch } when the
+ * order is LEAVING coming_tomorrow and carries a raised request — the caller
+ * applies it only if the live request is still open (a picker's fulfil wins).
+ * cancelReason "hold_released" classifies as "No longer needed" in history;
+ * resolvedBy carries the person so it is never credited to the engine.
+ */
+export function holdReleaseUpdate(order, newStatus, { nowIso, uid = null }) {
+  if (newStatus === "coming_tomorrow") return null;      // still held — nothing to release
+  if (!order?.onHoldRefillRequestId) return null;        // no request was ever raised
+  return {
+    requestId: order.onHoldRefillRequestId,
+    patch: {
+      status: "cancelled",
+      resolvedAt: nowIso,
+      cancelReason: "hold_released",
+      ...(uid ? { resolvedBy: uid } : {}),
+    },
+  };
+}
+
 export function onHoldRefillPlan(order, { nowIso, saDate }) {
   const hub = order?.placedAtHub || order?.hub || null;
   if (!VALID_HUBS.has(hub)) return { ok: false, reason: hub ? `unroutable_hub_${hub}` : "no_hub" };

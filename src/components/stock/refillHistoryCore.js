@@ -194,6 +194,7 @@ export const REASON_TEXT = {
   unfillable: "no stock anywhere in the network",
   awaiting_upstream: "source had none — returns automatically when it restocks",
   order_lost: "its order record was lost (daily number reuse)",
+  hold_released: "its customer order left on-hold — nothing to send any more",
 };
 
 /** When did this request's OUTCOME happen? Open ones are dated by when they

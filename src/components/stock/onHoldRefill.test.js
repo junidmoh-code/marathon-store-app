@@ -76,3 +76,67 @@ describe("onHoldRefillPlan — FAILS CLOSED, never guesses", () => {
     expect(onHoldRefillPlan({ ...ORDER, qty: 3 }, CTX).record.qty).toBe(3);
   });
 });
+
+// ── the lifecycle half (Kimi review, PR #335): one surface at every moment ──
+import { heldCardVisible, holdReleaseUpdate } from "./onHoldRefill.js";
+
+describe("heldCardVisible — the queue and the held list never both (or neither) show an ask", () => {
+  const statuses = (o) => new Map(Object.entries(o));
+
+  it("a hold that never raised a request is always a held card", () => {
+    expect(heldCardVisible(null, statuses({}), true)).toBe(true);
+    expect(heldCardVisible(undefined, statuses({}), false)).toBe(true);
+  });
+
+  it("an OPEN request suppresses the held card — the queue owns it", () => {
+    expect(heldCardVisible("onhold_x", statuses({ onhold_x: "open" }), true)).toBe(false);
+  });
+
+  it("a REJECTED request hands the ask BACK to the held card — it must not vanish", () => {
+    // The reviewed bug: unconditional suppression left a rejected ask visible
+    // nowhere while the customer order sat coming_tomorrow forever.
+    expect(heldCardVisible("onhold_x", statuses({ onhold_x: "cancelled" }), true)).toBe(true);
+  });
+
+  it("a FULFILLED request also returns the card (stock arrived — send it on)", () => {
+    expect(heldCardVisible("onhold_x", statuses({ onhold_x: "fulfilled" }), true)).toBe(true);
+  });
+
+  it("a DELETED request row falls back to the held card, never to nowhere", () => {
+    expect(heldCardVisible("onhold_gone", statuses({}), true)).toBe(true);
+  });
+
+  it("while requests are still loading the card stays hidden (no duplicate flash)", () => {
+    expect(heldCardVisible("onhold_x", statuses({}), false)).toBe(false);
+  });
+});
+
+describe("holdReleaseUpdate — leaving on-hold withdraws the still-open ask", () => {
+  const CTX2 = { nowIso: "2026-08-08T12:00:00.000Z", uid: "vWfHqbLEPvRMItXhH0B9NvYW0LG3" };
+  const HELD = { id: "042", onHoldRefillRequestId: "onhold_2026-08-08_042" };
+
+  it("marks the request cancelled with hold_released and the person", () => {
+    const rel = holdReleaseUpdate(HELD, "ready", CTX2);
+    expect(rel.requestId).toBe("onhold_2026-08-08_042");
+    expect(rel.patch).toEqual({
+      status: "cancelled", resolvedAt: CTX2.nowIso,
+      cancelReason: "hold_released", resolvedBy: CTX2.uid,
+    });
+  });
+
+  it("never defaults the human-reject shape — cancelReason is ALWAYS present here", () => {
+    // cancelReason absence means human ✕ across the codebase; a release must
+    // not masquerade as one.
+    expect(holdReleaseUpdate(HELD, "collected", CTX2).patch.cancelReason).toBe("hold_released");
+  });
+
+  it("omits resolvedBy when nobody is signed in (omit-don't-copy)", () => {
+    const rel = holdReleaseUpdate(HELD, "ready", { nowIso: CTX2.nowIso, uid: null });
+    expect("resolvedBy" in rel.patch).toBe(false);
+  });
+
+  it("no-op when the order stays on hold or never raised a request", () => {
+    expect(holdReleaseUpdate(HELD, "coming_tomorrow", CTX2)).toBeNull();
+    expect(holdReleaseUpdate({ id: "042" }, "ready", CTX2)).toBeNull();
+  });
+});
