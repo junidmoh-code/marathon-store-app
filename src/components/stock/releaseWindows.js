@@ -15,12 +15,14 @@
 //     window (the last release instant only ever moves forward past createdAt);
 //   • everything that predates the feature is already released.
 //
-// The gate is PRESENTATION-ONLY and applied in exactly one place — the pick
-// queue (Hub2RefillQueue). Every other consumer of /refill_requests (the
-// engine's reconcile/satisfied/rejection-learning passes, MoveExcess netting,
-// Missing Sneakers dedupe, Refill History, held-card visibility) keeps reading
-// the full open set. Hiding a request from those would change real behaviour;
-// hiding it from the picker only changes when it becomes work.
+// The gate is PRESENTATION-ONLY. Two read-only consumers exist (2026-08-08):
+// the pick queue (RefillQueue — the one place rows are HIDDEN as work, request
+// and sale rows alike) and Refill History (which only LABELS the open set as
+// Open vs Queued — it hides nothing). No write path consults it, and every
+// behavioural consumer of /refill_requests (the engine's reconcile/satisfied/
+// rejection-learning passes, MoveExcess netting, Missing Sneakers dedupe)
+// keeps reading the full open set. Hiding a request from those would change
+// real behaviour; hiding it from the picker only changes when it becomes work.
 //
 // CONFIG — console-editable, no deploy:
 //   /config/refillEngine/releaseWindows = ["06:00", "14:00"]

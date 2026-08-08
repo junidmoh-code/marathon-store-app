@@ -254,34 +254,8 @@ export function restockCountsFromLog({ log, dateStr, hub, returnedIds, onNameCol
   return result;
 }
 
-// On-hold ("coming tomorrow") requests logged on any of the given SA dates,
-// deduped by (date, orderNumber). Returns a flat list the On Hold tab renders.
-// `dates` is the retention window (array or Set of "YYYY-MM-DD").
-export function onHoldEventsFromLog({ log, dates }) {
-  const dateSet = dates instanceof Set ? dates : new Set(dates || []);
-  const raw = (log || []).filter(
-    (e) => e && e.action === "tomorrow" && dateSet.has(saDateOf(e.timestamp))
-  );
-  return dedupeByOrderNumber(raw).map((e) => ({
-    orderNumber: e.orderNumber,
-    productName: e.productName || "Unknown",
-    productId: e.productId ?? null,
-    size: e.size ?? null,
-    hub: e.placedAtHub || "hub1",
-    customerName: e.customerName ?? null,
-    timestamp: e.timestamp,
-    saDate: saDateOf(e.timestamp),
-    // A hold that raised a refill request (2026-08-08) is represented in the
-    // hub's refill queue — the held-card list uses this to not show it twice.
-    refillRequestId: e.refillRequestId ?? null,
-  }));
-}
-
-// Composite on-hold "handled" key — date::orderNumber. orderNumber alone is
-// daily-reused, so a bare key let yesterday's handled #001 mask today's #001.
-export function onHoldKey(saDate, orderNumber) {
-  return sanitizeKey(`${saDate}::${String(orderNumber)}`);
-}
+// (onHoldEventsFromLog / onHoldKey removed 2026-08-08: the On Hold surface they
+// rebuilt is abolished — holds are ordinary /refill_requests rows now.)
 
 export function clothingRefillEventsForPeriod({ isToday, orders, log, filterStart, filterEnd }) {
   if (isToday) {

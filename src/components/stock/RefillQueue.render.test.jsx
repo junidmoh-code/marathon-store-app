@@ -231,8 +231,30 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     expect(patch["refill_requests/bootreq/status"]).toBe("cancelled");
     expect(patch["refill_requests/bootreq/rejectedBy"]).toBe("warehouse");
     expect(patch["refill_requests/bootreq/resolvedBy"]).toBe("u1");
-    expect(Object.keys(patch).find((k) => k.includes("cancelReason"))).toBeUndefined();
+    // cancelReason is EXPLICITLY CLEARED (null = RTDB delete), never set to a
+    // value: the engine reads "cancelled with no cancelReason" as the human
+    // rejection. A stale reason from an earlier lifecycle must not survive the
+    // reject and demote it to an engine withdrawal (CodeRabbit, PR #337).
+    expect(patch["refill_requests/bootreq/cancelReason"]).toBeNull();
     expect(applyMovementMock).not.toHaveBeenCalled();
+  });
+
+  it("a THROWING confirm never wedges the row or the panel at 'Transferring…' (finally reset)", async () => {
+    const onSaleProgress = vi.fn(() => { throw new Error("progress write exploded"); });
+    const tree = renderQueue({ onSaleProgress });
+    const adiSaleCard = tree.root.findAll((n) =>
+      n.type === "div" && textOf(n.children).includes("Size 5") && n.props.style?.background === "rgba(4,5,10,1)")[0];
+    const fulfilBtn = adiSaleCard.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).trim() === "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick().catch(() => {}); });
+    await act(async () => {});
+    const out = textOf(tree.toJSON());
+    expect(out).not.toContain("Transferring…");
+    // the panel surfaced the failure instead of dying silently
+    expect(out).toContain("progress write exploded");
+    tree.unmount();
   });
 
   it("Out of Stock on a SALE row writes the response record and moves no stock", async () => {

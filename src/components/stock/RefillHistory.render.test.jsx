@@ -39,7 +39,10 @@ const constraintsOf = (r) => Object.fromEntries((r.constraints || []).map((c) =>
 const isBacklogQuery = (r) => (r.constraints || []).some((c) => c.kind === "equalTo");
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
-vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => NOW, serverNowIso: () => new Date(NOW).toISOString() }));
+// Mutable clock: the release-boundary test moves it forward and lets the
+// component's own minute ticker pick the new instant up.
+const clock = { now: NOW };
+vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => clock.now, serverNowIso: () => new Date(clock.now).toISOString() }));
 
 const { default: RefillHistory } = await import("./RefillHistory.jsx");
 
@@ -72,6 +75,7 @@ const clickTab = async (tree, label) => {
 beforeEach(() => {
   for (const k of Object.keys(reads)) delete reads[k];
   readCalls.length = 0;
+  clock.now = NOW;
   reads["config/refillEngine"] = null;   // default windows
   reads["refill_requests"] = {
     // OPEN, raised before today's 06:00 release → the Open tab.
@@ -147,6 +151,27 @@ describe("the STATUS TABS — each opens its own rows", () => {
     expect(out).toContain("New Era 9Forty Navy");
     expect(out).not.toContain("Timberland Premium 6-Inch Wheat");
     tree.unmount();
+  });
+
+  it("crossing a release instant re-buckets Queued → Open WITHOUT any user action", async () => {
+    // 12:00 SA: queuedA (raised 07:00 SA) sits behind the 14:00 window. Leave
+    // the screen alone, let the clock pass 14:00 SA, and the minute ticker
+    // must move it to Open on its own (CodeRabbit, PR #337: a render-time
+    // clock froze the buckets until the user changed day/hub/tab).
+    vi.useFakeTimers();
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<RefillHistory products={PRODUCTS} />); });
+    await act(async () => {});
+    await clickTab(tree, "Queued");
+    expect(textOf(tree.toJSON())).toContain("New Era 9Forty Navy");
+
+    clock.now = Date.parse("2026-08-07T12:01:00.000Z");   // 14:01 SA — past the release
+    await act(async () => { vi.advanceTimersByTime(61_000); });
+    expect(textOf(tree.toJSON())).not.toContain("New Era 9Forty Navy");   // left Queued…
+    await clickTab(tree, "Open");
+    expect(textOf(tree.toJSON())).toContain("New Era 9Forty Navy");       // …and landed in Open
+    tree.unmount();
+    vi.useRealTimers();
   });
 
   it("the Rejected tab shows product, size, qty, source→destination, time, actor AND the reason", async () => {

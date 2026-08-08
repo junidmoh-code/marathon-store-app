@@ -9359,14 +9359,16 @@ function WarehouseView({ products = [], orders, onExit }) {
     if (status === STATUS.COMING_TOMORROW) patch.comingTomorrowAt = now;
     if (status === STATUS.COLLECTED)       patch.collectedAt = now;
 
-    // ── ON HOLD RAISES A SIZE REFILL REQUEST (owner redesign 2026-08-08) ─────
-    // The source-facing half of a hold is now a real /refill_requests row
-    // against the order's own hub, queued in that hub's refill tab. FAIL
-    // CLOSED on every uncertainty (unroutable hub, no productId/size, write
-    // refused): no request, and the hold stays visible as a held card for a
-    // human — see onHoldRefill.js. Create-if-absent so a re-tap can neither
-    // duplicate the ask nor reopen one the source already rejected. The
-    // customer-facing hold (status, TV, WhatsApp below) is untouched.
+    // ── ON HOLD RAISES A SIZE REFILL REQUEST (owner spec 2026-08-08) ─────────
+    // The source-facing half of a hold is an ORDINARY /refill_requests row
+    // against the order's own hub — indistinguishable in that hub's queue.
+    // FAIL CLOSED on every uncertainty (unroutable hub, no productId/size,
+    // write refused): no request; the order simply remains a warehouse On
+    // Hold order handled by a human — see onHoldRefill.js. Create-if-absent
+    // so a re-tap can neither duplicate the ask nor reopen one the source
+    // already rejected. The customer-facing hold status (warehouse tab, TV
+    // row, status page) is untouched; the "available tomorrow" WhatsApp is
+    // GONE — no customer notification for holds is sent any more.
     if (status === STATUS.COMING_TOMORROW) {
       const plan = onHoldRefillPlan(order, { nowIso: now, saDate: getSADateString() });
       if (plan.ok) {
@@ -13044,10 +13046,25 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // RefillQueue — same layout, same Fulfil / Out of Stock actions, all batched
   // by the release windows, one quiet status line. The old separate sections
   // (queue / sold today / earlier days / on hold) are gone.
+  //
+  // The sale rows are memoised for the ACTIVE tab: the 5-day straggler rebuild
+  // (restockCountsFromLog × HISTORY_RETENTION_DAYS + the photo join) is not
+  // free, and calling it inline re-ran it on every unrelated SourceView render
+  // (Sonnet architect, PR #337). Only the active hub's rows are ever needed.
+  const activeHub = tab === "hub1refill" ? "hub1" : tab === "clothing" ? "hub2" : null;
+  const activeMode = activeHub === "hub2" ? hub2Line : null;   // hub1 is footwear by construction
+  const activeCellFilter = useMemo(
+    () => activeMode ? (key, product, size) => lineMatches(productForKey(key, product), size, activeMode) : null,
+    [activeMode, lineMatches, productForKey]);
+  const activeSaleRows = useMemo(
+    () => activeHub ? saleRowsFor(activeHub, activeCellFilter) : [],
+    [activeHub, activeCellFilter, saleRowsFor]);
+  const activeCompletedSale = useMemo(
+    () => activeHub ? completedSaleFor(activeHub, activeCellFilter) : [],
+    [activeHub, activeCellFilter, completedSaleFor]);
   const hubTabContent = (h) => {
-    const mode = h === "hub2" ? hub2Line : null;   // hub1 is footwear by construction
+    const mode = h === "hub2" ? hub2Line : null;
     const lineFilter = mode ? (product, size) => lineMatches(product, size, mode) : null;
-    const cellFilter = mode ? (key, product, size) => lineMatches(productForKey(key, product), size, mode) : null;
     return (
       <>
         {h === "hub2" && (
@@ -13067,8 +13084,8 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           </div>
         )}
         <RefillQueue products={products} dest={h} lineFilter={lineFilter}
-          saleRows={saleRowsFor(h, cellFilter)}
-          completedSale={completedSaleFor(h, cellFilter)}
+          saleRows={activeSaleRows}
+          completedSale={activeCompletedSale}
           onSaleResponse={(row, resp) => handleResponse(row.date, row.key, row.size, resp)}
           onSaleProgress={(row, newSent, complete, meta) => handleFulfilProgress(row.date, row.key, row.size, newSent, complete, meta)}
           onSaleUndo={(c) => handleUndo(c.date, c.key, c.size, c.legacyKey)}

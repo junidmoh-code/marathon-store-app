@@ -93,8 +93,22 @@ function StepperBar({ onBack, onForward, backEnabled, forwardEnabled, title, sub
   );
 }
 
+// Live-ticking server-corrected "now", once a minute — the Open/Queued split is
+// a function of the clock, and a screen left open across a release instant must
+// re-bucket on its own (CodeRabbit, PR #337: a render-time read froze a Queued
+// row as Queued until the user happened to change day, hub or tab).
+function useNowMinute() {
+  const [now, setNow] = useState(() => serverNowMs());
+  useEffect(() => {
+    const id = setInterval(() => setNow(serverNowMs()), 60000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
 export default function RefillHistory({ products = [] }) {
-  const todayStr = saDayOf(serverNowMs());
+  const nowMs = useNowMinute();
+  const todayStr = saDayOf(nowMs);
   const [day, setDay] = useState(todayStr);
   const [hubIdx, setHubIdx] = useState(0);
   const [tab, setTab] = useState("requested");
@@ -170,8 +184,9 @@ export default function RefillHistory({ products = [] }) {
 
   // Which tab does a row belong to? Display kinds keep their kind; an open
   // request splits Open (released) vs Queued (behind the window); the rest is
-  // its classified status.
-  const nowMs = serverNowMs();
+  // its classified status. `nowMs` is the minute ticker above, and it is a
+  // dependency of BOTH memos, so crossing a release instant re-buckets Queued
+  // rows into Open without any user interaction.
   const bucketOf = (r) => {
     if (r.kind === "display_in" || r.kind === "display_out") return r.kind;
     if (r.status === "requested") return isReleased(r, nowMs, windows) ? "requested" : "queued";
@@ -185,8 +200,8 @@ export default function RefillHistory({ products = [] }) {
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, windows]);
-  const shown = useMemo(() => rows.filter((r) => bucketOf(r) === tab), [rows, tab, windows]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rows, windows, nowMs]);
+  const shown = useMemo(() => rows.filter((r) => bucketOf(r) === tab), [rows, tab, windows, nowMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const TAB_KEYS = ["requested", "queued", "fulfilled", "rejected", "withdrawn", "parked",
     ...(counts.display_in ? ["display_in"] : []), ...(counts.display_out ? ["display_out"] : [])];

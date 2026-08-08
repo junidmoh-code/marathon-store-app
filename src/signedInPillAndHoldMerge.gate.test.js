@@ -159,8 +159,8 @@ describe("5 · one list, one design — the per-origin row components are gone",
 
   it("both hub tabs mount the ONE queue with the sale rows folded in", () => {
     expect(SRC).toContain("<RefillQueue products={products} dest={h} lineFilter={lineFilter}");
-    expect(SRC).toContain("saleRows={saleRowsFor(h, cellFilter)}");
-    expect(SRC).toContain("completedSale={completedSaleFor(h, cellFilter)}");
+    expect(SRC).toContain("saleRows={activeSaleRows}");
+    expect(SRC).toContain("completedSale={activeCompletedSale}");
   });
 
   it("the divergent action wording is dead: nothing says 'Transfer to Hub' as a row action", () => {

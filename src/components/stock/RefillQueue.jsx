@@ -168,9 +168,16 @@ function SupplyPanel({ sources, productId, size, destLabel, wantQty = 1, capFor,
   const confirm = async () => {
     if (!pick || busy) return;
     setBusy(true); setErr(null);
-    const res = await onConfirm(pick, q, pickedAvail);
-    setBusy(false);
-    if (res && !res.ok) setErr(res.reason || "Transfer failed — retry.");
+    // finally, not tail: a rejection from onConfirm must never wedge the panel
+    // at "Transferring…" with the button dead (CodeRabbit, PR #337).
+    try {
+      const res = await onConfirm(pick, q, pickedAvail);
+      if (res && !res.ok) setErr(res.reason || "Transfer failed — retry.");
+    } catch (e) {
+      setErr(String(e?.message || e) || "Transfer failed — retry.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -398,6 +405,11 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       [`refill_requests/${row.id}/status`]: "cancelled",
       [`refill_requests/${row.id}/resolvedAt`]: serverNowIso(),
       [`refill_requests/${row.id}/rejectedBy`]: actorRole || "unknown",
+      // Clear any stale reason from an earlier lifecycle, mirroring the fulfil
+      // path: the engine recognises a HUMAN rejection precisely as "cancelled
+      // with NO cancelReason" — a leftover reason would silently skip the
+      // cooldown and confirmed-out learning (CodeRabbit, PR #337).
+      [`refill_requests/${row.id}/cancelReason`]: null,
       ...(auth.currentUser?.uid ? { [`refill_requests/${row.id}/resolvedBy`]: auth.currentUser.uid } : {}),
     };
     try { await update(ref(database), upd); }
@@ -536,10 +548,13 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         uncountedWhen={isReq ? (avail) => !((Number(avail) || 0) > 0) : (avail) => typeof avail !== "number"}
         onConfirm={async (pickLoc, q, avail) => {
           setBusyRow(row.rowKey);
-          const res = isReq ? await fulfilRequest(row, q, avail) : await fulfilSale(saleRow, pickLoc, q, avail);
-          setBusyRow(null);
-          if (res.ok) setOpenRow(null);
-          return res;
+          try {
+            const res = isReq ? await fulfilRequest(row, q, avail) : await fulfilSale(saleRow, pickLoc, q, avail);
+            if (res.ok) setOpenRow(null);
+            return res;
+          } finally {
+            setBusyRow(null);   // a throw must not leave the row disabled forever
+          }
         }}
         onCancel={() => setOpenRow(null)}
         onWithoutTransfer={isReq ? null : () => { setOpenRow(null); onSaleResponse?.(row, "available"); }}

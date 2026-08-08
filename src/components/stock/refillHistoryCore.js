@@ -85,13 +85,6 @@ export function saDayStartMs(day) {
   return Date.parse(`${day}T00:00:00.000Z`) - SA_OFFSET_MS;
 }
 
-export const QUICK_RANGES = [
-  { key: "today", label: "Today" },
-  { key: "yesterday", label: "Yesterday" },
-  { key: "last7", label: "Last 7 days" },
-  { key: "month", label: "This month" },
-];
-
 // ─── DAY STEPPER (owner redo 2026-08-08) ─────────────────────────────────────
 // The view shows ONE SA day at a time: back = the day before, forward = the day
 // after, forward DISABLED at today. Pure so the boundary maths is testable.

@@ -3,6 +3,7 @@
 import { describe, it, expect } from "vitest";
 import { earliestSaleTs, pendingSaleRows, queueStatusLine, sortQueueRows } from "./refillQueueCore.js";
 import { sourceMovementIdSeed } from "./sourceMovementDedupe.js";
+import { encodeSizeKey } from "../../utils/sizeKey.js";
 
 describe("earliestSaleTs — dates a sale cell by its FIRST sale", () => {
   it("keeps the earliest timestamp per (product, size), keyed like the counts builder", () => {
@@ -66,6 +67,13 @@ describe("pendingSaleRows — sale cells as gate-compatible request rows", () =>
     const r7 = rows.find((r) => r.size === "7");
     expect(r7.movementIdSeed).toBe(sourceMovementIdSeed("2026-08-08", "p1", "7"));
     expect(r7.legacyMovementIdSeed).toBe(sourceMovementIdSeed("2026-08-08", "boot", "7"));
+  });
+
+  it("a half size is encoded before seeding — '.' is illegal in an RTDB key (CodeRabbit, PR #337)", () => {
+    const half = { p1: { ...counts.p1, sizes: { "5.5": 1 } } };
+    const [row] = pendingSaleRows({ counts: half, responses: {}, progress: {}, date: "2026-08-08", tsBySize: null, fallbackMs: 0 });
+    expect(row.movementIdSeed).toBe(sourceMovementIdSeed("2026-08-08", "p1", encodeSizeKey("5.5")));
+    expect(row.movementIdSeed).not.toContain(".");
   });
 
   it("the cellFilter (SNEAKERS / CLOTHING toggle) applies per cell", () => {
