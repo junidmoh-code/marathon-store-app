@@ -454,3 +454,38 @@ describe("bandwidth guard", () => {
     expect(REQUESTS_INDEXED).toBe(true);
   });
 });
+
+// ─── THE STEPPERS (owner redo 2026-08-08) — pure maths, pinned ───────────────
+import { shiftDay, stepHub, HUB_STEPS } from "./refillHistoryCore.js";
+
+describe("shiftDay — one SA day per step, clamped at today", () => {
+  const TODAY = "2026-08-07";
+  it("back goes to yesterday, back again the day before", () => {
+    expect(shiftDay(TODAY, -1, TODAY)).toBe("2026-08-06");
+    expect(shiftDay("2026-08-06", -1, TODAY)).toBe("2026-08-05");
+  });
+  it("forward steps ahead, and returns null AT today (the arrow disables)", () => {
+    expect(shiftDay("2026-08-05", +1, TODAY)).toBe("2026-08-06");
+    expect(shiftDay(TODAY, +1, TODAY)).toBeNull();
+  });
+  it("crosses month boundaries in SA time, not UTC", () => {
+    expect(shiftDay("2026-08-01", -1, TODAY)).toBe("2026-07-31");
+  });
+});
+
+describe("stepHub — cycles All / Hub 1 / Hub 2 / Shops", () => {
+  it("the four stops are exactly All, Hub 1, Hub 2, Shops", () => {
+    expect(HUB_STEPS.map((h) => h.label)).toEqual(["All", "Hub 1", "Hub 2", "Shops"]);
+  });
+  it("forward wraps Shops → All; back wraps All → Shops", () => {
+    expect(stepHub(0, +1)).toBe(1);
+    expect(stepHub(3, +1)).toBe(0);
+    expect(stepHub(0, -1)).toBe(3);
+  });
+  it("Shops covers every shop-leg location; All is the union", () => {
+    const shops = HUB_STEPS.find((h) => h.key === "shops").locs;
+    expect(shops).toEqual(["marathon-pe", "trophy", "marathon-pine", "hub3"]);
+    const all = HUB_STEPS.find((h) => h.key === "all").locs;
+    for (const l of ["hub1", "hub2", ...shops]) expect(all).toContain(l);
+  });
+});

@@ -1,0 +1,623 @@
+// ─── THE REFILL QUEUE — one list, one design (owner spec 2026-08-08) ─────────
+// Every ask a hub can act on renders here as an ORDINARY REQUEST LINE — one row
+// per (product, size), identical layout, identical actions (Fulfil / Out of
+// Stock), whatever raised it:
+//
+//   • /refill_requests rows — the engine, Missing Sneakers, MoveExcess, and
+//     customer holds. A hold-raised request is indistinguishable from any
+//     other: no badge, no order number, no customer name. The separate On Hold
+//     surface is abolished, not relocated.
+//   • sale-driven restock cells — today's POS sales against this hub
+//     (restock_log) and the unanswered past-day stragglers, passed in as
+//     `saleRows` by SourceView. These are "today's requests" in the owner's
+//     language and obey the exact same presentation rules.
+//
+// RELEASE WINDOWS APPLY TO EVERYTHING. Requests are raised the moment demand
+// appears, but they become pickable work only at the configured release times
+// (/config/refillEngine/releaseWindows, default 06:00 & 14:00 SA) — sneakers
+// and clothing, every hub, every origin. The gate stays a pure function of
+// (createdAt, now, config) — see releaseWindows.js — and is applied here and
+// nowhere else. The admin early-release override stamps one request out of
+// band, unchanged.
+//
+// THE PAGE IS QUIET. One status line says what to pick or when the next batch
+// lands; the waiting backlog and already-covered detail sit behind a tap on
+// that line. Completed sale cells (with Undo) sit behind one line at the
+// bottom. Nothing else competes for attention.
+//
+// STOCK SEMANTICS ARE UNCHANGED per origin — only the presentation unified:
+//   • request rows: counted Central stock → transfer_out central→dest, reason
+//     `${dest}_auto_refill`; zero at Central → received into dest only, reason
+//     `${dest}_refill_uncounted`; movementId `rrf_{requestId}` (idempotent);
+//     stale-qty clamp against the live request before every send. Out of
+//     Stock cancels WITHOUT a cancelReason — the engine's human-rejection
+//     shape (cooldown + confirmed-out learning).
+//   • sale rows: the Source Transfer & Fulfil precedent (#209) — pick a supply
+//     warehouse, counted → transfer_out with allowNegative (reason
+//     source_refill), never-counted → received (source_uncounted_send),
+//     movementId `{seed}_{alreadySent}` with the twin-safe legacy-id dedupe.
+//     Out of Stock writes the same response record it always has.
+
+import React, { useEffect, useMemo, useState } from "react";
+import { ref, update, get } from "firebase/database";
+import { database, auth } from "../../firebase";
+import { useRefillRequests, useStockCells, useEngineOpen, useEngineConfig } from "./useStock";
+import { usePermissions } from "../PermissionsContext";
+import { applyMovement } from "./applyMovement";
+import { GRAY, GREEN, RED, AMBER, BLUE, FONT, bGreen } from "./ui";
+import { serverNowIso, serverNowMs } from "../../utils/serverTime";
+import { formatDuration, refillAgeTone } from "../../utils/duration";
+import { partitionSatisfied, lockedRefillIds } from "./refillSatisfied";
+import { parseReleaseTimes, partitionReleased, nextReleaseMs, saTimeLabel, releaseEarlyPatch } from "./releaseWindows";
+import { queueStatusLine, sortQueueRows } from "./refillQueueCore";
+import { warehouseLocations, labelFor } from "./locations";
+import { stockCellPath } from "../../utils/sizeKey";
+import { checkSourceMovementDuplicate } from "./sourceMovementDedupe";
+import { canFulfilCard } from "../../utils/productIdentity";
+import { SizeTag } from "../SizeTag";
+
+const SOURCE_LOC = "central";
+const HUB_LABEL = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
+// Sale-row ledger reasons — the Source Transfer & Fulfil contract (#209).
+const SOURCE_REFILL_REASON = "source_refill";
+const SOURCE_UNCOUNTED_REASON = "source_uncounted_send";
+
+const TONE_COLOR = { normal: GRAY, amber: AMBER, red: RED };
+const parseMs = (iso) => Date.parse(iso || "");
+const fmtSaDateTime = (iso) => {
+  const t = parseMs(iso);
+  if (!Number.isFinite(t)) return "—";
+  return new Date(t).toLocaleString("en-GB", { timeZone: "Africa/Johannesburg", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+};
+
+// Live-ticking server-corrected "now", once a minute for the whole queue.
+function useNowMinute() {
+  const [now, setNow] = useState(() => serverNowMs());
+  useEffect(() => {
+    const id = setInterval(() => setNow(serverNowMs()), 60000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+function AgePill({ elapsedMs, raisedIso }) {
+  const tone = refillAgeTone(elapsedMs);
+  const color = TONE_COLOR[tone];
+  return (
+    <span title={raisedIso ? `raised ${fmtSaDateTime(raisedIso)}` : undefined}
+          style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700,
+                   color, border: `1px solid ${color}55`, background: `${color}14`, borderRadius: 999, padding: "3px 9px",
+                   fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
+      {tone === "red" && <span aria-hidden>●</span>}
+      waiting {formatDuration(elapsedMs)}
+    </span>
+  );
+}
+
+function Photo({ url, photo }) {
+  if (url) return <img src={url} alt="" style={{ width: 48, height: 48, borderRadius: 10, objectFit: "cover", flexShrink: 0 }} />;
+  return (
+    <span style={{ width: 48, height: 48, borderRadius: 10, background: "rgba(255,255,255,.06)", display: "inline-flex",
+                   alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>{photo || ""}</span>
+  );
+}
+
+// The one card surface — the app's navy card idiom (home page / hub cards).
+const CARD = {
+  background: "rgba(4,5,10,1)",
+  border: "1px solid rgba(60,110,255,.45)",
+  borderRadius: 14,
+  padding: 14,
+  boxShadow: "0 0 10px rgba(60,110,255,.12)",
+  fontFamily: FONT,
+};
+const BTN = {
+  flex: 1, minHeight: 44, padding: "10px 12px", borderRadius: 10, cursor: "pointer",
+  fontWeight: 700, fontSize: 13, fontFamily: FONT,
+  display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+};
+const BTN_NEUTRAL = { ...BTN, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.03)", color: "rgba(255,255,255,.75)" };
+
+// ─── THE SHARED SUPPLY PANEL ─────────────────────────────────────────────────
+// One inline panel for every row: supply chips with live counted quantity, a
+// stepper when more than one unit is open, one confirm. `capFor(avail)` and
+// `uncountedWhen(avail)` carry the per-origin stock semantics (documented in
+// the header) without changing what the runner sees.
+function SupplyPanel({ sources, productId, size, destLabel, wantQty = 1, capFor, uncountedWhen, locationsReg,
+                       onConfirm, onCancel, onWithoutTransfer }) {
+  const [avail, setAvail] = useState(null);   // { locId: qty | null } — null = never counted
+  const [pick, setPick] = useState(sources.length === 1 ? sources[0].id : null);
+  // Default to the FULL open quantity (clamped by the cap once counts load) —
+  // the same default the old fulfil panel had; sending everything asked is the
+  // common case and one fewer tap.
+  const [qty, setQty] = useState(Math.max(1, wantQty));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  // Keyed by ids, not array identity — the caller rebuilds `sources` per
+  // render, and refetching one cell per parent re-render would be waste.
+  const sourcesKey = sources.map((l) => l.id).join(",");
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      const out = {};
+      for (const l of sources) {
+        try {
+          const snap = await get(ref(database, stockCellPath(l.id, productId, size)));
+          const cell = snap.val();
+          out[l.id] = cell && typeof cell.qty === "number" ? cell.qty : null;
+        } catch { out[l.id] = null; }
+      }
+      if (dead) return;
+      setAvail(out);
+      setPick((p) => {
+        if (p) return p;
+        const best = sources.slice().sort((a, b) => (out[b.id] ?? -1) - (out[a.id] ?? -1))[0];
+        return best ? best.id : null;
+      });
+    })();
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productId, size, sourcesKey]);
+
+  const pickedAvail = pick && avail ? avail[pick] : undefined;
+  const cap = Math.max(1, capFor(pickedAvail));
+  const q = Math.max(1, Math.min(Math.round(qty) || 1, cap));
+  const willNotDeduct = pick != null && avail != null && uncountedWhen(pickedAvail);
+
+  const confirm = async () => {
+    if (!pick || busy) return;
+    setBusy(true); setErr(null);
+    const res = await onConfirm(pick, q, pickedAvail);
+    setBusy(false);
+    if (res && !res.ok) setErr(res.reason || "Transfer failed — retry.");
+  };
+
+  return (
+    <div style={{ marginTop: 10, borderTop: "1px solid rgba(60,110,255,.15)", paddingTop: 10 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".8px", color: "rgba(255,255,255,.45)", marginBottom: 7 }}>SUPPLY FROM</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+        {sources.map((l) => {
+          const a = avail ? avail[l.id] : undefined;
+          const active = pick === l.id;
+          return (
+            <button key={l.id} onClick={() => setPick(l.id)} disabled={busy}
+                    style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 40, padding: "7px 10px", borderRadius: 10,
+                             border: active ? "1px solid rgba(60,110,255,.7)" : "1px solid rgba(255,255,255,.1)",
+                             background: active ? "rgba(60,110,255,.16)" : "rgba(255,255,255,.03)",
+                             color: active ? "#6A9FFF" : "rgba(255,255,255,.65)", fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: FONT }}>
+              {l.label || labelFor(l.id, locationsReg)}
+              <span style={{ fontSize: 10, fontWeight: 600, color: a == null ? "rgba(255,255,255,.35)" : (a > 0 ? GREEN : RED) }}>
+                {avail == null ? "…" : (a == null ? "uncounted" : a)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {willNotDeduct && (
+        <div style={{ fontSize: 10, color: "rgba(255,255,255,.4)", marginBottom: 8 }}>
+          Not counted at {labelFor(pick, locationsReg)} — units will be added to {destLabel} only.
+        </div>
+      )}
+      {cap > 1 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+          <span style={{ fontSize: 11, color: "rgba(255,255,255,.55)", fontWeight: 600 }}>Quantity</span>
+          <button onClick={() => setQty(q - 1)} disabled={busy}
+                  style={{ width: 34, height: 34, borderRadius: 8, border: "1px solid rgba(255,255,255,.14)", background: "rgba(255,255,255,.04)", color: "#fff", fontWeight: 800, cursor: "pointer" }}>−</button>
+          <span style={{ minWidth: 24, textAlign: "center", fontWeight: 800, color: "#fff", fontSize: 15 }}>{q}</span>
+          <button onClick={() => setQty(q + 1)} disabled={busy}
+                  style={{ width: 34, height: 34, borderRadius: 8, border: "1px solid rgba(255,255,255,.14)", background: "rgba(255,255,255,.04)", color: "#fff", fontWeight: 800, cursor: "pointer" }}>+</button>
+          <span style={{ fontSize: 10, color: "rgba(255,255,255,.35)" }}>of {cap} open</span>
+        </div>
+      )}
+      {err && <div style={{ fontSize: 11, color: RED, marginBottom: 8 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={confirm} disabled={busy || !pick} style={{ ...bGreen, flex: 1, minHeight: 44, opacity: busy || !pick ? 0.6 : 1 }}>
+          {busy ? "Transferring…" : "Transfer & Fulfil"}
+        </button>
+        <button onClick={onCancel} disabled={busy} style={{ ...BTN_NEUTRAL, flex: "0 0 auto" }}>Cancel</button>
+      </div>
+      {onWithoutTransfer && (
+        <button onClick={onWithoutTransfer} disabled={busy}
+                style={{ marginTop: 8, width: "100%", padding: 7, borderRadius: 8, border: "none", background: "transparent", color: "rgba(255,255,255,.35)", fontSize: 10, fontWeight: 600, cursor: "pointer", textDecoration: "underline" }}>
+          Complete without stock transfer
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ─── ONE ROW, WHATEVER RAISED IT ─────────────────────────────────────────────
+// The worked example this is built to: Adi 2000 size 5 (from a sale) and size 7
+// (from a hold) are two of these, in one list, identical.
+function RequestLine({ row, nowMs, destLabel, canAct, busy, msg, fulfilOpen, onToggleFulfil, onOutOfStock, panel }) {
+  const raised = Number.isFinite(row.createdMs) ? row.createdMs : parseMs(row.createdAt);
+  const open = Math.max(1, (row.qty || 1) - (row.sent || 0));
+  return (
+    <div style={{ ...CARD, opacity: busy ? 0.7 : 1, transition: "opacity 120ms ease" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+        <Photo url={row.photoUrl} photo={row.photo} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, color: "#fff", fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.productName}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 7, background: "rgba(60,110,255,.1)", border: "1px solid rgba(60,110,255,.25)", borderRadius: 8, padding: "5px 10px" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>Size <SizeTag size={row.size} /></span>
+              {open > 1 && <span style={{ fontSize: 10, color: BLUE, fontWeight: 700 }}>×{open}</span>}
+            </span>
+            {row.sent > 0 && (
+              <span style={{ fontSize: 10, fontWeight: 700, color: GREEN, background: "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 999, padding: "3px 9px" }}>
+                {row.sent} of {row.qty} sent
+              </span>
+            )}
+            {Number.isFinite(raised) && <AgePill elapsedMs={nowMs - raised} raisedIso={row.createdAt} />}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button disabled={busy} onClick={onToggleFulfil}
+                style={{ ...BTN, border: fulfilOpen ? "1px solid rgba(74,222,128,.5)" : "1px solid rgba(255,255,255,.12)",
+                         background: fulfilOpen ? "rgba(74,222,128,.08)" : "rgba(255,255,255,.03)",
+                         color: fulfilOpen ? GREEN : "rgba(255,255,255,.75)" }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>
+          {canAct ? "Fulfil" : "Available"}
+        </button>
+        <button disabled={busy} onClick={onOutOfStock} style={BTN_NEUTRAL}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Out of Stock
+        </button>
+      </div>
+      {fulfilOpen && canAct && panel}
+      {msg && <div style={{ color: msg.includes("failed") ? RED : GREEN, fontSize: 12, fontWeight: 600, marginTop: 9 }}>{msg}</div>}
+    </div>
+  );
+}
+
+/**
+ * `saleRows` / `completedSale` and the sale callbacks come from SourceView
+ * (sale-driven feed): `onSaleResponse(row, "available"|"out_of_stock")` writes
+ * the response record, `onSaleProgress(row, newSent, complete, meta)` the
+ * partial-fulfil leaf, `onSaleUndo(cell)` clears a response. The Health
+ * dashboard mounts this with none of them and gets the request-only list.
+ * `lineFilter` is the Hub 2 SNEAKERS / CLOTHING toggle — a filter over the one
+ * list, never a second list.
+ */
+export default function RefillQueue({ products = [], dest = "hub2", lineFilter = null,
+                                      saleRows = [], completedSale = [],
+                                      onSaleResponse = null, onSaleProgress = null, onSaleUndo = null,
+                                      fulfilCtx = null }) {
+  const DEST_LOC = dest;
+  const destLabel = HUB_LABEL[dest] || dest;
+  const { permRecord, isSuperAdmin } = usePermissions();
+  const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
+  const canTransfer = ["store", "warehouse", "admin"].includes(actorRole);
+
+  const allRequests = useRefillRequests();
+  const destCells = useStockCells(DEST_LOC);
+  const engineOpen = useEngineOpen();
+  const lockedIds = useMemo(() => lockedRefillIds(engineOpen), [engineOpen]);
+  const now = useNowMinute();
+  const engineConfig = useEngineConfig();
+  const rawReleaseWindows = engineConfig?.releaseWindows;
+  const windows = useMemo(() => parseReleaseTimes(rawReleaseWindows), [rawReleaseWindows]);
+
+  const [openRow, setOpenRow] = useState(null);      // rowKey with the fulfil panel open
+  const [busyRow, setBusyRow] = useState(null);
+  const [msg, setMsg] = useState({});                // rowKey → result line
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [completedOpen, setCompletedOpen] = useState(false);
+  const [releasingId, setReleasingId] = useState(null);
+  const [releaseErr, setReleaseErr] = useState(null);
+
+  const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+
+  // Request rows for this destination, one row per request (per size already).
+  const requestRows = useMemo(() => {
+    let mine = allRequests.filter((r) => r.status === "open" && r.requestingLocation === DEST_LOC && r.productId);
+    if (lineFilter) mine = mine.filter((r) => lineFilter(byId.get(r.productId), r.size));
+    return mine.map((r) => {
+      const p = byId.get(r.productId);
+      return {
+        origin: "request", rowKey: `req:${r.id}`, id: r.id,
+        productId: r.productId, productName: p?.name || r.productId,
+        photoUrl: p?.photoUrl || null, photo: "",
+        size: String(r.size), qty: r.qty || 1, sent: 0,
+        createdAt: r.createdAt, createdMs: parseMs(r.createdAt),
+        earlyRelease: r.earlyRelease, shadow: !!r.shadow, _r: r,
+      };
+    });
+  }, [allRequests, DEST_LOC, lineFilter, byId]);
+
+  // Gate EVERYTHING through the release windows — request rows and sale rows in
+  // one partition, then the destination-shelf "already covered" split on the
+  // released request rows only (a sale cell has no lock semantics).
+  const { pick, waiting, covered, shadows } = useMemo(() => {
+    const real = requestRows.filter((r) => !r.shadow);
+    const shadows = requestRows.filter((r) => r.shadow);
+    const gate = partitionReleased([...real, ...saleRows], now, windows);
+    const releasedReq = gate.released.filter((r) => r.origin === "request");
+    const releasedSale = gate.released.filter((r) => r.origin === "sale");
+    const split = partitionSatisfied(releasedReq.map((r) => r._r), destCells, lockedIds);
+    const okIds = new Set(split.actionable.map((r) => r.id));
+    return {
+      pick: sortQueueRows([...releasedReq.filter((r) => okIds.has(r.id)), ...releasedSale]),
+      waiting: sortQueueRows(gate.waiting),
+      covered: split.covered,
+      shadows,
+    };
+  }, [requestRows, saleRows, now, windows, destCells, lockedIds]);
+
+  // ── REQUEST-ROW ACTIONS — movement shapes unchanged (see header) ───────────
+  const fulfilRequest = async (row, qty, avail) => {
+    const r = row._r;
+    let q = qty;
+    try {
+      const live = (await get(ref(database, `refill_requests/${r.id}`))).val();
+      if (!live || live.status !== "open") return { ok: false, reason: "Request already resolved — it will leave the list on its own." };
+      if (typeof live.qty === "number" && q > live.qty) q = live.qty;
+      if (q <= 0) return { ok: false, reason: "Nothing left to send on this request." };
+    } catch { /* offline read — movement idempotency still guards */ }
+    const counted = (Number(avail) || 0) > 0;
+    let res;
+    try {
+      res = await applyMovement(counted ? {
+        type: "transfer_out", productId: r.productId, size: r.size, qty: q,
+        from: SOURCE_LOC, to: DEST_LOC, actorRole,
+        reason: `${DEST_LOC}_auto_refill`,
+        movementId: `rrf_${r.id}`,
+        link: { refillId: r.id },
+      } : {
+        type: "received", productId: r.productId, size: r.size, qty: q,
+        to: DEST_LOC, actorRole,
+        reason: `${DEST_LOC}_refill_uncounted`,
+        movementId: `rrf_${r.id}`,
+        link: { refillId: r.id },
+      });
+    } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
+    if (!res.ok) return { ok: false, reason: `Transfer failed: ${res.reason || "unknown"} — retry.` };
+    try {
+      await update(ref(database), {
+        [`refill_requests/${r.id}/status`]: "fulfilled",
+        [`refill_requests/${r.id}/fulfilledBy`]: { movementId: `rrf_${r.id}`, qty: q, ...(counted ? {} : { uncounted: true }) },
+        [`refill_requests/${r.id}/resolvedAt`]: serverNowIso(),
+        // A withdrawal landing between the re-read and this write must not
+        // leave its stale reason on a row now marked fulfilled (Kimi, #332).
+        [`refill_requests/${r.id}/cancelReason`]: null,
+        ...(auth.currentUser?.uid ? { [`refill_requests/${r.id}/resolvedBy`]: auth.currentUser.uid } : {}),
+      });
+    } catch { return { ok: false, reason: "Sent, but marking it fulfilled failed — retry (stock will not move twice)." }; }
+    setMsg((m) => ({ ...m, [row.rowKey]: `${q} unit${q === 1 ? "" : "s"} → ${destLabel} ✓` }));
+    return { ok: true };
+  };
+
+  // Out of Stock on a request = the human rejection: cancelled with NO
+  // cancelReason (the engine reads exactly that shape — cooldown + learning).
+  const rejectRequest = async (row) => {
+    if (busyRow || !canTransfer) return;
+    setBusyRow(row.rowKey);
+    const upd = {
+      [`refill_requests/${row.id}/status`]: "cancelled",
+      [`refill_requests/${row.id}/resolvedAt`]: serverNowIso(),
+      [`refill_requests/${row.id}/rejectedBy`]: actorRole || "unknown",
+      ...(auth.currentUser?.uid ? { [`refill_requests/${row.id}/resolvedBy`]: auth.currentUser.uid } : {}),
+    };
+    try { await update(ref(database), upd); }
+    catch { setMsg((m) => ({ ...m, [row.rowKey]: "failed — retry" })); }
+    setBusyRow(null);
+  };
+
+  // ── SALE-ROW ACTIONS — the Source Transfer & Fulfil contract, unchanged ────
+  const fulfilSale = async (row, pickLoc, qty, avail) => {
+    const counted = typeof avail === "number";
+    const mvId = `${row.movementIdSeed}_${row.sent}`;
+    let res, viaLegacy = false, appliedQty = qty;
+    try {
+      const dup = await checkSourceMovementDuplicate({
+        getMovement: async (id) => (await get(ref(database, `stock_movements/${id}`))).val(),
+        newId: mvId,
+        legacyId: row.legacyMovementIdSeed ? `${row.legacyMovementIdSeed}_${row.sent}` : null,
+        productId: row.resolvedId,
+      });
+      if (dup.duplicate) {
+        viaLegacy = dup.viaLegacy;
+        appliedQty = dup.appliedQty;
+        res = { ok: true, idempotent: true };
+      } else {
+        res = await applyMovement(counted ? {
+          type: "transfer_out", productId: row.resolvedId, size: row.size, qty,
+          from: pickLoc, to: DEST_LOC, actorRole,
+          allowNegative: true,
+          reason: SOURCE_REFILL_REASON,
+          movementId: mvId, link: { refillId: row.movementIdSeed },
+        } : {
+          type: "received", productId: row.resolvedId, size: row.size, qty,
+          to: DEST_LOC, actorRole,
+          reason: SOURCE_UNCOUNTED_REASON,
+          movementId: mvId, link: { refillId: row.movementIdSeed },
+        });
+      }
+    } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
+    if (!res.ok) return { ok: false, reason: `Transfer failed: ${res.reason || "unknown"}. Check your stock access and retry.` };
+    const newSent = row.sent + appliedQty;
+    onSaleProgress?.(row, newSent, newSent >= row.qty, { lastFrom: pickLoc, counted, ...(viaLegacy ? { viaLegacyMovementId: true } : {}) });
+    setMsg((m) => ({ ...m, [row.rowKey]: `${appliedQty} unit${appliedQty === 1 ? "" : "s"} → ${destLabel} ✓` }));
+    return { ok: true };
+  };
+
+  // URGENT OVERRIDE — admin releases ONE request early; reason required,
+  // recorded with the uid; the stamp releases the row for everyone.
+  const releaseNow = async (row) => {
+    if (releasingId || actorRole !== "admin") return;
+    const reason = window.prompt("Release this request ahead of the window?\nReason (required — recorded with your account):");
+    if (reason == null) return;
+    const patch = releaseEarlyPatch({ nowIso: serverNowIso(), uid: auth.currentUser?.uid || null, reason });
+    if (!patch) { setReleaseErr("A reason is required — nothing was released."); return; }
+    setReleasingId(row.id); setReleaseErr(null);
+    try { await update(ref(database, `refill_requests/${row.id}`), patch); }
+    catch (e) { setReleaseErr(`Early release failed — ${String(e?.message || e)}`); }
+    setReleasingId(null);
+  };
+
+  // ── THE ONE STATUS LINE — tap for the waiting/covered detail ───────────────
+  const statusText = queueStatusLine({
+    pickCount: pick.length,
+    waitingCount: waiting.length,
+    coveredCount: covered.length,
+    windowsDisabled: windows.disabled,
+    nextLabel: windows.disabled ? "" : saTimeLabel(nextReleaseMs(now, windows)),
+  });
+  const hasDetail = waiting.length > 0 || covered.length > 0;
+  const statusLine = (
+    <button type="button" onClick={() => hasDetail && setDetailOpen((v) => !v)}
+            style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "transparent",
+                     color: GRAY, fontSize: 12.5, fontFamily: FONT, padding: "4px 2px", margin: "0 0 10px",
+                     cursor: hasDetail ? "pointer" : "default", lineHeight: 1.5 }}>
+      {statusText}{hasDetail ? (detailOpen ? " ▴" : " ▾") : ""}
+      {releaseErr && <span style={{ color: RED, fontWeight: 600 }}> · {releaseErr}</span>}
+    </button>
+  );
+
+  const detail = detailOpen && hasDetail && (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, margin: "0 0 12px" }}>
+      {waiting.map((row) => {
+        const raised = Number.isFinite(row.createdMs) ? row.createdMs : parseMs(row.createdAt);
+        return (
+          <div key={row.rowKey} style={{ ...CARD, display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", opacity: 0.85 }}>
+            <Photo url={row.photoUrl} photo={row.photo} />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.productName}</span>
+              <span style={{ display: "block", fontSize: 11, color: GRAY }}>size {row.size} ×{row.qty || 1} · raised {fmtSaDateTime(row.createdAt)}</span>
+            </span>
+            {Number.isFinite(raised) && <AgePill elapsedMs={now - raised} raisedIso={row.createdAt} />}
+            {actorRole === "admin" && row.origin === "request" && (
+              <button onClick={() => releaseNow(row)} disabled={releasingId !== null}
+                      style={{ border: "1px solid rgba(74,127,255,.5)", background: "rgba(74,127,255,.12)", color: "#cfe0ff",
+                               borderRadius: 9, minHeight: 40, padding: "7px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
+                               opacity: releasingId !== null ? 0.5 : 1, flexShrink: 0, fontFamily: FONT }}>
+                {releasingId === row.id ? "Releasing…" : "Release now"}
+              </button>
+            )}
+          </div>
+        );
+      })}
+      {covered.map((r) => (
+        <div key={`cov-${r.id}`} style={{ ...CARD, padding: "9px 12px", opacity: 0.85 }}>
+          <span style={{ fontSize: 12, color: GRAY }}>
+            <b style={{ color: GREEN }}>Already covered:</b>{" "}
+            <b style={{ color: "rgba(255,255,255,.85)" }}>{byId.get(r.productId)?.name || r.productId}</b>{" "}
+            size {String(r.size)} — asked ×{r.qty || 1}, {r.onHand} on the shelf at {destLabel}. The engine withdraws it on its next scan.
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+
+  // ── ROWS ───────────────────────────────────────────────────────────────────
+  const rowEls = pick.map((row) => {
+    const isReq = row.origin === "request";
+    const resolvedId = isReq ? row.productId : (fulfilCtx ? fulfilCtx.resolveId({ productId: row.productId, productName: row.productName }) : null);
+    const canAct = isReq ? canTransfer : (!!fulfilCtx && canFulfilCard({ enabled: fulfilCtx.canTransfer, productId: resolvedId }));
+    const saleRow = isReq ? null : { ...row, resolvedId };
+    const remaining = Math.max(1, (row.qty || 1) - (row.sent || 0));
+    const sources = isReq
+      ? [{ id: SOURCE_LOC, label: "Central" }]
+      : warehouseLocations(fulfilCtx?.locationsReg).filter((l) => l.id !== DEST_LOC);
+    const panel = (
+      <SupplyPanel
+        sources={sources}
+        productId={resolvedId}
+        size={row.size}
+        destLabel={destLabel}
+        wantQty={isReq ? (row.qty || 1) : remaining}
+        locationsReg={fulfilCtx?.locationsReg}
+        // Per-origin stock semantics, folded behind the one button (see header).
+        capFor={isReq
+          ? (avail) => ((Number(avail) || 0) > 0 ? Math.min(row.qty || 1, Number(avail)) : (row.qty || 1))
+          : () => remaining}
+        uncountedWhen={isReq ? (avail) => !((Number(avail) || 0) > 0) : (avail) => typeof avail !== "number"}
+        onConfirm={async (pickLoc, q, avail) => {
+          setBusyRow(row.rowKey);
+          const res = isReq ? await fulfilRequest(row, q, avail) : await fulfilSale(saleRow, pickLoc, q, avail);
+          setBusyRow(null);
+          if (res.ok) setOpenRow(null);
+          return res;
+        }}
+        onCancel={() => setOpenRow(null)}
+        onWithoutTransfer={isReq ? null : () => { setOpenRow(null); onSaleResponse?.(row, "available"); }}
+      />
+    );
+    return (
+      <RequestLine key={row.rowKey}
+        row={row} nowMs={now} destLabel={destLabel}
+        canAct={canAct}
+        busy={busyRow === row.rowKey || (isReq && !canTransfer)}
+        msg={msg[row.rowKey]}
+        fulfilOpen={openRow === row.rowKey && canAct}
+        onToggleFulfil={() => {
+          if (!canAct) { if (!isReq) onSaleResponse?.(row, "available"); return; }
+          setOpenRow(openRow === row.rowKey ? null : row.rowKey);
+        }}
+        onOutOfStock={() => { isReq ? rejectRequest(row) : onSaleResponse?.(row, "out_of_stock"); }}
+        panel={panel}
+      />
+    );
+  });
+
+  // Shadow previews (engine shadow mode) — read-only, never actionable.
+  const shadowEls = shadows.map((row) => (
+    <div key={row.rowKey} style={{ ...CARD, opacity: 0.7 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <Photo url={row.photoUrl} photo={row.photo} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, color: "#fff", fontSize: 14 }}>{row.productName}</div>
+          <div style={{ fontSize: 11, color: AMBER, marginTop: 3 }}>size {row.size} ×{row.qty || 1} · shadow preview — the engine would raise this in Live Mode. Nothing to action.</div>
+        </div>
+      </div>
+    </div>
+  ));
+
+  // Completed sale cells (today) behind one quiet line — the Undo path.
+  const completedBlock = completedSale.length > 0 && (
+    <div style={{ marginTop: 14 }}>
+      <button type="button" onClick={() => setCompletedOpen((v) => !v)}
+              style={{ border: "none", background: "transparent", color: GRAY, fontSize: 12, fontWeight: 600,
+                       cursor: "pointer", padding: "8px 2px", fontFamily: FONT }}>
+        Completed today · {completedSale.length} {completedOpen ? "▴" : "▾"}
+      </button>
+      {completedOpen && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+          {completedSale.map((c) => {
+            const isAvail = c.response === "available";
+            return (
+              <div key={`done:${c.date}:${c.key}:${c.size}`} style={{ ...CARD, display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", opacity: 0.85 }}>
+                <Photo url={c.photoUrl} photo={c.photo} />
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.productName}</span>
+                  <span style={{ display: "block", fontSize: 11, color: isAvail ? GREEN : RED, fontWeight: 700 }}>
+                    size {c.size}{c.qty > 1 ? ` ×${c.qty}` : ""} · {isAvail ? "Fulfilled" : "Out of Stock"}
+                  </span>
+                </span>
+                <button onClick={() => onSaleUndo?.(c)}
+                        style={{ ...BTN_NEUTRAL, flex: "0 0 auto", minHeight: 40, fontSize: 11 }}>Undo</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div style={{ paddingBottom: 30, fontFamily: FONT }}>
+      {statusLine}
+      {detail}
+      {!canTransfer && pick.length > 0 && (
+        <div style={{ color: AMBER, fontSize: 11.5, margin: "0 2px 10px" }}>You need a stock role to transfer — viewing only.</div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {rowEls}
+        {shadowEls}
+      </div>
+      {completedBlock}
+    </div>
+  );
+}
