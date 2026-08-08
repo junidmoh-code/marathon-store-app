@@ -384,10 +384,22 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // tapped, this one lands on the same product).
       const aliasOwner = await lookupCodeAlias(normalised).catch(() => null);
       if (aliasOwner) {
-        const p = products.find((x) => x && x.id === aliasOwner && !isMergedAway(x))
-          || await fetchProductFollowingMerge(aliasOwner).catch(() => null);
+        let p = products.find((x) => x && x.id === aliasOwner && !isMergedAway(x)) || null;
+        if (!p) {
+          try {
+            p = await fetchProductFollowingMerge(aliasOwner);
+          } catch (err) {
+            // A FAILED read is not a ghost — a KNOWN identity must never land
+            // on the never-registered list because the network blinked (Kimi
+            // review, PR #334; same rule as the claim branch above).
+            flash("err", `${display} is a known label code, but its product couldn't be loaded (${err?.message || err}) — try again.`);
+            return;
+          }
+        }
         const cp = p ? countPanelFor(p) : null;
         if (cp) { fileAllCodes(p.id); setPanel(cp); return; }
+        // p is genuinely gone (alias points at nothing live) — fall through
+        // to the never-registered note; that IS the truthful state.
       }
       const noted = await recordUnresolvedScan({ hub, code: display, context: "count" });
       if (noted.ok) {
@@ -1030,13 +1042,18 @@ function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
     return () => { cancelled = true; };
   }, [siblings, panel.code]);
 
-  // The human's tap IS the answer — store it against the shoe's signature
-  // (code + this photo's palette) so the question is never asked twice for
-  // this physical shoe. Best-effort: a failed store just means one more ask.
-  const pick = (p, { remember = true } = {}) => {
-    if (remember && siblings && panel.code && photoColours) {
+  // The pick IS the answer — store it against the shoe's signature (code +
+  // the palette of the photo that DROVE this pick) so the question is never
+  // asked twice for this physical shoe. The palette is passed EXPLICITLY by
+  // the photo handler: the auto path decides before setPhotoColours commits,
+  // so reading the state here would record the PREVIOUS photo's palette (or
+  // none) against this answer — a stale signature that could silently
+  // resolve a different shoe to the wrong colourway later (Kimi review,
+  // PR #334). Best-effort: a failed store just means one more ask.
+  const pick = (p, { remember = true, palette = photoColours } = {}) => {
+    if (remember && siblings && panel.code && palette) {
       recordColourwayAnswer({
-        code: normaliseStyleCode(panel.code), productId: p.id, palette: photoColours,
+        code: normaliseStyleCode(panel.code), productId: p.id, palette,
       }).catch(() => {});
     }
     onPick(p);
@@ -1062,7 +1079,7 @@ function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
         // next time step 2 resolves this shoe silently.
         const withPalettes = await enrichCandidates();
         const decided = selectByColourAffinity(withPalettes, colours);
-        if (decided.kind === "auto") { pick(decided.product); return; }
+        if (decided.kind === "auto") { pick(decided.product, { palette: colours }); return; }
         setAutoNote("The photo can't separate these on colour — tap the shoe in your hand.");
       }
       setPhotoColours(colours);

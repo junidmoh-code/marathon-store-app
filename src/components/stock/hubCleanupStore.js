@@ -264,7 +264,11 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   // collision handling and pending-field writes stay the server's job. Rides
   // the SAME save; a failure downgrades to a warning because the stock unit
   // must never be lost to a queue hiccup.
-  let captureWarning = null;
+  // Warnings ACCUMULATE — the alias filing, the label-code filing and the
+  // capture queue are three independent side-writes of the same save, and any
+  // one clobbering another's warning would hide a failed identity write from
+  // the operator (Kimi review, PR #334).
+  const warnings = [];
   // A label READING becomes an alias — never a capture, never a claim on
   // styleCodeNormalised. If the product already carries a code (or gains one
   // later), the reading is simply a further way to find it: registration can
@@ -272,9 +276,9 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   if (aliasTokens) {
     try {
       const res = await addLabelAlias({ productId: product.id, tokens: aliasTokens });
-      if (!res || (!res.ok && !res.deduped)) captureWarning = "Registered, but the label reading could not be filed — open this product and save again to retry.";
+      if (!res || (!res.ok && !res.deduped)) warnings.push("Registered, but the label reading could not be filed — open this product and save again to retry.");
     } catch (err) {
-      captureWarning = `Registered, but the label reading could not be filed (${String(err?.message || err)}) — open this product and save again to retry.`;
+      warnings.push(`Registered, but the label reading could not be filed (${String(err?.message || err)}) — open this product and save again to retry.`);
     }
   }
   // Multi-token label: file EVERY code as an identity of this product. Rides
@@ -283,7 +287,7 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
   // flow's banner — never a silent attach.
   {
     const codesWarning = await fileLabelCodes();
-    if (codesWarning) captureWarning = codesWarning;
+    if (codesWarning) warnings.push(codesWarning);
   }
   if (capturedNormalised && capturedNormalised !== codeOnFile) {
     try {
@@ -295,11 +299,12 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
         labelPhoto: styleCode?.labelPhoto || null,
         nowMs: serverNowMs(),
       });
-      if (!q || !q.ok) captureWarning = `Registered, but the style number could not be queued (${q?.error || "write failed"}) — capture it again from the panel.`;
+      if (!q || !q.ok) warnings.push(`Registered, but the style number could not be queued (${q?.error || "write failed"}) — capture it again from the panel.`);
     } catch (err) {
-      captureWarning = `Registered, but the style number could not be queued (${String(err?.message || err)}) — capture it again from the panel.`;
+      warnings.push(`Registered, but the style number could not be queued (${String(err?.message || err)}) — capture it again from the panel.`);
     }
   }
+  const captureWarning = warnings.length ? warnings.join(" ") : null;
 
   // Create-once: if another device registered the same slot in the race window,
   // their record stands (the movement was shared anyway — one id, one unit).

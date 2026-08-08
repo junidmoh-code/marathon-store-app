@@ -183,6 +183,32 @@ test("re-filing the same label is deduped — one record, not a pile", async () 
   assert.ok(isDuplicateCodeAlias([TOKEN_A, TOKEN_B], "pDiesel", db.data[LABEL_ALIASES_PATH]));
 });
 
+test("disagreeing alias records fail closed AND land in the duplicate queue — never a silent permanent dead end", async () => {
+  // The write race: two devices attached the same token to two products.
+  const db = baseDb({
+    [LABEL_ALIASES_PATH]: {
+      a1: { productId: "pDiesel", c: { [TOKEN_B]: true }, n: 1, addedAt: 1, addedBy: "x" },
+      a2: { productId: "pOther", c: { [TOKEN_B]: true }, n: 1, addedAt: 2, addedBy: "y" },
+    },
+  });
+  const look = await runLabelAlias(db, { action: "codeLookup", code: TOKEN_B, actor: ACTOR, nowMs: NOW });
+  assert.strictEqual(look.productId, null, "nobody resolves — a human decides");
+  const pair = db.data[DUPLICATE_CANDIDATES_PATH] && db.data[DUPLICATE_CANDIDATES_PATH]["pDiesel__pOther"];
+  assert.ok(pair && pair.status === "open", "the disagreement is surfaced for review, not swallowed");
+
+  // …but a disagreement that COLLAPSES through merge pointers resolves fine.
+  const db2 = baseDb({
+    [LABEL_ALIASES_PATH]: {
+      a1: { productId: "pDiesel", c: { [TOKEN_B]: true }, n: 1, addedAt: 1, addedBy: "x" },
+      a2: { productId: "pOther", c: { [TOKEN_B]: true }, n: 1, addedAt: 2, addedBy: "y" },
+    },
+  });
+  db2.data.products.pOther.mergedInto = "pDiesel";
+  const look2 = await runLabelAlias(db2, { action: "codeLookup", code: TOKEN_B, actor: ACTOR, nowMs: NOW });
+  assert.strictEqual(look2.productId, "pDiesel");
+  assert.strictEqual(db2.data[DUPLICATE_CANDIDATES_PATH], undefined, "a merge artifact is not a duplicate");
+});
+
 test("token-set scoring and code records cannot bleed into each other", async () => {
   const db = baseDb();
   await runLabelAlias(db, {

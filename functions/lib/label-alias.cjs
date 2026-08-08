@@ -205,6 +205,24 @@ function codesToMap(codes) {
 }
 
 /**
+ * EVERY distinct product the records point this code at. Normally 0 or 1;
+ * 2+ is the write race two devices can produce (the check-then-push attach
+ * is deliberately not transactional) — the callers turn that into a
+ * duplicate-queue entry so a human resolves it; it must never stay a silent
+ * permanent dead end.
+ */
+function codeAliasOwnersAll(code, aliasesNode) {
+  const norm = normaliseStyleCode(code);
+  if (!norm) return [];
+  const owners = new Set();
+  for (const rec of Object.values(aliasesNode || {})) {
+    if (!rec || !rec.productId || !rec.c || typeof rec.c !== "object") continue;
+    if (rec.c[norm]) owners.add(rec.productId);
+  }
+  return [...owners].sort();
+}
+
+/**
  * EXACT code-alias lookup over the whole node.
  * @returns {{productId, aliasId}|null} null when unknown OR when two records
  *          disagree on the owner (fail closed — a human decides, never a race).
@@ -250,5 +268,6 @@ module.exports = {
   normaliseAliasCodes,
   codesToMap,
   codeAliasOwner,
+  codeAliasOwnersAll,
   isDuplicateCodeAlias,
 };

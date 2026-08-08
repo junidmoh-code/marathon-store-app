@@ -34,7 +34,7 @@ const admin = require("firebase-admin");
 const {
   LABEL_ALIASES_PATH, BANDS, normaliseAliasTokens, tokensToMap,
   scoreAliases, bandFor, isDuplicateAlias,
-  normaliseAliasCodes, codesToMap, codeAliasOwner, isDuplicateCodeAlias,
+  normaliseAliasCodes, codesToMap, codeAliasOwner, codeAliasOwnersAll, isDuplicateCodeAlias,
 } = require("../lib/label-alias.cjs");
 const { LAYOUT_RULES_PATH, layoutKeyFor, learnLayoutTransition } = require("../lib/label-layout.cjs");
 const { normaliseStyleCode, styleCodeFormat } = require("../lib/style-code.cjs");
@@ -108,16 +108,27 @@ async function runLabelAlias(db, { action, tokens, productId, code, chosenCode, 
   }
 
   // ── EXACT CODE-ALIAS LOOKUP — the untapped token resolves too ──────────────
-  // Read-open like "match": the assistant's finder depends on it. Fails closed
-  // on disagreement inside codeAliasOwner; follows merge pointers here.
+  // Read-open like "match": the assistant's finder depends on it. Follows
+  // merge pointers. Disagreement (two records, two products — the write race
+  // the non-transactional attach can produce) FAILS CLOSED for the caller,
+  // but never silently for good: the disagreeing pair is filed in the
+  // duplicate queue so a human resolves it (Kimi review, PR #334).
   if (action === "codeLookup") {
     const norm = normaliseStyleCode(code);
     if (!norm) return { productId: null };
     const aliases = (await db.ref(LABEL_ALIASES_PATH).get()).val() || {};
-    const hit = codeAliasOwner(norm, aliases);
-    if (!hit) return { productId: null };
-    const live = await resolveProductId(db, hit.productId);
-    return { productId: live || null };
+    const owners = codeAliasOwnersAll(norm, aliases);
+    if (!owners.length) return { productId: null };
+    const resolved = [...new Set((await Promise.all(owners.map((o) => resolveProductId(db, o)))).filter(Boolean))].sort();
+    if (resolved.length === 1) return { productId: resolved[0] };
+    if (resolved.length > 1) {
+      const [anchor, ...rest] = resolved;
+      for (const other of rest) {
+        await flagDuplicates(db, norm,
+          [{ pairId: duplicatePairId(anchor, other), productIdA: anchor, productIdB: other }], actor, nowMs);
+      }
+    }
+    return { productId: null };
   }
 
   // ── FILE EVERY CODE ON A MULTI-TOKEN LABEL (owner spec 2026-08-08) ─────────
