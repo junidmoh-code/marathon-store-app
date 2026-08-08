@@ -53,6 +53,7 @@ import { queueStatusLine, sortQueueRows } from "./refillQueueCore";
 import { warehouseLocations, labelFor } from "./locations";
 import { stockCellPath } from "../../utils/sizeKey";
 import { checkSourceMovementDuplicate } from "./sourceMovementDedupe";
+import { sizeRank } from "./hubSizeRank";
 import { canFulfilCard } from "../../utils/productIdentity";
 import { SizeTag } from "../SizeTag";
 
@@ -234,47 +235,39 @@ function SupplyPanel({ sources, productId, size, destLabel, wantQty = 1, capFor,
   );
 }
 
-// ─── ONE ROW, WHATEVER RAISED IT ─────────────────────────────────────────────
-// The worked example this is built to: Adi 2000 size 5 (from a sale) and size 7
-// (from a hold) are two of these, in one list, identical.
-function RequestLine({ row, nowMs, destLabel, canAct, busy, msg, fulfilOpen, onToggleFulfil, onOutOfStock, panel }) {
-  const raised = Number.isFinite(row.createdMs) ? row.createdMs : parseMs(row.createdAt);
-  const open = Math.max(1, (row.qty || 1) - (row.sent || 0));
+// ─── ONE CARD PER PRODUCT, EVERY SIZE INSIDE (owner correction 2026-08-08) ───
+// The first cut rendered one box per (product, size) — five boxes for five
+// sizes of one shoe. Corrected: all sizes of one product combine into ONE
+// card, and each size keeps its own line with its own Fulfil / Out of Stock.
+// A partial send DEDUCTS from the line — ask ×2, send 1 → ×1 stays on the
+// list. The worked example still holds: Adi 2000 size 5 (sale) and size 7
+// (hold) are two identical lines inside the same card, nothing marking either.
+function SizeLine({ row, remaining, canAct, busy, msg, fulfilOpen, onToggleFulfil, onOutOfStock, panel }) {
+  const sent = row.origin === "sale" ? (row.sent || 0) : 0;
   return (
-    <div style={{ ...CARD, opacity: busy ? 0.7 : 1, transition: "opacity 120ms ease" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-        <Photo url={row.photoUrl} photo={row.photo} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, color: "#fff", fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.productName}</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 7, background: "rgba(60,110,255,.1)", border: "1px solid rgba(60,110,255,.25)", borderRadius: 8, padding: "5px 10px" }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>Size <SizeTag size={row.size} /></span>
-              {open > 1 && <span style={{ fontSize: 10, color: BLUE, fontWeight: 700 }}>×{open}</span>}
-            </span>
-            {row.sent > 0 && (
-              <span style={{ fontSize: 10, fontWeight: 700, color: GREEN, background: "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 999, padding: "3px 9px" }}>
-                {row.sent} of {row.qty} sent
-              </span>
-            )}
-            {Number.isFinite(raised) && <AgePill elapsedMs={nowMs - raised} raisedIso={row.createdAt} />}
-          </div>
-        </div>
-      </div>
-      <div style={{ display: "flex", gap: 8 }}>
+    <div data-size={row.size} data-origin={row.origin} data-row={row.rowKey}
+         style={{ borderTop: "1px solid rgba(255,255,255,.06)", marginTop: 10, paddingTop: 10,
+                  opacity: busy ? 0.6 : 1, transition: "opacity 120ms ease" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ display: "inline-flex", alignItems: "baseline", gap: 7, minWidth: 74 }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}><SizeTag size={row.size} /></span>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: BLUE, fontVariantNumeric: "tabular-nums" }}>×{remaining}</span>
+          {sent > 0 && <span style={{ fontSize: 11, color: GRAY }}>· {sent} sent</span>}
+        </span>
+        <span style={{ flex: 1 }} />
         <button disabled={busy} onClick={onToggleFulfil}
-                style={{ ...BTN, border: fulfilOpen ? "1px solid rgba(74,222,128,.5)" : "1px solid rgba(255,255,255,.12)",
+                style={{ ...BTN, flex: "0 0 auto", padding: "10px 16px",
+                         border: fulfilOpen ? "1px solid rgba(74,222,128,.5)" : "1px solid rgba(255,255,255,.12)",
                          background: fulfilOpen ? "rgba(74,222,128,.08)" : "rgba(255,255,255,.03)",
-                         color: fulfilOpen ? GREEN : "rgba(255,255,255,.75)" }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>
+                         color: fulfilOpen ? GREEN : "rgba(255,255,255,.8)" }}>
           {canAct ? "Fulfil" : "Available"}
         </button>
-        <button disabled={busy} onClick={onOutOfStock} style={BTN_NEUTRAL}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <button disabled={busy} onClick={onOutOfStock} style={{ ...BTN_NEUTRAL, flex: "0 0 auto", padding: "10px 14px", color: "rgba(255,255,255,.55)" }}>
           Out of Stock
         </button>
       </div>
       {fulfilOpen && canAct && panel}
-      {msg && <div style={{ color: msg.includes("failed") ? RED : GREEN, fontSize: 12, fontWeight: 600, marginTop: 9 }}>{msg}</div>}
+      {msg && <div style={{ color: msg.includes("failed") ? RED : GREEN, fontSize: 12, fontWeight: 600, marginTop: 8 }}>{msg}</div>}
     </div>
   );
 }
@@ -354,37 +347,61 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   }, [requestRows, saleRows, now, windows, destCells, lockedIds]);
 
   // ── REQUEST-ROW ACTIONS — movement shapes unchanged (see header) ───────────
+  // PARTIAL FULFILMENT (owner correction 2026-08-08): sending fewer units than
+  // asked no longer closes the request — the sent tranche is deducted (qty
+  // becomes the remainder, sentQty accumulates) and the line stays on the list
+  // with the rest. Each tranche gets its own idempotent movement id: the FIRST
+  // keeps the historic bare `rrf_{id}` (byte-identical to every movement ever
+  // written by this queue), later tranches suffix the units already sent —
+  // the same `${seed}_${alreadySent}` idiom the Source panel has always used.
+  // History accumulates them per link.refillId (mergeRows), so the fulfilled
+  // row reports the true total.
   const fulfilRequest = async (row, qty, avail) => {
     const r = row._r;
-    let q = qty;
+    let q = qty, liveQty = r.qty || 1, already = 0;
     try {
       const live = (await get(ref(database, `refill_requests/${r.id}`))).val();
       if (!live || live.status !== "open") return { ok: false, reason: "Request already resolved — it will leave the list on its own." };
-      if (typeof live.qty === "number" && q > live.qty) q = live.qty;
+      if (typeof live.qty === "number") liveQty = live.qty;
+      already = Number(live.sentQty) || 0;
+      if (q > liveQty) q = liveQty;
       if (q <= 0) return { ok: false, reason: "Nothing left to send on this request." };
     } catch { /* offline read — movement idempotency still guards */ }
     const counted = (Number(avail) || 0) > 0;
+    const mvId = already === 0 ? `rrf_${r.id}` : `rrf_${r.id}_${already}`;
     let res;
     try {
       res = await applyMovement(counted ? {
         type: "transfer_out", productId: r.productId, size: r.size, qty: q,
         from: SOURCE_LOC, to: DEST_LOC, actorRole,
         reason: `${DEST_LOC}_auto_refill`,
-        movementId: `rrf_${r.id}`,
+        movementId: mvId,
         link: { refillId: r.id },
       } : {
         type: "received", productId: r.productId, size: r.size, qty: q,
         to: DEST_LOC, actorRole,
         reason: `${DEST_LOC}_refill_uncounted`,
-        movementId: `rrf_${r.id}`,
+        movementId: mvId,
         link: { refillId: r.id },
       });
     } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
     if (!res.ok) return { ok: false, reason: `Transfer failed: ${res.reason || "unknown"} — retry.` };
+    const remaining = liveQty - q;
+    if (remaining > 0) {
+      // Deduct the sent tranche; the request stays OPEN for the remainder.
+      try {
+        await update(ref(database), {
+          [`refill_requests/${r.id}/qty`]: remaining,
+          [`refill_requests/${r.id}/sentQty`]: already + q,
+        });
+      } catch { return { ok: false, reason: "Sent, but updating the remaining quantity failed — retry (stock will not move twice)." }; }
+      setMsg((m) => ({ ...m, [row.rowKey]: `${q} sent → ${destLabel} ✓ · ${remaining} still open` }));
+      return { ok: true };
+    }
     try {
       await update(ref(database), {
         [`refill_requests/${r.id}/status`]: "fulfilled",
-        [`refill_requests/${r.id}/fulfilledBy`]: { movementId: `rrf_${r.id}`, qty: q, ...(counted ? {} : { uncounted: true }) },
+        [`refill_requests/${r.id}/fulfilledBy`]: { movementId: mvId, qty: q, ...(already ? { totalQty: already + q } : {}), ...(counted ? {} : { uncounted: true }) },
         [`refill_requests/${r.id}/resolvedAt`]: serverNowIso(),
         // A withdrawal landing between the re-read and this write must not
         // leave its stale reason on a row now marked fulfilled (Kimi, #332).
@@ -523,13 +540,32 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     </div>
   );
 
-  // ── ROWS ───────────────────────────────────────────────────────────────────
-  const rowEls = pick.map((row) => {
+  // ── CARDS — one per product, its sizes as lines inside ─────────────────────
+  const cards = useMemo(() => {
+    const byKey = new Map();
+    for (const row of pick) {
+      const k = row.productId || `name:${row.productName}`;
+      if (!byKey.has(k)) byKey.set(k, { key: k, productName: row.productName, photoUrl: row.photoUrl, photo: row.photo, rows: [], oldestMs: Infinity, oldestIso: null });
+      const c = byKey.get(k);
+      c.rows.push(row);
+      if (!c.photoUrl && row.photoUrl) c.photoUrl = row.photoUrl;
+      const m = Number.isFinite(row.createdMs) ? row.createdMs : Infinity;
+      if (m < c.oldestMs) { c.oldestMs = m; c.oldestIso = row.createdAt; }
+    }
+    const out = [...byKey.values()];
+    for (const c of out) c.rows.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+    // Longest-waiting product first — a card's age is its OLDEST ask.
+    return out.sort((a, b) => a.oldestMs - b.oldestMs);
+  }, [pick]);
+
+  const renderSizeLine = (row) => {
     const isReq = row.origin === "request";
     const resolvedId = isReq ? row.productId : (fulfilCtx ? fulfilCtx.resolveId({ productId: row.productId, productName: row.productName }) : null);
     const canAct = isReq ? canTransfer : (!!fulfilCtx && canFulfilCard({ enabled: fulfilCtx.canTransfer, productId: resolvedId }));
     const saleRow = isReq ? null : { ...row, resolvedId };
-    const remaining = Math.max(1, (row.qty || 1) - (row.sent || 0));
+    // For a request row qty IS the remainder (partial sends deduct it in the
+    // DB); a sale row nets its progress leaf locally.
+    const remaining = isReq ? (row.qty || 1) : Math.max(1, (row.qty || 1) - (row.sent || 0));
     const sources = isReq
       ? [{ id: SOURCE_LOC, label: "Central" }]
       : warehouseLocations(fulfilCtx?.locationsReg).filter((l) => l.id !== DEST_LOC);
@@ -539,11 +575,11 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         productId={resolvedId}
         size={row.size}
         destLabel={destLabel}
-        wantQty={isReq ? (row.qty || 1) : remaining}
+        wantQty={remaining}
         locationsReg={fulfilCtx?.locationsReg}
         // Per-origin stock semantics, folded behind the one button (see header).
         capFor={isReq
-          ? (avail) => ((Number(avail) || 0) > 0 ? Math.min(row.qty || 1, Number(avail)) : (row.qty || 1))
+          ? (avail) => ((Number(avail) || 0) > 0 ? Math.min(remaining, Number(avail)) : remaining)
           : () => remaining}
         uncountedWhen={isReq ? (avail) => !((Number(avail) || 0) > 0) : (avail) => typeof avail !== "number"}
         onConfirm={async (pickLoc, q, avail) => {
@@ -561,8 +597,8 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       />
     );
     return (
-      <RequestLine key={row.rowKey}
-        row={row} nowMs={now} destLabel={destLabel}
+      <SizeLine key={row.rowKey}
+        row={row} remaining={remaining}
         canAct={canAct}
         busy={busyRow === row.rowKey || (isReq && !canTransfer)}
         msg={msg[row.rowKey]}
@@ -575,7 +611,25 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         panel={panel}
       />
     );
-  });
+  };
+
+  const cardEls = cards.map((card) => (
+    <div key={card.key} style={CARD}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <Photo url={card.photoUrl} photo={card.photo} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, color: "#fff", fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{card.productName}</div>
+          <div style={{ fontSize: 11.5, color: GRAY, marginTop: 2 }}>
+            {card.rows.length} size{card.rows.length === 1 ? "" : "s"}
+          </div>
+        </div>
+        {Number.isFinite(card.oldestMs) && card.oldestMs !== Infinity && (
+          <AgePill elapsedMs={now - card.oldestMs} raisedIso={card.oldestIso} />
+        )}
+      </div>
+      {card.rows.map(renderSizeLine)}
+    </div>
+  ));
 
   // Shadow previews (engine shadow mode) — read-only, never actionable.
   const shadowEls = shadows.map((row) => (
@@ -629,7 +683,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         <div style={{ color: AMBER, fontSize: 11.5, margin: "0 2px 10px" }}>You need a stock role to transfer — viewing only.</div>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {rowEls}
+        {cardEls}
         {shadowEls}
       </div>
       {completedBlock}
