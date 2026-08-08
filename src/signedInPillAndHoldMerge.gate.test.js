@@ -129,7 +129,9 @@ describe("4 · the release gate changes VISIBILITY only — stock writes are unt
     expect(Q).toContain("const mvId = already === 0 ? `rrf_${r.id}` : `rrf_${r.id}_${already}`;");
     const reqBlock = Q.slice(Q.indexOf("const fulfilRequest"), Q.indexOf("const rejectRequest"));
     expect(reqBlock.match(/movementId: mvId,/g)).toHaveLength(3);   // both applyMovement branches + the fulfilledBy audit record
-    expect(reqBlock).toContain("fulfilledBy`]: { movementId: mvId, qty: q,");
+    // appliedQty, not the raw pick: a retry credits what the recorded movement
+    // actually carried (the sourceMovementDedupe idiom).
+    expect(reqBlock).toContain("fulfilledBy`]: { movementId: mvId, qty: appliedQty,");
   });
 
   it("the sale-row movement calls keep the Source contract byte-for-byte", () => {

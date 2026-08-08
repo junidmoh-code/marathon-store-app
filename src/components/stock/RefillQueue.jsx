@@ -243,7 +243,9 @@ function SupplyPanel({ sources, productId, size, destLabel, wantQty = 1, capFor,
 // list. The worked example still holds: Adi 2000 size 5 (sale) and size 7
 // (hold) are two identical lines inside the same card, nothing marking either.
 function SizeLine({ row, remaining, canAct, busy, msg, fulfilOpen, onToggleFulfil, onOutOfStock, panel }) {
-  const sent = row.origin === "sale" ? (row.sent || 0) : 0;
+  // Both origins carry accumulated progress now: a sale row's progress leaf,
+  // a request row's sentQty tranches (CodeRabbit, PR #338).
+  const sent = row.sent || 0;
   return (
     <div data-size={row.size} data-origin={row.origin} data-row={row.rowKey}
          style={{ borderTop: "1px solid rgba(255,255,255,.06)", marginTop: 10, paddingTop: 10,
@@ -320,7 +322,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         origin: "request", rowKey: `req:${r.id}`, id: r.id,
         productId: r.productId, productName: p?.name || r.productId,
         photoUrl: p?.photoUrl || null, photo: "",
-        size: String(r.size), qty: r.qty || 1, sent: 0,
+        size: String(r.size), qty: r.qty || 1, sent: Number(r.sentQty) || 0,
         createdAt: r.createdAt, createdMs: parseMs(r.createdAt),
         earlyRelease: r.earlyRelease, shadow: !!r.shadow, _r: r,
       };
@@ -359,6 +361,10 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   const fulfilRequest = async (row, qty, avail) => {
     const r = row._r;
     let q = qty, liveQty = r.qty || 1, already = 0;
+    // The live read is LOAD-BEARING for tranches and must not be skipped on
+    // failure: proceeding with already=0 would rebuild tranche one's movement
+    // id, applyMovement would swallow the send as a duplicate, and the request
+    // could be marked fulfilled with units never moved (CodeRabbit, PR #338).
     try {
       const live = (await get(ref(database, `refill_requests/${r.id}`))).val();
       if (!live || live.status !== "open") return { ok: false, reason: "Request already resolved — it will leave the list on its own." };
@@ -366,42 +372,78 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       already = Number(live.sentQty) || 0;
       if (q > liveQty) q = liveQty;
       if (q <= 0) return { ok: false, reason: "Nothing left to send on this request." };
-    } catch { /* offline read — movement idempotency still guards */ }
+    } catch { return { ok: false, reason: "Couldn't read the live request — check your connection and retry. Nothing was sent." }; }
     const counted = (Number(avail) || 0) > 0;
     const mvId = already === 0 ? `rrf_${r.id}` : `rrf_${r.id}_${already}`;
+    // Credit what ACTUALLY moved (the sourceMovementDedupe idiom): if this
+    // tranche id already carries a recorded movement — a retry after a failed
+    // bookkeeping write — do not re-send; credit the recorded quantity, which
+    // may be smaller than the pick, so the remainder stays open instead of
+    // being closed over units that never shipped.
+    let appliedQty = q;
     let res;
     try {
-      res = await applyMovement(counted ? {
-        type: "transfer_out", productId: r.productId, size: r.size, qty: q,
-        from: SOURCE_LOC, to: DEST_LOC, actorRole,
-        reason: `${DEST_LOC}_auto_refill`,
-        movementId: mvId,
-        link: { refillId: r.id },
-      } : {
-        type: "received", productId: r.productId, size: r.size, qty: q,
-        to: DEST_LOC, actorRole,
-        reason: `${DEST_LOC}_refill_uncounted`,
-        movementId: mvId,
-        link: { refillId: r.id },
-      });
+      const prior = (await get(ref(database, `stock_movements/${mvId}`))).val();
+      if (prior) {
+        appliedQty = Math.min(Number(prior.qty) || 0, liveQty);
+        if (appliedQty <= 0) return { ok: false, reason: "A previous send under this id couldn't be verified — retry." };
+        res = { ok: true, idempotent: true };
+      } else res = null;
+    } catch { res = null; }
+    try {
+      if (!res) {
+        res = await applyMovement(counted ? {
+          type: "transfer_out", productId: r.productId, size: r.size, qty: q,
+          from: SOURCE_LOC, to: DEST_LOC, actorRole,
+          reason: `${DEST_LOC}_auto_refill`,
+          movementId: mvId,
+          link: { refillId: r.id },
+        } : {
+          type: "received", productId: r.productId, size: r.size, qty: q,
+          to: DEST_LOC, actorRole,
+          reason: `${DEST_LOC}_refill_uncounted`,
+          movementId: mvId,
+          link: { refillId: r.id },
+        });
+        // A concurrent send can land between the pre-check and this call;
+        // applyMovement then replays idempotently WITHOUT moving stock. Credit
+        // the recorded movement, never our own pick (Sonnet review, PR #338).
+        if (res.ok && res.idempotent) {
+          const recorded = (await get(ref(database, `stock_movements/${mvId}`))).val();
+          appliedQty = Math.min(Number(recorded?.qty) || 0, liveQty);
+          if (appliedQty <= 0) return { ok: false, reason: "Another device just sent this tranche — refresh before sending more." };
+        }
+      }
     } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
     if (!res.ok) return { ok: false, reason: `Transfer failed: ${res.reason || "unknown"} — retry.` };
-    const remaining = liveQty - q;
+    const remaining = liveQty - appliedQty;
     if (remaining > 0) {
       // Deduct the sent tranche; the request stays OPEN for the remainder.
+      //
+      // ENGINE INTERPLAY (Sonnet review, PR #338 — assessed, deliberate): an
+      // engine-LOCKED request also carries qty on its /refill_engine/open lock,
+      // which this write does not touch (that node is the engine's own; rules
+      // are console-managed). The desync is transient and CONVERGENT: the
+      // tranche has already landed in /stock at the destination, so the next
+      // scan's resize recomputes need = target − destHave = exactly this
+      // remainder and writes BOTH nodes to it; if the tranche fully satisfied
+      // the target, needGone withdraws the remainder as "no_longer_needed" —
+      // the engine's long-standing rule for stock that arrived by any route.
+      // Lock-less requests (Missing Sneakers, former holds) have no twin to
+      // desync. Watch item recorded in the engine backlog.
       try {
         await update(ref(database), {
           [`refill_requests/${r.id}/qty`]: remaining,
-          [`refill_requests/${r.id}/sentQty`]: already + q,
+          [`refill_requests/${r.id}/sentQty`]: already + appliedQty,
         });
       } catch { return { ok: false, reason: "Sent, but updating the remaining quantity failed — retry (stock will not move twice)." }; }
-      setMsg((m) => ({ ...m, [row.rowKey]: `${q} sent → ${destLabel} ✓ · ${remaining} still open` }));
+      setMsg((m) => ({ ...m, [row.rowKey]: `${appliedQty} sent → ${destLabel} ✓ · ${remaining} still open` }));
       return { ok: true };
     }
     try {
       await update(ref(database), {
         [`refill_requests/${r.id}/status`]: "fulfilled",
-        [`refill_requests/${r.id}/fulfilledBy`]: { movementId: mvId, qty: q, ...(already ? { totalQty: already + q } : {}), ...(counted ? {} : { uncounted: true }) },
+        [`refill_requests/${r.id}/fulfilledBy`]: { movementId: mvId, qty: appliedQty, ...(already ? { totalQty: already + appliedQty } : {}), ...(counted ? {} : { uncounted: true }) },
         [`refill_requests/${r.id}/resolvedAt`]: serverNowIso(),
         // A withdrawal landing between the re-read and this write must not
         // leave its stale reason on a row now marked fulfilled (Kimi, #332).
@@ -409,7 +451,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         ...(auth.currentUser?.uid ? { [`refill_requests/${r.id}/resolvedBy`]: auth.currentUser.uid } : {}),
       });
     } catch { return { ok: false, reason: "Sent, but marking it fulfilled failed — retry (stock will not move twice)." }; }
-    setMsg((m) => ({ ...m, [row.rowKey]: `${q} unit${q === 1 ? "" : "s"} → ${destLabel} ✓` }));
+    setMsg((m) => ({ ...m, [row.rowKey]: `${appliedQty} unit${appliedQty === 1 ? "" : "s"} → ${destLabel} ✓` }));
     return { ok: true };
   };
 

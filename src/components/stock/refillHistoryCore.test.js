@@ -489,3 +489,29 @@ describe("stepHub — cycles All / Hub 1 / Hub 2 / Shops", () => {
     for (const l of ["hub1", "hub2", ...shops]) expect(all).toContain(l);
   });
 });
+
+describe("mergeRows × partial fulfilment (PR #338): an OPEN request never absorbs its tranche", () => {
+  const openReq = { key: "rr:r1", kind: "refill", refillId: "r1", ts: 100, raisedMs: 100, resolvedMs: null,
+                    productId: "p", size: "7", qty: 1, source: "central", dest: "hub1", status: "requested" };
+  const tranche = { key: "mv:rrf_r1", kind: "refill", movementId: "rrf_r1", refillId: "r1", ts: 200,
+                    raisedMs: null, resolvedMs: 200, productId: "p", size: "7", qty: 1,
+                    source: "central", dest: "hub1", status: "fulfilled" };
+
+  it("keeps BOTH rows: the shipped tranche (Refilled) and the outstanding remainder (Open)", () => {
+    const rows = mergeRows([{ ...openReq }], [{ ...tranche }]);
+    expect(rows).toHaveLength(2);
+    const open = rows.find((r) => r.key === "rr:r1");
+    expect(open.status).toBe("requested");
+    expect(open.movedQty).toBeUndefined();   // Open reports OUTSTANDING units, never sent ones
+    expect(open.qty).toBe(1);
+    expect(rows.find((r) => r.key === "mv:rrf_r1").status).toBe("fulfilled");
+  });
+
+  it("a CLOSED request still absorbs its movements exactly as before", () => {
+    const closed = { ...openReq, status: "fulfilled", resolvedMs: 200 };
+    const rows = mergeRows([closed], [{ ...tranche }]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].movedQty).toBe(1);
+    expect(rows[0].movementId).toBe("rrf_r1");
+  });
+});

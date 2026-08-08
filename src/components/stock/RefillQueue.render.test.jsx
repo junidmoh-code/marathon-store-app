@@ -24,12 +24,13 @@ const NOW = Date.parse("2026-08-07T10:00:00.000Z");
 
 const paths = {};   // onValue subscriptions
 const gets = {};    // one-shot get() reads
+const rejects = new Set();   // paths whose get() fails (offline simulation)
 const updateMock = vi.fn(() => Promise.resolve());
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   onValue: (r, cb) => { cb({ val: () => paths[r.path] ?? null }); return () => {}; },
   update: (...a) => updateMock(...a),
-  get: (r) => Promise.resolve({ val: () => gets[r.path] ?? null }),
+  get: (r) => rejects.has(r.path) ? Promise.reject(new Error("offline")) : Promise.resolve({ val: () => gets[r.path] ?? null }),
 }));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
@@ -108,6 +109,7 @@ beforeEach(() => {
   for (const k of Object.keys(gets)) delete gets[k];
   updateMock.mockClear();
   applyMovementMock.mockClear();
+  rejects.clear();
   perm.permRecord = { stockRole: "warehouse" };
   perm.isSuperAdmin = false;
   paths["refill_requests"] = {
@@ -275,6 +277,50 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     const patch = updateMock.mock.calls.at(-1)[1];
     expect(patch["refill_requests/bootreq/status"]).toBe("fulfilled");
     expect(patch["refill_requests/bootreq/fulfilledBy"]).toEqual({ movementId: "rrf_bootreq_1", qty: 1, totalQty: 2 });
+  });
+
+  it("a FAILED live read aborts the send — never a guessed tranche id (CodeRabbit, PR #338)", async () => {
+    rejects.add("refill_requests/bootreq");
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    const out = textOf(tree.toJSON());
+    tree.unmount();
+    expect(applyMovementMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(out).toContain("Nothing was sent");
+  });
+
+  it("a RETRY after a failed bookkeeping write credits what actually moved, not the new pick", async () => {
+    // Tranche one (1 unit) is already in the ledger under the bare id, but the
+    // qty/sentQty write failed — the request still reads qty 2 / sentQty 0.
+    // The picker retries asking for the full 2: nothing must move again, ONE
+    // unit is credited, and ×1 stays open instead of the request closing over
+    // a unit that never shipped.
+    gets["stock_movements/rrf_bootreq"] = { qty: 1, productId: "boot" };
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    tree.unmount();
+    expect(applyMovementMock).not.toHaveBeenCalled();
+    const patch = updateMock.mock.calls.at(-1)[1];
+    expect(patch["refill_requests/bootreq/qty"]).toBe(1);
+    expect(patch["refill_requests/bootreq/sentQty"]).toBe(1);
+    expect(Object.keys(patch).find((k) => k.includes("/status"))).toBeUndefined();
+  });
+
+  it("a partially-sent request line SHOWS its progress (sentQty renders)", () => {
+    paths["refill_requests"].bootreq = { ...paths["refill_requests"].bootreq, qty: 1, sentQty: 1 };
+    const tree = renderQueue();
+    const line = rowLineOf(tree, "req:bootreq");
+    expect(textOf(line.children)).toContain("1 sent");
+    tree.unmount();
   });
 
   it("Out of Stock on a REQUEST row is the human rejection — cancelled with NO cancelReason", async () => {
