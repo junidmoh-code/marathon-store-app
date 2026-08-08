@@ -991,8 +991,32 @@ function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
   const [shooting, setShooting] = useState(false);
   const [autoNote, setAutoNote] = useState(null);
   const fileRef = useRef(null);
-  const ordered = photoColours ? orderByColourAffinity(panel.claimants, photoColours) : panel.claimants;
   const siblings = !!panel.siblings;
+
+  // Candidates enriched with palettes. Most existing products carry no stored
+  // dominantColours (the field only lands when a shoe photo was taken at
+  // registration) — without this, the margin decision would fail closed on
+  // every legacy product forever. The palette is computed once from the
+  // product's own stored photo (CORS-enabled bucket) and kept in-session;
+  // nothing is written back. A photo that cannot be read stays palette-less,
+  // and selectByColourAffinity then refuses to auto-pick — fail closed.
+  const paletteCache = useRef({});
+  const [enriched, setEnriched] = useState(null);
+  const enrichCandidates = async () => {
+    const list = await Promise.all(panel.claimants.map(async (p) => {
+      if (!p) return p;
+      if (Array.isArray(p.dominantColours) && p.dominantColours.length) return p;
+      if (!(p.id in paletteCache.current)) {
+        paletteCache.current[p.id] = p.photoUrl ? await extractDominantColours(p.photoUrl).catch(() => []) : [];
+      }
+      const dc = paletteCache.current[p.id];
+      return dc && dc.length ? { ...p, dominantColours: dc } : p;
+    }));
+    setEnriched(list);
+    return list;
+  };
+  const candidates = enriched || panel.claimants;
+  const ordered = photoColours ? orderByColourAffinity(candidates, photoColours) : candidates;
 
   // Earlier answers for this code — fetched once; a failed fetch degrades to
   // asking (never to a broken picker). Only sibling sets use them.
@@ -1032,10 +1056,12 @@ function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
         const remembered = matchColourwayAnswers(answers || [], colours);
         const rememberedProduct = remembered ? panel.claimants.find((c) => c && c.id === remembered) : null;
         if (rememberedProduct) { pick(rememberedProduct, { remember: false }); return; }
-        // Step 3 — the margin decision. `auto` only on a clear win; the
-        // stored answer comes from the product images, so remember this
-        // photo's palette too — next time it resolves at step 2.
-        const decided = selectByColourAffinity(panel.claimants, colours);
+        // Step 3 — the margin decision, against every candidate's stored
+        // image (palettes computed on the fly where not stored). `auto` only
+        // on a clear win; the human's answer, when asked, is remembered so
+        // next time step 2 resolves this shoe silently.
+        const withPalettes = await enrichCandidates();
+        const decided = selectByColourAffinity(withPalettes, colours);
         if (decided.kind === "auto") { pick(decided.product); return; }
         setAutoNote("The photo can't separate these on colour — tap the shoe in your hand.");
       }

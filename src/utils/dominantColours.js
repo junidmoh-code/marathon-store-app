@@ -42,6 +42,12 @@ export async function extractDominantColours(source) {
     url = owned ? URL.createObjectURL(source) : source;
     const img = await new Promise((resolve, reject) => {
       const el = new Image();
+      // A remote product photo (Storage URL) taints the canvas without CORS
+      // opt-in, and getImageData then throws — which read as "no palette" and
+      // silently disabled every comparison against a stored image. The bucket
+      // serves CORS headers (set 2026-05-20); the attribute is what asks for
+      // them. Local blobs/data-URLs are unaffected.
+      if (!owned) el.crossOrigin = "anonymous";
       el.onload = () => resolve(el);
       el.onerror = reject;
       el.src = url;
@@ -116,13 +122,21 @@ export function paletteDistance(a, b) {
   return weight ? sum / weight : Infinity;
 }
 
-// ── AUTO-SELECT THRESHOLDS (owner spec 2026-08-08; evidence in PR notes) ─────
+// ── AUTO-SELECT THRESHOLDS (owner spec 2026-08-08) ───────────────────────────
 // RGB-Euclidean units, 0–441 scale, on paletteDistance's weighted average.
-// Measured against the live catalogue's multi-owner codes (photo-vs-photo
-// pairwise distances of registered siblings): clearly different colourways
-// (black vs white uppers) sit far apart, near-twin colourways (the RTFKT
-// White Photo Blue vs White Gray pair) sit close. The margin is what separates
-// "the photo decided" from "the photo cannot tell them apart".
+// MEASURED 2026-08-08 against every multi-owner code in the live catalogue
+// (12 codes, 26 sibling pairs, product-photo vs product-photo with this exact
+// quantisation): distances run 1–252 with median 30, heavily COMPRESSED by
+// the shared white studio backgrounds — even a black-vs-white pair can sit
+// near 21. The owner's own evidence pair (RTFKT White Photo Blue vs White
+// Gray, HF0438-001) measures 39. So the margin sits at 55: above every
+// near-twin in the catalogue, below the three genuinely separable groups
+// (Bapesta black-vs-white 252, NOCTA 139, Powercourt-vs-Lerond 80). A
+// smaller margin would start auto-picking between pairs the metric provably
+// compresses, which is the silent wrong match this whole design forbids —
+// asking is always the cheaper failure. Expect ~9 of the current 12
+// multi-owner codes to stay in the ask band; the answer memory (below) is
+// what makes those stop asking per-shoe.
 export const AUTO_SELECT_MARGIN = 55;    // runner-up must trail by at least this
 export const AUTO_SELECT_CLOSE_MAX = 150; // and the winner must actually resemble the photo
 export const ANSWER_MATCH_MAX = 40;      // a stored answer counts only this close
