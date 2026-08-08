@@ -52,9 +52,31 @@ export function stockSizeKey(size) {
   return encodeSizeKey(size);
 }
 
+// ─── LAST-LINE GUARD: no illegal char may become a path segment ──────────────
+// Firebase's own key validation throws SYNCHRONOUSLY (before a promise exists),
+// so a raw "5.5" reaching update()/set() escapes every .catch() — the operator
+// sees a cryptic crash AFTER upstream writes already applied (that is exactly
+// how half-size fulfils moved stock but never closed their cell). This guard
+// turns that into a loud, named error at the moment the path is BUILT, before
+// any write fires. It rejects, it never repairs: encoding is the caller's job
+// (encodeSizeKey / stockSizeKey), and silently fixing here would let a raw
+// size and its encoded twin address two different cells.
+const ILLEGAL_SEGMENT = /[.#$/[\]]/;
+
+export function assertSafeSegment(segment, label = "segment") {
+  const s = String(segment);
+  if (s === "" || ILLEGAL_SEGMENT.test(s)) {
+    throw new Error(
+      `Illegal RTDB path ${label}: "${s}" — a key must be non-empty and cannot contain ` +
+      `".", "#", "$", "/", "[" or "]". Encode it first (encodeSizeKey/stockSizeKey).`
+    );
+  }
+  return s;
+}
+
 // The single construction point for a /stock balance-cell path. Every writer and
 // the read-modify path in applyMovement build the key through here, so a half-size
 // or one-size can never reach RTDB un-encoded.
 export function stockCellPath(loc, productId, size) {
-  return `stock/${loc}/${productId}/${stockSizeKey(size)}`;
+  return `stock/${assertSafeSegment(loc, "location")}/${assertSafeSegment(productId, "productId")}/${assertSafeSegment(stockSizeKey(size), "size key")}`;
 }

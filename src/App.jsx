@@ -7,7 +7,7 @@ import { database, storage, auth, googleProvider, functions, functionsUS } from 
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
 import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
-import { stockCellPath, encodeSizeKey } from "./utils/sizeKey";
+import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
@@ -314,7 +314,7 @@ const STATUS = { INCOMING: "incoming", READY: "ready", OUT_OF_STOCK: "out_of_sto
 // Matches the spread of sizeOptions in AdminView ([3..11]); kept here so the
 // Warehouse picker doesn't have to import it.
 const SIZE_MIN = 3;
-const SIZE_MAX = 11;
+const SIZE_MAX = 13;   // run extended to 12/13 (2026-08-08) — substitutes may now offer them
 
 // Given a requested size string, returns { below, above } as size strings
 // representing one FULL size down / up (delta ±1.0). Either side is null when
@@ -1073,7 +1073,11 @@ function useAllSourceResponses() {
           if (key === "createdAt" || key === "date" || key === "products") return;
           if (typeof val !== "object" || val === null) return;
           const sizes = {};
-          Object.entries(val).forEach(([size, raw]) => {
+          Object.entries(val).forEach(([sizeKey, raw]) => {
+            // Stored keys are RTDB-encoded ("5_5"); in-memory maps use the raw
+            // catalogue size ("5.5") so every lookup site compares like with
+            // like. Legacy raw whole/letter keys decode to themselves.
+            const size = decodeSizeKey(sizeKey);
             const norm = normalizeSourceResponse(raw);
             if (norm) sizes[size] = norm;
             else if (raw && typeof raw === "object" && Number(raw.fulfilledQty) > 0) {
@@ -1101,9 +1105,17 @@ function useAllSourceResponses() {
 // `extra` (optional) rides along for the audit trail — e.g. fulfilledQty +
 // transferred flags from Transfer & Fulfil. Readers only consume
 // response/respondedOn, so extras are DB-only forensics.
+// SIZE KEYS ARE ENCODED (half-size fix 2026-08-08). A raw "5.5" used as an
+// update key throws SYNCHRONOUSLY inside Firebase's key validation — before the
+// promise exists — so the .catch below never saw it and the error escaped to
+// the operator AFTER the stock transfer had already applied: stock moved, the
+// cell never closed. Every write below goes through encodeSizeKey ("5.5"→"5_5",
+// whole/letter sizes unchanged), every read through useAllSourceResponses
+// decodes back, so in-memory code keeps comparing raw catalogue sizes. Existing
+// leaves are raw whole/letter sizes, which encode to themselves — no migration.
 function saveSourceResponse(date, productKey, size, response, extra) {
   update(ref(database, sourceResponsePath(date, productKey)), {
-    [size]: { response, respondedOn: serverNowIso(), ...(extra || {}) }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { response, respondedOn: serverNowIso(), ...(extra || {}) }
   }).catch(err => console.warn("saveSourceResponse failed:", err));
 }
 
@@ -1112,7 +1124,7 @@ function saveSourceResponse(date, productKey, size, response, extra) {
 // "n of m sent" badge until the remainder ships and saveSourceResponse closes it.
 function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
   update(ref(database, sourceResponsePath(date, productKey)), {
-    [size]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}) }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}) }
   }).catch(err => console.warn("saveSourceFulfilProgress failed:", err));
 }
 
@@ -1168,8 +1180,9 @@ function useClothingOos() {
         Object.entries(storeNode).forEach(([pid, sizesNode]) => {
           if (!sizesNode || typeof sizesNode !== "object") return;
           const bySize = {};
-          Object.entries(sizesNode).forEach(([size, leaf]) => {
-            if (leaf && typeof leaf === "object" && leaf.outHub) bySize[size] = leaf;
+          Object.entries(sizesNode).forEach(([sizeKey, leaf]) => {
+            // Stored keys are encoded ("5_5"); decode so lookups by raw size match.
+            if (leaf && typeof leaf === "object" && leaf.outHub) bySize[decodeSizeKey(sizeKey)] = leaf;
           });
           if (Object.keys(bySize).length) byProduct[pid] = bySize;
         });
@@ -1186,11 +1199,14 @@ function useClothingOos() {
 function saveClothingOut(store, productId, size, hub) {
   const uid = auth.currentUser?.uid || null;
   update(ref(database, `clothing_sold_refills/${store}/${productId}`), {
-    [String(size)]: { outHub: hub || null, at: serverNowIso(), by: uid }
+    // Encoded key (same half-size fix as saveSourceResponse): a "." size here
+    // threw synchronously; a "." in clearClothingOut's path silently addressed
+    // a child node instead. Reader (useClothingOos) decodes back to raw.
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { outHub: hub || null, at: serverNowIso(), by: uid }
   }).catch(err => console.warn("saveClothingOut failed:", err));
 }
 function clearClothingOut(store, productId, size) {
-  return remove(ref(database, `clothing_sold_refills/${store}/${productId}/${String(size)}`))
+  return remove(ref(database, `clothing_sold_refills/${store}/${productId}/${assertSafeSegment(encodeSizeKey(size), "size key")}`))
     .catch(err => console.warn("clearClothingOut failed:", err));
 }
 
@@ -1221,7 +1237,8 @@ async function reverseClothingRefill({ store, productId, size, qty, hub, batchId
     reason: CLOTHING_REFILL_UNDO_REASON,
     actorRole: actorRole || null,
     link: { refillId: `clth_${store}_${productId}` },
-    movementId: `clthundo_${batchId}_${size}`,
+    // Encoded — a raw "." in a movementId is an illegal /stock_movements key.
+    movementId: `clthundo_${batchId}_${encodeSizeKey(size)}`,
   });
 }
 
@@ -2806,7 +2823,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
 // Sneaker size options (clothing uses CLOTHING_SIZES). Hoisted to module
 // scope so both AdminView's Add Product form and AdminProductDetail's size
 // editor share the same source of truth.
-const SNEAKER_SIZES = ["3","4","5","5.5","6","7","8","9","10","11"];
+const SNEAKER_SIZES = ["3","4","5","5.5","6","7","8","9","10","11","12","13"];
 
 // `#product/{id}` is the detail-page route. Returns null when the hash is
 // anything else (empty, #admin, etc.).
@@ -9114,7 +9131,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     return { dueRefills: due, completedRefills: completed };
   }, [orders, selectedHub, nowTick]);
   const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
-  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","S","M","L","XL","XXL","XXXL","4XL","28","30","32","34","36","38","40"];
+  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","12","13","S","M","L","XL","XXL","XXXL","4XL","28","30","32","34","36","38","40"];
   const sizeRank = (s) => {
     const i = CANONICAL_SIZE_ORDER.indexOf(s);
     return i === -1 ? 999 : i;

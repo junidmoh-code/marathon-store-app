@@ -173,6 +173,15 @@ describe("seedableSizes — what Solve may write", () => {
       .toEqual(["5.5", "7"]);
   });
 
+  it("sees an existing HALF-SIZE cell in the decoded map — no phantom re-seed", () => {
+    // allStock is the useStockCells shape: half-size cells keyed "5.5", not
+    // "5_5". Comparing the encoded key against decoded keys offered the seed
+    // for a cell that already existed.
+    const allStock = { hub1: { sh1: { "5.5": cell(1) } } };
+    expect(seedableSizes({ allStock, pid: "sh1", catalogSizes: ["5.5", "7"], hub: "hub1", footwearRun }))
+      .toEqual(["7"]);
+  });
+
   it("is EMPTY when footwear targeting is not configured — Solve must be disabled", () => {
     // Guards the false-success trap: seeding a cell the engine will never refill
     // looks like progress and silently is not.
@@ -231,12 +240,24 @@ describe("footwearSolvePlan — policy capped by Central stock", () => {
     expect(plan.map((l) => l.size)).toEqual(["6"]);
   });
 
-  it("resolves the half size through its encoded key and orders it numerically", () => {
+  it("finds half-size Central stock in the DECODED cell map (the live shape)", () => {
+    // centralCells comes from useStockCells, which decodes "5_5" back to "5.5".
+    // The policy stays encoded (RTDB config). Reading the cell by the encoded
+    // key was the bug that made every half size invisible to Solve.
     const plan = footwearSolvePlan({
-      catalogSizes: ["6", "5.5", "3"], policy, centralCells: central({ 6: 5, "5_5": 5, 3: 5 }),
+      catalogSizes: ["6", "5.5", "3"], policy, centralCells: central({ 6: 5, "5.5": 5, 3: 5 }),
     });
     expect(plan.map((l) => l.size)).toEqual(["3", "5.5", "6"]);
     expect(plan.find((l) => l.size === "5.5").qty).toBe(2);
+  });
+
+  it("does NOT read an encoded-keyed cell map — the decoded contract is strict", () => {
+    // An encoded map here means a caller skipped useStockCells' decode; the
+    // half-size row must drop (avail 0) rather than silently half-work.
+    const plan = footwearSolvePlan({
+      catalogSizes: ["5.5"], policy, centralCells: central({ "5_5": 5 }),
+    });
+    expect(plan).toEqual([]);
   });
 
   it("skips sizes that already have an OPEN request — no double-picking", () => {
@@ -285,9 +306,11 @@ describe("network-wide reservation — two hubs cannot claim the same Central un
       .toEqual([{ size: "8", qty: 2, want: 2, avail: 3 }]);
   });
 
-  it("reservation is keyed by the ENCODED size, so half sizes are counted", () => {
+  it("reservation stays keyed by the ENCODED size while the cell map is decoded", () => {
+    // reserved comes from open requests keyed with sizeKeyOf (encoded);
+    // centralCells is the useStockCells decoded map. Both spaces meet here.
     const plan = footwearSolvePlan({
-      catalogSizes: ["5.5"], policy: { "5_5": 2 }, centralCells: central({ "5_5": 3 }), reserved: { "5_5": 2 },
+      catalogSizes: ["5.5"], policy: { "5_5": 2 }, centralCells: central({ "5.5": 3 }), reserved: { "5_5": 2 },
     });
     expect(plan).toEqual([{ size: "5.5", qty: 1, want: 2, avail: 1 }]);
   });
@@ -306,9 +329,11 @@ describe("one shared size-key encoder — the same one the stock cells use", () 
   });
 
   it("a padded size resolves against the cell it is actually stored in", () => {
+    // " 8" encodes to "_8", and decode does NOT reverse that (only digit_digit),
+    // so even the DECODED map keys this cell "_8". decodedCellKeyOf covers it.
     const plan = footwearSolvePlan({
       catalogSizes: [" 8"], policy: { _8: 2 },
-      centralCells: { _8: { qty: 3 } },        // how stockSizeKey(" 8") writes it
+      centralCells: { _8: { qty: 3 } },        // how stockSizeKey(" 8") writes it — same in the decoded map
       reserved: { [sizeKeyOf(" 8")]: 2 },
     });
     expect(plan).toEqual([{ size: " 8", qty: 1, want: 2, avail: 1 }]);
@@ -368,18 +393,19 @@ describe("footwearPickPlan", () => {
     })).toEqual([]);
   });
 
-  it("half sizes resolve against the cell they are stored in, not a raw '5.5' key", () => {
-    // 5.5 is 538 live cells. A raw lookup misses every one of them.
+  it("half sizes resolve against the DECODED cell map (the live useStockCells shape)", () => {
+    // 5.5 is 538 live cells. useStockCells hands them over keyed "5.5"; an
+    // encoded "5_5" lookup on that map missed every one of them.
     expect(footwearPickPlan({
       picks: [{ size: "5.5", qty: 2 }],
-      centralCells: { "5_5": { qty: 2 } },
+      centralCells: { "5.5": { qty: 2 } },
     })).toEqual([{ size: "5.5", qty: 2, asked: 2, avail: 2 }]);
   });
 
   it("returns lines in numeric size order, not the order they were typed", () => {
     expect(footwearPickPlan({
       picks: [{ size: "10", qty: 1 }, { size: "5.5", qty: 1 }, { size: "7", qty: 1 }],
-      centralCells: { 10: { qty: 2 }, "5_5": { qty: 2 }, 7: { qty: 2 } },
+      centralCells: { 10: { qty: 2 }, "5.5": { qty: 2 }, 7: { qty: 2 } },
     }).map((l) => l.size)).toEqual(["5.5", "7", "10"]);
   });
 

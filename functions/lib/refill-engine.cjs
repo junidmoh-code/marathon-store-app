@@ -888,9 +888,13 @@ function computeRefillPlan(snapshot) {
     return out;
   };
   // Encoded key → raw size (clothing letters are identity; keep a map anyway).
+  // The catalogue-miss fallback DECODES ("5_5"→"5.5") rather than passing the
+  // encoded key through: `size` fields on requests/orders are raw-size space,
+  // and an encoded value there renders as "5_5" and misses every availability
+  // lookup in the app (which indexes decoded cell maps by raw size).
   const rawSize = (pid, sizeKey) => {
     for (const s of products?.[pid]?.sizes || []) if (encodeSizeKey(s) === sizeKey) return String(s);
-    return sizeKey === "_" ? "" : sizeKey;
+    return sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2");
   };
 
   // ── REJECT STREAK — loop-guard state (incident 2026-07-19: wrong shelf) ─────

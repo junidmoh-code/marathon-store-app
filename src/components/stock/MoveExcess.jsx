@@ -23,12 +23,14 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { openPickList } from "../../print/pickList";
 import { serverNowMs } from "../../utils/serverTime";
+import { sizeRank } from "./hubSizeRank";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 const SOURCES = ["hub2", "marathon-pe", "trophy"];
 const STORE_EXCESS_MIN = 2;   // keep in sync with config.storeExcessMinUnits
-const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
-const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? 99 : i; };
+// Numeric-aware ordering via hubSizeRank (imported at top): letters keep their
+// historical ranks; shoe/waist sizes sort numerically after them instead of
+// tying at 99 and rendering in arbitrary map order (12/13 would land anywhere).
 
 const isClothing = (p) =>
   p?.productType === "clothing" ||

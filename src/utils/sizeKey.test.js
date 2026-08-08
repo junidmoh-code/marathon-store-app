@@ -5,7 +5,7 @@
 // the same. Vectors below mirror the POS test suite exactly.
 
 import { describe, it, expect } from "vitest";
-import { encodeSizeKey, decodeSizeKey, stockSizeKey, stockCellPath } from "./sizeKey";
+import { encodeSizeKey, decodeSizeKey, stockSizeKey, stockCellPath, assertSafeSegment } from "./sizeKey";
 
 describe("encodeSizeKey — identical to the POS encoder", () => {
   it("encodes half-sizes dot-free (the bug): '.' → '_'", () => {
@@ -96,5 +96,40 @@ describe("stockCellPath — half-size /stock key is dot-free", () => {
   });
   it("encodes a numeric half-size too", () => {
     expect(stockCellPath("hub1", "pX", 5.5)).toBe("stock/hub1/pX/5_5");
+  });
+});
+
+describe("assertSafeSegment — the loud last-line path guard", () => {
+  it("rejects every RTDB-illegal character, naming the offending value", () => {
+    for (const bad of ["5.5", "a#b", "a$b", "a/b", "a[b", "a]b"]) {
+      expect(() => assertSafeSegment(bad, "size key")).toThrow(bad);
+      expect(() => assertSafeSegment(bad, "size key")).toThrow(/size key/);
+    }
+  });
+  it("rejects the empty segment (an empty RTDB key is invalid)", () => {
+    expect(() => assertSafeSegment("", "size key")).toThrow(/non-empty/);
+  });
+  it("passes clean segments through unchanged", () => {
+    expect(assertSafeSegment("5_5")).toBe("5_5");
+    expect(assertSafeSegment("M")).toBe("M");
+    expect(assertSafeSegment("_")).toBe("_");
+    expect(assertSafeSegment("p1778841820730")).toBe("p1778841820730");
+  });
+  it("stockCellPath refuses an illegal LOCATION or PRODUCT segment instead of writing astray", () => {
+    // The size is encoded by stockSizeKey before the guard, so it can never trip —
+    // but a caller-supplied location/productId containing "/" or "." must throw,
+    // not silently address a different node.
+    expect(() => stockCellPath("hub1/evil", "pX", "6")).toThrow(/hub1\/evil/);
+    expect(() => stockCellPath("hub1", "p.X", "6")).toThrow(/p\.X/);
+  });
+});
+
+describe("sizes 12 and 13 — run extension (2026-08-08)", () => {
+  it("encode to themselves and decode to themselves (no dot, nothing to fold)", () => {
+    expect(encodeSizeKey("12")).toBe("12");
+    expect(encodeSizeKey("13")).toBe("13");
+    expect(decodeSizeKey("12")).toBe("12");
+    expect(stockCellPath("hub1", "pX", "12")).toBe("stock/hub1/pX/12");
+    expect(stockCellPath("hub1", "pX", "13")).toBe("stock/hub1/pX/13");
   });
 });
