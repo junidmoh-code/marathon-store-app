@@ -25,7 +25,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, update, get } from "firebase/database";
 import { database, auth } from "../../firebase";
-import { useRefillRequests, useStockCells, useStockExceptions, useEngineOpen } from "./useStock";
+import { useRefillRequests, useStockCells, useStockExceptions, useEngineOpen, useEngineConfig } from "./useStock";
 import { sizeRank } from "./hubSizeRank";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
@@ -34,6 +34,7 @@ import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets"
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { formatDuration, refillAgeTone } from "../../utils/duration";
 import { partitionSatisfied, lockedRefillIds } from "./refillSatisfied";
+import { parseReleaseTimes, partitionReleased, nextReleaseMs, saTimeLabel, releaseEarlyPatch } from "./releaseWindows";
 
 const SOURCE_LOC = "central";
 // HUB-AGNOSTIC (2026-07-30). This queue was written when only Hub 2 received
@@ -94,7 +95,20 @@ function AgePill({ elapsedMs, raisedIso, prefix }) {
 // so the two views of one queue never disagree about what belongs to the
 // toggle. `product` is the catalogue record (may be undefined for a pid the
 // catalogue lost); absent filter = everything, exactly as before.
-export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, lineFilter = null }) {
+//
+// ── HOLDS ARE REQUEST ROWS (owner spec 2026-08-08) ──────────────────────────
+// The separate "On hold" section is gone. A customer hold that raised a refill
+// request IS a row in this queue — `holdInfoByRequestId` (Map: requestId →
+// {orderNumber, customerName, ts}) lets the row say a customer is waiting, and
+// a request stamped createdFrom.via === "on_hold" is badged CUSTOMER HOLD even
+// when the join has nothing (order clobbered by the daily number reset AND
+// outside the log window). `holdRows` is the exception tail rendered INSIDE
+// this same list: holds that could not become requests (fail-closed hub,
+// legacy) and holds whose request already resolved (outcome attached) — they
+// keep their Sent / Out of Stock / Undo actions. They are pinned above the
+// request cards: each is a customer already waiting, never batch work.
+export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, lineFilter = null,
+                                          holdRows = null, holdInfoByRequestId = null }) {
   const DEST_LOC = dest;
   const destLabel = HUB_LABEL[dest] || dest;
   const { permRecord, isSuperAdmin } = usePermissions();
@@ -153,22 +167,36 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, li
   const [rejects, setRejects] = useState({});   // refillId → true (marked "not available")
   const [busyCard, setBusyCard] = useState(null);
   const [msg, setMsg] = useState({});           // productId → result line
+  const [releasingId, setReleasingId] = useState(null); // early-release in flight
+  const [releaseErr, setReleaseErr] = useState(null);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const canTransfer = ["store", "warehouse", "admin"].includes(actorRole);
 
-  // Requests for THIS destination, split into work that is still real and work
-  // the destination's own shelf has already answered (see refillSatisfied.js).
-  // Shadow previews are excluded from the split: they are read-only pictures of
-  // what Live Mode would do, and "already covered" is a statement about a real
-  // ask. They stay in the card list exactly as before.
-  const { actionable, covered } = useMemo(() => {
+  // ── BATCHED RELEASE WINDOWS (owner spec 2026-08-08) ────────────────────────
+  // Requests are raised the moment demand appears but become PICKABLE work only
+  // at the configured release times (default 06:00 & 14:00 SA) — see
+  // releaseWindows.js for the whole mechanism. The gate is applied HERE and
+  // nowhere else: it filters what this screen presents as work, never what the
+  // engine, MoveExcess, Missing Sneakers, Refill History or the held-card rule
+  // read. Config absent → defaults; config === false → gate off entirely.
+  const engineConfig = useEngineConfig();
+  const windows = useMemo(() => parseReleaseTimes(engineConfig?.releaseWindows), [engineConfig]);
+
+  // Requests for THIS destination: released (pickable now) vs waiting (behind
+  // the next window), then released split into work that is still real and
+  // work the destination's own shelf has already answered (refillSatisfied.js).
+  // Shadow previews bypass the window gate: they are read-only pictures of what
+  // Live Mode would do — admin information, not batched pick work — and are
+  // excluded from the satisfied split exactly as before.
+  const { actionable, covered, waiting } = useMemo(() => {
     let mine = openRequests.filter((r) => r.requestingLocation === DEST_LOC && r.productId);
     if (lineFilter) mine = mine.filter((r) => lineFilter(byId.get(r.productId), r.size));
     const shadows = mine.filter((r) => r.shadow);
-    const split = partitionSatisfied(mine.filter((r) => !r.shadow), destCells, lockedIds);
-    return { actionable: [...split.actionable, ...shadows], covered: split.covered };
-  }, [openRequests, destCells, lockedIds, DEST_LOC, lineFilter, byId]);
+    const gate = partitionReleased(mine.filter((r) => !r.shadow), now, windows);
+    const split = partitionSatisfied(gate.released, destCells, lockedIds);
+    return { actionable: [...split.actionable, ...shadows], covered: split.covered, waiting: gate.waiting };
+  }, [openRequests, destCells, lockedIds, DEST_LOC, lineFilter, byId, now, windows]);
 
   const cards = useMemo(() => {
     const byPid = new Map();
@@ -323,6 +351,21 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, li
     setBusyCard(null);
   };
 
+  // URGENT OVERRIDE — an admin releases ONE request early, out of band. The
+  // reason is required and recorded with the uid (earlyRelease: {at, by,
+  // reason}); the stamp's presence releases the row for everyone, permanently.
+  const releaseNow = async (r) => {
+    if (releasingId || actorRole !== "admin") return;
+    const reason = window.prompt("Release this request ahead of the window?\nReason (required — recorded with your account):");
+    if (reason == null) return; // cancelled
+    const patch = releaseEarlyPatch({ nowIso: serverNowIso(), uid: auth.currentUser?.uid || null, reason });
+    if (!patch) { setReleaseErr("A reason is required — nothing was released."); return; }
+    setReleasingId(r.id); setReleaseErr(null);
+    try { await update(ref(database, `refill_requests/${r.id}`), patch); }
+    catch (e) { setReleaseErr(`Early release failed — ${String(e?.message || e)}`); }
+    setReleasingId(null);
+  };
+
   // Open queue ⇄ Fulfilled history toggle — both views come from the one
   // subscription above.
   const toggle = (
@@ -404,16 +447,87 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, li
     </div>
   ) : null;
 
+  // ── RELEASE-WINDOW STATUS + THE ACCUMULATING BACKLOG ───────────────────────
+  // The next-release line renders whenever batching is on, so an empty queue
+  // between windows reads as "working as designed", never as a broken screen.
+  // The backlog rows render for ADMIN only: the owner must see what is
+  // accumulating even while staff cannot act on it, and each row carries the
+  // one-tap urgent override. Staff see only the count.
+  const releaseLine = !windows.disabled ? (
+    <div style={{ ...GLASS, padding: "10px 14px", margin: "0 0 12px", display: "flex", flexWrap: "wrap", gap: "4px 14px", alignItems: "baseline" }}>
+      <span style={{ color: "#cfe0ff", fontSize: 12.5, fontWeight: 700 }}>
+        Release windows {windows.labels.join(" & ")} SA
+      </span>
+      <span style={{ color: GRAY, fontSize: 12 }}>
+        next release {saTimeLabel(nextReleaseMs(now, windows))} · {waiting.length ? <b style={{ color: AMBER }}>{waiting.length} waiting behind it</b> : "nothing waiting"}
+      </span>
+      {releaseErr && <span style={{ color: RED, fontSize: 12, fontWeight: 600 }}>{releaseErr}</span>}
+    </div>
+  ) : null;
+
+  const adminBacklog = actorRole === "admin" && waiting.length ? (
+    <div style={{ margin: "14px 0 0" }}>
+      <div style={{ color: GRAY, fontSize: 11.5, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", margin: "0 2px 8px" }}>
+        Accumulating — releases {saTimeLabel(nextReleaseMs(now, windows))} (admin view)
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {[...waiting].sort((a, b) => (parseMs(a.createdAt) || 0) - (parseMs(b.createdAt) || 0)).map((r) => {
+          const p = byId.get(r.productId);
+          const hold = holdInfoByRequestId?.get?.(r.id) || null;
+          const isHold = hold || r.createdFrom?.via === "on_hold";
+          const raised = parseMs(r.createdAt);
+          return (
+            <div key={r.id} style={{ ...GLASS, display: "flex", alignItems: "center", gap: 11, padding: "9px 12px", opacity: 0.85 }}>
+              {p?.photoUrl
+                ? <img src={p.photoUrl} alt="" style={{ width: 34, height: 34, borderRadius: 7, objectFit: "cover", flexShrink: 0 }} />
+                : <span style={{ width: 34, height: 34, borderRadius: 7, background: "rgba(255,255,255,.05)", flexShrink: 0 }} />}
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {p?.name || r.productId}
+                </span>
+                <span style={{ display: "block", fontSize: 11, color: GRAY }}>
+                  size {String(r.size)} ×{r.qty || 1} · raised {fmtSaDateTime(r.createdAt)}
+                  {isHold && <b style={{ color: RED }}> · customer hold{hold?.orderNumber ? ` #${hold.orderNumber}` : r.createdFrom?.orderId ? ` #${r.createdFrom.orderId}` : ""}{hold?.customerName ? ` — ${hold.customerName}` : ""}</b>}
+                </span>
+              </span>
+              {Number.isFinite(raised) && <AgePill elapsedMs={now - raised} raisedIso={r.createdAt} prefix="waiting" />}
+              <button onClick={() => releaseNow(r)} disabled={releasingId !== null}
+                      style={{ border: "1px solid rgba(74,127,255,.5)", background: "rgba(74,127,255,.12)", color: "#cfe0ff",
+                               borderRadius: 9, padding: "7px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
+                               opacity: releasingId !== null ? 0.5 : 1, flexShrink: 0 }}>
+                {releasingId === r.id ? "Releasing…" : "Release now"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  ) : null;
+
   if (!cards.length) {
     return (
       <div style={{ paddingBottom: 30 }}>
         {toggle}
+        {releaseLine}
         {coveredNote}
+        {holdRows}
         <div style={{ ...GLASS, padding: 16, margin: "8px 0", color: GRAY, fontSize: 13 }}>
-          {`No refill requests Central can act on right now. When ${destLabel} drops below its`}
-          approved targets AND Central has the stock, requests appear here automatically.
-          {passiveLine(" In the background: ")}
+          {!windows.disabled && waiting.length ? (
+            <>
+              Nothing to pick right now — requests are batched into release windows.{" "}
+              <b style={{ color: "#cfe0ff" }}>{waiting.length} item{waiting.length === 1 ? "" : "s"}</b> waiting for the{" "}
+              <b style={{ color: "#cfe0ff" }}>{saTimeLabel(nextReleaseMs(now, windows))}</b> release.
+              {passiveLine(" In the background: ")}
+            </>
+          ) : (
+            <>
+              {`No refill requests Central can act on right now. When ${destLabel} drops below its`}
+              approved targets AND Central has the stock, requests appear here automatically.
+              {passiveLine(" In the background: ")}
+            </>
+          )}
         </div>
+        {adminBacklog}
       </div>
     );
   }
@@ -421,7 +535,9 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, li
   return (
     <div style={{ paddingBottom: 30 }}>
       {toggle}
+      {releaseLine}
       {coveredNote}
+      {holdRows}
       <div style={{ color: GRAY, fontSize: 11.5, margin: "6px 2px 10px" }}>
         <b style={{ color: GREEN }}>{cards.length} ready to fulfil</b> — created against live Central stock; if a size
         sold out since, the card withdraws itself on the next scan (≤15 min). Longest-waiting first.
@@ -431,12 +547,21 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, li
       {cards.map((card) => {
         const p = byId.get(card.pid);
         const totalPick = card.reqs.reduce((t, r) => t + pickOf(r), 0);
+        // Hold-origin asks in this card: the row must say a customer is waiting
+        // (owner spec 2026-08-08 — the request row replaced the On hold list).
+        // Join first (order number + name from the live order / durable log);
+        // the createdFrom.via stamp is the fallback so the badge survives even
+        // when the join has nothing to offer.
+        const holdAsks = card.shadow ? [] : card.reqs
+          .map((r) => ({ r, info: holdInfoByRequestId?.get?.(r.id) || null }))
+          .filter((x) => x.info || x.r.createdFrom?.via === "on_hold");
         return (
           <ProductCard key={card.pid}
             photo={p?.photoUrl} name={p?.name || card.pid}
             badges={<>
-              <Badge tone={AMBER}>{card.shadow ? "HUB 2 REFILL · AUTO (SHADOW)" : "HUB 2 REFILL"}</Badge>
+              <Badge tone={AMBER}>{card.shadow ? `${destLabel.toUpperCase()} REFILL · AUTO (SHADOW)` : `${destLabel.toUpperCase()} REFILL`}</Badge>
               {card.auto && !card.shadow && <Badge tone={BLUE_L}>AUTO</Badge>}
+              {holdAsks.length > 0 && <Badge tone={RED}>CUSTOMER HOLD</Badge>}
               {!card.shadow && Number.isFinite(card.raisedMs) && (
                 <AgePill elapsedMs={now - card.raisedMs} raisedIso={card.raisedIso} prefix="waiting" />
               )}
@@ -477,6 +602,18 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, li
                     );
                   })}
                 </div>
+                {holdAsks.length > 0 && (
+                  <div style={{ marginTop: 9, display: "flex", flexDirection: "column", gap: 3 }}>
+                    {holdAsks.map(({ r, info }) => (
+                      <div key={`hold-${r.id}`} style={{ color: "#F87171", fontSize: 11.5, fontWeight: 600 }}>
+                        Customer waiting — size {String(r.size)} held for order
+                        {" "}#{info?.orderNumber || r.createdFrom?.orderId || "?"}
+                        {info?.customerName ? ` · ${info.customerName}` : ""}
+                        {info?.ts ? ` · on hold since ${fmtSaDateTime(info.ts)}` : ""}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {msg[card.pid] && (
                   <div style={{ color: msg[card.pid].includes("failed") ? RED : GREEN, fontSize: 12.5, fontWeight: 600, marginTop: 10 }}>{msg[card.pid]}</div>
                 )}
@@ -506,6 +643,7 @@ export default function Hub2RefillQueue({ products = [], dest = DEFAULT_DEST, li
           </ProductCard>
         );
       })}
+      {adminBacklog}
     </div>
   );
 }
