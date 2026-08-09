@@ -38,9 +38,15 @@ export const crMovementId = (prefix, orderId, createdAt, gen) =>
 // per-request card the two are the same value.
 export const crLineCreatedAt = (item, batch) => item?.createdAt || batch?.createdAt;
 
-// Units still waiting on a card — the header total. Resolved lines don't count.
+// Units still waiting on a card — the header total. Resolved lines don't
+// count, and an EXPLICIT qty of 0 (an engine-resized-to-nothing line) counts
+// as 0 — the 1-fallback is only for absent/invalid quantities (CodeRabbit,
+// PR #339).
 export const pendingUnits = (items) =>
-  (items || []).filter((it) => !it.status).reduce((s, it) => s + (Number(it.qty) || 1), 0);
+  (items || []).filter((it) => !it.status).reduce((s, it) => {
+    const qty = Number(it.qty ?? 1);
+    return s + (Number.isFinite(qty) ? qty : 1);
+  }, 0);
 
 // Merge the OPEN (active) per-request batches into one card per
 // (productId, destShop). Input batches and their item records are never

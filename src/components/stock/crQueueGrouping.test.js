@@ -120,6 +120,15 @@ describe("fulfilling one size must not touch another — id + record independenc
     expect(pendingUnits(card.items)).toBe(1);
   });
 
+  it("an explicit qty of 0 contributes ZERO units — the 1-fallback is only for absent/invalid qty", () => {
+    expect(pendingUnits([
+      { orderId: "a", size: "S", status: null, qty: 0 },          // resized to nothing → 0, not a phantom 1
+      { orderId: "b", size: "M", status: null },                  // absent → 1
+      { orderId: "c", size: "L", status: null, qty: "junk" },     // invalid → 1
+      { orderId: "d", size: "XL", status: null, qty: 3 },
+    ])).toBe(5);
+  });
+
   it("grouping writes nothing: frozen inputs survive, and input batch objects are untouched", () => {
     const S = req({ createdAt: "2026-08-09T08:00:00.000Z", items: [{ orderId: "R001", size: "S" }] });
     const M = req({ createdAt: "2026-08-09T10:30:00.000Z", items: [{ orderId: "R004", size: "M" }] });
