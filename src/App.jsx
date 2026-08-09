@@ -75,6 +75,8 @@ import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositio
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { onHoldRefillPlan, holdReleaseUpdate } from "./components/stock/onHoldRefill";
+import { crMovementId, crLineCreatedAt, mergeActiveCRBatches, pendingUnits } from "./components/stock/crQueueGrouping";
+import { sizeRank as hubSizeRankOf } from "./components/stock/hubSizeRank";
 import { clearSourceResponseCells } from "./components/stock/sourceResponseWrites";
 import { printOrderSlips } from "./print/orderSlip";
 // ── New product taxonomy (31 categories, RTDB-backed registry) ───────────────
@@ -1264,17 +1266,14 @@ const CLOTHING_CR_UNCOUNTED_REASON      = "clothing_cr_uncounted";
 const CLOTHING_CR_UNCOUNTED_UNDO_REASON = "clothing_cr_uncounted_undo";
 
 // IDEMPOTENCY: both directions are keyed on the order line + its CREATION DATE +
-// fulfil GENERATION (clothingRefillGen, bumped by each undo). order.id is only a
-// DAILY counter (001–999, reused every day), so createdAt MUST be threaded in —
-// otherwise two same-numbered Shop-Refill orders on different days collide and
-// the later transfer is silently swallowed as idempotent (stock/order diverge).
-// Same scrub as the dispatch path (RTDB keys can't hold . # $ [ ] / : space).
-// Within one (order,date,gen): a re-tapped Send, a flag-write that failed after
-// the transfer landed, or two devices racing the batch all collapse into ONE
-// ledger movement — while a later undo→re-fulfil cycle (next gen) moves stock
-// again as it should.
-const crMovementId = (prefix, orderId, createdAt, gen) =>
-  `${prefix}_${orderId}_${createdAt || ""}_g${gen}`.replace(/[.#$[\]/\s:]/g, "_");
+// fulfil GENERATION (clothingRefillGen, bumped by each undo). Within one
+// (order,date,gen): a re-tapped Send, a flag-write that failed after the
+// transfer landed, or two devices racing the batch all collapse into ONE ledger
+// movement — while a later undo→re-fulfil cycle (next gen) moves stock again as
+// it should. crMovementId itself lives in crQueueGrouping.js (imported above)
+// so the grouping test pins the REAL id builder; the createdAt each call must
+// thread in is the LINE's own request date — crLineCreatedAt — because a
+// product-grouped card holds lines from several requests (see that module).
 
 async function fireCRRefill({ store, productId, size, qty, from, actorRole, orderId, createdAt, gen = 0 }) {
   return applyMovement({
@@ -6776,7 +6775,10 @@ function RefillTrackingProductCard({ group, onViewPhoto }) {
       if (r.status === "ready") { if (r.sentQty == null) c.sentUnknown = true; else c.sent += r.sentQty; }
     }
     const rank = { pending: 0, ready: 1, oos: 2 };
-    return [...map.values()].sort((a, b) => rank[a.status] - rank[b.status]);
+    // Within a status, sizes read in run order (S, M, L… / footwear numeric),
+    // never in request-arrival or lexical order — same rule as the hub queues.
+    return [...map.values()].sort((a, b) =>
+      (rank[a.status] - rank[b.status]) || (hubSizeRankOf(a.size) - hubSizeRankOf(b.size)));
   }, [group.lines]);
   return (
     <div style={{ background:CARD, border:"1px solid rgba(60,110,255,.45)", borderRadius:RADIUS, boxShadow:"0 0 10px rgba(60,110,255,.12)", overflow:"hidden" }}>
@@ -9164,11 +9166,11 @@ function WarehouseView({ products = [], orders, onExit }) {
     return { dueRefills: due, completedRefills: completed };
   }, [orders, selectedHub, nowTick]);
   const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
-  const CANONICAL_SIZE_ORDER = ["3","4","5","5.5","6","7","8","9","10","11","12","13","S","M","L","XL","XXL","XXXL","4XL","28","30","32","34","36","38","40"];
-  const sizeRank = (s) => {
-    const i = CANONICAL_SIZE_ORDER.indexOf(s);
-    return i === -1 ? 999 : i;
-  };
+  // Size run order — the SHARED hubSizeRank comparator (letters S→4XL in run
+  // order, footwear/waist numerically including half sizes, 12 and 13; never
+  // lexically). Replaces a local indexOf list that dropped unlisted half sizes
+  // (6.5, 9.5…) to an arbitrary tail position.
+  const sizeRank = hubSizeRankOf;
   const { clothingActiveBatches, clothingCompletedBatches } = useMemo(() => {
     const byKey = new Map();
     (orders || []).forEach(o => {
@@ -9183,10 +9185,13 @@ function WarehouseView({ products = [], orders, onExit }) {
       // Pine CRs on hub3 (placedAtHub, written by placeRefillRequests via
       // CR_HUB_BY_UNIVERSE; o.hub fallback covers legacy hub2-era orders).
       if ((o.placedAtHub || o.hub || "hub2") !== selectedHub) return;
-      // destShop in the key: PE and Trophy requests must NEVER share a card —
-      // warehouse staff always know exactly which store a batch is for (and the
-      // engine stamps one createdAt per store per scan, so its lines group into
-      // one card per product per store).
+      // This byKey layer is PER REQUEST (product, store, createdAt) — it is
+      // what History records and what resolution rolls up over. The OPEN queue
+      // is then merged down to one card per (product, store) by
+      // mergeActiveCRBatches below, so a size requested later joins the
+      // product's existing card. destShop stays in every key: PE and Trophy
+      // requests must NEVER share a card — warehouse staff always know exactly
+      // which store a batch is for.
       const key = `${o.productId}__${o.destShop || ""}__${o.createdAt}`;
       if (!byKey.has(key)) {
         byKey.set(key, {
@@ -9211,6 +9216,10 @@ function WarehouseView({ products = [], orders, onExit }) {
       b.items.push({
         orderId: o.id,
         size: o.size,
+        // The line's OWN request date — movement ids embed it (crLineCreatedAt),
+        // and a product-grouped card mixes lines from several requests, so the
+        // card-level createdAt can no longer stand in for it.
+        createdAt: o.createdAt,
         qty: o.qty || 1,
         status: o.clothingRefillStatus || null,
         refilledQty: o.clothingRefilledQty ?? null,   // units actually sent (partial-aware)
@@ -9253,10 +9262,15 @@ function WarehouseView({ products = [], orders, onExit }) {
         active.push(batch);
       }
     });
-    // Active: newest first (within DayCollapsible's bucket logic).
-    active.sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt));
+    // OPEN queue: one card per (product, destination shop) — a size requested
+    // later joins the product's existing card instead of starting a new row
+    // (owner spec 2026-08-09). Presentation only: item records pass through by
+    // reference, and History below stays per-request. The tab re-sorts these
+    // oldest-first; a merged card's createdAt is its oldest ask.
+    const mergedActive = mergeActiveCRBatches(active);
+    mergedActive.sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt));
     completed.sort((a, b) => tsMs(b.resolvedAt) - tsMs(a.resolvedAt));
-    return { clothingActiveBatches: active, clothingCompletedBatches: completed };
+    return { clothingActiveBatches: mergedActive, clothingCompletedBatches: completed };
   }, [orders, nowTick, selectedHub]);
   // CR fulfil (Approach B): firing a real hub2→store transfer needs a stock-capable
   // role (applyMovement is rule-gated on stockRole), plus live Hub 2 on-hand to cap
@@ -9823,11 +9837,11 @@ function WarehouseView({ products = [], orders, onExit }) {
         // Send after a transient failure completes the rest without double-moving stock.
         let sentCounted = 0, sentUncounted = 0, legErr = null;
         if (countedQty > 0) {
-          const r = await runCRLeg(() => fireCRRefill({ store, productId: batch.productId, size: it.size, qty: countedQty, from, actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }));
+          const r = await runCRLeg(() => fireCRRefill({ store, productId: batch.productId, size: it.size, qty: countedQty, from, actorRole: crActorRole, orderId: it.orderId, createdAt: crLineCreatedAt(it, batch), gen: it.gen }));
           if (r.ok) sentCounted = countedQty; else legErr = r;
         }
         if (uncountedQty > 0) {
-          const r = await runCRLeg(() => fireCRUncounted({ store, productId: batch.productId, size: it.size, qty: uncountedQty, actorRole: crActorRole, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen }));
+          const r = await runCRLeg(() => fireCRUncounted({ store, productId: batch.productId, size: it.size, qty: uncountedQty, actorRole: crActorRole, orderId: it.orderId, createdAt: crLineCreatedAt(it, batch), gen: it.gen }));
           if (r.ok) sentUncounted = uncountedQty; else legErr = r;
         }
         const sent = sentCounted + sentUncounted;
@@ -9887,11 +9901,11 @@ function WarehouseView({ products = [], orders, onExit }) {
         }
         let legFail = null;
         if (countedQ > 0) {
-          const r = await runCRLeg(() => reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: countedQ, hub: it.placedAtHub || "hub2", orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }));
+          const r = await runCRLeg(() => reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: countedQ, hub: it.placedAtHub || "hub2", orderId: it.orderId, createdAt: crLineCreatedAt(it, batch), gen: it.gen, actorRole: crActorRole }));
           if (!r.ok) legFail = r;
         }
         if (uncountedQ > 0 && !legFail) {
-          const r = await runCRLeg(() => reverseCRUncounted({ store: batch.destShop, productId: batch.productId, size: it.size, qty: uncountedQ, orderId: it.orderId, createdAt: batch.createdAt, gen: it.gen, actorRole: crActorRole }));
+          const r = await runCRLeg(() => reverseCRUncounted({ store: batch.destShop, productId: batch.productId, size: it.size, qty: uncountedQ, orderId: it.orderId, createdAt: crLineCreatedAt(it, batch), gen: it.gen, actorRole: crActorRole }));
           if (!r.ok) legFail = r;
         }
         if (legFail) {
@@ -10842,12 +10856,16 @@ function SizeStatusChips({ items }) {
   );
 }
 
-// One CR request = ONE COMPACT card (accordion). Collapsed: small photo (tap →
-// lightbox), name, destination shop, and a coverage summary chip — many fit on
-// screen, scannable like the Clothing-Sold list. Tap to expand THAT card into the
-// per-size fulfil/reject steppers + Send; the parent keeps one card open at a time.
-// Send fires a real hub2→store transfer per fulfilled size (onFulfill →
-// fulfillCRBatch, idempotent per line+generation).
+// ONE COMPACT card PER PRODUCT per destination shop (accordion) — the Open
+// queue arrives here already merged by mergeActiveCRBatches, so its size lines
+// may span several requests raised at different times; each line keeps its own
+// orderId/createdAt/status and its own stepper + reject. Collapsed: small photo
+// (tap → lightbox), name, destination shop, and a sizes · units summary chip —
+// many fit on screen, scannable like the Clothing-Sold list. Tap to expand THAT
+// card into the per-size fulfil/reject steppers + Send; the parent keeps one
+// card open at a time. Send fires a real hub2→store transfer per fulfilled size
+// (onFulfill → fulfillCRBatch, idempotent per line+date+generation). History
+// cards still hold exactly one request.
 function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onViewPhoto, products, fmtTime, open, onToggle }) {
   const [qtys, setQtys]       = useState({});   // { orderId: qty } (only for touched lines)
   const [touched, setTouched] = useState({});   // { orderId: true }
@@ -10928,7 +10946,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
           </div>
         </div>
         <span style={{ flexShrink:0, fontSize:10.5, fontWeight:700, color:BLUE_L, background:"rgba(60,110,255,.1)", border:"1px solid rgba(60,110,255,.3)", borderRadius:999, padding:"3px 9px", whiteSpace:"nowrap" }}>
-          {pending.length} size{pending.length === 1 ? "" : "s"}
+          {pending.length} size{pending.length === 1 ? "" : "s"} · {pendingUnits(pending)} unit{pendingUnits(pending) === 1 ? "" : "s"}
           {resolved.length > 0 ? ` · ${resolved.length} done` : ""}
         </span>
         <span style={{ color:"#4A7FFF", transform: open ? "rotate(90deg)" : "none", transition:"transform .15s", fontSize:13, flexShrink:0 }}>▸</span>
