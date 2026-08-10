@@ -77,7 +77,15 @@ export async function inspectPrintedBarcode(code, productId = null, size = ONE_S
     return { kind: PRINTED_INVALID, code: String(code ?? ""), codes: [], indexCodes: [] };
   }
   const codes = indexCodesFor(code);
-  const owners = await readBarcodeOwners(codes);
+  let owners;
+  try {
+    owners = await readBarcodeOwners(codes);
+  } catch (err) {
+    // Tagged so callers can tell "could not reach the index" from "the index
+    // said no" — two failures with two different instructions for the operator.
+    err.printedBarcodeStage = "inspect";
+    throw err;
+  }
   return { ...printedBarcodeOutcome(owners, productId, size), indexCodes: codes };
 }
 
@@ -171,6 +179,9 @@ export function registrationRefusalText(reg, code) {
            `which an admin must reconcile before it can be trusted`;
   }
   if (reg.kind === PRINTED_INVALID) return `“${code}” is not a valid printed barcode`;
+  if (reg.kind === "unavailable") {
+    return "the barcode index could not be reached — try again in a moment, nothing was changed";
+  }
   return "the barcode index refused it";
 }
 
@@ -206,8 +217,18 @@ export async function attachPrintedBarcode({ productId, code, size = ONE_SIZE })
   try {
     reg = await registerPrintedBarcode(productId, code, size, extraUpdates);
   } catch (err) {
-    // The commit was rejected as a whole — nothing landed anywhere.
-    return { ok: false, kind: "denied", indexed: false, reason: String(err?.message || err) };
+    // ── COULD NOT REACH IT vs WAS NOT ALLOWED ─────────────────────────────
+    // A failure to READ the index is not a refusal, and telling the operator
+    // they lack stock permission when the connection dropped sends them to
+    // ask an admin for something they already have. The two carry different
+    // instructions: retry, versus get permission. (CodeRabbit, PR #340.)
+    const kind = err && err.printedBarcodeStage === "inspect" ? "unavailable" : "denied";
+    return {
+      ok: false, kind, indexed: false,
+      reason: kind === "unavailable"
+        ? `the barcode index could not be reached (${err?.message || err}) — try again in a moment, nothing was changed`
+        : `it could not be written (${err?.message || err}) — you may not have stock permission`,
+    };
   }
   if (!reg.ok) {
     return { ok: false, kind: reg.kind, indexed: false, reason: registrationRefusalText(reg, code), verdict: reg };

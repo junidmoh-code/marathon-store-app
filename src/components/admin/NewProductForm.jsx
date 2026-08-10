@@ -203,7 +203,14 @@ export default function NewProductForm({
         <div>
           <Label required hint="the code already printed on the box">Barcode</Label>
           <Panel>
+            {/* KEYED ON THE CATEGORY. The capture invalidates in-flight work
+                when its productId changes, but in Add Product that is always
+                null — so a perfume→perfume category change (which DOES clear
+                the answer in selectCategory) would let a capture started
+                before the switch land afterwards. Remounting drops it.
+                (CodeRabbit, PR #340.) */}
             <PrintedBarcodeCapture
+              key={form.categoryKey}
               productId={null}
               products={products}
               value={form.printedBarcode || null}

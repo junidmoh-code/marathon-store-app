@@ -18,6 +18,7 @@ import {
   PRINTED_FREE,
   PRINTED_ALREADY,
   PRINTED_CONFLICT,
+  PRINTED_SIZE_MISMATCH,
 } from "./eanBarcode";
 
 // The three bottles already on the shelf.
@@ -153,6 +154,28 @@ describe("printedBarcodeOutcome — what an already-indexed code means", () => {
     // productId is null before the product exists — so anyone holding the code
     // is by definition somebody else.
     expect(printedBarcodeOutcome([{ code: OUD_MOOD, productId: "pOther" }], null).kind).toBe(PRINTED_CONFLICT);
+  });
+
+  it("SIZE MISMATCH when our OWN row points at another size", () => {
+    // It resolves — to the wrong stock cell. "Already registered" would be a
+    // lie with a scan behind it. Pinned here, purely, not only through the
+    // Firebase store test. (CodeRabbit, PR #340.)
+    const out = printedBarcodeOutcome([{ code: OUD_MOOD, productId: "p1", size: "50ml" }], "p1");
+    expect(out.kind).toBe(PRINTED_SIZE_MISMATCH);
+    expect(out.indexedSize).toBe("50ml");
+    expect(out.expectedSize).toBe("_");
+  });
+
+  it("treats an OMITTED size as one-size, exactly as the POS resolver does", () => {
+    expect(printedBarcodeOutcome([{ code: OUD_MOOD, productId: "p1" }], "p1").kind).toBe(PRINTED_ALREADY);
+    expect(printedBarcodeOutcome([{ code: OUD_MOOD, productId: "p1", size: null }], "p1").kind).toBe(PRINTED_ALREADY);
+    expect(printedBarcodeOutcome([{ code: OUD_MOOD, productId: "p1", size: "" }], "p1").kind).toBe(PRINTED_ALREADY);
+  });
+
+  it("normalises BOTH sides — a null expectedSize is not a mismatch against \"_\"", () => {
+    const row = [{ code: OUD_MOOD, productId: "p1", size: "_" }];
+    expect(printedBarcodeOutcome(row, "p1", null).kind).toBe(PRINTED_ALREADY);
+    expect(printedBarcodeOutcome(row, "p1", "").kind).toBe(PRINTED_ALREADY);
   });
 
   it("a conflict on the TWIN form outranks a free primary form", () => {

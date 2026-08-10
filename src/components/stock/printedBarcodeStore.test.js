@@ -22,6 +22,8 @@ let raceOnWrite = new Map();
 // Makes a /products write fail on its own — the offline / permission case for
 // the ALREADY backfill, which is the one branch that is not a single commit.
 let failProductWrites = false;
+// Makes every READ fail — the connection is down. Distinct from a refusal.
+let failReads = false;
 
 function getPath(path) {
   let node = store;
@@ -43,7 +45,10 @@ function setPath(path, value) {
 
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path || "" }),
-  get: async (node) => ({ val: () => getPath(node.path), exists: () => getPath(node.path) != null }),
+  get: async (node) => {
+    if (failReads) throw new Error("network unreachable");
+    return { val: () => getPath(node.path), exists: () => getPath(node.path) != null };
+  },
   // ── THE RULES, ENFORCED — AND ATOMICALLY ────────────────────────────────
   // RTDB multi-path update() is ALL-OR-NOTHING and evaluates each path's rules
   // independently. This fake reproduces both: every path is validated first
@@ -100,6 +105,7 @@ beforeEach(() => {
   denyWrites = new Set();
   raceOnWrite = new Map();
   failProductWrites = false;
+  failReads = false;
   // The products these tests register against must EXIST — the live .validate
   // on /barcodes/$code requires it, and the fake above enforces it.
   setPath("products/pPerfume", { id: "pPerfume", name: "Oud Mood" });
@@ -147,6 +153,20 @@ describe("losing the read→write race is DIAGNOSED, not misreported", () => {
     expect(out.reason).toMatch(/already registered to another product/);
     expect(out.reason).toMatch(/Merge Products/);
     expect(getPath("products/pPerfume/printedBarcode")).toBe(null);
+  });
+
+  it("an UNREACHABLE index is not reported as a permission problem", async () => {
+    // Telling an operator they lack stock permission when the connection
+    // dropped sends them to ask an admin for something they already have.
+    // Retry versus get-permission are different instructions.
+    // (CodeRabbit, PR #340.)
+    failReads = true;
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD });
+    expect(out.ok).toBe(false);
+    expect(out.kind).toBe("unavailable");
+    expect(out.indexed).toBe(false);
+    expect(out.reason).toMatch(/could not be reached/i);
+    expect(out.reason).toMatch(/nothing was changed/i);
   });
 
   it("a GENUINE denial still reports as denied — the two are not collapsed", async () => {

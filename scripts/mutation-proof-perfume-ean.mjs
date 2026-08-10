@@ -320,11 +320,19 @@ function runTests(files) {
     // guard failure — the same misclassification this replaced, one layer
     // down. ERROR is loud and stops the run, so it fails safe rather than
     // silently crediting a mutation. (Kimi review, PR #340.)
-    if (/Tests\s+\d+\s+failed|Test Files\s+\d+\s+failed/.test(out)) return "FAIL";
+    // ONLY the executed-test tally counts. "Test Files N failed" is also
+    // printed when a file fails to COLLECT or TRANSFORM — a mutation that
+    // introduces a syntax error would otherwise be credited with proving a
+    // guard no assertion ever ran. (CodeRabbit, PR #340.)
+    if (/Tests\s+\d+\s+failed/.test(out)) return "FAIL";
     return `ERROR(${(out.trim().split("\n").pop() || "no output").slice(0, 120)})`;
   }
 }
 
+// The restored run re-executes the same suites against byte-identical source,
+// so within one harness run its result is deterministic per test-set. Several
+// mutations share a test list; caching halves the wall time. (CodeRabbit.)
+const restoredCache = new Map();
 const results = [];
 for (const m of MUTATIONS) {
   const original = readFileSync(m.file, "utf8");
@@ -355,7 +363,12 @@ for (const m of MUTATIONS) {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
   try {
-    writeFileSync(m.file, original.replace(m.from, m.to));
+    // A FUNCTION replacement is inserted verbatim: `$&`, `$'` and `$n` inside
+    // m.to keep no special meaning. No mutation uses them today, but one that
+    // did would silently write different bytes than intended, the suite would
+    // still fail, and the guard would be reported PROVEN against source that
+    // was never produced. (CodeRabbit, PR #340.)
+    writeFileSync(m.file, original.replace(m.from, () => m.to));
     mutated = runTests(m.tests);
   } finally {
     restore();
@@ -370,7 +383,9 @@ for (const m of MUTATIONS) {
     console.error(`\n*** ${m.file} DID NOT RESTORE — restore it from git before doing anything else. ***`);
     process.exit(2);
   }
-  restored = runTests(m.tests);
+  const cacheKey = [...m.tests].sort().join("|");
+  if (!restoredCache.has(cacheKey)) restoredCache.set(cacheKey, runTests(m.tests));
+  restored = restoredCache.get(cacheKey);
   results.push({ ...m, mutated, restored });
   const verdict = mutated === "FAIL" && restored === "PASS" ? "PROVEN" : "*** NOT PROVEN ***";
   console.log(`${m.id}  mutated=${mutated}  restored=${restored}  ${verdict}  — ${m.guard}`);

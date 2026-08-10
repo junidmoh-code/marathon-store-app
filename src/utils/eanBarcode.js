@@ -173,6 +173,12 @@ export const PRINTED_INVALID = "invalid";
  */
 export function printedBarcodeOutcome(owners, productId, expectedSize = "_") {
   const rows = Array.isArray(owners) ? owners : [];
+  // BOTH sides go through the same normaliser. Comparing a raw expectedSize
+  // against a normalised row size means a caller passing null or "" for an
+  // unsized product reports a false mismatch against a row that says "_" —
+  // the default hides it today, but the asymmetry is easy to trip on a later
+  // call site. (CodeRabbit, PR #340.)
+  const wanted = normaliseIndexSize(expectedSize);
   // A conflict outranks everything else: if ANY form of this code is owned
   // elsewhere, registering the other forms would spread one duplicate into two.
   const clash = rows.find((r) => r && r.productId && r.productId !== productId);
@@ -182,13 +188,13 @@ export function printedBarcodeOutcome(owners, productId, expectedSize = "_") {
   // and treating it as success would leave the POS deducting the wrong cell
   // while the UI showed a tidy green tick.
   const wrongSize = rows.find((r) => r && r.productId === productId && r.productId
-    && normaliseIndexSize(r.size) !== expectedSize);
+    && normaliseIndexSize(r.size) !== wanted);
   if (wrongSize) {
     return {
       kind: PRINTED_SIZE_MISMATCH,
       code: wrongSize.code,
       indexedSize: normaliseIndexSize(wrongSize.size),
-      expectedSize,
+      expectedSize: wanted,
     };
   }
 

@@ -5434,10 +5434,9 @@ function AdminView({ products, orders, onExit }) {
             `photograph the barcode again to finish the record; it will report as already registered.`
           );
         }
-        const failure = attach.ok || attach.indexed ? null
-          : attach.kind === "denied"
-            ? `it could not be written (${attach.reason}) — you may not have stock permission`
-            : attach.reason;
+        // attachPrintedBarcode words every outcome — an unreachable index, a
+        // permission denial and a refusal each need a different instruction.
+        const failure = attach.ok || attach.indexed ? null : attach.reason;
         if (failure) {
           // Mint a shop code so the product is scannable — and VERIFY it,
           // because ensureBarcodes swallows its own index-write errors by
@@ -6389,7 +6388,13 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
       // step: the print sheet mints a shop code on open (ensureBarcodes), which
       // would both undo the capture and hand the operator a sticker to put over
       // a working barcode. Distribution is still offered; only printing is not.
-      const usesPrintedBarcode = typeof product.printedBarcode === "string" && !!product.printedBarcode;
+      // Suppress the label ONLY when the index confirms the code really does
+      // resolve to this product at one-size. A record whose code is missing
+      // from the index, points at another product, or points at another size
+      // is NOT scannable, and withholding the print sheet would leave the
+      // stock with no working barcode at all. `indexWarning` is exactly that
+      // check, already run on open. (CodeRabbit, PR #340.)
+      const usesPrintedBarcode = !!printedCode && !indexWarning;
       setLastReceived(usesPrintedBarcode ? null : { productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems });
       // Receive into Central → offer initial distribution first; print follows.
       if (recvLoc === "central") setDistribOpen(true);
@@ -6718,7 +6723,8 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           // opening one mints a shop code via ensureBarcodes.
           onClose={() => {
             setDistribOpen(false);
-            if (!product.printedBarcode) setPrintOpen(true);
+            // Same rule: only a code the index CONFIRMS earns the no-label path.
+            if (!printedCode || indexWarning) setPrintOpen(true);
           }}
         />
       )}
