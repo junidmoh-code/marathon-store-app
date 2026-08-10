@@ -887,6 +887,22 @@ describe("the transfer gate reads the real record shape", () => {
     expect(transferBlocks({ status: "sent", lines: { [pid]: { _: 2 } }, received: { [pid]: { _: 1 } } }, pid)).toBe(null);
   });
 
+  it("never names a size it scraped out of a node it could not read", () => {
+    // The malformed shape's own key is "sizes". Under the letter-only size test
+    // that was harmless — "sizes" is not a letter size, so it contributed
+    // nothing. Widening the test to "anything that is not the sentinel" (which
+    // caps required: 28, 55 and 4XL are all real sizes) makes "sizes" itself
+    // look like one, and the gate reports `carrying size sizes` about a record
+    // nobody parsed. It blocks either way, so nothing is unsafe — but an
+    // operator sent to clear "size sizes" off a transfer has been told a
+    // confident falsehood, and the fix is that a node is only harvested if it
+    // was understood.
+    const msg = transferBlocks({ status: "sent", lines: { [pid]: { sizes: { M: 2 } } } }, pid);
+    expect(msg).toMatch(/shape this gate does not understand/);
+    expect(msg).not.toMatch(/size sizes/);
+    expect(msg).not.toMatch(/carrying size/);
+  });
+
   it("blocks a `lines` node nested differently — an empty structural read is not a clean bill", () => {
     // These carry `lines`, so an "only when both nodes are absent" fail-safe
     // skipped the mention check and returned "does not block".
