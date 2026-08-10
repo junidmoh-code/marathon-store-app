@@ -16,6 +16,12 @@
 
 import { legacyFor, sizesOf, catByKey } from "./productTaxonomy.js";
 import { normaliseStyleCode, formatStyleCodeForDisplay } from "./styleCode.js";
+import { normalisePrintedBarcode } from "./eanBarcode.js";
+
+// A printed manufacturer code is only ever accepted through the ONE gate — the
+// right length AND its own check digit. Same function the capture UI uses, so
+// the two can never disagree about what a valid code is.
+const isPrintedBarcode = (v) => normalisePrintedBarcode(v).ok;
 
 export const VALID_HUBS = ["hub1", "hub2", "hub3"];
 
@@ -152,6 +158,26 @@ export function buildNewProduct(registry, form, extras = {}) {
   if (typeof extras.labelModelName === "string" && extras.labelModelName.trim()) {
     product.labelModelName = extras.labelModelName.trim().slice(0, 64);
   }
+  // ── THE MANUFACTURER'S OWN PRINTED BARCODE (perfume) ──────────────────────
+  // Perfume boxes carry a real EAN-13 from the factory, so we capture theirs
+  // instead of minting ours. Two things are written for it, and they are NOT
+  // the same thing:
+  //   • THIS field — the product's copy, so the detail page can show it, search
+  //     can find it, and a later capture can tell "already registered" from
+  //     "not captured yet". Nothing resolves a scan through it.
+  //   • /barcodes/{code} → { productId, size:"_" } — the reverse index the POS
+  //     actually scans against. Written after the product exists, by
+  //     components/stock/printedBarcodeStore.js, because the rule on that path
+  //     requires the referenced product to exist and is CREATE-ONLY.
+  // Validated here as a last line of defence rather than trusted: the value has
+  // already passed normalisePrintedBarcode at capture, and a record that
+  // somehow carries an unchecked number would put a code on a product that no
+  // physical box matches. OMITTED when absent — never null (see the 2026-08-06
+  // undefined/omission outage above).
+  if (typeof extras.printedBarcode === "string" && isPrintedBarcode(extras.printedBarcode)) {
+    product.printedBarcode = extras.printedBarcode;
+  }
+
   // Dominant colours off a photo of the shoe — an ORDERING signal for the
   // sibling-colourway picker, never a selector (utils/dominantColours.js).
   if (Array.isArray(extras.dominantColours) && extras.dominantColours.length) {
