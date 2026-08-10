@@ -49,6 +49,7 @@
 
 import { createRequire } from "module";
 import { writeFileSync, readFileSync, statSync } from "fs";
+import os from "os";
 import { tmpdir } from "os";
 import { join } from "path";
 import { setServerTimeOffsetMs, serverNowIso } from "../src/utils/serverTime.js";
@@ -76,6 +77,9 @@ const io = {
 
 // A product that moved this recently is in active use at a till — skip it.
 const RECENT_ACTIVITY_MS = Number(process.env.RECENT_ACTIVITY_MINUTES || 15) * 60 * 1000;
+
+// Set once the execute-run lock is taken; called on every exit path.
+let releaseLock = null;
 
 // Same credential assertion as the pre-flight probe — fail early and legibly.
 function hasPrivilegedCredential(app) {
@@ -113,7 +117,7 @@ function hasPrivilegedCredential(app) {
   // productId → most recent movement instant (and a count of unreadable stamps)
   // for the recent-activity gate — see movementRecency for why the unreadable
   // case must block rather than read as quiet.
-  const { lastMs: lastMovementMs, unreadable: unreadableStamp } = movementRecency(movements);
+  const { lastMs: lastMovementMs, unreadable: unreadableStamp } = movementRecency(movements, { nowMs });
 
   // ── scope ──────────────────────────────────────────────────────────────────
   let scope = Object.entries(products)
@@ -158,6 +162,42 @@ function hasPrivilegedCredential(app) {
   } catch (e) {
     console.error(`ABORT: rollback snapshot unreadable — ${e.message}. Nothing has been written.`);
     process.exit(1);
+  }
+
+  // ── EXECUTE-ONLY: ONE RUN AT A TIME ───────────────────────────────────────
+  // Two overlapping --execute processes are the one way this migration can
+  // double-apply a positive leg: both read the ledger, neither sees the other's
+  // movement yet, and the IN leg into "_" has no negative floor to refuse the
+  // second write — 6 units could land 12, with the single ledger record
+  // overwritten so nothing records that it happened twice. The in-loop
+  // idempotency re-check narrows it; this closes it, because there is never a
+  // second process. (Sonnet re-review, PR #343.)
+  //
+  // The lock lives in RTDB, not on disk: two runs on different machines still
+  // hit the same database. A stale lock (a crashed run) is reported with its
+  // age and can be cleared deliberately — never auto-stolen, because "the other
+  // run looks old" is exactly the reasoning that produces a double-apply.
+  const LOCK = "_migrations/beanieOneSizeCollapse/runLock";
+  let lockHeld = false;
+  if (EXECUTE) {
+    const existing = await io.read(LOCK);
+    if (existing && existing.releasedAt == null) {
+      const ageMin = Math.round((nowMs - (Date.parse(existing.startedAt) || nowMs)) / 60000);
+      console.error(`\nABORT: another --execute run holds the lock (pid ${existing.pid} on ${existing.host}, started ${existing.startedAt}, ${ageMin} min ago).`);
+      console.error("Two concurrent runs can double-apply a positive movement leg. If that run");
+      console.error(`crashed, clear the lock deliberately once you are sure it is dead:\n  firebase database:remove /${LOCK} --project marathon-club`);
+      process.exit(1);
+    }
+    await io.update({ [LOCK]: { startedAt: nowIso, pid: process.pid, host: os.hostname(), releasedAt: null } });
+    lockHeld = true;
+    const release = async () => {
+      if (!lockHeld) return;
+      lockHeld = false;
+      try { await io.update({ [`${LOCK}/releasedAt`]: new Date().toISOString() }); } catch { /* best effort */ }
+    };
+    process.on("exit", () => { if (lockHeld) console.error(`\n⚠ run lock still held — clear it: firebase database:remove /${LOCK} --project marathon-club`); });
+    for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, async () => { await release(); process.exit(130); });
+    releaseLock = release;
   }
 
   // ── execute-only global gate ───────────────────────────────────────────────
@@ -253,8 +293,8 @@ function hasPrivilegedCredential(app) {
       gates.push(`moved ${Math.round((nowMs - lastMove) / 60000)} min ago (${new Date(lastMove).toISOString()}) — active at a till; re-run when it is quiet`);
     }
     const unreadable = unreadableStamp.get(pid);
-    if (unreadable) {
-      gates.push(`${unreadable} ledger movement(s) for this product have an unreadable timestamp — cannot prove it is quiet, so it is not migrated`);
+    if (unreadable?.length) {
+      gates.push(`${unreadable.length} recent ledger movement(s) have an unreadable timestamp (${unreadable.slice(0, 3).join(", ")}${unreadable.length > 3 ? ", …" : ""}) — cannot prove this product is quiet, so it is not migrated`);
     }
     for (const [rid, r] of Object.entries(refillRequestsNow)) {
       if (r && r.status === "open" && r.productId === pid && REAL_SIZE.test(String(r.size || ""))) gates.push(`open refill request ${rid} (size ${r.size})`);
@@ -394,10 +434,11 @@ function hasPrivilegedCredential(app) {
     }
     console.log(`  network totals for the ${baselinePids.size} products this run touched ${totalsOk ? "UNCHANGED" : "CHANGED — investigate before anything else"}: ${Object.entries(totalsAfter).sort().map(([l, q]) => `${l}=${q}`).join("  ")}`);
     console.log(`  (measured against the fresh per-product baselines, not the startup snapshot)`);
-    if (!totalsOk) process.exit(1);
+    if (!totalsOk) { await releaseLock?.(); process.exit(1); }
   } else {
     console.log("  DRY RUN — nothing written except the rollback snapshot above.");
   }
+  await releaseLock?.();
   const bad = results.filter((r) => r.status !== "DONE" && r.status !== "ALREADY DONE" && r.status !== "PLANNED");
   process.exit(bad.length ? 1 : 0);
-})().catch((e) => { console.error(e); process.exit(1); });
+})().catch(async (e) => { console.error(e); await releaseLock?.(); process.exit(1); });

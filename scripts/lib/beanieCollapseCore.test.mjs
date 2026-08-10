@@ -21,7 +21,7 @@
 import { describe, it, expect } from "vitest";
 import {
   applyMovementAdmin, planStep1, planStep2, planStep3, step2Done, verifyProduct,
-  assertDrained, legIds, orderBlocks, transferBlocks, movementRecency, isInScope, isUnexpectedSubcategory,
+  assertDrained, legIds, orderBlocks, transferBlocks, movementRecency, pushKeyMs, isInScope, isUnexpectedSubcategory,
 } from "./beanieCollapseCore.mjs";
 
 // ── fake RTDB ────────────────────────────────────────────────────────────────
@@ -648,9 +648,37 @@ describe("the recent-activity gate's input", () => {
       b: { productId: "pB", appliedAt: "2026-08-10T11:00:00.000Z" },
       c: { productId: "pB", ts: "2026-08-10T10:00:00.000Z" },
       d: { productId: "pOther", appliedAt: "2026-08-10T12:00:00.000Z" },
-    });
+    }, { nowMs: Date.parse("2026-08-10T12:00:00.000Z") });
     expect(lastMs.get("pB")).toBe(Date.parse("2026-08-10T11:00:00.000Z"));
     expect(unreadable.size).toBe(0);
+  });
+
+  it("windows the lookback, so old debris cannot gate a product forever", () => {
+    // A push id encodes its own creation time, which is how a record with an
+    // unusable timestamp field can still be dated. Old debris is ignored;
+    // recent debris still blocks.
+    // Real ids from the live ledger, decoded against their own createdAt:
+    //   -OxNIloqoe_3VnGVZWi4 → 2026-07-12T21:50:07Z (old, outside a 45d window
+    //                          measured from the 2026-11 "now" below)
+    //   -OzfaJNGf-A9sOcSP2l1 → 2026-08-10T12:15:18Z
+    const oldId = "-OxNIloqoe_3VnGVZWi4";
+    const freshId = "-OzfaJNGf-A9sOcSP2l1";
+    expect(new Date(pushKeyMs(oldId)).toISOString()).toBe("2026-07-12T21:50:07.670Z");
+    expect(new Date(pushKeyMs(freshId)).toISOString()).toBe("2026-08-10T12:15:18.545Z");
+    const nowMs = Date.parse("2026-08-20T10:00:00.000Z");     // 45d window starts 2026-07-06
+    const { unreadable } = movementRecency({
+      [oldId]: { productId: "pB", appliedAt: "garbage" },
+      [freshId]: { productId: "pB", appliedAt: "garbage" },
+    }, { nowMs, windowDays: 20 });                            // window starts 2026-07-31
+    expect(unreadable.get("pB")).toEqual([freshId]);          // the old one dropped out
+  });
+
+  it("drops readable movements older than the window", () => {
+    const nowMs = Date.parse("2026-08-10T10:00:00.000Z");
+    const { lastMs } = movementRecency({
+      a: { productId: "pB", appliedAt: "2026-01-01T00:00:00.000Z" },   // ~7 months old
+    }, { nowMs });
+    expect(lastMs.has("pB")).toBe(false);
   });
 
   it("counts an unreadable stamp instead of letting the product read as quiet", () => {
@@ -660,18 +688,19 @@ describe("the recent-activity gate's input", () => {
       a: { productId: "pB", appliedAt: "not-a-date" },
       b: { productId: "pB" },                                  // no stamp at all
       c: { productId: "pB", ts: "" },
-    });
+    }, { nowMs: Date.parse("2026-08-10T12:00:00.000Z") });
     expect(lastMs.has("pB")).toBe(false);
-    expect(unreadable.get("pB")).toBe(3);
+    // Not push ids, so they cannot be dated out of the window — they block.
+    expect(unreadable.get("pB")).toEqual(["a", "b", "c"]);
   });
 
   it("a readable stamp alongside an unreadable one still counts the unreadable one", () => {
     const { lastMs, unreadable } = movementRecency({
       a: { productId: "pB", appliedAt: "2026-08-10T09:00:00.000Z" },
       b: { productId: "pB", appliedAt: "garbage" },
-    });
+    }, { nowMs: Date.parse("2026-08-10T12:00:00.000Z") });
     expect(lastMs.get("pB")).toBe(Date.parse("2026-08-10T09:00:00.000Z"));
-    expect(unreadable.get("pB")).toBe(1);
+    expect(unreadable.get("pB")).toEqual(["b"]);
   });
 });
 

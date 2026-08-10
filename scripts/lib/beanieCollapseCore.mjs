@@ -156,20 +156,64 @@ export function orderBlocks(order, pid, nowMs) {
 // a gate whose entire job is to stop a race with a till. "I cannot tell when
 // this last moved" is not "it has not moved", so unreadable stamps are counted
 // separately and the caller blocks on them. (CodeRabbit, PR #343.)
-export function movementRecency(movements) {
+// WINDOWED, and it must be. An unreadable stamp blocks its product, and over an
+// UNBOUNDED ledger that block never expires: one piece of malformed debris from
+// any point in a product's life would gate it forever, with no way to clear it —
+// unlike the 24h undo window and the 15-minute activity window, which both
+// self-clear. It fails safe, but a permanent unexplainable gate is its own trap.
+// Reading only the recent slice keeps the gate answering the question it is
+// actually asking ("is this product busy RIGHT NOW"), and the ids of the
+// offending movements come back so the message can name them.
+// (Sonnet re-review, PR #343.)
+export function movementRecency(movements, { nowMs = Date.now(), windowDays = 45 } = {}) {
   const lastMs = new Map();
   const unreadable = new Map();
-  for (const m of Object.values(movements || {})) {
+  const cutoff = nowMs - windowDays * 86400000;
+  for (const [id, m] of Object.entries(movements || {})) {
     if (!m || !m.productId) continue;
     const raw = m.appliedAt || m.ts;
     const ts = raw ? Date.parse(raw) : NaN;
     if (!Number.isFinite(ts)) {
-      unreadable.set(m.productId, (unreadable.get(m.productId) || 0) + 1);
+      // An unreadable stamp cannot be placed in time, so it cannot be excluded
+      // by the window either — but the ledger key is push-ordered, so an id
+      // below the window's key is old debris rather than live activity.
+      // Without that discriminator every malformed record would be permanent.
+      const idMs = pushKeyMs(id);
+      if (idMs !== null && idMs < cutoff) continue;
+      const seen = unreadable.get(m.productId) || [];
+      seen.push(id);
+      unreadable.set(m.productId, seen);
       continue;
     }
+    if (ts < cutoff) continue;
     if (ts > (lastMs.get(m.productId) || 0)) lastMs.set(m.productId, ts);
   }
   return { lastMs, unreadable };
+}
+
+// Firebase push ids encode their creation time in the FIRST 8 characters, in a
+// custom base-64 whose alphabet sorts lexicographically by time. Decoding it
+// dates a record whose own timestamp field is unusable. Returns null for any id
+// that is not a push key (the migration's own deterministic ids, for instance).
+//
+// The leading "-" is not a separator — it is the alphabet's ZERO character,
+// which is simply what the timestamp's high bits decode to at present-day
+// magnitudes. Skipping it shifts every digit and dates 2026 records to the year
+// 5500s; the first version of this function did exactly that. Calibrated
+// against live ledger ids: -OxNIloqoe_3VnGVZWi4 → 2026-07-12T21:50:07Z, which
+// matches that record's own createdAt to the second.
+const PUSH_CHARS = "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+export function pushKeyMs(id) {
+  if (typeof id !== "string" || id.length < 8) return null;
+  let ms = 0;
+  for (let i = 0; i < 8; i++) {
+    const v = PUSH_CHARS.indexOf(id[i]);
+    if (v < 0) return null;
+    ms = ms * 64 + v;
+  }
+  // A decode that lands outside any plausible ledger era means this was not a
+  // push key at all (it just happened to use legal characters).
+  return ms > 946684800000 && ms < 4102444800000 ? ms : null;   // 2000 … 2100
 }
 
 // ── TRANSFERS KEY THEIR SIZES, THEY DO NOT LABEL THEM ────────────────────────
@@ -258,9 +302,6 @@ export async function applyMovementAdmin(io, movement, { nowIso }) {
   if (!movement.movementId) return { ok: false, reason: "movement_id_required" };
   const mvId = assertSafeSegment(movement.movementId, "movementId");
 
-  const existing = await io.read(`stock_movements/${mvId}`);
-  if (existing) return { ok: true, movementId: mvId, idempotent: true };
-
   const loc = movement.to || movement.from;
   const delta = movement.to ? +Number(movement.qty) : -Number(movement.qty);
   if (!loc) return { ok: false, reason: "missing_location" };
@@ -273,6 +314,18 @@ export async function applyMovementAdmin(io, movement, { nowIso }) {
   };
 
   for (let attempt = 1; attempt <= CONFLICT_RETRIES; attempt++) {
+    // IDEMPOTENCY IS CHECKED INSIDE THE LOOP, not once before it. Checked only
+    // at the top, two overlapping callers could both pass it before either
+    // wrote — and for a POSITIVE leg (the IN into "_") there is no negative
+    // floor to refuse the second one, so a 6-unit move could land 12 with the
+    // single ledger record silently overwritten, erasing the evidence. Inside
+    // the loop the check is re-run on every attempt, immediately before the
+    // guarded write. (Sonnet re-review, PR #343. The CLI's own single-process
+    // sequential loop cannot race itself; the run lock in the CLI is what
+    // stops two processes, and this is the belt to that pair of braces.)
+    const existing = await io.read(`stock_movements/${mvId}`);
+    if (existing) return { ok: true, movementId: mvId, idempotent: true };
+
     const cell = await io.read(path);
     const curQty = cell && typeof cell.qty === "number" ? cell.qty : 0;
     const newQty = curQty + delta;
