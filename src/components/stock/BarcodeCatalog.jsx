@@ -196,18 +196,20 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     // records it. Shown on screen too. Only for the Xprinter transport.
     // On FAILURE the full block goes on screen (the remote machine has no console);
     // on success we stay quiet and only record to RTDB.
-    const recordXprinterDiag = async (error) => {
+    // Takes the ERROR OBJECT, not a string — the failing step and the browser's
+    // DOMException name only survive on the object.
+    const recordXprinterDiag = async (err) => {
       if (transport !== "xprinter") return;
       const d = getXprinterDiag();
-      if (error) setDiagText(getXprinterDiagText(error));
-      try { await set(ref(database, "printer_diag/xprinter"), { ...(d || {}), error: error || null }); }
+      if (err) setDiagText(getXprinterDiagText(err));
+      try { await set(ref(database, "printer_diag/xprinter"), { ...(d || {}), error: err ? String(err?.message || err) : null }); }
       catch { /* diagnostic only */ }
     };
     let conn;
     try { conn = await connectTransport(transport); }
     catch (e) {
       setBusy(false);
-      await recordXprinterDiag(String(e?.message || e));
+      await recordXprinterDiag(e);
       return flash("err", `Couldn't connect to the printer: ${String(e?.message || e)}`);
     }
     await recordXprinterDiag(null);

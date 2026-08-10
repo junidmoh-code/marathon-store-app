@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  findBulkOut, describeUsbDevice, formatUsbDiagnostics, openUsbPrinter, sendBulk, NO_BULK_OUT,
+  findBulkOut, describeUsbDevice, formatUsbDiagnostics, openUsbPrinter, sendBulk, failureOf, NO_BULK_OUT,
 } from "./usbDiscovery";
 
 // ─── FAKE USBDevice SHAPES ────────────────────────────────────────────────────
@@ -15,9 +15,13 @@ const alt = (alternateSetting, interfaceClass, endpoints) =>
 const iface = (interfaceNumber, alternates) => ({ interfaceNumber, alternates });
 const cfg = (configurationValue, interfaces) => ({ configurationValue, interfaces });
 
+// A DOMException as Chrome actually throws it: the NAME is the diagnosis.
+const domError = (name, message) => Object.assign(new Error(message), { name });
+
 // activeValue: the configurationValue reported as active, or null for "macOS gave
 // us no active configuration" (the common case on the failing iMac).
-function fakeDevice({ configurations, activeValue = null, claimFailures = 0, opened = false }) {
+// throwOn: { open|selectConfiguration|claimInterface|selectAlternateInterface: Error }
+function fakeDevice({ configurations, activeValue = null, claimFailures = 0, opened = false, throwOn = {} }) {
   let claimAttempts = 0;
   const dev = {
     productName: "XP-350B", manufacturerName: "Xprinter", serialNumber: "SN123",
@@ -28,20 +32,25 @@ function fakeDevice({ configurations, activeValue = null, claimFailures = 0, ope
     configuration: activeValue == null ? null : configurations.find(c => c.configurationValue === activeValue) || null,
     calls: [],
     claimAttempts: () => claimAttempts,
-    async open() { dev.calls.push(["open"]); dev.opened = true; },
+    async open() { dev.calls.push(["open"]); if (throwOn.open) throw throwOn.open; dev.opened = true; },
     async selectConfiguration(v) {
       dev.calls.push(["selectConfiguration", v]);
+      if (throwOn.selectConfiguration) throw throwOn.selectConfiguration;
       const found = configurations.find(c => c.configurationValue === v);
       // Chrome rejects an unsupported configuration value with NotFoundError —
       // the fake must too, or "just try 1" looks like it works.
-      if (!found) throw new Error("NotFoundError: The configuration value provided is not supported by the device.");
+      if (!found) throw domError("NotFoundError", "The configuration value provided is not supported by the device.");
       dev.configuration = found;
     },
     async claimInterface(n) {
       dev.calls.push(["claimInterface", n]);
-      if (claimAttempts++ < claimFailures) throw new Error("Unable to claim interface — the device is in use.");
+      if (throwOn.claimInterface) throw throwOn.claimInterface;
+      if (claimAttempts++ < claimFailures) throw domError("NetworkError", "Unable to claim interface.");
     },
-    async selectAlternateInterface(i, a) { dev.calls.push(["selectAlternateInterface", i, a]); },
+    async selectAlternateInterface(i, a) {
+      dev.calls.push(["selectAlternateInterface", i, a]);
+      if (throwOn.selectAlternateInterface) throw throwOn.selectAlternateInterface;
+    },
   };
   return dev;
 }
@@ -187,6 +196,37 @@ describe("openUsbPrinter — open, configure, claim, select alternate", () => {
     expect(callNames(device)).not.toContain("selectAlternateInterface");
   });
 
+  // The configuration that gets selected must be the one CONTAINING the chosen
+  // interface — "the first one declared" is not good enough, and a claim against
+  // the wrong configuration is exactly the failure mode we are fixing.
+  it("selects the configuration CONTAINING the chosen interface, not merely the first declared", async () => {
+    const device = fakeDevice({
+      activeValue: null,                                        // macOS: nothing active
+      configurations: [
+        // First declared — value 3, and it has NO bulk OUT at all.
+        cfg(3, [iface(0, [alt(0, 0x03, [ep("in", "interrupt", 1)])])]),
+        // The real printer lives here: a different configurationValue entirely.
+        cfg(7, [iface(2, [alt(0, 0x07, [ep("in", "bulk", 1), ep("out", "bulk", 4)])])]),
+      ],
+    });
+    const conn = await openUsbPrinter(device, { sleep: noSleep });
+
+    const configCalls = device.calls.filter(c => c[0] === "selectConfiguration").map(c => c[1]);
+    // Whatever it probes on the way, the configuration it ENDS on is 7 — the one
+    // holding interface 2 — and it is left active on the device.
+    expect(configCalls[configCalls.length - 1]).toBe(7);
+    expect(device.configuration.configurationValue).toBe(7);
+    expect(conn).toMatchObject({ configurationValue: 7, interfaceNumber: 2, alternateSetting: 0, endpointNumber: 4 });
+
+    // ...and the claim happened AFTER that configuration was made active, so it
+    // claimed an interface that actually exists in the live configuration.
+    const claimAt = device.calls.findIndex(c => c[0] === "claimInterface");
+    const cfg7At = device.calls.findIndex(c => c[0] === "selectConfiguration" && c[1] === 7);
+    expect(claimAt).toBeGreaterThan(cfg7At);
+    expect(device.calls[claimAt][1]).toBe(2);
+    expect(device.claimAttempts()).toBe(1);                     // claim succeeded first try
+  });
+
   it("switches configuration when the winning endpoint lives in another one", async () => {
     const device = fakeDevice({
       activeValue: 1,
@@ -240,6 +280,72 @@ describe("openUsbPrinter — open, configure, claim, select alternate", () => {
     const text = formatUsbDiagnostics(err.diag, err.message);
     expect(text).toMatch(/interface 1 alt 0 class 255\/1\/2: in\/bulk\/2/);
     expect(text).toMatch(/chosen: NONE/);
+  });
+});
+
+// ─── THE RAW EXCEPTION AND THE STEP THAT THREW ────────────────────────────────
+// "NetworkError: Unable to claim interface" and "SecurityError" mean completely
+// different things, and knowing WHICH call threw is half the diagnosis. Both must
+// survive into the on-screen text — the remote machine gives us nothing else.
+describe("every failure names its step and the browser's own exception", () => {
+  const printerCfg = [cfg(1, [iface(0, [alt(0, 0x07, [ep("out", "bulk", 1)])])])];
+  const altCfg = [cfg(1, [iface(0, [alt(0, 0x07, []), alt(1, 0x07, [ep("out", "bulk", 2)])])])];
+
+  const cases = [
+    { step: "open", name: "SecurityError", message: "Access denied.", device: () => fakeDevice({ activeValue: 1, configurations: printerCfg, throwOn: { open: domError("SecurityError", "Access denied.") } }) },
+    { step: "selectConfiguration", name: "NotFoundError", message: "No such configuration.", device: () => fakeDevice({ activeValue: null, configurations: printerCfg, throwOn: { selectConfiguration: domError("NotFoundError", "No such configuration.") } }) },
+    { step: "claimInterface", name: "NetworkError", message: "Unable to claim interface.", device: () => fakeDevice({ activeValue: 1, configurations: printerCfg, throwOn: { claimInterface: domError("NetworkError", "Unable to claim interface.") } }) },
+    { step: "selectAlternateInterface", name: "InvalidStateError", message: "Interface not claimed.", device: () => fakeDevice({ activeValue: 1, configurations: altCfg, throwOn: { selectAlternateInterface: domError("InvalidStateError", "Interface not claimed.") } }) },
+  ];
+
+  for (const c of cases) {
+    it(`tags a ${c.name} thrown by ${c.step}`, async () => {
+      const device = c.device();
+      const err = await openUsbPrinter(device, { sleep: noSleep }).catch(e => e);
+      expect(failureOf(err)).toEqual({ step: c.step, name: c.name, message: c.message });
+      // Survives String(err.message) — which is what every catch in the print flow does.
+      expect(String(err.message)).toContain(c.name);
+      expect(String(err.message)).toContain(c.message);
+      // ...and reads out of the on-screen block.
+      const text = formatUsbDiagnostics(err.diag, err);
+      expect(text).toContain(`failed step: ${c.step}`);
+      expect(text).toContain(`raw error: ${c.name}: ${c.message}`);
+      expect(text).toMatch(/0x1234\/0x5678/);          // the device map is still there
+    });
+  }
+
+  it("keeps the DOMException name in the claim message even after the macOS hint is added", async () => {
+    const device = fakeDevice({ activeValue: 1, claimFailures: 2, configurations: printerCfg });
+    const err = await openUsbPrinter(device, { sleep: noSleep }).catch(e => e);
+    expect(err.message).toContain("NetworkError: Unable to claim interface.");
+    expect(err.message).toMatch(/Printers & Scanners/);
+    expect(failureOf(err)).toMatchObject({ step: "claimInterface", name: "NetworkError" });
+    expect(formatUsbDiagnostics(err.diag, err)).toContain("failed step: claimInterface");
+  });
+
+  it("labels a device with no bulk OUT as a discovery failure, not a phantom exception", async () => {
+    const device = fakeDevice({ activeValue: 1, configurations: [cfg(1, [iface(0, [alt(0, 0x03, [ep("in", "interrupt", 1)])])])] });
+    const err = await openUsbPrinter(device, { sleep: noSleep }).catch(e => e);
+    expect(failureOf(err)).toMatchObject({ step: "discovery" });
+    expect(formatUsbDiagnostics(err.diag, err)).toContain("failed step: discovery");
+  });
+
+  it("tags a transferOut rejection and a non-ok transfer status", async () => {
+    const thrower = { async transferOut() { throw domError("NetworkError", "A transfer error has occurred."); } };
+    const rejected = await sendBulk(thrower, 1, new Uint8Array(4)).catch(e => e);
+    expect(failureOf(rejected)).toEqual({ step: "transferOut", name: "NetworkError", message: "A transfer error has occurred." });
+    expect(String(rejected.message)).toContain("NetworkError");
+
+    const staller = { async transferOut() { return { status: "stall", bytesWritten: 0 }; } };
+    const stalled = await sendBulk(staller, 1, new Uint8Array(4)).catch(e => e);
+    expect(failureOf(stalled)).toMatchObject({ step: "transferOut", name: "status stall" });
+    expect(formatUsbDiagnostics(null, stalled)).toContain("failed step: transferOut");
+  });
+
+  it("does not double-wrap a step that is already tagged", async () => {
+    const device = fakeDevice({ activeValue: 1, configurations: printerCfg, throwOn: { open: domError("SecurityError", "Access denied.") } });
+    const err = await openUsbPrinter(device, { sleep: noSleep }).catch(e => e);
+    expect(err.message).toBe("open failed — SecurityError: Access denied.");   // not "open failed — open failed — …"
   });
 });
 

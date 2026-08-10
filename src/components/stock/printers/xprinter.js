@@ -16,7 +16,7 @@
 // This is a SEPARATE transport — the Phomemo M110 Bluetooth path is untouched.
 
 import { code128Modules } from "../barcode";
-import { PRINTER_CLASS, TX_CHUNK, openUsbPrinter, sendBulk, formatUsbDiagnostics } from "./usbDiscovery";
+import { PRINTER_CLASS, TX_CHUNK, openUsbPrinter, sendBulk, formatUsbDiagnostics, failureOf } from "./usbDiscovery";
 
 const ENCODER = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
 
@@ -37,7 +37,9 @@ let disconnectWired = false;
 let lastXprinterDiag = null;
 export function getXprinterDiag() { return lastXprinterDiag; }
 // The same map as a copyable block of text — what the UI shows and what the
-// operator photographs / copies when the printer won't connect.
+// operator photographs / copies when the printer won't connect. Pass the ERROR
+// OBJECT, not a string: that is what carries the failing step and the browser's
+// own DOMException name ("NetworkError", "SecurityError", …).
 export function getXprinterDiagText(error = null) { return formatUsbDiagnostics(lastXprinterDiag, error); }
 
 export function isXprinterSupported() {
@@ -224,8 +226,11 @@ export async function printXprinter(items, conn = null) {
     if (!printed) return { ok: false, error: "Nothing to print." };
     return { ok: true, printed, bytes };
   } catch (err) {
-    const error = String(err?.message || err);
-    return { ok: false, error, diag: getXprinterDiagText(error) };
+    // Fold the failing step into the stored map too, so the RTDB record and the
+    // on-screen block agree on WHERE it broke, not just that it broke.
+    const failure = failureOf(err);
+    if (lastXprinterDiag && failure) lastXprinterDiag = { ...lastXprinterDiag, failure };
+    return { ok: false, error: String(err?.message || err), diag: getXprinterDiagText(err) };
   }
   // NO release/close — keep the device claimed so the next batch reuses it (BUG-2 parity
   // with Phomemo). The cache is cleared by the USB 'disconnect' listener.

@@ -34,6 +34,42 @@ const num = (v) => (typeof v === "number" ? v : null);
 const str = (v) => (typeof v === "string" && v ? v : "");
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ── WHICH STEP THREW, AND WHAT THE BROWSER ACTUALLY SAID ─────────────────────
+// Chrome's WebUSB rejections are DOMExceptions whose NAME is the whole diagnosis:
+// "NetworkError: Unable to claim interface" (something else owns it) is a
+// completely different problem from "SecurityError" (permission) or
+// "NotFoundError" (wrong configuration value). The name is lost the moment
+// anything does String(err.message), which every catch in the print flow does —
+// so we fold BOTH the step and the raw "Name: message" into the message text
+// itself, and keep them as fields for the structured diagnostic.
+
+export const STEPS = ["open", "selectConfiguration", "claimInterface", "selectAlternateInterface", "transferOut"];
+
+const rawName = (e) => str(e?.name) || (e instanceof Error ? "Error" : "");
+const rawMessage = (e) => str(e?.message) || String(e ?? "");
+const rawLabel = (e) => { const n = rawName(e), m = rawMessage(e); return n && m ? `${n}: ${m}` : (n || m || "unknown error"); };
+
+// The failure record that rides on the error and into the on-screen block.
+export function failureOf(err) {
+  if (!err) return null;
+  if (err.usbFailure) return err.usbFailure;
+  return { step: str(err.step) || "", name: rawName(err), message: rawMessage(err) };
+}
+
+// Run one WebUSB call, tagging any rejection with the step that produced it.
+async function step(name, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e?.usbFailure) throw e;                      // already tagged — don't double-wrap
+    const err = new Error(`${name} failed — ${rawLabel(e)}`);
+    err.step = name;
+    err.usbFailure = { step: name, name: rawName(e), message: rawMessage(e) };
+    err.cause = e;
+    throw err;
+  }
+}
+
 // Every configuration the device declares. `configurations` is descriptor data and
 // is readable whether or not one is active; fall back to the active one alone if a
 // (non-Chrome / fake) device doesn't expose the list.
@@ -79,9 +115,10 @@ export function findBulkOut(device) {
 // Full structured description of the device — the raw material for the on-screen
 // diagnostic. All values are null/""-normalised (never undefined) so the caller can
 // hand it straight to Firebase set() without an undefined blowing the write up.
-export function describeUsbDevice(device, { hadActiveConfiguration = null, chosen = null, at = null } = {}) {
+export function describeUsbDevice(device, { hadActiveConfiguration = null, chosen = null, at = null, failure = null } = {}) {
   return {
     at: at ?? null,
+    failure: failure ?? null,
     productName: str(device?.productName),
     manufacturerName: str(device?.manufacturerName),
     serialNumber: str(device?.serialNumber),
@@ -116,8 +153,20 @@ export function describeUsbDevice(device, { hadActiveConfiguration = null, chose
 // Flatten a diagnostic into a block of plain text that can be READ OFF A PHOTO of
 // the screen or copied out of the app. This is the only channel we have to the
 // machines that fail — they are remote and their console is not reachable.
+// `error` may be an Error (preferred — its step and DOMException name survive) or
+// a plain string.
 export function formatUsbDiagnostics(diag, error = null) {
-  if (!diag) return error ? `error: ${error}` : "no device information captured";
+  const isErr = error && typeof error === "object";
+  const failure = (isErr ? failureOf(error) : null) || diag?.failure || null;
+  const errorText = error == null ? null : (isErr ? rawMessage(error) : String(error));
+  const failureLines = [];
+  if (failure?.step) failureLines.push(`failed step: ${failure.step}`);
+  // The browser's own words, unwrapped — "NetworkError: Unable to claim interface"
+  // says something a rewritten message cannot.
+  if (failure?.name || failure?.message) {
+    failureLines.push(`raw error: ${failure.name && failure.message ? `${failure.name}: ${failure.message}` : (failure.name || failure.message)}`);
+  }
+  if (!diag) return [...failureLines, errorText ? `error: ${errorText}` : null].filter(Boolean).join("\n") || "no device information captured";
   const cls = (n) => (typeof n === "number" ? n : "?");
   const out = [];
   out.push(`${diag.productName || "(no product name)"} — ${diag.manufacturerName || "(no manufacturer)"} ${diag.vendorId}/${diag.productId}`);
@@ -138,13 +187,15 @@ export function formatUsbDiagnostics(diag, error = null) {
     ? `chosen: config ${diag.chosen.configurationValue} · interface ${diag.chosen.interfaceNumber} · alt ${diag.chosen.alternateSetting} · bulk OUT endpoint ${diag.chosen.endpointNumber} (class ${cls(diag.chosen.interfaceClass)})`
     : "chosen: NONE — no bulk OUT endpoint anywhere on this device");
   if (diag.at) out.push(`at ${diag.at}`);
-  if (error) out.push(`error: ${error}`);
+  out.push(...failureLines);
+  if (errorText) out.push(`error: ${errorText}`);
   return out.join("\n");
 }
 
-function fail(message, diag) {
+function fail(message, diag, failure = null) {
   const err = new Error(message);
   err.diag = diag;
+  if (failure) { err.step = failure.step; err.usbFailure = failure; }
   return err;
 }
 
@@ -153,49 +204,65 @@ function fail(message, diag) {
 // ORDER NOTE: the brief said "selectAlternateInterface … then claimInterface", but
 // WebUSB rejects selectAlternateInterface with InvalidStateError on an unclaimed
 // interface, so the claim MUST come first. Same two calls, spec-mandated order.
+//
+// Every rejection leaves here tagged with the STEP that produced it and the
+// browser's own DOMException name — that pair is the whole diagnosis on a machine
+// we cannot open a console on.
 export async function openUsbPrinter(device, { sleep = wait, claimRetryMs = CLAIM_RETRY_MS, at = null } = {}) {
-  if (!device.opened) await device.open();
-
-  // macOS commonly reports NO active configuration — on its own that made the old
-  // path find nothing. Use the first configurationValue the device declares rather
-  // than assuming 1.
-  const hadActiveConfiguration = device.configuration != null;
-  if (!hadActiveConfiguration) {
-    const first = allConfigurations(device)[0]?.configurationValue;
-    await device.selectConfiguration(typeof first === "number" ? first : 1);
-  }
-
-  const chosen = findBulkOut(device);
-  const diag = describeUsbDevice(device, { hadActiveConfiguration, chosen, at });
-  if (!chosen) throw fail(NO_BULK_OUT, diag);
-
-  // The winner may live in a configuration that isn't the active one.
-  if (device.configuration?.configurationValue !== chosen.configurationValue) {
-    await device.selectConfiguration(chosen.configurationValue);
-  }
+  // Captured as we go so a failure at ANY step still describes the device.
+  let hadActiveConfiguration = null, chosen = null;
+  const snapshot = (failure) => describeUsbDevice(device, { hadActiveConfiguration, chosen, at, failure });
 
   try {
-    await device.claimInterface(chosen.interfaceNumber);
-  } catch (first) {
-    // macOS can hold the interface for a moment after a replug / driver teardown.
-    await sleep(claimRetryMs);
-    try {
-      await device.claimInterface(chosen.interfaceNumber);
-    } catch (e) {
-      const msg = String(e?.message || e);
-      const inUse = /in use|claim|access|denied|busy/i.test(msg);
-      throw fail(
-        `Couldn't claim the printer${inUse ? " — the interface is in use" : ""} (${msg}). ` +
-        `On macOS the system usually owns the printer: remove it from System Settings ▸ Printers & Scanners ` +
-        `(and quit any app using it), then retry.`,
-        diag
-      );
-    }
-  }
+    if (!device.opened) await step("open", () => device.open());
 
-  // Only alternate 0 is active by default; anything else has to be selected.
-  if (chosen.alternateSetting !== 0) {
-    await device.selectAlternateInterface(chosen.interfaceNumber, chosen.alternateSetting);
+    // macOS commonly reports NO active configuration — on its own that made the old
+    // path find nothing. Use the first configurationValue the device declares rather
+    // than assuming 1.
+    hadActiveConfiguration = device.configuration != null;
+    if (!hadActiveConfiguration) {
+      const first = allConfigurations(device)[0]?.configurationValue;
+      await step("selectConfiguration", () => device.selectConfiguration(typeof first === "number" ? first : 1));
+    }
+
+    chosen = findBulkOut(device);
+    if (!chosen) {
+      const failure = { step: "discovery", name: "", message: NO_BULK_OUT };
+      throw fail(NO_BULK_OUT, snapshot(failure), failure);
+    }
+
+    // The winner may live in a configuration that isn't the active one. Select the
+    // configuration that CONTAINS the chosen interface, whichever one that is.
+    if (device.configuration?.configurationValue !== chosen.configurationValue) {
+      await step("selectConfiguration", () => device.selectConfiguration(chosen.configurationValue));
+    }
+
+    try {
+      await step("claimInterface", () => device.claimInterface(chosen.interfaceNumber));
+    } catch (firstAttempt) {
+      // macOS can hold the interface for a moment after a replug / driver teardown.
+      await sleep(claimRetryMs);
+      try {
+        await step("claimInterface", () => device.claimInterface(chosen.interfaceNumber));
+      } catch (e) {
+        const failure = failureOf(e);
+        const inUse = /in use|claim|access|denied|busy|NetworkError/i.test(`${failure.name} ${failure.message}`);
+        throw fail(
+          `Couldn't claim the printer${inUse ? " — the interface is in use" : ""} (${failure.name}: ${failure.message}). ` +
+          `On macOS the system usually owns the printer: remove it from System Settings ▸ Printers & Scanners ` +
+          `(and quit any app using it), then retry.`,
+          snapshot(failure), failure
+        );
+      }
+    }
+
+    // Only alternate 0 is active by default; anything else has to be selected.
+    if (chosen.alternateSetting !== 0) {
+      await step("selectAlternateInterface", () => device.selectAlternateInterface(chosen.interfaceNumber, chosen.alternateSetting));
+    }
+  } catch (e) {
+    if (!e.diag) e.diag = snapshot(failureOf(e));    // fail() already attached one
+    throw e;
   }
 
   return {
@@ -204,7 +271,7 @@ export async function openUsbPrinter(device, { sleep = wait, claimRetryMs = CLAI
     interfaceNumber: chosen.interfaceNumber,
     alternateSetting: chosen.alternateSetting,
     endpointNumber: chosen.endpointNumber,
-    diag,
+    diag: snapshot(null),     // the map as it stands on a good connection
   };
 }
 
@@ -223,14 +290,18 @@ export async function sendBulk(device, endpointNumber, bytes, chunkSize = TX_CHU
   let sent = 0;
   for (let i = 0; i < bytes.length; i += chunkSize) {
     const chunk = bytes.slice(i, i + chunkSize);
-    const res = await device.transferOut(endpointNumber, chunk);
+    // A rejection here (NetworkError, InvalidStateError…) is tagged "transferOut".
+    const res = await step("transferOut", () => device.transferOut(endpointNumber, chunk));
     const status = res?.status;
     if (status !== "ok") {
       const hint = STATUS_HINT[status];
-      throw new Error(
+      const err = new Error(
         `USB transfer returned "${status || "no status"}" on endpoint ${endpointNumber}` +
         `${hint ? ` — ${hint}` : ""} (${sent} of ${bytes.length} bytes sent).`
       );
+      err.step = "transferOut";
+      err.usbFailure = { step: "transferOut", name: `status ${status || "none"}`, message: hint || "non-ok transfer status" };
+      throw err;
     }
     sent += typeof res?.bytesWritten === "number" ? res.bytesWritten : chunk.length;
   }
