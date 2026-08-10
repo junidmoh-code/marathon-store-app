@@ -7,7 +7,7 @@ only, so **no hosting deploy is needed or wanted**.
 
 State as at the census of 2026-08-10:
 
-```
+```text
 scope 301 products — 134 beanies + 167 caps
 units 1358          central=700  hub2=262  marathon-pe=396  marathon-pine=0
 already one-size    68 (47 beanies, 21 caps) — verify as no-ops
@@ -146,11 +146,24 @@ collapse that product rather than strand the units.
 
 ## 4. Execute
 
+Run it as **two passes**, each with its own snapshot and report, matching the
+two-session plan above. Without `--kind` a single run migrates every eligible
+beanie AND cap, which is not what the session plan says:
+
 ```bash
-SNAPSHOT_PATH=~/headwear-collapse-rollback-$(date +%Y%m%d-%H%M).json \
-REPORT_JSON=~/headwear-collapse-report-$(date +%Y%m%d-%H%M).json \
-node scripts/collapse-one-size-headwear.mjs --execute
+# PASS 1 — beanies
+SNAPSHOT_PATH=~/headwear-beanie-rollback-$(date +%Y%m%d-%H%M).json \
+REPORT_JSON=~/headwear-beanie-report-$(date +%Y%m%d-%H%M).json \
+node scripts/collapse-one-size-headwear.mjs --kind=beanie --execute
+
+# PASS 2 — caps (the arithmetic half; run it on its own day)
+SNAPSHOT_PATH=~/headwear-cap-rollback-$(date +%Y%m%d-%H%M).json \
+REPORT_JSON=~/headwear-cap-report-$(date +%Y%m%d-%H%M).json \
+node scripts/collapse-one-size-headwear.mjs --kind=cap --execute
 ```
+
+Each pass has its own rollback snapshot, so a cap problem can be reverted
+without touching the beanies.
 
 The rollback snapshot is written **before any write** and verified readable, or
 the run aborts. Keep both files until the verification below passes.
@@ -280,6 +293,23 @@ firebase database:remove /_migrations/headwearOneSizeCollapse/runLock --project 
 ```
 
 A dry run never takes the lock, so it always works regardless.
+
+## Two things worth knowing before you run
+
+**A resumed run completes half-applied pairs from the LEDGER, not from the
+cell.** If a run is interrupted between a pair's OUT and IN legs and the cell
+then moves — a till oversell, a warehouse receive — the resume still credits the
+quantity the OUT actually removed. Stock that arrived AFTER a pair was spent is
+reported as `STRANDED` and refuses to collapse that product until you move it to
+`"_"` by hand; it is never quietly swept in under a spent movement id.
+
+**Merging negatives concentrates them, and the live `/stock` rule cares.** The
+rule allows a negative cell only when `lastType` is `sold`/`return`/
+`transfer_in`/`transfer_out`, so a client RECEIVE that would leave a cell still
+below zero is rejected. That is already true per cell today; after the collapse
+a location's negatives sit in ONE `"_"` cell instead of several sized ones, so
+clearing it takes one larger receive rather than several small ones. Reconciling
+the 9 negative cells before the run avoids the question entirely.
 
 ## The negative cells
 

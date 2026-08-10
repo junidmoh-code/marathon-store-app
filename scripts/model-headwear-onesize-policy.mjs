@@ -202,10 +202,19 @@ const minQtyFor = (target) => Math.ceil(target / 2);
   console.log(`  post-collapse on hand: central=${centralHeld}  ${HUB}=${hubHeld}  ${SHOPS.map((s) => `${s}=${shopHeld[s]}`).join("  ")}`);
 
   // ── the proposed rows (IN MEMORY, then to a payload FILE) ──────────────────
-  // ARMING WIDTH: only where the location already carries the product. Arming
-  // every product everywhere would create rows for products a location has
-  // never seen, which is demand invented by a script rather than observed.
-  const carriedAt = (loc) => carriedBy(loc, "presence");
+  // ARMING WIDTH — AN OWNER DECISION, DEFAULTED NOT ASSUMED. The brief says
+  // "every beanie and cap"; this defaults to "every one the location already
+  // carries", which is narrower. The difference is real: 69 products are held
+  // only at central, and under CARRIED they get no row anywhere and are never
+  // pulled forward. Arming them anyway would create demand at a shop that has
+  // never seen that design, which is the same shape as the PE/Trophy clothing
+  // contamination. Both numbers are reported below so the choice is made on
+  // evidence; WIDTH=ALL switches it.
+  const WIDTH = (process.env.WIDTH || "CARRIED").toUpperCase();
+  if (WIDTH !== "CARRIED" && WIDTH !== "ALL") { console.error(`WIDTH must be CARRIED or ALL (got ${JSON.stringify(WIDTH)})`); process.exit(1); }
+  const carriedAt = (loc) => (WIDTH === "ALL" ? headwear : carriedBy(loc, "presence"));
+  console.log(`\n  ARMING WIDTH: ${WIDTH}${WIDTH === "CARRIED" ? "  (only where the location already carries the design — WIDTH=ALL arms every design everywhere)" : "  (EVERY design at every armed location, including ones that location has never stocked)"}`);
+  console.log(`  CARRIED would write ${carriedBy(HUB, "presence").length + SHOPS.reduce((t, s2) => t + carriedBy(s2, "presence").length, 0)} rows; ALL would write ${headwear.length * (1 + SHOPS.length)} rows.`);
   const payload = {};                      // FLAT path → row (multi-path update shape)
   const proposed = { [HUB]: {}, ...Object.fromEntries(SHOPS.map((s) => [s, {}])) };
   const row = (target, reorderPoint) => ({
