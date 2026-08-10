@@ -106,7 +106,7 @@ function ownMovementIds(snap) {
 
   // EXECUTE ONLY. A dry run writes nothing, so it must not take a lock — and
   // it exits before the write, so it would never release one either.
-  let LOCK = "_migrations/beanieOneSizeCollapse/runLock";
+  const LOCK = "_migrations/beanieOneSizeCollapse/runLock";
   if (EXECUTE) {
     // ── TAKE THE MIGRATION'S OWN LOCK — do not merely peek at it ──────────────
     // A rollback --execute overlapping a migration --execute produces interleaved
@@ -128,7 +128,6 @@ function ownMovementIds(snap) {
     // duration of its run. That makes the exclusion symmetric: a migration
     // starting mid-rollback is refused by the lock the rollback is holding, which
     // a stale read could never do. (Sonnet review, PR #344.)
-    LOCK = "_migrations/beanieOneSizeCollapse/runLock";
     const { committed, snapshot: lockSnap } = await db.ref(LOCK).transaction((cur) => {
       if (cur && cur.releasedAt == null) return;              // abort: someone holds it
       return { startedAt: new Date().toISOString(), pid: process.pid, host: hostname(), releasedAt: null, holder: "rollback" };
