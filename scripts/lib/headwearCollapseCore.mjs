@@ -24,7 +24,7 @@
 //   io.read(path)      → Promise<value|null>
 //   io.update(updates) → Promise<void>   ONE atomic multi-path update from root
 //
-// The live CLI (scripts/collapse-one-size-beanies.mjs) binds these to the Admin
+// The live CLI (scripts/collapse-one-size-headwear.mjs) binds these to the Admin
 // SDK; the tests bind them to a fake that reproduces real RTDB semantics —
 // including the one that invalidates naive fakes: RTDB DELETES a child whose
 // written value is null, an empty object or an empty array.
@@ -568,6 +568,7 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
       // only plan a fresh pair when its own ids are untouched. A cell holding
       // units whose pair is already spent is STRANDED — reported, never planned,
       // and assertDrained refuses to collapse the product until it is cleared.
+      let resolvedByResume = false;
       const [out, inMv, negOut, negIn] = await Promise.all([
         io.read(`stock_movements/${ids.out}`),
         io.read(`stock_movements/${ids.in}`),
@@ -583,12 +584,32 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
             reason: `Collapse to one-size: receive from size ${size}` } },
         ] });
       }
+      // The mirrored pair's closing leg raises the SIZED cell by exactly the
+      // shortage its OUT leg already debited from "_". That is only correct
+      // while the cell still holds that shortage. If something settled it in
+      // the gap — a receive against the oversold size — the shortage has
+      // already been made good once, and crediting it again MINTS stock:
+      //
+      //   S −1, "_" 5.  negOut → "_" 4.  a receive of 1 → S 0.
+      //   resume negIn → S +1, so the network holds 5 where it held 4.
+      //
+      // Unlike the positive pair, whose IN leg credits units that are genuinely
+      // owed whatever the source cell now reads, this leg's correctness depends
+      // on the cell. So it resumes only when the cell is still exactly as the
+      // mirror left it, and otherwise refuses and says so.
       if (negOut && !negIn) {
         const n = Number(negOut.qty);
-        plans.push({ loc, sizeKey, kind: "resume-neg-in", qty: -n, legs: [
-          { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
-            reason: `Collapse to one-size: close oversold size ${size} cell` } },
-        ] });
+        if (q === -n) {
+          plans.push({ loc, sizeKey, kind: "resume-neg-in", qty: -n, legs: [
+            { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
+              reason: `Collapse to one-size: close oversold size ${size} cell` } },
+          ] });
+          resolvedByResume = true;
+        } else {
+          plans.push({ loc, sizeKey, kind: "stranded", qty: q, legs: [],
+            note: `${loc}/${sizeKey} reads ${q} but an interrupted run already carried a shortage of ${n} into "_" — the cell moved in between, so closing it now would credit that shortage twice. Reconcile this cell by hand before collapsing.` });
+          resolvedByResume = true;   // reported; must not ALSO fall through to the generic stranded note
+        }
       }
 
       // 2. The cell's own balance — only if the pair it needs is untouched.
@@ -607,20 +628,21 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
           { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
             reason: `Collapse to one-size: close oversold size ${size} cell` } },
         ] });
-      } else if (q !== 0 && !(q < 0 && !negIn)) {
+      } else if (q !== 0 && !resolvedByResume) {
         // STRANDED — stock in a size whose pair is spent, with nothing planned
         // that will zero it. Planning it again would either no-op (losing it)
         // or apply half a pair (minting). Neither is acceptable, and neither is
         // silence.
         //
-        // The `!(q < 0 && !negIn)` half is load-bearing and was missing at
-        // first: a cell sitting at −1 with negOut spent is NOT stranded — the
-        // resume-neg-in leg planned above is precisely what brings it to 0. The
-        // execute path treats a stranded plan as a hard failure, so getting
-        // this wrong would refuse the very interrupted run this fix exists to
-        // let finish. What is genuinely stranded is a cell no planned leg
-        // touches: positive with its OUT already spent, or negative with its
-        // closing leg already spent (a fresh oversell after the mirror ran).
+        // `resolvedByResume` is load-bearing: a cell sitting at −1 with negOut
+        // spent is NOT stranded — the resume leg planned above is precisely
+        // what brings it to 0, and the execute path treats a stranded plan as a
+        // hard failure, so getting this wrong would refuse the very interrupted
+        // run this fix exists to let finish. It also stops a cell the mirror
+        // resume ALREADY reported being reported a second time here.
+        // What is genuinely stranded is a cell no planned leg will zero:
+        // positive with its OUT already spent, or negative with its closing leg
+        // already spent (a fresh oversell after the mirror completed).
         plans.push({ loc, sizeKey, kind: "stranded", qty: q, legs: [],
           note: `${loc}/${sizeKey} holds ${q} but its movement pair is already spent — this stock arrived after the pair ran. Move it to "_" by hand (or clear it) before collapsing; Step 2 will refuse until you do.` });
       }

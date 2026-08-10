@@ -410,6 +410,34 @@ describe("idempotency and interruption", () => {
     expect(plans[0].legs.map((l) => l.id)).toEqual([ids.negIn]);
   });
 
+  it("a mirrored pair whose cell was SETTLED in the gap is refused, not closed twice", async () => {
+    // The mirror's closing leg raises the sized cell by exactly the shortage its
+    // OUT leg already took out of "_". That is only true while the cell still
+    // holds that shortage. If a receive settles it in between, crediting it
+    // again MINTS: S −1 and "_" 5 → negOut → "_" 4 → receive 1 → S 0 → a blind
+    // resume would put S at +1, leaving 5 where the network held 4.
+    const db = makeDb(seedProduct({ sizes: ["S"], barcodes: { S: "00033333" },
+      cells: { "marathon-pe": { S: -1, _: 5 } } }));
+    const ids = legIds("pB", "marathon-pe", "S");
+    await applyMovementAdmin(db.io, { type: "adjustment", productId: "pB", size: "_", qty: 1, from: "marathon-pe",
+      movementId: ids.negOut, allowNegative: true, reason: "carry oversell" }, { nowIso: NOW });
+    expect(db.raw().stock["marathon-pe"].pB._.qty).toBe(4);
+    // A receive settles the oversold size.
+    db.poke("stock/marathon-pe/pB/S", { qty: 0, v: 9, mv: "receive", lastType: "received" });
+    const totalBefore = totalAt(db.raw(), "marathon-pe", "pB");
+    expect(totalBefore).toBe(4);
+
+    const product = await db.io.read("products/pB");
+    const plans = await planStep1(db.io, "pB", product.sizes, { "marathon-pe": await db.io.read("stock/marathon-pe/pB") });
+    // Refused, and said so — not closed a second time.
+    expect(plans.map((p) => p.kind)).toEqual(["stranded"]);
+    expect(plans[0].note).toMatch(/credit that shortage twice/);
+    for (const pl of plans) for (const leg of pl.legs) {
+      await applyMovementAdmin(db.io, { ...leg.movement, ts: NOW }, { nowIso: NOW });
+    }
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(totalBefore);   // nothing minted
+  });
+
   it("interrupted mid negative pair: the re-run relies on movement idempotency and must not double-deduct", async () => {
     // The positive pair resumes from the LEDGER (the emptied cell no longer
     // describes the work), but the negative pair's source cell is unchanged

@@ -272,8 +272,16 @@ const MUTATIONS = [
     id: "M28",
     guard: "A cell the resume leg is about to close is NOT reported stranded (which would fail the very run this allows to finish)",
     file: CORE,
-    from: `      } else if (q !== 0 && !(q < 0 && !negIn)) {`,
+    from: `      } else if (q !== 0 && !resolvedByResume) {`,
     to: `      } else if (q !== 0) {`,
+    tests: SUITE,
+  },
+  {
+    id: "M29",
+    guard: "A mirrored pair whose cell was settled in the gap is refused, not closed twice (a mint)",
+    file: CORE,
+    from: `        if (q === -n) {`,
+    to: `        if (true) {`,
     tests: SUITE,
   },
 ];
