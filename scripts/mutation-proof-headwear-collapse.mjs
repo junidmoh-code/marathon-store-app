@@ -57,7 +57,7 @@ const MUTATIONS = [
     id: "M3",
     guard: "A negative cell takes the MIRRORED pair instead of an overdrawing OUT",
     file: CORE,
-    from: `      } else if (q < 0) {`,
+    from: `      } else if (q < 0 && !negOut && !negIn) {`,
     to: `      } else if (false) {`,
     tests: SUITE,
   },
@@ -186,10 +186,10 @@ const MUTATIONS = [
   },
   {
     id: "M18",
-    guard: "An interrupted Step 1 resumes the IN leg from the LEDGER, not the emptied cell",
+    guard: "An interrupted Step 1 resumes the IN leg at the LEDGER's quantity, not the cell's",
     file: CORE,
-    from: `        if (out && !inMv) {`,
-    to: `        if (false) {`,
+    from: `        const n = Number(out.qty);`,
+    to: `        const n = 1;`,
     tests: SUITE,
   },
   {
@@ -266,6 +266,14 @@ const MUTATIONS = [
     file: CORE,
     from: `      } else if (q < 0 && !negOut && !negIn) {`,
     to: `      } else if (q < 0) {`,
+    tests: SUITE,
+  },
+  {
+    id: "M28",
+    guard: "A cell the resume leg is about to close is NOT reported stranded (which would fail the very run this allows to finish)",
+    file: CORE,
+    from: `      } else if (q !== 0 && !(q < 0 && !negIn)) {`,
+    to: `      } else if (q !== 0) {`,
     tests: SUITE,
   },
 ];

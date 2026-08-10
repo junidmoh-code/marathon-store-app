@@ -375,6 +375,41 @@ describe("idempotency and interruption", () => {
     expect(totalAt(db.raw(), "hub2", "pB")).toBe(10);
   });
 
+  it("a spent movement id no-ops on a second application instead of applying twice", async () => {
+    // Since a spent pair is no longer re-planned, this guard is only reachable
+    // by calling the movement layer directly — which is exactly what two
+    // overlapping processes would do. It is the last line of defence behind the
+    // run lock, so it needs its own test rather than riding on the planner.
+    const db = makeDb(seedProduct({ cells: { hub2: { M: 5 } } }));
+    const mv = { type: "adjustment", productId: "pB", size: "_", qty: 6, to: "hub2",
+      movementId: "onesize_pB_hub2_in_us_M", reason: "receive from size M" };
+    const first = await applyMovementAdmin(db.io, mv, { nowIso: NOW });
+    expect(first).toMatchObject({ ok: true, newQty: 6 });
+    expect(first.idempotent).toBeUndefined();
+
+    const second = await applyMovementAdmin(db.io, mv, { nowIso: NOW });
+    expect(second).toMatchObject({ ok: true, idempotent: true });
+    // A POSITIVE leg has no floor to refuse it, so without the guard this cell
+    // would hold 12 with a single ledger record claiming 6.
+    expect(db.raw().stock.hub2.pB._.qty).toBe(6);
+    expect(Object.keys(db.raw().stock_movements)).toHaveLength(1);
+  });
+
+  it("a spent MIRRORED pair is not re-planned either — only its missing leg is", async () => {
+    const db = makeDb(seedProduct({ sizes: ["S"], barcodes: { S: "00033333" }, cells: { "marathon-pe": { S: -1 } } }));
+    const ids = legIds("pB", "marathon-pe", "S");
+    await applyMovementAdmin(db.io, { type: "adjustment", productId: "pB", size: "_", qty: 1, from: "marathon-pe",
+      movementId: ids.negOut, allowNegative: true, reason: "carry oversell" }, { nowIso: NOW });
+    // The source cell is STILL −1 (its closing leg has not run), so the naive
+    // read of the cell would plan the whole mirrored pair over again.
+    expect(db.raw().stock["marathon-pe"].pB.S.qty).toBe(-1);
+
+    const product = await db.io.read("products/pB");
+    const plans = await planStep1(db.io, "pB", product.sizes, { "marathon-pe": await db.io.read("stock/marathon-pe/pB") });
+    expect(plans.map((p) => p.kind)).toEqual(["resume-neg-in"]);
+    expect(plans[0].legs.map((l) => l.id)).toEqual([ids.negIn]);
+  });
+
   it("interrupted mid negative pair: the re-run relies on movement idempotency and must not double-deduct", async () => {
     // The positive pair resumes from the LEDGER (the emptied cell no longer
     // describes the work), but the negative pair's source cell is unchanged

@@ -607,10 +607,20 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
           { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
             reason: `Collapse to one-size: close oversold size ${size} cell` } },
         ] });
-      } else if (q !== 0) {
-        // Stock sitting in a size whose pair is spent. Planning it again would
-        // either no-op (losing it) or apply half a pair (minting). Neither is
-        // acceptable, and neither is silence.
+      } else if (q !== 0 && !(q < 0 && !negIn)) {
+        // STRANDED — stock in a size whose pair is spent, with nothing planned
+        // that will zero it. Planning it again would either no-op (losing it)
+        // or apply half a pair (minting). Neither is acceptable, and neither is
+        // silence.
+        //
+        // The `!(q < 0 && !negIn)` half is load-bearing and was missing at
+        // first: a cell sitting at −1 with negOut spent is NOT stranded — the
+        // resume-neg-in leg planned above is precisely what brings it to 0. The
+        // execute path treats a stranded plan as a hard failure, so getting
+        // this wrong would refuse the very interrupted run this fix exists to
+        // let finish. What is genuinely stranded is a cell no planned leg
+        // touches: positive with its OUT already spent, or negative with its
+        // closing leg already spent (a fresh oversell after the mirror ran).
         plans.push({ loc, sizeKey, kind: "stranded", qty: q, legs: [],
           note: `${loc}/${sizeKey} holds ${q} but its movement pair is already spent — this stock arrived after the pair ran. Move it to "_" by hand (or clear it) before collapsing; Step 2 will refuse until you do.` });
       }
