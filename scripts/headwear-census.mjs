@@ -220,30 +220,38 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
     const refs = [];
     for (const [tid, t] of Object.entries(transfers)) {
       const why = transferBlocks(t, pid);
-      if (why) { refs.push({ kind: "transfer", id: tid, status: t?.status ?? null, why }); flag("open-ref-real-size", `${pid} "${p.name}" transfer ${tid} — ${why}`); }
+      if (why) { refs.push({ kind: "transfer", id: tid, status: t?.status ?? null, why, blocks: true }); flag("open-ref-real-size", `${pid} "${p.name}" transfer ${tid} — ${why}`); }
     }
     for (const [oid, o] of Object.entries(orders)) {
       const why = orderBlocks(o && { ...o, id: o.id || oid }, pid, nowMs);
-      if (why) { refs.push({ kind: "order", id: oid, status: o?.status ?? null, why }); flag("open-ref-real-size", `${pid} "${p.name}" order ${oid} — ${why}`); }
+      if (why) { refs.push({ kind: "order", id: oid, status: o?.status ?? null, why, blocks: true }); flag("open-ref-real-size", `${pid} "${p.name}" order ${oid} — ${why}`); }
     }
     for (const [rid, r] of Object.entries(refillRequests)) {
       if (r && r.status === "open" && r.productId === pid && isRetiredSize(r.size)) {
-        refs.push({ kind: "refill_request", id: rid, size: r.size, dest: r.dest ?? r.shop ?? null });
+        refs.push({ kind: "refill_request", id: rid, size: r.size, dest: r.dest ?? r.shop ?? null, blocks: true });
         flag("open-ref-real-size", `${pid} "${p.name}" open refill request ${rid} (size ${r.size})`);
       }
     }
+    // A reference against the one-size cell is NOT a blocker — that cell is
+    // where the migration is moving everything TO, so nothing about it is
+    // retired. Both of these are recorded with `blocks` so the report can list
+    // the worklist separately from the merely-informational rows; printing an
+    // already-one-size Display Check under "must clear before their product can
+    // migrate" sends someone to clear something that is already correct.
     for (const [loc, byPid] of Object.entries(openLocks)) {
       for (const sk of Object.keys(byPid?.[pid] || {})) {
-        refs.push({ kind: "engine_lock", id: `${loc}/${pid}/${sk}`, size: sk });
-        if (isRetiredSizeKey(sk)) flag("open-ref-real-size", `${pid} "${p.name}" engine lock ${loc}/${sk}`);
+        const blocks = isRetiredSizeKey(sk);
+        refs.push({ kind: "engine_lock", id: `${loc}/${pid}/${sk}`, size: sk, blocks });
+        if (blocks) flag("open-ref-real-size", `${pid} "${p.name}" engine lock ${loc}/${sk}`);
       }
     }
     for (const [loc, byKey] of Object.entries(dcActive)) {
       for (const k of Object.keys(byKey || {})) {
         if (!k.startsWith(`${pid}__`)) continue;
-        refs.push({ kind: "display_check", id: `${loc}/${k}` });
-        // The check key is `${pid}__${sizeKey}__…`; a one-size check ends "___".
-        if (!k.endsWith("___")) flag("open-ref-real-size", `${pid} "${p.name}" active display check ${loc}/${k}`);
+        // The check key is `${pid}__${sizeKey}`; a one-size check ends "___".
+        const blocks = !k.endsWith("___");
+        refs.push({ kind: "display_check", id: `${loc}/${k}`, blocks });
+        if (blocks) flag("open-ref-real-size", `${pid} "${p.name}" active display check ${loc}/${k}`);
       }
     }
 
@@ -310,9 +318,12 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
   console.log(`\nEXPLICIT /stock_targets ROWS: ${withTargets.length} products`);
   for (const r of withTargets) console.log(`  ${r.pid} "${r.name}" ${JSON.stringify(r.targetRows)}`);
 
-  const withRefs = report.filter((r) => r.openRefs.length);
-  console.log(`\nOPEN REFERENCES (these must clear before their product can migrate): ${withRefs.length} products`);
-  for (const r of withRefs) for (const ref of r.openRefs) console.log(`  ${r.pid} "${r.name}" — ${ref.kind} ${ref.id}${ref.why ? ` — ${ref.why}` : ""}${ref.size ? ` size=${ref.size}` : ""}`);
+  const withBlocking = report.filter((r) => r.openRefs.some((x) => x.blocks));
+  console.log(`\nOPEN REFERENCES THAT BLOCK (clear these before their product can migrate): ${withBlocking.length} products`);
+  for (const r of withBlocking) for (const ref of r.openRefs.filter((x) => x.blocks)) console.log(`  ${r.pid} "${r.name}" — ${ref.kind} ${ref.id}${ref.why ? ` — ${ref.why}` : ""}${ref.size ? ` size=${ref.size}` : ""}`);
+  const nonBlocking = report.flatMap((r) => r.openRefs.filter((x) => !x.blocks).map((x) => ({ r, x })));
+  console.log(`\nreferences against the "_" cell — informational, NOT a worklist: ${nonBlocking.length}`);
+  for (const { r, x } of nonBlocking) console.log(`  ${r.pid} "${r.name}" — ${x.kind} ${x.id}`);
 
   console.log(`\nPER-PRODUCT DETAIL`);
   for (const r of report) {
