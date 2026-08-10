@@ -348,6 +348,41 @@ export function planStep2(pid, product, indexCodes, stockSizeKeysHeld) {
   return { updates, keepCode, rule, codes };
 }
 
+// ── THE DRAIN CHECK — Step 2's precondition, on FRESH reads ─────────────────
+// Step 2 is the irreversible half: the moment `sizes` becomes ["_"], any unit
+// still sitting in a sized cell is invisible to the app and to the engine.
+// Step 1 reporting success is NOT proof that the cells are empty, because the
+// movement id is scoped to (product, location, size) with no attempt number:
+//
+//   run 1  Step 1 lands in full (M drained to 0, "_" holds the units) and the
+//          operator stops before Step 2 — the state this file's header calls
+//          safe, and it IS safe, because the product still declares M.
+//   …then  a legitimate warehouse receive lands 2 units into M, exactly as it
+//          should, because M is still a declared size.
+//   run 2  planStep1 sees M = 2 and plans the pair again — but BOTH movement
+//          ids already exist, so applyMovementAdmin no-ops each leg and
+//          reports ok+idempotent. Nothing moves. Step 2 fires anyway and the
+//          2 units are stranded in a size the product no longer declares.
+//
+// Reproduced end-to-end against these exact functions (Sonnet review, PR #343).
+// The recent-activity gate does not cover it: the realistic trigger is a pause
+// of hours, not minutes. So Step 2 asks the database directly, immediately
+// before it commits, whether every sized cell is actually at zero — and the
+// caller must refuse to collapse the product if any is not. Idempotency stays
+// exactly as it is; what changes is that success is now verified, not inferred.
+export async function assertDrained(io, pid) {
+  const stock = (await io.read("stock")) || {};
+  const residue = [];
+  for (const [loc, byPid] of Object.entries(stock)) {
+    for (const [sizeKey, cell] of Object.entries(byPid?.[pid] || {})) {
+      if (sizeKey === "_") continue;
+      const q = typeof cell?.qty === "number" ? cell.qty : 0;
+      if (q !== 0) residue.push(`${loc}/${sizeKey}=${q}`);
+    }
+  }
+  return residue;
+}
+
 // Already in the Step 2 end state? (makes a re-run a read-only no-op)
 export function step2Done(product, indexCodes, keepCode) {
   const sizesOk = JSON.stringify(product.sizes || null) === JSON.stringify(["_"]);

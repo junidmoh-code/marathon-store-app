@@ -21,7 +21,7 @@
 import { describe, it, expect } from "vitest";
 import {
   applyMovementAdmin, planStep1, planStep2, planStep3, step2Done, verifyProduct,
-  legIds, orderBlocks, transferBlocks, isInScope,
+  assertDrained, legIds, orderBlocks, transferBlocks, isInScope,
 } from "./beanieCollapseCore.mjs";
 
 // ── fake RTDB ────────────────────────────────────────────────────────────────
@@ -333,6 +333,54 @@ describe("idempotency and interruption", () => {
     expect(mid.stock.central.pB.M.qty).toBe(4);
     // Nothing lost network-wide.
     expect(totalAt(mid, "hub2", "pB") + totalAt(mid, "central", "pB")).toBe(10);
+  });
+});
+
+describe("Step 2's drain precondition — a spent pair cannot certify an undrained cell", () => {
+  it("stock arriving in a still-declared size AFTER its pair landed is caught before identity collapses", async () => {
+    // The exact sequence: Step 1 lands in full, the operator stops (a state the
+    // header calls safe, and it is — the product still declares M). A normal
+    // warehouse receive then puts units into M. On resume, planStep1 plans the
+    // pair again but both movement ids are spent, so each leg no-ops and
+    // reports ok. Without the drain check, Step 2 fires and strands the units.
+    const db = makeDb(seedProduct({ cells: { hub2: { M: 6 } } }));
+    await migrate(db, "pB", { skipStep2: true, skipStep3: true });
+    expect(db.raw().stock.hub2.pB.M.qty).toBe(0);
+    expect(db.raw().stock.hub2.pB._.qty).toBe(6);
+
+    db.poke("stock/hub2/pB/M", { qty: 2, v: 5, mv: "warehouse_receive", lastType: "received" });
+
+    // Resume: the legs report success while moving nothing.
+    const product = await db.io.read("products/pB");
+    const cellsByLoc = { hub2: await db.io.read("stock/hub2/pB") };
+    const plans = await planStep1(db.io, "pB", product.sizes, cellsByLoc);
+    const results = [];
+    for (const pl of plans) for (const leg of pl.legs) {
+      results.push(await applyMovementAdmin(db.io, { ...leg.movement, ts: NOW }, { nowIso: NOW }));
+    }
+    expect(results.every((r) => r.ok)).toBe(true);
+    expect(results.some((r) => r.idempotent)).toBe(true);
+
+    // THE GUARD: Step 2's precondition asks the database, and refuses.
+    const residue = await assertDrained(db.io, "pB");
+    expect(residue).toEqual(["hub2/M=2"]);
+
+    // Identity is therefore untouched and those 2 units are still sellable.
+    expect(db.raw().products.pB.sizes).toEqual(["M"]);
+    expect(db.raw().barcodes["00011111"].size).toBe("M");
+  });
+
+  it("reports no residue on a genuinely drained product, so a normal run is unaffected", async () => {
+    const db = makeDb(seedProduct({ cells: { hub2: { M: 6 }, central: { M: 4 } } }));
+    await migrate(db, "pB", { skipStep2: true, skipStep3: true });
+    expect(await assertDrained(db.io, "pB")).toEqual([]);
+  });
+
+  it("a zero sized cell and a negative one are told apart — the mirror's residue also blocks", async () => {
+    const db = makeDb(seedProduct({ sizes: ["S"], barcodes: { S: "00033333" }, cells: { "marathon-pe": { S: -1 } } }));
+    expect(await assertDrained(db.io, "pB")).toEqual(["marathon-pe/S=-1"]);
+    await migrate(db, "pB", { skipStep2: true, skipStep3: true });
+    expect(await assertDrained(db.io, "pB")).toEqual([]);   // mirror closed it at 0
   });
 });
 

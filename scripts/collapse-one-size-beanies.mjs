@@ -54,7 +54,7 @@ import { join } from "path";
 import { setServerTimeOffsetMs, serverNowIso } from "../src/utils/serverTime.js";
 import {
   applyMovementAdmin, planStep1, planStep2, step2Done, planStep3, verifyProduct,
-  orderBlocks, transferBlocks, isInScope, REAL_SIZE,
+  assertDrained, orderBlocks, transferBlocks, isInScope, REAL_SIZE,
 } from "./lib/beanieCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
@@ -172,10 +172,41 @@ function hasPrivilegedCredential(app) {
   }
   if (!EXECUTE) console.log(`  engine paused: ${session?.active === true ? "yes" : "NO (must be true at execute time)"}`);
 
+  // ── BOUNDED-STALENESS GATE DATA ────────────────────────────────────────────
+  // The referential trees (orders, transfers, refill requests, engine locks,
+  // Display Checks) were read once before the loop. A run over ~90 products is
+  // not instantaneous, so an order or request opened after that read but before
+  // its product's turn was invisible to the gate — the same staleness class the
+  // fresh per-product cell read closed for /stock. (Sonnet review, PR #343.)
+  //
+  // Re-reading all of them per product would mean ~134 × (2.4k orders + 12k
+  // requests) of reads for a one-off script; refreshing when the snapshot is
+  // older than a bounded age gets the same guarantee at a sane cost. The
+  // exposure drops from "the whole run" to at most GATE_MAX_AGE_MS, and the
+  // recent-activity gate covers the tail.
+  const GATE_MAX_AGE_MS = Number(process.env.GATE_MAX_AGE_SECONDS || 60) * 1000;
+  let gateData = { transfers, orders, refillRequests, openLocks, dcActive };
+  let gateReadAt = Date.now();
+  let gateRefreshes = 0;
+  const freshGates = async () => {
+    if (Date.now() - gateReadAt < GATE_MAX_AGE_MS) return gateData;
+    const [t, o, rr, ol, dc] = await Promise.all([
+      io.read("transfers"), io.read("orders"), io.read("refill_requests"),
+      io.read("refill_engine/open"), io.read("displayChecks_active"),
+    ]).then((r) => r.map((v) => v || {}));
+    gateData = { transfers: t, orders: o, refillRequests: rr, openLocks: ol, dcActive: dc };
+    gateReadAt = Date.now();
+    gateRefreshes++;
+    return gateData;
+  };
+
   // ── per-product ────────────────────────────────────────────────────────────
   const results = [];
   for (const [pid, p] of scope) {
     const name = p.name || pid;
+    const gates_ = await freshGates();
+    const { transfers: transfersNow, orders: ordersNow, refillRequests: refillRequestsNow,
+      openLocks: openLocksNow, dcActive: dcActiveNow } = gates_;
     const indexCodes = { ...(reverseIdx[pid] || {}) };
     for (const code of Object.values(p.barcodes || {}).map(String)) if (!(code in indexCodes)) indexCodes[code] = barcodesIdx[code] ?? null;
 
@@ -200,11 +231,11 @@ function hasPrivilegedCredential(app) {
     }
     // Any not-yet-received transfer carrying this product in a real size still
     // has a receive leg ahead of it that would credit the retired key.
-    for (const [tid, t] of Object.entries(transfers)) {
+    for (const [tid, t] of Object.entries(transfersNow)) {
       const why = transferBlocks(t, pid);
       if (why) gates.push(`${why} [${tid}]`);
     }
-    for (const [oid, o] of Object.entries(orders)) {
+    for (const [oid, o] of Object.entries(ordersNow)) {
       // id LAST: a record carrying its own id must not shadow the node key it
       // is actually stored under. (Kimi review, PR #343.)
       const why = orderBlocks(o && { ...o, id: o.id || oid }, pid, nowMs);
@@ -219,13 +250,13 @@ function hasPrivilegedCredential(app) {
     if (lastMove && nowMs - lastMove < RECENT_ACTIVITY_MS) {
       gates.push(`moved ${Math.round((nowMs - lastMove) / 60000)} min ago (${new Date(lastMove).toISOString()}) — active at a till; re-run when it is quiet`);
     }
-    for (const [rid, r] of Object.entries(refillRequests)) {
+    for (const [rid, r] of Object.entries(refillRequestsNow)) {
       if (r && r.status === "open" && r.productId === pid && REAL_SIZE.test(String(r.size || ""))) gates.push(`open refill request ${rid} (size ${r.size})`);
     }
-    for (const [loc, byPid] of Object.entries(openLocks)) {
+    for (const [loc, byPid] of Object.entries(openLocksNow)) {
       for (const sk of Object.keys(byPid?.[pid] || {})) if (sk !== "_") gates.push(`engine lock ${loc}/${sk}`);
     }
-    for (const [loc, byKey] of Object.entries(dcActive)) {
+    for (const [loc, byKey] of Object.entries(dcActiveNow)) {
       for (const k of Object.keys(byKey || {})) if (k.startsWith(`${pid}__`) && !k.endsWith("___")) gates.push(`active display check ${loc}/${k}`);
     }
     if (gates.length) {
@@ -255,7 +286,18 @@ function hasPrivilegedCredential(app) {
     const s2Needed = !step2Done(p, indexCodes, s2.keepCode);
 
     if (!EXECUTE) {
-      const legLines = step1.flatMap((pl) => pl.legs.map((l) => `${l.id} (${l.movement.from ? "OUT " + l.movement.from : "IN " + l.movement.to} ${l.movement.size} qty ${l.movement.qty}${l.movement.allowNegative ? " allowNegative" : ""})`));
+      // A planned leg whose movement id ALREADY exists will no-op — it moves
+      // nothing. On a first run that never happens; on a resume it means stock
+      // arrived in a size whose pair has already been spent, and the execute
+      // path will refuse to collapse this product. Say so in the plan rather
+      // than printing it like an ordinary pair. (Sonnet review, PR #343.)
+      const legLines = [];
+      for (const pl of step1) {
+        for (const l of pl.legs) {
+          const spent = !!(await io.read(`stock_movements/${l.id}`));
+          legLines.push(`${l.id} (${l.movement.from ? "OUT " + l.movement.from : "IN " + l.movement.to} ${l.movement.size} qty ${l.movement.qty}${l.movement.allowNegative ? " allowNegative" : ""})${spent ? "  ⚠ ALREADY IN THE LEDGER — this leg will move NOTHING; the units here arrived after the pair was spent" : ""}`);
+        }
+      }
       results.push({ pid, name, status: (step1.length || s2Needed || Object.keys(step3).length) ? "PLANNED" : "ALREADY DONE", detail: [
         ...legLines,
         s2Needed ? `step2 atomic ×${Object.keys(s2.updates).length} paths — "_" slot ← ${s2.keepCode} (${s2.rule})` : "step2: already collapsed",
@@ -276,6 +318,17 @@ function hasPrivilegedCredential(app) {
         if (!r.ok) { failed = `${leg.id}: ${r.reason}${r.available != null ? ` (available ${r.available}, requested ${r.requested})` : ""}`; break; }
       }
       if (failed) break;
+    }
+    // STEP 2'S PRECONDITION, ON FRESH READS. Step 1 reporting success is not
+    // proof the cells are empty — an already-landed movement id no-ops without
+    // moving anything, so stock that arrived in a still-declared size between
+    // runs would be stranded the instant identity collapses. Ask the database.
+    // (Sonnet review, PR #343 — reproduced end to end.)
+    if (!failed) {
+      const residue = await assertDrained(io, pid);
+      if (residue.length) {
+        failed = `step1 did not drain: ${residue.join(", ")} — stock arrived in a size about to be retired; identity NOT collapsed. Move it to "_" (or clear it) and re-run.`;
+      }
     }
     if (!failed && s2Needed) {
       try { await io.update(s2.updates); } catch (e) { failed = `step2: ${e.message}`; }
@@ -299,6 +352,7 @@ function hasPrivilegedCredential(app) {
     console.log(`  ${r.status.padEnd(13)} ${r.pid} "${r.name}"`);
     for (const d of r.detail) console.log(`     ${d}`);
   }
+  if (gateRefreshes) console.log(`  gate data refreshed ${gateRefreshes}× during the run (max age ${GATE_MAX_AGE_MS / 1000}s)`);
   console.log(`\n  SUMMARY: ${Object.entries(byStatus).map(([s, l]) => `${s}=${l.length}`).join("  ")}`);
   // Machine-readable twin of the same run — the operator report and the
   // clear-first worklist are built from this, not from scraping stdout.
