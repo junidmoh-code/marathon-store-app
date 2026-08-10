@@ -175,6 +175,63 @@ describe("the fallback ladder", () => {
     expect(allText(r)).toMatch(/Type it from the box/);
   });
 
+  it("SUPPRESSES the OCR warning when the verdict is a conflict", async () => {
+    // The warning belongs to a successful capture. Showing it beside a
+    // duplicate — or a size mismatch, or an already-registered code — would
+    // put a hedge next to the message that actually matters.
+    // (Codex review, PR #340.)
+    decodeFrames.mockResolvedValue({ ok: false, reason: "no_symbol", message: "no bars" });
+    readPrintedDigits.mockResolvedValue({ ok: true, code: OUD_MOOD, fromDigits: true });
+    inspect.mockResolvedValue({ kind: "conflict", code: OUD_MOOD, otherProductId: "pOther", indexCodes: [OUD_MOOD] });
+    const onCapture = vi.fn();
+    const r = await openCamera(await mount({ onCapture, products: [{ id: "pOther", name: "Other Bottle" }] }));
+    await act(async () => { await r.root.findByType(LabelCamera).props.onFrames(FRAMES); });
+
+    expect(onCapture).not.toHaveBeenCalled();
+    expect(allText(r)).toMatch(/already on another product/i);
+    expect(allText(r)).not.toMatch(/printed number under them/i);
+  });
+
+  it("SUPPRESSES it on a size mismatch too", async () => {
+    decodeFrames.mockResolvedValue({ ok: false, reason: "no_symbol", message: "no bars" });
+    readPrintedDigits.mockResolvedValue({ ok: true, code: OUD_MOOD, fromDigits: true });
+    inspect.mockResolvedValue({ kind: "size_mismatch", code: OUD_MOOD, indexedSize: "50ml", expectedSize: "_" });
+    const onCapture = vi.fn();
+    const r = await openCamera(await mount({ productId: "pPerfume", onCapture }));
+    await act(async () => { await r.root.findByType(LabelCamera).props.onFrames(FRAMES); });
+
+    expect(onCapture).not.toHaveBeenCalled();
+    expect(allText(r)).toMatch(/50ml/);
+    expect(allText(r)).not.toMatch(/printed number under them/i);
+  });
+
+  it("an ALREADY-registered code shows that, not the OCR hedge", async () => {
+    decodeFrames.mockResolvedValue({ ok: false, reason: "no_symbol", message: "no bars" });
+    readPrintedDigits.mockResolvedValue({ ok: true, code: OUD_MOOD, fromDigits: true });
+    inspect.mockResolvedValue({ kind: "already", indexCodes: [OUD_MOOD] });
+    const onCapture = vi.fn();
+    const r = await openCamera(await mount({ productId: "pPerfume", onCapture }));
+    await act(async () => { await r.root.findByType(LabelCamera).props.onFrames(FRAMES); });
+
+    expect(onCapture).toHaveBeenCalledWith(OUD_MOOD);
+    expect(allText(r)).toMatch(/already registered/i);
+    expect(allText(r)).not.toMatch(/printed number under them/i);
+  });
+
+  it("shows NOTHING when an OCR run is superseded mid-check", async () => {
+    decodeFrames.mockResolvedValue({ ok: false, reason: "no_symbol", message: "no bars" });
+    readPrintedDigits.mockResolvedValue({ ok: true, code: OUD_MOOD, fromDigits: true });
+    let release;
+    inspect.mockReturnValue(new Promise((res) => { release = () => res({ kind: "free", codes: [OUD_MOOD], indexCodes: [OUD_MOOD] }); }));
+    const onCapture = vi.fn();
+    const r = await openCamera(await mount({ productId: "pA", onCapture }));
+    await act(async () => { r.root.findByType(LabelCamera).props.onFrames(FRAMES); });
+    await act(async () => { r.unmount(); });
+    await act(async () => { release(); });
+
+    expect(onCapture).not.toHaveBeenCalled();
+  });
+
   it("a THROWN decode renders the error note instead of an unhandled rejection", async () => {
     decodeFrames.mockRejectedValue(new Error("camera exploded"));
     const onCapture = vi.fn();

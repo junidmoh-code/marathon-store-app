@@ -83,6 +83,42 @@ describe("decodeFrames — the burst", () => {
     expect(decode).toHaveBeenCalledTimes(3);
   });
 
+  it("STOPS at the first valid reading — later frames are not decoded", async () => {
+    // The existing burst test cannot see this: its only valid decode is the
+    // last frame, so the old all-frames implementation and the early-exit one
+    // both decode three times and both pass. (Codex review, PR #340.)
+    const decode = vi.fn().mockResolvedValue(OUD_MOOD);
+    const out = await decodeFrames(framesOf(3), { decode });
+    expect(out).toEqual({ ok: true, code: OUD_MOOD, frameIndex: 0 });
+    expect(decode).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the ORIGINAL frame index when earlier frames were skipped", async () => {
+    // A blobless frame still occupies a slot, so the reported index must count
+    // it — an early exit that indexed into "frames actually decoded" would be
+    // off by one and blame the wrong frame.
+    const decode = vi.fn().mockResolvedValue(EPIC);
+    const out = await decodeFrames([{ base64: "x" }, { blob: {}, base64: "y" }], { decode });
+    expect(out).toEqual({ ok: true, code: EPIC, frameIndex: 1 });
+    expect(decode).toHaveBeenCalledTimes(1);
+  });
+
+  it("decodes every frame when NONE is valid", async () => {
+    const decode = vi.fn().mockResolvedValue(BAD_CHECK);
+    const out = await decodeFrames(framesOf(3), { decode });
+    expect(out.ok).toBe(false);
+    expect(decode).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps decoding past an invalid check digit to reach a valid frame", async () => {
+    const decode = vi.fn()
+      .mockResolvedValueOnce(BAD_CHECK)
+      .mockResolvedValueOnce(OUD_MOOD);
+    const out = await decodeFrames(framesOf(3), { decode });
+    expect(out).toEqual({ ok: true, code: OUD_MOOD, frameIndex: 1 });
+    expect(decode).toHaveBeenCalledTimes(2);       // stopped at the valid one
+  });
+
   it("tolerates a frame with no blob", async () => {
     const decode = vi.fn().mockResolvedValue(OUD_MOOD);
     const out = await decodeFrames([{ base64: "x" }, ...framesOf(1)], { decode });
