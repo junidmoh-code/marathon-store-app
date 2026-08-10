@@ -124,9 +124,20 @@ export function effectiveStandard({ std, subRun, subcategory, sizes }) {
 // in a key) and read as "no row". That is the ENCODED-vs-DECODED class that
 // silently zeroed the sneaker Solve's sizes; it is written correctly here at the
 // first opportunity rather than waiting to be found again.
+// A NON-FINITE target is still an EXPLICIT ROW, and must not fall through.
+// The engine's gate is `typeof explicit.target === "number"` and it then passes
+// the value through `num()`, which maps anything non-finite to 0 — so to the
+// engine a NaN row reads as "explicit, target 0" and WINS over the size run.
+// Requiring Number.isFinite here would have returned null instead, letting the
+// run re-enable a size the engine had already settled at 0. Mirroring `num()`
+// exactly keeps the two in step in both value AND branch. Unreachable today —
+// RTDB refuses to store NaN/Infinity, and every write path in the app writes a
+// validated numeric literal — but a mirror that is only right on reachable input
+// is a mirror waiting to drift. (Sonnet review, PR #342.)
 export function explicitTarget(targets, loc, pid, size) {
   const row = targets?.[loc]?.[pid]?.[encodeSizeKey(size)];
-  return row && typeof row.target === "number" && Number.isFinite(row.target) ? row.target : null;
+  if (!row || typeof row.target !== "number") return null;
+  return Number.isFinite(row.target) ? row.target : 0;
 }
 
 // The run map Solve should actually decide on: effectiveStandard (subcategory

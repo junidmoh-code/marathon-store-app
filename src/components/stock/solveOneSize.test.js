@@ -50,11 +50,26 @@ describe("explicitTarget — the engine's priority-1 source, keyed the engine's 
   it("an explicit 0 is a real answer (deliberately excluded), not an absent row", () => {
     expect(explicitTarget({ trophy: { [BEANIE]: { _: row(0) } } }, "trophy", BEANIE, "_")).toBe(0);
   });
-  it("absent rows, non-numeric and non-finite targets read as no row", () => {
+  it("absent rows and non-NUMERIC targets read as no row", () => {
     expect(explicitTarget({}, "trophy", BEANIE, "_")).toBe(null);
     expect(explicitTarget(null, "trophy", BEANIE, "_")).toBe(null);
     expect(explicitTarget({ trophy: { [BEANIE]: { _: { target: "5" } } } }, "trophy", BEANIE, "_")).toBe(null);
-    expect(explicitTarget({ trophy: { [BEANIE]: { _: { target: NaN } } } }, "trophy", BEANIE, "_")).toBe(null);
+  });
+
+  it("a NON-FINITE target is still an explicit row, resolving to 0 like the engine", () => {
+    // The engine gates on `typeof === "number"` then runs the value through
+    // num(), which maps non-finite to 0 — so to the engine this is "explicit,
+    // target 0", which WINS over the size run. Returning null here would let the
+    // run re-enable a size the engine had already settled at 0.
+    for (const bad of [NaN, Infinity, -Infinity]) {
+      expect(explicitTarget({ trophy: { [BEANIE]: { _: { target: bad } } } }, "trophy", BEANIE, "_")).toBe(0);
+    }
+    // …and it must therefore SUPPRESS a size the run would otherwise cover.
+    const run = resolvedRun({
+      std: STD, sizes: ["M"], pid: "tee", ruleBasedTargets: true,
+      targets: { hub2: { tee: { M: row(3) } }, trophy: { tee: { M: { target: NaN } } } },
+    });
+    expect(qualifyingSizes(["M"], "central", "trophy", run)).toEqual([]);
   });
 });
 

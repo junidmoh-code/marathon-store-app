@@ -350,7 +350,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         const solveBlocked = solveReason({
           canAct, configLoaded: !!cfg, configError: cfgErr, targetsLoaded: targetsReady,
           hasSourceStock: card.units > 0, policyAtAnyStore, ruleOnAnywhere: armed, targetsError,
-          oneSize: catalogSizes(card.pid).every((s) => s === "_"),
+          // `.every` is vacuously true on an empty list, which would have called a
+          // product with no usable catalogue size "one-size" and told the operator
+          // to go and set a target for a size it does not have. (Sonnet, PR #342.)
+          oneSize: catalogSizes(card.pid).length > 0 && catalogSizes(card.pid).every((s) => s === "_"),
         });
         return (
           <ProductCard key={card.pid}

@@ -30,6 +30,13 @@ describe("solveReason — the clothing Solve", () => {
     expect(solveReason({ ...OK, oneSize: true })).toBe(null);
   });
 
+  it("a product with no usable catalogue size is not called 'one-size'", () => {
+    // `oneSize` is computed with `.every`, which is vacuously true on an empty
+    // list; the caller guards on length, and this pins the wording either way.
+    const r = solveReason({ ...OK, oneSize: false, policyAtAnyStore: false });
+    expect(r).not.toMatch(/one-size/i);
+  });
+
   it("a one-size product with NO policy stays disabled and says what it needs", () => {
     const r = solveReason({ ...OK, oneSize: true, policyAtAnyStore: false });
     expect(r).toMatch(/one-size/i);

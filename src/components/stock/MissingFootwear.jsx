@@ -285,10 +285,16 @@ export default function MissingFootwear({ products = [] }) {
         // a hover tooltip, invisible on the warehouse tablets this runs on.
         const solveBlocked = footwearSolveReason({ canAct, runLoaded: !!footwearRun, linesAtAnyHub: solvable });
         const requestBlocked = footwearRequestReason({ canAct });
+        // `busy` is the GLOBAL in-flight flag, not this row's, because the
+        // buttons below are disabled by the global one. Passing the per-row test
+        // while disabling on the global left a window — another card mid-write —
+        // where the button was grey and the row said nothing, which is the very
+        // contract this module exists to keep. Disable and reason now read the
+        // SAME flag. (Sonnet review, PR #342.)
         const confirmBlocked = footwearConfirmReason({
-          canAct, busy: solveBusy === card.pid, lines: solveLines.length, hubLabel: LOC_LABEL[sHub],
+          canAct, busy: !!solveBusy, lines: solveLines.length, hubLabel: LOC_LABEL[sHub],
         });
-        const submitBlocked = footwearRequestSubmitReason({ canAct, busy: busyPid === card.pid, units: total });
+        const submitBlocked = footwearRequestSubmitReason({ canAct, busy: !!busyPid, units: total });
         return (
           <ProductCard key={card.pid}
             photo={card.photo} name={card.name}
@@ -360,7 +366,7 @@ export default function MissingFootwear({ products = [] }) {
                   </div>
                 )}
                 {confirmBlocked && <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: 6 }}>{confirmBlocked}</div>}
-                <button onClick={() => solve(card)} disabled={!!solveBusy || !!confirmBlocked}
+                <button onClick={() => solve(card)} disabled={!!confirmBlocked}
                         title={confirmBlocked || undefined}
                         style={{ background: "rgba(74,222,128,.14)", border: "1px solid rgba(74,222,128,.45)", color: GREEN, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: confirmBlocked ? "default" : "pointer", opacity: confirmBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {solveBusy === card.pid ? "Raising…" : "Confirm"}
@@ -385,7 +391,7 @@ export default function MissingFootwear({ products = [] }) {
                   ))}
                 </div>
                 {submitBlocked && <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: 6 }}>{submitBlocked}</div>}
-                <button onClick={() => request(card)} disabled={!!busyPid || !!submitBlocked}
+                <button onClick={() => request(card)} disabled={!!submitBlocked}
                         title={submitBlocked || undefined}
                         style={{ background: "rgba(60,110,255,.15)", border: "1px solid rgba(60,110,255,.5)", color: BLUE_L, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: submitBlocked ? "default" : "pointer", opacity: submitBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {busyPid === card.pid ? "Raising…" : `Request ${total} for ${LOC_LABEL[dest]}`}
