@@ -76,6 +76,15 @@ export function isInScope(product) {
   return !!product && /beanie/i.test(product.name || "") && !product.mergedInto;
 }
 
+// A record whose NAME says beanie but whose filing does not. It stays in scope
+// (the name is decisive) but it is worth a human's eye before its identity is
+// rewritten, so the census flags it and exits non-zero. Lives here, next to the
+// scope rule it qualifies, so it is testable rather than buried in a live-data
+// script with no unit surface. (CodeRabbit, PR #343.)
+export function isUnexpectedSubcategory(product) {
+  return isInScope(product) && product.subcategory !== "Caps & Hats";
+}
+
 // ── WHAT COUNTS AS AN OPEN REFERENCE ─────────────────────────────────────────
 // A product is gated only when some FUTURE action would still move stock in the
 // size key this migration is about to retire. An order's base status alone does

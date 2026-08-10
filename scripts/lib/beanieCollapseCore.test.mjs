@@ -21,7 +21,7 @@
 import { describe, it, expect } from "vitest";
 import {
   applyMovementAdmin, planStep1, planStep2, planStep3, step2Done, verifyProduct,
-  assertDrained, legIds, orderBlocks, transferBlocks, isInScope,
+  assertDrained, legIds, orderBlocks, transferBlocks, isInScope, isUnexpectedSubcategory,
 } from "./beanieCollapseCore.mjs";
 
 // ── fake RTDB ────────────────────────────────────────────────────────────────
@@ -531,6 +531,15 @@ describe("scope — caps are untouched by every path", () => {
     expect(raw.barcodes["00077772"].size).toBe("M");
     expect(raw.stock.hub2.pCap).toEqual({ S: cell(2), M: cell(3), L: cell(4) });
     expect(raw.stock.hub2.pCap._).toBeUndefined();
+  });
+
+  it("flags a beanie filed outside Caps & Hats, and only an in-scope one", () => {
+    // In scope (the name decides) but worth a human's eye — the census exits
+    // non-zero on it rather than reading as clean.
+    expect(isUnexpectedSubcategory({ name: "Nike beanie green", subcategory: "Accessories" })).toBe(true);
+    expect(isUnexpectedSubcategory({ name: "Nike beanie green", subcategory: "Caps & Hats" })).toBe(false);
+    expect(isUnexpectedSubcategory({ name: "Nike cap black", subcategory: "Accessories" })).toBe(false);
+    expect(isUnexpectedSubcategory({ name: "Nike beanie green", subcategory: "Accessories", mergedInto: "pX" })).toBe(false);
   });
 
   it("the scope predicate takes beanies by name and rejects caps and merge stubs", () => {

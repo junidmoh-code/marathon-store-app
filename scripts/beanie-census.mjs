@@ -37,6 +37,7 @@
 
 import { createRequire } from "module";
 import { writeFileSync } from "fs";
+import { isInScope, isUnexpectedSubcategory } from "./lib/beanieCollapseCore.mjs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -74,7 +75,7 @@ const LIVE_ORDER_STATUSES = new Set(["incoming", "ready", "coming_tomorrow", "on
     const isCapsHats = p?.subcategory === "Caps & Hats";
     if (!isBeanieName && !isCapsHats) continue;
     if (isBeanieName) {
-      if (p.mergedInto) { mergedStubs.push({ pid, mergedInto: p.mergedInto, name: p.name }); continue; }
+      if (!isInScope(p)) { mergedStubs.push({ pid, mergedInto: p.mergedInto, name: p.name }); continue; }
       beanies.push([pid, p]);
     } else {
       capsCount++;
@@ -199,7 +200,7 @@ const LIVE_ORDER_STATUSES = new Set(["incoming", "ready", "coming_tomorrow", "on
   // through flag(), so a name-matched beanie filed under an unexpected
   // subcategory could not affect the exit status and a scripted run would treat
   // the census as clean. (CodeRabbit, PR #343.)
-  const offSub = report.filter((r) => r.subcategory !== "Caps & Hats");
+  const offSub = report.filter((r) => isUnexpectedSubcategory(products[r.pid]));
   for (const r of offSub) flag("unexpected-subcategory", `${r.pid} "${r.name}" is name-matched as a beanie but filed under ${JSON.stringify(r.subcategory)} — confirm it belongs in scope`);
   if (offSub.length) console.log(`\nNAME-MATCHED OUTSIDE Caps & Hats (in scope, flagged):\n${offSub.map((r) => `  ${r.pid} "${r.name}" sub=${r.subcategory}`).join("\n")}`);
 
