@@ -113,6 +113,35 @@ export function describeUsbDevice(device, { hadActiveConfiguration = null, chose
   };
 }
 
+// Flatten a diagnostic into a block of plain text that can be READ OFF A PHOTO of
+// the screen or copied out of the app. This is the only channel we have to the
+// machines that fail — they are remote and their console is not reachable.
+export function formatUsbDiagnostics(diag, error = null) {
+  if (!diag) return error ? `error: ${error}` : "no device information captured";
+  const cls = (n) => (typeof n === "number" ? n : "?");
+  const out = [];
+  out.push(`${diag.productName || "(no product name)"} — ${diag.manufacturerName || "(no manufacturer)"} ${diag.vendorId}/${diag.productId}`);
+  out.push(`device class ${cls(diag.deviceClass)}/${cls(diag.deviceSubclass)}/${cls(diag.deviceProtocol)}${diag.serialNumber ? ` · serial ${diag.serialNumber}` : ""}`);
+  out.push(`configuration active before selection: ${diag.hadActiveConfiguration === null ? "unknown" : diag.hadActiveConfiguration ? "yes" : "NO"} · active now: ${diag.activeConfigurationValue ?? "none"}`);
+  for (const cfg of diag.configurations || []) {
+    out.push(`config ${cfg.configurationValue ?? "?"}:`);
+    if (!(cfg.interfaces || []).length) out.push("  (no interfaces)");
+    for (const intf of cfg.interfaces || []) {
+      for (const alt of intf.alternates || []) {
+        const eps = (alt.endpoints || []).map((e) => `${e.direction}/${e.type}/${e.number}`).join(", ") || "no endpoints";
+        out.push(`  interface ${intf.number ?? "?"} alt ${alt.alternateSetting ?? "?"} class ${cls(alt.interfaceClass)}/${cls(alt.interfaceSubclass)}/${cls(alt.interfaceProtocol)}: ${eps}`);
+      }
+      if (!(intf.alternates || []).length) out.push(`  interface ${intf.number ?? "?"}: (no alternates)`);
+    }
+  }
+  out.push(diag.chosen
+    ? `chosen: config ${diag.chosen.configurationValue} · interface ${diag.chosen.interfaceNumber} · alt ${diag.chosen.alternateSetting} · bulk OUT endpoint ${diag.chosen.endpointNumber} (class ${cls(diag.chosen.interfaceClass)})`
+    : "chosen: NONE — no bulk OUT endpoint anywhere on this device");
+  if (diag.at) out.push(`at ${diag.at}`);
+  if (error) out.push(`error: ${error}`);
+  return out.join("\n");
+}
+
 function fail(message, diag) {
   const err = new Error(message);
   err.diag = diag;
@@ -179,15 +208,30 @@ export async function openUsbPrinter(device, { sleep = wait, claimRetryMs = CLAI
   };
 }
 
+// What a non-"ok" transferOut status actually means, so the operator isn't staring
+// at a bare word. A "stall" in particular is the printer rejecting the endpoint —
+// it is NOT a delivery success and must never be reported as one.
+const STATUS_HINT = {
+  stall: "the printer halted the endpoint (wrong endpoint, or it rejected the data)",
+  babble: "the printer sent back more data than the endpoint allows",
+};
+
 // Push bytes down the endpoint that was ACTUALLY discovered. Returns the number of
-// bytes the device acknowledged.
+// bytes the device acknowledged. Every chunk's status is checked — a partial or
+// stalled write raises rather than counting as printed.
 export async function sendBulk(device, endpointNumber, bytes, chunkSize = TX_CHUNK) {
   let sent = 0;
   for (let i = 0; i < bytes.length; i += chunkSize) {
     const chunk = bytes.slice(i, i + chunkSize);
     const res = await device.transferOut(endpointNumber, chunk);
     const status = res?.status;
-    if (status !== "ok") throw new Error(`USB transfer ${status || "failed"} on endpoint ${endpointNumber}`);
+    if (status !== "ok") {
+      const hint = STATUS_HINT[status];
+      throw new Error(
+        `USB transfer returned "${status || "no status"}" on endpoint ${endpointNumber}` +
+        `${hint ? ` — ${hint}` : ""} (${sent} of ${bytes.length} bytes sent).`
+      );
+    }
     sent += typeof res?.bytesWritten === "number" ? res.bytesWritten : chunk.length;
   }
   return sent;

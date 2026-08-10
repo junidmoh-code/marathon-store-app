@@ -16,7 +16,7 @@
 // This is a SEPARATE transport — the Phomemo M110 Bluetooth path is untouched.
 
 import { code128Modules } from "../barcode";
-import { PRINTER_CLASS, TX_CHUNK, openUsbPrinter, sendBulk } from "./usbDiscovery";
+import { PRINTER_CLASS, TX_CHUNK, openUsbPrinter, sendBulk, formatUsbDiagnostics } from "./usbDiscovery";
 
 const ENCODER = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
 
@@ -36,6 +36,9 @@ let disconnectWired = false;
 // endpoint map. Surfaced on screen and to RTDB by the caller.
 let lastXprinterDiag = null;
 export function getXprinterDiag() { return lastXprinterDiag; }
+// The same map as a copyable block of text — what the UI shows and what the
+// operator photographs / copies when the printer won't connect.
+export function getXprinterDiagText(error = null) { return formatUsbDiagnostics(lastXprinterDiag, error); }
 
 export function isXprinterSupported() {
   return typeof navigator !== "undefined" && !!navigator.usb;
@@ -202,23 +205,27 @@ export async function connectXprinter() {
 // items: [{ code, productName, size, count }]. Emits one TSPL label per item with
 // PRINT copies = count (never 0 → 1). Streams the whole batch over ONE connection;
 // the device stays claimed afterwards for the next batch (silent reuse).
+// Returns { ok, printed, bytes } — `bytes` is what the device ACKNOWLEDGED, so a
+// success line can prove data actually left the machine. On failure the full USB
+// diagnostic rides along as `diag` for the on-screen block.
 export async function printXprinter(items, conn = null) {
   if (!isXprinterSupported()) return { ok: false, error: "WebUSB not available — use desktop Chrome." };
   if (!ENCODER) return { ok: false, error: "TextEncoder unavailable." };
   try {
     const c = conn || await getConnection();
-    let printed = 0;
+    let printed = 0, bytes = 0;
     for (const it of items || []) {
       if (!it || !it.code) continue;
       const n = Number(it.count);
       const copies = Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;   // never 0
-      await sendBulk(c.device, c.endpointOut, ENCODER.encode(tsplLabel(it, copies)), TX_CHUNK);
+      bytes += await sendBulk(c.device, c.endpointOut, ENCODER.encode(tsplLabel(it, copies)), TX_CHUNK);
       printed += copies;
     }
     if (!printed) return { ok: false, error: "Nothing to print." };
-    return { ok: true, printed };
+    return { ok: true, printed, bytes };
   } catch (err) {
-    return { ok: false, error: String(err?.message || err) };
+    const error = String(err?.message || err);
+    return { ok: false, error, diag: getXprinterDiagText(error) };
   }
   // NO release/close — keep the device claimed so the next batch reuses it (BUG-2 parity
   // with Phomemo). The cache is cleared by the USB 'disconnect' listener.

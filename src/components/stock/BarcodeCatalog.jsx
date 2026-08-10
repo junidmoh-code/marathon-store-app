@@ -18,7 +18,7 @@ import { transferTargets, labelFor } from "./locations";
 import FilterPicker from "./FilterPicker";
 import { ensureBarcode, getBarcode } from "./barcodeStore";
 import { code128Modules } from "./barcode";
-import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag, defaultTransportId } from "./printers";
+import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag, getXprinterDiagText, defaultTransportId } from "./printers";
 import { Toast, Empty } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGhost, input } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
@@ -47,6 +47,43 @@ function Thumb({ product, size = 40, onOpen }) {
     style={{ width: size, height: size, objectFit: "cover", borderRadius: 9, flexShrink: 0, cursor: onOpen ? "zoom-in" : "default" }}
     onError={(e) => { e.currentTarget.style.display = "none"; }} />;
   return <div style={{ width: size, height: size, borderRadius: 9, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.5, flexShrink: 0 }}>👟</div>;
+}
+
+// ─── PRINTER DIAGNOSTIC BOX ───────────────────────────────────────────────────
+// The machines that fail are REMOTE — no console, no dev tools. Whatever went
+// wrong has to be (a) readable off a photo of this box and (b) copyable in one tap
+// so it can be pasted into a message. Multi-line, monospace, scrolls rather than
+// swallowing the page.
+function DiagBox({ text, onDismiss, compact = false }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else {
+        // execCommand fallback — clipboard API needs a secure context.
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+      }
+      setCopied(true); setTimeout(() => setCopied(false), 2000);
+    } catch { /* copy is a convenience — the text is on screen regardless */ }
+  };
+  return (
+    <div style={{ padding: "9px 10px", borderRadius: 9, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.12)",
+                  display: "flex", gap: 8, alignItems: "flex-start" }}>
+      <pre style={{ flex: 1, margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "monospace",
+                    fontSize: compact ? 10 : 11, lineHeight: 1.45, color: "#fff", maxHeight: compact ? 190 : 260, overflowY: "auto" }}>{text}</pre>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+        <button onClick={copy}
+          style={{ padding: "5px 8px", borderRadius: 7, cursor: "pointer", fontSize: 10.5, fontWeight: 700, whiteSpace: "nowrap",
+                   background: "rgba(74,127,255,.16)", border: "1px solid rgba(74,127,255,.4)", color: "#9DBCFF", fontFamily: FONT }}>
+          {copied ? "Copied ✓" : "Copy diagnostics"}
+        </button>
+        <button onClick={onDismiss}
+          style={{ background: "none", border: "none", color: GRAY, cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0 }}>✕</button>
+      </div>
+    </div>
+  );
 }
 
 export default function BarcodeCatalog({ products, canMint, onExit }) {
@@ -157,10 +194,12 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     // Best-effort: persist the Xprinter's USB identity (VID/PID + iface/endpoints) to
     // RTDB so it can be read server-side — captured pre-claim, so even a claim failure
     // records it. Shown on screen too. Only for the Xprinter transport.
+    // On FAILURE the full block goes on screen (the remote machine has no console);
+    // on success we stay quiet and only record to RTDB.
     const recordXprinterDiag = async (error) => {
       if (transport !== "xprinter") return;
       const d = getXprinterDiag();
-      if (d) setDiagText(`XP-350B ${d.vendorId}/${d.productId}${error ? ` — ${error}` : ""}`);
+      if (error) setDiagText(getXprinterDiagText(error));
       try { await set(ref(database, "printer_diag/xprinter"), { ...(d || {}), error: error || null }); }
       catch { /* diagnostic only */ }
     };
@@ -195,9 +234,14 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     if (noCode) skipped.push(`${noCode} had no code`);
     if (failReserve) skipped.push(`${failReserve} failed`);
     const extra = skipped.length ? ` · ${skipped.join(", ")}` : "";
-    const diag = res.diag ? ` [${res.diag}]` : "";
-    if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${TRANSPORTS.find(t => t.id === transport)?.label}${extra}.${diag}`);
-    else flash("err", `Print failed: ${res.error} — codes are saved; retry.${diag}`);
+    if (res.ok) {
+      // Byte count = what the printer ACKNOWLEDGED, so "sent" is evidence, not a guess.
+      const bytes = typeof res.bytes === "number" ? ` · ${res.bytes} bytes sent` : "";
+      flash("ok", `Sent ${res.printed} label(s) to ${TRANSPORTS.find(t => t.id === transport)?.label}${extra}.${bytes}`);
+    } else {
+      if (res.diag) setDiagText(res.diag);
+      flash("err", `Print failed: ${res.error} — codes are saved; retry.`);
+    }
   };
 
   // ── DESKTOP BARCODE STUDIO (≥1024px) — sidebar (filters + printer) · product
@@ -257,9 +301,8 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
             );
           })}
           {diagText && (
-            <div style={{ marginTop: 8, padding: "9px 10px", borderRadius: 9, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", fontSize: 10.5, color: "#fff", wordBreak: "break-word", fontFamily: "monospace", display: "flex", gap: 6 }}>
-              <span style={{ flex: 1 }}>{diagText}</span>
-              <button onClick={() => setDiagText(null)} style={{ background: "none", border: "none", color: GRAY, cursor: "pointer", padding: 0 }}>✕</button>
+            <div style={{ marginTop: 8 }}>
+              <DiagBox text={diagText} onDismiss={() => setDiagText(null)} compact />
             </div>
           )}
           <div style={{ flex: 1 }} />
@@ -454,10 +497,8 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
       </div>
 
       {diagText && (
-        <div style={{ marginBottom: 12, padding: "9px 11px", borderRadius: 9, background: "rgba(255,255,255,.06)", border: BORDER,
-                      fontSize: 11, color: "#fff", wordBreak: "break-word", display: "flex", gap: 8, alignItems: "flex-start" }}>
-          <span style={{ flex: 1, fontFamily: "monospace" }}>{diagText}</span>
-          <button onClick={() => setDiagText(null)} style={{ background: "none", border: "none", color: GRAY, cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0 }}>✕</button>
+        <div style={{ marginBottom: 12 }}>
+          <DiagBox text={diagText} onDismiss={() => setDiagText(null)} />
         </div>
       )}
 
