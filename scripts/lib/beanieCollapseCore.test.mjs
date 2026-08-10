@@ -629,6 +629,20 @@ describe("the transfer gate reads the real record shape", () => {
   it("blocks an unrecognised shape that still names the product", () => {
     expect(transferBlocks({ status: "sent", payload: `something about ${pid}` }, pid)).toMatch(/shape this gate does not understand/);
   });
+  it("a well-formed node cannot vouch for a malformed sibling node", () => {
+    // lines[pid] reads cleanly and carries only "_", while received[pid] hides
+    // its sizes one level down. A single sticky "understood" flag would let the
+    // good node vouch for the bad one and return a clean bill on a transfer
+    // that really does carry M.
+    const mixed = { status: "sent", lines: { [pid]: { _: 2 } }, received: { [pid]: { sizes: { M: 2 } } } };
+    expect(transferBlocks(mixed, pid)).toMatch(/shape this gate does not understand/);
+    // reversed — the malformed node first
+    const reversed = { status: "sent", lines: { [pid]: { sizes: { M: 2 } } }, received: { [pid]: { _: 2 } } };
+    expect(transferBlocks(reversed, pid)).toMatch(/shape this gate does not understand/);
+    // both well-formed and one-size only → still a clean pass
+    expect(transferBlocks({ status: "sent", lines: { [pid]: { _: 2 } }, received: { [pid]: { _: 1 } } }, pid)).toBe(null);
+  });
+
   it("blocks a `lines` node nested differently — an empty structural read is not a clean bill", () => {
     // These carry `lines`, so an "only when both nodes are absent" fail-safe
     // skipped the mention check and returned "does not block".

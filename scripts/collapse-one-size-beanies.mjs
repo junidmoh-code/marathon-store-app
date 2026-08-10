@@ -49,8 +49,7 @@
 
 import { createRequire } from "module";
 import { writeFileSync, readFileSync, statSync } from "fs";
-import os from "os";
-import { tmpdir } from "os";
+import { hostname, tmpdir } from "os";
 import { join } from "path";
 import { setServerTimeOffsetMs, serverNowIso } from "../src/utils/serverTime.js";
 import {
@@ -202,7 +201,7 @@ function hasPrivilegedCredential(app) {
   const LOCK = "_migrations/beanieOneSizeCollapse/runLock";
   let lockHeld = false;
   if (EXECUTE) {
-    const mine = { startedAt: nowIso, pid: process.pid, host: os.hostname(), releasedAt: null };
+    const mine = { startedAt: nowIso, pid: process.pid, host: hostname(), releasedAt: null };
     const { committed, snapshot } = await db.ref(LOCK).transaction((cur) => {
       if (cur && cur.releasedAt == null) return;         // abort: someone holds it
       return mine;

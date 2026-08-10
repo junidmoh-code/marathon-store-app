@@ -229,15 +229,23 @@ export function transferBlocks(transfer, pid) {
   // { sizes: { M: 2 } } has the pid but hides its sizes one level down, and
   // treating that as read would return a clean bill on a transfer that really
   // does carry size M. Numbers all the way down, or it is not understood.
+  // Judged PER NODE, then combined. A single `understood` flag set by whichever
+  // node happened to be well-formed was sticky: a good lines[pid] would vouch
+  // for a malformed received[pid], and the mention check never fired — a clean
+  // bill on a transfer that really did carry a real size in the node nobody
+  // could read. Every node that mentions the product must be readable.
+  // (Kimi review of the lock delta, PR #343.)
   const sizes = new Set();
-  let understood = false;
+  let found = false, malformed = false;
   for (const node of [transfer.lines, transfer.received]) {
     const entry = node?.[pid];
     if (!entry || typeof entry !== "object") continue;
+    found = true;
     const values = Object.values(entry);
-    if (values.length && values.every((v) => typeof v === "number")) understood = true;
+    if (!(values.length && values.every((v) => typeof v === "number"))) malformed = true;
     for (const k of Object.keys(entry)) if (REAL_SIZE.test(k)) sizes.add(k);
   }
+  const understood = found && !malformed;
   if (sizes.size) return `open transfer (${transfer.status || "no status"}) ${transfer.from || "?"}→${transfer.to || "?"} carrying size ${[...sizes].sort().join(", ")}`;
   // Unrecognised shape that still names the product: same fail-safe rule as
   // orderBlocks — block rather than assume.
