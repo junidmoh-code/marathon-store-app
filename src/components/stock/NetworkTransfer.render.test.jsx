@@ -259,6 +259,23 @@ describe("the store the panel names is the store the write uses", () => {
   });
 });
 
+describe("wording only fits the product it describes", () => {
+  it("a product with NO usable catalogue size is not called 'one-size'", () => {
+    // `.every` is vacuously true on an empty list, and catalogSizes drops blanks,
+    // so this product would have been told to set a target for a size it does not
+    // have. (Sonnet review, PR #342.)
+    const BLANK = "blank1";
+    const tree = render({}, {
+      products: [{ id: BLANK, name: "Blank Size Item", productType: "clothing", sizes: ["   "] }],
+      stock: { central: { [BLANK]: { _: cell(4) } } },
+    });
+    const btn = solveButton(tree);
+    expect(btn.props.disabled).toBe(true);
+    expect(btn.props.title).toMatch(/No refill policy/);
+    expect(btn.props.title).not.toMatch(/one-size/i);
+  });
+});
+
 describe("the coverage estimate reads the cell the stock is actually in", () => {
   // The sibling of the sneaker defect, on the clothing side: the confirm panel
   // asks "how much of this does Central hold?" by indexing the DECODED cell map.
