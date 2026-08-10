@@ -20,6 +20,8 @@ vi.mock("../stock/TongueLabelReader", () => ({ LabelCamera: () => null }));
 vi.mock("../../utils/labelPhoto", () => ({ prepareLabelPhoto: vi.fn() }));
 vi.mock("../../utils/barcodeDecode", () => ({ decodeFrames: vi.fn(), readPrintedDigits: vi.fn() }));
 
+const { LabelCamera } = await import("../stock/TongueLabelReader");
+const { decodeFrames, readPrintedDigits } = await import("../../utils/barcodeDecode");
 const PrintedBarcodeCapture = (await import("./PrintedBarcodeCapture.jsx")).default;
 
 const OUD_MOOD = "6291106065114";
@@ -39,6 +41,12 @@ function textOf(n) {
 const allText = (r) => textOf(r.toJSON());
 const textInput = (r) => r.root.findAllByType("input").find((i) => i.props.type !== "file");
 const form = (r) => r.root.findByType("form");
+
+async function openCamera(r) {
+  const btn = r.root.findAllByType("button").find((b) => /Photograph the barcode/i.test(textOf(b.props.children)));
+  await act(async () => { btn.props.onClick(); });
+  return r;
+}
 
 async function mount(props = {}) {
   let r;
@@ -122,6 +130,60 @@ describe("a code already in the index", () => {
     await type(r, OUD_MOOD);
     expect(onCapture).not.toHaveBeenCalled();
     expect(allText(r)).toMatch(/could not check/i);
+  });
+});
+
+// ─── THE LADDER — decode, then OCR the digits, then manual ───────────────────
+// The rungs below manual entry had no coverage at all: the OCR fallback, the
+// warning that says a reading came from the printed number rather than the
+// bars, and the combined message when both fail. (CodeRabbit, PR #340.)
+describe("the fallback ladder", () => {
+  const FRAMES = [{ blob: {}, base64: "b64" }];
+
+  it("a decoded symbol is captured with NO printed-number warning", async () => {
+    decodeFrames.mockResolvedValue({ ok: true, code: OUD_MOOD, frameIndex: 0 });
+    const onCapture = vi.fn();
+    const r = await openCamera(await mount({ onCapture }));
+    await act(async () => { await r.root.findByType(LabelCamera).props.onFrames(FRAMES); });
+
+    expect(onCapture).toHaveBeenCalledWith(OUD_MOOD);
+    expect(readPrintedDigits).not.toHaveBeenCalled();   // no vision call spent
+    expect(allText(r)).not.toMatch(/printed number under them/i);
+  });
+
+  it("falls back to the printed digits and SAYS the reading came from them", async () => {
+    decodeFrames.mockResolvedValue({ ok: false, reason: "no_symbol", message: "No barcode could be read." });
+    readPrintedDigits.mockResolvedValue({ ok: true, code: OUD_MOOD, fromDigits: true });
+    const onCapture = vi.fn();
+    const r = await openCamera(await mount({ onCapture }));
+    await act(async () => { await r.root.findByType(LabelCamera).props.onFrames(FRAMES); });
+
+    expect(onCapture).toHaveBeenCalledWith(OUD_MOOD);
+    // An OCR'd reading is weaker evidence than a decode — the operator is told.
+    expect(allText(r)).toMatch(/printed number under them/i);
+  });
+
+  it("combines BOTH failure messages when the bars and the digits both fail", async () => {
+    decodeFrames.mockResolvedValue({ ok: false, reason: "no_symbol", message: "No barcode could be read." });
+    readPrintedDigits.mockResolvedValue({ ok: false, reason: "no_digits", message: "Type it from the box." });
+    const onCapture = vi.fn();
+    const r = await openCamera(await mount({ onCapture }));
+    await act(async () => { await r.root.findByType(LabelCamera).props.onFrames(FRAMES); });
+
+    expect(onCapture).not.toHaveBeenCalled();
+    expect(allText(r)).toMatch(/No barcode could be read/);
+    expect(allText(r)).toMatch(/Type it from the box/);
+  });
+
+  it("a THROWN decode renders the error note instead of an unhandled rejection", async () => {
+    decodeFrames.mockRejectedValue(new Error("camera exploded"));
+    const onCapture = vi.fn();
+    const r = await openCamera(await mount({ onCapture }));
+    await act(async () => { await r.root.findByType(LabelCamera).props.onFrames(FRAMES); });
+
+    expect(onCapture).not.toHaveBeenCalled();
+    expect(allText(r)).toMatch(/camera exploded/);
+    expect(allText(r)).toMatch(/type it from the box/i);
   });
 });
 

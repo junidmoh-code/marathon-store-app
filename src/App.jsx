@@ -6251,6 +6251,12 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           `product record failed (${attach.reason}). Reload and try again — re-capturing the same ` +
           `code is safe and will report it as already registered.`
         : `${code} was not registered: ${attach.reason}.\n\nNothing was changed.`);
+    } catch (err) {
+      // attachPrintedBarcode reports its own failures rather than throwing, so
+      // reaching here means something unforeseen. Silence would leave the
+      // capture looking like it succeeded. (CodeRabbit, PR #340.)
+      console.error("printed barcode save threw:", err);
+      alert(`Could not register ${code} (${err?.message || err}). Check the product before trying again.`);
     } finally {
       setSavingPrintedBarcode(false);
     }
@@ -6696,7 +6702,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
             <PrintedBarcodeCapture
               productId={product.id}
               products={allProducts}
-              value={recapture || typeof product.printedBarcode !== "string" ? null : product.printedBarcode}
+              value={(recapture || !printedCode) ? null : printedCode}
               busy={savingPrintedBarcode}
               onCapture={savePrintedBarcode}
               onClear={clearPrintedBarcode}

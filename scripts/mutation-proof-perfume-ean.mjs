@@ -376,6 +376,21 @@ function runTests(files) {
 // The restored run re-executes the same suites against byte-identical source,
 // so within one harness run its result is deterministic per test-set. Several
 // mutations share a test list; caching halves the wall time. (CodeRabbit.)
+// ── PREFLIGHT: NEVER MUTATE AN ALREADY-DIRTY FILE ─────────────────────────────
+// If a previous run was killed mid-mutation, its file is still broken on disk —
+// and this run would capture that broken text as `original` and faithfully
+// "restore" it afterwards, cementing the damage while reporting green.
+// (CodeRabbit, PR #340.)
+{
+  const dirty = execFileSync("git", ["status", "--porcelain", "--", ...new Set(MUTATIONS.map((m) => m.file))])
+    .toString().trim();
+  if (dirty) {
+    console.error("Working tree is not clean for the files this harness mutates:\n" + dirty);
+    console.error("Commit or stash first — a dirty file would be captured as the baseline.");
+    process.exit(2);
+  }
+}
+
 const restoredCache = new Map();
 const results = [];
 for (const m of MUTATIONS) {

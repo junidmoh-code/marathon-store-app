@@ -151,7 +151,7 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     // perfume EAN must not survive a switch to a SIZED category, where it
     // would register a one-size code against a product sized 9/10.
     expect(app).toMatch(/sizeRun: \[\],[\s\S]{0,700}?hubs: hubs\.length/);
-    expect(app).toMatch(/printedBarcode: null,\n\s*printedBarcodeAuto: false,/);
+    expect(app).toMatch(/printedBarcode: null,\s*printedBarcodeAuto: false,/);
     // The no-label rule follows what actually REGISTERED, never what was
     // merely attempted. Deriving it from the attempt told staff to print and
     // stick a fallback shop label while suppressing the only screen that

@@ -121,7 +121,12 @@ export default function PrintedBarcodeCapture({
   //    moves on. /barcodes/$code is CREATE-ONLY at the rules layer, so a code
   //    already in the index cannot be overwritten; attempting it fails
   //    SILENTLY. Read it, and let what is there decide.
-  const accept = async (code, token = beginRun()) => {
+  // `noteOnSuccess` survives the accept. Setting a note BEFORE calling accept
+  // did not work: the free-slot path clears the note, so the warning that a
+  // reading came from OCR'd digits rather than the decoded bars — the one that
+  // tells the operator to check it against the box — was wiped before it could
+  // be read. Found by writing the ladder tests. (CodeRabbit, PR #340.)
+  const accept = async (code, token = beginRun(), noteOnSuccess = null) => {
     setWorking("checking");
     try {
       const verdict = await inspectPrintedBarcode(code, productId);
@@ -155,7 +160,7 @@ export default function PrintedBarcodeCapture({
       if (verdict.kind === PRINTED_ALREADY) {
         setNote({ tone: "green", text: `${code} is already registered to this product — nothing to do.` });
       } else {
-        setNote(null);
+        setNote(noteOnSuccess);
       }
       onCapture(code);
     } catch (err) {
@@ -184,8 +189,10 @@ export default function PrintedBarcodeCapture({
       const digits = await readPrintedDigits(frames, readStyleCodeLabelFn);
       if (!isCurrent(token)) return;
       if (digits.ok) {
-        setNote({ tone: "amber", text: "The bars would not read, so this came from the printed number under them — check it against the box before continuing." });
-        await accept(digits.code, token);
+        await accept(digits.code, token, {
+          tone: "amber",
+          text: "The bars would not read, so this came from the printed number under them — check it against the box before continuing.",
+        });
         return;
       }
       setNote({ tone: "amber", text: `${decoded.message} ${digits.message}` });
@@ -319,6 +326,7 @@ export default function PrintedBarcodeCapture({
       <form onSubmit={(e) => { e.preventDefault(); applyTyped(); }}
             style={{ display: "flex", gap: 8, marginTop: 10 }}>
         <input value={typed} onChange={(e) => setTyped(e.target.value)}
+               aria-label="Printed barcode number from the box"
                inputMode="numeric" placeholder="…or type the number, e.g. 6291106065114"
                style={{ ...input, flex: 1, minHeight: 48, fontSize: 15, fontVariantNumeric: "tabular-nums" }} />
         <button type="submit" disabled={!typed.trim() || !!working || busy}
@@ -331,7 +339,7 @@ export default function PrintedBarcodeCapture({
           style={{ ...bGhost, width: "100%", minHeight: 46, marginTop: 10, fontSize: 12.5,
                    color: usingAuto ? GREEN : "rgba(233,238,255,.6)" }}>
           {usingAuto
-            ? "✓ Using a shop-generated barcode for this one"
+            ? "✓ Using a shop-generated barcode — tap to undo"
             : "Barcode unreadable — generate a shop barcode instead"}
         </button>
       )}

@@ -100,6 +100,12 @@ export async function decodeFrames(frames, { decode = decodeBlob } = {}) {
   for (const frame of frames || []) {
     if (!frame || !frame.blob) { readings.push(null); continue; }
     readings.push(await decode(frame.blob));
+    // The FIRST valid reading ends the burst — later frames cannot change the
+    // answer (pickDecodedBarcode already takes the first valid one), and each
+    // decode is a full ZXing pass plus a DOM node. Selection semantics are
+    // identical; only the wasted work is gone. (CodeRabbit, PR #340.)
+    const soFar = pickDecodedBarcode(readings);
+    if (soFar.ok) return soFar;
   }
   return pickDecodedBarcode(readings);
 }
