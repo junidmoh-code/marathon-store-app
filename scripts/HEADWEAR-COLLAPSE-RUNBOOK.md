@@ -122,7 +122,20 @@ moves until it passes.
 Then the dry run, and read it:
 
 ```bash
-node scripts/collapse-one-size-headwear.mjs
+GATE_MAX_AGE_SECONDS=3600 node scripts/collapse-one-size-headwear.mjs
+```
+
+**Expect the dry run to take a while, and use that env var for it.** The gate
+data (transfers, orders, refill requests, engine locks, Display Checks) is
+re-read whenever it is more than 60 seconds old, so that a request opened
+mid-run cannot be missed. `/refill_requests` alone is ~12k records, and over 301
+products that refresh happens many times. That bounded staleness is exactly what
+you want on the **execute** run and is pure cost on a dry run, which writes
+nothing — so raise it for the dry run and leave it at the default when you
+execute:
+
+```bash
+node scripts/collapse-one-size-headwear.mjs --execute        # default 60s — keep it
 ```
 
 Confirm the summary matches the census and that GATED is down to whatever you
