@@ -29,6 +29,14 @@
 // two policy-row decisions, and M25-M27 the resume path that both independent
 // reviews of #345 broke: a pair left half-applied by an interrupted run, whose
 // source cell then moved before the resume.
+//
+// M28-M32 came out of the second review round: the resume/stranded
+// de-duplication (M28), the mirrored pair's closing leg being owed on
+// conservation grounds rather than on the cell's current value (M29), deferring
+// a positive balance while a mirror resume is pending (M30), the orphan-index
+// guard keying on the RECORD rather than the map key (M31), and the totals
+// check expecting the credit a resumed pair owes instead of calling it minted
+// stock (M32).
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -238,7 +246,10 @@ const MUTATIONS = [
   },
   {
     id: "M24",
-    guard: "A policy row must carry minQty, and reorderPoint null is refused rather than written",
+    // Narrowly what the mutation removes: the minQty requirement. reorderPoint
+    // handling is asserted by its own test but has no mutation of its own, so
+    // this guard must not claim it. (CodeRabbit, PR #345.)
+    guard: "A policy row must carry minQty (the live rule requires it)",
     file: CORE,
     from: `  if (typeof row.minQty !== "number" || !Number.isFinite(row.minQty)) return "minQty is not a finite number (the live rule REQUIRES it)";`,
     to: ``,

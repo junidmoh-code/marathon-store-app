@@ -247,9 +247,10 @@ barcode index record, every stock cell and every target row as they were before
 the run.
 
 ```bash
-node scripts/rollback-headwear-collapse.mjs ~/headwear-collapse-rollback-YYYYMMDD-HHMM.json
+# whichever pass you are undoing — the two have separate snapshots:
+node scripts/rollback-headwear-collapse.mjs ~/headwear-cap-rollback-YYYYMMDD-HHMM.json
 # read it, then:
-node scripts/rollback-headwear-collapse.mjs ~/headwear-collapse-rollback-YYYYMMDD-HHMM.json --execute
+node scripts/rollback-headwear-collapse.mjs ~/headwear-cap-rollback-YYYYMMDD-HHMM.json --execute
 ```
 
 It restores `sizes`, the `barcodes` map, **whole** barcode index records (and

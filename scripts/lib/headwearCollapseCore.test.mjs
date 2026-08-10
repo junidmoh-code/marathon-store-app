@@ -701,7 +701,7 @@ describe("STEP 2 — one atomic identity update", () => {
       expect(raw.barcodes[code].size).toBe("_");
       expect(raw.products.pB.sizes).toContain(raw.barcodes[code].size);
     }
-    // Exactly one keeps the slot; the other six are reported, not deleted.
+    // Exactly one keeps the slot; the other five are reported, not deleted.
     expect(r.droppedCodes).toHaveLength(5);
     expect([...r.droppedCodes, r.keepCode].sort()).toEqual(Object.values(barcodes).sort());
     for (const code of r.droppedCodes) expect(raw.barcodes[code]).toBeTruthy();

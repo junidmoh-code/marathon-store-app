@@ -274,14 +274,27 @@ function hasPrivilegedCredential(app) {
   // older than a bounded age gets the same guarantee at a sane cost. The
   // exposure drops from "the whole run" to at most GATE_MAX_AGE_MS, and the
   // recent-activity gate covers the tail.
-  const GATE_MAX_AGE_MS = Number(process.env.GATE_MAX_AGE_SECONDS || 60) * 1000;
+  // Validated, not coerced: a non-numeric or non-positive value silently turns
+  // a staleness bound into either "never refresh" (NaN comparisons are always
+  // false) or "refresh on every product". Both defeat the gate quietly.
+  const positiveSeconds = (name, fallback) => {
+    const raw = process.env[name];
+    if (raw == null || raw === "") return fallback * 1000;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`ABORT: ${name}=${JSON.stringify(raw)} is not a finite positive number of seconds.`);
+      process.exit(1);
+    }
+    return n * 1000;
+  };
+  const GATE_MAX_AGE_MS = positiveSeconds("GATE_MAX_AGE_SECONDS", 60);
   // /stock_movements is the LARGEST node in the database and was previously read
   // exactly once. Refreshing it on the 60s gate cadence is a full re-download
   // every minute of an hour-long run. It gets its own, longer interval: still
   // vastly fresher than "once at startup" (which turned a sliding 15-minute
   // recency window into a fixed slice of the run's first 15 minutes), at a
   // fraction of the bandwidth. (Review of PR #345.)
-  const LEDGER_MAX_AGE_MS = Number(process.env.LEDGER_MAX_AGE_SECONDS || 300) * 1000;
+  const LEDGER_MAX_AGE_MS = positiveSeconds("LEDGER_MAX_AGE_SECONDS", 300);
   let ledgerReadAt = Date.now();
   //
   // THE LEDGER IS REFRESHED WITH THEM, and the clock with it. The recent-
@@ -299,16 +312,28 @@ function hasPrivilegedCredential(app) {
   const freshGates = async () => {
     if (Date.now() - gateReadAt < GATE_MAX_AGE_MS) return gateData;
     const wantLedger = Date.now() - ledgerReadAt >= LEDGER_MAX_AGE_MS;
-    const [t, o, rr, ol, dc, mv] = await Promise.all([
+    const [t, o, rr, ol, dc, mv, bc] = await Promise.all([
       io.read("transfers"), io.read("orders"), io.read("refill_requests"),
       io.read("refill_engine/open"), io.read("displayChecks_active"),
       wantLedger ? io.read("stock_movements") : Promise.resolve(null),
-    ]).then((r) => r.map((v, i) => (i === 5 ? v : (v || {}))));
+      wantLedger ? io.read("barcodes") : Promise.resolve(null),
+    ]).then((r) => r.map((v, i) => (i >= 5 ? v : (v || {}))));
     const nowMsFresh = Date.now() + offset;
     let { lastMovementMs: lastMs, unreadableStamp: unreadable } = gateData;
     if (mv) {
       ({ lastMs, unreadable } = movementRecency(mv, { nowMs: nowMsFresh }));
       ledgerReadAt = Date.now();
+    }
+    // THE SET of codes pointing at a product, not just each code's record. A
+    // code created after startup and absent from the product's own map would
+    // otherwise never be enumerated: it would keep its old size while every
+    // sibling collapsed, and verifyProduct — which checks only the codes
+    // planStep2 knew about — would not notice. (CodeRabbit, PR #345.)
+    if (bc) {
+      for (const k of Object.keys(reverseIdx)) delete reverseIdx[k];
+      for (const [code, rec] of Object.entries(bc)) {
+        if (rec && pidSet.has(rec.productId)) (reverseIdx[rec.productId] = reverseIdx[rec.productId] || {})[code] = rec;
+      }
     }
     gateData = { transfers: t, orders: o, refillRequests: rr, openLocks: ol, dcActive: dc,
       lastMovementMs: lastMs, unreadableStamp: unreadable, nowMs: nowMsFresh };

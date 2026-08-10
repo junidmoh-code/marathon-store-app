@@ -212,7 +212,20 @@ const minQtyFor = (target) => Math.ceil(target / 2);
   // evidence; WIDTH=ALL switches it.
   const WIDTH = (process.env.WIDTH || "CARRIED").toUpperCase();
   if (WIDTH !== "CARRIED" && WIDTH !== "ALL") { console.error(`WIDTH must be CARRIED or ALL (got ${JSON.stringify(WIDTH)})`); process.exit(1); }
-  const carriedAt = (loc) => (WIDTH === "ALL" ? headwear : carriedBy(loc, "presence"));
+  // A LOCATION-LEVEL STOCK GATE, above the per-product presence test. Cell
+  // presence is the right per-product question — it is what storeCarries asks,
+  // and a design at target with 0 on hand still belongs to the assortment. It
+  // is the WRONG question for a location that holds no headwear at all:
+  // SHOPS=marathon-pine would have built rows from its three zero-quantity
+  // reconciliation husks while the status line above said pine was not being
+  // armed, and apply-headwear-policy has no stock gate to catch it.
+  // (CodeRabbit, PR #345.)
+  const locHoldsHeadwear = (loc) => carriedBy(loc, "held").length > 0;
+  const carriedAt = (loc) => (!locHoldsHeadwear(loc) ? []
+    : WIDTH === "ALL" ? headwear : carriedBy(loc, "presence"));
+  for (const loc of [HUB, ...SHOPS]) {
+    if (!locHoldsHeadwear(loc)) console.log(`  ⚠ ${loc} holds NO headwear units — no rows will be generated for it, whatever WIDTH says.`);
+  }
   console.log(`\n  ARMING WIDTH: ${WIDTH}${WIDTH === "CARRIED" ? "  (only where the location already carries the design — WIDTH=ALL arms every design everywhere)" : "  (EVERY design at every armed location, including ones that location has never stocked)"}`);
   console.log(`  CARRIED would write ${carriedBy(HUB, "presence").length + SHOPS.reduce((t, s2) => t + carriedBy(s2, "presence").length, 0)} rows; ALL would write ${headwear.length * (1 + SHOPS.length)} rows.`);
   const payload = {};                      // FLAT path → row (multi-path update shape)
