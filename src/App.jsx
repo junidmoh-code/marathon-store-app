@@ -17,7 +17,7 @@ import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex"
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
-import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./utils/productCategory";
+import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -68,6 +68,8 @@ import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
 import InitialDistributionWizard from "./components/stock/InitialDistributionWizard";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
+import { attachPrintedBarcode, readBarcodeOwners, inspectPrintedBarcode, labelIsRedundant } from "./components/stock/printedBarcodeStore";
+import { PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_SIZE_MISMATCH } from "./utils/eanBarcode";
 import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
@@ -93,6 +95,7 @@ import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
+import PrintedBarcodeCapture from "./components/admin/PrintedBarcodeCapture";
 import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
 // ── SNEAKER INTAKE — style code first ────────────────────────────────────────
 // Sneakers arrive without boxes, so there is no barcode. The inside-tongue style
@@ -554,6 +557,27 @@ async function reserveNextSkuAndBarcode() {
     throw operatorError(reserved?.error || "SKU/barcode reservation aborted.");
   }
   return reserved; // { sku, barcode }
+}
+
+// Mint a shop barcode as the fallback AND PROVE IT RESOLVES.
+//
+// ensureBarcodes deliberately swallows its own reverse-index errors (a failed
+// index write costs only POS resolvability and self-heals on the next mint), so
+// its resolving is NOT implied by its returning. Telling an operator "a shop
+// barcode has been generated" on that basis is how a product ends up scannable
+// nowhere while everyone believes it is fine. This returns the code only when
+// /barcodes actually names this product. (Codex review, PR #340.)
+async function mintAndVerifyFallbackBarcode(productId, sizes) {
+  try {
+    const minted = await ensureBarcodes(productId, sizes.length ? sizes : [null]);
+    const code = Object.values(minted || {})[0]?.code;
+    if (!code) return null;
+    const owners = await readBarcodeOwners([code]);
+    return owners[0] && owners[0].productId === productId ? code : null;
+  } catch (err) {
+    console.warn("fallback shop barcode could not be minted or verified:", err);
+    return null;
+  }
 }
 
 // ─── AN ERROR THE OPERATOR IS MEANT TO READ ──────────────────────────────────
@@ -4972,7 +4996,7 @@ function AdminView({ products, orders, onExit }) {
   // toggle; once true we stop auto-syncing it from the category.
   // sku + barcode are NOT in form state — they auto-generate at save time via
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
-  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   // ── STYLE CODE INTAKE (step 1) ──────────────────────────────────────────
   // While null, "Add Product" shows the style-code gate instead of the create
@@ -5010,6 +5034,12 @@ function AdminView({ products, orders, onExit }) {
   // Initial Distribution Wizard: set to the just-saved product when opening
   // stock landed at Central. Wizard shows first; the print sheet follows on close.
   const [distribProduct, setDistribProduct] = useState(null);
+  // Whether the product now in the wizard uses the barcode printed on its own
+  // box. Held separately because the code deliberately does NOT live on the
+  // record object here — it is committed with the index rows, not with the
+  // product — and the wizard's close handler must still know not to offer a
+  // label. (CodeRabbit, PR #340.)
+  const [distribUsesPrintedBarcode, setDistribUsesPrintedBarcode] = useState(false);
   const recvRegistry = useLocations();
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
@@ -5077,6 +5107,19 @@ function AdminView({ products, orders, onExit }) {
   // applied, from the same single source of truth.
   const formLegacy = useMemo(() => legacyFor(taxonomy, form.categoryKey), [taxonomy, form.categoryKey]);
   const formIsClothing = formLegacy?.productType === "clothing";
+  // ── IS THIS A PERFUME? ────────────────────────────────────────────────────
+  // Answered from the LEGACY TRIPLE the chosen category will write, through the
+  // shared classifier — the same `category` field every automation reads, and
+  // the same test the Display Checks trigger uses. Not the category key, not
+  // the label: both are console-editable presentation, and a rename must never
+  // change whether a product's barcode is captured or minted.
+  const formIsPerfume = isPerfume(formLegacy);
+  // A perfume whose barcode will not read falls back to the ordinary minted
+  // shop code — but only by an explicit tap, which also clears any half-captured
+  // code so the two answers can never both be live.
+  const useAutoBarcode = () => setForm((f) => ({
+    ...f, printedBarcode: null, printedBarcodeAuto: !f.printedBarcodeAuto,
+  }));
 
   const addProduct = async () => {
     setSaveAttempted(true);
@@ -5090,6 +5133,14 @@ function AdminView({ products, orders, onExit }) {
     // The quantities themselves are not — an explicit 0 everywhere is a valid
     // answer ("received nothing yet"), it just writes no movements.
     if (!recvLoc) { alert("Pick the location this stock is being received into before saving."); return; }
+    // Perfume: the barcode question must be ANSWERED, one way or the other.
+    // Either the printed code was captured or the operator deliberately chose a
+    // shop-generated one. Falling through silently would mint a code for a box
+    // that already carries one — the exact waste this step exists to stop.
+    if (formIsPerfume && !form.printedBarcode && !form.printedBarcodeAuto) {
+      alert("Photograph the barcode printed on the box — or tap “generate a shop barcode instead” if it will not read.");
+      return;
+    }
     setSaving(true);
     try {
       const id = "p" + serverNowMs();
@@ -5152,6 +5203,9 @@ function AdminView({ products, orders, onExit }) {
         labelColorway: intake ? intake.labelColorway : null,
         labelUpc: intake ? intake.labelUpc : null,
         labelModelName: intake ? intake.labelModelName : null,
+        // The manufacturer's own printed code, when one was captured (perfume).
+        // Re-validated inside buildNewProduct; omitted, never nulled.
+        printedBarcode: form.printedBarcode || null,
         dominantColours,
         // The bypass, when one was used. buildNewProduct refuses to record an
         // exemption with no reason — a bypass with no reason is a gap.
@@ -5167,6 +5221,18 @@ function AdminView({ products, orders, onExit }) {
       // legacy fields, which would silently drop out of every automation.
       if (!newProduct) throw operatorError("That category is no longer available. Pick a category again.");
       const sizes = newProduct.sizes;
+      // ── THE PRINTED CODE LEAVES THE INITIAL WRITE ─────────────────────────
+      // buildNewProduct is still the GATE — it is what refuses a code on a
+      // non-perfume category and re-validates the check digit — but the value
+      // it produced is lifted out of the product's own set() and committed
+      // later, in the SAME atomic multi-path update as the /barcodes rows.
+      // Writing it here would mean the record could claim a code whose
+      // registration then failed, which previously needed a compensating
+      // removal that could itself fail. Now the database enforces it: either
+      // the code resolves AND the record names it, or neither happened.
+      // (CodeRabbit, PR #340.)
+      const printedCode = newProduct.printedBarcode || null;
+      delete newProduct.printedBarcode;
       // MERGE NOTE (2026-07-30): prices and the shoebox flag moved INTO
       // buildNewProduct during the form rewrite — main's inline copies of those
       // are intentionally not carried over here, they would be duplicates. The
@@ -5327,11 +5393,68 @@ function AdminView({ products, orders, onExit }) {
         }).catch((err) => console.warn("addProduct: filing the label's other codes failed:", err));
       }
 
-      // GUARANTEE ON SAVE: mint a barcode for every size now so the catalog never
-      // has gaps (a sizeless/one-size product mints the "_" slot). Best-effort —
-      // a creator without stockRole still saves the product; the index heals on
-      // the next mint and the backfill covers anything missed.
-      ensureBarcodes(id, sizes.length ? sizes : [null]).catch(() => {});
+      // ── THE BARCODE — CAPTURED, OR MINTED ─────────────────────────────────
+      // Default (every category): mint a code for every size now so the catalog
+      // never has gaps (a sizeless/one-size product mints the "_" slot).
+      // Best-effort — a creator without stockRole still saves the product; the
+      // index heals on the next mint and the backfill covers anything missed.
+      //
+      // PERFUME WITH A CAPTURED CODE takes the other branch: the box already
+      // carries a real EAN, so that code is registered into the SAME /barcodes
+      // index the POS scans, and no shop code is minted for it. Nothing is
+      // replaced — /barcodes is many-to-one, so this is an additional entry
+      // pointing at the same product and size, and any label already printed
+      // for this product keeps scanning.
+      //
+      // Registration runs AFTER the product write, never before: the rule on
+      // /barcodes/$code validates that the referenced product exists.
+      // Whether this product ACTUALLY ends up using the code from its box —
+      // which is not the same question as whether one was captured. If
+      // registration fails we mint a shop code instead, and that code needs a
+      // printed label like any other. Deriving the no-label rule from the
+      // ATTEMPT told staff to stick a label while suppressing the only screen
+      // that prints one. (Codex review, PR #340.)
+      let printedBarcodeActive = false;
+      if (printedCode) {
+        // The field was deliberately kept OUT of the product's own set() (see
+        // above): it rides the same atomic commit as the index rows, so it can
+        // never name a code that did not register. Nothing to compensate for.
+        const attach = await attachPrintedBarcode({ productId: id, code: printedCode });
+        // ── "INDEXED" IS THE QUESTION THAT MATTERS FOR SCANNING ──────────────
+        // If the index rows landed, the box scans — even when recording the
+        // code on the product record afterwards did not. Treating that as a
+        // total failure minted a shop code the product did not need and told
+        // the operator the barcode "was NOT attached" when it demonstrably
+        // resolves. The two are reported separately. (Kimi review, PR #340.)
+        printedBarcodeActive = attach.ok || attach.indexed === true;
+        if (!attach.ok && attach.indexed) {
+          alert(
+            `Saved, and barcode ${printedCode} IS registered and scans correctly — but recording it on ` +
+            `the product record failed (${attach.reason}). No label is needed. Open the product and ` +
+            `photograph the barcode again to finish the record; it will report as already registered.`
+          );
+        }
+        // attachPrintedBarcode words every outcome — an unreachable index, a
+        // permission denial and a refusal each need a different instruction.
+        const failure = attach.ok || attach.indexed ? null : attach.reason;
+        if (failure) {
+          // Mint a shop code so the product is scannable — and VERIFY it,
+          // because ensureBarcodes swallows its own index-write errors by
+          // design. Claiming "a shop barcode has been generated" without
+          // checking is how a product ends up scannable nowhere while the
+          // operator is told it is fine. (Codex review, PR #340.)
+          const minted = await mintAndVerifyFallbackBarcode(id, sizes);
+          alert(
+            `Saved, but barcode ${printedCode} was NOT attached to this product — ${failure}.\n\n` +
+            (minted
+              ? `A shop barcode (${minted}) was generated instead — print and stick a label on the box.`
+              : `A shop barcode could NOT be generated either, so THIS PRODUCT CANNOT BE SCANNED YET. ` +
+                `Ask an admin with stock permission to open it from Stock → Barcodes and print a label.`)
+          );
+        }
+      } else {
+        ensureBarcodes(id, sizes.length ? sizes : [null]).catch(() => {});
+      }
 
       // Opening stock: the entered quantities become `received` movements at the
       // chosen location via applyMovement — ledger-paired, never raw. A size left
@@ -5383,20 +5506,32 @@ function AdminView({ products, orders, onExit }) {
             );
           }
           // Surface the inline Print-barcodes sheet for the sizes that saved.
+          //
+          // EXCEPT when the product uses the barcode printed on its own box.
+          // The print sheet calls ensureBarcodes on open, so offering it here
+          // would MINT the shop code we just went to the trouble of not
+          // minting — and hand the operator a label to stick over a barcode
+          // that already works. The distribution wizard is still offered for
+          // Central stock; only the label step is skipped.
           if (savedItems.length) {
+            // The code that actually registered — NOT the one that was tried.
+            const usesPrintedBarcode = printedBarcodeActive;
+            // Payload always kept — the wizard-close handler decides whether to
+            // OPEN the sheet, and it cannot render one without this.
             setLastReceived({ productId: id, productName: newProduct.name, photoUrl: newProduct.photoUrl ?? null, items: savedItems });
             // Stock landed at Central → offer initial distribution first; the
             // print sheet opens when the wizard closes. Other locations keep
             // the original save → print flow.
+            setDistribUsesPrintedBarcode(usesPrintedBarcode);
             if (recvLoc === "central") setDistribProduct(newProduct);
-            else setPrintOpen(true);
+            else if (!usesPrintedBarcode) setPrintOpen(true);
           }
         }
       } catch (recErr) {
         console.warn("opening-stock receive failed:", recErr);
       }
 
-      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
       setShoeboxTouched(false);
       setRecvQtys({});
       setSaveAttempted(false);
@@ -5444,6 +5579,14 @@ function AdminView({ products, orders, onExit }) {
         categoryKey: nextKey,
         // The size run resets with the category — selecting it is deliberate.
         sizeRun: [],
+        // So does the barcode answer. It was given about a SPECIFIC product in
+        // the operator's hand; carrying a perfume's EAN onto a sneaker would
+        // register a one-size code against a product whose real sizes are "9"
+        // and "10", and a POS scan would then resolve to the wrong stock cell.
+        // buildNewProduct refuses it too — this is the visible half of that
+        // guard, so the form never SHOWS a stale answer either. (Codex, #340.)
+        printedBarcode: null,
+        printedBarcodeAuto: false,
         hubs: hubs.length ? hubs : (clothing ? ["hub2"] : ["hub1"]),
         // Clothing forces the shoebox off even against a manual toggle (it is a
         // shoebox — clothing does not have one). Footwear only auto-sets it
@@ -5540,6 +5683,7 @@ function AdminView({ products, orders, onExit }) {
     const detail = (
       <AdminProductDetail
         product={detailProduct}
+        allProducts={products}
         insightsLog={insightsLog}
         onBack={() => window.history.back()}
       />
@@ -5691,6 +5835,11 @@ function AdminView({ products, orders, onExit }) {
           recvQtys={recvQtys} setRecvQtys={setRecvQtys}
           recvLoc={recvLoc} setRecvLoc={setRecvLoc} recvRegistry={recvRegistry}
           fileInputRef={fileInputRef} handleImageUpload={handleImageUpload}
+          products={products}
+          isPerfume={formIsPerfume}
+          onCapturePrintedBarcode={(code) => setForm((f) => ({ ...f, printedBarcode: code, printedBarcodeAuto: false }))}
+          onClearPrintedBarcode={() => setForm((f) => ({ ...f, printedBarcode: null }))}
+          onUseAutoBarcode={useAutoBarcode}
           saving={saving} saveAttempted={saveAttempted} onSave={addProduct}
         />
       )}
@@ -5745,7 +5894,15 @@ function AdminView({ products, orders, onExit }) {
       {distribProduct && (
         <InitialDistributionWizard
           product={distribProduct}
-          onClose={() => { setDistribProduct(null); setPrintOpen(true); }}
+          // The no-label rule is stated HERE, not left to depend on
+          // lastReceived being null. A product that carries the barcode
+          // printed on its own box never gets a print sheet: opening one calls
+          // ensureBarcodes, which would mint exactly the shop code this
+          // feature exists to avoid. (CodeRabbit, PR #340.)
+          onClose={() => {
+            setDistribProduct(null);
+            if (!distribUsesPrintedBarcode) setPrintOpen(true);
+          }}
         />
       )}
       {/* Inline Print-barcodes sheet (#73), surfaced after a save with opening
@@ -5905,7 +6062,7 @@ function AdminProductRow({ product }) {
 // existing compression pipeline and uploads immediately on file pick (no
 // preview step; consistent with the auto-save theme). Delete prompts for
 // confirmation then navigates back.
-function AdminProductDetail({ product, insightsLog, onBack }) {
+function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) {
   const isClothing = (product.productType || "sneaker") === "clothing";
   const productSizes = Array.isArray(product.sizes) && product.sizes.length
     ? product.sizes
@@ -5986,6 +6143,130 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     if (!window.confirm(`Remove the photo for "${product.name}"?`)) return;
     await update(ref(database, `products/${product.id}`), { photoUrl: null });
   };
+
+  // ── THE PRINTED BARCODE (perfume) ─────────────────────────────────────────
+  // Attaches the manufacturer's own EAN to a product that already exists. Both
+  // paths land in ONE atomic multi-path update (attachPrintedBarcode):
+  //   • /barcodes/{code} → { productId, size:"_" }   the scan resolution
+  //   • /products/{id}/printedBarcode = code          the product's own copy
+  // There is NO ordering to get wrong: either the code resolves AND the record
+  // names it, or neither happened. /barcodes is create-only at the rules layer
+  // and needs stockRole, so without it the whole commit is refused rather than
+  // half-applied. Do not split these back into sequential writes.
+  //
+  // NOTHING IS EVER REMOVED. The auto-generated shop code this product already
+  // has stays exactly where it is, in /products/{id}/barcodes and in /barcodes,
+  // so every label already stuck on stock keeps scanning. /barcodes is
+  // many-to-one by design — both numbers resolve to this product, size "_".
+  const [recapture, setRecapture] = useState(false);
+  const [savingPrintedBarcode, setSavingPrintedBarcode] = useState(false);
+  // ── DOES THE RECORD AGREE WITH THE INDEX? ─────────────────────────────────
+  // The field is written only after a successful index write, but a code can
+  // still drift out of the index later (a merge repoint, a hand edit, an older
+  // record from before this feature). Rendering the confirmed green number
+  // straight from /products would then show a barcode no scanner resolves, and
+  // nothing on screen would say so. So it is CHECKED, once, on open — and the
+  // check is read-only and best-effort: it can warn, never block, never write.
+  // (Codex + Kimi review, PR #340.)
+  const [indexWarning, setIndexWarning] = useState(null);
+  // ── "NO WARNING" IS NOT "CONFIRMED" ───────────────────────────────────────
+  // indexWarning is null in THREE states: the check confirmed the code, the
+  // check has not resolved yet, and the check itself failed. Only the first is
+  // evidence. Treating all three as confirmation meant a failed read silently
+  // withheld the print sheet for the rest of the session — leaving stock with
+  // a code that may not be in the index at all and no label either. An
+  // explicit status makes the difference unrepresentable. (CodeRabbit, #340.)
+  // The status is BOUND TO THE CODE it was computed for. A bare status survives
+  // a product change for one render, so the gate could read the PREVIOUS
+  // product's "confirmed" against the new product's code — the one direction
+  // that is dangerous. Carrying the code makes that unrepresentable rather than
+  // relying on React flushing effects first. (Kimi review, PR #340.)
+  const [indexCheck, setIndexCheck] = useState({ code: null, status: "unknown" });
+  const printedCode = typeof product.printedBarcode === "string" ? product.printedBarcode : null;
+  // Classification is a DEPENDENCY, not just a read. The capture block below
+  // re-renders from isPerfume(product) every render, so leaving it out of the
+  // deps let the two disagree: a product that became a perfume never got its
+  // check, and one that stopped being a perfume kept a stale warning on screen.
+  // (CodeRabbit, PR #340.)
+  const productIsPerfume = isPerfume(product);
+  useEffect(() => {
+    if (!printedCode || !productIsPerfume) {
+      setIndexWarning(null);
+      setIndexCheck({ code: null, status: "unknown" });
+      return;
+    }
+    let cancelled = false;
+    // Clear the PREVIOUS code's warning as the new check starts. Leaving it up
+    // meant a warning about code A stayed on screen describing code B — and if
+    // B's read then threw, it stayed there indefinitely, wrong.
+    // (Codex review, PR #340.)
+    setIndexWarning(null);
+    setIndexCheck({ code: printedCode, status: "unknown" });
+    inspectPrintedBarcode(printedCode, product.id)
+      .then((v) => {
+        if (cancelled) return;
+        if (v.kind === PRINTED_ALREADY) {
+          setIndexWarning(null);
+          setIndexCheck({ code: printedCode, status: "confirmed" });
+          return;
+        }
+        setIndexCheck({ code: printedCode, status: "warned" });
+        setIndexWarning(
+          v.kind === PRINTED_CONFLICT
+            ? `${printedCode} is shown on this product but the barcode index resolves it to a DIFFERENT product. A scan will not reach this one.`
+            : v.kind === PRINTED_SIZE_MISMATCH
+              ? `${printedCode} resolves to this product but at size “${v.indexedSize}”, not one-size — a scan would touch the wrong stock.`
+              : `${printedCode} is shown on this product but is NOT in the barcode index, so scanning it will not find anything. Photograph it again to register it.`
+        );
+      })
+      .catch(() => { /* a failed read is not evidence of anything */ });
+    return () => { cancelled = true; };
+  }, [printedCode, product.id, productIsPerfume]);
+  const savePrintedBarcode = async (code) => {
+    setSavingPrintedBarcode(true);
+    try {
+      // ONE tested function owns both writes, and they are ONE atomic commit —
+      // the index rows and the product's copy of the code land together or not
+      // at all. There is no ordering to get wrong any more, and nothing to
+      // compensate for. (Stale comment corrected — Kimi review, PR #340.)
+      const attach = await attachPrintedBarcode({ productId: product.id, code });
+      if (attach.ok) {
+        // attach.ok is itself proof the index resolves this code to this
+        // product (a fresh atomic commit, or ALREADY). The effect will NOT
+        // re-run — its deps are unchanged when the same code is re-captured —
+        // so the status is confirmed here or it stays "warned" forever and the
+        // operator is sent to print a label they just proved unnecessary.
+        // (Kimi review, PR #340.)
+        setRecapture(false);
+        setIndexWarning(null);
+        setIndexCheck({ code, status: "confirmed" });
+        return;
+      }
+      // TELL THE TRUTH ABOUT WHAT LANDED. An index row is PERMANENT — it cannot
+      // be deleted from the client — so "nothing was changed" is false whenever
+      // `indexed` is true, and would send an operator off to register a code
+      // that is already registered. (Codex + Kimi review, PR #340.)
+      alert(attach.indexed
+        ? `${code} IS now registered to this product and scans correctly, but recording it on the ` +
+          `product record failed (${attach.reason}). Reload and try again — re-capturing the same ` +
+          `code is safe and will report it as already registered.`
+        : `${code} was not registered: ${attach.reason}.\n\nNothing was changed.`);
+    } catch (err) {
+      // attachPrintedBarcode reports its own failures rather than throwing, so
+      // reaching here means something unforeseen. Silence would leave the
+      // capture looking like it succeeded. (CodeRabbit, PR #340.)
+      console.error("printed barcode save threw:", err);
+      alert(`Could not register ${code} (${err?.message || err}). Check the product before trying again.`);
+    } finally {
+      setSavingPrintedBarcode(false);
+    }
+  };
+  // "Photograph it again" reopens the capture WITHOUT touching what is stored.
+  // A /barcodes entry cannot be deleted from the client (the rule permits a
+  // write only when the slot is empty), so an entry that has been made is
+  // permanent — capturing a different code adds another one rather than
+  // replacing it, and both keep resolving to this product.
+  const clearPrintedBarcode = () => setRecapture(true);
 
   // Box photo (sneakers) — the shoe's own retail-box shot, attached to AI
   // Photo Studio HOUSE-STYLE generations so the AI reproduces the real box.
@@ -6150,10 +6431,25 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     if (fail) flashRecv(false, `${ok} received, ${fail} failed — you may not have stock permission (stockRole).`);
     else flashRecv(true, `Received ${ok} size${ok > 1 ? "s" : ""} into ${locLabel}.`);
     if (savedItems.length) {
+      // A product that uses the barcode printed on its own box gets NO label
+      // step: the print sheet mints a shop code on open (ensureBarcodes), which
+      // would both undo the capture and hand the operator a sticker to put over
+      // a working barcode. Distribution is still offered; only printing is not.
+      // Suppress the label ONLY when the index has CONFIRMED that this exact
+      // code resolves to this product. Decided by one pure, fully tested
+      // function so loading, failure, staleness and a product change cannot
+      // each be got subtly wrong at two call sites.
+      const usesPrintedBarcode = labelIsRedundant(printedCode, indexCheck);
+      // THE PAYLOAD IS ALWAYS KEPT. Discarding it here meant the decision was
+      // frozen at receive time: if the code was confirmed then, lastReceived
+      // went null, and a later close of the distribution wizard could ask for
+      // the print sheet — which cannot render without a payload. Stock that had
+      // become unscannable in the meantime would get no label at all. Keep the
+      // payload; let the gate decide when to OPEN. (Codex review, PR #340.)
       setLastReceived({ productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems });
       // Receive into Central → offer initial distribution first; print follows.
       if (recvLoc === "central") setDistribOpen(true);
-      else setPrintOpen(true);
+      else if (!usesPrintedBarcode) setPrintOpen(true);
     }
   };
 
@@ -6389,6 +6685,30 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
             </div>
           </div>
         </div>
+        {/* ── THE PRINTED BARCODE — PERFUME ONLY ─────────────────────────────
+            Perfume that pre-dates this feature already has an auto-generated
+            shop code; capturing the manufacturer's EAN here ADDS a second
+            /barcodes entry pointing at the same product and size. The shop code
+            is never removed or replaced, so labels already stuck on stock keep
+            scanning, and either number resolves to this product. */}
+        {isPerfume(product) && (
+          <div style={{ borderTop:"1px solid rgba(255,255,255,.06)", padding:"14px 16px" }}>
+            {indexWarning && (
+              <div style={{ marginBottom:10, background:"rgba(248,113,113,.09)", border:"1px solid rgba(248,113,113,.4)",
+                            borderRadius:11, padding:"10px 12px", fontSize:12.5, color:"#FFC9C9", lineHeight:1.5 }}>
+                ⚠️ {indexWarning}
+              </div>
+            )}
+            <PrintedBarcodeCapture
+              productId={product.id}
+              products={allProducts}
+              value={(recapture || !printedCode) ? null : printedCode}
+              busy={savingPrintedBarcode}
+              onCapture={savePrintedBarcode}
+              onClear={clearPrintedBarcode}
+            />
+          </div>
+        )}
       </div>
 
       {/* HUBS — iOS-style grouped list */}
@@ -6449,7 +6769,15 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
       {distribOpen && (
         <InitialDistributionWizard
           product={product}
-          onClose={() => { setDistribOpen(false); setPrintOpen(true); }}
+          // Same no-label rule, stated explicitly here too: a product carrying
+          // the barcode printed on its box never gets a print sheet, because
+          // opening one mints a shop code via ensureBarcodes.
+          onClose={() => {
+            setDistribOpen(false);
+            // Re-decided HERE, from the status as it stands NOW — the product
+            // may have changed in another session while the wizard was open.
+            if (!labelIsRedundant(printedCode, indexCheck)) setPrintOpen(true);
+          }}
         />
       )}
       {/* Inline Print-barcodes sheet (#73), surfaced after a re-order receive. */}

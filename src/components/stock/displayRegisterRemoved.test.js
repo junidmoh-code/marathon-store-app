@@ -147,7 +147,23 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     const app = readFileSync(join(SRC, "App.jsx"), "utf8");
     expect(app).toMatch(/for \(const zSize of zeroEntries\(sizes, recvQtys\)\)/);
     expect(app).toMatch(/setCellState\(recvLoc, id, zSize, "live"\)/);
-    expect(app).toMatch(/sizeRun: \[\],\n\s*hubs: hubs\.length/);
+    // The category reset. The printed-barcode answer joined it (PR #340): a
+    // perfume EAN must not survive a switch to a SIZED category, where it
+    // would register a one-size code against a product sized 9/10.
+    expect(app).toMatch(/sizeRun: \[\],[\s\S]{0,700}?hubs: hubs\.length/);
+    expect(app).toMatch(/printedBarcode: null,\s*printedBarcodeAuto: false,/);
+    // The no-label rule follows what actually REGISTERED, never what was
+    // merely attempted. Deriving it from the attempt told staff to print and
+    // stick a fallback shop label while suppressing the only screen that
+    // prints one. (Codex review, PR #340.)
+    expect(app).toMatch(/const usesPrintedBarcode = printedBarcodeActive;/);
+    // The label decision itself is NOT pinned as source text — it moved into
+    // the pure labelIsRedundant(), whose every state transition is tested in
+    // printedBarcodeStore.test.js. What is pinned here is only that BOTH gates
+    // call it, because two call sites getting subtly different logic is the
+    // failure this consolidation exists to prevent. (Kimi + Codex, PR #340.)
+    expect((app.match(/labelIsRedundant\(printedCode, indexCheck\)/g) || []).length).toBe(2);
+    expect(app).toMatch(/printedBarcodeActive = attach\.ok \|\| attach\.indexed === true;/);
     // Review pins (#330): a failed seed is OBSERVED and reported (setCellState
     // resolves {ok:false}, it never throws), and the finder only ever hands
     // back records from the CURRENT catalog:

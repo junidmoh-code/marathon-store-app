@@ -22,6 +22,7 @@
 
 import { sizesOf } from "../../utils/productTaxonomy.js";
 import CategorySelect from "./CategorySelect.jsx";
+import PrintedBarcodeCapture from "./PrintedBarcodeCapture.jsx";
 import SizeQtyBoxes, { totalUnits } from "./SizeQtyBoxes.jsx";
 import { LocationPicker } from "../stock/widgets.jsx";
 import { labelFor, transferTargets } from "../stock/locations.js";
@@ -72,12 +73,19 @@ export default function NewProductForm({
   recvQtys, setRecvQtys,
   recvLoc, setRecvLoc, recvRegistry,
   fileInputRef, handleImageUpload,
+  products, isPerfume, onCapturePrintedBarcode, onClearPrintedBarcode, onUseAutoBarcode,
   saving, saveAttempted, onSave,
 }) {
   const nameOk = !!form.name.trim();
   const catOk = !!selectedCat;
   const hubsOk = form.hubs.length > 0;
   const locOk = !!recvLoc;
+  // ── PERFUME: THE BARCODE IS AN ANSWER, NOT A DEFAULT ──────────────────────
+  // Perfume boxes already carry a real EAN, so the save waits for one of two
+  // deliberate answers: the printed code was captured, or the operator tapped
+  // the fallback because it would not read. Neither is assumed. Every other
+  // category is untouched — its barcode auto-generates on save exactly as before.
+  const barcodeOk = !isPerfume || !!form.printedBarcode || !!form.printedBarcodeAuto;
   // ── THE SIZE RUN IS CHOSEN, NOT ASSUMED (owner fix 3, 2026-08-06) ──────────
   // The category defines what sizes are POSSIBLE; the operator taps the ones
   // this product actually comes in. Default: nothing selected — a deliberate
@@ -94,7 +102,7 @@ export default function NewProductForm({
     // size the save will not persist.
     setRecvQtys((q) => (sizeRun.includes(sz) ? { ...q, [sz]: "" } : q));
   };
-  const canSave = !saving && nameOk && catOk && hubsOk && locOk && sizesOk;
+  const canSave = !saving && nameOk && catOk && hubsOk && locOk && sizesOk && barcodeOk;
   const units = totalUnits(Object.fromEntries(chosenSizes.map((sz) => [sz, recvQtys[sz]])));
   const sizeCount = chosenSizes.length;
 
@@ -183,6 +191,43 @@ export default function NewProductForm({
           </div>
         )}
       </div>
+
+      {/* ── BARCODE — PERFUME ONLY ─────────────────────────────────────────
+          Perfume already comes barcoded from the factory, so the step captures
+          that code rather than minting one. Gated on the CATEGORY CLASSIFIER
+          (utils/productCategory isPerfume, the same `category` field the
+          Display Checks trigger keys off), never on a category label — a
+          console rename must not change how a product is handled. Every other
+          category never renders this and keeps auto-generation untouched. */}
+      {isPerfume && (
+        <div>
+          <Label required hint="the code already printed on the box">Barcode</Label>
+          <Panel>
+            {/* KEYED ON THE CATEGORY. The capture invalidates in-flight work
+                when its productId changes, but in Add Product that is always
+                null — so a perfume→perfume category change (which DOES clear
+                the answer in selectCategory) would let a capture started
+                before the switch land afterwards. Remounting drops it.
+                (CodeRabbit, PR #340.) */}
+            <PrintedBarcodeCapture
+              key={form.categoryKey}
+              productId={null}
+              products={products}
+              value={form.printedBarcode || null}
+              usingAuto={!!form.printedBarcodeAuto}
+              busy={saving}
+              onCapture={onCapturePrintedBarcode}
+              onClear={onClearPrintedBarcode}
+              onUseAuto={onUseAutoBarcode}
+            />
+          </Panel>
+          {saveAttempted && !barcodeOk && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: "#F87171", fontWeight: 600 }}>
+              Photograph the barcode on the box — or tap “generate a shop barcode instead” if it will not read.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── PHOTO ─────────────────────────────────────────────────────────── */}
       <div>
@@ -333,7 +378,9 @@ export default function NewProductForm({
       )}
 
       <div style={{ fontSize: 12, color: "rgba(233,238,255,.3)", fontStyle: "italic" }}>
-        SKU + barcode are assigned automatically on save.
+        {isPerfume && form.printedBarcode
+          ? "SKU is assigned automatically on save. This product uses the barcode printed on its box."
+          : "SKU + barcode are assigned automatically on save."}
       </div>
 
       <button type="button" onClick={onSave} disabled={!canSave}

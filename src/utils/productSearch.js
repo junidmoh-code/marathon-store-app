@@ -10,6 +10,8 @@
 // It's pure string math (bounded Levenshtein with early-exit) — no index to build,
 // so it stays fast on a few-thousand-product catalogue filtered per keystroke.
 
+import { indexCodesFor } from "./eanBarcode.js";
+
 // Lowercase + reduce to alphanumeric "words" (drops spaces/punctuation).
 function normWords(s) {
   return String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -68,11 +70,22 @@ function tokenInName(token, ctx) {
   return false;
 }
 
-// All codes attached to a product: top-level barcode/sku + every per-size barcode.
+// All codes attached to a product: top-level barcode/sku, every per-size
+// barcode, and the manufacturer's own printed code where one was captured
+// (perfume). A product may legitimately answer to SEVERAL codes — /barcodes is
+// many-to-one — so searching by any of them must find it. Typing the EAN off a
+// perfume box is the fastest way to find that product, and leaving it out here
+// would make a code the POS resolves invisible to the app's own search.
 function productCodes(p) {
   const codes = [];
   if (p.barcode != null) codes.push(String(p.barcode));
   if (p.sku != null) codes.push(String(p.sku));
+  // EVERY spelling of the printed code, not just the one that happens to be
+  // stored. A UPC-A and its zero-padded EAN-13 are the same number, and which
+  // one a colleague reads off the box (or a scanner reports) is not the one we
+  // persisted. Both are registered in /barcodes, so both must be searchable
+  // here. (CodeRabbit, PR #340.)
+  if (p.printedBarcode != null) codes.push(...indexCodesFor(String(p.printedBarcode)));
   if (p.barcodes && typeof p.barcodes === "object") {
     for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
   }

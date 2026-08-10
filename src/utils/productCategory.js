@@ -46,6 +46,28 @@ export function topCategory(product) {
   return TOP_CATEGORIES.includes(c) ? c : UNCATEGORIZED_TOP;
 }
 
+// ── PERFUME — a BEHAVIOURAL predicate, not a display bucket ────────────────────
+// Perfume is the one category whose stock arrives already carrying a real
+// printed barcode, so the barcode step behaves differently for it. That
+// decision must key off the SAME field every other automation keys off, and
+// must never be a string match on a category LABEL: labels are console-editable
+// presentation ("Perfumes", "Perfume & Fragrance"), while `category` is the
+// validated browse-tree value that legacyFor() writes and isLegalLegacy()
+// polices. Renaming a category label must never change how a product is
+// handled.
+//
+// This is deliberately the identical test the Display Checks trigger already
+// uses server-side (functions/displayChecks/lib.cjs isClothingSale():
+// `category === "Perfume"`), so the two cannot disagree about what a perfume is.
+//
+// Takes anything carrying a `category`: a /products record, or the legacy
+// triple a chosen taxonomy category will WRITE — which is what lets the Add
+// Product form know it is about to create a perfume before one exists.
+export const PERFUME_CATEGORY = "Perfume";
+export function isPerfume(record) {
+  return !!record && record.category === PERFUME_CATEGORY;
+}
+
 // ── Size class (mirrors the POS src/shared/sizeClass.js contract) ──────────────
 const CLOTHING_LETTER_RE = /^(XS|S|M|L|X+L|[2-9]X+L)$/;
 const WAIST_MIN = 28; // numeric ≥ 28 is a pants waist (clothing); below is a shoe.
