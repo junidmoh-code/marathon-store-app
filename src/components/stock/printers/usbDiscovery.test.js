@@ -31,7 +31,11 @@ function fakeDevice({ configurations, activeValue = null, claimFailures = 0, ope
     async open() { dev.calls.push(["open"]); dev.opened = true; },
     async selectConfiguration(v) {
       dev.calls.push(["selectConfiguration", v]);
-      dev.configuration = configurations.find(c => c.configurationValue === v) || null;
+      const found = configurations.find(c => c.configurationValue === v);
+      // Chrome rejects an unsupported configuration value with NotFoundError —
+      // the fake must too, or "just try 1" looks like it works.
+      if (!found) throw new Error("NotFoundError: The configuration value provided is not supported by the device.");
+      dev.configuration = found;
     },
     async claimInterface(n) {
       dev.calls.push(["claimInterface", n]);
@@ -133,7 +137,8 @@ describe("openUsbPrinter — open, configure, claim, select alternate", () => {
       configurations: [cfg(2, [iface(0, [alt(0, 0x07, [ep("out", "bulk", 1)])])])],
     });
     const conn = await openUsbPrinter(device, { sleep: noSleep });
-    expect(device.calls).toContainEqual(["selectConfiguration", 2]);
+    // Not "try 1 and hope": the FIRST configuration call must already be the right one.
+    expect(device.calls.filter(c => c[0] === "selectConfiguration")).toEqual([["selectConfiguration", 2]]);
     expect(conn).toMatchObject({ configurationValue: 2, interfaceNumber: 0, endpointNumber: 1 });
     expect(conn.diag.hadActiveConfiguration).toBe(false);
   });
