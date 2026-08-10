@@ -10,6 +10,8 @@
 // It's pure string math (bounded Levenshtein with early-exit) — no index to build,
 // so it stays fast on a few-thousand-product catalogue filtered per keystroke.
 
+import { indexCodesFor } from "./eanBarcode.js";
+
 // Lowercase + reduce to alphanumeric "words" (drops spaces/punctuation).
 function normWords(s) {
   return String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -78,7 +80,12 @@ function productCodes(p) {
   const codes = [];
   if (p.barcode != null) codes.push(String(p.barcode));
   if (p.sku != null) codes.push(String(p.sku));
-  if (p.printedBarcode != null) codes.push(String(p.printedBarcode));
+  // EVERY spelling of the printed code, not just the one that happens to be
+  // stored. A UPC-A and its zero-padded EAN-13 are the same number, and which
+  // one a colleague reads off the box (or a scanner reports) is not the one we
+  // persisted. Both are registered in /barcodes, so both must be searchable
+  // here. (CodeRabbit, PR #340.)
+  if (p.printedBarcode != null) codes.push(...indexCodesFor(String(p.printedBarcode)));
   if (p.barcodes && typeof p.barcodes === "object") {
     for (const c of Object.values(p.barcodes)) if (c != null) codes.push(String(c));
   }

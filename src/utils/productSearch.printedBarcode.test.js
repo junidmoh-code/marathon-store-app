@@ -35,6 +35,19 @@ describe("searching by the manufacturer's printed code", () => {
     expect(ids("0042")).toEqual(["pPerfume"]);
   });
 
+  it("finds it by EITHER spelling of a UPC-A, whichever one is stored", () => {
+    // A UPC-A and its zero-padded EAN-13 are the same number, and which one a
+    // colleague reads off the box is not necessarily the one we persisted.
+    // Both are registered in /barcodes, so both must be searchable here.
+    const asUpc = [{ id: "pU", name: "Boxed Thing", printedBarcode: "036000291452" }];
+    expect(searchProducts(asUpc, "036000291452").map((p) => p.id)).toEqual(["pU"]);
+    expect(searchProducts(asUpc, "0036000291452").map((p) => p.id)).toEqual(["pU"]);
+
+    const asEan = [{ id: "pE", name: "Boxed Thing", printedBarcode: "0036000291452" }];
+    expect(searchProducts(asEan, "0036000291452").map((p) => p.id)).toEqual(["pE"]);
+    expect(searchProducts(asEan, "036000291452").map((p) => p.id)).toEqual(["pE"]);
+  });
+
   it("does not match a DIFFERENT product's code", () => {
     expect(ids(OUD_MOOD)).not.toContain("pShoe");
   });

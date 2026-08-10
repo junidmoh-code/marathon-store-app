@@ -119,6 +119,12 @@ export function indexCodesFor(code) {
   const s = String(code ?? "");
   if (!/^\d+$/.test(s)) return [];
   if (s.length === 12) return [s, `0${s}`];
+  // SYMMETRIC. A 13-digit code beginning with 0 is the EAN-13 spelling of a
+  // UPC-A, and a scanner may report either. Handling only the 12→13 direction
+  // meant a box captured from its EAN-13 print stayed unfindable to a reader
+  // that strips the pad — the same gap, in the other direction.
+  // (CodeRabbit, PR #340.)
+  if (s.length === 13 && s.startsWith("0")) return [s, s.slice(1)];
   return [s];
 }
 

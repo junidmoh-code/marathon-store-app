@@ -21,7 +21,7 @@
 // EAN never removes, replaces or invalidates an auto-generated code: every
 // label already in circulation keeps scanning.
 
-import { ref, get, set } from "firebase/database";
+import { ref, get, update } from "firebase/database";
 import { database } from "../../firebase";
 import { barcodeIndexRecord } from "./barcode";
 import { serverNowIso } from "../../utils/serverTime";
@@ -95,57 +95,53 @@ export async function inspectPrintedBarcode(code, productId = null, size = ONE_S
  *
  * @returns {{ok:true, written:string[], kind:string} | {ok:false, kind:"conflict", …}}
  */
-export async function registerPrintedBarcode(productId, code, size = ONE_SIZE) {
+export async function registerPrintedBarcode(productId, code, size = ONE_SIZE, extraUpdates = null) {
   if (!productId) throw new Error("registerPrintedBarcode requires productId");
   const verdict = await inspectPrintedBarcode(code, productId, size);
   if (verdict.kind !== PRINTED_FREE) {
     // "already" is success with nothing to do. "conflict", "size_mismatch" and
     // "invalid" are refusals. Reported as-is — the caller decides, this never
     // guesses, and it never writes on a verdict it did not understand.
-    return { ok: verdict.kind === PRINTED_ALREADY, written: [], failed: [], ...verdict };
+    return { ok: verdict.kind === PRINTED_ALREADY, written: [], ...verdict };
   }
 
-  // ── PER-CODE, NOT ALL-OR-NOTHING ──────────────────────────────────────────
-  // A UPC-A writes two rows and RTDB gives us no client-side transaction across
-  // them. If the second is denied after the first landed, throwing would report
-  // a total failure while one form is live and scanning — so the caller would
-  // mint a shop code the product did not need. What actually happened is
-  // returned instead, and a partial result is still a success: the primary form
-  // is written first, so the number on the box resolves. (Kimi review, #340.)
-  const written = [];
-  const failed = [];
-  for (const c of verdict.codes) {
-    try {
-      await set(ref(database, `barcodes/${c}`), barcodeIndexRecord(productId, size, serverNowIso()));
-      written.push(c);
-    } catch (err) {
-      failed.push({ code: c, reason: String(err?.message || err) });
-    }
-  }
-  if (!written.length) {
-    // Nothing landed at all — a rules denial (no stockRole) or an outage. This
-    // is the caller's signal to fall back, so it must be an exception, not a
-    // quiet {ok:false} that an `if (!reg.ok)` might read as a mere conflict.
-    throw new Error(failed[0]?.reason || "printed barcode registration wrote nothing");
-  }
+  // ── ONE ATOMIC MULTI-PATH UPDATE, NOT A LOOP OF set() CALLS ───────────────
+  // A UPC-A registers two rows (itself and its EAN-13 spelling). Writing them
+  // one at a time meant the second could be denied after the first had landed,
+  // leaving ONE spelling of a number registered and the other free for another
+  // product to claim — the same physical barcode resolving to two products
+  // depending on which reader you used. RTDB multi-path update() is atomic and
+  // evaluates each path's rules independently, so either both forms land or
+  // neither does, and the create-only rule still arbitrates each one.
+  //
+  // `extraUpdates` lets the caller put a value that must agree with these rows
+  // INTO THE SAME COMMIT — see attachPrintedBarcode, which uses it for
+  // products/{id}/printedBarcode. That is what makes "the field means
+  // registered" an invariant rather than a convention maintained by
+  // compensating writes. (CodeRabbit, PR #340.)
+  const record = barcodeIndexRecord(productId, size, serverNowIso());
+  const updates = {};
+  for (const c of verdict.codes) updates[`barcodes/${c}`] = record;
+  Object.assign(updates, extraUpdates || {});
+  await update(ref(database), updates);   // throws → caller falls back
 
   // ── READ BACK, BECAUSE A WRITE THAT "SUCCEEDED" MAY NOT HAVE ──────────────
-  // The read-before-write is TOCTOU: between our read and our set, another
-  // client can claim the same code (or the twin form of it) for a different
-  // product, and under the create-only rule the loser's write is DENIED — which
-  // the SDK may surface late, or not at all if the winner's value is identical
-  // in shape. So the rows are read back and must actually name us. We cannot
-  // undo the other client's row from here (no delete permission), but the
-  // caller must never be told a code is ours when it is not. (Codex, #340.)
-  const owners = await readBarcodeOwners(written);
+  // The read-before-write is still TOCTOU: between our read and our commit,
+  // another client can claim a code for a different product, and under the
+  // create-only rule the loser's write is DENIED — which the SDK may surface
+  // late, or not at all when the winner's value is identical in shape. So the
+  // rows are read back and must actually name us. We cannot undo the other
+  // client's row from here (no delete permission), but the caller must never be
+  // told a code is ours when it is not. (Codex review, #340.)
+  const owners = await readBarcodeOwners(verdict.codes);
   const stolen = owners.filter((o) => o.productId !== productId);
   if (stolen.length) {
     return {
-      ok: false, kind: PRINTED_CONFLICT, written: [], failed,
+      ok: false, kind: PRINTED_CONFLICT, written: [],
       code: stolen[0].code, otherProductId: stolen[0].productId,
     };
   }
-  return { ok: true, written, failed, kind: PRINTED_FREE };
+  return { ok: true, written: verdict.codes, kind: PRINTED_FREE };
 }
 
 // ─── WHAT A REFUSAL MEANS, IN WORDS ──────────────────────────────────────────
@@ -180,33 +176,40 @@ export function registrationRefusalText(reg, code) {
 // TESTED once — previously each surface open-coded it, and swapping the two
 // writes broke no test at all. (Kimi + Codex review, PR #340.)
 //
-// `writeProductField` is injected: the Add Product flow has already written the
-// field as part of the product record, so it passes a no-op and only needs the
-// index half plus the removal-on-failure.
+// ── ONE COMMIT, SO THE FIELD CANNOT LIE ──────────────────────────────────────
+// The product field rides the SAME atomic multi-path update as the index rows.
+// Previously it was a second write afterwards, which left a window where the
+// index said one thing and the record another, and required a compensating
+// removal to clean up after a failure — compensation that could itself fail.
+// Now the database enforces the invariant: either the code resolves AND the
+// record claims it, or neither happened. (CodeRabbit, PR #340.)
 //
-// @returns {{ok:true, kind}|{ok:false, kind, reason, indexed:boolean}}
-export async function attachPrintedBarcode({ productId, code, writeProductField, size = ONE_SIZE }) {
+// `setProductField` is a flag, not a callback: this function owns the path.
+//
+// @returns {{ok:true, kind, written}|{ok:false, kind, reason, indexed:boolean}}
+export async function attachPrintedBarcode({ productId, code, setProductField = true, size = ONE_SIZE }) {
+  const extraUpdates = setProductField
+    ? { [`products/${productId}/printedBarcode`]: code }
+    : null;
   let reg;
   try {
-    reg = await registerPrintedBarcode(productId, code, size);
+    reg = await registerPrintedBarcode(productId, code, size, extraUpdates);
   } catch (err) {
-    // Nothing was written at all — the index half never landed.
+    // The commit was rejected as a whole — nothing landed anywhere.
     return { ok: false, kind: "denied", indexed: false, reason: String(err?.message || err) };
   }
   if (!reg.ok) {
     return { ok: false, kind: reg.kind, indexed: false, reason: registrationRefusalText(reg, code), verdict: reg };
   }
-  // The code now resolves. Only now may the product record claim it.
-  if (writeProductField) {
+  // ALREADY: the rows were there before, so the commit above never ran and the
+  // product field may still be missing. Write it on its own — safe, because the
+  // code demonstrably resolves to this product already.
+  if (reg.kind === PRINTED_ALREADY && extraUpdates) {
     try {
-      await writeProductField(code);
+      await update(ref(database), extraUpdates);
     } catch (err) {
-      // The index row is PERMANENT — it cannot be deleted from the client (the
-      // rule permits a write only into an empty slot). So this is a partial
-      // success, and saying otherwise would send an operator to register a code
-      // that is already registered.
       return { ok: false, kind: "record_write_failed", indexed: true, reason: String(err?.message || err) };
     }
   }
-  return { ok: true, kind: reg.kind, indexed: true, written: reg.written, failed: reg.failed };
+  return { ok: true, kind: reg.kind, indexed: true, written: reg.written };
 }

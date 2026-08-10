@@ -119,8 +119,14 @@ describe("indexCodesFor — UPC-A and EAN-13 are one number", () => {
     expect(hasValidCheckDigit("0036000291452")).toBe(true);
   });
 
-  it("leaves EAN-13 and EAN-8 as themselves alone", () => {
-    expect(indexCodesFor(OUD_MOOD)).toEqual([OUD_MOOD]);
+  it("is SYMMETRIC — a 13-digit code beginning with 0 also gives its UPC-A form", () => {
+    // Handling only the 12→13 direction left a box captured from its EAN-13
+    // print unfindable to a reader that strips the pad. Same gap, other way.
+    expect(indexCodesFor("0036000291452")).toEqual(["0036000291452", "036000291452"]);
+  });
+
+  it("leaves a normal EAN-13 and an EAN-8 as themselves alone", () => {
+    expect(indexCodesFor(OUD_MOOD)).toEqual([OUD_MOOD]);         // starts with 6
     expect(indexCodesFor("96385074")).toEqual(["96385074"]);
   });
 });

@@ -40,18 +40,29 @@ function setPath(path, value) {
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path || "" }),
   get: async (node) => ({ val: () => getPath(node.path), exists: () => getPath(node.path) != null }),
-  // THE RULE, ENFORCED: create-only. An overwrite is recorded and rejected.
-  set: async (node, value) => {
-    if (getPath(node.path) != null) {
-      overwriteAttempts.push(node.path);
-      throw new Error("PERMISSION_DENIED: /barcodes is create-only");
+  // ── THE RULES, ENFORCED — AND ATOMICALLY ────────────────────────────────
+  // RTDB multi-path update() is ALL-OR-NOTHING and evaluates each path's rules
+  // independently. This fake reproduces both: every path is validated first
+  // (create-only on /barcodes, plus the injectable denials) and the tree is
+  // only mutated once every path has passed. A fake that applied writes as it
+  // went would let a half-committed pair pass tests that the real database
+  // would never produce.
+  update: async (node, updates) => {
+    const base = node.path ? `${node.path}/` : "";
+    const paths = Object.entries(updates).map(([k, v]) => [`${base}${k}`, v]);
+    for (const [path] of paths) {
+      if (!path.startsWith("barcodes/")) continue;           // /products is a plain write
+      if (getPath(path) != null) {
+        overwriteAttempts.push(path);
+        throw new Error("PERMISSION_DENIED: /barcodes is create-only");
+      }
+      const code = path.split("/").pop();
+      if (denyWrites.has(code)) throw new Error("PERMISSION_DENIED: claimed in the meantime");
     }
-    if ([...denyWrites].some((c) => String(node.path).endsWith(`/${c}`))) {
-      throw new Error("PERMISSION_DENIED: claimed in the meantime");
+    for (const [path, value] of paths) {
+      const thief = stealWrites.get(path.split("/").pop());
+      setPath(path, thief ? { ...value, productId: thief } : value);
     }
-    const code = String(node.path).split("/").pop();
-    const thief = stealWrites.get(code);
-    setPath(node.path, thief ? { ...value, productId: thief } : value);
   },
 }));
 vi.mock("../../firebase", () => ({ database: {} }));
@@ -81,34 +92,39 @@ describe("losing the read→write race is DETECTED, not assumed away", () => {
     expect(out.written).toEqual([]);
   });
 
-  it("and attachPrintedBarcode therefore never records it on the product", async () => {
+  it("and attachPrintedBarcode reports the conflict rather than a success", async () => {
     stealWrites.set(OUD_MOOD, "pSomebodyElse");
-    const writeProductField = vi.fn();
-    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD, writeProductField });
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD });
     expect(out.ok).toBe(false);
-    expect(writeProductField).not.toHaveBeenCalled();
+    expect(out.kind).toBe("conflict");
+    expect(out.reason).toMatch(/already registered to another product/);
   });
 });
 
-describe("a UPC-A whose twin is denied mid-write", () => {
-  it("keeps the form that LANDED instead of reporting total failure", async () => {
-    // The primary form is written first, so the number on the box resolves.
-    // Throwing here would tell the caller nothing was registered, and it would
-    // mint a shop code the product did not need. (Kimi review, PR #340.)
+describe("a UPC-A registers ATOMICALLY — both forms or neither", () => {
+  it("leaves NEITHER form written when one of them is denied", async () => {
+    // Writing the two rows one at a time meant the second could be refused
+    // after the first had landed, leaving ONE spelling of a number registered
+    // and the other free for a different product to claim — the same physical
+    // barcode resolving to two products depending on the reader.
+    // (CodeRabbit, PR #340.)
     denyWrites.add("0036000291452");
 
-    const out = await registerPrintedBarcode("pPerfume", "036000291452");
+    await expect(registerPrintedBarcode("pPerfume", "036000291452")).rejects.toThrow(/PERMISSION_DENIED/);
 
-    expect(out.ok).toBe(true);
-    expect(out.written).toEqual(["036000291452"]);
-    expect(out.failed.map((f) => f.code)).toEqual(["0036000291452"]);
-    expect(store.barcodes["036000291452"].productId).toBe("pPerfume");
+    expect(getPath("barcodes/036000291452")).toBe(null);
+    expect(getPath("barcodes/0036000291452")).toBe(null);
   });
 
-  it("throws when NOTHING landed, so the caller knows to fall back", async () => {
+  it("throws when nothing landed, so the caller knows to fall back", async () => {
     denyWrites.add("036000291452");
-    denyWrites.add("0036000291452");
     await expect(registerPrintedBarcode("pPerfume", "036000291452")).rejects.toThrow(/PERMISSION_DENIED/);
+  });
+
+  it("commits both forms together on the happy path", async () => {
+    const out = await registerPrintedBarcode("pPerfume", "036000291452");
+    expect(out.ok).toBe(true);
+    expect(out.written).toEqual(["036000291452", "0036000291452"]);
   });
 });
 
@@ -220,59 +236,60 @@ describe("an auto-generated barcode is never touched", () => {
 // page (product record before index) broke NO test, even though the comment
 // calls that ordering non-negotiable. Both surfaces now route through
 // attachPrintedBarcode, and the ordering is pinned here.
-describe("attachPrintedBarcode — index first, product record second", () => {
-  it("writes the index BEFORE the product record", async () => {
-    const order = [];
-    await attachPrintedBarcode({
-      productId: "pPerfume", code: OUD_MOOD,
-      writeProductField: async () => {
-        // By the time the record is written the code must ALREADY resolve.
-        order.push(`record:${getPath(`barcodes/${OUD_MOOD}/productId`)}`);
-      },
-    });
-    expect(order).toEqual(["record:pPerfume"]);
+describe("attachPrintedBarcode — the record and the index land TOGETHER", () => {
+  it("commits the product field in the SAME update as the index rows", async () => {
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD });
+    expect(out.ok).toBe(true);
+    expect(store.barcodes[OUD_MOOD].productId).toBe("pPerfume");
+    expect(store.products.pPerfume.printedBarcode).toBe(OUD_MOOD);
   });
 
-  it("never writes the product record when the index REFUSES", async () => {
+  it("leaves the product field UNSET when the index refuses", async () => {
+    // The record must never claim a code that does not resolve — previously a
+    // second write plus a compensating removal that could itself fail.
     await registerPrintedBarcode("pOther", OUD_MOOD);
-    const writeProductField = vi.fn();
 
-    const out = await attachPrintedBarcode({ productId: "pMine", code: OUD_MOOD, writeProductField });
+    const out = await attachPrintedBarcode({ productId: "pMine", code: OUD_MOOD });
 
     expect(out.ok).toBe(false);
     expect(out.kind).toBe("conflict");
     expect(out.indexed).toBe(false);
-    expect(writeProductField).not.toHaveBeenCalled();
+    expect(getPath("products/pMine/printedBarcode")).toBe(null);
     expect(out.reason).toMatch(/already registered to another product/);
     expect(out.reason).toMatch(/Merge Products/);
   });
 
-  it("reports indexed:true when only the RECORD write fails — the row is permanent", async () => {
-    // Saying "nothing was changed" here would be false, and would send an
-    // operator off to register a code that already resolves.
-    const out = await attachPrintedBarcode({
-      productId: "pPerfume", code: OUD_MOOD,
-      writeProductField: async () => { throw new Error("permission denied"); },
-    });
+  it("leaves the product field UNSET when the whole commit is denied", async () => {
+    denyWrites.add(OUD_MOOD);
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD });
     expect(out.ok).toBe(false);
-    expect(out.kind).toBe("record_write_failed");
-    expect(out.indexed).toBe(true);
-    expect(store.barcodes[OUD_MOOD].productId).toBe("pPerfume");   // it DID land
+    expect(out.kind).toBe("denied");
+    expect(out.indexed).toBe(false);
+    expect(getPath("products/pPerfume/printedBarcode")).toBe(null);
+    expect(getPath(`barcodes/${OUD_MOOD}`)).toBe(null);
   });
 
-  it("reports denied (indexed:false) when nothing could be written at all", async () => {
-    const out = await attachPrintedBarcode({
-      productId: "pPerfume", code: "not-a-barcode", writeProductField: vi.fn(),
-    });
+  it("refuses a code that is not a barcode without writing anything", async () => {
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: "not-a-barcode" });
     expect(out.ok).toBe(false);
     expect(out.indexed).toBe(false);
+    expect(getPath("products/pPerfume/printedBarcode")).toBe(null);
   });
 
-  it("succeeds with no product write at all (the Add Product path)", async () => {
-    // The record already carries the field from the product's own set().
+  it("backfills the product field when the rows were ALREADY ours", async () => {
+    // The index commit does not run in this case, so the field would otherwise
+    // stay missing forever on a product whose code does resolve.
+    setPath(`barcodes/${OUD_MOOD}`, { productId: "pPerfume", size: "_" });
     const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD });
     expect(out.ok).toBe(true);
-    expect(store.barcodes[OUD_MOOD].productId).toBe("pPerfume");
+    expect(out.kind).toBe("already");
+    expect(getPath("products/pPerfume/printedBarcode")).toBe(OUD_MOOD);
+  });
+
+  it("can skip the product field entirely when the caller owns that write", async () => {
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD, setProductField: false });
+    expect(out.ok).toBe(true);
+    expect(getPath("products/pPerfume/printedBarcode")).toBe(null);
   });
 });
 

@@ -8,7 +8,7 @@
 // memory and written back in a finally block, including on a crash.
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 const MUTATIONS = [
   {
@@ -74,8 +74,8 @@ const MUTATIONS = [
     id: "M7",
     guard: "Registering an EAN leaves an existing auto-generated code resolving",
     file: "src/components/stock/printedBarcodeStore.js",
-    from: `  for (const c of verdict.codes) {`,
-    to: `  for (const c of verdict.indexCodes) {`,
+    from: `  for (const c of verdict.codes) updates[\`barcodes/\${c}\`] = record;`,
+    to: `  for (const c of verdict.indexCodes) updates[\`barcodes/\${c}\`] = record;`,
     tests: ["src/components/stock/printedBarcodeStore.test.js"],
   },
   {
@@ -179,20 +179,49 @@ const MUTATIONS = [
   },
   {
     id: "M20",
-    guard: "The index is written BEFORE the product record claims the code",
+    guard: "The product field rides the SAME commit as the index rows",
     file: "src/components/stock/printedBarcodeStore.js",
-    from: `    reg = await registerPrintedBarcode(productId, code, size);`,
-    to: `    if (writeProductField) await writeProductField(code);
-    reg = await registerPrintedBarcode(productId, code, size);`,
+    from: `  Object.assign(updates, extraUpdates || {});`,
+    to: ``,
     tests: ["src/components/stock/printedBarcodeStore.test.js"],
   },
   {
     id: "M21",
-    guard: "A failed RECORD write still reports the index row as landed",
+    guard: "An ALREADY-registered code still backfills a missing product field",
     file: "src/components/stock/printedBarcodeStore.js",
-    from: `      return { ok: false, kind: "record_write_failed", indexed: true, reason: String(err?.message || err) };`,
-    to: `      return { ok: false, kind: "record_write_failed", indexed: false, reason: String(err?.message || err) };`,
+    from: `  if (reg.kind === PRINTED_ALREADY && extraUpdates) {`,
+    to: `  if (false) {`,
     tests: ["src/components/stock/printedBarcodeStore.test.js"],
+  },
+  {
+    id: "M28",
+    guard: "A refused registration never lets the record claim the code",
+    file: "src/components/stock/printedBarcodeStore.js",
+    from: `  const extraUpdates = setProductField
+    ? { [\`products/\${productId}/printedBarcode\`]: code }
+    : null;`,
+    to: `  const extraUpdates = null;
+  if (setProductField) await update(ref(database), { [\`products/\${productId}/printedBarcode\`]: code });`,
+    tests: ["src/components/stock/printedBarcodeStore.test.js"],
+  },
+  {
+    id: "M29",
+    guard: "A 13-digit code beginning with 0 also registers its UPC-A spelling",
+    file: "src/utils/eanBarcode.js",
+    from: `  if (s.length === 13 && s.startsWith("0")) return [s, s.slice(1)];`,
+    to: ``,
+    tests: [
+      "src/utils/eanBarcode.test.js",
+      "src/utils/productSearch.printedBarcode.test.js",
+    ],
+  },
+  {
+    id: "M30",
+    guard: "Search finds EVERY spelling of a captured code, not just the stored one",
+    file: "src/utils/productSearch.js",
+    from: `  if (p.printedBarcode != null) codes.push(...indexCodesFor(String(p.printedBarcode)));`,
+    to: `  if (p.printedBarcode != null) codes.push(String(p.printedBarcode));`,
+    tests: ["src/utils/productSearch.printedBarcode.test.js"],
   },
   {
     id: "M22",
@@ -223,14 +252,10 @@ const MUTATIONS = [
   },
   {
     id: "M25",
-    guard: "A UPC-A twin denied mid-loop does not discard the form that landed",
+    guard: "Both forms of a UPC-A commit ATOMICALLY — never one without the other",
     file: "src/components/stock/printedBarcodeStore.js",
-    from: `    } catch (err) {
-      failed.push({ code: c, reason: String(err?.message || err) });
-    }`,
-    to: `    } catch (err) {
-      throw err;
-    }`,
+    from: `  await update(ref(database), updates);   // throws → caller falls back`,
+    to: `  for (const [p, v] of Object.entries(updates)) await update(ref(database), { [p]: v });`,
     tests: ["src/components/stock/printedBarcodeStore.test.js"],
   },
   {
@@ -255,36 +280,74 @@ const MUTATIONS = [
     id: "M17",
     guard: "The captured code is searchable in the app that wrote it",
     file: "src/utils/productSearch.js",
-    from: `  if (p.printedBarcode != null) codes.push(String(p.printedBarcode));`,
+    from: `  if (p.printedBarcode != null) codes.push(...indexCodesFor(String(p.printedBarcode)));`,
     to: ``,
     tests: ["src/utils/productSearch.printedBarcode.test.js"],
   },
 ];
 
+// ── A NON-ZERO EXIT IS NOT PROOF ─────────────────────────────────────────────
+// Treating every failure as "FAIL" is how a mutation gets credited for a guard
+// it never exercised: a syntax error the mutation introduced, a missing test
+// file, a bad path — all exit non-zero, and the harness would report the guard
+// PROVEN without a single assertion having run. So the runner distinguishes
+// "Vitest ran and tests failed" from "Vitest could not run", and only the
+// former counts. (CodeRabbit, PR #340.)
 function runTests(files) {
   try {
-    execSync(`npx vitest run ${files.join(" ")} --silent`, { stdio: "pipe" });
+    // maxBuffer: a source-pinning test that fails prints the ENTIRE file it
+    // asserts on as the "received" value. App.jsx is 17k lines, which blows the
+    // 1MB default, truncates the captured output, and loses the summary line
+    // the verdict is read from — the run then reports ERROR for a mutation that
+    // failed exactly as intended. Found by the ERROR detection above, which is
+    // the point of having it.
+    execFileSync("npx", ["vitest", "run", ...files, "--silent"], { stdio: "pipe", maxBuffer: 64 * 1024 * 1024 });
     return "PASS";
-  } catch {
-    return "FAIL";
+  } catch (err) {
+    const out = `${err.stdout || ""}${err.stderr || ""}`;
+    // Vitest prints a "Tests  N failed" / "Test Files  N failed" tally only
+    // when it actually executed a suite.
+    if (/Tests\s+\d+\s+failed|Test Files\s+\d+\s+failed/.test(out)) return "FAIL";
+    return `ERROR(${(out.trim().split("\n").pop() || "no output").slice(0, 120)})`;
   }
 }
 
 const results = [];
 for (const m of MUTATIONS) {
   const original = readFileSync(m.file, "utf8");
-  if (!original.includes(m.from)) {
+  // ── THE ANCHOR MUST BE UNIQUE ─────────────────────────────────────────────
+  // String.replace with a string pattern edits only the FIRST occurrence. If an
+  // anchor matches twice, the other site keeps the guard intact — the suite can
+  // still pass, and the harness reports NOT PROVEN for a guard that is in fact
+  // covered, or quietly proves the wrong line. Ambiguity is a harness fault,
+  // not a result. (CodeRabbit, PR #340.)
+  const hits = original.split(m.from).length - 1;
+  if (hits === 0) {
     results.push({ ...m, mutated: "ANCHOR-MISSING", restored: "-" });
     console.log(`${m.id}  ANCHOR NOT FOUND in ${m.file}`);
     continue;
   }
+  if (hits > 1) {
+    results.push({ ...m, mutated: "ANCHOR-AMBIGUOUS", restored: "-" });
+    console.log(`${m.id}  ANCHOR FOUND ${hits}× in ${m.file} — widen it`);
+    continue;
+  }
   let mutated = "?";
   let restored = "?";
+  // `finally` does not run when the process is KILLED, and a mutated source
+  // file left in the working tree is a deliberately broken product waiting to
+  // be committed. Restore on the signals too. (CodeRabbit, PR #340.)
+  const restore = () => { try { writeFileSync(m.file, original); } catch { /* nothing better available */ } };
+  const onSignal = () => { restore(); process.exit(130); };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
   try {
     writeFileSync(m.file, original.replace(m.from, m.to));
     mutated = runTests(m.tests);
   } finally {
-    writeFileSync(m.file, original);
+    restore();
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
   }
   // PROVE THE RESTORE. A `finally` does not survive a process kill, and a
   // half-restored source file left in the working tree is a deliberately broken

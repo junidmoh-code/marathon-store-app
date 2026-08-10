@@ -5215,6 +5215,18 @@ function AdminView({ products, orders, onExit }) {
       // legacy fields, which would silently drop out of every automation.
       if (!newProduct) throw operatorError("That category is no longer available. Pick a category again.");
       const sizes = newProduct.sizes;
+      // ── THE PRINTED CODE LEAVES THE INITIAL WRITE ─────────────────────────
+      // buildNewProduct is still the GATE — it is what refuses a code on a
+      // non-perfume category and re-validates the check digit — but the value
+      // it produced is lifted out of the product's own set() and committed
+      // later, in the SAME atomic multi-path update as the /barcodes rows.
+      // Writing it here would mean the record could claim a code whose
+      // registration then failed, which previously needed a compensating
+      // removal that could itself fail. Now the database enforces it: either
+      // the code resolves AND the record names it, or neither happened.
+      // (CodeRabbit, PR #340.)
+      const printedCode = newProduct.printedBarcode || null;
+      delete newProduct.printedBarcode;
       // MERGE NOTE (2026-07-30): prices and the shoebox flag moved INTO
       // buildNewProduct during the form rewrite — main's inline copies of those
       // are intentionally not carried over here, they would be duplicates. The
@@ -5390,33 +5402,24 @@ function AdminView({ products, orders, onExit }) {
       //
       // Registration runs AFTER the product write, never before: the rule on
       // /barcodes/$code validates that the referenced product exists.
-      if (newProduct.printedBarcode) {
-        // The product record already carries the field (buildNewProduct wrote
-        // it in the same set()), so no product write is needed here — only the
-        // index half, and the removal below if it does not land.
-        const attach = await attachPrintedBarcode({ productId: id, code: newProduct.printedBarcode });
+      if (printedCode) {
+        // The field was deliberately kept OUT of the product's own set() (see
+        // above): it rides the same atomic commit as the index rows, so it can
+        // never name a code that did not register. Nothing to compensate for.
+        const attach = await attachPrintedBarcode({ productId: id, code: printedCode });
         const failure = attach.ok ? null
           : attach.kind === "denied"
             ? `it could not be written (${attach.reason}) — you may not have stock permission`
             : attach.reason;
         if (failure) {
-          // ── THE FIELD MEANS "REGISTERED". SO IT COMES OFF. ────────────────
-          // products/{id}/printedBarcode is the product's copy of a code that
-          // resolves in /barcodes. Leaving it after a failed registration would
-          // show a tidy number on the detail page and return this product from
-          // a search for a code the POS resolves to somebody else. Removing it
-          // keeps the field honest. Best-effort: a failed removal is logged,
-          // never fatal — the product is already saved.
-          update(ref(database, `products/${id}`), { printedBarcode: null })
-            .catch((e) => console.warn("could not clear the unregistered printedBarcode:", e));
-          // Now mint a shop code so the product is scannable — and VERIFY it,
+          // Mint a shop code so the product is scannable — and VERIFY it,
           // because ensureBarcodes swallows its own index-write errors by
           // design. Claiming "a shop barcode has been generated" without
           // checking is how a product ends up scannable nowhere while the
           // operator is told it is fine. (Codex review, PR #340.)
           const minted = await mintAndVerifyFallbackBarcode(id, sizes);
           alert(
-            `Saved, but barcode ${newProduct.printedBarcode} was NOT attached to this product — ${failure}.\n\n` +
+            `Saved, but barcode ${printedCode} was NOT attached to this product — ${failure}.\n\n` +
             (minted
               ? `A shop barcode (${minted}) was generated instead — print and stick a label on the box.`
               : `A shop barcode could NOT be generated either, so THIS PRODUCT CANNOT BE SCANNED YET. ` +
@@ -5485,7 +5488,7 @@ function AdminView({ products, orders, onExit }) {
           // that already works. The distribution wizard is still offered for
           // Central stock; only the label step is skipped.
           if (savedItems.length) {
-            const usesPrintedBarcode = !!newProduct.printedBarcode;
+            const usesPrintedBarcode = !!printedCode;
             setLastReceived(usesPrintedBarcode ? null : { productId: id, productName: newProduct.name, photoUrl: newProduct.photoUrl ?? null, items: savedItems });
             // Stock landed at Central → offer initial distribution first; the
             // print sheet opens when the wizard closes. Other locations keep
@@ -6152,11 +6155,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
     try {
       // ONE tested function owns the ordering: index first (it is the write
       // that can be refused), product record second (it MEANS "registered").
-      const attach = await attachPrintedBarcode({
-        productId: product.id,
-        code,
-        writeProductField: (c) => update(ref(database, `products/${product.id}`), { printedBarcode: c }),
-      });
+      const attach = await attachPrintedBarcode({ productId: product.id, code });
       if (attach.ok) { setRecapture(false); setIndexWarning(null); return; }
       // TELL THE TRUTH ABOUT WHAT LANDED. An index row is PERMANENT — it cannot
       // be deleted from the client — so "nothing was changed" is false whenever
