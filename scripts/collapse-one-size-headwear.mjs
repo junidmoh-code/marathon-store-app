@@ -124,7 +124,7 @@ function hasPrivilegedCredential(app) {
   const offset = (await io.read(".info/serverTimeOffset")) || 0;
   setServerTimeOffsetMs(offset);
   const nowIso = serverNowIso();
-  const nowMs = Date.parse(nowIso);
+  const nowMs0 = Date.parse(nowIso);
   console.log(`  server time anchor: offset ${offset}ms → ${nowIso}`);
 
   const [products, stock, allTargets, barcodesIdx, transfers, orders, refillRequests, openLocks, dcActive, session, movements] =
@@ -138,7 +138,7 @@ function hasPrivilegedCredential(app) {
   // productId → most recent movement instant (and a count of unreadable stamps)
   // for the recent-activity gate — see movementRecency for why the unreadable
   // case must block rather than read as quiet.
-  const { lastMs: lastMovementMs, unreadable: unreadableStamp } = movementRecency(movements, { nowMs });
+  const { lastMs: lastMovementMs0, unreadable: unreadableStamp0 } = movementRecency(movements, { nowMs: nowMs0 });
 
   // ── scope ──────────────────────────────────────────────────────────────────
   let scope = Object.entries(products)
@@ -245,7 +245,7 @@ function hasPrivilegedCredential(app) {
     if (!committed) {
       const held = snapshot.val() || {};
       const started = Date.parse(held.startedAt);
-      const age = Number.isFinite(started) ? `${Math.round((nowMs - started) / 60000)} min ago` : "at an unreadable time";
+      const age = Number.isFinite(started) ? `${Math.round((nowMs0 - started) / 60000)} min ago` : "at an unreadable time";
       console.error(`\nABORT: another --execute run holds the lock (pid ${held.pid} on ${held.host}, started ${held.startedAt}, ${age}).`);
       console.error("Two concurrent runs can double-apply a positive movement leg. If that run");
       console.error(`crashed, clear the lock deliberately once you are sure it is dead:\n  firebase database:remove /${LOCK} --project marathon-club`);
@@ -275,16 +275,30 @@ function hasPrivilegedCredential(app) {
   // exposure drops from "the whole run" to at most GATE_MAX_AGE_MS, and the
   // recent-activity gate covers the tail.
   const GATE_MAX_AGE_MS = Number(process.env.GATE_MAX_AGE_SECONDS || 60) * 1000;
-  let gateData = { transfers, orders, refillRequests, openLocks, dcActive };
+  //
+  // THE LEDGER IS REFRESHED WITH THEM, and the clock with it. The recent-
+  // activity gate asks "is this product being sold RIGHT NOW", and it was the
+  // only input still answering from the startup snapshot against a frozen
+  // `nowMs`. Over a run measured in tens of minutes that turns a sliding
+  // 15-minute window into a fixed slice of the run's first 15 minutes: a
+  // product sold at minute 30 read as quiet when its turn came at minute 90.
+  // The gate designed to stop a race with a till was the stalest thing in the
+  // loop. (Both independent reviews, PR #345.)
+  let gateData = { transfers, orders, refillRequests, openLocks, dcActive,
+    lastMovementMs: lastMovementMs0, unreadableStamp: unreadableStamp0, nowMs: nowMs0 };
   let gateReadAt = Date.now();
   let gateRefreshes = 0;
   const freshGates = async () => {
     if (Date.now() - gateReadAt < GATE_MAX_AGE_MS) return gateData;
-    const [t, o, rr, ol, dc] = await Promise.all([
+    const [t, o, rr, ol, dc, mv] = await Promise.all([
       io.read("transfers"), io.read("orders"), io.read("refill_requests"),
       io.read("refill_engine/open"), io.read("displayChecks_active"),
+      io.read("stock_movements"),
     ]).then((r) => r.map((v) => v || {}));
-    gateData = { transfers: t, orders: o, refillRequests: rr, openLocks: ol, dcActive: dc };
+    const nowMsFresh = Date.now() + offset;
+    const { lastMs, unreadable } = movementRecency(mv, { nowMs: nowMsFresh });
+    gateData = { transfers: t, orders: o, refillRequests: rr, openLocks: ol, dcActive: dc,
+      lastMovementMs: lastMs, unreadableStamp: unreadable, nowMs: nowMsFresh };
     gateReadAt = Date.now();
     gateRefreshes++;
     return gateData;
@@ -297,22 +311,55 @@ function hasPrivilegedCredential(app) {
 
   // ── per-product ────────────────────────────────────────────────────────────
   const results = [];
-  for (const [pid, p] of scope) {
-    const name = p.name || pid;
+  for (const [pid, pStart] of scope) {
     const gates_ = await freshGates();
     const { transfers: transfersNow, orders: ordersNow, refillRequests: refillRequestsNow,
-      openLocks: openLocksNow, dcActive: dcActiveNow } = gates_;
-    const indexCodes = { ...(reverseIdx[pid] || {}) };
-    for (const code of Object.values(p.barcodes || {}).map(String)) if (!(code in indexCodes)) indexCodes[code] = barcodesIdx[code] ?? null;
+      openLocks: openLocksNow, dcActive: dcActiveNow,
+      lastMovementMs, unreadableStamp, nowMs } = gates_;
+    // ── EVERYTHING THIS PRODUCT'S DECISIONS REST ON IS RE-READ HERE ─────────
+    // The startup snapshot is minutes old by the 60th product and over an hour
+    // old by the last, and Step 2 FORCE-WRITES barcodes/{code}/size for every
+    // code the snapshot listed. Two consequences, both found by review of #345:
+    //
+    //   • a code reassigned to another product mid-run (a re-tag, a merge)
+    //     still passes the ownership gate on the stale record, and Step 2 then
+    //     stamps size "_" onto a record that now belongs to SOMEONE ELSE —
+    //     corrupting a product this run was never asked to touch. verifyProduct
+    //     would eventually notice, but only as a cryptic line under THIS
+    //     product's failure, naming neither the victim nor the damage.
+    //   • the undeclared-size gate and the keep-code ranking were computed from
+    //     stale cells while the plan itself used fresh ones, so a cell that
+    //     appeared in an undeclared size after startup was drained without ever
+    //     being gated, and the code that won the "_" slot could differ from the
+    //     one the dry run printed.
+    //
+    // So the product record, its cells and its index records are all re-read
+    // immediately before its own gates and plan. This is the same bounded-
+    // staleness reasoning freshGates applies to the referential trees; it was
+    // simply never extended to the data being WRITTEN.
+    const p = (await io.read(`products/${pid}`)) || pStart;
+    const name = p.name || pid;
+    const freshCells = {};
+    for (const loc of Object.keys(stock)) {
+      const bySize = await io.read(`stock/${loc}/${pid}`);
+      if (bySize) freshCells[loc] = bySize;
+    }
+    const indexCodes = {};
+    for (const code of new Set([
+      ...Object.keys(reverseIdx[pid] || {}),
+      ...Object.values(p.barcodes || {}).map(String),
+    ])) {
+      indexCodes[code] = await io.read(`barcodes/${code}`);
+    }
 
     // gates
     const gates = [];
+    if (!isInScope(p)) gates.push(`no longer in headwear scope (renamed, re-filed or merged since the run started): ${JSON.stringify(p.name)} / ${JSON.stringify(p.subcategory)}`);
     for (const [code, rec] of Object.entries(indexCodes)) {
       if (!rec) gates.push(`barcode ${code}: no index record`);
-      else if (rec.productId !== pid) gates.push(`barcode ${code}: index points at ${rec.productId}`);
+      else if (rec.productId !== pid) gates.push(`barcode ${code}: index now points at ${rec.productId} — reassigned since this run started; writing it would corrupt that product`);
     }
-    const cellsByLoc = {};
-    for (const [loc, byPid] of Object.entries(stock)) if (byPid?.[pid]) cellsByLoc[loc] = byPid[pid];
+    const cellsByLoc = freshCells;
     const declared = (p.sizes || []).map(String);
     // Units per SIZE KEY, summed across every location — the input to the
     // keep-code rule. It was a LIST of keys when every beanie held one size and
@@ -377,11 +424,6 @@ function hasPrivilegedCredential(app) {
     // is about to stop declaring. Re-read this product's cells immediately
     // before planning, and derive the before-totals from the same fresh read so
     // the verification compares like with like. (Kimi review, PR #343.)
-    const freshCells = {};
-    for (const loc of Object.keys(stock)) {
-      const bySize = await io.read(`stock/${loc}/${pid}`);
-      if (bySize) freshCells[loc] = bySize;
-    }
     const step1 = await planStep1(io, pid, declared, freshCells);
     const s2 = planStep2(pid, p, indexCodes, heldUnits);
     if (s2.error) { results.push({ pid, name, status: "GATED", detail: [s2.error] }); continue; }
@@ -396,11 +438,15 @@ function hasPrivilegedCredential(app) {
       // arrived in a size whose pair has already been spent, and the execute
       // path will refuse to collapse this product. Say so in the plan rather
       // than printing it like an ordinary pair. (Sonnet review, PR #343.)
+      // planStep1 no longer emits a leg whose id is already spent — such stock
+      // comes back as a `stranded` plan with no legs instead, because planning
+      // it would either no-op (losing it) or half-apply (minting). Both are
+      // printed: the legs that will run, and the stock that will not move.
       const legLines = [];
       for (const pl of step1) {
+        if (pl.kind === "stranded") { legLines.push(`⚠ STRANDED — ${pl.note}`); continue; }
         for (const l of pl.legs) {
-          const spent = !!(await io.read(`stock_movements/${l.id}`));
-          legLines.push(`${l.id} (${l.movement.from ? "OUT " + l.movement.from : "IN " + l.movement.to} ${l.movement.size} qty ${l.movement.qty}${l.movement.allowNegative ? " allowNegative" : ""})${spent ? "  ⚠ ALREADY IN THE LEDGER — this leg will move NOTHING; the units here arrived after the pair was spent" : ""}`);
+          legLines.push(`${l.id} (${l.movement.from ? "OUT " + l.movement.from : "IN " + l.movement.to} ${l.movement.size} qty ${l.movement.qty}${l.movement.allowNegative ? " allowNegative" : ""})${pl.kind.startsWith("resume") ? "  ↩ RESUME — completing a pair an earlier run left half-applied, at the LEDGER's quantity" : ""}`);
         }
       }
       results.push({ pid, name, status: (step1.length || s2Needed || Object.keys(step3).length) ? "PLANNED" : "ALREADY DONE", detail: [
@@ -426,6 +472,7 @@ function hasPrivilegedCredential(app) {
       baselinePids.add(pid);
     }
     let failed = null;
+    const strandedPlans = step1.filter((pl) => pl.kind === "stranded");
     for (const pl of step1) {
       for (const leg of pl.legs) {
         const r = await applyMovementAdmin(io, { ...leg.movement, ts: nowIso }, { nowIso });
@@ -442,6 +489,12 @@ function hasPrivilegedCredential(app) {
     // moving anything, so stock that arrived in a still-declared size between
     // runs would be stranded the instant identity collapses. Ask the database.
     // (Sonnet review, PR #343 — reproduced end to end.)
+    // A stranded cell cannot be moved by this run and MUST NOT be collapsed
+    // over. assertDrained would catch it a moment later anyway; naming it here
+    // gives the operator the instruction instead of just the symptom.
+    if (!failed && strandedPlans.length) {
+      failed = strandedPlans.map((pl) => pl.note).join("  |  ");
+    }
     if (!failed) {
       const residue = await assertDrained(io, pid);
       if (residue.length) {

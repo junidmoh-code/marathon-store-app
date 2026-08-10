@@ -543,14 +543,63 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
       const declaredMatch = (declaredSizes || []).map(String).find((s) => encodeSizeKey(s) === sizeKey);
       const size = declaredMatch ?? sizeKey;
 
-      if (q > 0) {
+      // ── THE LEDGER IS CONSULTED FIRST, ALWAYS ───────────────────────────────
+      // This used to happen ONLY in the `q === 0` branch, on the assumption that
+      // a half-applied pair always leaves its source cell at exactly zero. It
+      // does — until anything else touches that cell, and the cell stays a
+      // DECLARED size the whole time, so a till or a warehouse receive is
+      // perfectly entitled to. Both independent reviews of PR #345 found this
+      // and both reproduced it end to end:
+      //
+      //   OUT lands (M 5 → 0, "_" not yet credited), the run is interrupted.
+      //   • A till oversells M to −1. On resume q < 0, so the MIRRORED pair is
+      //     planned and `ids.in` is never planned at all. The mirror closes M at
+      //     0, assertDrained sees no residue, Step 2 collapses identity, and
+      //     verifyProduct passes because this run's baseline was taken AFTER the
+      //     loss. FIVE UNITS GONE, every check green.
+      //   • A receive puts 2 into M. On resume q > 0, so OUT is re-planned under
+      //     its SPENT id (no-op) while IN applies with the NEW qty — crediting 2
+      //     instead of the owed 5. Two units minted into "_", five still lost.
+      //
+      // The ids are keyed by (product, location, size) with no quantity in them,
+      // which is what makes a re-run a no-op; the price is that a spent id can
+      // never be reused for a different quantity. So: read the ledger first,
+      // finish any half-applied pair from the LEDGER's recorded quantity, and
+      // only plan a fresh pair when its own ids are untouched. A cell holding
+      // units whose pair is already spent is STRANDED — reported, never planned,
+      // and assertDrained refuses to collapse the product until it is cleared.
+      const [out, inMv, negOut, negIn] = await Promise.all([
+        io.read(`stock_movements/${ids.out}`),
+        io.read(`stock_movements/${ids.in}`),
+        io.read(`stock_movements/${ids.negOut}`),
+        io.read(`stock_movements/${ids.negIn}`),
+      ]);
+
+      // 1. Finish a half-applied pair, from the ledger, whatever the cell says.
+      if (out && !inMv) {
+        const n = Number(out.qty);
+        plans.push({ loc, sizeKey, kind: "resume-in", qty: n, legs: [
+          { id: ids.in, movement: { type: "adjustment", productId: pid, size: "_", qty: n, to: loc, movementId: ids.in,
+            reason: `Collapse to one-size: receive from size ${size}` } },
+        ] });
+      }
+      if (negOut && !negIn) {
+        const n = Number(negOut.qty);
+        plans.push({ loc, sizeKey, kind: "resume-neg-in", qty: -n, legs: [
+          { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
+            reason: `Collapse to one-size: close oversold size ${size} cell` } },
+        ] });
+      }
+
+      // 2. The cell's own balance — only if the pair it needs is untouched.
+      if (q > 0 && !out && !inMv) {
         plans.push({ loc, sizeKey, kind: "positive", qty: q, legs: [
           { id: ids.out, movement: { type: "adjustment", productId: pid, size, qty: q, from: loc, movementId: ids.out,
             reason: `Collapse to one-size: move size ${size} → _` } },
           { id: ids.in, movement: { type: "adjustment", productId: pid, size: "_", qty: q, to: loc, movementId: ids.in,
             reason: `Collapse to one-size: receive from size ${size}` } },
         ] });
-      } else if (q < 0) {
+      } else if (q < 0 && !negOut && !negIn) {
         const n = -q;
         plans.push({ loc, sizeKey, kind: "negative", qty: q, legs: [
           { id: ids.negOut, movement: { type: "adjustment", productId: pid, size: "_", qty: n, from: loc, movementId: ids.negOut,
@@ -558,27 +607,12 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
           { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
             reason: `Collapse to one-size: close oversold size ${size} cell` } },
         ] });
-      } else {
-        // qty 0 — but an INTERRUPTED prior run leaves exactly this state with
-        // the OUT landed and the IN missing. The ledger, not the cell, says so.
-        const out = await io.read(`stock_movements/${ids.out}`);
-        const inMv = await io.read(`stock_movements/${ids.in}`);
-        if (out && !inMv) {
-          const n = Number(out.qty);
-          plans.push({ loc, sizeKey, kind: "resume-in", qty: n, legs: [
-            { id: ids.in, movement: { type: "adjustment", productId: pid, size: "_", qty: n, to: loc, movementId: ids.in,
-              reason: `Collapse to one-size: receive from size ${size}` } },
-          ] });
-        }
-        const negOut = await io.read(`stock_movements/${ids.negOut}`);
-        const negIn = await io.read(`stock_movements/${ids.negIn}`);
-        if (negOut && !negIn) {
-          const n = Number(negOut.qty);
-          plans.push({ loc, sizeKey, kind: "resume-neg-in", qty: -n, legs: [
-            { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
-              reason: `Collapse to one-size: close oversold size ${size} cell` } },
-          ] });
-        }
+      } else if (q !== 0) {
+        // Stock sitting in a size whose pair is spent. Planning it again would
+        // either no-op (losing it) or apply half a pair (minting). Neither is
+        // acceptable, and neither is silence.
+        plans.push({ loc, sizeKey, kind: "stranded", qty: q, legs: [],
+          note: `${loc}/${sizeKey} holds ${q} but its movement pair is already spent — this stock arrived after the pair ran. Move it to "_" by hand (or clear it) before collapsing; Step 2 will refuse until you do.` });
       }
     }
   }

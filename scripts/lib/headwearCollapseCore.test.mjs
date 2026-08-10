@@ -395,6 +395,66 @@ describe("idempotency and interruption", () => {
     expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(-1);
   });
 
+  // ── THE CELL MOVED WHILE THE PAIR WAS HALF-APPLIED ────────────────────────
+  // Both independent reviews of PR #345 reproduced these two. The resume lookup
+  // used to live ONLY in the `q === 0` branch, on the assumption that a
+  // half-applied pair always leaves its source cell at zero. It does — until
+  // something else touches it, and the cell is still a DECLARED size, so a till
+  // or a receive is entitled to.
+  it("OUT landed, then the cell was OVERSOLD: the owed units are still credited, not lost", async () => {
+    const db = makeDb(seedProduct({ cells: { hub2: { M: 5 } } }));
+    const ids = legIds("pB", "hub2", "M");
+    // Run 1: the OUT lands, the process dies before the IN.
+    await applyMovementAdmin(db.io, { type: "adjustment", productId: "pB", size: "M", qty: 5, from: "hub2",
+      movementId: ids.out, reason: "collapse" }, { nowIso: NOW });
+    expect(db.raw().stock.hub2.pB.M.qty).toBe(0);
+    // A till oversells M — legitimately, it is still a declared size.
+    db.poke("stock/hub2/pB/M", { qty: -1, v: 9, mv: "till_oversell", lastType: "sold" });
+
+    // Resume. The old code saw q < 0, planned ONLY the mirrored pair, never
+    // planned ids.in, closed M at 0 and let Step 2 collapse — five units gone
+    // with assertDrained and verifyProduct both green.
+    const r = await migrate(db, "pB");
+    expect(r.ok).toBe(true);
+    const cells = db.raw().stock.hub2.pB;
+    expect(cells._.qty).toBe(4);        // 5 owed, less the 1 oversold
+    expect(cells.M.qty).toBe(0);
+    expect(totalAt(db.raw(), "hub2", "pB")).toBe(4);
+    // The IN leg really did run, at the LEDGER's quantity, not the cell's.
+    expect((await db.io.read(`stock_movements/${ids.in}`)).qty).toBe(5);
+  });
+
+  it("OUT landed, then stock was RECEIVED into the same size: nothing is minted and the new stock is reported, not silently swallowed", async () => {
+    const db = makeDb(seedProduct({ cells: { hub2: { M: 5 } } }));
+    const ids = legIds("pB", "hub2", "M");
+    await applyMovementAdmin(db.io, { type: "adjustment", productId: "pB", size: "M", qty: 5, from: "hub2",
+      movementId: ids.out, reason: "collapse" }, { nowIso: NOW });
+    // A warehouse receive puts 2 into M — still a declared size.
+    db.poke("stock/hub2/pB/M", { qty: 2, v: 9, mv: "warehouse_receive", lastType: "received" });
+
+    const product = await db.io.read("products/pB");
+    const plans = await planStep1(db.io, "pB", product.sizes, { hub2: await db.io.read("stock/hub2/pB") });
+    // The owed 5 is completed from the ledger…
+    const resume = plans.find((p) => p.kind === "resume-in");
+    expect(resume.qty).toBe(5);
+    // …and the 2 that arrived later is NOT planned under the spent ids (which
+    // would have no-opped the OUT and applied the IN at the wrong quantity).
+    const stranded = plans.find((p) => p.kind === "stranded");
+    expect(stranded.qty).toBe(2);
+    expect(stranded.legs).toHaveLength(0);
+    expect(stranded.note).toMatch(/already spent/);
+
+    for (const pl of plans) for (const leg of pl.legs) {
+      await applyMovementAdmin(db.io, { ...leg.movement, ts: NOW }, { nowIso: NOW });
+    }
+    const cells = db.raw().stock.hub2.pB;
+    expect(cells._.qty).toBe(5);          // the owed units, exactly — nothing minted
+    expect(cells.M.qty).toBe(2);          // the new stock, untouched
+    expect(totalAt(db.raw(), "hub2", "pB")).toBe(7);
+    // And identity must NOT collapse while those 2 units sit in a doomed size.
+    expect(await assertDrained(db.io, "pB")).toEqual(["hub2/M=2"]);
+  });
+
   it("interrupted before Step 2: stock is split across the sized cell and \"_\" and BOTH are sellable", async () => {
     // Two locations; the second location's pair never runs.
     const db = makeDb(seedProduct({ cells: { hub2: { M: 6 }, central: { M: 4 } } }));
@@ -416,11 +476,9 @@ describe("idempotency and interruption", () => {
 
 describe("Step 2's drain precondition — a spent pair cannot certify an undrained cell", () => {
   it("stock arriving in a still-declared size AFTER its pair landed is caught before identity collapses", async () => {
-    // The exact sequence: Step 1 lands in full, the operator stops (a state the
+    // The exact sequence: Step 1 lands in FULL, the operator stops (a state the
     // header calls safe, and it is — the product still declares M). A normal
-    // warehouse receive then puts units into M. On resume, planStep1 plans the
-    // pair again but both movement ids are spent, so each leg no-ops and
-    // reports ok. Without the drain check, Step 2 fires and strands the units.
+    // warehouse receive then puts units into M.
     const db = makeDb(seedProduct({ cells: { hub2: { M: 6 } } }));
     await migrate(db, "pB", { skipStep2: true, skipStep3: true });
     expect(db.raw().stock.hub2.pB.M.qty).toBe(0);
@@ -428,16 +486,16 @@ describe("Step 2's drain precondition — a spent pair cannot certify an undrain
 
     db.poke("stock/hub2/pB/M", { qty: 2, v: 5, mv: "warehouse_receive", lastType: "received" });
 
-    // Resume: the legs report success while moving nothing.
+    // Resume. Both ids are spent, so the pair is NOT re-planned — it is reported
+    // as stranded and moves nothing at all. (It used to be re-planned and each
+    // leg no-opped, which was harmless here but is the same code path that lost
+    // units when only ONE of the two ids was spent.)
     const product = await db.io.read("products/pB");
     const cellsByLoc = { hub2: await db.io.read("stock/hub2/pB") };
     const plans = await planStep1(db.io, "pB", product.sizes, cellsByLoc);
-    const results = [];
-    for (const pl of plans) for (const leg of pl.legs) {
-      results.push(await applyMovementAdmin(db.io, { ...leg.movement, ts: NOW }, { nowIso: NOW }));
-    }
-    expect(results.every((r) => r.ok)).toBe(true);
-    expect(results.some((r) => r.idempotent)).toBe(true);
+    expect(plans.flatMap((p) => p.legs)).toHaveLength(0);
+    expect(plans.map((p) => p.kind)).toEqual(["stranded"]);
+    expect(db.raw().stock.hub2.pB._.qty).toBe(6);      // untouched
 
     // THE GUARD: Step 2's precondition asks the database, and refuses.
     const residue = await assertDrained(db.io, "pB");

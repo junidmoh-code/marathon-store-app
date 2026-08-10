@@ -26,7 +26,9 @@
 // from the ledger (M18), movement-id idempotency (M19), and the transfer gate's
 // refusal to name a size it could not parse (M20). M21–M24 cover what the
 // review round added: orphan index records, the ledger's recorded size, and the
-// two policy-row decisions.
+// two policy-row decisions, and M25-M27 the resume path that both independent
+// reviews of #345 broke: a pair left half-applied by an interrupted run, whose
+// source cell then moved before the resume.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -240,6 +242,30 @@ const MUTATIONS = [
     file: CORE,
     from: `  if (typeof row.minQty !== "number" || !Number.isFinite(row.minQty)) return "minQty is not a finite number (the live rule REQUIRES it)";`,
     to: ``,
+    tests: SUITE,
+  },
+  {
+    id: "M25",
+    guard: "A half-applied pair is completed from the LEDGER even when the cell has since moved",
+    file: CORE,
+    from: `      if (out && !inMv) {`,
+    to: `      if (out && !inMv && q === 0) {`,
+    tests: SUITE,
+  },
+  {
+    id: "M26",
+    guard: "A cell whose pair is already spent is STRANDED, never re-planned under the spent ids",
+    file: CORE,
+    from: `      if (q > 0 && !out && !inMv) {`,
+    to: `      if (q > 0) {`,
+    tests: SUITE,
+  },
+  {
+    id: "M27",
+    guard: "The mirrored pair is not re-planned once its own ids are spent",
+    file: CORE,
+    from: `      } else if (q < 0 && !negOut && !negIn) {`,
+    to: `      } else if (q < 0) {`,
     tests: SUITE,
   },
 ];
