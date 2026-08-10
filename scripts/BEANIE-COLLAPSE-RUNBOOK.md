@@ -135,34 +135,50 @@ The snapshot from step 4 holds, per product: `sizes`, the `barcodes` map, every
 barcode index record, every stock cell and every target row as they were before
 the run.
 
-**Identity is what you roll back, and it is the part that matters** — restoring
-`sizes`, the `barcodes` map and the index records puts scanning back exactly as
-it was. Using the snapshot file written in step 4:
+**Identity is what you roll back**, and there is a script for it — it was a
+one-liner until review pointed out that a one-liner restored the wrong subset:
 
 ```bash
-node -e '
-const fs=require("fs"),snap=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
-const {createRequire}=require("module");const req=createRequire(process.cwd()+"/functions/package.json");
-const admin=req("firebase-admin");
-admin.initializeApp({credential:admin.credential.applicationDefault(),
-  databaseURL:"https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app"});
-const u={};
-for (const [pid,p] of Object.entries(snap.products)) {
-  u[`products/${pid}/sizes`]=p.sizes; u[`products/${pid}/barcodes`]=p.barcodes;
-}
-for (const [code,rec] of Object.entries(snap.barcodeIndex)) if (rec) u[`barcodes/${code}/size`]=rec.size;
-console.log("restoring",Object.keys(u).length,"paths");
-admin.database().ref().update(u).then(()=>{console.log("identity restored");process.exit(0)});
-' ~/beanie-collapse-rollback-YYYYMMDD-HHMM.json
+node scripts/rollback-beanie-collapse.mjs ~/beanie-collapse-rollback-YYYYMMDD-HHMM.json
+# read it, then:
+node scripts/rollback-beanie-collapse.mjs ~/beanie-collapse-rollback-YYYYMMDD-HHMM.json --execute
 ```
 
-**Stock is a ledger, not a snapshot.** Do NOT overwrite cells from the file —
-that would erase every sale and receive that happened since. Reversing the stock
-half means new paired movements in the opposite direction, and in practice you
-almost never want it: the units are all still there, just in the `"_"` cell
-rather than the sized one, and the identity restore above makes the sized cell
-addressable again. If you do need it, take the movement ids from the run's JSON
-report and mirror each pair with a fresh id.
+It restores `sizes`, the `barcodes` map, **whole** barcode index records (and
+removes any the migration created), and the `/stock_targets` rows the migration
+retired — leaving those out would give a product back its old identity with no
+refill policy. It verifies on fresh reads afterwards.
+
+**It refuses if the product has moved since the snapshot.** Step 5 above sells
+at the till on purpose, so later activity is expected rather than hypothetical,
+and restoring identity under it can strand units that arrived in the `"_"` cell
+after the collapse. The script names those movements and stops; `--force`
+proceeds if you decide that is what you want.
+
+**Stock is a ledger, not a snapshot.** The rollback deliberately does NOT move
+stock — overwriting cells from the file would erase every sale and receive
+since the run. After an identity restore the units are still in the `"_"` cell
+while the product declares its old sizes again, so the sized cell reads 0. The
+script prints exactly where the stock is sitting. To finish the job, move each
+`"_"` balance back with FRESH paired movements — new ids, because the
+migration's own ids are spent and would no-op.
+
+## If a run dies without releasing its lock
+
+`--execute` takes a lock at `/_migrations/beanieOneSizeCollapse/runLock` so two
+runs can never overlap. Ctrl-C and a normal error both release it. A `SIGKILL`,
+a crashed host or a lost laptop does not — there is no expiry, deliberately,
+because auto-stealing a lock is how two runs end up writing at once.
+
+The next run's abort message names the holder (pid, host, when it started).
+Confirm that process is genuinely dead — `ps -p <pid>` on that host — then clear
+it and re-run:
+
+```bash
+firebase database:remove /_migrations/beanieOneSizeCollapse/runLock --project marathon-club
+```
+
+A dry run never takes the lock, so it always works regardless.
 
 ## What is NOT armed
 
