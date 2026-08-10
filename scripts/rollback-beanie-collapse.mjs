@@ -103,6 +103,7 @@ const isMigrationMovement = (id) => typeof id === "string" && id.startsWith("one
 
   // ── the write plan ────────────────────────────────────────────────────────
   const updates = {};
+  const unattributed = [];
   for (const pid of pids) {
     const p = snap.products[pid];
     updates[`products/${pid}/sizes`] = p.sizes ?? null;
@@ -111,9 +112,24 @@ const isMigrationMovement = (id) => typeof id === "string" && id.startsWith("one
   // WHOLE index records, not just `size` — a record may carry more than that,
   // and a snapshot entry of null means the record did NOT exist before the run
   // and must be REMOVED, not left behind. (CodeRabbit, PR #343.)
+  //
+  // OWNERSHIP COMES FROM THE SNAPSHOT'S PRODUCT MAPS, not from the record. A
+  // null entry has no productId to filter on, so filtering on the record alone
+  // meant `--only=pA` planned `barcodes/<pB's code> = null` and DELETED an
+  // unrelated product's barcode — reproduced before fixing. The snapshot knows
+  // which product listed each code; ask it.
   const snapPids = new Set(pids);
+  const ownerOfCode = new Map();
+  for (const [pid, p] of Object.entries(snap.products || {})) {
+    for (const code of Object.values(p?.barcodes || {})) ownerOfCode.set(String(code), pid);
+  }
   for (const [code, rec] of Object.entries(snap.barcodeIndex || {})) {
-    if (rec && rec.productId && !snapPids.has(rec.productId)) continue;   // another product's code
+    const owner = rec?.productId || ownerOfCode.get(String(code));
+    // Unknown owner (a null record for a code no snapshot product lists) is not
+    // ours to touch — deleting a record we cannot attribute is the one
+    // irreversible thing this script could do by accident.
+    if (!owner) { unattributed.push(code); continue; }
+    if (!snapPids.has(owner)) continue;                       // another product's code
     updates[`barcodes/${code}`] = rec ?? null;
   }
   // Target rows the migration retired to 0 — restoring identity without them
@@ -125,6 +141,10 @@ const isMigrationMovement = (id) => typeof id === "string" && id.startsWith("one
     }
   }
 
+  if (unattributed.length) {
+    console.log(`\n  NOTE — ${unattributed.length} snapshot index entr(ies) name no product in this snapshot`);
+    console.log(`  and are left ALONE rather than deleted: ${unattributed.slice(0, 6).join(", ")}${unattributed.length > 6 ? ", …" : ""}`);
+  }
   console.log(`\n── WRITE PLAN (${Object.keys(updates).length} paths) ─────────────────────────────────`);
   for (const [path, v] of Object.entries(updates).slice(0, 12)) console.log(`  ${path.padEnd(52)} = ${JSON.stringify(v)?.slice(0, 60)}`);
   if (Object.keys(updates).length > 12) console.log(`  … and ${Object.keys(updates).length - 12} more`);
