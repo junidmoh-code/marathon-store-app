@@ -269,9 +269,13 @@ describe("attachPrintedBarcode — the record and the index land TOGETHER", () =
     expect(getPath(`barcodes/${OUD_MOOD}`)).toBe(null);
   });
 
-  it("refuses a code that is not a barcode without writing anything", async () => {
+  it("refuses a code that is not a barcode as INVALID, not denied", async () => {
+    // App.jsx branches on kind === "denied" to show the stock-permission
+    // message. "not a barcode" is a different problem with a different fix, so
+    // the two must not collapse into one. (CodeRabbit, PR #340.)
     const out = await attachPrintedBarcode({ productId: "pPerfume", code: "not-a-barcode" });
     expect(out.ok).toBe(false);
+    expect(out.kind).toBe("invalid");
     expect(out.indexed).toBe(false);
     expect(getPath("products/pPerfume/printedBarcode")).toBe(null);
   });

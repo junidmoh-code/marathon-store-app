@@ -203,11 +203,18 @@ export default function PrintedBarcodeCapture({
     const file = e.target.files && e.target.files[0];
     e.target.value = "";
     if (!file) return;
+    // Downscaling is an await too, so this path takes a token like every other
+    // one. It only covers the PREPARATION step — processFrames begins its own
+    // run — but without it a stale error note could land on a surface the
+    // operator has already moved on from. (CodeRabbit, PR #340.)
+    const token = beginRun();
     setWorking("decoding");
     try {
       const photo = await prepareLabelPhoto(file);
+      if (!isCurrent(token)) return;
       await processFrames([photo]);
     } catch (err) {
+      if (!isCurrent(token)) return;
       setNote({ tone: "red", text: `Could not read that photo (${err?.message || err}) — type the number instead.` });
       setWorking(null);
     }

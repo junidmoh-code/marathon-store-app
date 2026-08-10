@@ -5034,6 +5034,12 @@ function AdminView({ products, orders, onExit }) {
   // Initial Distribution Wizard: set to the just-saved product when opening
   // stock landed at Central. Wizard shows first; the print sheet follows on close.
   const [distribProduct, setDistribProduct] = useState(null);
+  // Whether the product now in the wizard uses the barcode printed on its own
+  // box. Held separately because the code deliberately does NOT live on the
+  // record object here — it is committed with the index rows, not with the
+  // product — and the wizard's close handler must still know not to offer a
+  // label. (CodeRabbit, PR #340.)
+  const [distribUsesPrintedBarcode, setDistribUsesPrintedBarcode] = useState(false);
   const recvRegistry = useLocations();
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
@@ -5493,6 +5499,7 @@ function AdminView({ products, orders, onExit }) {
             // Stock landed at Central → offer initial distribution first; the
             // print sheet opens when the wizard closes. Other locations keep
             // the original save → print flow.
+            setDistribUsesPrintedBarcode(usesPrintedBarcode);
             if (recvLoc === "central") setDistribProduct(newProduct);
             else if (!usesPrintedBarcode) setPrintOpen(true);
           }
@@ -5864,7 +5871,15 @@ function AdminView({ products, orders, onExit }) {
       {distribProduct && (
         <InitialDistributionWizard
           product={distribProduct}
-          onClose={() => { setDistribProduct(null); setPrintOpen(true); }}
+          // The no-label rule is stated HERE, not left to depend on
+          // lastReceived being null. A product that carries the barcode
+          // printed on its own box never gets a print sheet: opening one calls
+          // ensureBarcodes, which would mint exactly the shop code this
+          // feature exists to avoid. (CodeRabbit, PR #340.)
+          onClose={() => {
+            setDistribProduct(null);
+            if (!distribUsesPrintedBarcode) setPrintOpen(true);
+          }}
         />
       )}
       {/* Inline Print-barcodes sheet (#73), surfaced after a save with opening
@@ -6132,8 +6147,14 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   // (Codex + Kimi review, PR #340.)
   const [indexWarning, setIndexWarning] = useState(null);
   const printedCode = typeof product.printedBarcode === "string" ? product.printedBarcode : null;
+  // Classification is a DEPENDENCY, not just a read. The capture block below
+  // re-renders from isPerfume(product) every render, so leaving it out of the
+  // deps let the two disagree: a product that became a perfume never got its
+  // check, and one that stopped being a perfume kept a stale warning on screen.
+  // (CodeRabbit, PR #340.)
+  const productIsPerfume = isPerfume(product);
   useEffect(() => {
-    if (!printedCode || !isPerfume(product)) { setIndexWarning(null); return; }
+    if (!printedCode || !productIsPerfume) { setIndexWarning(null); return; }
     let cancelled = false;
     inspectPrintedBarcode(printedCode, product.id)
       .then((v) => {
@@ -6149,7 +6170,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
       })
       .catch(() => { /* a failed read is not evidence of anything */ });
     return () => { cancelled = true; };
-  }, [printedCode, product.id]);
+  }, [printedCode, product.id, productIsPerfume]);
   const savePrintedBarcode = async (code) => {
     setSavingPrintedBarcode(true);
     try {
@@ -6668,7 +6689,13 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
       {distribOpen && (
         <InitialDistributionWizard
           product={product}
-          onClose={() => { setDistribOpen(false); setPrintOpen(true); }}
+          // Same no-label rule, stated explicitly here too: a product carrying
+          // the barcode printed on its box never gets a print sheet, because
+          // opening one mints a shop code via ensureBarcodes.
+          onClose={() => {
+            setDistribOpen(false);
+            if (!product.printedBarcode) setPrintOpen(true);
+          }}
         />
       )}
       {/* Inline Print-barcodes sheet (#73), surfaced after a re-order receive. */}
