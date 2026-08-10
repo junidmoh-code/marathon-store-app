@@ -110,8 +110,18 @@ function ownMovementIds(snap) {
   for (const [id, m] of Object.entries(movements)) {
     if (!m || !pids.includes(m.productId) || (own && own.has(id))) continue;
     const ts = Date.parse(m.appliedAt || m.ts);
-    if (!Number.isFinite(ts) || ts <= capturedMs) continue;
     const list = laterActivity.get(m.productId) || [];
+    // An UNREADABLE stamp counts as later activity, matching the migration's own
+    // recency gate. Skipping it was the fail-open reading — a movement that
+    // cannot be placed in time cannot be shown to predate the snapshot, and this
+    // check exists precisely to refuse when it cannot be sure. (Kimi review of
+    // the rollback, PR #343.)
+    if (!Number.isFinite(ts)) {
+      list.push(`${id} (${m.type} ${m.qty} ${m.size}, UNREADABLE timestamp — cannot be shown to predate the snapshot)`);
+      laterActivity.set(m.productId, list);
+      continue;
+    }
+    if (ts <= capturedMs) continue;
     list.push(`${id} (${m.type} ${m.qty} ${m.size} ${new Date(ts).toISOString()})`);
     laterActivity.set(m.productId, list);
   }
