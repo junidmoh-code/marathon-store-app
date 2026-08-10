@@ -193,7 +193,11 @@ const minQtyFor = (target) => Math.ceil(target / 2);
     }
   }
   const notCarrying = ["trophy", "marathon-pine"].filter((l) => locations[l] && !carriedBy(l, "held").length);
-  console.log(`\n  ARMING: ${HUB} + ${SHOPS.join(", ")}${notCarrying.length ? `   (NOT arming ${notCarrying.join(", ")} — no headwear stock)` : ""}`);
+  // Only name a location as armed if it will actually receive rows — listing
+  // marathon-pine in both halves of the same sentence was its own answer.
+  const armed = [HUB, ...SHOPS].filter((loc) => carriedBy(loc, "held").length > 0);
+  const skipped = [...new Set([...notCarrying, ...[HUB, ...SHOPS].filter((l) => !armed.includes(l))])];
+  console.log(`\n  ARMING: ${armed.join(" + ") || "(nothing)"}${skipped.length ? `   (NOT arming ${skipped.join(", ")} — no headwear stock)` : ""}`);
 
   const centralHeld = headwear.reduce((t, pid) => t + cellQty(stock, "central", pid, "_"), 0);
   const hubHeld = headwear.reduce((t, pid) => t + cellQty(stock, HUB, pid, "_"), 0);
@@ -227,7 +231,13 @@ const minQtyFor = (target) => Math.ceil(target / 2);
     if (!locHoldsHeadwear(loc)) console.log(`  ⚠ ${loc} holds NO headwear units — no rows will be generated for it, whatever WIDTH says.`);
   }
   console.log(`\n  ARMING WIDTH: ${WIDTH}${WIDTH === "CARRIED" ? "  (only where the location already carries the design — WIDTH=ALL arms every design everywhere)" : "  (EVERY design at every armed location, including ones that location has never stocked)"}`);
-  console.log(`  CARRIED would write ${carriedBy(HUB, "presence").length + SHOPS.reduce((t, s2) => t + carriedBy(s2, "presence").length, 0)} rows; ALL would write ${headwear.length * (1 + SHOPS.length)} rows.`);
+  // Both counts go through the SAME location gate the payload does. Computed
+  // raw, they described a payload the script would not produce — with
+  // SHOPS=marathon-pine the ALL figure was out by a factor of two, on the very
+  // configuration the gate exists for. (Review of PR #345.)
+  const wouldWrite = (width) => [HUB, ...SHOPS].reduce((t, loc) =>
+    t + (!locHoldsHeadwear(loc) ? 0 : width === "ALL" ? headwear.length : carriedBy(loc, "presence").length), 0);
+  console.log(`  CARRIED would write ${wouldWrite("CARRIED")} rows; ALL would write ${wouldWrite("ALL")} rows.`);
   const payload = {};                      // FLAT path → row (multi-path update shape)
   const proposed = { [HUB]: {}, ...Object.fromEntries(SHOPS.map((s) => [s, {}])) };
   const row = (target, reorderPoint) => ({

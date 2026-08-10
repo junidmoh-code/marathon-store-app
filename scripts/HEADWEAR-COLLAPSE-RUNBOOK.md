@@ -138,6 +138,19 @@ execute:
 node scripts/collapse-one-size-headwear.mjs --execute        # default 60s — keep it
 ```
 
+Two knobs, both validated (a typo aborts before anything is acquired rather
+than silently disabling the gate it belongs to):
+
+| variable | default | what it bounds |
+|---|---|---|
+| `GATE_MAX_AGE_SECONDS` | 60 | orders, transfers, refill requests, engine locks, Display Checks |
+| `LEDGER_MAX_AGE_SECONDS` | 300 | `/stock_movements` (the recent-activity gate) and the barcode-index enumeration — the two largest reads, so they get a longer beat |
+
+Note that raising `GATE_MAX_AGE_SECONDS` for the dry run also stops the ledger
+refresh firing, so **the dry run does not rehearse that code path**. That is
+fine — it writes nothing — but do not read a clean dry run as evidence about
+refresh behaviour.
+
 Confirm the summary matches the census and that GATED is down to whatever you
 chose not to clear. The dry run flags any planned leg whose movement id is
 already spent — on a first run that never happens; on a resume it means stock

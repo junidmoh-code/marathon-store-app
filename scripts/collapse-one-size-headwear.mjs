@@ -96,8 +96,38 @@ const io = {
   update: (u) => db.ref().update(u),
 };
 
+// ── TIMING KNOBS — VALIDATED, NOT COERCED, AND BEFORE THE LOCK ──────────────
+// `Number(process.env.X || default)` turns a typo into silence. On a staleness
+// bound that means "never refresh" (every NaN comparison is false); on the
+// recent-activity gate it means the gate NEVER FIRES, and a hat being rung up
+// at a till is migrated instead of skipped — the one concurrency protection
+// this run has against live tills, disabled by `RECENT_ACTIVITY_MINUTES=15m`.
+//
+// Validated at MODULE scope, which is also why it lives here rather than in the
+// IIFE: an abort after the RTDB run lock is taken leaves the lock held, and
+// every later --execute run then fails on a stale lock until someone clears it
+// by hand. That is exactly the trap the lock's own comment warns about — a gate
+// that punishes the expected mistake with a second, unrelated failure. Refusing
+// a bad value before anything is acquired costs nothing. (Review of PR #345.)
+function positiveSeconds(name, fallbackSeconds) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallbackSeconds * 1000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.error(`ABORT: ${name}=${JSON.stringify(raw)} is not a finite positive number of seconds. Nothing was started.`);
+    process.exit(1);
+  }
+  return n * 1000;
+}
 // A product that moved this recently is in active use at a till — skip it.
-const RECENT_ACTIVITY_MS = Number(process.env.RECENT_ACTIVITY_MINUTES || 15) * 60 * 1000;
+const RECENT_ACTIVITY_MS = positiveSeconds("RECENT_ACTIVITY_MINUTES", 15) * 60;
+const GATE_MAX_AGE_MS = positiveSeconds("GATE_MAX_AGE_SECONDS", 60);
+// /stock_movements is the LARGEST node in the database, and the barcode index
+// is enumerated on the same beat. Both refresh on their own, longer cadence:
+// still vastly fresher than "once at startup" (which turned a sliding 15-minute
+// recency window into a fixed slice of the run's first 15 minutes), at a
+// fraction of the bandwidth.
+const LEDGER_MAX_AGE_MS = positiveSeconds("LEDGER_MAX_AGE_SECONDS", 300);
 
 // Set once the execute-run lock is taken; called on every exit path.
 let releaseLock = null;
@@ -274,27 +304,7 @@ function hasPrivilegedCredential(app) {
   // older than a bounded age gets the same guarantee at a sane cost. The
   // exposure drops from "the whole run" to at most GATE_MAX_AGE_MS, and the
   // recent-activity gate covers the tail.
-  // Validated, not coerced: a non-numeric or non-positive value silently turns
-  // a staleness bound into either "never refresh" (NaN comparisons are always
-  // false) or "refresh on every product". Both defeat the gate quietly.
-  const positiveSeconds = (name, fallback) => {
-    const raw = process.env[name];
-    if (raw == null || raw === "") return fallback * 1000;
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) {
-      console.error(`ABORT: ${name}=${JSON.stringify(raw)} is not a finite positive number of seconds.`);
-      process.exit(1);
-    }
-    return n * 1000;
-  };
-  const GATE_MAX_AGE_MS = positiveSeconds("GATE_MAX_AGE_SECONDS", 60);
-  // /stock_movements is the LARGEST node in the database and was previously read
-  // exactly once. Refreshing it on the 60s gate cadence is a full re-download
-  // every minute of an hour-long run. It gets its own, longer interval: still
-  // vastly fresher than "once at startup" (which turned a sliding 15-minute
-  // recency window into a fixed slice of the run's first 15 minutes), at a
-  // fraction of the bandwidth. (Review of PR #345.)
-  const LEDGER_MAX_AGE_MS = positiveSeconds("LEDGER_MAX_AGE_SECONDS", 300);
+  // (timing knobs are validated at module scope, before the run lock)
   let ledgerReadAt = Date.now();
   //
   // THE LEDGER IS REFRESHED WITH THEM, and the clock with it. The recent-
@@ -320,10 +330,11 @@ function hasPrivilegedCredential(app) {
     ]).then((r) => r.map((v, i) => (i >= 5 ? v : (v || {}))));
     const nowMsFresh = Date.now() + offset;
     let { lastMovementMs: lastMs, unreadableStamp: unreadable } = gateData;
-    if (mv) {
-      ({ lastMs, unreadable } = movementRecency(mv, { nowMs: nowMsFresh }));
-      ledgerReadAt = Date.now();
-    }
+    // The clock advances because we ASKED, not because the answer was truthy.
+    // Keyed on `mv` alone, an empty ledger left wantLedger permanently true and
+    // re-downloaded the two largest nodes on every gate refresh.
+    if (wantLedger) ledgerReadAt = Date.now();
+    if (mv) ({ lastMs, unreadable } = movementRecency(mv, { nowMs: nowMsFresh }));
     // THE SET of codes pointing at a product, not just each code's record. A
     // code created after startup and absent from the product's own map would
     // otherwise never be enumerated: it would keep its old size while every
@@ -331,8 +342,24 @@ function hasPrivilegedCredential(app) {
     // planStep2 knew about — would not notice. (CodeRabbit, PR #345.)
     if (bc) {
       for (const k of Object.keys(reverseIdx)) delete reverseIdx[k];
+      const discovered = [];
       for (const [code, rec] of Object.entries(bc)) {
-        if (rec && pidSet.has(rec.productId)) (reverseIdx[rec.productId] = reverseIdx[rec.productId] || {})[code] = rec;
+        if (!rec || !pidSet.has(rec.productId)) continue;
+        (reverseIdx[rec.productId] = reverseIdx[rec.productId] || {})[code] = rec;
+        // ROLLBACK COVERAGE FOR A CODE THAT DID NOT EXIST AT STARTUP. Step 2
+        // force-writes size "_" onto every enumerated code, so a code this
+        // refresh discovers gets written — and without a snapshot entry the
+        // rollback could not undo it, leaving an index record pointing at a
+        // size its product no longer declares. Worse, if that code went on to
+        // win the "_" slot, the rollback would classify the migration's OWN
+        // output as diverged and refuse without --force, which is the false
+        // positive that trains an operator to force past real divergence.
+        // Captured as it reads NOW, i.e. before this migration touches it.
+        if (!(code in snapshot.barcodeIndex)) { snapshot.barcodeIndex[code] = rec; discovered.push(code); }
+      }
+      if (discovered.length) {
+        writeFileSync(SNAP, JSON.stringify(snapshot, null, 2));
+        console.log(`  snapshot extended with ${discovered.length} barcode(s) created since the run started: ${discovered.join(", ")}`);
       }
     }
     gateData = { transfers: t, orders: o, refillRequests: rr, openLocks: ol, dcActive: dc,
