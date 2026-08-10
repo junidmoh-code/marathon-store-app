@@ -24,7 +24,7 @@
 //
 // Live counts under this rule (2026-07-30): 635 footwear products have Central
 // stock; 121 are missing from both hubs — 95 never introduced, 26 sold out.
-import { stockSizeKey, decodeSizeKey } from "../../utils/sizeKey";
+import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
 
 // Footwear is CATEGORY, never productType: 1,369 products carry
 // category "Footwear" while only 580 carry productType "sneaker", and 858
@@ -41,12 +41,12 @@ export const isFootwearProduct = (p) => p?.category === "Footwear";
 export const sizeKeyOf = stockSizeKey;
 
 // The key a raw catalogue size has in a DECODED cell map (useStockCells).
-// encode-then-decode, NOT identity: "5.5" → "5_5" → "5.5", but a padded " 8"
-// → "_8" → "_8" (decode only reverses digit_digit), which is exactly how the
-// decoded map keys that cell. Looking up by the raw size alone misses " 8";
-// looking up by the encoded key alone misses every half size. This is the one
-// lookup that matches both.
-export const decodedCellKeyOf = (s) => decodeSizeKey(sizeKeyOf(s));
+// The implementation MOVED to utils/sizeKey.js (decodedCellKey) so the clothing
+// Solve can share it instead of growing a second copy — the clothing coverage
+// estimate had the same raw-size-against-a-decoded-map lookup this closed here.
+// Re-exported under the original name because this module's callers and tests
+// are written against it; there is still exactly ONE implementation.
+export const decodedCellKeyOf = decodedCellKey;
 
 // Numeric-aware size ordering — the clothing SIZE_ORDER table is letters only and
 // ranks every shoe size equal (99), which would render sizes in arbitrary order.

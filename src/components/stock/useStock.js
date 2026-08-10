@@ -34,6 +34,38 @@ function usePath(path, enabled = true) {
   return value;
 }
 
+// usePath, but reporting the THREE states RTDB's null conflates. `snap.val()` is
+// null for an empty or missing node, the initial state is null, and a DENIED read
+// leaves it null too (the error path only warns) — so a bare null cannot tell
+// "not answered yet" from "answered with nothing" from "could not read".
+//
+// That ambiguity is only harmless while a null is treated the same way in all
+// three cases. It stops being harmless the moment a screen GATES on the read:
+// gating on `value != null` turns an empty node or a permission error into a
+// permanent "still loading", with no error surfaced and no way out.
+//
+//   settled — the listener has answered at least once (or failed). Use THIS to
+//             gate, never `value != null`.
+//   error   — the read failed. Callers must degrade rather than block: an
+//             unreadable node means "this input is unknown", not "stop".
+function usePathState(path, enabled = true) {
+  const authReady = useAuthReady();
+  const [state, setState] = useState({ value: null, settled: false, error: false });
+  useEffect(() => {
+    if (!authReady || !enabled || !path) { setState({ value: null, settled: false, error: false }); return; }
+    const unsub = onValue(
+      ref(database, path),
+      (snap) => setState({ value: snap.val(), settled: true, error: false }),
+      (err) => {
+        console.warn(`Stock read error on /${path}:`, err);
+        setState({ value: null, settled: true, error: true });
+      },
+    );
+    return () => unsub();
+  }, [authReady, enabled, path]);
+  return state;
+}
+
 // /locations -> { id: {label,kind,sellable,active} } (object map, as stored).
 export function useLocations() {
   return usePath("locations") || {};
@@ -145,6 +177,15 @@ export function useEngineConfig() {
 // /stock_targets/{loc} → { pid: { sizeKey: {target,minQty,...} } } (encoded keys).
 export function useStockTargets(locationId) {
   return usePath(locationId ? `stock_targets/${locationId}` : "stock_targets");
+}
+
+// The same read, with the loaded/failed states a GATING caller needs. Missing
+// Products gates Solve on it (an explicit row is the only target a one-size
+// product can hold), and gating on the bare value would have greyed every
+// clothing Solve — sized ones included — behind a permanent "still loading"
+// whenever /stock_targets was empty or unreadable.
+export function useStockTargetsState(locationId) {
+  return usePathState(locationId ? `stock_targets/${locationId}` : "stock_targets");
 }
 
 // /stock_targets_decisions → { loc: { pid: {decision,decidedAt} } } — postpone
