@@ -90,7 +90,7 @@ export function hasPrivilegedCredential(app) {
   console.log(`  scope: ${inScope.length} products (${kinds.beanie} beanies, ${kinds.cap} caps), ${codes.size} barcode index records to probe`);
   console.log(`  largest single atomic batch: ${worst ? `${worst[1]} index record(s) on ${worst[0]}` : "n/a"} — all of them must be writable or that product cannot collapse\n`);
 
-  let pass = 0; const failures = [];
+  let pass = 0; const failures = []; const addsSize = [];
   for (const [code, pid] of codes) {
     try {
       const rec = await g(`barcodes/${code}`);
@@ -115,12 +115,43 @@ export function hasPrivilegedCredential(app) {
       // editing products. A barcode index record only changes when a product is
       // created or its codes are edited, so the quiet window is the real
       // control here and the runbook says so.
-      const before = await g(`barcodes/${code}/size`);
-      if (typeof before !== "string" || before === "") { failures.push(`${code}: size is ${JSON.stringify(before)} — nothing safe to write back`); continue; }
-      const stillBefore = await g(`barcodes/${code}/size`);
+      // ── WHICH LEAF TO WRITE BACK ─────────────────────────────────────────
+      // Normally `size`. But a genuinely UNSIZED index record OMITS the field
+      // entirely — that is deliberate and canonical (barcode.js
+      // barcodeIndexRecord: "UNSIZED items OMIT the size field entirely — NOT
+      // null and NOT '' — so the POS resolver reads a missing size as unsized").
+      //
+      // Every beanie code was a per-size code, so this never came up and the
+      // probe simply assumed `size` was a non-empty string. Caps break that:
+      // 21 are already one-size and their "_"-slot codes were minted by the
+      // unsized path, so they have no `size` at all. On live data the probe
+      // called two such records "nothing safe to write back" and ABORTED THE
+      // WHOLE MIGRATION over two perfectly healthy records — a false negative
+      // on the gate that everything else waits behind.
+      //
+      // There is no verbatim write-back available for a field that does not
+      // exist (writing "_" would be a real change, which is exactly what a
+      // probe must not do). So it writes back a different leaf that is
+      // guaranteed to exist: `productId`, which the live rule REQUIRES
+      // (`newData.hasChildren(['productId'])`). It sits under the same
+      // /barcodes/$code node and therefore takes the same create-only .write
+      // rule, so it proves the identical permission the migration needs.
+      //
+      // These records are reported, not silently passed: Step 2 will ADD `size`
+      // to them rather than rewrite it, which is a shape change worth seeing.
+      const rawSize = await g(`barcodes/${code}/size`);
+      const usesSize = typeof rawSize === "string" && rawSize !== "";
+      const leaf = usesSize ? "size" : "productId";
+      if (!usesSize) {
+        if (rawSize != null) { failures.push(`${code}: size is ${JSON.stringify(rawSize)} — neither a usable string nor absent; check it by hand`); continue; }
+        addsSize.push(code);
+      }
+      const before = await g(`barcodes/${code}/${leaf}`);
+      if (typeof before !== "string" || before === "") { failures.push(`${code}: ${leaf} is ${JSON.stringify(before)} — nothing safe to write back`); continue; }
+      const stillBefore = await g(`barcodes/${code}/${leaf}`);
       if (stillBefore !== before) { failures.push(`${code}: CHANGING UNDER THE PROBE (${before} → ${stillBefore}) — someone is editing this product; re-run in a quiet window`); continue; }
-      await db.ref(`barcodes/${code}/size`).set(before);
-      const after = await g(`barcodes/${code}/size`);
+      await db.ref(`barcodes/${code}/${leaf}`).set(before);
+      const after = await g(`barcodes/${code}/${leaf}`);
       if (after !== before) { failures.push(`${code}: CHANGED ${before} → ${after}`); continue; }
       pass++;
     } catch (e) {
@@ -137,6 +168,13 @@ export function hasPrivilegedCredential(app) {
   }
 
   console.log(`  probed ${codes.size} codes: ${pass} ok, ${failures.length} failed`);
+  if (addsSize.length) {
+    console.log(`\n  ${addsSize.length} record(s) carry NO size field — the canonical shape for a one-size`);
+    console.log(`  slot (barcodeIndexRecord omits it). Step 2 will ADD size "_" to these rather than`);
+    console.log(`  rewrite it. That is legal under the live rule (size must be a non-empty string when`);
+    console.log(`  present) and matches the 131 live one-size records that already carry "_".`);
+    console.log(`  ${addsSize.join(", ")}`);
+  }
   for (const f of failures) console.log(`  FAIL ${f}`);
   if (failures.length) {
     console.error("\nABORT: the atomic Step 2 batch would fail on the records above. Nothing moves.");

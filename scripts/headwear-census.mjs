@@ -66,8 +66,17 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
 (async () => {
   console.log(`\n${"═".repeat(78)}\n  HEADWEAR CENSUS — read-only, live data\n${"═".repeat(78)}`);
 
-  const nowIso = new Date().toISOString();
-  const nowMs = Date.now();
+  // SAME TIME ANCHOR AS THE MIGRATION. orderBlocks decides whether a resolved
+  // refill line is still inside its 24h undo window, and the migration measures
+  // that against RTDB's clock (serverNowIso, via .info/serverTimeOffset). A
+  // census running on the device clock could put a line on the other side of
+  // that boundary from the run that follows it, so the two would disagree about
+  // what is gated — the census reading as clean while the migration skips, or
+  // worse the reverse. The offset is milliseconds today; the point is that the
+  // two must not be able to differ at all.
+  const offset = (await g(".info/serverTimeOffset")) || 0;
+  const nowMs = Date.now() + offset;
+  const nowIso = new Date(nowMs).toISOString();
 
   const [products, stock, allTargets, transfers, orders, refillRequests, openLocks, dcActive, barcodesIdx] =
     await Promise.all([
