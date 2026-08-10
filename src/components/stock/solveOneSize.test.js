@@ -106,6 +106,23 @@ describe("a one-size product with stock at a source is solvable, exactly like a 
     });
     expect(qualifyingSizes(ONE_SIZE, "central", "trophy", excluded)).toEqual([]);
   });
+
+  it("an explicit 0 OVERRIDES a size run that would otherwise cover the size", () => {
+    // The discriminating case, and the one that matters operationally. On a
+    // one-size product a dropped 0 is invisible (nothing covers "_" anyway), so
+    // the exclusion has to be tested where the run WOULD say yes: a garment size
+    // a human deliberately switched off at one shop. The engine takes the row and
+    // stops — it never falls through — so a 0 must be overlaid AS 0, not skipped
+    // for being falsy. Skipping it silently re-enables the size at target 2.
+    const run = resolvedRun({
+      std: STD, sizes: ["M"], pid: "tee", ruleBasedTargets: true,
+      targets: { hub2: { tee: { M: row(3) } }, trophy: { tee: { M: row(0) } } },
+    });
+    expect(run.trophy.M).toBe(0);
+    expect(qualifyingSizes(["M"], "central", "trophy", run)).toEqual([]);
+    // …and the shop that has no exclusion row still qualifies from the run.
+    expect(qualifyingSizes(["M"], "central", "marathon-pe", run)).toEqual(["M"]);
+  });
 });
 
 describe("branch ORDER — the two rules that make this a mirror and not an approximation", () => {
