@@ -164,6 +164,22 @@ function hasPrivilegedCredential(app) {
     process.exit(1);
   }
 
+  // ── EXECUTE-ONLY: THE ENGINE MUST BE PAUSED ───────────────────────────────
+  // Checked BEFORE the run lock is taken. Taking the lock first meant that the
+  // most likely operator mistake — running while the engine is still live —
+  // aborted with the lock held, and every subsequent run then aborted on a
+  // stale lock until it was cleared by hand. A gate that punishes the expected
+  // mistake with a second, unrelated failure is a worse gate. (Kimi review of
+  // the lock delta, PR #343.)
+  if (EXECUTE && session?.active !== true) {
+    console.error(`\nABORT: refill engine is NOT paused (receiving_session.active = ${JSON.stringify(session?.active)}).`);
+    console.error("Set /receiving_session/active = true first — the health scan runs every 15 min");
+    console.error("regardless of shop hours, so a trading-hours freeze alone does not cover this.");
+    console.error("(No run lock was taken, so nothing needs clearing before you retry.)");
+    process.exit(1);
+  }
+  if (!EXECUTE) console.log(`  engine paused: ${session?.active === true ? "yes" : "NO (must be true at execute time)"}`);
+
   // ── EXECUTE-ONLY: ONE RUN AT A TIME ───────────────────────────────────────
   // Two overlapping --execute processes are the one way this migration can
   // double-apply a positive leg: both read the ledger, neither sees the other's
@@ -177,18 +193,29 @@ function hasPrivilegedCredential(app) {
   // hit the same database. A stale lock (a crashed run) is reported with its
   // age and can be cleared deliberately — never auto-stolen, because "the other
   // run looks old" is exactly the reasoning that produces a double-apply.
+  // ACQUIRED BY TRANSACTION, not read-then-write. A read followed by a write is
+  // the very TOCTOU this lock exists to close: two processes could both read it
+  // as free and both write it, last-writer-wins, and both proceed. RTDB's
+  // single-path transaction is a real compare-and-set and is exactly the right
+  // primitive here — Step 2 needs a multi-path update and so cannot use one,
+  // but a lock is one path. (Kimi review of the lock delta, PR #343.)
   const LOCK = "_migrations/beanieOneSizeCollapse/runLock";
   let lockHeld = false;
   if (EXECUTE) {
-    const existing = await io.read(LOCK);
-    if (existing && existing.releasedAt == null) {
-      const ageMin = Math.round((nowMs - (Date.parse(existing.startedAt) || nowMs)) / 60000);
-      console.error(`\nABORT: another --execute run holds the lock (pid ${existing.pid} on ${existing.host}, started ${existing.startedAt}, ${ageMin} min ago).`);
+    const mine = { startedAt: nowIso, pid: process.pid, host: os.hostname(), releasedAt: null };
+    const { committed, snapshot } = await db.ref(LOCK).transaction((cur) => {
+      if (cur && cur.releasedAt == null) return;         // abort: someone holds it
+      return mine;
+    });
+    if (!committed) {
+      const held = snapshot.val() || {};
+      const started = Date.parse(held.startedAt);
+      const age = Number.isFinite(started) ? `${Math.round((nowMs - started) / 60000)} min ago` : "at an unreadable time";
+      console.error(`\nABORT: another --execute run holds the lock (pid ${held.pid} on ${held.host}, started ${held.startedAt}, ${age}).`);
       console.error("Two concurrent runs can double-apply a positive movement leg. If that run");
       console.error(`crashed, clear the lock deliberately once you are sure it is dead:\n  firebase database:remove /${LOCK} --project marathon-club`);
       process.exit(1);
     }
-    await io.update({ [LOCK]: { startedAt: nowIso, pid: process.pid, host: os.hostname(), releasedAt: null } });
     lockHeld = true;
     const release = async () => {
       if (!lockHeld) return;
@@ -199,15 +226,6 @@ function hasPrivilegedCredential(app) {
     for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, async () => { await release(); process.exit(130); });
     releaseLock = release;
   }
-
-  // ── execute-only global gate ───────────────────────────────────────────────
-  if (EXECUTE && session?.active !== true) {
-    console.error(`\nABORT: refill engine is NOT paused (receiving_session.active = ${JSON.stringify(session?.active)}).`);
-    console.error("Set /receiving_session/active = true first — the health scan runs every 15 min");
-    console.error("regardless of shop hours, so a trading-hours freeze alone does not cover this.");
-    process.exit(1);
-  }
-  if (!EXECUTE) console.log(`  engine paused: ${session?.active === true ? "yes" : "NO (must be true at execute time)"}`);
 
   // ── BOUNDED-STALENESS GATE DATA ────────────────────────────────────────────
   // The referential trees (orders, transfers, refill requests, engine locks,
