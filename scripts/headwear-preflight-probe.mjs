@@ -1,4 +1,4 @@
-// ─── BEANIE ONE-SIZE COLLAPSE — COMMIT 2: BARCODE WRITE-BACK PROBE ────────────
+// ─── HEADWEAR ONE-SIZE COLLAPSE — COMMIT 2: BARCODE WRITE-BACK PROBE ──────────
 //
 // The migration's load-bearing step rewrites every /barcodes/{code}/size to "_"
 // inside ONE atomic multi-path update. The live rule at /barcodes/$code is
@@ -7,7 +7,7 @@
 // Credentials, which bypass rules. This probe PROVES that permission before any
 // stock moves, the same way the balaclava collapse did (PR #284):
 //
-//   for EVERY barcode of EVERY in-scope beanie —
+//   for EVERY barcode of EVERY in-scope beanie AND CAP —
 //     1. read /barcodes/{code}, assert it exists with the right productId
 //     2. write its EXISTING size value back verbatim (a real write, zero
 //        content change — the identical rule path the migration will take)
@@ -20,15 +20,26 @@
 // asserted and LOGGED up front so a future run under different credentials is
 // visible in the output, not just in its failure mode.
 //
-// Scope rule identical to the census (scripts/beanie-census.mjs): name matches
-// /beanie/i, not a mergedInto stub. Codes come from BOTH directions — the
-// product's barcodes map AND a reverse sweep of /barcodes by productId — so a
-// code the map forgot still gets probed.
+// ── WHY THE CAP HALF MAKES THIS BIGGER, NOT JUST LONGER ──────────────────────
+// Every beanie carried exactly ONE barcode, so a beanie product's atomic Step 2
+// touched one index record and a failure could only ever cost that one product.
+// 87 caps carry two or more — one carries SEVEN — and Step 2 rewrites ALL of a
+// product's records in a single update. One unwritable record therefore takes
+// down its whole product, including the codes that were perfectly fine. That is
+// the reason this probes ALL codes and never a sample: a sample that misses the
+// one bad record tells you the batch will succeed when it will not.
 //
-// Usage: node scripts/beanie-preflight-probe.mjs
+// Scope rule is the ONE shared predicate (scripts/lib/headwearCollapseCore.mjs),
+// imported rather than restated so the probe cannot certify a set of codes that
+// differs from the set the migration will write. Codes come from BOTH directions
+// — the product's barcodes map AND a reverse sweep of /barcodes by productId —
+// so a code the map forgot still gets probed.
+//
+// Usage: node scripts/headwear-preflight-probe.mjs
 // Exit 0 = every code probed clean. Exit 1 = abort (nothing further may move).
 
 import { createRequire } from "module";
+import { isInScope, headwearKind } from "./lib/headwearCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -49,7 +60,7 @@ export function hasPrivilegedCredential(app) {
 }
 
 (async () => {
-  console.log(`\n${"═".repeat(78)}\n  BEANIE PRE-FLIGHT — barcode index write-back probe (ALL codes)\n${"═".repeat(78)}`);
+  console.log(`\n${"═".repeat(78)}\n  HEADWEAR PRE-FLIGHT — barcode index write-back probe (ALL codes)\n${"═".repeat(78)}`);
 
   const cred = admin.app().options.credential;
   const credOk = hasPrivilegedCredential(admin.app());
@@ -64,16 +75,22 @@ export function hasPrivilegedCredential(app) {
 
   const [products, barcodesIdx] = await Promise.all([g("products"), g("barcodes")]).then((r) => r.map((v) => v || {}));
 
-  const inScope = Object.entries(products).filter(([, p]) => /beanie/i.test(p?.name || "") && !p?.mergedInto);
+  const inScope = Object.entries(products).filter(([, p]) => isInScope(p));
   const pidSet = new Set(inScope.map(([pid]) => pid));
   // code → expected pid, from both directions
   const codes = new Map();
   for (const [pid, p] of inScope) for (const code of Object.values(p.barcodes || {})) codes.set(String(code), pid);
   for (const [code, rec] of Object.entries(barcodesIdx)) if (rec && pidSet.has(rec.productId)) if (!codes.has(code)) codes.set(code, rec.productId);
 
-  console.log(`  scope: ${inScope.length} beanies, ${codes.size} barcode index records to probe\n`);
+  const kinds = { beanie: 0, cap: 0 };
+  for (const [, p] of inScope) kinds[headwearKind(p)]++;
+  const perProduct = new Map();
+  for (const pid of codes.values()) perProduct.set(pid, (perProduct.get(pid) || 0) + 1);
+  const worst = [...perProduct.entries()].sort((a, b) => b[1] - a[1])[0];
+  console.log(`  scope: ${inScope.length} products (${kinds.beanie} beanies, ${kinds.cap} caps), ${codes.size} barcode index records to probe`);
+  console.log(`  largest single atomic batch: ${worst ? `${worst[1]} index record(s) on ${worst[0]}` : "n/a"} — all of them must be writable or that product cannot collapse\n`);
 
-  let pass = 0; const failures = [];
+  let pass = 0; const failures = []; const addsSize = [];
   for (const [code, pid] of codes) {
     try {
       const rec = await g(`barcodes/${code}`);
@@ -98,12 +115,43 @@ export function hasPrivilegedCredential(app) {
       // editing products. A barcode index record only changes when a product is
       // created or its codes are edited, so the quiet window is the real
       // control here and the runbook says so.
-      const before = await g(`barcodes/${code}/size`);
-      if (typeof before !== "string" || before === "") { failures.push(`${code}: size is ${JSON.stringify(before)} — nothing safe to write back`); continue; }
-      const stillBefore = await g(`barcodes/${code}/size`);
+      // ── WHICH LEAF TO WRITE BACK ─────────────────────────────────────────
+      // Normally `size`. But a genuinely UNSIZED index record OMITS the field
+      // entirely — that is deliberate and canonical (barcode.js
+      // barcodeIndexRecord: "UNSIZED items OMIT the size field entirely — NOT
+      // null and NOT '' — so the POS resolver reads a missing size as unsized").
+      //
+      // Every beanie code was a per-size code, so this never came up and the
+      // probe simply assumed `size` was a non-empty string. Caps break that:
+      // 21 are already one-size and their "_"-slot codes were minted by the
+      // unsized path, so they have no `size` at all. On live data the probe
+      // called two such records "nothing safe to write back" and ABORTED THE
+      // WHOLE MIGRATION over two perfectly healthy records — a false negative
+      // on the gate that everything else waits behind.
+      //
+      // There is no verbatim write-back available for a field that does not
+      // exist (writing "_" would be a real change, which is exactly what a
+      // probe must not do). So it writes back a different leaf that is
+      // guaranteed to exist: `productId`, which the live rule REQUIRES
+      // (`newData.hasChildren(['productId'])`). It sits under the same
+      // /barcodes/$code node and therefore takes the same create-only .write
+      // rule, so it proves the identical permission the migration needs.
+      //
+      // These records are reported, not silently passed: Step 2 will ADD `size`
+      // to them rather than rewrite it, which is a shape change worth seeing.
+      const rawSize = await g(`barcodes/${code}/size`);
+      const usesSize = typeof rawSize === "string" && rawSize !== "";
+      const leaf = usesSize ? "size" : "productId";
+      if (!usesSize) {
+        if (rawSize != null) { failures.push(`${code}: size is ${JSON.stringify(rawSize)} — neither a usable string nor absent; check it by hand`); continue; }
+        addsSize.push(code);
+      }
+      const before = await g(`barcodes/${code}/${leaf}`);
+      if (typeof before !== "string" || before === "") { failures.push(`${code}: ${leaf} is ${JSON.stringify(before)} — nothing safe to write back`); continue; }
+      const stillBefore = await g(`barcodes/${code}/${leaf}`);
       if (stillBefore !== before) { failures.push(`${code}: CHANGING UNDER THE PROBE (${before} → ${stillBefore}) — someone is editing this product; re-run in a quiet window`); continue; }
-      await db.ref(`barcodes/${code}/size`).set(before);
-      const after = await g(`barcodes/${code}/size`);
+      await db.ref(`barcodes/${code}/${leaf}`).set(before);
+      const after = await g(`barcodes/${code}/${leaf}`);
       if (after !== before) { failures.push(`${code}: CHANGED ${before} → ${after}`); continue; }
       pass++;
     } catch (e) {
@@ -120,6 +168,13 @@ export function hasPrivilegedCredential(app) {
   }
 
   console.log(`  probed ${codes.size} codes: ${pass} ok, ${failures.length} failed`);
+  if (addsSize.length) {
+    console.log(`\n  ${addsSize.length} record(s) carry NO size field — the canonical shape for a one-size`);
+    console.log(`  slot (barcodeIndexRecord omits it). Step 2 will ADD size "_" to these rather than`);
+    console.log(`  rewrite it. That is legal under the live rule (size must be a non-empty string when`);
+    console.log(`  present) and matches the 131 live one-size records that already carry "_".`);
+    console.log(`  ${addsSize.join(", ")}`);
+  }
   for (const f of failures) console.log(`  FAIL ${f}`);
   if (failures.length) {
     console.error("\nABORT: the atomic Step 2 batch would fail on the records above. Nothing moves.");

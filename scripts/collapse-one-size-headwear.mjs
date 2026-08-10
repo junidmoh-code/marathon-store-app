@@ -1,12 +1,15 @@
-// ─── BEANIE ONE-SIZE COLLAPSE — COMMIT 3: THE MIGRATION (dry-run by default) ──
+// ─── HEADWEAR ONE-SIZE COLLAPSE — THE MIGRATION (dry-run by default) ─────────
 //
-// Collapses every legacy sized beanie (["M"] / ["S"]) to true one-size ["_"]:
+// Collapses every legacy sized BEANIE and CAP to true one-size ["_"]:
 //
 //   STEP 1  stock: per location, PAIRED adjustment movements move each sized
 //           cell's units into "_" — OUT from the sized cell, then IN to "_",
 //           same qty, same timestamp, deterministic ids (see
-//           scripts/lib/beanieCollapseCore.mjs for the id scheme and the
-//           negative-cell mirror). applyMovement semantics refuse an
+//           scripts/lib/headwearCollapseCore.mjs for the id scheme and the
+//           negative-cell mirror). One pair PER SIZE PER LOCATION, which is
+//           what makes the cap case correct: 47 caps hold two or more sizes at
+//           one location and their quantities genuinely sum (M 2 + L 3 + XL 1
+//           → a single "_" cell of 6). applyMovement semantics refuse an
 //           overdraw, so the OUT leg cannot go below zero. Interrupting here
 //           is SAFE: stock splits across the sized cell and "_", sizes and
 //           barcodes still agree, every unit stays sellable, and a re-run
@@ -15,17 +18,25 @@
 //           barcodes map {"_": keepCode}, every index record's size "_".
 //           Split across separate writes in any order and every scan for the
 //           product breaks in the window; atomic means no window exists.
+//           87 caps carry more than one barcode, so which code takes the "_"
+//           slot is a real decision — see the keep-code rule in the core. The
+//           codes that do not take it are NOT deleted and keep resolving to the
+//           product through /barcodes; only their slot in the product's own map
+//           goes, and a one-size product has only one slot.
 //   STEP 3  explicit /stock_targets rows on retired sizes → target 0
 //           ("deliberately excluded" in the engine's own vocabulary).
+//           IT NEVER CREATES A ROW. Arming the refill policy is a separate,
+//           owner-approved act (scripts/model-headwear-onesize-policy.mjs).
 //
 // DRY RUN BY DEFAULT — prints the complete per-product plan and writes NOTHING
 // except the rollback snapshot. --execute performs the writes. Processes one
 // product at a time with a fresh-read verification per product; resumable
 // after interruption at any point (all writes are idempotent or ledger-derived).
 //
-// Scope: /beanie/i name match, not a mergedInto stub — the census rule
-// (scripts/beanie-census.mjs). Caps share the subcategory and are NEVER in
-// scope. Products already fully collapsed verify as no-ops.
+// Scope: beanies (by name) and caps (by the Caps & Hats shelf, minus visors and
+// bucket hats), never a mergedInto stub — the ONE exported predicate in
+// scripts/lib/headwearCollapseCore.mjs, shared with the census and the probe so
+// they cannot drift. Products already fully collapsed verify as no-ops.
 //
 // PER-PRODUCT GATES (a gated product is SKIPPED and reported, the run
 // continues — nothing about product A blocks product B):
@@ -39,9 +50,10 @@
 // pausing the engine stays a conscious operator act.
 //
 // Usage:
-//   node scripts/collapse-one-size-beanies.mjs                  # dry run
-//   node scripts/collapse-one-size-beanies.mjs --execute        # real writes
-//   node scripts/collapse-one-size-beanies.mjs --only=pid1,pid2 # scope filter
+//   node scripts/collapse-one-size-headwear.mjs                  # dry run
+//   node scripts/collapse-one-size-headwear.mjs --execute        # real writes
+//   node scripts/collapse-one-size-headwear.mjs --only=pid1,pid2 # scope filter
+//   node scripts/collapse-one-size-headwear.mjs --kind=cap       # beanies only / caps only
 //   SNAPSHOT_PATH=/somewhere/rollback.json ... (default: os tmpdir, run-stamped)
 //
 // Exit 0 = every in-scope product done (or already done) and verified.
@@ -54,8 +66,9 @@ import { join } from "path";
 import { setServerTimeOffsetMs, serverNowIso } from "../src/utils/serverTime.js";
 import {
   applyMovementAdmin, planStep1, planStep2, step2Done, planStep3, verifyProduct,
-  assertDrained, orderBlocks, transferBlocks, movementRecency, isInScope, REAL_SIZE,
-} from "./lib/beanieCollapseCore.mjs";
+  assertDrained, orderBlocks, transferBlocks, movementRecency, isInScope, headwearKind,
+  isRetiredSize, isRetiredSizeKey,
+} from "./lib/headwearCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -67,15 +80,54 @@ const db = admin.database();
 
 const EXECUTE = process.argv.includes("--execute");
 const ONLY = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7).split(",").filter(Boolean);
-const SNAP = process.env.SNAPSHOT_PATH || join(tmpdir(), `rollback-beanie-collapse-${Date.now()}.json`);
+// Beanies and caps are one migration but two very different risk profiles — the
+// beanie half is 134 products that mostly need identity only, the cap half has
+// the real arithmetic. --kind lets the operator run them as separate passes on
+// separate days without hand-listing 167 product ids into --only.
+const KIND = (process.argv.find((a) => a.startsWith("--kind=")) || "").slice(7).trim();
+if (KIND && KIND !== "beanie" && KIND !== "cap") {
+  console.error(`--kind must be "beanie" or "cap" (got ${JSON.stringify(KIND)})`);
+  process.exit(1);
+}
+const SNAP = process.env.SNAPSHOT_PATH || join(tmpdir(), `rollback-headwear-collapse-${Date.now()}.json`);
 
 const io = {
   read: (p) => db.ref(p).once("value").then((s) => s.val()),
   update: (u) => db.ref().update(u),
 };
 
+// ── TIMING KNOBS — VALIDATED, NOT COERCED, AND BEFORE THE LOCK ──────────────
+// `Number(process.env.X || default)` turns a typo into silence. On a staleness
+// bound that means "never refresh" (every NaN comparison is false); on the
+// recent-activity gate it means the gate NEVER FIRES, and a hat being rung up
+// at a till is migrated instead of skipped — the one concurrency protection
+// this run has against live tills, disabled by `RECENT_ACTIVITY_MINUTES=15m`.
+//
+// Validated at MODULE scope, which is also why it lives here rather than in the
+// IIFE: an abort after the RTDB run lock is taken leaves the lock held, and
+// every later --execute run then fails on a stale lock until someone clears it
+// by hand. That is exactly the trap the lock's own comment warns about — a gate
+// that punishes the expected mistake with a second, unrelated failure. Refusing
+// a bad value before anything is acquired costs nothing. (Review of PR #345.)
+function positiveSeconds(name, fallbackSeconds) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallbackSeconds * 1000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.error(`ABORT: ${name}=${JSON.stringify(raw)} is not a finite positive number of seconds. Nothing was started.`);
+    process.exit(1);
+  }
+  return n * 1000;
+}
 // A product that moved this recently is in active use at a till — skip it.
-const RECENT_ACTIVITY_MS = Number(process.env.RECENT_ACTIVITY_MINUTES || 15) * 60 * 1000;
+const RECENT_ACTIVITY_MS = positiveSeconds("RECENT_ACTIVITY_MINUTES", 15) * 60;
+const GATE_MAX_AGE_MS = positiveSeconds("GATE_MAX_AGE_SECONDS", 60);
+// /stock_movements is the LARGEST node in the database, and the barcode index
+// is enumerated on the same beat. Both refresh on their own, longer cadence:
+// still vastly fresher than "once at startup" (which turned a sliding 15-minute
+// recency window into a fixed slice of the run's first 15 minutes), at a
+// fraction of the bandwidth.
+const LEDGER_MAX_AGE_MS = positiveSeconds("LEDGER_MAX_AGE_SECONDS", 300);
 
 // Set once the execute-run lock is taken; called on every exit path.
 let releaseLock = null;
@@ -88,7 +140,7 @@ function hasPrivilegedCredential(app) {
 
 
 (async () => {
-  console.log(`\n${"═".repeat(78)}\n  BEANIE ONE-SIZE COLLAPSE — mode: ${EXECUTE ? "EXECUTE (REAL WRITES)" : "DRY RUN"}\n${"═".repeat(78)}`);
+  console.log(`\n${"═".repeat(78)}\n  HEADWEAR ONE-SIZE COLLAPSE — mode: ${EXECUTE ? "EXECUTE (REAL WRITES)" : "DRY RUN"}\n${"═".repeat(78)}`);
 
   if (!hasPrivilegedCredential(admin.app())) {
     console.error("ABORT: not a privileged Admin SDK credential — Step 2 (rewriting existing");
@@ -102,7 +154,7 @@ function hasPrivilegedCredential(app) {
   const offset = (await io.read(".info/serverTimeOffset")) || 0;
   setServerTimeOffsetMs(offset);
   const nowIso = serverNowIso();
-  const nowMs = Date.parse(nowIso);
+  const nowMs0 = Date.parse(nowIso);
   console.log(`  server time anchor: offset ${offset}ms → ${nowIso}`);
 
   const [products, stock, allTargets, barcodesIdx, transfers, orders, refillRequests, openLocks, dcActive, session, movements] =
@@ -116,15 +168,19 @@ function hasPrivilegedCredential(app) {
   // productId → most recent movement instant (and a count of unreadable stamps)
   // for the recent-activity gate — see movementRecency for why the unreadable
   // case must block rather than read as quiet.
-  const { lastMs: lastMovementMs, unreadable: unreadableStamp } = movementRecency(movements, { nowMs });
+  const { lastMs: lastMovementMs0, unreadable: unreadableStamp0 } = movementRecency(movements, { nowMs: nowMs0 });
 
   // ── scope ──────────────────────────────────────────────────────────────────
   let scope = Object.entries(products)
     .filter(([, p]) => isInScope(p))
     .sort((a, b) => (a[1].name || "").localeCompare(b[1].name || ""));
+  if (KIND) scope = scope.filter(([, p]) => headwearKind(p) === KIND);
   if (ONLY.length) scope = scope.filter(([pid]) => ONLY.includes(pid));
   const pidSet = new Set(scope.map(([pid]) => pid));
-  console.log(`  scope: ${scope.length} beanies${ONLY.length ? ` (--only filter from ${ONLY.length} asked)` : ""}`);
+  const kindCount = { beanie: 0, cap: 0 };
+  for (const [, p] of scope) kindCount[headwearKind(p)]++;
+  console.log(`  scope: ${scope.length} headwear products (${kindCount.beanie} beanies, ${kindCount.cap} caps)`
+    + `${KIND ? ` — --kind=${KIND}` : ""}${ONLY.length ? ` — --only filter from ${ONLY.length} asked` : ""}`);
 
   // reverse index: code → record, per pid (catches codes the product map forgot)
   const reverseIdx = {};
@@ -208,7 +264,7 @@ function hasPrivilegedCredential(app) {
   // single-path transaction is a real compare-and-set and is exactly the right
   // primitive here — Step 2 needs a multi-path update and so cannot use one,
   // but a lock is one path. (Kimi review of the lock delta, PR #343.)
-  const LOCK = "_migrations/beanieOneSizeCollapse/runLock";
+  const LOCK = "_migrations/headwearOneSizeCollapse/runLock";
   let lockHeld = false;
   if (EXECUTE) {
     const mine = { startedAt: nowIso, pid: process.pid, host: hostname(), releasedAt: null };
@@ -219,7 +275,7 @@ function hasPrivilegedCredential(app) {
     if (!committed) {
       const held = snapshot.val() || {};
       const started = Date.parse(held.startedAt);
-      const age = Number.isFinite(started) ? `${Math.round((nowMs - started) / 60000)} min ago` : "at an unreadable time";
+      const age = Number.isFinite(started) ? `${Math.round((nowMs0 - started) / 60000)} min ago` : "at an unreadable time";
       console.error(`\nABORT: another --execute run holds the lock (pid ${held.pid} on ${held.host}, started ${held.startedAt}, ${age}).`);
       console.error("Two concurrent runs can double-apply a positive movement leg. If that run");
       console.error(`crashed, clear the lock deliberately once you are sure it is dead:\n  firebase database:remove /${LOCK} --project marathon-club`);
@@ -248,17 +304,66 @@ function hasPrivilegedCredential(app) {
   // older than a bounded age gets the same guarantee at a sane cost. The
   // exposure drops from "the whole run" to at most GATE_MAX_AGE_MS, and the
   // recent-activity gate covers the tail.
-  const GATE_MAX_AGE_MS = Number(process.env.GATE_MAX_AGE_SECONDS || 60) * 1000;
-  let gateData = { transfers, orders, refillRequests, openLocks, dcActive };
+  // (timing knobs are validated at module scope, before the run lock)
+  let ledgerReadAt = Date.now();
+  //
+  // THE LEDGER IS REFRESHED WITH THEM, and the clock with it. The recent-
+  // activity gate asks "is this product being sold RIGHT NOW", and it was the
+  // only input still answering from the startup snapshot against a frozen
+  // `nowMs`. Over a run measured in tens of minutes that turns a sliding
+  // 15-minute window into a fixed slice of the run's first 15 minutes: a
+  // product sold at minute 30 read as quiet when its turn came at minute 90.
+  // The gate designed to stop a race with a till was the stalest thing in the
+  // loop. (Both independent reviews, PR #345.)
+  let gateData = { transfers, orders, refillRequests, openLocks, dcActive,
+    lastMovementMs: lastMovementMs0, unreadableStamp: unreadableStamp0, nowMs: nowMs0 };
   let gateReadAt = Date.now();
   let gateRefreshes = 0;
   const freshGates = async () => {
     if (Date.now() - gateReadAt < GATE_MAX_AGE_MS) return gateData;
-    const [t, o, rr, ol, dc] = await Promise.all([
+    const wantLedger = Date.now() - ledgerReadAt >= LEDGER_MAX_AGE_MS;
+    const [t, o, rr, ol, dc, mv, bc] = await Promise.all([
       io.read("transfers"), io.read("orders"), io.read("refill_requests"),
       io.read("refill_engine/open"), io.read("displayChecks_active"),
-    ]).then((r) => r.map((v) => v || {}));
-    gateData = { transfers: t, orders: o, refillRequests: rr, openLocks: ol, dcActive: dc };
+      wantLedger ? io.read("stock_movements") : Promise.resolve(null),
+      wantLedger ? io.read("barcodes") : Promise.resolve(null),
+    ]).then((r) => r.map((v, i) => (i >= 5 ? v : (v || {}))));
+    const nowMsFresh = Date.now() + offset;
+    let { lastMovementMs: lastMs, unreadableStamp: unreadable } = gateData;
+    // The clock advances because we ASKED, not because the answer was truthy.
+    // Keyed on `mv` alone, an empty ledger left wantLedger permanently true and
+    // re-downloaded the two largest nodes on every gate refresh.
+    if (wantLedger) ledgerReadAt = Date.now();
+    if (mv) ({ lastMs, unreadable } = movementRecency(mv, { nowMs: nowMsFresh }));
+    // THE SET of codes pointing at a product, not just each code's record. A
+    // code created after startup and absent from the product's own map would
+    // otherwise never be enumerated: it would keep its old size while every
+    // sibling collapsed, and verifyProduct — which checks only the codes
+    // planStep2 knew about — would not notice. (CodeRabbit, PR #345.)
+    if (bc) {
+      for (const k of Object.keys(reverseIdx)) delete reverseIdx[k];
+      const discovered = [];
+      for (const [code, rec] of Object.entries(bc)) {
+        if (!rec || !pidSet.has(rec.productId)) continue;
+        (reverseIdx[rec.productId] = reverseIdx[rec.productId] || {})[code] = rec;
+        // ROLLBACK COVERAGE FOR A CODE THAT DID NOT EXIST AT STARTUP. Step 2
+        // force-writes size "_" onto every enumerated code, so a code this
+        // refresh discovers gets written — and without a snapshot entry the
+        // rollback could not undo it, leaving an index record pointing at a
+        // size its product no longer declares. Worse, if that code went on to
+        // win the "_" slot, the rollback would classify the migration's OWN
+        // output as diverged and refuse without --force, which is the false
+        // positive that trains an operator to force past real divergence.
+        // Captured as it reads NOW, i.e. before this migration touches it.
+        if (!(code in snapshot.barcodeIndex)) { snapshot.barcodeIndex[code] = rec; discovered.push(code); }
+      }
+      if (discovered.length) {
+        writeFileSync(SNAP, JSON.stringify(snapshot, null, 2));
+        console.log(`  snapshot extended with ${discovered.length} barcode(s) created since the run started: ${discovered.join(", ")}`);
+      }
+    }
+    gateData = { transfers: t, orders: o, refillRequests: rr, openLocks: ol, dcActive: dc,
+      lastMovementMs: lastMs, unreadableStamp: unreadable, nowMs: nowMsFresh };
     gateReadAt = Date.now();
     gateRefreshes++;
     return gateData;
@@ -271,30 +376,75 @@ function hasPrivilegedCredential(app) {
 
   // ── per-product ────────────────────────────────────────────────────────────
   const results = [];
-  for (const [pid, p] of scope) {
-    const name = p.name || pid;
+  for (const [pid, pStart] of scope) {
     const gates_ = await freshGates();
     const { transfers: transfersNow, orders: ordersNow, refillRequests: refillRequestsNow,
-      openLocks: openLocksNow, dcActive: dcActiveNow } = gates_;
-    const indexCodes = { ...(reverseIdx[pid] || {}) };
-    for (const code of Object.values(p.barcodes || {}).map(String)) if (!(code in indexCodes)) indexCodes[code] = barcodesIdx[code] ?? null;
+      openLocks: openLocksNow, dcActive: dcActiveNow,
+      lastMovementMs, unreadableStamp, nowMs } = gates_;
+    // ── EVERYTHING THIS PRODUCT'S DECISIONS REST ON IS RE-READ HERE ─────────
+    // The startup snapshot is minutes old by the 60th product and over an hour
+    // old by the last, and Step 2 FORCE-WRITES barcodes/{code}/size for every
+    // code the snapshot listed. Two consequences, both found by review of #345:
+    //
+    //   • a code reassigned to another product mid-run (a re-tag, a merge)
+    //     still passes the ownership gate on the stale record, and Step 2 then
+    //     stamps size "_" onto a record that now belongs to SOMEONE ELSE —
+    //     corrupting a product this run was never asked to touch. verifyProduct
+    //     would eventually notice, but only as a cryptic line under THIS
+    //     product's failure, naming neither the victim nor the damage.
+    //   • the undeclared-size gate and the keep-code ranking were computed from
+    //     stale cells while the plan itself used fresh ones, so a cell that
+    //     appeared in an undeclared size after startup was drained without ever
+    //     being gated, and the code that won the "_" slot could differ from the
+    //     one the dry run printed.
+    //
+    // So the product record, its cells and its index records are all re-read
+    // immediately before its own gates and plan. This is the same bounded-
+    // staleness reasoning freshGates applies to the referential trees; it was
+    // simply never extended to the data being WRITTEN.
+    // `|| pStart` would MASK a mid-run deletion: the stale record passes
+    // isInScope and Step 2 then RECREATES products/{pid} holding only `sizes`
+    // and `barcodes` — a record with no inner `id`, which the app hides from
+    // every list. A missing product gates instead. (Review of PR #345.)
+    const pLive = await io.read(`products/${pid}`);
+    const p = pLive || pStart;
+    const name = p.name || pid;
+    const freshCells = {};
+    for (const loc of Object.keys(stock)) {
+      const bySize = await io.read(`stock/${loc}/${pid}`);
+      if (bySize) freshCells[loc] = bySize;
+    }
+    const indexCodes = {};
+    for (const code of new Set([
+      ...Object.keys(reverseIdx[pid] || {}),
+      ...Object.values(p.barcodes || {}).map(String),
+    ])) {
+      indexCodes[code] = await io.read(`barcodes/${code}`);
+    }
 
     // gates
     const gates = [];
+    if (!pLive) gates.push(`products/${pid} no longer exists — deleted or merged since the run started; collapsing it would recreate a partial record with no id`);
+    if (!isInScope(p)) gates.push(`no longer in headwear scope (renamed, re-filed or merged since the run started): ${JSON.stringify(p.name)} / ${JSON.stringify(p.subcategory)}`);
     for (const [code, rec] of Object.entries(indexCodes)) {
       if (!rec) gates.push(`barcode ${code}: no index record`);
-      else if (rec.productId !== pid) gates.push(`barcode ${code}: index points at ${rec.productId}`);
+      else if (rec.productId !== pid) gates.push(`barcode ${code}: index now points at ${rec.productId} — reassigned since this run started; writing it would corrupt that product`);
     }
-    const cellsByLoc = {};
-    for (const [loc, byPid] of Object.entries(stock)) if (byPid?.[pid]) cellsByLoc[loc] = byPid[pid];
+    const cellsByLoc = freshCells;
     const declared = (p.sizes || []).map(String);
-    const heldKeys = [];
+    // Units per SIZE KEY, summed across every location — the input to the
+    // keep-code rule. It was a LIST of keys when every beanie held one size and
+    // the rule only needed "which size has stock"; caps hold several at once and
+    // the rule now asks "which size has the MOST", so the quantities have to
+    // survive the trip. A list would have made the choice depend on iteration
+    // order across locations.
+    const heldUnits = {};
     for (const [loc, bySize] of Object.entries(cellsByLoc)) {
       for (const [sizeKey, cell] of Object.entries(bySize)) {
         const q = typeof cell?.qty === "number" ? cell.qty : 0;
         if (q !== 0) {
-          heldKeys.push(sizeKey);
-          if (sizeKey !== "_" && !declared.includes(sizeKey)) gates.push(`holds ${q} in undeclared size ${loc}/${sizeKey}`);
+          heldUnits[sizeKey] = (heldUnits[sizeKey] || 0) + q;
+          if (isRetiredSizeKey(sizeKey) && !declared.includes(sizeKey)) gates.push(`holds ${q} in undeclared size ${loc}/${sizeKey}`);
         }
       }
     }
@@ -324,7 +474,7 @@ function hasPrivilegedCredential(app) {
       gates.push(`${unreadable.length} recent ledger movement(s) have an unreadable timestamp (${unreadable.slice(0, 3).join(", ")}${unreadable.length > 3 ? ", …" : ""}) — cannot prove this product is quiet, so it is not migrated`);
     }
     for (const [rid, r] of Object.entries(refillRequestsNow)) {
-      if (r && r.status === "open" && r.productId === pid && REAL_SIZE.test(String(r.size || ""))) gates.push(`open refill request ${rid} (size ${r.size})`);
+      if (r && r.status === "open" && r.productId === pid && isRetiredSize(r.size)) gates.push(`open refill request ${rid} (size ${r.size})`);
     }
     for (const [loc, byPid] of Object.entries(openLocksNow)) {
       for (const sk of Object.keys(byPid?.[pid] || {})) if (sk !== "_") gates.push(`engine lock ${loc}/${sk}`);
@@ -345,16 +495,17 @@ function hasPrivilegedCredential(app) {
     // is about to stop declaring. Re-read this product's cells immediately
     // before planning, and derive the before-totals from the same fresh read so
     // the verification compares like with like. (Kimi review, PR #343.)
-    const freshCells = {};
-    for (const loc of Object.keys(stock)) {
-      const bySize = await io.read(`stock/${loc}/${pid}`);
-      if (bySize) freshCells[loc] = bySize;
-    }
     const step1 = await planStep1(io, pid, declared, freshCells);
-    const s2 = planStep2(pid, p, indexCodes, heldKeys);
+    const s2 = planStep2(pid, p, indexCodes, heldUnits);
     if (s2.error) { results.push({ pid, name, status: "GATED", detail: [s2.error] }); continue; }
+    // FRESH, like everything else this product's writes depend on. It was the
+    // last startup-snapshot input still feeding a write: planStep3 could not
+    // retire a row created after startup, while verifyProduct re-reads
+    // stock_targets and fails the product for exactly such a row — after
+    // identity has already been written. (Review of PR #345.)
+    const targetsNow = (await io.read("stock_targets")) || {};
     const targetRows = {};
-    for (const [loc, byPid] of Object.entries(allTargets)) if (byPid?.[pid]) targetRows[loc] = byPid[pid];
+    for (const [loc, byPid] of Object.entries(targetsNow)) if (byPid?.[pid]) targetRows[loc] = byPid[pid];
     const step3 = planStep3(pid, targetRows, nowIso);
     const s2Needed = !step2Done(p, indexCodes, s2.keepCode);
 
@@ -364,16 +515,29 @@ function hasPrivilegedCredential(app) {
       // arrived in a size whose pair has already been spent, and the execute
       // path will refuse to collapse this product. Say so in the plan rather
       // than printing it like an ordinary pair. (Sonnet review, PR #343.)
+      // planStep1 no longer emits a leg whose id is already spent — such stock
+      // comes back as a `stranded` plan with no legs instead, because planning
+      // it would either no-op (losing it) or half-apply (minting). Both are
+      // printed: the legs that will run, and the stock that will not move.
       const legLines = [];
       for (const pl of step1) {
+        if (pl.kind === "stranded") { legLines.push(`⚠ STRANDED — ${pl.note}`); continue; }
         for (const l of pl.legs) {
-          const spent = !!(await io.read(`stock_movements/${l.id}`));
-          legLines.push(`${l.id} (${l.movement.from ? "OUT " + l.movement.from : "IN " + l.movement.to} ${l.movement.size} qty ${l.movement.qty}${l.movement.allowNegative ? " allowNegative" : ""})${spent ? "  ⚠ ALREADY IN THE LEDGER — this leg will move NOTHING; the units here arrived after the pair was spent" : ""}`);
+          legLines.push(`${l.id} (${l.movement.from ? "OUT " + l.movement.from : "IN " + l.movement.to} ${l.movement.size} qty ${l.movement.qty}${l.movement.allowNegative ? " allowNegative" : ""})${pl.kind.startsWith("resume") ? "  ↩ RESUME — completing a pair an earlier run left half-applied, at the LEDGER's quantity" : ""}`);
         }
       }
-      results.push({ pid, name, status: (step1.length || s2Needed || Object.keys(step3).length) ? "PLANNED" : "ALREADY DONE", detail: [
+      const strandedDry = step1.filter((pl) => pl.kind === "stranded");
+      results.push({ pid, name,
+        // A stranded cell guarantees a FAILED execute. Reporting it as PLANNED
+        // let the SUMMARY and the exit code read clean while the detail lines
+        // said otherwise — and the runbook's acceptance step is "confirm the
+        // summary". (Review of PR #345.)
+        status: strandedDry.length ? "WILL FAIL (stranded stock)"
+          : (step1.length || s2Needed || Object.keys(step3).length) ? "PLANNED" : "ALREADY DONE",
+        detail: [
         ...legLines,
         s2Needed ? `step2 atomic ×${Object.keys(s2.updates).length} paths — "_" slot ← ${s2.keepCode} (${s2.rule})` : "step2: already collapsed",
+        ...(s2.droppedCodes.length ? [`${s2.droppedCodes.length} other code(s) keep resolving to this product at size "_" but lose their map slot: ${s2.droppedCodes.join(", ")}`] : []),
         ...(Object.keys(step3).length ? [`step3 retire ${Object.keys(step3).length} target rows`] : []),
       ] });
       continue;
@@ -385,14 +549,36 @@ function hasPrivilegedCredential(app) {
     // last product, and the tills are not paused by receiving_session, so
     // measuring against it would report a legitimate sale as a migration loss
     // (and could hide a real one). (CodeRabbit, PR #343.)
+    // ── THE EXPECTED DELTA OF A RESUME ──────────────────────────────────────
+    // A resume leg is a CREDIT with no matching debit in this run: the debit
+    // landed in the interrupted run and is already reflected in the fresh
+    // baseline below. So a correct resume legitimately RAISES a location's
+    // total, and "totals must be unchanged" would report a run that healed the
+    // books as having minted stock — then exit 1, after Step 2 had already
+    // committed, pointing the operator at a rollback that would genuinely
+    // damage data. Expected movement is therefore computed per location and
+    // carried into both the per-product verify and the run-wide check.
+    // (Review of PR #345.)
+    const expectedDelta = {};
+    for (const pl of step1) {
+      if (!String(pl.kind).startsWith("resume")) continue;
+      // resume-in credits "_" with the owed units; resume-neg-in credits the
+      // sized cell with the shortage the mirror's OUT leg already removed.
+      const credit = Math.abs(Number(pl.qty)) || 0;
+      expectedDelta[pl.loc] = (expectedDelta[pl.loc] || 0) + credit;
+    }
+    if (Object.keys(expectedDelta).length) {
+      console.log(`  ${pid} resuming an interrupted pair — totals SHOULD rise by ${Object.entries(expectedDelta).map(([l, n]) => `${l}+${n}`).join(" ")} (the earlier run's debit is already in the baseline)`);
+    }
     const totalsBeforeProduct = {};
     for (const [loc, bySize] of Object.entries(freshCells)) {
       const sum = Object.values(bySize).reduce((t, c) => t + (typeof c?.qty === "number" ? c.qty : 0), 0);
       totalsBeforeProduct[loc] = sum;
-      baselineFresh[loc] = (baselineFresh[loc] || 0) + sum;
+      baselineFresh[loc] = (baselineFresh[loc] || 0) + sum + (expectedDelta[loc] || 0);
       baselinePids.add(pid);
     }
     let failed = null;
+    const strandedPlans = step1.filter((pl) => pl.kind === "stranded");
     for (const pl of step1) {
       for (const leg of pl.legs) {
         const r = await applyMovementAdmin(io, { ...leg.movement, ts: nowIso }, { nowIso });
@@ -409,6 +595,12 @@ function hasPrivilegedCredential(app) {
     // moving anything, so stock that arrived in a still-declared size between
     // runs would be stranded the instant identity collapses. Ask the database.
     // (Sonnet review, PR #343 — reproduced end to end.)
+    // A stranded cell cannot be moved by this run and MUST NOT be collapsed
+    // over. assertDrained would catch it a moment later anyway; naming it here
+    // gives the operator the instruction instead of just the symptom.
+    if (!failed && strandedPlans.length) {
+      failed = strandedPlans.map((pl) => pl.note).join("  |  ");
+    }
     if (!failed) {
       const residue = await assertDrained(io, pid);
       if (residue.length) {
@@ -423,10 +615,12 @@ function hasPrivilegedCredential(app) {
     }
     if (failed) { results.push({ pid, name, status: "FAILED", detail: [failed] }); continue; }
 
-    const problems = await verifyProduct(io, pid, s2.keepCode, s2.codes, totalsBeforeProduct);
+    const problems = await verifyProduct(io, pid, s2.keepCode, s2.codes, totalsBeforeProduct, expectedDelta);
     results.push(problems.length
       ? { pid, name, status: "VERIFY-FAILED", detail: problems }
-      : { pid, name, status: "DONE", detail: [`"_" slot ← ${s2.keepCode} (${s2.rule})`, `${step1.length} cell merges, ${Object.keys(step3).length} target rows retired`] });
+      : { pid, name, status: "DONE", detail: [
+        `"_" slot ← ${s2.keepCode} (${s2.rule})${s2.droppedCodes.length ? `; ${s2.droppedCodes.length} other code(s) still resolve here: ${s2.droppedCodes.join(", ")}` : ""}`,
+        `${step1.length} cell merges, ${Object.keys(step3).length} target rows retired`] });
   }
 
   // ── report ─────────────────────────────────────────────────────────────────
@@ -441,7 +635,7 @@ function hasPrivilegedCredential(app) {
   console.log(`\n  SUMMARY: ${Object.entries(byStatus).map(([s, l]) => `${s}=${l.length}`).join("  ")}`);
   // Machine-readable twin of the same run — the operator report and the
   // clear-first worklist are built from this, not from scraping stdout.
-  const REPORT = process.env.REPORT_JSON || join(tmpdir(), `beanie-collapse-${EXECUTE ? "execute" : "dryrun"}-${Date.now()}.json`);
+  const REPORT = process.env.REPORT_JSON || join(tmpdir(), `headwear-collapse-${EXECUTE ? "execute" : "dryrun"}-${Date.now()}.json`);
   writeFileSync(REPORT, JSON.stringify({ ranAt: nowIso, mode: EXECUTE ? "execute" : "dry-run", scope: scope.length, totalsBefore, baselineFresh, results }, null, 2));
   console.log(`  JSON report: ${REPORT}`);
 
@@ -477,6 +671,9 @@ function hasPrivilegedCredential(app) {
     console.log(`  snapshot updated with ${appliedMovementIds.length} applied movement id(s): ${SNAP}`);
   }
   await releaseLock?.();
+  // "WILL FAIL (stranded stock)" is deliberately NOT in the clean set — a dry
+  // run that finds stranded stock must exit non-zero, because the execute run
+  // it is rehearsing will fail on exactly those products.
   const bad = results.filter((r) => r.status !== "DONE" && r.status !== "ALREADY DONE" && r.status !== "PLANNED");
   process.exit(bad.length ? 1 : 0);
 })().catch(async (e) => { console.error(e); await releaseLock?.(); process.exit(1); });

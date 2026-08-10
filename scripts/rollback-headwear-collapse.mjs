@@ -1,7 +1,7 @@
-// ─── BEANIE ONE-SIZE COLLAPSE — ROLLBACK (DRY RUN BY DEFAULT) ────────────────
+// ─── HEADWEAR ONE-SIZE COLLAPSE — ROLLBACK (DRY RUN BY DEFAULT) ──────────────
 //
 // Restores product identity from a rollback snapshot written by
-// scripts/collapse-one-size-beanies.mjs: `sizes`, the `barcodes` map, every
+// scripts/collapse-one-size-headwear.mjs: `sizes`, the `barcodes` map, every
 // barcode index record, and the explicit /stock_targets rows the migration
 // retired. Requires --execute; without it, prints exactly what it would write.
 //
@@ -30,15 +30,15 @@
 // (CodeRabbit, PR #343.)
 //
 // Usage:
-//   node scripts/rollback-beanie-collapse.mjs <snapshot.json>
-//   node scripts/rollback-beanie-collapse.mjs <snapshot.json> --execute
-//   node scripts/rollback-beanie-collapse.mjs <snapshot.json> --execute --force
-//   node scripts/rollback-beanie-collapse.mjs <snapshot.json> --only=pid1,pid2
+//   node scripts/rollback-headwear-collapse.mjs <snapshot.json>
+//   node scripts/rollback-headwear-collapse.mjs <snapshot.json> --execute
+//   node scripts/rollback-headwear-collapse.mjs <snapshot.json> --execute --force
+//   node scripts/rollback-headwear-collapse.mjs <snapshot.json> --only=pid1,pid2
 
 import { createRequire } from "module";
 import { readFileSync } from "fs";
 import { hostname } from "os";
-import { BATCH } from "./lib/beanieCollapseCore.mjs";
+import { BATCH } from "./lib/headwearCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -83,11 +83,11 @@ function ownMovementIds(snap) {
 
 (async () => {
   if (!SNAP_PATH) {
-    console.error("usage: node scripts/rollback-beanie-collapse.mjs <snapshot.json> [--execute] [--force] [--only=pid,…]");
+    console.error("usage: node scripts/rollback-headwear-collapse.mjs <snapshot.json> [--execute] [--force] [--only=pid,…]");
     process.exit(1);
   }
   const snap = JSON.parse(readFileSync(SNAP_PATH, "utf8"));
-  console.log(`\n${"═".repeat(78)}\n  BEANIE COLLAPSE ROLLBACK — ${EXECUTE ? "EXECUTE" : "DRY RUN"}\n  snapshot: ${SNAP_PATH}\n  captured ${snap.capturedAt} · run ${snap.runId || "(unrecorded)"} · mode ${snap.mode || "(unknown)"}\n${"═".repeat(78)}`);
+  console.log(`\n${"═".repeat(78)}\n  HEADWEAR COLLAPSE ROLLBACK — ${EXECUTE ? "EXECUTE" : "DRY RUN"}\n  snapshot: ${SNAP_PATH}\n  captured ${snap.capturedAt} · run ${snap.runId || "(unrecorded)"} · mode ${snap.mode || "(unknown)"}\n${"═".repeat(78)}`);
   // A dry-run snapshot describes a state nothing ever changed — restoring from
   // it is a no-op at best and a way to undo someone else's work at worst.
   if (snap.mode === "dry-run") {
@@ -107,7 +107,7 @@ function ownMovementIds(snap) {
 
   // EXECUTE ONLY. A dry run writes nothing, so it must not take a lock — and
   // it exits before the write, so it would never release one either.
-  const LOCK = "_migrations/beanieOneSizeCollapse/runLock";
+  const LOCK = "_migrations/headwearOneSizeCollapse/runLock";
   if (EXECUTE) {
     // ── TAKE THE MIGRATION'S OWN LOCK — do not merely peek at it ──────────────
     // A rollback --execute overlapping a migration --execute produces interleaved

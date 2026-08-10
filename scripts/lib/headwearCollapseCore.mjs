@@ -1,4 +1,21 @@
-// ─── BEANIE ONE-SIZE COLLAPSE — CORE (pure logic, io-injected) ────────────────
+// ─── HEADWEAR ONE-SIZE COLLAPSE — CORE (pure logic, io-injected) ──────────────
+//
+// Beanies AND caps are quantities, not sizes. This module is the shared brain of
+// the census, the pre-flight probe, the migration and the rollback, so none of
+// them can drift from the others on what is in scope or what a collapse does.
+//
+// ── CAPS ARE NOT BEANIES (2026-08-10) ────────────────────────────────────────
+// The beanie half of this work (PRs #343/#344) could take two shortcuts that the
+// cap half cannot:
+//   • every beanie held stock in at most ONE size, so "merge the quantities"
+//     never actually merged anything. 47 caps hold stock across two or more
+//     sizes at once, and one holds a negative and a positive at the SAME
+//     location, so the paired-movement path now has real arithmetic to get right.
+//   • every beanie had exactly ONE barcode, so "which code keeps the '_' slot"
+//     answered itself. 87 caps carry two or more, so the keep-code rule is a
+//     decision with consequences for labels already on physical stock.
+// Read planStep2's keep-code rule and legIds' per-size id scheme with that in
+// mind; both were written for the beanie case and both changed here.
 //
 // The migration's decision-making, extracted from the CLI so the behaviour is
 // testable against a fake RTDB. NOTHING in here touches firebase directly: every
@@ -7,7 +24,7 @@
 //   io.read(path)      → Promise<value|null>
 //   io.update(updates) → Promise<void>   ONE atomic multi-path update from root
 //
-// The live CLI (scripts/collapse-one-size-beanies.mjs) binds these to the Admin
+// The live CLI (scripts/collapse-one-size-headwear.mjs) binds these to the Admin
 // SDK; the tests bind them to a fake that reproduces real RTDB semantics —
 // including the one that invalidates naive fakes: RTDB DELETES a child whose
 // written value is null, an empty object or an empty array.
@@ -46,8 +63,15 @@
 // the second pair's IN leg would hit the first's id, be skipped as idempotent,
 // and silently lose that size's units. Per-size ids keep re-runs no-ops AND
 // make the M+L merge correct — the mutation test "M 100 + L 100 → single _
-// cell of 200" fails on the collided shape. (Live census 2026-08-10 found zero
-// multi-size holders, so real ids differ from the spec only in suffix.)
+// cell of 200" fails on the collided shape.
+//
+// ON BEANIES THIS WAS INSURANCE. ON CAPS IT FIRES. The beanie census found zero
+// multi-size holders, so the collided shape would have passed unnoticed through
+// the entire live run. 47 caps hold two or more sizes at one location — one
+// holds four (marathon-pe L 2, M 1, S 2, XL 1) — so on the collided id shape
+// three of that product's four sizes would have been silently dropped on the
+// floor while every leg reported ok. The per-size id is the only reason the cap
+// half of this migration is arithmetically correct.
 //
 // A NEGATIVE sized cell (census: Nike beanie green, marathon-pe S = −1, an
 // oversell signal) cannot ride the normal pair — the OUT leg would overdraw.
@@ -59,21 +83,86 @@
 
 import { encodeSizeKey, stockSizeKey, stockCellPath, assertSafeSegment } from "../../src/utils/sizeKey.js";
 
-const ACTOR = "system:beanie-onesize-collapse";
-export const BATCH = "beanie-onesize-collapse";
+const ACTOR = "system:headwear-onesize-collapse";
+export const BATCH = "headwear-onesize-collapse";
 
-// ── SCOPE — THE ONE PLACE THAT DECIDES WHAT A BEANIE IS ──────────────────────
-// Beanies and caps share subcategory "Caps & Hats" (323 live records), so the
-// subcategory CANNOT separate them — the name is the only field that does. Caps
-// are out of scope: 86 of them declare two or more sizes and genuinely hold
-// stock across several, so a one-size row would orphan most of them.
+// ── SCOPE — THE ONE PLACE THAT DECIDES WHAT IS IN ────────────────────────────
+// In scope: beanies and caps. Nothing else, ever.
+//
+// The two are told apart by different evidence, and it is worth being exact
+// about why, because the asymmetry looks arbitrary until you look at the data:
+//
+//   A BEANIE IS DECIDED BY ITS NAME. /beanie/i, wherever it is filed. The name
+//   is unambiguous — no other product line uses the word — and a beanie
+//   mis-filed outside Caps & Hats is still a beanie. (Live 2026-08-10: all 134
+//   sit in Caps & Hats, so this admits nothing extra today; isUnexpectedSub-
+//   category below still flags one if it ever appears.)
+//
+//   A CAP IS DECIDED BY ITS SHELF, MINUS AN EXCLUSION LIST. A name rule cannot
+//   work here: 24 of the 167 live caps have no headwear word in the name at all
+//   ("Armani exchange mustard", "New Era Atlanta Braves 59FIFTY fitted Black",
+//   "Nike Dri-FIT Fly Maroon"). They are caps, they are on the cap shelf, and a
+//   /cap/i rule would silently leave them sized while their siblings collapsed.
+//   So the subcategory admits, and NOT_A_CAP removes the two things that share
+//   that shelf without being caps.
+//
+// ── WHAT NOT_A_CAP REMOVES, AND WHY IT IS NOT AN OVERSIGHT ───────────────────
+// Caps & Hats also holds 23 records that are neither a beanie nor a cap:
+//   • 16 bucket hats — 15 of which ALREADY declare ["_"], so there is nothing
+//     to collapse; the 16th (Nike bucket hat green, ["M"]) would be a one-line
+//     addition if the owner wants it.
+//   • 7 visors — 6 on the shelf, plus one mis-filed under "Clothing —
+//     Uncategorized" (Alo yoga airlift solar visor black).
+// Neither is a cap, and the brief scopes this migration to beanies and caps, so
+// they are reported by the census and left alone. isExcludedHeadwear names them
+// so "excluded" is a stated decision with a list, not silence — and it matches
+// on the NAME wherever the record is filed, not only on the shelf, because the
+// mis-filed visor is precisely the record a reader would want to see accounted
+// for and a shelf-only predicate made it vanish from both lists.
+// (CodeRabbit, PR #345.)
+//
 // A mergedInto record is a redirect stub with no stock identity of its own
 // (product-merge.cjs) and must never be collapsed in place.
 //
-// Exported and imported by the CLI and the tests rather than restated in each,
-// so a change to the rule cannot pass a test that still applies the old one.
+// Exported and imported by the CLI, the census, the probe and the tests rather
+// than restated in each, so a change to the rule cannot pass a test that still
+// applies the old one.
+export const HEADWEAR_SUBCATEGORY = "Caps & Hats";
+const BEANIE_NAME = /beanie/i;
+const NOT_A_CAP = /\bvisors?\b|\bbucket\s*hats?\b/i;
+// Reporting only — never gates anything. Splits the admitted caps into "the
+// name says cap" and "admitted because of where it is filed", so the census can
+// print the second list for a human to eyeball before anything moves.
+const CAP_NAME = /\bcaps?\b/i;
+
+export function headwearKind(product) {
+  if (!product || product.mergedInto) return null;
+  const name = String(product.name || "");
+  if (BEANIE_NAME.test(name)) return "beanie";
+  if (product.subcategory !== HEADWEAR_SUBCATEGORY) return null;
+  if (NOT_A_CAP.test(name)) return null;
+  return "cap";
+}
+
 export function isInScope(product) {
-  return !!product && /beanie/i.test(product.name || "") && !product.mergedInto;
+  return headwearKind(product) !== null;
+}
+
+// Named as a visor or a bucket hat, wherever it is filed, and not a beanie.
+// Reporting only — these are never in scope. Deliberately NOT restricted to the
+// shelf, so the one mis-filed visor is still accounted for in the census rather
+// than falling silently between "in scope" and "excluded".
+export function isExcludedHeadwear(product) {
+  if (!product || product.mergedInto) return false;
+  const name = String(product.name || "");
+  return !BEANIE_NAME.test(name) && NOT_A_CAP.test(name);
+}
+
+// Admitted as a cap by the shelf alone — the name carries no "cap"/"caps". These
+// are the records whose scope decision rests entirely on the subcategory field,
+// so they are the ones worth reading before a run. In scope; reported, not gated.
+export function isCapByShelfOnly(product) {
+  return headwearKind(product) === "cap" && !CAP_NAME.test(String(product.name || ""));
 }
 
 // A record whose NAME says beanie but whose filing does not. It stays in scope
@@ -82,7 +171,7 @@ export function isInScope(product) {
 // scope rule it qualifies, so it is testable rather than buried in a live-data
 // script with no unit surface. (CodeRabbit, PR #343.)
 export function isUnexpectedSubcategory(product) {
-  return isInScope(product) && product.subcategory !== "Caps & Hats";
+  return headwearKind(product) === "beanie" && product.subcategory !== HEADWEAR_SUBCATEGORY;
 }
 
 // ── WHAT COUNTS AS AN OPEN REFERENCE ─────────────────────────────────────────
@@ -104,7 +193,38 @@ export function isUnexpectedSubcategory(product) {
 //   • An UNRESOLVED CR line is a live pick: Send fires the hub→shop transfer on
 //     that size. Always blocks.
 //   • A customer order in a live status still has its dispatch ahead of it.
-export const REAL_SIZE = /^(XS|S|M|L|XL|XXL|XXXL)$/;
+// ── WHAT COUNTS AS A SIZE THIS MIGRATION IS ABOUT TO RETIRE ──────────────────
+// This WAS an enumeration: /^(XS|S|M|L|XL|XXL|XXXL)$/. On beanies that was
+// complete — the only sizes in play were S and M. On caps it is a FAIL-OPEN
+// HOLE, and not a theoretical one. Live caps hold stock in "28", "55" and "62"
+// and declare "4XL" and "55"…"63" (fitted caps are sized by head circumference
+// in centimetres). Every one of those fails the old regex, so an open order, an
+// unreceived transfer or a live refill request against a 59FIFTY in size 57
+// read as "no real size — does not block" and the product would have been
+// collapsed out from under it.
+//
+// The fix is to stop enumerating and ask the question the gate actually means:
+// "would this reference still move stock in a cell that is about to stop
+// existing?" Every cell key except the one-size sentinel is about to be retired,
+// so a size blocks unless it already IS the sentinel — decided by the same
+// stockSizeKey chokepoint that decides the cell key itself, so the gate and the
+// storage can never disagree about what one-size means. "Free Size" (the
+// synthetic display label) folds to "_" and correctly does NOT block; a genuine
+// "M", "4XL" or "57" does.
+//
+// It errs toward blocking: an unrecognised size string is not proven safe, so
+// it gates the product and gets reported. That is the same direction every
+// other gate in this file takes.
+export function isRetiredSize(size) {
+  if (size == null || size === "") return false;         // no size named — nothing to retire
+  return stockSizeKey(size) !== "_";
+}
+
+// A /stock or transfer-line KEY (already encoded) that this migration retires.
+export function isRetiredSizeKey(sizeKey) {
+  return typeof sizeKey === "string" && sizeKey !== "" && sizeKey !== "_";
+}
+
 // out_of_stock is a LIVE hold, not a terminal state — the customer is still
 // owed the item and the order can be revived and dispatched on its size.
 // (Kimi review, PR #343: it was missing, which is the fail-OPEN direction.)
@@ -127,7 +247,7 @@ export function orderBlocks(order, pid, nowMs) {
       ? `order ${order.id || ""} references this product in a shape this gate does not understand (no top-level productId) — clear it or check it by hand`
       : null;
   }
-  if (!REAL_SIZE.test(String(order.size || ""))) return null;   // one-size / no real size — nothing to retire
+  if (!isRetiredSize(order.size)) return null;   // one-size / no size named — nothing to retire
   if (order.customerName === "Shop Refill") {
     if (order.clothingRefillStatus == null) return `unresolved refill line ${order.id || ""} (size ${order.size}) — Send would move stock in the retired size`;
     // An UNPARSEABLE resolution stamp must fail SAFE. `|| 0` treated a garbled
@@ -242,11 +362,25 @@ export function transferBlocks(transfer, pid) {
     if (!entry || typeof entry !== "object") continue;
     found = true;
     const values = Object.values(entry);
-    if (!(values.length && values.every((v) => typeof v === "number"))) malformed = true;
-    for (const k of Object.keys(entry)) if (REAL_SIZE.test(k)) sizes.add(k);
+    if (!(values.length && values.every((v) => typeof v === "number"))) { malformed = true; continue; }
+    // SIZES ARE ONLY HARVESTED FROM A NODE THAT READ CLEANLY. This used to be
+    // safe by accident: the size test was an enumeration of letter sizes, so a
+    // malformed { sizes: { M: 2 } } contributed nothing because "sizes" is not
+    // a letter size. Widening the test to "any key that is not the sentinel"
+    // (which is what caps required — 28, 55, 4XL are all real) made "sizes"
+    // itself look like a size, and the gate reported `carrying size sizes`
+    // instead of "I cannot read this record". Both block, so nothing was
+    // unsafe, but the operator was told a confident falsehood about a record
+    // nobody had actually parsed. Reading a node and trusting a node are now
+    // the same decision.
+    for (const k of Object.keys(entry)) if (isRetiredSizeKey(k)) sizes.add(k);
   }
   const understood = found && !malformed;
-  if (sizes.size) return `open transfer (${transfer.status || "no status"}) ${transfer.from || "?"}→${transfer.to || "?"} carrying size ${[...sizes].sort().join(", ")}`;
+  if (understood && sizes.size) return `open transfer (${transfer.status || "no status"}) ${transfer.from || "?"}→${transfer.to || "?"} carrying size ${[...sizes].sort().join(", ")}`;
+  if (malformed) {
+    return `open transfer (${transfer.status || "no status"}) presents this product in a shape this gate does not understand`
+      + `${sizes.size ? ` (a readable node also carries size ${[...sizes].sort().join(", ")})` : ""} — check it by hand`;
+  }
   // Unrecognised shape that still names the product: same fail-safe rule as
   // orderBlocks — block rather than assume.
   //
@@ -390,19 +524,106 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
       if (sizeKey === "_") continue;
       const q = cell && typeof cell.qty === "number" ? cell.qty : 0;
       const ids = legIds(pid, loc, sizeKey);
-      // raw size for the movement record: beanie sizes are letters, so the
-      // encoded key IS the raw size; assert that rather than assume it.
-      const size = sizeKey;
-      if (encodeSizeKey(size) !== sizeKey) throw new Error(`size key ${sizeKey} does not round-trip`);
+      // ── RAW SIZE FOR THE MOVEMENT RECORD ────────────────────────────────
+      // This used to be `size = sizeKey` guarded by
+      // `if (encodeSizeKey(size) !== sizeKey) throw`. That guard could never
+      // fire: sizeKey comes from a /stock cell KEY, RTDB rejects every
+      // character encodeSizeKey substitutes, so the key is already encoded and
+      // encoding it again is a no-op. The one case the comment claimed to
+      // catch — a half size — was exactly the case that slipped through: "5.5"
+      // is stored under key "5_5", the assertion passed, and the movement
+      // recorded `size: "5_5"` rather than "5.5". The cell path re-encodes, so
+      // the arithmetic stayed right, but the ledger disagreed with the
+      // catalogue about what was moved. (CodeRabbit, PR #345.)
+      //
+      // So resolve the key back through the product's DECLARED sizes, which is
+      // where the raw form actually lives. Every live headwear size encodes to
+      // itself, so this changes nothing today; it stops the ledger lying the
+      // first time a size that does not.
+      const declaredMatch = (declaredSizes || []).map(String).find((s) => encodeSizeKey(s) === sizeKey);
+      const size = declaredMatch ?? sizeKey;
 
-      if (q > 0) {
+      // ── THE LEDGER IS CONSULTED FIRST, ALWAYS ───────────────────────────────
+      // This used to happen ONLY in the `q === 0` branch, on the assumption that
+      // a half-applied pair always leaves its source cell at exactly zero. It
+      // does — until anything else touches that cell, and the cell stays a
+      // DECLARED size the whole time, so a till or a warehouse receive is
+      // perfectly entitled to. Both independent reviews of PR #345 found this
+      // and both reproduced it end to end:
+      //
+      //   OUT lands (M 5 → 0, "_" not yet credited), the run is interrupted.
+      //   • A till oversells M to −1. On resume q < 0, so the MIRRORED pair is
+      //     planned and `ids.in` is never planned at all. The mirror closes M at
+      //     0, assertDrained sees no residue, Step 2 collapses identity, and
+      //     verifyProduct passes because this run's baseline was taken AFTER the
+      //     loss. FIVE UNITS GONE, every check green.
+      //   • A receive puts 2 into M. On resume q > 0, so OUT is re-planned under
+      //     its SPENT id (no-op) while IN applies with the NEW qty — crediting 2
+      //     instead of the owed 5. Two units minted into "_", five still lost.
+      //
+      // The ids are keyed by (product, location, size) with no quantity in them,
+      // which is what makes a re-run a no-op; the price is that a spent id can
+      // never be reused for a different quantity. So: read the ledger first,
+      // finish any half-applied pair from the LEDGER's recorded quantity, and
+      // only plan a fresh pair when its own ids are untouched. A cell holding
+      // units whose pair is already spent is STRANDED — reported, never planned,
+      // and assertDrained refuses to collapse the product until it is cleared.
+      let resolvedByResume = false;
+      const [out, inMv, negOut, negIn] = await Promise.all([
+        io.read(`stock_movements/${ids.out}`),
+        io.read(`stock_movements/${ids.in}`),
+        io.read(`stock_movements/${ids.negOut}`),
+        io.read(`stock_movements/${ids.negIn}`),
+      ]);
+
+      // 1. Finish a half-applied pair, from the ledger, whatever the cell says.
+      if (out && !inMv) {
+        const n = Number(out.qty);
+        plans.push({ loc, sizeKey, kind: "resume-in", qty: n, legs: [
+          { id: ids.in, movement: { type: "adjustment", productId: pid, size: "_", qty: n, to: loc, movementId: ids.in,
+            reason: `Collapse to one-size: receive from size ${size}` } },
+        ] });
+      }
+      // The mirrored pair is net-zero on the network: negOut debits "_" by n,
+      // negIn credits the sized cell by n. Half-applied, the books therefore
+      // read n LOW, and negIn is OWED — unconditionally, exactly like the
+      // positive pair's IN leg, and for exactly the same reason. Where the
+      // units land afterwards is assertDrained's problem, not the planner's.
+      //
+      // A previous attempt made this conditional on the cell still reading −n,
+      // reasoning that a receive settling the cell in the gap would make a
+      // second close a MINT. That was an arithmetic error: the receive adds a
+      // real unit, so the correct total rises with it, and refusing negIn
+      // leaves the network permanently short by the n that negOut removed —
+      // with the stranded note asserting the opposite of what happened, and
+      // every later re-run repeating the same refusal because the cell never
+      // returns to −n. Conservation is the test, not the cell's current value.
+      if (negOut && !negIn) {
+        const n = Number(negOut.qty);
+        plans.push({ loc, sizeKey, kind: "resume-neg-in", qty: -n, legs: [
+          { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
+            reason: `Collapse to one-size: close oversold size ${size} cell` } },
+        ] });
+        resolvedByResume = true;
+      }
+
+      // 2. The cell's own balance — only if the pair it needs is untouched.
+      // `!(negOut && !negIn)` — a pending MIRROR resume must finish on its own
+      // before this cell's positive balance is planned. Two reasons, both real:
+      // the quantity here was read BEFORE that resume leg applies, so the pair
+      // would be planned against a number about to change; and planning legs
+      // against a cell whose sibling leg is mid-flight is precisely the
+      // half-applied state this whole block exists to stop reasoning about. The
+      // resume lands, assertDrained refuses the collapse, and the next run
+      // plans this balance cleanly at its true value. (Review of PR #345.)
+      if (q > 0 && !out && !inMv && !(negOut && !negIn)) {
         plans.push({ loc, sizeKey, kind: "positive", qty: q, legs: [
           { id: ids.out, movement: { type: "adjustment", productId: pid, size, qty: q, from: loc, movementId: ids.out,
             reason: `Collapse to one-size: move size ${size} → _` } },
           { id: ids.in, movement: { type: "adjustment", productId: pid, size: "_", qty: q, to: loc, movementId: ids.in,
             reason: `Collapse to one-size: receive from size ${size}` } },
         ] });
-      } else if (q < 0) {
+      } else if (q < 0 && !negOut && !negIn) {
         const n = -q;
         plans.push({ loc, sizeKey, kind: "negative", qty: q, legs: [
           { id: ids.negOut, movement: { type: "adjustment", productId: pid, size: "_", qty: n, from: loc, movementId: ids.negOut,
@@ -410,27 +631,23 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
           { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
             reason: `Collapse to one-size: close oversold size ${size} cell` } },
         ] });
-      } else {
-        // qty 0 — but an INTERRUPTED prior run leaves exactly this state with
-        // the OUT landed and the IN missing. The ledger, not the cell, says so.
-        const out = await io.read(`stock_movements/${ids.out}`);
-        const inMv = await io.read(`stock_movements/${ids.in}`);
-        if (out && !inMv) {
-          const n = Number(out.qty);
-          plans.push({ loc, sizeKey, kind: "resume-in", qty: n, legs: [
-            { id: ids.in, movement: { type: "adjustment", productId: pid, size: "_", qty: n, to: loc, movementId: ids.in,
-              reason: `Collapse to one-size: receive from size ${size}` } },
-          ] });
-        }
-        const negOut = await io.read(`stock_movements/${ids.negOut}`);
-        const negIn = await io.read(`stock_movements/${ids.negIn}`);
-        if (negOut && !negIn) {
-          const n = Number(negOut.qty);
-          plans.push({ loc, sizeKey, kind: "resume-neg-in", qty: -n, legs: [
-            { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
-              reason: `Collapse to one-size: close oversold size ${size} cell` } },
-          ] });
-        }
+      } else if (q !== 0 && !resolvedByResume) {
+        // STRANDED — stock in a size whose pair is spent, with nothing planned
+        // that will zero it. Planning it again would either no-op (losing it)
+        // or apply half a pair (minting). Neither is acceptable, and neither is
+        // silence.
+        //
+        // `resolvedByResume` is load-bearing: a cell sitting at −1 with negOut
+        // spent is NOT stranded — the resume leg planned above is precisely
+        // what brings it to 0, and the execute path treats a stranded plan as a
+        // hard failure, so getting this wrong would refuse the very interrupted
+        // run this fix exists to let finish. It also stops a cell the mirror
+        // resume ALREADY reported being reported a second time here.
+        // What is genuinely stranded is a cell no planned leg will zero:
+        // positive with its OUT already spent, or negative with its closing leg
+        // already spent (a fresh oversell after the mirror completed).
+        plans.push({ loc, sizeKey, kind: "stranded", qty: q, legs: [],
+          note: `${loc}/${sizeKey} holds ${q} but its movement pair is already spent — this stock arrived after the pair ran. Move it to "_" by hand (or clear it) before collapsing; Step 2 will refuse until you do.` });
       }
     }
   }
@@ -444,31 +661,127 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
 // header for the two failure orderings) — so this function returns exactly ONE
 // updates object, and the CLI hands it to ONE io.update call.
 //
-// KEEP-CODE RULE (reported per product): the code minted for the size that
-// holds (or held) the product's stock owns the "_" slot, so labels already on
-// physical stock keep scanning and ensureBarcodes reuses the slot instead of
-// minting a fresh code. Every in-scope beanie has exactly ONE code (census
-// 2026-08-10), which is then trivially that code; with several, prefer the
-// stock-holding size's code, then the declared size's, then the smallest code
-// for determinism.
-export function planStep2(pid, product, indexCodes, stockSizeKeysHeld) {
-  const map = { ...(product.barcodes || {}) };
-  const codes = [...new Set([...Object.values(map).map(String), ...Object.keys(indexCodes || {})])].sort();
+// ── THE KEEP-CODE RULE ───────────────────────────────────────────────────────
+// A one-size product's `barcodes` map is keyed by size and therefore holds
+// exactly ONE entry: {"_": code}. So when a product carries several codes, one
+// of them has to own that slot. This was trivial for beanies (every one had
+// exactly one code) and is a real decision for caps: 87 of 167 carry two or
+// more, and the choice decides which physical labels keep their meaning.
+//
+// WHAT HAPPENS TO THE CODES THAT DO NOT WIN THE SLOT — the important half, and
+// the reason this is safe. NOTHING is deleted. Step 2 rewrites EVERY
+// /barcodes/{code} record of this product to size "_" and leaves productId
+// untouched, and /barcodes is the reverse index a scan actually resolves
+// through (barcode.js: "resolution is a reverse-index lookup, NOT parsing").
+// So every code — kept or not — still resolves to this product, at the one cell
+// the product now has. A former-M label and a former-L label scan to the same
+// place, which is exactly right, because the hat they are stuck to no longer
+// has a size. The only thing a losing code loses is its slot in the product's
+// own map, and that slot no longer exists for anyone.
+//
+// The slot matters for ONE thing: ensureBarcode reads
+// /products/{id}/barcodes/{sizeKey} and reuses a valid code rather than minting
+// a fresh one (barcodeStore.js:111). A filled "_" slot therefore stops the app
+// ever minting a NEW code for a product that already has perfectly good labels
+// in the field. Which of the existing codes fills it changes nothing about
+// resolution — only about which code a newly printed label carries.
+//
+// So the rule optimises for exactly that: newly printed labels should match the
+// codes already out there on the most stock.
+//
+//   1. AN EXISTING "_" SLOT WINS. If the product already has one, it is already
+//      correct and nothing should move.
+//   2. OTHERWISE THE CODE OF THE SIZE HOLDING THE MOST UNITS, network-wide.
+//      That is the code on the largest number of labels physically on stock, so
+//      it is the choice that makes the fewest future reprints disagree with the
+//      shelf. Ties break on size key ascending, then code ascending.
+//   3. NO STOCK ANYWHERE (42 live caps) — the code of the first DECLARED size
+//      that has one, in catalogue order. Nothing on a shelf to match, so the
+//      tie-break just has to be stable and explicable.
+//   4. LAST RESORT — the lowest code. Codes are 8-digit zero-padded, so
+//      lexicographic order IS numeric order, and the oldest code wins.
+//
+// Every branch is deterministic and total: the same product always yields the
+// same keepCode, whatever order its barcodes map happens to enumerate in, and
+// there is no input with a code that yields none.
+export function planStep2(pid, product, indexCodes, heldUnitsBySizeKey) {
+  const bySlot = {};
+  for (const [slot, c] of Object.entries(product.barcodes || {})) {
+    if (typeof c === "string" || typeof c === "number") bySlot[slot] = String(c);
+  }
+  const codes = [...new Set([...Object.values(bySlot), ...Object.keys(indexCodes || {}).map(String)])].sort();
   if (codes.length === 0) return { error: "no_barcodes" };
 
   let keepCode = null, rule = null;
-  const bySlot = Object.fromEntries(Object.entries(map).map(([slot, c]) => [slot, String(c)]));
-  const held = [...(stockSizeKeysHeld || [])].filter((k) => k !== "_");
-  if (codes.length === 1) { keepCode = codes[0]; rule = "only code"; }
-  else if (held.length && bySlot[held[0]]) { keepCode = bySlot[held[0]]; rule = `code of stock-holding size ${held[0]}`; }
-  else if (bySlot[(product.sizes || [])[0]]) { keepCode = bySlot[(product.sizes || [])[0]]; rule = `code of declared size ${(product.sizes || [])[0]}`; }
-  else { keepCode = codes[0]; rule = "smallest code (deterministic tie-break)"; }
+  if (bySlot["_"]) {
+    keepCode = bySlot["_"];
+    rule = `existing "_" slot`;
+  } else if (codes.length === 1) {
+    keepCode = codes[0];
+    rule = "only code";
+  } else {
+    // Units per SIZE KEY across every location, sentinel and non-positive
+    // excluded — a size holding 0 or a negative has no labels to protect.
+    const ranked = Object.entries(heldUnitsBySizeKey || {})
+      .filter(([k, n]) => isRetiredSizeKey(k) && Number(n) > 0 && bySlot[k])
+      .sort((a, b) => (Number(b[1]) - Number(a[1]))
+        || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)
+        || (bySlot[a[0]] < bySlot[b[0]] ? -1 : 1));
+    if (ranked.length) {
+      const [sizeKey, units] = ranked[0];
+      keepCode = bySlot[sizeKey];
+      rule = `code of size ${sizeKey}, the most-stocked size (${units} unit${units === 1 ? "" : "s"} on hand)`;
+    } else {
+      const declared = (product.sizes || []).map(String).find((s) => bySlot[encodeSizeKey(s)]);
+      if (declared) {
+        keepCode = bySlot[encodeSizeKey(declared)];
+        rule = `code of declared size ${declared} (no stock on hand anywhere)`;
+      } else {
+        keepCode = codes[0];
+        rule = "lowest code (no stock, no declared size carries a code)";
+      }
+    }
+  }
+
+  // ── ONLY REWRITE INDEX RECORDS THAT EXIST ───────────────────────────────────
+  // A code listed in the product's `barcodes` map with NO /barcodes record is
+  // possible (the two are written together but nothing enforces the pair). For
+  // such a code, `barcodes/{code}/size = "_"` does not rewrite a record — it
+  // CREATES one, holding a size and nothing else. That record has no productId,
+  // so it resolves to nothing on a scan, and it violates the live rule
+  // (`newData.hasChildren(['productId'])`) which the Admin SDK bypasses rather
+  // than enforces. The migration would silently mint junk in the index it is
+  // supposed to be repairing.
+  //
+  // The CLI does gate this (it refuses a product whose map names a code with no
+  // record), so no live run could reach it today. But planStep2 is called
+  // directly by the census for reporting and is the function that decides what
+  // gets written, so it must not depend on a caller's gate to stay correct.
+  // Unindexed codes come back named, rather than being written blind or dropped
+  // in silence. (CodeRabbit, PR #345.)
+  // Keyed on the RECORD, not the key. Both real callers represent "the index
+  // has no record for this code" as a present key with a null VALUE
+  // (`indexCodes[code] = barcodesIdx[code] ?? null`), so keying on
+  // Object.keys() classified exactly the missing records as indexed and put the
+  // orphan-creating write straight back. The guard is supposed to hold without
+  // a caller's help; keyed on the key it held only for a shape neither caller
+  // produces. (Review of PR #345.)
+  const indexed = new Set(Object.entries(indexCodes || {}).filter(([, rec]) => !!rec).map(([code]) => String(code)));
+  const unindexedCodes = codes.filter((c) => !indexed.has(c));
 
   const updates = {};
   updates[`products/${assertSafeSegment(pid, "productId")}/sizes`] = ["_"];
   updates[`products/${pid}/barcodes`] = { [stockSizeKey(null)]: keepCode };   // {"_": code} via the chokepoint
-  for (const code of codes) updates[`barcodes/${assertSafeSegment(code, "barcode")}/size`] = "_";
-  return { updates, keepCode, rule, codes };
+  for (const code of codes) {
+    if (!indexed.has(code)) continue;
+    updates[`barcodes/${assertSafeSegment(code, "barcode")}/size`] = "_";
+  }
+  // droppedCodes is REPORTING, not a write — the codes that keep resolving via
+  // the index but lose their slot in the product's own map. The census and the
+  // dry run print them so "what happens to the others" is answered per product
+  // before anything moves, not inferred afterwards.
+  return { updates, keepCode, rule, codes, unindexedCodes,
+    droppedCodes: codes.filter((c) => c !== keepCode) };
 }
 
 // ── THE DRAIN CHECK — Step 2's precondition, on FRESH reads ─────────────────
@@ -533,10 +846,62 @@ export function planStep3(pid, targetRowsByLoc, nowIso) {
   return updates;
 }
 
+// ── THE POLICY-ROW DECISIONS (used by scripts/apply-headwear-policy.mjs) ─────
+// They live here, next to the migration they depend on, so they are covered by
+// the same behavioural suite instead of being untestable logic inside a script
+// that only runs against live RTDB.
+
+// Mirrors the LIVE rule at /stock_targets/$loc/$pid/$size:
+//   hasChildren(['target','minQty']) && target.isNumber() && minQty.isNumber()
+// The Admin SDK bypasses rules, so an invalid row would be accepted here and
+// then rejected the first time anything client-side touched it.
+export function invalidTargetRow(row) {
+  if (!row || typeof row !== "object") return "not an object";
+  if (typeof row.target !== "number" || !Number.isFinite(row.target)) return "target is not a finite number";
+  if (typeof row.minQty !== "number" || !Number.isFinite(row.minQty)) return "minQty is not a finite number (the live rule REQUIRES it)";
+  if (row.target < 0 || row.minQty < 0) return "negative target/minQty";
+  // reorderPoint is optional. When present the engine honours only a finite
+  // >= 0; anything else silently falls back to "no gate" (eager ordering), so a
+  // row that MEANT to gate would quietly not. Refuse it rather than write it.
+  //
+  // null is refused for a second, sharper reason: RTDB DELETES a null child, so
+  // `reorderPoint: null` writes a row with no reorderPoint — which is a
+  // perfectly valid intent, but it then reads back as ABSENT and a verify that
+  // compares null against undefined reports a false failure on a write that
+  // did exactly what was asked. Omit the key to mean absent. (CodeRabbit #345.)
+  if ("reorderPoint" in row
+    && !(typeof row.reorderPoint === "number" && Number.isFinite(row.reorderPoint) && row.reorderPoint >= 0)) {
+    return `reorderPoint ${JSON.stringify(row.reorderPoint)} would be ignored by the engine — omit the key to mean absent`;
+  }
+  return null;
+}
+
+// Whether a product may have a policy row written / removed.
+//
+// ARMING and REMOVING are NOT symmetric, and treating them as one gate broke
+// the documented off switch. Arming demands the product be in scope AND already
+// collapsed. Removing must always be possible: a product that was merged or
+// renamed after being armed fails isInScope, and its rows are still live and
+// still driving the refill engine. Refusing to remove them would leave a policy
+// with no off switch — the one thing the design promises. (CodeRabbit #345.)
+export function policyRowGate(product, { remove = false } = {}) {
+  if (!product) return remove ? { ok: true, note: "product no longer exists — removing its row anyway" } : { ok: false, reason: "missing", detail: "no such product" };
+  if (remove) {
+    return isInScope(product)
+      ? { ok: true }
+      : { ok: true, note: "no longer in headwear scope (merged or renamed) — removing its row anyway" };
+  }
+  if (!isInScope(product)) return { ok: false, reason: "not-headwear", detail: "is not a beanie or a cap" };
+  if (JSON.stringify(product.sizes || null) !== JSON.stringify(["_"])) {
+    return { ok: false, reason: "not-collapsed", detail: `still declares ${JSON.stringify(product.sizes)}` };
+  }
+  return { ok: true };
+}
+
 // ── per-product verification (fresh reads, after execute) ────────────────────
 // Location totals must equal the totals BEFORE the product's migration; every
 // sized cell must sit at 0; identity and index must be fully collapsed.
-export async function verifyProduct(io, pid, keepCode, allCodes, totalsBefore) {
+export async function verifyProduct(io, pid, keepCode, allCodes, totalsBefore, expectedDelta = {}) {
   const problems = [];
   const product = await io.read(`products/${pid}`);
   if (JSON.stringify(product?.sizes || null) !== JSON.stringify(["_"])) problems.push(`sizes = ${JSON.stringify(product?.sizes)}`);
@@ -560,8 +925,10 @@ export async function verifyProduct(io, pid, keepCode, allCodes, totalsBefore) {
     totalsAfter[loc] = sum;
   }
   for (const loc of new Set([...Object.keys(totalsBefore || {}), ...Object.keys(totalsAfter)])) {
-    const b = totalsBefore?.[loc] || 0, a = totalsAfter[loc] || 0;
-    if (b !== a) problems.push(`${loc} total ${b} → ${a} (units lost or minted)`);
+    // expectedDelta is non-zero only where this run resumed a pair an earlier
+    // run left half-applied — a credit whose debit is already in the baseline.
+    const b = (totalsBefore?.[loc] || 0) + (expectedDelta?.[loc] || 0), a = totalsAfter[loc] || 0;
+    if (b !== a) problems.push(`${loc} total ${(totalsBefore?.[loc] || 0)} → ${a}, expected ${b}${expectedDelta?.[loc] ? ` (including +${expectedDelta[loc]} owed by a resumed pair)` : ""} (units lost or minted)`);
   }
   const targets = (await io.read("stock_targets")) || {};
   for (const [loc, byPid] of Object.entries(targets)) {
