@@ -21,7 +21,7 @@
 import { describe, it, expect } from "vitest";
 import {
   applyMovementAdmin, planStep1, planStep2, planStep3, step2Done, verifyProduct,
-  legIds, orderBlocks, isInScope,
+  legIds, orderBlocks, transferBlocks, isInScope,
 } from "./beanieCollapseCore.mjs";
 
 // ── fake RTDB ────────────────────────────────────────────────────────────────
@@ -72,14 +72,25 @@ function makeDb(seed = {}) {
   };
 
   let failNextUpdate = null;
+  // Fires after a cell read — how a concurrent writer (a till sale) is injected
+  // into the exact window between the read that computes the write and the
+  // re-read that guards it.
+  let afterCellRead = null;
   const stats = { updates: 0, pathsPerUpdate: [] };
 
   return {
     stats,
     raw: () => structuredClone(root),
     failNextUpdateWith(err) { failNextUpdate = err; },
+    onAfterCellRead(fn) { afterCellRead = fn; },
+    /** Write outside the io interface — stands in for another client. */
+    poke(path, value) { writePath(path, value); },
     io: {
-      read: async (p) => readPath(p),
+      read: async (p) => {
+        const v = readPath(p);
+        if (afterCellRead && p.startsWith("stock/")) afterCellRead(p);
+        return v;
+      },
       update: async (updates) => {
         // Validate everything first — one bad path rejects the WHOLE update and
         // applies nothing, exactly like RTDB.
@@ -520,5 +531,82 @@ describe("the open-reference gate", () => {
   });
   it("ignores an order that already carries the one-size sentinel", () => {
     expect(orderBlocks({ id: "O3", productId: pid, size: "_", customerName: "Thabo", status: "incoming" }, pid, nowMs)).toBe(null);
+  });
+  it("blocks an out_of_stock order — the customer is still owed the item", () => {
+    expect(orderBlocks({ id: "O4", productId: pid, size: "M", customerName: "Thabo", status: "out_of_stock" }, pid, nowMs)).toMatch(/live customer order/);
+  });
+  it("blocks a record that names the product in a shape it cannot read, instead of waving it through", () => {
+    // No top-level productId — the nested-line-item shape this gate does not
+    // understand. It must fail SAFE.
+    const nested = { id: "O5", status: "incoming", items: [{ productId: pid, size: "M", qty: 1 }] };
+    expect(orderBlocks(nested, pid, nowMs)).toMatch(/shape this gate does not understand/);
+    // …and an unreadable record about a DIFFERENT product is still ignored.
+    const other = { id: "O6", status: "incoming", items: [{ productId: "pOther", size: "M" }] };
+    expect(orderBlocks(other, pid, nowMs)).toBe(null);
+  });
+});
+
+describe("the transfer gate reads the real record shape", () => {
+  const pid = "pB";
+  it("blocks an unreceived transfer carrying the product in a real size", () => {
+    // Sizes are KEYS in a transfer, not a "size" field — the shape that made a
+    // JSON scan silently never fire.
+    const t = { from: "central", to: "marathon-pe", status: "sent", lines: { [pid]: { S: 1 } } };
+    expect(transferBlocks(t, pid)).toMatch(/carrying size S/);
+  });
+  it("ignores a received transfer and one about another product", () => {
+    expect(transferBlocks({ status: "received", lines: { [pid]: { M: 2 } } }, pid)).toBe(null);
+    expect(transferBlocks({ status: "sent", lines: { pOther: { M: 2 } } }, pid)).toBe(null);
+  });
+  it("ignores an open transfer that carries the product already one-size", () => {
+    expect(transferBlocks({ status: "sent", lines: { [pid]: { _: 3 } } }, pid)).toBe(null);
+  });
+  it("blocks an unrecognised shape that still names the product", () => {
+    expect(transferBlocks({ status: "sent", payload: `something about ${pid}` }, pid)).toMatch(/shape this gate does not understand/);
+  });
+});
+
+describe("concurrency — the version guard the Admin SDK does not get from rules", () => {
+  it("refuses to overwrite a cell a concurrent writer changed between the read and the write", async () => {
+    const db = makeDb(seedProduct({ cells: { hub2: { M: 5 } } }));
+    const ids = legIds("pB", "hub2", "M");
+    // Another writer touches the cell in the window between this function's
+    // read and its write, EVERY time. It RECEIVES a unit rather than selling
+    // one, so the cell never starves — the only reason the write can fail is
+    // that its computed quantity is stale, which is precisely the guard.
+    db.onAfterCellRead(() => {
+      const cur = db.raw().stock.hub2.pB.M;
+      db.poke("stock/hub2/pB/M", { ...cur, qty: cur.qty + 1, v: cur.v + 1, mv: "concurrent_receive" });
+    });
+    const r = await applyMovementAdmin(db.io, {
+      type: "adjustment", productId: "pB", size: "M", qty: 5, from: "hub2",
+      movementId: ids.out, reason: "collapse",
+    }, { nowIso: NOW });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("conflict_retries_exhausted");
+    // The sale's units are intact — nothing was clobbered, and no ledger entry
+    // claims a move that did not happen.
+    expect(await db.io.read(`stock_movements/${ids.out}`)).toBe(null);
+  });
+
+  it("commits normally once the cell is quiet", async () => {
+    const db = makeDb(seedProduct({ cells: { hub2: { M: 5 } } }));
+    const ids = legIds("pB", "hub2", "M");
+    let fired = 0;
+    db.onAfterCellRead(() => {                    // one interfering write, then quiet
+      if (fired++) return;
+      const cur = db.raw().stock.hub2.pB.M;
+      db.poke("stock/hub2/pB/M", { ...cur, qty: cur.qty - 1, v: cur.v + 1, mv: "concurrent_sale" });
+    });
+    const r = await applyMovementAdmin(db.io, {
+      type: "adjustment", productId: "pB", size: "M", qty: 4, from: "hub2",
+      movementId: ids.out, reason: "collapse",
+    }, { nowIso: NOW });
+    expect(r.ok).toBe(true);
+    // Computed from the POST-sale quantity (4), not the stale 5 — so the sale
+    // survives instead of being erased.
+    expect(db.raw().stock.hub2.pB.M.qty).toBe(0);
+    const mv = await db.io.read(`stock_movements/${ids.out}`);
+    expect(mv.before.hub2).toBe(4);
   });
 });

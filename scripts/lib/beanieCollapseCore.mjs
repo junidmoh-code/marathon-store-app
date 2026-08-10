@@ -96,11 +96,28 @@ export function isInScope(product) {
 //     that size. Always blocks.
 //   • A customer order in a live status still has its dispatch ahead of it.
 export const REAL_SIZE = /^(XS|S|M|L|XL|XXL|XXXL)$/;
-export const LIVE_ORDER_STATUSES = new Set(["incoming", "ready", "coming_tomorrow", "on_hold"]);
+// out_of_stock is a LIVE hold, not a terminal state — the customer is still
+// owed the item and the order can be revived and dispatched on its size.
+// (Kimi review, PR #343: it was missing, which is the fail-OPEN direction.)
+export const LIVE_ORDER_STATUSES = new Set(["incoming", "ready", "coming_tomorrow", "on_hold", "out_of_stock"]);
 export const CR_UNDO_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export function orderBlocks(order, pid, nowMs) {
-  if (!order || order.productId !== pid) return null;
+  if (!order) return null;
+  // FAIL-SAFE ON AN UNRECOGNISED SHAPE. Every live order record carries a
+  // top-level productId + size (verified across all 2,396 today), so the
+  // structured read below is correct. But if a record ever nests its lines
+  // instead, `order.productId !== pid` would quietly return "does not block"
+  // and the gate would wave through a live order on a size about to be
+  // retired. So: if the record MENTIONS this product but does not present the
+  // shape this function understands, block it and say why. Being unable to
+  // prove a thing is safe is not the same as it being safe.
+  // (Kimi review, PR #343.)
+  if (order.productId !== pid) {
+    return JSON.stringify(order).includes(pid)
+      ? `order ${order.id || ""} references this product in a shape this gate does not understand (no top-level productId) — clear it or check it by hand`
+      : null;
+  }
   if (!REAL_SIZE.test(String(order.size || ""))) return null;   // one-size / no real size — nothing to retire
   if (order.customerName === "Shop Refill") {
     if (order.clothingRefillStatus == null) return `unresolved refill line ${order.id || ""} (size ${order.size}) — Send would move stock in the retired size`;
@@ -115,6 +132,27 @@ export function orderBlocks(order, pid, nowMs) {
     : null;
 }
 
+// ── TRANSFERS KEY THEIR SIZES, THEY DO NOT LABEL THEM ────────────────────────
+// A transfer record is { from, to, status, lines: { <pid>: { <sizeKey>: qty } },
+// received: { … same shape } }. The size is a KEY, so the obvious
+// `/"size"\s*:\s*"M"/` scan over the record's JSON NEVER matches and the gate
+// silently never fires — which is exactly what it did before this fix. Read the
+// structure instead. (Kimi review, PR #343; proved against the live shape.)
+export function transferBlocks(transfer, pid) {
+  if (!transfer || transfer.status === "received") return null;
+  const sizes = new Set();
+  for (const node of [transfer.lines, transfer.received]) {
+    for (const k of Object.keys(node?.[pid] || {})) if (REAL_SIZE.test(k)) sizes.add(k);
+  }
+  if (sizes.size) return `open transfer (${transfer.status || "no status"}) ${transfer.from || "?"}→${transfer.to || "?"} carrying size ${[...sizes].sort().join(", ")}`;
+  // Unrecognised shape that still names the product: same fail-safe rule as
+  // orderBlocks — block rather than assume.
+  if (!transfer.lines && !transfer.received && JSON.stringify(transfer).includes(pid)) {
+    return `open transfer (${transfer.status || "no status"}) references this product in a shape this gate does not understand — check it by hand`;
+  }
+  return null;
+}
+
 export const legIds = (pid, loc, sizeKey) => ({
   out: `onesize_${pid}_${loc}_out_${sizeKey}`,
   in: `onesize_${pid}_${loc}_in_us_${sizeKey}`,
@@ -127,6 +165,29 @@ function emptyLink() {
 }
 
 // ── applyMovementAdmin — see header for the contract this mirrors ─────────────
+//
+// ── WHY THE VERSION RE-CHECK EXISTS (Kimi review, PR #343) ───────────────────
+// The client applyMovement gets its optimistic concurrency from the SECURITY
+// RULE, not from its own code: the rule refuses any cell write whose `v` is not
+// exactly data.v + 1, so a concurrent writer that landed in between makes the
+// write bounce and the client re-reads and retries.
+//
+// The Admin SDK bypasses every rule. Copying the `v + 1` FIELD without the rule
+// that enforces it copies the shape of the protection and none of its effect: a
+// till sale landing between this function's read and its write would be
+// silently overwritten, because the update SETS an absolute qty computed from
+// the stale read. The unit would vanish with no error and no ledger gap that
+// the totals check could see — before and after would both look right.
+//
+// So the guard is re-implemented here: read, compute, then re-read immediately
+// before the write and confirm nothing moved; on a change, start over. The
+// window is not closed (RTDB has no compare-and-set across paths), but it
+// shrinks from "the whole run" to the microseconds between two adjacent reads,
+// and a persistent conflict fails loudly instead of quietly winning. The
+// operational half of this guard is the trading-hours window and the
+// recent-activity gate in the CLI — neither replaces the other.
+const CONFLICT_RETRIES = 5;
+
 export async function applyMovementAdmin(io, movement, { nowIso }) {
   if (!movement || movement.type !== "adjustment") return { ok: false, reason: "invalid_type" };
   if (!movement.productId || !movement.size) return { ok: false, reason: "missing_product_or_size" };
@@ -143,41 +204,56 @@ export async function applyMovementAdmin(io, movement, { nowIso }) {
   if (!loc) return { ok: false, reason: "missing_location" };
 
   const path = stockCellPath(loc, movement.productId, movement.size);
-  const cell = await io.read(path);
-  const curQty = cell && typeof cell.qty === "number" ? cell.qty : 0;
-  const newQty = curQty + delta;
-  if (delta < 0 && newQty < 0 && !movement.allowNegative) {
-    return { ok: false, reason: "insufficient_stock", location: loc, available: curQty, requested: Number(movement.qty) };
-  }
-
-  const mv = {
-    type: "adjustment",
-    productId: movement.productId,
-    size: movement.size,
-    qty: Number(movement.qty),
-    from: movement.from ?? null,
-    to: movement.to ?? null,
-    before: { [loc]: curQty },
-    after: { [loc]: newQty },
-    actor: ACTOR,
-    actorRole: "admin",
-    ts: movement.ts || nowIso,
-    appliedAt: nowIso,
-    reason: movement.reason,
-    link: emptyLink(),
+  const sameCell = (a, b) => {
+    const q = (c) => (c && typeof c.qty === "number" ? c.qty : 0);
+    const v = (c) => (c && typeof c.v === "number" ? c.v : null);
+    return q(a) === q(b) && v(a) === v(b);
   };
 
-  const updates = {};
-  updates[`stock_movements/${mvId}`] = mv;
-  const newV = cell && typeof cell.v === "number" ? cell.v + 1 : 0;
-  updates[`${path}/qty`] = newQty;
-  updates[`${path}/v`] = newV;
-  updates[`${path}/mv`] = mvId;
-  updates[`${path}/lastType`] = "adjustment";
-  updates[`${path}/updatedAt`] = nowIso;
-  updates[`${path}/updatedBy`] = ACTOR;
-  await io.update(updates);
-  return { ok: true, movementId: mvId, qty: Number(movement.qty), newQty };
+  for (let attempt = 1; attempt <= CONFLICT_RETRIES; attempt++) {
+    const cell = await io.read(path);
+    const curQty = cell && typeof cell.qty === "number" ? cell.qty : 0;
+    const newQty = curQty + delta;
+    if (delta < 0 && newQty < 0 && !movement.allowNegative) {
+      return { ok: false, reason: "insufficient_stock", location: loc, available: curQty, requested: Number(movement.qty) };
+    }
+
+    const mv = {
+      type: "adjustment",
+      productId: movement.productId,
+      size: movement.size,
+      qty: Number(movement.qty),
+      from: movement.from ?? null,
+      to: movement.to ?? null,
+      before: { [loc]: curQty },
+      after: { [loc]: newQty },
+      actor: ACTOR,
+      actorRole: "admin",
+      ts: movement.ts || nowIso,
+      appliedAt: nowIso,
+      reason: movement.reason,
+      link: emptyLink(),
+    };
+
+    const updates = {};
+    updates[`stock_movements/${mvId}`] = mv;
+    const newV = cell && typeof cell.v === "number" ? cell.v + 1 : 0;
+    updates[`${path}/qty`] = newQty;
+    updates[`${path}/v`] = newV;
+    updates[`${path}/mv`] = mvId;
+    updates[`${path}/lastType`] = "adjustment";
+    updates[`${path}/updatedAt`] = nowIso;
+    updates[`${path}/updatedBy`] = ACTOR;
+
+    // The re-check. Anything that moved this cell since the read above makes the
+    // computed qty stale, and writing it would erase that other writer's change.
+    const recheck = await io.read(path);
+    if (!sameCell(cell, recheck)) continue;              // someone else wrote — recompute
+
+    await io.update(updates);
+    return { ok: true, movementId: mvId, qty: Number(movement.qty), newQty };
+  }
+  return { ok: false, reason: "conflict_retries_exhausted", location: loc };
 }
 
 // ── STEP 1 — plan the paired movements for one product ───────────────────────

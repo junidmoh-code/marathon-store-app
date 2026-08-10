@@ -54,7 +54,7 @@ import { join } from "path";
 import { setServerTimeOffsetMs, serverNowIso } from "../src/utils/serverTime.js";
 import {
   applyMovementAdmin, planStep1, planStep2, step2Done, planStep3, verifyProduct,
-  orderBlocks, isInScope, REAL_SIZE,
+  orderBlocks, transferBlocks, isInScope, REAL_SIZE,
 } from "./lib/beanieCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
@@ -73,6 +73,9 @@ const io = {
   read: (p) => db.ref(p).once("value").then((s) => s.val()),
   update: (u) => db.ref().update(u),
 };
+
+// A product that moved this recently is in active use at a till — skip it.
+const RECENT_ACTIVITY_MS = Number(process.env.RECENT_ACTIVITY_MINUTES || 15) * 60 * 1000;
 
 // Same credential assertion as the pre-flight probe — fail early and legibly.
 function hasPrivilegedCredential(app) {
@@ -99,12 +102,21 @@ function hasPrivilegedCredential(app) {
   const nowMs = Date.parse(nowIso);
   console.log(`  server time anchor: offset ${offset}ms → ${nowIso}`);
 
-  const [products, stock, allTargets, barcodesIdx, transfers, orders, refillRequests, openLocks, dcActive, session] =
+  const [products, stock, allTargets, barcodesIdx, transfers, orders, refillRequests, openLocks, dcActive, session, movements] =
     await Promise.all([
       io.read("products"), io.read("stock"), io.read("stock_targets"), io.read("barcodes"),
       io.read("transfers"), io.read("orders"), io.read("refill_requests"),
       io.read("refill_engine/open"), io.read("displayChecks_active"), io.read("receiving_session"),
+      io.read("stock_movements"),
     ]).then((r) => r.map((v) => v || {}));
+
+  // productId → most recent movement instant, for the recent-activity gate.
+  const lastMovementMs = new Map();
+  for (const m of Object.values(movements)) {
+    if (!m || !m.productId) continue;
+    const ts = Date.parse(m.appliedAt || m.ts || 0) || 0;
+    if (ts && ts > (lastMovementMs.get(m.productId) || 0)) lastMovementMs.set(m.productId, ts);
+  }
 
   // ── scope ──────────────────────────────────────────────────────────────────
   let scope = Object.entries(products)
@@ -186,17 +198,26 @@ function hasPrivilegedCredential(app) {
         }
       }
     }
-    // A transfer is matched on the whole record (line items nest the product),
-    // and any not-yet-received transfer naming a real size still has a receive
-    // leg ahead of it that would credit the retired key.
+    // Any not-yet-received transfer carrying this product in a real size still
+    // has a receive leg ahead of it that would credit the retired key.
     for (const [tid, t] of Object.entries(transfers)) {
-      if (!t || t.status === "received") continue;
-      const raw = JSON.stringify(t);
-      if (raw.includes(pid) && /"(size|sizeKey)"\s*:\s*"(XS|S|M|L|XL|XXL|XXXL)"/.test(raw)) gates.push(`open transfer ${tid} (${t.status})`);
+      const why = transferBlocks(t, pid);
+      if (why) gates.push(`${why} [${tid}]`);
     }
     for (const [oid, o] of Object.entries(orders)) {
-      const why = orderBlocks(o && { id: oid, ...o }, pid, nowMs);
+      // id LAST: a record carrying its own id must not shadow the node key it
+      // is actually stored under. (Kimi review, PR #343.)
+      const why = orderBlocks(o && { ...o, id: o.id || oid }, pid, nowMs);
       if (why) gates.push(why);
+    }
+    // RECENT ACTIVITY. The engine is paused at execute time, but the tills are
+    // not — and a sale landing mid-product is the one concurrency case the
+    // version re-check narrows without eliminating. If this product moved in
+    // the last window, it is in active use right now: skip it and say so
+    // rather than race it. (Kimi review, PR #343.)
+    const lastMove = lastMovementMs.get(pid);
+    if (lastMove && nowMs - lastMove < RECENT_ACTIVITY_MS) {
+      gates.push(`moved ${Math.round((nowMs - lastMove) / 60000)} min ago (${new Date(lastMove).toISOString()}) — active at a till; re-run when it is quiet`);
     }
     for (const [rid, r] of Object.entries(refillRequests)) {
       if (r && r.status === "open" && r.productId === pid && REAL_SIZE.test(String(r.size || ""))) gates.push(`open refill request ${rid} (size ${r.size})`);
@@ -212,8 +233,20 @@ function hasPrivilegedCredential(app) {
       continue;
     }
 
-    // plan
-    const step1 = await planStep1(io, pid, declared, cellsByLoc);
+    // PLAN FROM A FRESH READ, NOT THE STARTUP SNAPSHOT. The whole-tree read at
+    // the top is minutes old by the time the 60th product is processed; planning
+    // a movement quantity from it means moving a number that was true then. A
+    // stale OUT that is too large is refused as an overdraw (safe but a failed
+    // product); one that is too small leaves units behind in a size the product
+    // is about to stop declaring. Re-read this product's cells immediately
+    // before planning, and derive the before-totals from the same fresh read so
+    // the verification compares like with like. (Kimi review, PR #343.)
+    const freshCells = {};
+    for (const loc of Object.keys(stock)) {
+      const bySize = await io.read(`stock/${loc}/${pid}`);
+      if (bySize) freshCells[loc] = bySize;
+    }
+    const step1 = await planStep1(io, pid, declared, freshCells);
     const s2 = planStep2(pid, p, indexCodes, heldKeys);
     if (s2.error) { results.push({ pid, name, status: "GATED", detail: [s2.error] }); continue; }
     const targetRows = {};
@@ -231,9 +264,9 @@ function hasPrivilegedCredential(app) {
       continue;
     }
 
-    // execute
+    // execute — before-totals from the SAME fresh read the plan was built from
     const totalsBeforeProduct = {};
-    for (const [loc, bySize] of Object.entries(cellsByLoc)) {
+    for (const [loc, bySize] of Object.entries(freshCells)) {
       totalsBeforeProduct[loc] = Object.values(bySize).reduce((t, c) => t + (typeof c?.qty === "number" ? c.qty : 0), 0);
     }
     let failed = null;
