@@ -4,9 +4,10 @@
 // the Code 128 itself from the digits — no client-side bitmap. Self-contained:
 // failures are returned ({ok,error}), never thrown into the print flow.
 //
-// CONNECTION (WebUSB): requestDevice filtered to the USB printer class (interface
-// class 0x07) so the chooser shows the XP-350B → open → selectConfiguration(1) →
-// claim the interface that has a bulk OUT endpoint → transferOut raw TSPL bytes.
+// CONNECTION (WebUSB): the chooser lists every device → the discovery/open/claim
+// mechanics live in usbDiscovery.js (searches EVERY configuration, interface and
+// alternate for a bulk OUT endpoint; no assumption about configuration 1, interface
+// 0 or endpoint 1) → transferOut raw TSPL bytes on the endpoint actually found.
 // The device + endpoint are cached and reused across batches; on the next batch we
 // reopen the SAME device (or a previously-permitted one via getDevices) WITHOUT the
 // chooser. A USB disconnect clears the cache. claimInterface failures (common on
@@ -15,6 +16,7 @@
 // This is a SEPARATE transport — the Phomemo M110 Bluetooth path is untouched.
 
 import { code128Modules } from "../barcode";
+import { PRINTER_CLASS, TX_CHUNK, openUsbPrinter, sendBulk } from "./usbDiscovery";
 
 const ENCODER = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
 
@@ -25,19 +27,15 @@ const LABEL_HEIGHT_MM = 30;
 const GAP_MM          = 2;   // inter-label gap (printer auto-detects → one label each)
 const LABEL_WIDTH_DOTS = LABEL_WIDTH_MM * DOTS_PER_MM; // 320
 
-const PRINTER_CLASS = 0x07;  // USB printer class (bInterfaceClass) — the chooser filter
-const TX_CHUNK = 8192;       // transferOut chunk so large batches don't choke
-
 // Cached connection — reused across batches; silent reconnect (no chooser).
 let cachedDevice = null, cachedIface = null, cachedEndpoint = null;
 let disconnectWired = false;
 
-// Last selected device's identity + interface/endpoint map. Captured BEFORE claim so
-// we keep the VID/PID even if claimInterface fails. Surfaced to RTDB by the caller so
-// we can set a precise filter later (the chooser currently lists ALL devices).
+// Last selected device's identity + interface/endpoint map. Captured whether the
+// open SUCCEEDED or FAILED, so a claim failure still records the VID/PID and the
+// endpoint map. Surfaced on screen and to RTDB by the caller.
 let lastXprinterDiag = null;
 export function getXprinterDiag() { return lastXprinterDiag; }
-const hex4 = (n) => (typeof n === "number" ? "0x" + n.toString(16).padStart(4, "0") : String(n));
 
 export function isXprinterSupported() {
   return typeof navigator !== "undefined" && !!navigator.usb;
@@ -155,51 +153,24 @@ function isPrinterLike(device) {
 }
 
 // Open + claim the interface with a bulk OUT endpoint (prefer the printer-class one).
+// All the WebUSB mechanics — configuration selection, the full configuration ×
+// interface × alternate search, selectAlternateInterface, the claim retry — live in
+// usbDiscovery.js. Here we only cache the result and keep the diagnostic around.
 async function openDevice(device) {
-  if (!device.opened) await device.open();
-  if (device.configuration === null) await device.selectConfiguration(1);
-  let iface = null, endpointOut = null;
-  for (const cfgIface of device.configuration.interfaces) {
-    const alt = cfgIface.alternate;
-    const out = alt.endpoints.find(e => e.direction === "out" && e.type === "bulk");
-    if (!out) continue;
-    iface = cfgIface.interfaceNumber; endpointOut = out.endpointNumber;
-    if (alt.interfaceClass === PRINTER_CLASS) break;   // prefer the printer interface
-  }
-  // Capture the device's real identity + interface/endpoint map BEFORE claiming, so a
-  // claim failure still records the VID/PID we need to build a proper filter later.
-  lastXprinterDiag = {
-    at: new Date().toISOString(),
-    name: device.productName || "",
-    manufacturer: device.manufacturerName || "",
-    serial: device.serialNumber || "",
-    vendorId: hex4(device.vendorId),
-    productId: hex4(device.productId),
-    interfaces: (device.configuration?.interfaces || []).map(ci => ({
-      number: ci.interfaceNumber,
-      class: ci.alternate?.interfaceClass,
-      subclass: ci.alternate?.interfaceSubclass,
-      protocol: ci.alternate?.interfaceProtocol,
-      endpoints: (ci.alternate?.endpoints || []).map(e => ({ number: e.endpointNumber, direction: e.direction, type: e.type })),
-    })),
-    chosen: { iface, endpointOut },
-  };
-  console.log("[xprinter] device:", JSON.stringify(lastXprinterDiag));
-
-  if (iface === null) throw new Error("No bulk OUT endpoint found on the selected USB device — is this the label printer?");
   try {
-    await device.claimInterface(iface);
-  } catch (e) {
-    const msg = String(e?.message || e);
-    const inUse = /in use|claim|access|denied|busy/i.test(msg);
-    throw new Error(
-      `Couldn't claim the printer${inUse ? " — the interface is in use" : ""} (${msg}). ` +
-      `On macOS the system usually owns the printer: remove the XP-350B from System Settings ▸ Printers & Scanners ` +
-      `(and quit any app using it), then retry. VID/PID ${lastXprinterDiag.vendorId}/${lastXprinterDiag.productId}.`
-    );
+    const conn = await openUsbPrinter(device, { at: new Date().toISOString() });
+    lastXprinterDiag = conn.diag;
+    console.log("[xprinter] device:", JSON.stringify(lastXprinterDiag));
+    cachedDevice = device; cachedIface = conn.interfaceNumber; cachedEndpoint = conn.endpointNumber;
+    return { device, iface: conn.interfaceNumber, endpointOut: conn.endpointNumber };
+  } catch (err) {
+    // Keep the map even on failure — it is the only evidence a remote operator has.
+    if (err?.diag) {
+      lastXprinterDiag = err.diag;
+      console.log("[xprinter] device:", JSON.stringify(lastXprinterDiag));
+    }
+    throw err;
   }
-  cachedDevice = device; cachedIface = iface; cachedEndpoint = endpointOut;
-  return { device, iface, endpointOut };
 }
 
 // Reuse the live connection; else reopen the cached/known device (no chooser); else
@@ -228,13 +199,6 @@ export async function connectXprinter() {
   return await getConnection();
 }
 
-async function sendChunked(device, endpoint, bytes) {
-  for (let i = 0; i < bytes.length; i += TX_CHUNK) {
-    const res = await device.transferOut(endpoint, bytes.slice(i, i + TX_CHUNK));
-    if (res.status !== "ok") throw new Error(`USB transfer ${res.status}`);
-  }
-}
-
 // items: [{ code, productName, size, count }]. Emits one TSPL label per item with
 // PRINT copies = count (never 0 → 1). Streams the whole batch over ONE connection;
 // the device stays claimed afterwards for the next batch (silent reuse).
@@ -248,7 +212,7 @@ export async function printXprinter(items, conn = null) {
       if (!it || !it.code) continue;
       const n = Number(it.count);
       const copies = Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;   // never 0
-      await sendChunked(c.device, c.endpointOut, ENCODER.encode(tsplLabel(it, copies)));
+      await sendBulk(c.device, c.endpointOut, ENCODER.encode(tsplLabel(it, copies)), TX_CHUNK);
       printed += copies;
     }
     if (!printed) return { ok: false, error: "Nothing to print." };
