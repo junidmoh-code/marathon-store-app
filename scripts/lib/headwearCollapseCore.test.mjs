@@ -410,32 +410,72 @@ describe("idempotency and interruption", () => {
     expect(plans[0].legs.map((l) => l.id)).toEqual([ids.negIn]);
   });
 
-  it("a mirrored pair whose cell was SETTLED in the gap is refused, not closed twice", async () => {
-    // The mirror's closing leg raises the sized cell by exactly the shortage its
-    // OUT leg already took out of "_". That is only true while the cell still
-    // holds that shortage. If a receive settles it in between, crediting it
-    // again MINTS: S −1 and "_" 5 → negOut → "_" 4 → receive 1 → S 0 → a blind
-    // resume would put S at +1, leaving 5 where the network held 4.
+  it("a mirrored pair whose cell was SETTLED in the gap is still owed its closing leg", async () => {
+    // CONSERVATION IS THE TEST, NOT THE CELL'S CURRENT VALUE. The mirrored pair
+    // is net-zero: negOut debits "_" by n, negIn credits the sized cell by n.
+    // Half-applied, the books read n LOW. A receive landing in the gap adds a
+    // REAL unit, so the correct total rises with it — it does not settle the
+    // debt negOut created.
+    //
+    //   S −1, "_" 5            total 4   (books correct)
+    //   negOut                 total 3   (books 1 LOW — negIn is owed)
+    //   receive 1 into S       total 4   (correct answer is now 5)
+    //   resume negIn → S 1     total 5   ✓
+    //
+    // Refusing the resume here — which an earlier attempt did, calling it a
+    // mint — leaves the network permanently short by the n that negOut removed,
+    // and every re-run repeats the refusal because the cell never returns to −n.
     const db = makeDb(seedProduct({ sizes: ["S"], barcodes: { S: "00033333" },
       cells: { "marathon-pe": { S: -1, _: 5 } } }));
     const ids = legIds("pB", "marathon-pe", "S");
     await applyMovementAdmin(db.io, { type: "adjustment", productId: "pB", size: "_", qty: 1, from: "marathon-pe",
       movementId: ids.negOut, allowNegative: true, reason: "carry oversell" }, { nowIso: NOW });
-    expect(db.raw().stock["marathon-pe"].pB._.qty).toBe(4);
-    // A receive settles the oversold size.
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(3);       // 1 low, as expected
     db.poke("stock/marathon-pe/pB/S", { qty: 0, v: 9, mv: "receive", lastType: "received" });
-    const totalBefore = totalAt(db.raw(), "marathon-pe", "pB");
-    expect(totalBefore).toBe(4);
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(4);       // the real receive
 
     const product = await db.io.read("products/pB");
     const plans = await planStep1(db.io, "pB", product.sizes, { "marathon-pe": await db.io.read("stock/marathon-pe/pB") });
-    // Refused, and said so — not closed a second time.
-    expect(plans.map((p) => p.kind)).toEqual(["stranded"]);
-    expect(plans[0].note).toMatch(/credit that shortage twice/);
+    expect(plans.map((p) => p.kind)).toEqual(["resume-neg-in"]);
+    expect(plans[0].legs[0].movement.qty).toBe(1);                // the LEDGER's quantity
+
     for (const pl of plans) for (const leg of pl.legs) {
       await applyMovementAdmin(db.io, { ...leg.movement, ts: NOW }, { nowIso: NOW });
     }
-    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(totalBefore);   // nothing minted
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(5);       // books healed
+    expect(db.raw().stock["marathon-pe"].pB.S.qty).toBe(1);
+    // The unit now sits in a size about to be retired, so identity must NOT
+    // collapse until it is moved — which is assertDrained's job, not the
+    // planner's.
+    expect(await assertDrained(db.io, "pB")).toEqual(["marathon-pe/S=1"]);
+  });
+
+  it("a pending mirror resume defers this cell's positive balance to the next run", async () => {
+    // With a mirror resume outstanding, the cell's positive quantity was read
+    // BEFORE that resume applies, so planning a pair from it would use a number
+    // about to change — and would execute legs against a cell whose sibling leg
+    // is mid-flight. The resume lands alone, assertDrained refuses the collapse,
+    // and the next run plans the remainder at its true value.
+    const db = makeDb(seedProduct({ sizes: ["S"], barcodes: { S: "00033333" },
+      cells: { "marathon-pe": { S: -1, _: 5 } } }));
+    const ids = legIds("pB", "marathon-pe", "S");
+    await applyMovementAdmin(db.io, { type: "adjustment", productId: "pB", size: "_", qty: 1, from: "marathon-pe",
+      movementId: ids.negOut, allowNegative: true, reason: "carry oversell" }, { nowIso: NOW });
+    db.poke("stock/marathon-pe/pB/S", { qty: 3, v: 9, mv: "big_receive", lastType: "received" });
+
+    const product = await db.io.read("products/pB");
+    const plans = await planStep1(db.io, "pB", product.sizes, { "marathon-pe": await db.io.read("stock/marathon-pe/pB") });
+    expect(plans.map((p) => p.kind)).toEqual(["resume-neg-in"]);   // NOT also a positive pair
+    for (const pl of plans) for (const leg of pl.legs) {
+      await applyMovementAdmin(db.io, { ...leg.movement, ts: NOW }, { nowIso: NOW });
+    }
+    expect(db.raw().stock["marathon-pe"].pB.S.qty).toBe(4);
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(8);        // 4 + 4 received, books healed
+
+    // The NEXT run plans the whole remaining balance, at its true value.
+    const plans2 = await planStep1(db.io, "pB", product.sizes, { "marathon-pe": await db.io.read("stock/marathon-pe/pB") });
+    expect(plans2.map((p) => p.kind)).toEqual(["positive"]);
+    expect(plans2[0].qty).toBe(4);
   });
 
   it("interrupted mid negative pair: the re-run relies on movement idempotency and must not double-deduct", async () => {
@@ -674,7 +714,18 @@ describe("STEP 2 — one atomic identity update", () => {
     // that the live rule (hasChildren(['productId'])) would reject if the Admin
     // SDK enforced rules rather than bypassing them.
     const product = { name: "Test cap", sizes: ["S", "M"], barcodes: { S: "00099001", M: "00099002" } };
-    const indexCodes = { "00099001": { productId: "pB", size: "S" } };   // M's record is MISSING
+    // BOTH shapes a real caller produces for "no record": the key absent, and
+    // the key PRESENT with a null value (the census builds exactly the latter,
+    // `indexCodes[code] = barcodesIdx[code] ?? null`).
+    for (const indexCodes of [
+      { "00099001": { productId: "pB", size: "S" } },
+      { "00099001": { productId: "pB", size: "S" }, "00099002": null },
+    ]) {
+      const s2x = planStep2("pB", product, indexCodes, { S: 1, M: 4 });
+      expect(s2x.unindexedCodes).toEqual(["00099002"]);
+      expect(Object.keys(s2x.updates)).not.toContain("barcodes/00099002/size");
+    }
+    const indexCodes = { "00099001": { productId: "pB", size: "S" } };
     const s2 = planStep2("pB", product, indexCodes, { S: 1, M: 4 });
 
     expect(s2.unindexedCodes).toEqual(["00099002"]);
@@ -922,6 +973,33 @@ describe("scope — beanies and caps are in, nothing else is", () => {
     expect(raw.stock.hub2.pBucket).toEqual({ M: cell(7) });
     expect(raw.stock.hub2.pVisor._).toBeUndefined();
     expect(raw.stock.hub2.pBucket._).toBeUndefined();
+  });
+});
+
+describe("verification of a resumed run", () => {
+  it("accepts the credit a resumed pair owes instead of calling it minted stock", async () => {
+    // A resume leg is a credit whose DEBIT landed in the interrupted run, so it
+    // legitimately raises the location total. Verified against "unchanged", a
+    // run that healed the books reports "units lost or minted" and exits 1 —
+    // after Step 2 has committed — pointing the operator at a rollback that
+    // would genuinely damage data.
+    const db = makeDb(seedProduct({ cells: { hub2: { M: 10 } } }));
+    const ids = legIds("pB", "hub2", "M");
+    await applyMovementAdmin(db.io, { type: "adjustment", productId: "pB", size: "M", qty: 10, from: "hub2",
+      movementId: ids.out, reason: "collapse" }, { nowIso: NOW });
+    const totalsBefore = { hub2: totalAt(db.raw(), "hub2", "pB") };
+    expect(totalsBefore.hub2).toBe(0);                     // the interrupted state
+
+    const r = await migrate(db, "pB");
+    expect(r.ok).toBe(true);
+    expect(db.raw().stock.hub2.pB._.qty).toBe(10);
+
+    // Without the expected delta this reads as 10 units minted.
+    const naive = await verifyProduct(db.io, "pB", r.keepCode, r.codes, totalsBefore);
+    expect(naive.join(" ")).toMatch(/units lost or minted/);
+    // With it, the run verifies clean.
+    const withDelta = await verifyProduct(db.io, "pB", r.keepCode, r.codes, totalsBefore, { hub2: 10 });
+    expect(withDelta).toEqual([]);
   });
 });
 

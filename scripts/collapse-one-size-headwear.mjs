@@ -275,6 +275,14 @@ function hasPrivilegedCredential(app) {
   // exposure drops from "the whole run" to at most GATE_MAX_AGE_MS, and the
   // recent-activity gate covers the tail.
   const GATE_MAX_AGE_MS = Number(process.env.GATE_MAX_AGE_SECONDS || 60) * 1000;
+  // /stock_movements is the LARGEST node in the database and was previously read
+  // exactly once. Refreshing it on the 60s gate cadence is a full re-download
+  // every minute of an hour-long run. It gets its own, longer interval: still
+  // vastly fresher than "once at startup" (which turned a sliding 15-minute
+  // recency window into a fixed slice of the run's first 15 minutes), at a
+  // fraction of the bandwidth. (Review of PR #345.)
+  const LEDGER_MAX_AGE_MS = Number(process.env.LEDGER_MAX_AGE_SECONDS || 300) * 1000;
+  let ledgerReadAt = Date.now();
   //
   // THE LEDGER IS REFRESHED WITH THEM, and the clock with it. The recent-
   // activity gate asks "is this product being sold RIGHT NOW", and it was the
@@ -290,13 +298,18 @@ function hasPrivilegedCredential(app) {
   let gateRefreshes = 0;
   const freshGates = async () => {
     if (Date.now() - gateReadAt < GATE_MAX_AGE_MS) return gateData;
+    const wantLedger = Date.now() - ledgerReadAt >= LEDGER_MAX_AGE_MS;
     const [t, o, rr, ol, dc, mv] = await Promise.all([
       io.read("transfers"), io.read("orders"), io.read("refill_requests"),
       io.read("refill_engine/open"), io.read("displayChecks_active"),
-      io.read("stock_movements"),
-    ]).then((r) => r.map((v) => v || {}));
+      wantLedger ? io.read("stock_movements") : Promise.resolve(null),
+    ]).then((r) => r.map((v, i) => (i === 5 ? v : (v || {}))));
     const nowMsFresh = Date.now() + offset;
-    const { lastMs, unreadable } = movementRecency(mv, { nowMs: nowMsFresh });
+    let { lastMovementMs: lastMs, unreadableStamp: unreadable } = gateData;
+    if (mv) {
+      ({ lastMs, unreadable } = movementRecency(mv, { nowMs: nowMsFresh }));
+      ledgerReadAt = Date.now();
+    }
     gateData = { transfers: t, orders: o, refillRequests: rr, openLocks: ol, dcActive: dc,
       lastMovementMs: lastMs, unreadableStamp: unreadable, nowMs: nowMsFresh };
     gateReadAt = Date.now();
@@ -337,7 +350,12 @@ function hasPrivilegedCredential(app) {
     // immediately before its own gates and plan. This is the same bounded-
     // staleness reasoning freshGates applies to the referential trees; it was
     // simply never extended to the data being WRITTEN.
-    const p = (await io.read(`products/${pid}`)) || pStart;
+    // `|| pStart` would MASK a mid-run deletion: the stale record passes
+    // isInScope and Step 2 then RECREATES products/{pid} holding only `sizes`
+    // and `barcodes` — a record with no inner `id`, which the app hides from
+    // every list. A missing product gates instead. (Review of PR #345.)
+    const pLive = await io.read(`products/${pid}`);
+    const p = pLive || pStart;
     const name = p.name || pid;
     const freshCells = {};
     for (const loc of Object.keys(stock)) {
@@ -354,6 +372,7 @@ function hasPrivilegedCredential(app) {
 
     // gates
     const gates = [];
+    if (!pLive) gates.push(`products/${pid} no longer exists — deleted or merged since the run started; collapsing it would recreate a partial record with no id`);
     if (!isInScope(p)) gates.push(`no longer in headwear scope (renamed, re-filed or merged since the run started): ${JSON.stringify(p.name)} / ${JSON.stringify(p.subcategory)}`);
     for (const [code, rec] of Object.entries(indexCodes)) {
       if (!rec) gates.push(`barcode ${code}: no index record`);
@@ -427,8 +446,14 @@ function hasPrivilegedCredential(app) {
     const step1 = await planStep1(io, pid, declared, freshCells);
     const s2 = planStep2(pid, p, indexCodes, heldUnits);
     if (s2.error) { results.push({ pid, name, status: "GATED", detail: [s2.error] }); continue; }
+    // FRESH, like everything else this product's writes depend on. It was the
+    // last startup-snapshot input still feeding a write: planStep3 could not
+    // retire a row created after startup, while verifyProduct re-reads
+    // stock_targets and fails the product for exactly such a row — after
+    // identity has already been written. (Review of PR #345.)
+    const targetsNow = (await io.read("stock_targets")) || {};
     const targetRows = {};
-    for (const [loc, byPid] of Object.entries(allTargets)) if (byPid?.[pid]) targetRows[loc] = byPid[pid];
+    for (const [loc, byPid] of Object.entries(targetsNow)) if (byPid?.[pid]) targetRows[loc] = byPid[pid];
     const step3 = planStep3(pid, targetRows, nowIso);
     const s2Needed = !step2Done(p, indexCodes, s2.keepCode);
 
@@ -449,7 +474,15 @@ function hasPrivilegedCredential(app) {
           legLines.push(`${l.id} (${l.movement.from ? "OUT " + l.movement.from : "IN " + l.movement.to} ${l.movement.size} qty ${l.movement.qty}${l.movement.allowNegative ? " allowNegative" : ""})${pl.kind.startsWith("resume") ? "  ↩ RESUME — completing a pair an earlier run left half-applied, at the LEDGER's quantity" : ""}`);
         }
       }
-      results.push({ pid, name, status: (step1.length || s2Needed || Object.keys(step3).length) ? "PLANNED" : "ALREADY DONE", detail: [
+      const strandedDry = step1.filter((pl) => pl.kind === "stranded");
+      results.push({ pid, name,
+        // A stranded cell guarantees a FAILED execute. Reporting it as PLANNED
+        // let the SUMMARY and the exit code read clean while the detail lines
+        // said otherwise — and the runbook's acceptance step is "confirm the
+        // summary". (Review of PR #345.)
+        status: strandedDry.length ? "WILL FAIL (stranded stock)"
+          : (step1.length || s2Needed || Object.keys(step3).length) ? "PLANNED" : "ALREADY DONE",
+        detail: [
         ...legLines,
         s2Needed ? `step2 atomic ×${Object.keys(s2.updates).length} paths — "_" slot ← ${s2.keepCode} (${s2.rule})` : "step2: already collapsed",
         ...(s2.droppedCodes.length ? [`${s2.droppedCodes.length} other code(s) keep resolving to this product at size "_" but lose their map slot: ${s2.droppedCodes.join(", ")}`] : []),
@@ -464,11 +497,32 @@ function hasPrivilegedCredential(app) {
     // last product, and the tills are not paused by receiving_session, so
     // measuring against it would report a legitimate sale as a migration loss
     // (and could hide a real one). (CodeRabbit, PR #343.)
+    // ── THE EXPECTED DELTA OF A RESUME ──────────────────────────────────────
+    // A resume leg is a CREDIT with no matching debit in this run: the debit
+    // landed in the interrupted run and is already reflected in the fresh
+    // baseline below. So a correct resume legitimately RAISES a location's
+    // total, and "totals must be unchanged" would report a run that healed the
+    // books as having minted stock — then exit 1, after Step 2 had already
+    // committed, pointing the operator at a rollback that would genuinely
+    // damage data. Expected movement is therefore computed per location and
+    // carried into both the per-product verify and the run-wide check.
+    // (Review of PR #345.)
+    const expectedDelta = {};
+    for (const pl of step1) {
+      if (!String(pl.kind).startsWith("resume")) continue;
+      // resume-in credits "_" with the owed units; resume-neg-in credits the
+      // sized cell with the shortage the mirror's OUT leg already removed.
+      const credit = Math.abs(Number(pl.qty)) || 0;
+      expectedDelta[pl.loc] = (expectedDelta[pl.loc] || 0) + credit;
+    }
+    if (Object.keys(expectedDelta).length) {
+      console.log(`  ${pid} resuming an interrupted pair — totals SHOULD rise by ${Object.entries(expectedDelta).map(([l, n]) => `${l}+${n}`).join(" ")} (the earlier run's debit is already in the baseline)`);
+    }
     const totalsBeforeProduct = {};
     for (const [loc, bySize] of Object.entries(freshCells)) {
       const sum = Object.values(bySize).reduce((t, c) => t + (typeof c?.qty === "number" ? c.qty : 0), 0);
       totalsBeforeProduct[loc] = sum;
-      baselineFresh[loc] = (baselineFresh[loc] || 0) + sum;
+      baselineFresh[loc] = (baselineFresh[loc] || 0) + sum + (expectedDelta[loc] || 0);
       baselinePids.add(pid);
     }
     let failed = null;
@@ -509,7 +563,7 @@ function hasPrivilegedCredential(app) {
     }
     if (failed) { results.push({ pid, name, status: "FAILED", detail: [failed] }); continue; }
 
-    const problems = await verifyProduct(io, pid, s2.keepCode, s2.codes, totalsBeforeProduct);
+    const problems = await verifyProduct(io, pid, s2.keepCode, s2.codes, totalsBeforeProduct, expectedDelta);
     results.push(problems.length
       ? { pid, name, status: "VERIFY-FAILED", detail: problems }
       : { pid, name, status: "DONE", detail: [
@@ -565,6 +619,9 @@ function hasPrivilegedCredential(app) {
     console.log(`  snapshot updated with ${appliedMovementIds.length} applied movement id(s): ${SNAP}`);
   }
   await releaseLock?.();
+  // "WILL FAIL (stranded stock)" is deliberately NOT in the clean set — a dry
+  // run that finds stranded stock must exit non-zero, because the execute run
+  // it is rehearsing will fail on exactly those products.
   const bad = results.filter((r) => r.status !== "DONE" && r.status !== "ALREADY DONE" && r.status !== "PLANNED");
   process.exit(bad.length ? 1 : 0);
 })().catch(async (e) => { console.error(e); await releaseLock?.(); process.exit(1); });

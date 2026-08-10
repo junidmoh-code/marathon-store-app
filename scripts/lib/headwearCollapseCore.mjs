@@ -584,36 +584,39 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
             reason: `Collapse to one-size: receive from size ${size}` } },
         ] });
       }
-      // The mirrored pair's closing leg raises the SIZED cell by exactly the
-      // shortage its OUT leg already debited from "_". That is only correct
-      // while the cell still holds that shortage. If something settled it in
-      // the gap — a receive against the oversold size — the shortage has
-      // already been made good once, and crediting it again MINTS stock:
+      // The mirrored pair is net-zero on the network: negOut debits "_" by n,
+      // negIn credits the sized cell by n. Half-applied, the books therefore
+      // read n LOW, and negIn is OWED — unconditionally, exactly like the
+      // positive pair's IN leg, and for exactly the same reason. Where the
+      // units land afterwards is assertDrained's problem, not the planner's.
       //
-      //   S −1, "_" 5.  negOut → "_" 4.  a receive of 1 → S 0.
-      //   resume negIn → S +1, so the network holds 5 where it held 4.
-      //
-      // Unlike the positive pair, whose IN leg credits units that are genuinely
-      // owed whatever the source cell now reads, this leg's correctness depends
-      // on the cell. So it resumes only when the cell is still exactly as the
-      // mirror left it, and otherwise refuses and says so.
+      // A previous attempt made this conditional on the cell still reading −n,
+      // reasoning that a receive settling the cell in the gap would make a
+      // second close a MINT. That was an arithmetic error: the receive adds a
+      // real unit, so the correct total rises with it, and refusing negIn
+      // leaves the network permanently short by the n that negOut removed —
+      // with the stranded note asserting the opposite of what happened, and
+      // every later re-run repeating the same refusal because the cell never
+      // returns to −n. Conservation is the test, not the cell's current value.
       if (negOut && !negIn) {
         const n = Number(negOut.qty);
-        if (q === -n) {
-          plans.push({ loc, sizeKey, kind: "resume-neg-in", qty: -n, legs: [
-            { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
-              reason: `Collapse to one-size: close oversold size ${size} cell` } },
-          ] });
-          resolvedByResume = true;
-        } else {
-          plans.push({ loc, sizeKey, kind: "stranded", qty: q, legs: [],
-            note: `${loc}/${sizeKey} reads ${q} but an interrupted run already carried a shortage of ${n} into "_" — the cell moved in between, so closing it now would credit that shortage twice. Reconcile this cell by hand before collapsing.` });
-          resolvedByResume = true;   // reported; must not ALSO fall through to the generic stranded note
-        }
+        plans.push({ loc, sizeKey, kind: "resume-neg-in", qty: -n, legs: [
+          { id: ids.negIn, movement: { type: "adjustment", productId: pid, size, qty: n, to: loc, movementId: ids.negIn,
+            reason: `Collapse to one-size: close oversold size ${size} cell` } },
+        ] });
+        resolvedByResume = true;
       }
 
       // 2. The cell's own balance — only if the pair it needs is untouched.
-      if (q > 0 && !out && !inMv) {
+      // `!(negOut && !negIn)` — a pending MIRROR resume must finish on its own
+      // before this cell's positive balance is planned. Two reasons, both real:
+      // the quantity here was read BEFORE that resume leg applies, so the pair
+      // would be planned against a number about to change; and planning legs
+      // against a cell whose sibling leg is mid-flight is precisely the
+      // half-applied state this whole block exists to stop reasoning about. The
+      // resume lands, assertDrained refuses the collapse, and the next run
+      // plans this balance cleanly at its true value. (Review of PR #345.)
+      if (q > 0 && !out && !inMv && !(negOut && !negIn)) {
         plans.push({ loc, sizeKey, kind: "positive", qty: q, legs: [
           { id: ids.out, movement: { type: "adjustment", productId: pid, size, qty: q, from: loc, movementId: ids.out,
             reason: `Collapse to one-size: move size ${size} → _` } },
@@ -756,7 +759,14 @@ export function planStep2(pid, product, indexCodes, heldUnitsBySizeKey) {
   // gets written, so it must not depend on a caller's gate to stay correct.
   // Unindexed codes come back named, rather than being written blind or dropped
   // in silence. (CodeRabbit, PR #345.)
-  const indexed = new Set(Object.keys(indexCodes || {}).map(String));
+  // Keyed on the RECORD, not the key. Both real callers represent "the index
+  // has no record for this code" as a present key with a null VALUE
+  // (`indexCodes[code] = barcodesIdx[code] ?? null`), so keying on
+  // Object.keys() classified exactly the missing records as indexed and put the
+  // orphan-creating write straight back. The guard is supposed to hold without
+  // a caller's help; keyed on the key it held only for a shape neither caller
+  // produces. (Review of PR #345.)
+  const indexed = new Set(Object.entries(indexCodes || {}).filter(([, rec]) => !!rec).map(([code]) => String(code)));
   const unindexedCodes = codes.filter((c) => !indexed.has(c));
 
   const updates = {};
@@ -891,7 +901,7 @@ export function policyRowGate(product, { remove = false } = {}) {
 // ── per-product verification (fresh reads, after execute) ────────────────────
 // Location totals must equal the totals BEFORE the product's migration; every
 // sized cell must sit at 0; identity and index must be fully collapsed.
-export async function verifyProduct(io, pid, keepCode, allCodes, totalsBefore) {
+export async function verifyProduct(io, pid, keepCode, allCodes, totalsBefore, expectedDelta = {}) {
   const problems = [];
   const product = await io.read(`products/${pid}`);
   if (JSON.stringify(product?.sizes || null) !== JSON.stringify(["_"])) problems.push(`sizes = ${JSON.stringify(product?.sizes)}`);
@@ -915,8 +925,10 @@ export async function verifyProduct(io, pid, keepCode, allCodes, totalsBefore) {
     totalsAfter[loc] = sum;
   }
   for (const loc of new Set([...Object.keys(totalsBefore || {}), ...Object.keys(totalsAfter)])) {
-    const b = totalsBefore?.[loc] || 0, a = totalsAfter[loc] || 0;
-    if (b !== a) problems.push(`${loc} total ${b} → ${a} (units lost or minted)`);
+    // expectedDelta is non-zero only where this run resumed a pair an earlier
+    // run left half-applied — a credit whose debit is already in the baseline.
+    const b = (totalsBefore?.[loc] || 0) + (expectedDelta?.[loc] || 0), a = totalsAfter[loc] || 0;
+    if (b !== a) problems.push(`${loc} total ${(totalsBefore?.[loc] || 0)} → ${a}, expected ${b}${expectedDelta?.[loc] ? ` (including +${expectedDelta[loc]} owed by a resumed pair)` : ""} (units lost or minted)`);
   }
   const targets = (await io.read("stock_targets")) || {};
   for (const [loc, byPid] of Object.entries(targets)) {
