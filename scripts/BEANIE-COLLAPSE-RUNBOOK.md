@@ -155,6 +155,12 @@ and restoring identity under it can strand units that arrived in the `"_"` cell
 after the collapse. The script names those movements and stops; `--force`
 proceeds if you decide that is what you want.
 
+**Do the stock move-back before the next sale.** The moment an identity restore
+lands, the sized barcodes are live again while the sized cells read 0 — so a
+till sale in that window either refuses or drives the cell negative, and any
+restored target rows re-arm the refill engine against empty sized cells. Restore
+identity and move the stock back in one closed window, not across a trading day.
+
 **Stock is a ledger, not a snapshot.** The rollback deliberately does NOT move
 stock — overwriting cells from the file would erase every sale and receive
 since the run. After an identity restore the units are still in the `"_"` cell
