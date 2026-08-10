@@ -22,6 +22,7 @@ import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets"
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts } from "./missingProductsCore";
+import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -287,6 +288,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         const result = done[card.pid];
         const dest = dests[card.pid] || destOptions(card)[0];
         const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
+        const moveBlocked = moveReason({ canAct, busy: busyPid === card.pid, units: total });
         const sOpen = solvePid === card.pid;
         const sResult = solved[card.pid];
         // Default to a store this product can ACTUALLY be solved at, not simply
@@ -297,6 +299,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // still pick either store; this only changes which one is pre-selected.
         const sStore = solveDest[card.pid] || STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
         const plan = sOpen ? solvePlan(card, sStore) : null;
+        // The confirm button asks the question of the ONE nominated store, which
+        // a per-location policy can answer differently from "any store".
+        const confirmBlocked = sOpen ? solveConfirmReason({
+          canAct, busy: solveBusy === card.pid, sizesInPlan: plan.sizes.length, storeLabel: LOC_LABEL[sStore],
+        }) : null;
         // Solvable only if the engine has a standard for at least one of its sizes
         // at at least one store. This used to probe STORES[0] alone, on the grounds
         // that the PE and Trophy size runs are identical — true of defaultRunByStore,
@@ -304,16 +311,19 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // location and could name one store and not the other. Probing every store
         // keeps the button honest; the panel's own button still re-checks the store
         // actually nominated, so a store with no policy remains unsolvable.
-        const solvable = STORES.some((s) => qualifyingSizes(card, s).length > 0);
-        // Why it's greyed — four genuinely different situations that all used to
-        // read "no standard sizes", which sent people looking at the product when
-        // the answer was the engine's switch or a config still loading.
+        const policyAtAnyStore = STORES.some((s) => qualifyingSizes(card, s).length > 0);
+        // Why it's greyed. Every disabled action on this row now carries its own
+        // sentence (actionReasons.js) and renders it as VISIBLE text — the old
+        // `whyNot` went to `title=`, a desktop hover tooltip, which on a warehouse
+        // tablet is no explanation at all. `solveBlocked` is both the reason string
+        // and the disabled test, so the button cannot go grey without the row
+        // saying why.
         const armed = STORES.some((s) => seedLocations(card.source, s).every(ruleOn));
-        const whyNot = !cfg ? "Checking the engine's settings…"
-          : cfgErr ? "Couldn't read the engine's settings — Solve is off until it loads. Use Move manually."
-          : !targetsReady ? "Checking the engine's settings…"
-          : !armed ? "Rule-based refills are switched off — the engine wouldn't refill this, so there's nothing to seed. Use Move manually."
-          : "No refill policy covers this product — use Move manually";
+        const solveBlocked = solveReason({
+          canAct, configLoaded: !!cfg, configError: cfgErr, targetsLoaded: targetsReady,
+          hasSourceStock: card.units > 0, policyAtAnyStore, ruleOnAnywhere: armed,
+          oneSize: catalogSizes(card.pid).every((s) => s === "_"),
+        });
         return (
           <ProductCard key={card.pid}
             photo={card.photo} name={card.name}
@@ -323,9 +333,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
             </>}
             right={
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!canAct || !solvable}
-                        title={!solvable ? whyNot : undefined}
-                        style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: (canAct && solvable) ? "pointer" : "default", opacity: (canAct && solvable) ? 1 : 0.4, fontFamily: FONT }}>
+                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!!solveBlocked}
+                        title={solveBlocked || undefined}
+                        style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: solveBlocked ? "default" : "pointer", opacity: solveBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {sOpen ? "Close" : "Solve"}
                 </button>
                 <button onClick={() => { setOpenPid(open ? null : card.pid); setSolvePid(null); }}
@@ -335,6 +345,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
               </div>
             }
           >
+            {/* NEVER A SILENTLY DEAD BUTTON. Whenever Solve is greyed the row says
+                why, in the same words the (hover-only, tablet-invisible) tooltip
+                used to hide. It sits above the panels so it is readable with the
+                row collapsed — which is the state an operator meets it in. */}
+            {solveBlocked && (
+              <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: sOpen || open ? 8 : 0 }}>
+                Solve unavailable — {solveBlocked}
+              </div>
+            )}
             {sResult ? (
               <div style={{ fontSize: 12.5 }}>
                 <span style={{ color: sResult.ok ? GREEN : RED, fontWeight: 700 }}>{sResult.msg}</span>
@@ -366,8 +385,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                   </div>
                   <div style={{ marginTop: 5, color: "rgba(255,255,255,.4)", fontSize: 11 }}>No stock moves now — this just marks it carried; the engine raises the refills.</div>
                 </div>
-                <button onClick={() => solve(card)} disabled={solveBusy === card.pid || !canAct || plan.sizes.length === 0}
-                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: solveBusy === card.pid || !canAct || plan.sizes.length === 0 ? 0.5 : 1 }}>
+                {confirmBlocked && (
+                  <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{confirmBlocked}</div>
+                )}
+                <button onClick={() => solve(card)} disabled={!!confirmBlocked}
+                        title={confirmBlocked || undefined}
+                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked ? 0.5 : 1 }}>
                   {solveBusy === card.pid ? "Seeding…" : `Solve — carry at ${LOC_LABEL[sStore]}`}
                 </button>
               </>
@@ -398,8 +421,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                     </button>
                   ))}
                 </div>
-                <button onClick={() => transfer(card)} disabled={busyPid === card.pid || total === 0 || !canAct}
-                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: busyPid === card.pid || total === 0 || !canAct ? 0.5 : 1 }}>
+                {moveBlocked && (
+                  <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{moveBlocked}</div>
+                )}
+                <button onClick={() => transfer(card)} disabled={!!moveBlocked}
+                        title={moveBlocked || undefined}
+                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: moveBlocked ? 0.5 : 1 }}>
                   {busyPid === card.pid ? "Transferring…" : `Transfer ${total} unit${total === 1 ? "" : "s"} to ${LOC_LABEL[dest]}`}
                 </button>
               </>

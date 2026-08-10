@@ -47,6 +47,7 @@ import { usePermissions } from "../PermissionsContext";
 import { GLASS, GRAY, GREEN, AMBER, BLUE_L, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowIso } from "../../utils/serverTime";
+import { footwearSolveReason, footwearRequestReason, footwearConfirmReason, footwearRequestSubmitReason } from "./actionReasons";
 import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, sizeKeyOf } from "./missingFootwearCore";
 import { useRefillRequests } from "./useStock";
 
@@ -279,9 +280,15 @@ export default function MissingFootwear({ products = [] }) {
         const sHub = hubFor(card);
         const solveLines = planFor(card, sHub);
         const solvable = HUBS.some((h) => planFor(card, h).length > 0);
-        const solveTitle = !footwearRun
-          ? "Footwear targeting isn't configured yet — use Request instead"
-          : !solvable ? "Nothing to raise at either hub — every size is already queued, or Central has none" : undefined;
+        // Same contract as the clothing list (actionReasons.js): a string means
+        // disabled AND is the text shown on the row. These were `title=` only —
+        // a hover tooltip, invisible on the warehouse tablets this runs on.
+        const solveBlocked = footwearSolveReason({ canAct, runLoaded: !!footwearRun, linesAtAnyHub: solvable });
+        const requestBlocked = footwearRequestReason({ canAct });
+        const confirmBlocked = footwearConfirmReason({
+          canAct, busy: solveBusy === card.pid, lines: solveLines.length, hubLabel: LOC_LABEL[sHub],
+        });
+        const submitBlocked = footwearRequestSubmitReason({ canAct, busy: busyPid === card.pid, units: total });
         return (
           <ProductCard key={card.pid}
             photo={card.photo} name={card.name}
@@ -303,19 +310,22 @@ export default function MissingFootwear({ products = [] }) {
             right={
               <div style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }}
-                        disabled={!canAct || !solvable} title={solveTitle}
-                        style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: (canAct && solvable) ? "pointer" : "default", opacity: (canAct && solvable) ? 1 : 0.4, fontFamily: FONT }}>
+                        disabled={!!solveBlocked} title={solveBlocked || undefined}
+                        style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: solveBlocked ? "default" : "pointer", opacity: solveBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {sOpen ? "Close" : "Solve"}
                 </button>
                 <button onClick={() => { setOpenPid(open ? null : card.pid); setSolvePid(null); }}
-                        disabled={!canAct}
-                        style={{ background: "rgba(60,110,255,.1)", border: "1px solid rgba(60,110,255,.35)", color: BLUE_L, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: canAct ? "pointer" : "default", opacity: canAct ? 1 : 0.4, fontFamily: FONT }}>
+                        disabled={!!requestBlocked} title={requestBlocked || undefined}
+                        style={{ background: "rgba(60,110,255,.1)", border: "1px solid rgba(60,110,255,.35)", color: BLUE_L, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: requestBlocked ? "default" : "pointer", opacity: requestBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {open ? "Close" : "Request"}
                 </button>
               </div>
             }>
             {result && <div style={{ fontSize: 12, color: result.ok ? GREEN : AMBER, marginTop: 6 }}>{result.msg}</div>}
             {sResult && <div style={{ fontSize: 12, color: sResult.ok ? GREEN : AMBER, marginTop: 6 }}>{sResult.msg}</div>}
+            {/* Never a silently dead button — see actionReasons.js. */}
+            {solveBlocked && <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 6 }}>Solve unavailable — {solveBlocked}</div>}
+            {requestBlocked && <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 6 }}>Request unavailable — {requestBlocked}</div>}
 
             {sOpen && (
               <div style={{ marginTop: 10 }}>
@@ -349,8 +359,10 @@ export default function MissingFootwear({ products = [] }) {
                     Nothing to raise at {LOC_LABEL[sHub]} — every size is already queued there, or Central has none.
                   </div>
                 )}
-                <button onClick={() => solve(card)} disabled={!!solveBusy || !solveLines.length}
-                        style={{ background: "rgba(74,222,128,.14)", border: "1px solid rgba(74,222,128,.45)", color: GREEN, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: solveLines.length ? "pointer" : "default", opacity: solveLines.length ? 1 : 0.4, fontFamily: FONT }}>
+                {confirmBlocked && <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: 6 }}>{confirmBlocked}</div>}
+                <button onClick={() => solve(card)} disabled={!!solveBusy || !!confirmBlocked}
+                        title={confirmBlocked || undefined}
+                        style={{ background: "rgba(74,222,128,.14)", border: "1px solid rgba(74,222,128,.45)", color: GREEN, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: confirmBlocked ? "default" : "pointer", opacity: confirmBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {solveBusy === card.pid ? "Raising…" : "Confirm"}
                 </button>
               </div>
@@ -372,8 +384,10 @@ export default function MissingFootwear({ products = [] }) {
                     </button>
                   ))}
                 </div>
-                <button onClick={() => request(card)} disabled={!!busyPid || total === 0}
-                        style={{ background: "rgba(60,110,255,.15)", border: "1px solid rgba(60,110,255,.5)", color: BLUE_L, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: total ? "pointer" : "default", opacity: total ? 1 : 0.4, fontFamily: FONT }}>
+                {submitBlocked && <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: 6 }}>{submitBlocked}</div>}
+                <button onClick={() => request(card)} disabled={!!busyPid || !!submitBlocked}
+                        title={submitBlocked || undefined}
+                        style={{ background: "rgba(60,110,255,.15)", border: "1px solid rgba(60,110,255,.5)", color: BLUE_L, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: submitBlocked ? "default" : "pointer", opacity: submitBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {busyPid === card.pid ? "Raising…" : `Request ${total} for ${LOC_LABEL[dest]}`}
                 </button>
               </div>

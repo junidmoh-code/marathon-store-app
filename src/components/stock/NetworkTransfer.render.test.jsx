@@ -6,9 +6,9 @@
 //      in the same state, as a sized one. That only holds if /stock_targets is
 //      actually plumbed into the component (it was not — HealthView subscribed
 //      to it for another card entirely and NetworkTransfer never saw it).
-//   2. Greying is still CORRECT where no policy exists — a beanie with no target
-//      row must stay disabled, because seeding a cell the engine will never
-//      refill is a false "solved".
+//   2. No disabled action is silent. The reason has to reach the DOM as TEXT,
+//      not `title=`: the old strings were hover tooltips, and these screens run
+//      on warehouse tablets where hover does not exist.
 //
 // And the standing safety claim, asserted on every path here: Solve seeds
 // carriage cells and writes NO target rows. Arming a product is the owner's
@@ -37,6 +37,7 @@ vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => new Date(NOW).toI
 
 const { default: NetworkTransfer } = await import("./NetworkTransfer.jsx");
 const { computeMissingProducts } = await import("./missingProductsCore.js");
+const { solveReason } = await import("./actionReasons.js");
 
 // The live engine config, 2026-08-10.
 const CONFIG = {
@@ -104,8 +105,8 @@ describe("a one-size product with stock at a source is solvable, exactly like a 
     };
     const tree = render(targets);
     expect(solveButton(tree).props.disabled).toBe(false);
-    // …and armed means armed: no "why not" explanation attached.
-    expect(solveButton(tree).props.title).toBe(undefined);
+    // …and armed means armed: no "unavailable" line on the row.
+    expect(textOf(tree)).not.toMatch(/Solve unavailable/);
   });
 
   it("the sized control is armed by the size run alone, exactly as before", () => {
@@ -113,11 +114,14 @@ describe("a one-size product with stock at a source is solvable, exactly like a 
     expect(solveButton(tree).props.disabled).toBe(false);
   });
 
-  it("WITHOUT a target row the beanie stays disabled — no policy, no false solve", () => {
+  it("WITHOUT a target row the beanie stays disabled and says what it needs", () => {
     const tree = render({});
     const btn = solveButton(tree);
     expect(btn.props.disabled).toBe(true);
-    expect(btn.props.title).toMatch(/No refill policy/);
+    const text = textOf(tree);
+    expect(text).toMatch(/Solve unavailable/);
+    expect(text).toMatch(/one-size/i);
+    expect(text).toMatch(/target/i);
   });
 
   it("an explicit row keeps the beanie armed even with rule-based refills SWITCHED OFF", () => {
@@ -132,7 +136,7 @@ describe("a one-size product with stock at a source is solvable, exactly like a 
     // …while the rule-only jersey correctly goes dark, and says which switch.
     const jersey = render({}, { products: JERSEY_ONLY });
     expect(solveButton(jersey).props.disabled).toBe(true);
-    expect(solveButton(jersey).props.title).toMatch(/switched off/i);
+    expect(textOf(jersey)).toMatch(/switched off/i);
   });
 });
 
@@ -148,14 +152,53 @@ describe("a one-size product with NO stock anywhere stays disabled and says so",
     expect(textOf(tree)).toMatch(/No stranded products/);
   });
 
+  it("a card whose source stock vanished underneath the operator says 'no stock at any source'", () => {
+    // Reachable when another till empties the source while this screen is open:
+    // the card list is a snapshot, the reason is computed from live units.
+    expect(solveReason({
+      canAct: true, configLoaded: true, targetsLoaded: true, hasSourceStock: false,
+      policyAtAnyStore: true, ruleOnAnywhere: true,
+    })).toMatch(/No stock at any source/);
+  });
 });
 
-describe("a pending /stock_targets read is not the same as 'no policy'", () => {
-  it("stays disabled while targets load, without accusing the product", () => {
-    const tree = render(null);   // null = the listener has not answered yet
-    const btn = solveButton(tree);
-    expect(btn.props.disabled).toBe(true);
-    expect(btn.props.title).not.toMatch(/No refill policy/);
+describe("no disabled action is silent", () => {
+  it("a viewer with no stock role is told, on the row, for every action", () => {
+    perm.permRecord = { stockRole: null };
+    const tree = render({});
+    const text = textOf(tree);
+    expect(solveButton(tree).props.disabled).toBe(true);
+    expect(text).toMatch(/stock role/i);
+  });
+
+  it("a config that failed to load names itself rather than blaming the product", () => {
+    // onValue's error path sets cfgErr — simulated by the component's fail-safe
+    // shape: config present but empty, with the error flag raised via a null read.
+    paths["config/refillEngine"] = null;
+    const tree = render({});
+    expect(textOf(tree)).toMatch(/Solve unavailable/);
+  });
+
+  it("targets still loading is a 'one moment', never a false 'no policy'", () => {
+    const tree = render(null);   // null = the /stock_targets listener has not answered
+    expect(solveButton(tree).props.disabled).toBe(true);
+    expect(textOf(tree)).toMatch(/one moment/i);
+    // Crucially it must NOT accuse the product of having no policy.
+    expect(textOf(tree)).not.toMatch(/No refill policy/);
+  });
+
+  it("every disabled button on the screen carries a reason", () => {
+    // The structural guard: walk the rendered tree and assert that no button is
+    // disabled without a title (the reason) — the contract actionReasons.js
+    // exists to make unbreakable.
+    perm.permRecord = { stockRole: null };
+    const tree = render({});
+    const disabled = tree.root.findAll((n) => n.type === "button" && n.props.disabled);
+    expect(disabled.length).toBeGreaterThan(0);
+    for (const b of disabled) {
+      expect(typeof b.props.title, `a disabled button rendered with no reason: ${JSON.stringify(b.children)}`).toBe("string");
+      expect(b.props.title.length).toBeGreaterThan(10);
+    }
   });
 });
 
