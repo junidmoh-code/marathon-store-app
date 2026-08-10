@@ -255,6 +255,22 @@ function ownMovementIds(snap) {
     console.log(`\n  DRY RUN — nothing written. Re-run with --execute to apply.`);
     process.exit(0);
   }
+  // ── NOT WHILE A MIGRATION IS RUNNING ──────────────────────────────────────
+  // The migration takes /_migrations/beanieOneSizeCollapse/runLock for exactly
+  // this class of problem, and the rollback never looked at it. A rollback
+  // --execute overlapping a migration --execute produces interleaved writes
+  // that are each atomic and jointly wrong: the rollback restores sizes ["M"]
+  // for a product the migration is a moment away from collapsing, and step 2
+  // lands over it — both reporting success. The lock is one line to read.
+  // (Kimi review of the rollback, PR #343 follow-up.)
+  const migrationLock = await io.read("_migrations/beanieOneSizeCollapse/runLock");
+  if (migrationLock && migrationLock.releasedAt == null) {
+    console.error(`\nABORT: a migration run holds the lock (pid ${migrationLock.pid} on ${migrationLock.host}, started ${migrationLock.startedAt}).`);
+    console.error("A rollback interleaved with a live migration writes over it. Wait for that run");
+    console.error("to finish (or confirm it is dead and clear the lock), then re-run this.");
+    process.exit(1);
+  }
+
   if (diverged.length && !FORCE) {
     console.error(`\nABORT: ${diverged.length} path(s) have diverged from what this rollback expects.`);
     console.error("Restoring them would overwrite a change made after the migration — a barcode");
@@ -272,6 +288,27 @@ function ownMovementIds(snap) {
   if (laterActivity.size && FORCE) {
     console.log(`\n  --force: proceeding over later activity on ${laterActivity.size} product(s), listed above.`);
   }
+
+  // ── LAST-MOMENT RE-CHECK ──────────────────────────────────────────────────
+  // The activity read above happened before the write plan was printed and
+  // before a human read it. A sale landing in that gap would strand units under
+  // a freshly restored identity with no refusal, so the ledger is read again
+  // here, immediately before the write. Same reasoning as the migration's own
+  // recency gate: the check is worth little if it is minutes stale.
+  // (Kimi review of the rollback, PR #343 follow-up.)
+  const movementsNow = (await io.read("stock_movements")) || {};
+  const appeared = [];
+  for (const [id, m] of Object.entries(movementsNow)) {
+    if (!m || !pids.includes(m.productId) || (own && own.has(id)) || movements[id]) continue;
+    appeared.push(`${id} (${m.type} ${m.qty} ${m.size} ${m.appliedAt || m.ts})`);
+  }
+  if (appeared.length && !FORCE) {
+    console.error(`\nABORT: ${appeared.length} movement(s) landed while this plan was being read:`);
+    for (const a of appeared.slice(0, 6)) console.error(`     ${a}`);
+    console.error("Someone is trading against these products right now. Re-run when it is quiet.");
+    process.exit(1);
+  }
+  if (appeared.length) console.log(`\n  --force: proceeding over ${appeared.length} movement(s) that landed during this run.`);
 
   await io.update(updates);
   console.log(`\n  RESTORED ${Object.keys(updates).length} paths.`);
