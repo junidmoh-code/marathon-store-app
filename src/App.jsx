@@ -5408,11 +5408,19 @@ function AdminView({ products, orders, onExit }) {
       //
       // Registration runs AFTER the product write, never before: the rule on
       // /barcodes/$code validates that the referenced product exists.
+      // Whether this product ACTUALLY ends up using the code from its box —
+      // which is not the same question as whether one was captured. If
+      // registration fails we mint a shop code instead, and that code needs a
+      // printed label like any other. Deriving the no-label rule from the
+      // ATTEMPT told staff to stick a label while suppressing the only screen
+      // that prints one. (Codex review, PR #340.)
+      let printedBarcodeActive = false;
       if (printedCode) {
         // The field was deliberately kept OUT of the product's own set() (see
         // above): it rides the same atomic commit as the index rows, so it can
         // never name a code that did not register. Nothing to compensate for.
         const attach = await attachPrintedBarcode({ productId: id, code: printedCode });
+        printedBarcodeActive = attach.ok;
         const failure = attach.ok ? null
           : attach.kind === "denied"
             ? `it could not be written (${attach.reason}) — you may not have stock permission`
@@ -5494,7 +5502,8 @@ function AdminView({ products, orders, onExit }) {
           // that already works. The distribution wizard is still offered for
           // Central stock; only the label step is skipped.
           if (savedItems.length) {
-            const usesPrintedBarcode = !!printedCode;
+            // The code that actually registered — NOT the one that was tried.
+            const usesPrintedBarcode = printedBarcodeActive;
             setLastReceived(usesPrintedBarcode ? null : { productId: id, productName: newProduct.name, photoUrl: newProduct.photoUrl ?? null, items: savedItems });
             // Stock landed at Central → offer initial distribution first; the
             // print sheet opens when the wizard closes. Other locations keep

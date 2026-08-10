@@ -123,23 +123,34 @@ export async function registerPrintedBarcode(productId, code, size = ONE_SIZE, e
   const updates = {};
   for (const c of verdict.codes) updates[`barcodes/${c}`] = record;
   Object.assign(updates, extraUpdates || {});
-  await update(ref(database), updates);   // throws → caller falls back
-
-  // ── READ BACK, BECAUSE A WRITE THAT "SUCCEEDED" MAY NOT HAVE ──────────────
-  // The read-before-write is still TOCTOU: between our read and our commit,
-  // another client can claim a code for a different product, and under the
-  // create-only rule the loser's write is DENIED — which the SDK may surface
-  // late, or not at all when the winner's value is identical in shape. So the
-  // rows are read back and must actually name us. We cannot undo the other
-  // client's row from here (no delete permission), but the caller must never be
-  // told a code is ours when it is not. (Codex review, #340.)
-  const owners = await readBarcodeOwners(verdict.codes);
-  const stolen = owners.filter((o) => o.productId !== productId);
-  if (stolen.length) {
-    return {
-      ok: false, kind: PRINTED_CONFLICT, written: [],
-      code: stolen[0].code, otherProductId: stolen[0].productId,
-    };
+  // ── LOSING THE RACE LOOKS EXACTLY LIKE BEING FORBIDDEN ────────────────────
+  // The read-before-write is TOCTOU: between our inspect and this commit,
+  // another client can claim the code for a different product. Under the
+  // create-only rule (`!data.exists()`) our commit is then rejected — with the
+  // SAME permission error a user without stockRole gets. Same failure, two
+  // completely different remedies: "ask an admin for stock permission" versus
+  // "this is a duplicate, go and merge the records". Reporting the first for
+  // the second sends the operator to the wrong person entirely.
+  //
+  // So a rejection is DIAGNOSED, once, by re-reading the index. If the code is
+  // now owned elsewhere we lost the race and say so; anything else is a genuine
+  // denial and propagates.
+  //
+  // (This replaces a post-success read-back, which Kimi's review correctly
+  // identified as unreachable: the commit is atomic, so if it resolves, every
+  // row was written by us. Verifying that told us nothing, while the case that
+  // actually happens went undiagnosed.)
+  try {
+    await update(ref(database), updates);
+  } catch (err) {
+    const after = await inspectPrintedBarcode(code, productId, size).catch(() => null);
+    if (after && after.kind === PRINTED_CONFLICT) {
+      return {
+        ok: false, kind: PRINTED_CONFLICT, written: [],
+        code: after.code, otherProductId: after.otherProductId,
+      };
+    }
+    throw err;                          // a real denial — the caller falls back
   }
   return { ok: true, written: verdict.codes, kind: PRINTED_FREE };
 }

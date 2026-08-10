@@ -13,11 +13,12 @@ let overwriteAttempts = [];
 // which another client claims a code between our read and our write, which is
 // exactly how a UPC-A ends up half-registered.
 let denyWrites = new Set();
-// Codes where a CONCURRENT client's row wins: our write appears to go through
-// locally, but what is actually at that path afterwards names somebody else.
-// This is the read→write race the create-only rule arbitrates, and the only
-// way to detect it from the client is to read the row back.
-let stealWrites = new Map();
+// Codes claimed by a CONCURRENT client between our inspect and our commit. The
+// winner's row lands first, and OUR commit is then rejected by the create-only
+// rule — with the same permission error a user without stockRole would get.
+// That is what the real database does, and modelling anything softer would be
+// testing a scenario that cannot happen.
+let raceOnWrite = new Map();
 
 function getPath(path) {
   let node = store;
@@ -50,7 +51,13 @@ vi.mock("firebase/database", () => ({
   update: async (node, updates) => {
     const base = node.path ? `${node.path}/` : "";
     const paths = Object.entries(updates).map(([k, v]) => [`${base}${k}`, v]);
+    // A concurrent claim lands BEFORE our commit is evaluated — which is what
+    // makes the create-only rule reject us, exactly as the real database does.
     for (const [path] of paths) {
+      const winner = raceOnWrite.get(path.split("/").pop());
+      if (path.startsWith("barcodes/") && winner) setPath(path, { productId: winner, size: "_" });
+    }
+    for (const [path, value] of paths) {
       if (!path.startsWith("barcodes/")) continue;           // /products is a plain write
       if (getPath(path) != null) {
         overwriteAttempts.push(path);
@@ -58,11 +65,18 @@ vi.mock("firebase/database", () => ({
       }
       const code = path.split("/").pop();
       if (denyWrites.has(code)) throw new Error("PERMISSION_DENIED: claimed in the meantime");
+      // THE .validate, ENFORCED: the referenced product must already exist, and
+      // size must be a non-empty string. This is what makes the ordering
+      // requirement — product write BEFORE registration — a thing these tests
+      // actually prove rather than merely describe. (Codex review, PR #340.)
+      if (!value || typeof value.productId !== "string" || getPath(`products/${value.productId}`) == null) {
+        throw new Error("PERMISSION_DENIED: /barcodes .validate — referenced product does not exist");
+      }
+      if (value.size != null && (typeof value.size !== "string" || value.size.length === 0)) {
+        throw new Error("PERMISSION_DENIED: /barcodes .validate — size must be a non-empty string");
+      }
     }
-    for (const [path, value] of paths) {
-      const thief = stealWrites.get(path.split("/").pop());
-      setPath(path, thief ? { ...value, productId: thief } : value);
-    }
+    for (const [path, value] of paths) setPath(path, value);
   },
 }));
 vi.mock("../../firebase", () => ({ database: {} }));
@@ -74,15 +88,40 @@ const { registerPrintedBarcode, inspectPrintedBarcode, readBarcodeOwners, attach
 const OUD_MOOD = "6291106065114";
 const EPIC = "6291103660466";
 
-beforeEach(() => { store = {}; overwriteAttempts = []; denyWrites = new Set(); stealWrites = new Map(); });
+beforeEach(() => {
+  store = {};
+  overwriteAttempts = [];
+  denyWrites = new Set();
+  raceOnWrite = new Map();
+  // The products these tests register against must EXIST — the live .validate
+  // on /barcodes/$code requires it, and the fake above enforces it.
+  setPath("products/pPerfume", { id: "pPerfume", name: "Oud Mood" });
+  setPath("products/pOther", { id: "pOther", name: "Honeyed Fantasy" });
+  setPath("products/pFirst", { id: "pFirst", name: "Epic" });
+  setPath("products/pSecond", { id: "pSecond", name: "Another" });
+  setPath("products/pMine", { id: "pMine", name: "Mine" });
+  setPath("products/pSomebodyElse", { id: "pSomebodyElse", name: "Theirs" });
+});
 
-describe("losing the read→write race is DETECTED, not assumed away", () => {
-  it("reads the row back and refuses to claim a code that names somebody else", async () => {
-    // Between our read of an empty slot and our write, another client claims
-    // the code for a different product. Trusting the write to have "succeeded"
-    // would hand the caller a code the POS resolves elsewhere — and the caller
-    // would then write it onto the product record as its identity.
-    stealWrites.set(OUD_MOOD, "pSomebodyElse");
+describe("the product must exist before its barcode can be registered", () => {
+  it("REFUSES to register against a product that has not been written yet", async () => {
+    // The live rule validates
+    //   root.child('products').child(newData.child('productId').val()).exists()
+    // so registration must run AFTER the product write, never before. This is
+    // the same ordering constraint the style-code claim already lives under.
+    await expect(registerPrintedBarcode("pDoesNotExist", OUD_MOOD)).rejects.toThrow(/does not exist/);
+    expect(getPath(`barcodes/${OUD_MOOD}`)).toBe(null);
+  });
+});
+
+describe("losing the read→write race is DIAGNOSED, not misreported", () => {
+  it("is reported as a CONFLICT, not as a permission problem", async () => {
+    // Another client claims the code between our inspect and our commit. The
+    // create-only rule then rejects us with the SAME permission error a user
+    // without stockRole gets — same failure, two completely different
+    // remedies. Calling it a denial sends the operator to ask an admin for
+    // permissions when what they actually have is a duplicate to merge.
+    raceOnWrite.set(OUD_MOOD, "pSomebodyElse");
 
     const out = await registerPrintedBarcode("pPerfume", OUD_MOOD);
 
@@ -92,12 +131,24 @@ describe("losing the read→write race is DETECTED, not assumed away", () => {
     expect(out.written).toEqual([]);
   });
 
-  it("and attachPrintedBarcode reports the conflict rather than a success", async () => {
-    stealWrites.set(OUD_MOOD, "pSomebodyElse");
+  it("routes it to the duplicate flow, naming the winner", async () => {
+    raceOnWrite.set(OUD_MOOD, "pSomebodyElse");
     const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD });
     expect(out.ok).toBe(false);
     expect(out.kind).toBe("conflict");
+    expect(out.indexed).toBe(false);
     expect(out.reason).toMatch(/already registered to another product/);
+    expect(out.reason).toMatch(/Merge Products/);
+    expect(getPath("products/pPerfume/printedBarcode")).toBe(null);
+  });
+
+  it("a GENUINE denial still reports as denied — the two are not collapsed", async () => {
+    // No concurrent claim, just no permission. This must NOT be dressed up as
+    // a duplicate: App.jsx shows the stock-permission message off this kind.
+    denyWrites.add(OUD_MOOD);
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD });
+    expect(out.ok).toBe(false);
+    expect(out.kind).toBe("denied");
   });
 });
 

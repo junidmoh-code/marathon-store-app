@@ -152,6 +152,12 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     // would register a one-size code against a product sized 9/10.
     expect(app).toMatch(/sizeRun: \[\],[\s\S]{0,700}?hubs: hubs\.length/);
     expect(app).toMatch(/printedBarcode: null,\n\s*printedBarcodeAuto: false,/);
+    // The no-label rule follows what actually REGISTERED, never what was
+    // merely attempted. Deriving it from the attempt told staff to print and
+    // stick a fallback shop label while suppressing the only screen that
+    // prints one. (Codex review, PR #340.)
+    expect(app).toMatch(/const usesPrintedBarcode = printedBarcodeActive;/);
+    expect(app).toMatch(/printedBarcodeActive = attach\.ok;/);
     // Review pins (#330): a failed seed is OBSERVED and reported (setCellState
     // resolves {ok:false}, it never throws), and the finder only ever hands
     // back records from the CURRENT catalog:
