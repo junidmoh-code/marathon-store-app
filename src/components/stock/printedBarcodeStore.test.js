@@ -107,6 +107,22 @@ describe("a code already in the index is NEVER overwritten", () => {
     expect(store.barcodes[OUD_MOOD].productId).toBe("pFirst");
   });
 
+  it("writes ONLY the missing form when we already own the other", async () => {
+    // A UPC-A registered before the EAN-13 twin existed (or a retry after a
+    // half-completed write). Re-writing the form we already own would be an
+    // overwrite — denied by the rule, and a denial nobody reads back looks
+    // exactly like success. Only the genuinely empty slot may be written.
+    setPath("barcodes/036000291452", { productId: "pPerfume", size: "_" });
+
+    const out = await registerPrintedBarcode("pPerfume", "036000291452");
+
+    expect(out.ok).toBe(true);
+    expect(out.written).toEqual(["0036000291452"]);   // the twin ONLY
+    expect(overwriteAttempts).toEqual([]);            // the owned form untouched
+    expect(store.barcodes["036000291452"]).toEqual({ productId: "pPerfume", size: "_" });
+    expect(store.barcodes["0036000291452"].productId).toBe("pPerfume");
+  });
+
   it("a UPC-A whose TWIN is owned elsewhere writes NEITHER form", async () => {
     // Half-registering would spread one duplicate across two index rows.
     setPath("barcodes/0036000291452", { productId: "pOther", size: "_" });
