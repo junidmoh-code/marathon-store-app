@@ -46,7 +46,18 @@ function BigButton({ children, onClick, tone = "blue", disabled, style }) {
 // upload (same budget as prepareLabelPhoto) and the server caches per frame's
 // image hash — so the three frames cost at most three vision calls ONCE, and
 // a retake of any identical frame re-bills nothing.
-export function LabelCamera({ onFrames, onFallback, onClose }) {
+// The COPY is a prop with the tongue-label wording as its default, because the
+// same pipeline now serves a second subject: the printed barcode on a perfume
+// box. Telling an operator to "fold the tongue forward" while they hold a
+// perfume carton is how a shared component teaches people to distrust it. The
+// mechanism — three frames, downscale, stream teardown, single-photo fallback —
+// is untouched and stays in ONE place.
+export function LabelCamera({
+  onFrames, onFallback, onClose,
+  title = "The label inside the tongue",
+  hint = "Fold the tongue forward and fill the frame with the printed label. One press takes three quick frames.",
+  shootLabel = "◉ Capture the label",
+}) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const [error, setError] = useState(null);
@@ -101,7 +112,7 @@ export function LabelCamera({ onFrames, onFallback, onClose }) {
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.96)", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 18px", color: "#fff" }}>
-        <div style={{ fontWeight: 800, fontSize: 15 }}>The label inside the tongue</div>
+        <div style={{ fontWeight: 800, fontSize: 15 }}>{title}</div>
         <button onClick={onClose} style={{ ...bGhost, padding: "10px 16px", fontSize: 13 }}>Close</button>
       </div>
       {error ? (
@@ -120,13 +131,13 @@ export function LabelCamera({ onFrames, onFallback, onClose }) {
           </div>
           <div style={{ padding: "14px 18px 30px" }}>
             <div style={{ color: "rgba(255,255,255,.6)", fontSize: 12.5, textAlign: "center", marginBottom: 10 }}>
-              Fold the tongue forward and fill the frame with the printed label. One press takes three quick frames.
+              {hint}
             </div>
             <button onClick={shoot} disabled={shooting}
               style={{ width: "100%", minHeight: 62, borderRadius: 15, fontSize: 17, fontWeight: 800, fontFamily: FONT, cursor: "pointer",
                        background: "rgba(74,127,255,.2)", border: "2px solid rgba(74,127,255,.6)", color: "#D7E3FF",
                        opacity: shooting ? 0.6 : 1 }}>
-              {shooting ? "Capturing 3 frames…" : "◉ Capture the label"}
+              {shooting ? "Capturing 3 frames…" : shootLabel}
             </button>
           </div>
         </>
