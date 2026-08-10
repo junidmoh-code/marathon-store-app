@@ -24,13 +24,16 @@
 // holding stock they cannot enter. It is a tap, not a timeout — the fallback
 // has to be a decision somebody made.
 
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { LabelCamera } from "../stock/TongueLabelReader";
 import { prepareLabelPhoto } from "../../utils/labelPhoto";
 import { decodeFrames, readPrintedDigits } from "../../utils/barcodeDecode";
-import { normalisePrintedBarcode, PRINTED_ALREADY, PRINTED_CONFLICT } from "../../utils/eanBarcode";
+import {
+  normalisePrintedBarcode,
+  PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_SIZE_MISMATCH, PRINTED_INVALID,
+} from "../../utils/eanBarcode";
 import { inspectPrintedBarcode } from "../stock/printedBarcodeStore";
 import { FONT, bBlue, bGray, bGhost, input, GREEN, RED } from "../stock/ui";
 
@@ -82,6 +85,33 @@ export default function PrintedBarcodeCapture({
   const [typed, setTyped] = useState("");
   const fileRef = useRef(null);
 
+  // ── A CAPTURE BELONGS TO THE MOMENT IT WAS STARTED ────────────────────────
+  // Decoding a burst and reading the index both take real time, during which
+  // the operator can change category, close the flow or navigate to another
+  // product. A result arriving after that must NOT call onCapture: it would
+  // write a perfume's EAN onto whatever the form has become — and for a sized
+  // product that means a one-size code on a product whose real sizes are "9"
+  // and "10". Each run takes a token; only the current token may report.
+  // (Codex review, PR #340.)
+  const runRef = useRef(0);
+  const liveRef = useRef(true);
+  useEffect(() => {
+    liveRef.current = true;
+    return () => { liveRef.current = false; runRef.current++; };
+  }, []);
+  // Switching to a different product invalidates anything still in flight and
+  // clears the surface, so a verdict about product A can never be shown — or
+  // captured — against product B.
+  useEffect(() => {
+    runRef.current++;
+    setNote(null);
+    setConflict(null);
+    setWorking(null);
+    setTyped("");
+  }, [productId]);
+  const beginRun = () => ++runRef.current;
+  const isCurrent = (token) => liveRef.current && runRef.current === token;
+
   const nameOf = (id) => {
     const p = (products || []).find((x) => x && x.id === id);
     return p && p.name ? p.name : id;
@@ -91,10 +121,13 @@ export default function PrintedBarcodeCapture({
   //    moves on. /barcodes/$code is CREATE-ONLY at the rules layer, so a code
   //    already in the index cannot be overwritten; attempting it fails
   //    SILENTLY. Read it, and let what is there decide.
-  const accept = async (code) => {
+  const accept = async (code, token = beginRun()) => {
     setWorking("checking");
     try {
       const verdict = await inspectPrintedBarcode(code, productId);
+      // Superseded or unmounted while the index was being read — drop it
+      // silently. Reporting a stale verdict is worse than reporting nothing.
+      if (!isCurrent(token)) return;
       if (verdict.kind === PRINTED_CONFLICT) {
         // The same printed code on two records means one physical product
         // exists twice in the catalogue. That is a duplicate, and it is
@@ -104,6 +137,21 @@ export default function PrintedBarcodeCapture({
         return;
       }
       setConflict(null);
+      if (verdict.kind === PRINTED_SIZE_MISMATCH) {
+        // Ours, but the index points it at a different size. "Already
+        // registered" would be a lie: the code resolves, to the wrong stock
+        // cell. It cannot be corrected from here (create-only), so it is
+        // surfaced rather than swallowed. (Codex review, PR #340.)
+        setNote({ tone: "red", text:
+          `${code} is already in the barcode index for this product but points at size ` +
+          `“${verdict.indexedSize}”, not one-size. Scanning it would touch the wrong stock. ` +
+          `An admin must reconcile that entry before this code can be used.` });
+        return;
+      }
+      if (verdict.kind === PRINTED_INVALID) {
+        setNote({ tone: "red", text: `“${code}” is not a valid printed barcode.` });
+        return;
+      }
       if (verdict.kind === PRINTED_ALREADY) {
         setNote({ tone: "green", text: `${code} is already registered to this product — nothing to do.` });
       } else {
@@ -113,34 +161,39 @@ export default function PrintedBarcodeCapture({
     } catch (err) {
       // A failed READ must not be reported as a free slot: accepting here
       // would send a code to a create-only write that may be denied silently.
+      if (!isCurrent(token)) return;
       setNote({ tone: "red", text: `Could not check ${code} against the barcode index (${err?.message || err}). Try again in a moment.` });
     } finally {
-      setWorking(null);
+      if (isCurrent(token)) setWorking(null);
     }
   };
 
   const processFrames = async (frames) => {
+    const token = beginRun();
     setNote(null);
     setConflict(null);
     setWorking("decoding");
     try {
       const decoded = await decodeFrames(frames);
-      if (decoded.ok) { await accept(decoded.code); return; }
+      if (!isCurrent(token)) return;
+      if (decoded.ok) { await accept(decoded.code, token); return; }
 
       // No frame's SYMBOL read. Fall back to the printed digits — one vision
       // call, image-hash cached, and its answer faces the same check digit.
       setWorking("digits");
       const digits = await readPrintedDigits(frames, readStyleCodeLabelFn);
+      if (!isCurrent(token)) return;
       if (digits.ok) {
         setNote({ tone: "amber", text: "The bars would not read, so this came from the printed number under them — check it against the box before continuing." });
-        await accept(digits.code);
+        await accept(digits.code, token);
         return;
       }
       setNote({ tone: "amber", text: `${decoded.message} ${digits.message}` });
     } catch (err) {
+      if (!isCurrent(token)) return;
       setNote({ tone: "red", text: `Could not read that barcode (${err?.message || err}) — type it from the box instead.` });
     } finally {
-      setWorking((w) => (w === "checking" ? w : null));
+      if (isCurrent(token)) setWorking((w) => (w === "checking" ? w : null));
     }
   };
 

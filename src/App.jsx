@@ -68,7 +68,8 @@ import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
 import InitialDistributionWizard from "./components/stock/InitialDistributionWizard";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
-import { registerPrintedBarcode } from "./components/stock/printedBarcodeStore";
+import { attachPrintedBarcode, readBarcodeOwners, inspectPrintedBarcode } from "./components/stock/printedBarcodeStore";
+import { PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_SIZE_MISMATCH } from "./utils/eanBarcode";
 import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
@@ -556,6 +557,27 @@ async function reserveNextSkuAndBarcode() {
     throw operatorError(reserved?.error || "SKU/barcode reservation aborted.");
   }
   return reserved; // { sku, barcode }
+}
+
+// Mint a shop barcode as the fallback AND PROVE IT RESOLVES.
+//
+// ensureBarcodes deliberately swallows its own reverse-index errors (a failed
+// index write costs only POS resolvability and self-heals on the next mint), so
+// its resolving is NOT implied by its returning. Telling an operator "a shop
+// barcode has been generated" on that basis is how a product ends up scannable
+// nowhere while everyone believes it is fine. This returns the code only when
+// /barcodes actually names this product. (Codex review, PR #340.)
+async function mintAndVerifyFallbackBarcode(productId, sizes) {
+  try {
+    const minted = await ensureBarcodes(productId, sizes.length ? sizes : [null]);
+    const code = Object.values(minted || {})[0]?.code;
+    if (!code) return null;
+    const owners = await readBarcodeOwners([code]);
+    return owners[0] && owners[0].productId === productId ? code : null;
+  } catch (err) {
+    console.warn("fallback shop barcode could not be minted or verified:", err);
+    return null;
+  }
 }
 
 // ─── AN ERROR THE OPERATOR IS MEANT TO READ ──────────────────────────────────
@@ -5369,29 +5391,37 @@ function AdminView({ products, orders, onExit }) {
       // Registration runs AFTER the product write, never before: the rule on
       // /barcodes/$code validates that the referenced product exists.
       if (newProduct.printedBarcode) {
-        try {
-          const reg = await registerPrintedBarcode(id, newProduct.printedBarcode);
-          if (!reg.ok) {
-            // A code claimed by someone else between capture and save. The
-            // product is already written, so this is reported, not thrown — and
-            // a shop code is minted so the product is still scannable today.
-            alert(
-              `Saved — but barcode ${newProduct.printedBarcode} was registered to another product in the meantime, ` +
-              `so it was NOT attached to this one. A shop barcode has been generated instead. ` +
-              `An admin should check whether these are the same product (Stock → Merge Products).`
-            );
-            ensureBarcodes(id, sizes.length ? sizes : [null]).catch(() => {});
-          }
-        } catch (regErr) {
-          // Rules denial (no stockRole) or a network failure. The captured code
-          // is on the product record either way, so nothing is lost — but the
-          // product must not be left with NO scannable code, so mint one.
-          console.warn("printed barcode registration failed (product already saved):", regErr);
+        // The product record already carries the field (buildNewProduct wrote
+        // it in the same set()), so no product write is needed here — only the
+        // index half, and the removal below if it does not land.
+        const attach = await attachPrintedBarcode({ productId: id, code: newProduct.printedBarcode });
+        const failure = attach.ok ? null
+          : attach.kind === "denied"
+            ? `it could not be written (${attach.reason}) — you may not have stock permission`
+            : attach.reason;
+        if (failure) {
+          // ── THE FIELD MEANS "REGISTERED". SO IT COMES OFF. ────────────────
+          // products/{id}/printedBarcode is the product's copy of a code that
+          // resolves in /barcodes. Leaving it after a failed registration would
+          // show a tidy number on the detail page and return this product from
+          // a search for a code the POS resolves to somebody else. Removing it
+          // keeps the field honest. Best-effort: a failed removal is logged,
+          // never fatal — the product is already saved.
+          update(ref(database, `products/${id}`), { printedBarcode: null })
+            .catch((e) => console.warn("could not clear the unregistered printedBarcode:", e));
+          // Now mint a shop code so the product is scannable — and VERIFY it,
+          // because ensureBarcodes swallows its own index-write errors by
+          // design. Claiming "a shop barcode has been generated" without
+          // checking is how a product ends up scannable nowhere while the
+          // operator is told it is fine. (Codex review, PR #340.)
+          const minted = await mintAndVerifyFallbackBarcode(id, sizes);
           alert(
-            `Saved, but the printed barcode could not be registered (${regErr?.message || regErr}). ` +
-            `A shop barcode has been generated instead — ask an admin to register the printed code.`
+            `Saved, but barcode ${newProduct.printedBarcode} was NOT attached to this product — ${failure}.\n\n` +
+            (minted
+              ? `A shop barcode (${minted}) was generated instead — print and stick a label on the box.`
+              : `A shop barcode could NOT be generated either, so THIS PRODUCT CANNOT BE SCANNED YET. ` +
+                `Ask an admin with stock permission to open it from Stock → Barcodes and print a label.`)
           );
-          ensureBarcodes(id, sizes.length ? sizes : [null]).catch(() => {});
         }
       } else {
         ensureBarcodes(id, sizes.length ? sizes : [null]).catch(() => {});
@@ -5447,13 +5477,21 @@ function AdminView({ products, orders, onExit }) {
             );
           }
           // Surface the inline Print-barcodes sheet for the sizes that saved.
+          //
+          // EXCEPT when the product uses the barcode printed on its own box.
+          // The print sheet calls ensureBarcodes on open, so offering it here
+          // would MINT the shop code we just went to the trouble of not
+          // minting — and hand the operator a label to stick over a barcode
+          // that already works. The distribution wizard is still offered for
+          // Central stock; only the label step is skipped.
           if (savedItems.length) {
-            setLastReceived({ productId: id, productName: newProduct.name, photoUrl: newProduct.photoUrl ?? null, items: savedItems });
+            const usesPrintedBarcode = !!newProduct.printedBarcode;
+            setLastReceived(usesPrintedBarcode ? null : { productId: id, productName: newProduct.name, photoUrl: newProduct.photoUrl ?? null, items: savedItems });
             // Stock landed at Central → offer initial distribution first; the
             // print sheet opens when the wizard closes. Other locations keep
             // the original save → print flow.
             if (recvLoc === "central") setDistribProduct(newProduct);
-            else setPrintOpen(true);
+            else if (!usesPrintedBarcode) setPrintOpen(true);
           }
         }
       } catch (recErr) {
@@ -5508,6 +5546,14 @@ function AdminView({ products, orders, onExit }) {
         categoryKey: nextKey,
         // The size run resets with the category — selecting it is deliberate.
         sizeRun: [],
+        // So does the barcode answer. It was given about a SPECIFIC product in
+        // the operator's hand; carrying a perfume's EAN onto a sneaker would
+        // register a one-size code against a product whose real sizes are "9"
+        // and "10", and a POS scan would then resolve to the wrong stock cell.
+        // buildNewProduct refuses it too — this is the visible half of that
+        // guard, so the form never SHOWS a stale answer either. (Codex, #340.)
+        printedBarcode: null,
+        printedBarcodeAuto: false,
         hubs: hubs.length ? hubs : (clothing ? ["hub2"] : ["hub1"]),
         // Clothing forces the shoebox off even against a manual toggle (it is a
         // shoebox — clothing does not have one). Footwear only auto-sets it
@@ -6073,20 +6119,54 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   // many-to-one by design — both numbers resolve to this product, size "_".
   const [recapture, setRecapture] = useState(false);
   const [savingPrintedBarcode, setSavingPrintedBarcode] = useState(false);
+  // ── DOES THE RECORD AGREE WITH THE INDEX? ─────────────────────────────────
+  // The field is written only after a successful index write, but a code can
+  // still drift out of the index later (a merge repoint, a hand edit, an older
+  // record from before this feature). Rendering the confirmed green number
+  // straight from /products would then show a barcode no scanner resolves, and
+  // nothing on screen would say so. So it is CHECKED, once, on open — and the
+  // check is read-only and best-effort: it can warn, never block, never write.
+  // (Codex + Kimi review, PR #340.)
+  const [indexWarning, setIndexWarning] = useState(null);
+  const printedCode = typeof product.printedBarcode === "string" ? product.printedBarcode : null;
+  useEffect(() => {
+    if (!printedCode || !isPerfume(product)) { setIndexWarning(null); return; }
+    let cancelled = false;
+    inspectPrintedBarcode(printedCode, product.id)
+      .then((v) => {
+        if (cancelled) return;
+        if (v.kind === PRINTED_ALREADY) { setIndexWarning(null); return; }
+        setIndexWarning(
+          v.kind === PRINTED_CONFLICT
+            ? `${printedCode} is shown on this product but the barcode index resolves it to a DIFFERENT product. A scan will not reach this one.`
+            : v.kind === PRINTED_SIZE_MISMATCH
+              ? `${printedCode} resolves to this product but at size “${v.indexedSize}”, not one-size — a scan would touch the wrong stock.`
+              : `${printedCode} is shown on this product but is NOT in the barcode index, so scanning it will not find anything. Photograph it again to register it.`
+        );
+      })
+      .catch(() => { /* a failed read is not evidence of anything */ });
+    return () => { cancelled = true; };
+  }, [printedCode, product.id]);
   const savePrintedBarcode = async (code) => {
     setSavingPrintedBarcode(true);
     try {
-      const reg = await registerPrintedBarcode(product.id, code);
-      if (!reg.ok) {
-        // Claimed by a different product between the capture check and now.
-        alert(`${code} is registered to another product. Nothing was changed.`);
-        return;
-      }
-      await update(ref(database, `products/${product.id}`), { printedBarcode: code });
-      setRecapture(false);
-    } catch (err) {
-      console.error("printed barcode save failed:", err);
-      alert(`Could not register ${code} (${err?.message || err}). Nothing was changed.`);
+      // ONE tested function owns the ordering: index first (it is the write
+      // that can be refused), product record second (it MEANS "registered").
+      const attach = await attachPrintedBarcode({
+        productId: product.id,
+        code,
+        writeProductField: (c) => update(ref(database, `products/${product.id}`), { printedBarcode: c }),
+      });
+      if (attach.ok) { setRecapture(false); setIndexWarning(null); return; }
+      // TELL THE TRUTH ABOUT WHAT LANDED. An index row is PERMANENT — it cannot
+      // be deleted from the client — so "nothing was changed" is false whenever
+      // `indexed` is true, and would send an operator off to register a code
+      // that is already registered. (Codex + Kimi review, PR #340.)
+      alert(attach.indexed
+        ? `${code} IS now registered to this product and scans correctly, but recording it on the ` +
+          `product record failed (${attach.reason}). Reload and try again — re-capturing the same ` +
+          `code is safe and will report it as already registered.`
+        : `${code} was not registered: ${attach.reason}.\n\nNothing was changed.`);
     } finally {
       setSavingPrintedBarcode(false);
     }
@@ -6261,10 +6341,15 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
     if (fail) flashRecv(false, `${ok} received, ${fail} failed — you may not have stock permission (stockRole).`);
     else flashRecv(true, `Received ${ok} size${ok > 1 ? "s" : ""} into ${locLabel}.`);
     if (savedItems.length) {
-      setLastReceived({ productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems });
+      // A product that uses the barcode printed on its own box gets NO label
+      // step: the print sheet mints a shop code on open (ensureBarcodes), which
+      // would both undo the capture and hand the operator a sticker to put over
+      // a working barcode. Distribution is still offered; only printing is not.
+      const usesPrintedBarcode = typeof product.printedBarcode === "string" && !!product.printedBarcode;
+      setLastReceived(usesPrintedBarcode ? null : { productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems });
       // Receive into Central → offer initial distribution first; print follows.
       if (recvLoc === "central") setDistribOpen(true);
-      else setPrintOpen(true);
+      else if (!usesPrintedBarcode) setPrintOpen(true);
     }
   };
 
@@ -6508,6 +6593,12 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
             scanning, and either number resolves to this product. */}
         {isPerfume(product) && (
           <div style={{ borderTop:"1px solid rgba(255,255,255,.06)", padding:"14px 16px" }}>
+            {indexWarning && (
+              <div style={{ marginBottom:10, background:"rgba(248,113,113,.09)", border:"1px solid rgba(248,113,113,.4)",
+                            borderRadius:11, padding:"10px 12px", fontSize:12.5, color:"#FFC9C9", lineHeight:1.5 }}>
+                ⚠️ {indexWarning}
+              </div>
+            )}
             <PrintedBarcodeCapture
               productId={product.id}
               products={allProducts}

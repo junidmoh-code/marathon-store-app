@@ -113,8 +113,8 @@ const MUTATIONS = [
     id: "M11",
     guard: "Only the printed code the record was given may reach /products",
     file: "src/utils/newProductRecord.js",
-    from: `  if (typeof extras.printedBarcode === "string" && isPrintedBarcode(extras.printedBarcode)) {`,
-    to: `  if (typeof extras.printedBarcode === "string") {`,
+    from: `      && isPrintedBarcode(extras.printedBarcode)) {`,
+    to: `      && true) {`,
     tests: ["src/utils/printedBarcodeRecord.test.js"],
   },
   {
@@ -157,6 +157,100 @@ const MUTATIONS = [
     to: `      onCapture(code);`,
     tests: ["src/components/admin/PrintedBarcodeCapture.test.jsx"],
   },
+  // ── Round 2: the guards the Kimi + Codex review round added ───────────────
+  {
+    id: "M18",
+    guard: "A perfume EAN cannot survive a switch to a SIZED category",
+    file: "src/utils/newProductRecord.js",
+    from: `  if (isPerfume(legacy)
+      && typeof extras.printedBarcode === "string"`,
+    to: `  if (true
+      && typeof extras.printedBarcode === "string"`,
+    tests: ["src/utils/printedBarcodeRecord.test.js"],
+  },
+  {
+    id: "M19",
+    guard: "The form clears the barcode answer on a category change",
+    file: "src/App.jsx",
+    from: `        printedBarcode: null,
+        printedBarcodeAuto: false,`,
+    to: ``,
+    tests: ["src/components/stock/displayRegisterRemoved.test.js"],
+  },
+  {
+    id: "M20",
+    guard: "The index is written BEFORE the product record claims the code",
+    file: "src/components/stock/printedBarcodeStore.js",
+    from: `    reg = await registerPrintedBarcode(productId, code, size);`,
+    to: `    if (writeProductField) await writeProductField(code);
+    reg = await registerPrintedBarcode(productId, code, size);`,
+    tests: ["src/components/stock/printedBarcodeStore.test.js"],
+  },
+  {
+    id: "M21",
+    guard: "A failed RECORD write still reports the index row as landed",
+    file: "src/components/stock/printedBarcodeStore.js",
+    from: `      return { ok: false, kind: "record_write_failed", indexed: true, reason: String(err?.message || err) };`,
+    to: `      return { ok: false, kind: "record_write_failed", indexed: false, reason: String(err?.message || err) };`,
+    tests: ["src/components/stock/printedBarcodeStore.test.js"],
+  },
+  {
+    id: "M22",
+    guard: "A row pointing at the WRONG SIZE is not \"already registered\"",
+    file: "src/utils/eanBarcode.js",
+    from: `  if (wrongSize) {`,
+    to: `  if (false) {`,
+    tests: [
+      "src/components/stock/printedBarcodeStore.test.js",
+      "src/components/admin/PrintedBarcodeCapture.test.jsx",
+    ],
+  },
+  {
+    id: "M23",
+    guard: "An OMITTED index size reads as one-size, matching the POS resolver",
+    file: "src/utils/eanBarcode.js",
+    from: `  return size == null || size === "" ? "_" : String(size);`,
+    to: `  return String(size);`,
+    tests: ["src/components/stock/printedBarcodeStore.test.js"],
+  },
+  {
+    id: "M24",
+    guard: "A code that is not a barcode is refused, not a silent no-op success",
+    file: "src/components/stock/printedBarcodeStore.js",
+    from: `  if (!normalisePrintedBarcode(code).ok) {`,
+    to: `  if (false) {`,
+    tests: ["src/components/stock/printedBarcodeStore.test.js"],
+  },
+  {
+    id: "M25",
+    guard: "A UPC-A twin denied mid-loop does not discard the form that landed",
+    file: "src/components/stock/printedBarcodeStore.js",
+    from: `    } catch (err) {
+      failed.push({ code: c, reason: String(err?.message || err) });
+    }`,
+    to: `    } catch (err) {
+      throw err;
+    }`,
+    tests: ["src/components/stock/printedBarcodeStore.test.js"],
+  },
+  {
+    id: "M26",
+    guard: "Registration is verified by reading the row back",
+    file: "src/components/stock/printedBarcodeStore.js",
+    from: `  const stolen = owners.filter((o) => o.productId !== productId);`,
+    to: `  const stolen = [];`,
+    tests: ["src/components/stock/printedBarcodeStore.test.js"],
+  },
+  {
+    id: "M27",
+    guard: "A superseded capture never reports against the new product",
+    file: "src/components/admin/PrintedBarcodeCapture.jsx",
+    from: `      if (!isCurrent(token)) return;
+      if (verdict.kind === PRINTED_CONFLICT) {`,
+    to: `      if (false) return;
+      if (verdict.kind === PRINTED_CONFLICT) {`,
+    tests: ["src/components/admin/PrintedBarcodeCapture.test.jsx"],
+  },
   {
     id: "M17",
     guard: "The captured code is searchable in the app that wrote it",
@@ -191,6 +285,14 @@ for (const m of MUTATIONS) {
     mutated = runTests(m.tests);
   } finally {
     writeFileSync(m.file, original);
+  }
+  // PROVE THE RESTORE. A `finally` does not survive a process kill, and a
+  // half-restored source file left in the working tree is a deliberately broken
+  // product waiting to be committed. Verified byte-for-byte, and the run stops
+  // dead rather than continuing to mutate more files. (Codex review, PR #340.)
+  if (readFileSync(m.file, "utf8") !== original) {
+    console.error(`\n*** ${m.file} DID NOT RESTORE — restore it from git before doing anything else. ***`);
+    process.exit(2);
   }
   restored = runTests(m.tests);
   results.push({ ...m, mutated, restored });

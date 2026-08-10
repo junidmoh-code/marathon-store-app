@@ -147,7 +147,11 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     const app = readFileSync(join(SRC, "App.jsx"), "utf8");
     expect(app).toMatch(/for \(const zSize of zeroEntries\(sizes, recvQtys\)\)/);
     expect(app).toMatch(/setCellState\(recvLoc, id, zSize, "live"\)/);
-    expect(app).toMatch(/sizeRun: \[\],\n\s*hubs: hubs\.length/);
+    // The category reset. The printed-barcode answer joined it (PR #340): a
+    // perfume EAN must not survive a switch to a SIZED category, where it
+    // would register a one-size code against a product sized 9/10.
+    expect(app).toMatch(/sizeRun: \[\],[\s\S]{0,700}?hubs: hubs\.length/);
+    expect(app).toMatch(/printedBarcode: null,\n\s*printedBarcodeAuto: false,/);
     // Review pins (#330): a failed seed is OBSERVED and reported (setCellState
     // resolves {ok:false}, it never throws), and the finder only ever hands
     // back records from the CURRENT catalog:

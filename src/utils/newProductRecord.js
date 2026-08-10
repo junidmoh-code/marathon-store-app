@@ -17,6 +17,7 @@
 import { legacyFor, sizesOf, catByKey } from "./productTaxonomy.js";
 import { normaliseStyleCode, formatStyleCodeForDisplay } from "./styleCode.js";
 import { normalisePrintedBarcode } from "./eanBarcode.js";
+import { isPerfume } from "./productCategory.js";
 
 // A printed manufacturer code is only ever accepted through the ONE gate — the
 // right length AND its own check digit. Same function the capture UI uses, so
@@ -174,7 +175,17 @@ export function buildNewProduct(registry, form, extras = {}) {
   // somehow carries an unchecked number would put a code on a product that no
   // physical box matches. OMITTED when absent — never null (see the 2026-08-06
   // undefined/omission outage above).
-  if (typeof extras.printedBarcode === "string" && isPrintedBarcode(extras.printedBarcode)) {
+  // GATED ON THE CATEGORY, not merely on a value being present. The Add Product
+  // form keeps one draft across a category change, so an operator who captures
+  // a perfume EAN and then switches to Sneakers would otherwise carry that code
+  // onto a SIZED product — and it would be registered against size "_", so a
+  // POS scan would resolve to a one-size cell on a product whose real sizes are
+  // "9" and "10". Wrong cell, wrong deduction. The form clears the field on a
+  // category change; this refuses it outright, so no caller can reintroduce the
+  // bug. (Codex review, PR #340.)
+  if (isPerfume(legacy)
+      && typeof extras.printedBarcode === "string"
+      && isPrintedBarcode(extras.printedBarcode)) {
     product.printedBarcode = extras.printedBarcode;
   }
 

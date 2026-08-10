@@ -25,7 +25,10 @@ import { ref, get, set } from "firebase/database";
 import { database } from "../../firebase";
 import { barcodeIndexRecord } from "./barcode";
 import { serverNowIso } from "../../utils/serverTime";
-import { indexCodesFor, printedBarcodeOutcome, PRINTED_FREE } from "../../utils/eanBarcode";
+import {
+  indexCodesFor, printedBarcodeOutcome, normalisePrintedBarcode,
+  PRINTED_FREE, PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_INVALID, PRINTED_SIZE_MISMATCH,
+} from "../../utils/eanBarcode";
 
 // Perfume is one-size: the "_" sentinel, the SAME one /stock and the per-size
 // barcode slots use. It is passed through barcodeIndexRecord (which omits a
@@ -42,7 +45,14 @@ export async function readBarcodeOwners(codes) {
   for (const code of codes) {
     const snap = await get(ref(database, `barcodes/${code}`));
     const val = snap.val();
-    out.push({ code, productId: val && typeof val.productId === "string" ? val.productId : null });
+    out.push({
+      code,
+      productId: val && typeof val.productId === "string" ? val.productId : null,
+      // The SIZE the row resolves to is carried, not discarded. A row that is
+      // ours but points at a different size is not "already registered" — it
+      // is a scan that deducts the wrong cell. (Codex review, PR #340.)
+      size: val && val.size != null ? val.size : null,
+    });
   }
   return out;
 }
@@ -59,11 +69,16 @@ export async function readBarcodeOwners(codes) {
  *
  * @returns the printedBarcodeOutcome verdict, plus the index codes it covers.
  */
-export async function inspectPrintedBarcode(code, productId = null) {
+export async function inspectPrintedBarcode(code, productId = null, size = ONE_SIZE) {
+  // An unusable code must not read as "free" — that made registerPrintedBarcode
+  // report ok with nothing written, a silent success for garbage. It is refused
+  // here, once, for every caller. (Kimi review, PR #340.)
+  if (!normalisePrintedBarcode(code).ok) {
+    return { kind: PRINTED_INVALID, code: String(code ?? ""), codes: [], indexCodes: [] };
+  }
   const codes = indexCodesFor(code);
-  if (!codes.length) return { kind: "free", codes: [], indexCodes: [] };
   const owners = await readBarcodeOwners(codes);
-  return { ...printedBarcodeOutcome(owners, productId), indexCodes: codes };
+  return { ...printedBarcodeOutcome(owners, productId, size), indexCodes: codes };
 }
 
 /**
@@ -82,16 +97,116 @@ export async function inspectPrintedBarcode(code, productId = null) {
  */
 export async function registerPrintedBarcode(productId, code, size = ONE_SIZE) {
   if (!productId) throw new Error("registerPrintedBarcode requires productId");
-  const verdict = await inspectPrintedBarcode(code, productId);
+  const verdict = await inspectPrintedBarcode(code, productId, size);
   if (verdict.kind !== PRINTED_FREE) {
-    // "already" is success with nothing to do; "conflict" is a refusal. Both
-    // are reported as-is — the caller decides, this never guesses.
-    return { ok: verdict.kind !== "conflict", written: [], ...verdict };
+    // "already" is success with nothing to do. "conflict", "size_mismatch" and
+    // "invalid" are refusals. Reported as-is — the caller decides, this never
+    // guesses, and it never writes on a verdict it did not understand.
+    return { ok: verdict.kind === PRINTED_ALREADY, written: [], failed: [], ...verdict };
   }
+
+  // ── PER-CODE, NOT ALL-OR-NOTHING ──────────────────────────────────────────
+  // A UPC-A writes two rows and RTDB gives us no client-side transaction across
+  // them. If the second is denied after the first landed, throwing would report
+  // a total failure while one form is live and scanning — so the caller would
+  // mint a shop code the product did not need. What actually happened is
+  // returned instead, and a partial result is still a success: the primary form
+  // is written first, so the number on the box resolves. (Kimi review, #340.)
   const written = [];
+  const failed = [];
   for (const c of verdict.codes) {
-    await set(ref(database, `barcodes/${c}`), barcodeIndexRecord(productId, size, serverNowIso()));
-    written.push(c);
+    try {
+      await set(ref(database, `barcodes/${c}`), barcodeIndexRecord(productId, size, serverNowIso()));
+      written.push(c);
+    } catch (err) {
+      failed.push({ code: c, reason: String(err?.message || err) });
+    }
   }
-  return { ok: true, written, kind: PRINTED_FREE };
+  if (!written.length) {
+    // Nothing landed at all — a rules denial (no stockRole) or an outage. This
+    // is the caller's signal to fall back, so it must be an exception, not a
+    // quiet {ok:false} that an `if (!reg.ok)` might read as a mere conflict.
+    throw new Error(failed[0]?.reason || "printed barcode registration wrote nothing");
+  }
+
+  // ── READ BACK, BECAUSE A WRITE THAT "SUCCEEDED" MAY NOT HAVE ──────────────
+  // The read-before-write is TOCTOU: between our read and our set, another
+  // client can claim the same code (or the twin form of it) for a different
+  // product, and under the create-only rule the loser's write is DENIED — which
+  // the SDK may surface late, or not at all if the winner's value is identical
+  // in shape. So the rows are read back and must actually name us. We cannot
+  // undo the other client's row from here (no delete permission), but the
+  // caller must never be told a code is ours when it is not. (Codex, #340.)
+  const owners = await readBarcodeOwners(written);
+  const stolen = owners.filter((o) => o.productId !== productId);
+  if (stolen.length) {
+    return {
+      ok: false, kind: PRINTED_CONFLICT, written: [], failed,
+      code: stolen[0].code, otherProductId: stolen[0].productId,
+    };
+  }
+  return { ok: true, written, failed, kind: PRINTED_FREE };
+}
+
+// ─── WHAT A REFUSAL MEANS, IN WORDS ──────────────────────────────────────────
+// registerPrintedBarcode returns a VERDICT, not a boolean, because the four
+// ways it can refuse need four different things from the operator. Pure, and
+// living beside the verdicts it describes, so the two capture surfaces cannot
+// word the same outcome differently.
+export function registrationRefusalText(reg, code) {
+  if (!reg) return "the barcode index refused it";
+  if (reg.kind === PRINTED_CONFLICT) {
+    return `it is already registered to another product${reg.otherProductId ? ` (${reg.otherProductId})` : ""}` +
+           `, so an admin should check whether these are the same product (Stock → Merge Products)`;
+  }
+  if (reg.kind === PRINTED_SIZE_MISMATCH) {
+    return `the barcode index already points it at size “${reg.indexedSize}” instead of one-size, ` +
+           `which an admin must reconcile before it can be trusted`;
+  }
+  if (reg.kind === PRINTED_INVALID) return `“${code}” is not a valid printed barcode`;
+  return "the barcode index refused it";
+}
+
+// ─── ATTACHING A CODE TO A PRODUCT — THE ORDERING, IN ONE PLACE ──────────────
+// Two writes, and their order is the whole safety property:
+//   1. /barcodes/{code}  — the scan resolution. This is the one that can be
+//      REFUSED (create-only, needs stockRole), so it goes first.
+//   2. /products/{id}/printedBarcode — the product's copy, which MEANS "this
+//      code is registered". Writing it first would show a barcode on screen,
+//      and return the product from a search for it, while no scanner could
+//      resolve it.
+//
+// Both capture surfaces route through here so the ordering is defined once and
+// TESTED once — previously each surface open-coded it, and swapping the two
+// writes broke no test at all. (Kimi + Codex review, PR #340.)
+//
+// `writeProductField` is injected: the Add Product flow has already written the
+// field as part of the product record, so it passes a no-op and only needs the
+// index half plus the removal-on-failure.
+//
+// @returns {{ok:true, kind}|{ok:false, kind, reason, indexed:boolean}}
+export async function attachPrintedBarcode({ productId, code, writeProductField, size = ONE_SIZE }) {
+  let reg;
+  try {
+    reg = await registerPrintedBarcode(productId, code, size);
+  } catch (err) {
+    // Nothing was written at all — the index half never landed.
+    return { ok: false, kind: "denied", indexed: false, reason: String(err?.message || err) };
+  }
+  if (!reg.ok) {
+    return { ok: false, kind: reg.kind, indexed: false, reason: registrationRefusalText(reg, code), verdict: reg };
+  }
+  // The code now resolves. Only now may the product record claim it.
+  if (writeProductField) {
+    try {
+      await writeProductField(code);
+    } catch (err) {
+      // The index row is PERMANENT — it cannot be deleted from the client (the
+      // rule permits a write only into an empty slot). So this is a partial
+      // success, and saying otherwise would send an operator to register a code
+      // that is already registered.
+      return { ok: false, kind: "record_write_failed", indexed: true, reason: String(err?.message || err) };
+    }
+  }
+  return { ok: true, kind: reg.kind, indexed: true, written: reg.written, failed: reg.failed };
 }

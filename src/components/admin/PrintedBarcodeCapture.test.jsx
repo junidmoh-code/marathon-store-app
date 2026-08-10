@@ -125,6 +125,62 @@ describe("a code already in the index", () => {
   });
 });
 
+describe("a capture belongs to the moment it was started", () => {
+  it("does NOT report against a product the operator moved to mid-read", async () => {
+    // Reading the index takes real time. If the operator switches product (or
+    // category, in the Add Product form) while it is in flight, the verdict
+    // must be dropped — capturing it would write a perfume's one-size EAN onto
+    // whatever the surface has become. (Codex review, PR #340.)
+    let release;
+    inspect.mockReturnValue(new Promise((res) => { release = () => res({ kind: "free", codes: [OUD_MOOD], indexCodes: [OUD_MOOD] }); }));
+    const onCapture = vi.fn();
+
+    let r;
+    await act(async () => {
+      r = TestRenderer.create(React.createElement(PrintedBarcodeCapture, {
+        productId: "pA", products: [], value: null, onCapture, onClear: vi.fn(),
+      }));
+    });
+    await act(async () => { textInput(r).props.onChange({ target: { value: OUD_MOOD } }); });
+    await act(async () => { form(r).props.onSubmit({ preventDefault() {} }); });
+
+    // The operator moves to a different product before the read comes back.
+    await act(async () => {
+      r.update(React.createElement(PrintedBarcodeCapture, {
+        productId: "pB", products: [], value: null, onCapture, onClear: vi.fn(),
+      }));
+    });
+    await act(async () => { release(); });
+
+    expect(onCapture).not.toHaveBeenCalled();
+  });
+
+  it("does not report after unmount", async () => {
+    let release;
+    inspect.mockReturnValue(new Promise((res) => { release = () => res({ kind: "free", codes: [OUD_MOOD], indexCodes: [OUD_MOOD] }); }));
+    const onCapture = vi.fn();
+    const r = await mount({ onCapture });
+    await act(async () => { textInput(r).props.onChange({ target: { value: OUD_MOOD } }); });
+    await act(async () => { form(r).props.onSubmit({ preventDefault() {} }); });
+    await act(async () => { r.unmount(); });
+    await act(async () => { release(); });
+    expect(onCapture).not.toHaveBeenCalled();
+  });
+});
+
+describe("a row that is ours but points at the WRONG SIZE", () => {
+  it("is refused, not shown as registered — a scan would hit the wrong stock", async () => {
+    inspect.mockResolvedValue({ kind: "size_mismatch", code: OUD_MOOD, indexedSize: "50ml", expectedSize: "_" });
+    const onCapture = vi.fn();
+    const r = await mount({ productId: "pPerfume", onCapture });
+    await type(r, OUD_MOOD);
+
+    expect(onCapture).not.toHaveBeenCalled();
+    expect(allText(r)).toMatch(/50ml/);
+    expect(allText(r)).toMatch(/wrong stock/i);
+  });
+});
+
 describe("the accepted code is shown for confirmation", () => {
   it("renders the number large, grouped, before anything is written", async () => {
     const r = await mount({ value: OUD_MOOD });

@@ -81,6 +81,28 @@ describe("buildNewProduct — the printed code on the record", () => {
   });
 });
 
+describe("a captured code cannot leak onto a non-perfume product", () => {
+  it("REFUSES a valid EAN on a sneaker — the category decides, not the value", () => {
+    // The Add Product form keeps ONE draft across a category change. An
+    // operator who captures a perfume EAN and then switches to Sneakers would
+    // otherwise carry that code onto a SIZED product, where it registers
+    // against size "_" — so a POS scan resolves to a one-size cell on a
+    // product whose real sizes are "9" and "10". Wrong cell, wrong deduction.
+    const p = buildNewProduct(TAXONOMY_SEED, sneakerForm, { id: "p1", printedBarcode: OUD_MOOD });
+    expect("printedBarcode" in p).toBe(false);
+    expect(p.sizes).toEqual(["9"]);
+  });
+
+  it("refuses it on the one-size accessories too, which share perfume's \"_\"", () => {
+    for (const key of ["watches", "belts", "bags", "sunglasses"]) {
+      const form = { name: "Thing", categoryKey: key, hubs: ["hub2"], sizeRun: [], photo: "" };
+      const p = buildNewProduct(TAXONOMY_SEED, form, { id: "p1", printedBarcode: OUD_MOOD });
+      expect(p, key).not.toBeNull();
+      expect("printedBarcode" in p, key).toBe(false);
+    }
+  });
+});
+
 describe("every other category is untouched", () => {
   it("a sneaker record is byte-identical with and without the new extra", () => {
     const withExtra = buildNewProduct(TAXONOMY_SEED, sneakerForm, { id: "p1", printedBarcode: null });

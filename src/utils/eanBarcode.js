@@ -137,27 +137,64 @@ export function indexCodesFor(code) {
 //   "conflict" some form points at a DIFFERENT product → the same printed code
 //              on two records means one physical product exists twice in the
 //              catalogue. Refuse, and hand it to the duplicate flow.
+// A fourth outcome exists after all, and missing it was a real hole: a row
+// that IS ours but points at a DIFFERENT SIZE. "Already registered" would be a
+// lie — the code resolves, but to the wrong stock cell, so a scan deducts the
+// wrong one. It cannot be corrected from the client either (create-only), so it
+// is surfaced for reconciliation rather than swallowed. (Codex review, #340.)
+// ALL FOUR OUTCOMES LIVE HERE, together. A fifth constant kept in the Firebase
+// module was a split that cost a real debugging session — and, worse, an
+// incomplete mock of that module turned a missing export into a thrown
+// ReferenceError inside a try block, which surfaced as "could not check the
+// index" rather than as the wiring mistake it was.
 export const PRINTED_FREE = "free";
 export const PRINTED_ALREADY = "already";
 export const PRINTED_CONFLICT = "conflict";
+export const PRINTED_SIZE_MISMATCH = "size_mismatch";
+// Not a barcode at all. Distinct from a conflict, which is somebody else's
+// real code.
+export const PRINTED_INVALID = "invalid";
 
 /**
  * Decide from index readings alone. PURE — the caller does the reads.
  *
- * @param {Array<{code:string, productId:(string|null)}>} owners one entry per
- *        index code, productId null when the slot is free.
+ * @param {Array<{code:string, productId:(string|null), size:(string|null)}>} owners
+ *        one entry per index code; productId null when the slot is free.
  * @param {string|null} productId the product being captured for; null while
  *        creating a product that does not exist yet (every existing owner is
  *        then, by definition, a different product).
+ * @param {string} expectedSize the size the row must carry to count as ours.
  */
-export function printedBarcodeOutcome(owners, productId) {
+export function printedBarcodeOutcome(owners, productId, expectedSize = "_") {
   const rows = Array.isArray(owners) ? owners : [];
   // A conflict outranks everything else: if ANY form of this code is owned
   // elsewhere, registering the other forms would spread one duplicate into two.
   const clash = rows.find((r) => r && r.productId && r.productId !== productId);
   if (clash) return { kind: PRINTED_CONFLICT, code: clash.code, otherProductId: clash.productId };
 
+  // Ours, but pointing somewhere else. A legacy or hand-made row can do this,
+  // and treating it as success would leave the POS deducting the wrong cell
+  // while the UI showed a tidy green tick.
+  const wrongSize = rows.find((r) => r && r.productId === productId && r.productId
+    && normaliseIndexSize(r.size) !== expectedSize);
+  if (wrongSize) {
+    return {
+      kind: PRINTED_SIZE_MISMATCH,
+      code: wrongSize.code,
+      indexedSize: normaliseIndexSize(wrongSize.size),
+      expectedSize,
+    };
+  }
+
   const free = rows.filter((r) => r && !r.productId).map((r) => r.code);
   if (!free.length && rows.length) return { kind: PRINTED_ALREADY };
   return { kind: PRINTED_FREE, codes: free };
+}
+
+// barcodeIndexRecord OMITS the size field for an unsized item (RTDB drops
+// nulls), so an absent size reads as the one-size sentinel — exactly how the
+// POS resolver reads it (`barcode.size ?? null`). Anything else is compared
+// literally.
+export function normaliseIndexSize(size) {
+  return size == null || size === "" ? "_" : String(size);
 }

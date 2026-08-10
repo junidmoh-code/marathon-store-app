@@ -9,6 +9,15 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 let store = {};
 let overwriteAttempts = [];
+// Codes whose write is DENIED even though the slot is empty — the race in
+// which another client claims a code between our read and our write, which is
+// exactly how a UPC-A ends up half-registered.
+let denyWrites = new Set();
+// Codes where a CONCURRENT client's row wins: our write appears to go through
+// locally, but what is actually at that path afterwards names somebody else.
+// This is the read→write race the create-only rule arbitrates, and the only
+// way to detect it from the client is to read the row back.
+let stealWrites = new Map();
 
 function getPath(path) {
   let node = store;
@@ -37,19 +46,71 @@ vi.mock("firebase/database", () => ({
       overwriteAttempts.push(node.path);
       throw new Error("PERMISSION_DENIED: /barcodes is create-only");
     }
-    setPath(node.path, value);
+    if ([...denyWrites].some((c) => String(node.path).endsWith(`/${c}`))) {
+      throw new Error("PERMISSION_DENIED: claimed in the meantime");
+    }
+    const code = String(node.path).split("/").pop();
+    const thief = stealWrites.get(code);
+    setPath(node.path, thief ? { ...value, productId: thief } : value);
   },
 }));
 vi.mock("../../firebase", () => ({ database: {} }));
 vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => "2026-08-10T00:00:00.000Z" }));
 
-const { registerPrintedBarcode, inspectPrintedBarcode, readBarcodeOwners } =
+const { registerPrintedBarcode, inspectPrintedBarcode, readBarcodeOwners, attachPrintedBarcode, registrationRefusalText } =
   await import("./printedBarcodeStore");
 
 const OUD_MOOD = "6291106065114";
 const EPIC = "6291103660466";
 
-beforeEach(() => { store = {}; overwriteAttempts = []; });
+beforeEach(() => { store = {}; overwriteAttempts = []; denyWrites = new Set(); stealWrites = new Map(); });
+
+describe("losing the read→write race is DETECTED, not assumed away", () => {
+  it("reads the row back and refuses to claim a code that names somebody else", async () => {
+    // Between our read of an empty slot and our write, another client claims
+    // the code for a different product. Trusting the write to have "succeeded"
+    // would hand the caller a code the POS resolves elsewhere — and the caller
+    // would then write it onto the product record as its identity.
+    stealWrites.set(OUD_MOOD, "pSomebodyElse");
+
+    const out = await registerPrintedBarcode("pPerfume", OUD_MOOD);
+
+    expect(out.ok).toBe(false);
+    expect(out.kind).toBe("conflict");
+    expect(out.otherProductId).toBe("pSomebodyElse");
+    expect(out.written).toEqual([]);
+  });
+
+  it("and attachPrintedBarcode therefore never records it on the product", async () => {
+    stealWrites.set(OUD_MOOD, "pSomebodyElse");
+    const writeProductField = vi.fn();
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD, writeProductField });
+    expect(out.ok).toBe(false);
+    expect(writeProductField).not.toHaveBeenCalled();
+  });
+});
+
+describe("a UPC-A whose twin is denied mid-write", () => {
+  it("keeps the form that LANDED instead of reporting total failure", async () => {
+    // The primary form is written first, so the number on the box resolves.
+    // Throwing here would tell the caller nothing was registered, and it would
+    // mint a shop code the product did not need. (Kimi review, PR #340.)
+    denyWrites.add("0036000291452");
+
+    const out = await registerPrintedBarcode("pPerfume", "036000291452");
+
+    expect(out.ok).toBe(true);
+    expect(out.written).toEqual(["036000291452"]);
+    expect(out.failed.map((f) => f.code)).toEqual(["0036000291452"]);
+    expect(store.barcodes["036000291452"].productId).toBe("pPerfume");
+  });
+
+  it("throws when NOTHING landed, so the caller knows to fall back", async () => {
+    denyWrites.add("036000291452");
+    denyWrites.add("0036000291452");
+    await expect(registerPrintedBarcode("pPerfume", "036000291452")).rejects.toThrow(/PERMISSION_DENIED/);
+  });
+});
 
 describe("a free code registers against size \"_\"", () => {
   it("writes the index row pointing at the product, one-size", async () => {
@@ -154,6 +215,111 @@ describe("an auto-generated barcode is never touched", () => {
   });
 });
 
+// ─── THE ORDERING, WHICH NOTHING USED TO TEST ────────────────────────────────
+// Both reviewers landed on the same gap: swapping the two writes in the detail
+// page (product record before index) broke NO test, even though the comment
+// calls that ordering non-negotiable. Both surfaces now route through
+// attachPrintedBarcode, and the ordering is pinned here.
+describe("attachPrintedBarcode — index first, product record second", () => {
+  it("writes the index BEFORE the product record", async () => {
+    const order = [];
+    await attachPrintedBarcode({
+      productId: "pPerfume", code: OUD_MOOD,
+      writeProductField: async () => {
+        // By the time the record is written the code must ALREADY resolve.
+        order.push(`record:${getPath(`barcodes/${OUD_MOOD}/productId`)}`);
+      },
+    });
+    expect(order).toEqual(["record:pPerfume"]);
+  });
+
+  it("never writes the product record when the index REFUSES", async () => {
+    await registerPrintedBarcode("pOther", OUD_MOOD);
+    const writeProductField = vi.fn();
+
+    const out = await attachPrintedBarcode({ productId: "pMine", code: OUD_MOOD, writeProductField });
+
+    expect(out.ok).toBe(false);
+    expect(out.kind).toBe("conflict");
+    expect(out.indexed).toBe(false);
+    expect(writeProductField).not.toHaveBeenCalled();
+    expect(out.reason).toMatch(/already registered to another product/);
+    expect(out.reason).toMatch(/Merge Products/);
+  });
+
+  it("reports indexed:true when only the RECORD write fails — the row is permanent", async () => {
+    // Saying "nothing was changed" here would be false, and would send an
+    // operator off to register a code that already resolves.
+    const out = await attachPrintedBarcode({
+      productId: "pPerfume", code: OUD_MOOD,
+      writeProductField: async () => { throw new Error("permission denied"); },
+    });
+    expect(out.ok).toBe(false);
+    expect(out.kind).toBe("record_write_failed");
+    expect(out.indexed).toBe(true);
+    expect(store.barcodes[OUD_MOOD].productId).toBe("pPerfume");   // it DID land
+  });
+
+  it("reports denied (indexed:false) when nothing could be written at all", async () => {
+    const out = await attachPrintedBarcode({
+      productId: "pPerfume", code: "not-a-barcode", writeProductField: vi.fn(),
+    });
+    expect(out.ok).toBe(false);
+    expect(out.indexed).toBe(false);
+  });
+
+  it("succeeds with no product write at all (the Add Product path)", async () => {
+    // The record already carries the field from the product's own set().
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD });
+    expect(out.ok).toBe(true);
+    expect(store.barcodes[OUD_MOOD].productId).toBe("pPerfume");
+  });
+});
+
+describe("registrationRefusalText — one wording for both surfaces", () => {
+  it("names the other product and points at Merge for a conflict", () => {
+    const text = registrationRefusalText({ kind: "conflict", otherProductId: "pOther" }, OUD_MOOD);
+    expect(text).toMatch(/pOther/);
+    expect(text).toMatch(/Merge Products/);
+  });
+
+  it("says which size the index disagrees on", () => {
+    expect(registrationRefusalText({ kind: "size_mismatch", indexedSize: "50ml" }, OUD_MOOD)).toMatch(/50ml/);
+  });
+
+  it("quotes the input when it was not a barcode", () => {
+    expect(registrationRefusalText({ kind: "invalid" }, "junk")).toMatch(/junk/);
+  });
+
+  it("never returns an empty string for an unknown verdict", () => {
+    expect(registrationRefusalText(null, OUD_MOOD).length).toBeGreaterThan(0);
+    expect(registrationRefusalText({ kind: "who-knows" }, OUD_MOOD).length).toBeGreaterThan(0);
+  });
+});
+
+describe("a row that is ours but points at the WRONG SIZE", () => {
+  it("is NOT reported as already-registered — a scan would hit the wrong cell", async () => {
+    setPath(`barcodes/${OUD_MOOD}`, { productId: "pPerfume", size: "50ml" });
+
+    const out = await registerPrintedBarcode("pPerfume", OUD_MOOD);
+
+    expect(out.ok).toBe(false);
+    expect(out.kind).toBe("size_mismatch");
+    expect(out.indexedSize).toBe("50ml");
+    expect(out.written).toEqual([]);
+    expect(overwriteAttempts).toEqual([]);
+  });
+
+  it("treats an OMITTED size as one-size, matching how the POS reads it", async () => {
+    // barcodeIndexRecord omits the size field for unsized items and RTDB drops
+    // nulls, so absent must read as "_" — not as a mismatch.
+    setPath(`barcodes/${OUD_MOOD}`, { productId: "pPerfume" });
+    const out = await registerPrintedBarcode("pPerfume", OUD_MOOD);
+    expect(out.kind).toBe("already");
+    expect(out.ok).toBe(true);
+  });
+});
+
 describe("inspection is read-only", () => {
   it("reports a conflict for a product that does not exist yet (create flow)", async () => {
     await registerPrintedBarcode("pFirst", OUD_MOOD);
@@ -162,8 +328,19 @@ describe("inspection is read-only", () => {
     expect(verdict.otherProductId).toBe("pFirst");
   });
 
-  it("reads a free slot as unowned", async () => {
-    expect(await readBarcodeOwners([EPIC])).toEqual([{ code: EPIC, productId: null }]);
+  it("reads a free slot as unowned, and carries the row's size", async () => {
+    expect(await readBarcodeOwners([EPIC])).toEqual([{ code: EPIC, productId: null, size: null }]);
+    await registerPrintedBarcode("pPerfume", EPIC);
+    expect(await readBarcodeOwners([EPIC])).toEqual([{ code: EPIC, productId: "pPerfume", size: "_" }]);
+  });
+
+  it("refuses a code that is not a printed barcode instead of reporting a no-op success", async () => {
+    // Previously: indexCodesFor("garbage") → [] → "free" with no codes → the
+    // loop wrote nothing and returned ok:true. A silent success for junk.
+    const out = await registerPrintedBarcode("pPerfume", "not-a-barcode");
+    expect(out.ok).toBe(false);
+    expect(out.kind).toBe("invalid");
+    expect(out.written).toEqual([]);
   });
 
   it("refuses to register without a productId", async () => {

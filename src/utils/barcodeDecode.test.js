@@ -11,9 +11,10 @@ import { describe, it, expect, vi } from "vitest";
 // under test only uses it inside decodeBlob, which these tests never call.
 vi.mock("html5-qrcode", () => ({
   Html5Qrcode: class { scanFile() { return Promise.resolve(""); } clear() {} },
-  Html5QrcodeSupportedFormats: { EAN_13: 9, EAN_8: 10, UPC_A: 14 },
+  Html5QrcodeSupportedFormats: { QR_CODE: 0, EAN_13: 9, EAN_8: 10, UPC_A: 14, UPC_E: 15 },
 }));
 
+const { Html5QrcodeSupportedFormats: FORMATS } = await import("html5-qrcode");
 const { pickDecodedBarcode, decodeFrames, readPrintedDigits, RETAIL_1D_FORMATS } =
   await import("./barcodeDecode");
 
@@ -25,7 +26,14 @@ const framesOf = (n) => Array.from({ length: n }, (_, i) => ({ blob: { i }, base
 
 describe("the decoder is asked for retail 1D symbologies only", () => {
   it("restricts to EAN-13, EAN-8 and UPC-A", () => {
-    expect(RETAIL_1D_FORMATS).toEqual([9, 10, 14]);
+    // Asserted against the ENUM MEMBERS, not against the numbers this test's
+    // own mock supplies — comparing self-supplied literals would be testing the
+    // mock. This pins WHICH symbologies are requested, which is the real
+    // guarantee: widening to QR/Aztec/PDF-417 gives the decoder more ways to
+    // resolve noise into a plausible number. (Kimi review, PR #340.)
+    expect(RETAIL_1D_FORMATS).toEqual([FORMATS.EAN_13, FORMATS.EAN_8, FORMATS.UPC_A]);
+    expect(RETAIL_1D_FORMATS).not.toContain(FORMATS.QR_CODE);
+    expect(RETAIL_1D_FORMATS).not.toContain(FORMATS.UPC_E);
   });
 });
 
