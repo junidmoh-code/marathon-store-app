@@ -15,7 +15,18 @@ vi.mock("./CategorySelect.jsx", () => ({ default: () => null }));
 vi.mock("./SizeQtyBoxes.jsx", () => ({ default: () => null, totalUnits: () => 0 }));
 vi.mock("../stock/widgets.jsx", () => ({ LocationPicker: () => null }));
 vi.mock("../stock/locations.js", () => ({ labelFor: () => "Hub 2", transferTargets: [] }));
-vi.mock("./PrintedBarcodeCapture.jsx", () => ({ default: () => null }));
+// Counts MOUNTS, not renders — the remount is the guard being tested, and a
+// mount counter does not depend on React internals the way a fiber key does.
+let captureMounts = 0;
+vi.mock("./PrintedBarcodeCapture.jsx", async () => {
+  const React = await import("react");
+  return {
+    default: () => {
+      React.useEffect(() => { captureMounts++; }, []);
+      return null;
+    },
+  };
+});
 
 const NewProductForm = (await import("./NewProductForm.jsx")).default;
 const PrintedBarcodeCapture = (await import("./PrintedBarcodeCapture.jsx")).default;
@@ -104,6 +115,40 @@ describe("nobody is ever stuck", () => {
   it("and then the footer says a barcode WILL be generated", async () => {
     const r = await mount({ form: { ...baseForm, printedBarcodeAuto: true } });
     expect(allText(r)).toMatch(/SKU \+ barcode are assigned automatically/);
+  });
+
+  it("REMOUNTS the capture when the perfume category changes", async () => {
+    // The capture invalidates in-flight work when its productId changes, but
+    // in Add Product productId is always null — so a perfume→perfume category
+    // switch would let a capture started before the switch land afterwards,
+    // re-arming an answer selectCategory had just cleared. The key is the whole
+    // guard, and without a test a refactor could drop it silently.
+    // (CodeRabbit, PR #340.)
+    captureMounts = 0;
+    const r = await mount();
+    expect(captureMounts).toBe(1);
+
+    await act(async () => {
+      r.update(React.createElement(NewProductForm, {
+        styleCode: null, suggestedImageUrl: null, onChangeStyleCode: null,
+        form: { ...baseForm, categoryKey: "perfumes-niche" }, setForm: vi.fn(),
+        taxonomy: {}, taxonomySource: "live",
+        selectedCat: { key: "perfumes-niche", label: "Niche Perfumes" },
+        formSizes: ["_"], formOneSize: true, formIsClothing: false,
+        selectCategory: vi.fn(), toggleHub: vi.fn(), toggleShoebox: vi.fn(),
+        recvQtys: {}, setRecvQtys: vi.fn(),
+        recvLoc: "hub2", setRecvLoc: vi.fn(), recvRegistry: {},
+        fileInputRef: { current: null }, handleImageUpload: vi.fn(),
+        products: [], isPerfume: true,
+        onCapturePrintedBarcode: vi.fn(), onClearPrintedBarcode: vi.fn(), onUseAutoBarcode: vi.fn(),
+        saving: false, saveAttempted: false, onSave: vi.fn(),
+      }));
+    });
+
+    // A changed key forces a REMOUNT — which is what drops in-flight work.
+    // Without the key React would reuse the instance and the count stays 1.
+    expect(captureMounts).toBe(2);
+    expect(r.root.findAllByType(PrintedBarcodeCapture).length).toBe(1);
   });
 
   it("passes the fallback handler down so the tap exists at all", async () => {

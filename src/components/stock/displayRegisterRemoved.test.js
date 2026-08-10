@@ -157,6 +157,12 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     // stick a fallback shop label while suppressing the only screen that
     // prints one. (Codex review, PR #340.)
     expect(app).toMatch(/const usesPrintedBarcode = printedBarcodeActive;/);
+    // "No warning" is not "confirmed" — it is also "not resolved yet" and
+    // "the read failed". Only a CONFIRMED check may withhold a label, or a
+    // failed read silently leaves stock with no working barcode and no
+    // sticker either. (CodeRabbit, PR #340.)
+    expect(app).toMatch(/const usesPrintedBarcode = !!printedCode && indexStatus === "confirmed";/);
+    expect(app).toMatch(/if \(!printedCode \|\| indexStatus !== "confirmed"\) setPrintOpen\(true\);/);
     expect(app).toMatch(/printedBarcodeActive = attach\.ok \|\| attach\.indexed === true;/);
     // Review pins (#330): a failed seed is OBSERVED and reported (setCellState
     // resolves {ok:false}, it never throws), and the finder only ever hands

@@ -6143,14 +6143,14 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   };
 
   // ── THE PRINTED BARCODE (perfume) ─────────────────────────────────────────
-  // Attaches the manufacturer's own EAN to a product that already exists. Two
-  // writes, in this order and no other:
-  //   1. /barcodes/{code} → { productId, size:"_" }   the scan resolution
-  //   2. /products/{id}/printedBarcode = code          the product's own copy
-  // The index write goes FIRST because it is the one that can be refused: it is
-  // create-only at the rules layer and needs stockRole. Recording the code on
-  // the product when the index write had failed would show a barcode on screen
-  // that no scanner could resolve.
+  // Attaches the manufacturer's own EAN to a product that already exists. Both
+  // paths land in ONE atomic multi-path update (attachPrintedBarcode):
+  //   • /barcodes/{code} → { productId, size:"_" }   the scan resolution
+  //   • /products/{id}/printedBarcode = code          the product's own copy
+  // There is NO ordering to get wrong: either the code resolves AND the record
+  // names it, or neither happened. /barcodes is create-only at the rules layer
+  // and needs stockRole, so without it the whole commit is refused rather than
+  // half-applied. Do not split these back into sequential writes.
   //
   // NOTHING IS EVER REMOVED. The auto-generated shop code this product already
   // has stays exactly where it is, in /products/{id}/barcodes and in /barcodes,
@@ -6167,6 +6167,14 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   // check is read-only and best-effort: it can warn, never block, never write.
   // (Codex + Kimi review, PR #340.)
   const [indexWarning, setIndexWarning] = useState(null);
+  // ── "NO WARNING" IS NOT "CONFIRMED" ───────────────────────────────────────
+  // indexWarning is null in THREE states: the check confirmed the code, the
+  // check has not resolved yet, and the check itself failed. Only the first is
+  // evidence. Treating all three as confirmation meant a failed read silently
+  // withheld the print sheet for the rest of the session — leaving stock with
+  // a code that may not be in the index at all and no label either. An
+  // explicit status makes the difference unrepresentable. (CodeRabbit, #340.)
+  const [indexStatus, setIndexStatus] = useState("unknown"); // unknown | confirmed | warned
   const printedCode = typeof product.printedBarcode === "string" ? product.printedBarcode : null;
   // Classification is a DEPENDENCY, not just a read. The capture block below
   // re-renders from isPerfume(product) every render, so leaving it out of the
@@ -6175,12 +6183,14 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   // (CodeRabbit, PR #340.)
   const productIsPerfume = isPerfume(product);
   useEffect(() => {
-    if (!printedCode || !productIsPerfume) { setIndexWarning(null); return; }
+    if (!printedCode || !productIsPerfume) { setIndexWarning(null); setIndexStatus("unknown"); return; }
     let cancelled = false;
+    setIndexStatus("unknown");
     inspectPrintedBarcode(printedCode, product.id)
       .then((v) => {
         if (cancelled) return;
-        if (v.kind === PRINTED_ALREADY) { setIndexWarning(null); return; }
+        if (v.kind === PRINTED_ALREADY) { setIndexWarning(null); setIndexStatus("confirmed"); return; }
+        setIndexStatus("warned");
         setIndexWarning(
           v.kind === PRINTED_CONFLICT
             ? `${printedCode} is shown on this product but the barcode index resolves it to a DIFFERENT product. A scan will not reach this one.`
@@ -6394,7 +6404,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
       // is NOT scannable, and withholding the print sheet would leave the
       // stock with no working barcode at all. `indexWarning` is exactly that
       // check, already run on open. (CodeRabbit, PR #340.)
-      const usesPrintedBarcode = !!printedCode && !indexWarning;
+      const usesPrintedBarcode = !!printedCode && indexStatus === "confirmed";
       setLastReceived(usesPrintedBarcode ? null : { productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems });
       // Receive into Central → offer initial distribution first; print follows.
       if (recvLoc === "central") setDistribOpen(true);
@@ -6724,7 +6734,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           onClose={() => {
             setDistribOpen(false);
             // Same rule: only a code the index CONFIRMS earns the no-label path.
-            if (!printedCode || indexWarning) setPrintOpen(true);
+            if (!printedCode || indexStatus !== "confirmed") setPrintOpen(true);
           }}
         />
       )}

@@ -283,6 +283,22 @@ const MUTATIONS = [
     tests: ["src/components/admin/PrintedBarcodeCapture.test.jsx"],
   },
   {
+    id: "M33",
+    guard: "The capture REMOUNTS on a perfume→perfume category change",
+    file: "src/components/admin/NewProductForm.jsx",
+    from: `              key={form.categoryKey}\n`,
+    to: ``,
+    tests: ["src/components/admin/NewProductForm.perfume.test.jsx"],
+  },
+  {
+    id: "M34",
+    guard: "Only a CONFIRMED index check earns the no-label path (not a failed read)",
+    file: "src/App.jsx",
+    from: `      const usesPrintedBarcode = !!printedCode && indexStatus === "confirmed";`,
+    to: `      const usesPrintedBarcode = !!printedCode && !indexWarning;`,
+    tests: ["src/components/stock/displayRegisterRemoved.test.js"],
+  },
+  {
     id: "M17",
     guard: "The captured code is searchable in the app that wrote it",
     file: "src/utils/productSearch.js",
