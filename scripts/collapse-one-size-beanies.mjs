@@ -144,7 +144,17 @@ function hasPrivilegedCredential(app) {
   console.log(`  units before: ${Object.entries(totalsBefore).sort().map(([l, q]) => `${l}=${q}`).join("  ")}  total=${Object.values(totalsBefore).reduce((a, b) => a + b, 0)}`);
 
   // ── rollback snapshot ON DISK before ANY write (balaclava standard) ────────
-  const snapshot = { capturedAt: nowIso, mode: EXECUTE ? "execute" : "dry-run", products: {}, barcodeIndex: {}, stockCells: {}, stockTargets: {} };
+  // RUN ID + the ids this run actually writes. The rollback must be able to
+  // tell THIS run's movements from those of any other run of the same script:
+  // a prefix match on "onesize_" cannot, and a stale snapshot would then roll
+  // back over a later, genuinely-completed migration without a warning (the
+  // multi-pass workflow over gated products produces exactly that situation).
+  // The snapshot file is rewritten at the end of the run with the applied ids.
+  // (Sonnet review of the rollback, PR #343.)
+  const RUN_ID = `${nowIso}__${process.pid}`;
+  const appliedMovementIds = [];
+  const snapshot = { capturedAt: nowIso, runId: RUN_ID, mode: EXECUTE ? "execute" : "dry-run",
+    appliedMovementIds, products: {}, barcodeIndex: {}, stockCells: {}, stockTargets: {} };
   for (const [pid, p] of scope) {
     snapshot.products[pid] = { sizes: p.sizes ?? null, barcodes: p.barcodes ?? null };
     for (const code of new Set([...Object.values(p.barcodes || {}).map(String), ...Object.keys(reverseIdx[pid] || {})])) {
@@ -387,6 +397,10 @@ function hasPrivilegedCredential(app) {
       for (const leg of pl.legs) {
         const r = await applyMovementAdmin(io, { ...leg.movement, ts: nowIso }, { nowIso });
         if (!r.ok) { failed = `${leg.id}: ${r.reason}${r.available != null ? ` (available ${r.available}, requested ${r.requested})` : ""}`; break; }
+        // Only ids THIS run actually applied — an idempotent no-op means the id
+        // belongs to an earlier run and must NOT be excluded from that run's
+        // rollback activity check.
+        if (!r.idempotent) appliedMovementIds.push(r.movementId);
       }
       if (failed) break;
     }
@@ -454,6 +468,13 @@ function hasPrivilegedCredential(app) {
     if (!totalsOk) { await releaseLock?.(); process.exit(1); }
   } else {
     console.log("  DRY RUN — nothing written except the rollback snapshot above.");
+  }
+  if (EXECUTE) {
+    // Rewrite the snapshot so it carries the ids this run applied. Written last
+    // because the list is only complete now; the ORIGINAL pre-write capture is
+    // untouched — only this field is added to it.
+    writeFileSync(SNAP, JSON.stringify({ ...snapshot, appliedMovementIds, completedAt: new Date().toISOString() }, null, 2));
+    console.log(`  snapshot updated with ${appliedMovementIds.length} applied movement id(s): ${SNAP}`);
   }
   await releaseLock?.();
   const bad = results.filter((r) => r.status !== "DONE" && r.status !== "ALREADY DONE" && r.status !== "PLANNED");

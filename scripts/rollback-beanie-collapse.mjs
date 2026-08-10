@@ -56,8 +56,22 @@ const EXECUTE = args.includes("--execute");
 const FORCE = args.includes("--force");
 const ONLY = (args.find((a) => a.startsWith("--only=")) || "").slice(7).split(",").filter(Boolean);
 
-// Movements this migration itself wrote — never counted as "later activity".
-const isMigrationMovement = (id) => typeof id === "string" && id.startsWith("onesize_");
+// ── WHOSE MOVEMENTS ARE "MINE"? ──────────────────────────────────────────────
+// Only the ids THIS snapshot's run applied, recorded in the snapshot itself.
+// A prefix match on "onesize_" was a P0: it is global, so movements written by
+// a LATER run of the same script were also discarded. The runbook's own
+// multi-pass workflow (gated products cleared and re-run) produces exactly that
+// — and a stale snapshot would then report "no later activity" and silently
+// revert a product that a subsequent run had correctly migrated.
+//
+// A snapshot without the field (written before this was recorded) gets the
+// fail-safe reading: nothing is excluded, so the migration's own movements
+// count as later activity and the rollback refuses until a human looks.
+// (Sonnet review of the rollback, PR #343.)
+function ownMovementIds(snap) {
+  const ids = snap.appliedMovementIds;
+  return Array.isArray(ids) ? new Set(ids) : null;
+}
 
 (async () => {
   if (!SNAP_PATH) {
@@ -65,7 +79,13 @@ const isMigrationMovement = (id) => typeof id === "string" && id.startsWith("one
     process.exit(1);
   }
   const snap = JSON.parse(readFileSync(SNAP_PATH, "utf8"));
-  console.log(`\n${"═".repeat(78)}\n  BEANIE COLLAPSE ROLLBACK — ${EXECUTE ? "EXECUTE" : "DRY RUN"}\n  snapshot: ${SNAP_PATH} (captured ${snap.capturedAt})\n${"═".repeat(78)}`);
+  console.log(`\n${"═".repeat(78)}\n  BEANIE COLLAPSE ROLLBACK — ${EXECUTE ? "EXECUTE" : "DRY RUN"}\n  snapshot: ${SNAP_PATH}\n  captured ${snap.capturedAt} · run ${snap.runId || "(unrecorded)"} · mode ${snap.mode || "(unknown)"}\n${"═".repeat(78)}`);
+  // A dry-run snapshot describes a state nothing ever changed — restoring from
+  // it is a no-op at best and a way to undo someone else's work at worst.
+  if (snap.mode === "dry-run") {
+    console.log(`\n  ⚠ THIS IS A DRY-RUN SNAPSHOT — the run that wrote it changed nothing.`);
+    console.log(`  You almost certainly want the snapshot from the --execute run instead.`);
+  }
 
   let pids = Object.keys(snap.products || {});
   if (ONLY.length) pids = pids.filter((p) => ONLY.includes(p));
@@ -79,9 +99,16 @@ const isMigrationMovement = (id) => typeof id === "string" && id.startsWith("one
 
   // ── activity check ────────────────────────────────────────────────────────
   const movements = (await io.read("stock_movements")) || {};
+  const own = ownMovementIds(snap);
+  if (!own) {
+    console.log(`\n  NOTE — this snapshot does not record which movement ids its run applied.`);
+    console.log(`  Every movement after its capture instant therefore counts as later activity,`);
+    console.log(`  including the migration's own. That is deliberate: without the record there`);
+    console.log(`  is no way to tell this run's writes from a later run's.`);
+  }
   const laterActivity = new Map();
   for (const [id, m] of Object.entries(movements)) {
-    if (!m || !pids.includes(m.productId) || isMigrationMovement(id)) continue;
+    if (!m || !pids.includes(m.productId) || (own && own.has(id))) continue;
     const ts = Date.parse(m.appliedAt || m.ts);
     if (!Number.isFinite(ts) || ts <= capturedMs) continue;
     const list = laterActivity.get(m.productId) || [];
@@ -141,6 +168,49 @@ const isMigrationMovement = (id) => typeof id === "string" && id.startsWith("one
     }
   }
 
+  // ── DIVERGENCE CHECK — is the live value still the one this rollback expects?
+  // The activity check watches /stock_movements only, so it is blind to drift in
+  // IDENTITY and POLICY. Two real cases:
+  //   • a barcode legitimately reassigned to another product since the collapse
+  //     (merge, re-tag) — a blind restore steals it back and breaks scanning for
+  //     whoever owns it now;
+  //   • explicit "_" target rows added after the collapse to arm the new policy
+  //     — the snapshot has no "_" row, so a blind restore of the whole node
+  //     DELETES the policy the owner just approved.
+  // So every path is compared against the live value first, and classified:
+  //   already-restored → dropped from the plan (nothing to do)
+  //   post-migration   → the expected rollback target, written
+  //   diverged         → someone changed it since; refuse without --force
+  // (Sonnet review of the rollback, PR #343.)
+  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const diverged = [], alreadyRestored = [];
+  for (const path of Object.keys(updates)) {
+    const live = await io.read(path);
+    const want = updates[path];
+    if (same(live, want)) { alreadyRestored.push(path); delete updates[path]; continue; }
+    let expected = false;
+    if (/^products\/[^/]+\/sizes$/.test(path)) expected = same(live, ["_"]);
+    else if (/^products\/[^/]+\/barcodes$/.test(path)) expected = !!live && Object.keys(live).length === 1 && Object.keys(live)[0] === "_";
+    else if (/^barcodes\//.test(path)) expected = !!live && live.size === "_" && (!want || live.productId === want.productId);
+    else if (/^stock_targets\//.test(path)) {
+      const keys = Object.keys(live || {});
+      // every retired size at 0, and NO "_" row (a "_" row is a new policy)
+      expected = keys.length > 0 && !keys.includes("_") && keys.every((k) => (live[k]?.target ?? 0) === 0);
+    }
+    if (!expected) diverged.push({ path, live, want });
+  }
+
+  if (alreadyRestored.length) console.log(`\n  ${alreadyRestored.length} path(s) already match the snapshot — nothing to do for those.`);
+  if (diverged.length) {
+    console.log(`\n── LIVE STATE HAS DIVERGED (${diverged.length} path(s)) ─────────────────────────`);
+    console.log(`  These are neither the snapshot value nor what the migration left behind —`);
+    console.log(`  something changed them since. Overwriting would destroy that change.`);
+    for (const d of diverged.slice(0, 10)) {
+      console.log(`  ${d.path}\n     live: ${JSON.stringify(d.live)?.slice(0, 90)}\n     would write: ${JSON.stringify(d.want)?.slice(0, 90)}`);
+    }
+    if (diverged.length > 10) console.log(`  … and ${diverged.length - 10} more`);
+  }
+
   if (unattributed.length) {
     console.log(`\n  NOTE — ${unattributed.length} snapshot index entr(ies) name no product in this snapshot`);
     console.log(`  and are left ALONE rather than deleted: ${unattributed.slice(0, 6).join(", ")}${unattributed.length > 6 ? ", …" : ""}`);
@@ -175,6 +245,13 @@ const isMigrationMovement = (id) => typeof id === "string" && id.startsWith("one
     console.log(`\n  DRY RUN — nothing written. Re-run with --execute to apply.`);
     process.exit(0);
   }
+  if (diverged.length && !FORCE) {
+    console.error(`\nABORT: ${diverged.length} path(s) have diverged from what this rollback expects.`);
+    console.error("Restoring them would overwrite a change made after the migration — a barcode");
+    console.error("reassigned to another product, or a target policy armed since. Reconcile them,");
+    console.error("or re-run with --force if you have decided the snapshot value is what you want.");
+    process.exit(1);
+  }
   if (laterActivity.size && !FORCE) {
     console.error(`\nABORT: ${laterActivity.size} product(s) have moved since the snapshot.`);
     console.error("Restoring identity now can strand units that arrived in the \"_\" cell after");
@@ -197,10 +274,21 @@ const isMigrationMovement = (id) => typeof id === "string" && id.startsWith("one
     if (JSON.stringify(p?.barcodes ?? null) !== JSON.stringify(snap.products[pid].barcodes ?? null)) problems.push(`${pid} barcodes = ${JSON.stringify(p?.barcodes)}`);
   }
   for (const [code, rec] of Object.entries(snap.barcodeIndex || {})) {
-    if (rec && rec.productId && !snapPids.has(rec.productId)) continue;
+    const owner = rec?.productId || ownerOfCode.get(String(code));
+    if (!owner || !snapPids.has(owner)) continue;
     const live = await io.read(`barcodes/${code}`);
     if (JSON.stringify(live ?? null) !== JSON.stringify(rec ?? null)) problems.push(`barcodes/${code} = ${JSON.stringify(live)}`);
   }
-  console.log(problems.length ? `\n  VERIFY FAILED:\n${problems.map((p) => `     ${p}`).join("\n")}` : "  verified on fresh reads: identity, index and target rows match the snapshot");
+  // TARGET ROWS — the verify claimed to cover these and did not. A claim in the
+  // success message that nothing checks is worse than no claim.
+  // (Sonnet review of the rollback, PR #343.)
+  for (const [loc, byPid] of Object.entries(snap.stockTargets || {})) {
+    for (const [pid, rows] of Object.entries(byPid)) {
+      if (!snapPids.has(pid)) continue;
+      const live = await io.read(`stock_targets/${loc}/${pid}`);
+      if (JSON.stringify(live ?? null) !== JSON.stringify(rows ?? null)) problems.push(`stock_targets/${loc}/${pid} = ${JSON.stringify(live)?.slice(0, 80)}`);
+    }
+  }
+  console.log(problems.length ? `\n  VERIFY FAILED:\n${problems.map((p) => `     ${p}`).join("\n")}` : "  verified on fresh reads: sizes, barcodes map, index records AND target rows all match the snapshot");
   process.exit(problems.length ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
