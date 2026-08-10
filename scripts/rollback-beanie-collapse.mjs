@@ -38,6 +38,7 @@
 import { createRequire } from "module";
 import { readFileSync } from "fs";
 import { hostname } from "os";
+import { BATCH } from "./lib/beanieCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -282,17 +283,26 @@ function ownMovementIds(snap) {
     }
     else if (/^barcodes\//.test(path)) expected = !!live && live.size === "_" && (!want || live.productId === want.productId);
     else if (/^stock_targets\//.test(path)) {
-      // A row is "as the migration left it" only if the WHOLE row matches what
-      // Step 3 writes — target 0, minQty 0, source "excluded". Comparing only
-      // `target` let a later edit to minQty or source read as untouched and be
-      // silently overwritten by the pre-collapse values. (Sonnet review, PR #344.)
+      // A row is "as the migration left it" if its VALUES match what Step 3
+      // writes AND its provenance stamp is the migration's own. Checking only
+      // `target` let an edit to minQty or source read as untouched; checking
+      // only those three still let a RE-APPROVAL by other tooling — which
+      // re-stamps batchId/approvedBy on the same retired row — pass as
+      // untouched and be silently overwritten with pre-collapse values.
+      // (Sonnet reviews, PR #344 — the second pass caught that the first fix's
+      // comment claimed "the whole row" while the code checked half of it.)
+      //
+      // batchId absent is deliberately allowed: planStep3 SKIPS a row already
+      // retired by other tooling ({target:0, source:"excluded"}, no minQty, no
+      // batchId), so demanding a stamp would flag a row the migration never
+      // touched. What is refused is a stamp that is someone ELSE's.
       const keys = Object.keys(live || {});
       expected = keys.length > 0 && !keys.includes("_") && keys.every((k) => {
         const row = live[k] || {};
-        // minQty ?? 0 — planStep3 skips a row already retired by other tooling
-        // ({target:0, source:"excluded"} with no minQty), so requiring an
-        // explicit 0 would flag a row the migration deliberately left alone.
-        return row.target === 0 && (row.minQty ?? 0) === 0 && row.source === "excluded";
+        const valuesOk = row.target === 0 && (row.minQty ?? 0) === 0 && row.source === "excluded";
+        const stampOk = (row.batchId == null || row.batchId === BATCH)
+          && (row.approvedBy == null || row.approvedBy === "owner");
+        return valuesOk && stampOk;
       });
     }
     if (!expected) diverged.push({ path, live, want });

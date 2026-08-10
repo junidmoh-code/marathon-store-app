@@ -60,7 +60,7 @@
 import { encodeSizeKey, stockSizeKey, stockCellPath, assertSafeSegment } from "../../src/utils/sizeKey.js";
 
 const ACTOR = "system:beanie-onesize-collapse";
-const BATCH = "beanie-onesize-collapse";
+export const BATCH = "beanie-onesize-collapse";
 
 // ── SCOPE — THE ONE PLACE THAT DECIDES WHAT A BEANIE IS ──────────────────────
 // Beanies and caps share subcategory "Caps & Hats" (323 live records), so the
