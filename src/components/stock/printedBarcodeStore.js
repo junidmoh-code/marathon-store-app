@@ -163,6 +163,29 @@ export async function registerPrintedBarcode(productId, code, size = ONE_SIZE, e
   return { ok: true, written: verdict.codes, kind: PRINTED_FREE };
 }
 
+// ─── DOES THIS PRODUCT STILL NEED A PRINTED LABEL? ───────────────────────────
+// The one question both receive surfaces ask before deciding whether to offer
+// the barcode print sheet. PURE, so every transition is testable — it used to
+// be an inline boolean guarded only by source-text pins, and a source pin
+// cannot exercise loading, rejection, a stale result, or a product change.
+//
+// A label is redundant ONLY when the index has been CONFIRMED to resolve this
+// exact code to this product. Every other state offers the label:
+//   • no captured code at all                     → ordinary shop barcode
+//   • the check has not resolved yet              → not evidence
+//   • the check failed (read error)               → not evidence
+//   • the check warned (missing / wrong product / wrong size) → not scannable
+//   • the check confirmed a DIFFERENT code        → stale, belongs to the
+//     product that was open before this one
+//
+// Erring toward offering a label is deliberate: a redundant sticker is waste,
+// a missing one is stock nobody can scan. (Kimi + Codex review, PR #340.)
+export function labelIsRedundant(printedCode, indexCheck) {
+  if (!printedCode) return false;
+  if (!indexCheck || indexCheck.status !== "confirmed") return false;
+  return indexCheck.code === printedCode;
+}
+
 // ─── WHAT A REFUSAL MEANS, IN WORDS ──────────────────────────────────────────
 // registerPrintedBarcode returns a VERDICT, not a boolean, because the four
 // ways it can refuse need four different things from the operator. Pure, and

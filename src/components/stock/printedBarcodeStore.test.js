@@ -93,7 +93,7 @@ vi.mock("firebase/database", () => ({
 vi.mock("../../firebase", () => ({ database: {} }));
 vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => "2026-08-10T00:00:00.000Z" }));
 
-const { registerPrintedBarcode, inspectPrintedBarcode, readBarcodeOwners, attachPrintedBarcode, registrationRefusalText } =
+const { registerPrintedBarcode, inspectPrintedBarcode, readBarcodeOwners, attachPrintedBarcode, registrationRefusalText, labelIsRedundant } =
   await import("./printedBarcodeStore");
 
 const OUD_MOOD = "6291106065114";
@@ -382,6 +382,48 @@ describe("attachPrintedBarcode — the record and the index land TOGETHER", () =
     expect(out.kind).toBe("record_write_failed");
     expect(out.indexed).toBe(true);                 // the box still scans
     expect(store.barcodes[OUD_MOOD].productId).toBe("pPerfume");
+  });
+});
+
+// ─── THE LABEL DECISION, AS BEHAVIOUR ────────────────────────────────────────
+// This was an inline boolean guarded only by a source-text pin, which cannot
+// exercise loading, rejection, staleness or a product change — and both
+// reviewers said so. It is a pure function now, and every state it can be in is
+// tested. Erring toward OFFERING a label is deliberate: a redundant sticker is
+// waste, a missing one is stock nobody can scan.
+describe("labelIsRedundant — a label is skipped only on CONFIRMED evidence", () => {
+  const confirmed = { code: OUD_MOOD, status: "confirmed" };
+
+  it("skips the label when the index confirmed THIS code", () => {
+    expect(labelIsRedundant(OUD_MOOD, confirmed)).toBe(true);
+  });
+
+  it("offers a label while the check has not resolved yet", () => {
+    expect(labelIsRedundant(OUD_MOOD, { code: OUD_MOOD, status: "unknown" })).toBe(false);
+  });
+
+  it("offers a label when the check WARNED (missing / wrong product / wrong size)", () => {
+    expect(labelIsRedundant(OUD_MOOD, { code: OUD_MOOD, status: "warned" })).toBe(false);
+  });
+
+  it("offers a label when the check FAILED — a failed read is not evidence", () => {
+    // A read error leaves the status where it started.
+    expect(labelIsRedundant(OUD_MOOD, { code: OUD_MOOD, status: "unknown" })).toBe(false);
+    expect(labelIsRedundant(OUD_MOOD, null)).toBe(false);
+    expect(labelIsRedundant(OUD_MOOD, undefined)).toBe(false);
+  });
+
+  it("REFUSES a confirmation that belongs to a DIFFERENT code", () => {
+    // The dangerous direction: a status computed for the previously-open
+    // product surviving one render into the next one.
+    expect(labelIsRedundant(EPIC, confirmed)).toBe(false);
+    expect(labelIsRedundant(OUD_MOOD, { code: EPIC, status: "confirmed" })).toBe(false);
+  });
+
+  it("always offers a label when there is no captured code at all", () => {
+    expect(labelIsRedundant(null, confirmed)).toBe(false);
+    expect(labelIsRedundant("", confirmed)).toBe(false);
+    expect(labelIsRedundant(undefined, { code: undefined, status: "confirmed" })).toBe(false);
   });
 });
 

@@ -293,9 +293,25 @@ const MUTATIONS = [
   {
     id: "M34",
     guard: "Only a CONFIRMED index check earns the no-label path (not a failed read)",
+    file: "src/components/stock/printedBarcodeStore.js",
+    from: `  if (!indexCheck || indexCheck.status !== "confirmed") return false;`,
+    to: `  if (!indexCheck || indexCheck.status === "impossible") return false;`,
+    tests: ["src/components/stock/printedBarcodeStore.test.js"],
+  },
+  {
+    id: "M35",
+    guard: "A confirmation for a DIFFERENT code never suppresses the label",
+    file: "src/components/stock/printedBarcodeStore.js",
+    from: `  return indexCheck.code === printedCode;`,
+    to: `  return true;`,
+    tests: ["src/components/stock/printedBarcodeStore.test.js"],
+  },
+  {
+    id: "M36",
+    guard: "BOTH receive gates route through the one label decision",
     file: "src/App.jsx",
-    from: `      const usesPrintedBarcode = !!printedCode && indexStatus === "confirmed";`,
-    to: `      const usesPrintedBarcode = !!printedCode && !indexWarning;`,
+    from: `            if (!labelIsRedundant(printedCode, indexCheck)) setPrintOpen(true);`,
+    to: `            setPrintOpen(true);`,
     tests: ["src/components/stock/displayRegisterRemoved.test.js"],
   },
   {

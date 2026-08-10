@@ -68,7 +68,7 @@ import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
 import InitialDistributionWizard from "./components/stock/InitialDistributionWizard";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
-import { attachPrintedBarcode, readBarcodeOwners, inspectPrintedBarcode } from "./components/stock/printedBarcodeStore";
+import { attachPrintedBarcode, readBarcodeOwners, inspectPrintedBarcode, labelIsRedundant } from "./components/stock/printedBarcodeStore";
 import { PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_SIZE_MISMATCH } from "./utils/eanBarcode";
 import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
@@ -5516,7 +5516,9 @@ function AdminView({ products, orders, onExit }) {
           if (savedItems.length) {
             // The code that actually registered — NOT the one that was tried.
             const usesPrintedBarcode = printedBarcodeActive;
-            setLastReceived(usesPrintedBarcode ? null : { productId: id, productName: newProduct.name, photoUrl: newProduct.photoUrl ?? null, items: savedItems });
+            // Payload always kept — the wizard-close handler decides whether to
+            // OPEN the sheet, and it cannot render one without this.
+            setLastReceived({ productId: id, productName: newProduct.name, photoUrl: newProduct.photoUrl ?? null, items: savedItems });
             // Stock landed at Central → offer initial distribution first; the
             // print sheet opens when the wizard closes. Other locations keep
             // the original save → print flow.
@@ -6174,7 +6176,12 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   // withheld the print sheet for the rest of the session — leaving stock with
   // a code that may not be in the index at all and no label either. An
   // explicit status makes the difference unrepresentable. (CodeRabbit, #340.)
-  const [indexStatus, setIndexStatus] = useState("unknown"); // unknown | confirmed | warned
+  // The status is BOUND TO THE CODE it was computed for. A bare status survives
+  // a product change for one render, so the gate could read the PREVIOUS
+  // product's "confirmed" against the new product's code — the one direction
+  // that is dangerous. Carrying the code makes that unrepresentable rather than
+  // relying on React flushing effects first. (Kimi review, PR #340.)
+  const [indexCheck, setIndexCheck] = useState({ code: null, status: "unknown" });
   const printedCode = typeof product.printedBarcode === "string" ? product.printedBarcode : null;
   // Classification is a DEPENDENCY, not just a read. The capture block below
   // re-renders from isPerfume(product) every render, so leaving it out of the
@@ -6183,14 +6190,27 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   // (CodeRabbit, PR #340.)
   const productIsPerfume = isPerfume(product);
   useEffect(() => {
-    if (!printedCode || !productIsPerfume) { setIndexWarning(null); setIndexStatus("unknown"); return; }
+    if (!printedCode || !productIsPerfume) {
+      setIndexWarning(null);
+      setIndexCheck({ code: null, status: "unknown" });
+      return;
+    }
     let cancelled = false;
-    setIndexStatus("unknown");
+    // Clear the PREVIOUS code's warning as the new check starts. Leaving it up
+    // meant a warning about code A stayed on screen describing code B — and if
+    // B's read then threw, it stayed there indefinitely, wrong.
+    // (Codex review, PR #340.)
+    setIndexWarning(null);
+    setIndexCheck({ code: printedCode, status: "unknown" });
     inspectPrintedBarcode(printedCode, product.id)
       .then((v) => {
         if (cancelled) return;
-        if (v.kind === PRINTED_ALREADY) { setIndexWarning(null); setIndexStatus("confirmed"); return; }
-        setIndexStatus("warned");
+        if (v.kind === PRINTED_ALREADY) {
+          setIndexWarning(null);
+          setIndexCheck({ code: printedCode, status: "confirmed" });
+          return;
+        }
+        setIndexCheck({ code: printedCode, status: "warned" });
         setIndexWarning(
           v.kind === PRINTED_CONFLICT
             ? `${printedCode} is shown on this product but the barcode index resolves it to a DIFFERENT product. A scan will not reach this one.`
@@ -6210,7 +6230,18 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
       // at all. There is no ordering to get wrong any more, and nothing to
       // compensate for. (Stale comment corrected — Kimi review, PR #340.)
       const attach = await attachPrintedBarcode({ productId: product.id, code });
-      if (attach.ok) { setRecapture(false); setIndexWarning(null); return; }
+      if (attach.ok) {
+        // attach.ok is itself proof the index resolves this code to this
+        // product (a fresh atomic commit, or ALREADY). The effect will NOT
+        // re-run — its deps are unchanged when the same code is re-captured —
+        // so the status is confirmed here or it stays "warned" forever and the
+        // operator is sent to print a label they just proved unnecessary.
+        // (Kimi review, PR #340.)
+        setRecapture(false);
+        setIndexWarning(null);
+        setIndexCheck({ code, status: "confirmed" });
+        return;
+      }
       // TELL THE TRUTH ABOUT WHAT LANDED. An index row is PERMANENT — it cannot
       // be deleted from the client — so "nothing was changed" is false whenever
       // `indexed` is true, and would send an operator off to register a code
@@ -6398,14 +6429,18 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
       // step: the print sheet mints a shop code on open (ensureBarcodes), which
       // would both undo the capture and hand the operator a sticker to put over
       // a working barcode. Distribution is still offered; only printing is not.
-      // Suppress the label ONLY when the index confirms the code really does
-      // resolve to this product at one-size. A record whose code is missing
-      // from the index, points at another product, or points at another size
-      // is NOT scannable, and withholding the print sheet would leave the
-      // stock with no working barcode at all. `indexWarning` is exactly that
-      // check, already run on open. (CodeRabbit, PR #340.)
-      const usesPrintedBarcode = !!printedCode && indexStatus === "confirmed";
-      setLastReceived(usesPrintedBarcode ? null : { productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems });
+      // Suppress the label ONLY when the index has CONFIRMED that this exact
+      // code resolves to this product. Decided by one pure, fully tested
+      // function so loading, failure, staleness and a product change cannot
+      // each be got subtly wrong at two call sites.
+      const usesPrintedBarcode = labelIsRedundant(printedCode, indexCheck);
+      // THE PAYLOAD IS ALWAYS KEPT. Discarding it here meant the decision was
+      // frozen at receive time: if the code was confirmed then, lastReceived
+      // went null, and a later close of the distribution wizard could ask for
+      // the print sheet — which cannot render without a payload. Stock that had
+      // become unscannable in the meantime would get no label at all. Keep the
+      // payload; let the gate decide when to OPEN. (Codex review, PR #340.)
+      setLastReceived({ productId: product.id, productName: product.name, photoUrl: product.photoUrl ?? null, items: savedItems });
       // Receive into Central → offer initial distribution first; print follows.
       if (recvLoc === "central") setDistribOpen(true);
       else if (!usesPrintedBarcode) setPrintOpen(true);
@@ -6733,8 +6768,9 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           // opening one mints a shop code via ensureBarcodes.
           onClose={() => {
             setDistribOpen(false);
-            // Same rule: only a code the index CONFIRMS earns the no-label path.
-            if (!printedCode || indexStatus !== "confirmed") setPrintOpen(true);
+            // Re-decided HERE, from the status as it stands NOW — the product
+            // may have changed in another session while the wizard was open.
+            if (!labelIsRedundant(printedCode, indexCheck)) setPrintOpen(true);
           }}
         />
       )}
