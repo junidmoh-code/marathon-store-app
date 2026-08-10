@@ -286,6 +286,26 @@ describe("idempotency and interruption", () => {
     expect(totalAt(db.raw(), "hub2", "pB")).toBe(10);
   });
 
+  it("interrupted mid negative pair: the re-run relies on movement idempotency and must not double-deduct", async () => {
+    // The positive pair resumes from the LEDGER (the emptied cell no longer
+    // describes the work), but the negative pair's source cell is unchanged
+    // until its second leg lands — so a re-run re-plans BOTH legs and only the
+    // movement-id guard stops the first one applying twice. Without that guard
+    // "_" goes to −2 and a unit of shortage is invented.
+    const db = makeDb(seedProduct({ sizes: ["S"], barcodes: { S: "00033333" }, cells: { "marathon-pe": { S: -1 } } }));
+    const ids = legIds("pB", "marathon-pe", "S");
+    await applyMovementAdmin(db.io, { type: "adjustment", productId: "pB", size: "_", qty: 1, from: "marathon-pe",
+      movementId: ids.negOut, allowNegative: true, reason: "carry oversell" }, { nowIso: NOW });
+    expect(db.raw().stock["marathon-pe"].pB._.qty).toBe(-1);
+    expect(db.raw().stock["marathon-pe"].pB.S.qty).toBe(-1);   // second leg not yet run
+
+    await migrate(db, "pB");
+    const cells = db.raw().stock["marathon-pe"].pB;
+    expect(cells._.qty).toBe(-1);      // NOT −2
+    expect(cells.S.qty).toBe(0);
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(-1);
+  });
+
   it("interrupted before Step 2: stock is split across the sized cell and \"_\" and BOTH are sellable", async () => {
     // Two locations; the second location's pair never runs.
     const db = makeDb(seedProduct({ cells: { hub2: { M: 6 }, central: { M: 4 } } }));
