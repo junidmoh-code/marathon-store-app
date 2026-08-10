@@ -455,7 +455,7 @@ export default function HealthView({ products = [], onExit }) {
             </div>
             {activeTab === "sneakers"
               ? <MissingFootwear products={products} />
-              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingProductCards || []} />}
+              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingProductCards || []} targets={allTargetsRaw} />}
           </DetailShell>
         );
       }

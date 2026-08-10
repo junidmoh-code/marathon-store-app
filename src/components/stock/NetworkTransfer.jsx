@@ -16,11 +16,11 @@ import { ref, get, update, onValue } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
-import { encodeSizeKey, stockCellPath } from "../../utils/sizeKey";
+import { encodeSizeKey, stockCellPath, decodedCellKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
-import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, effectiveStandard, ruleTargetsEnabledFor } from "./solvePlan";
+import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts } from "./missingProductsCore";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -55,7 +55,7 @@ const destChip = (on) => ({
 // one — the same count-disagrees-with-list class of bug this tab was just fixed
 // for. One subscription, one snapshot, and one less full-tree listener.
 // (Codex review, PR #308.) HealthView is the only renderer of this component.
-export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null }) {
+export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null }) {
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
@@ -98,7 +98,21 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const ruleOn = (dest) => ruleTargetsEnabledFor(cfg?.ruleBasedTargets, dest);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
-  const qtyAt = (loc, pid, size) => Math.max(Number(allStock?.[loc]?.[pid]?.[String(size)]?.qty) || 0, 0);
+  // /stock_targets, LIVE, handed down by HealthView (it already subscribes for
+  // the migration count — a second full-tree listener here is the drift the
+  // allStock note below warns about). null = the listener has not answered yet,
+  // and that is NOT the same as "no explicit rows": treating a pending read as
+  // an empty one would grey Solve on exactly the products an explicit row
+  // enables. `targetsReady` is what keeps the button honest while it loads.
+  const targetsReady = targets != null;
+  // On-hand for a RAW catalogue size against the DECODED cell map HealthView
+  // passes down (useStockCells decodes on the way in). decodedCellKey, never
+  // `String(size)`: the raw size and the cell key part company the moment a size
+  // needs encoding — a padded " 8" lives in the cell "_8" — and a miss here reads
+  // as a silent zero, which is precisely how the sneaker Solve lost whole sizes.
+  // Letters and the "_" sentinel are unaffected either way; this is the lookup
+  // that is right for all three.
+  const qtyAt = (loc, pid, size) => Math.max(Number(allStock?.[loc]?.[pid]?.[decodedCellKey(size)]?.qty) || 0, 0);
   // ("carries" lived here and is now missingProductsCore's alone — the carriage
   // rule belongs with the card build it gates. Keeping a copy would be a second
   // implementation of the engine's storeCarries idea. CodeRabbit, PR #308.)
@@ -142,22 +156,40 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // only as the pre-load placeholder, where nothing can act on it.
   // (CodeRabbit, PR #305.)
   const stdRun = useMemo(() => (cfg ? (std || {}) : STD_FALLBACK), [cfg, std]);
-  // The standard THIS product is governed by — subcategory policy where one
-  // applies, the size run otherwise (solvePlan.js mirrors resolveTarget).
-  const runFor = (pid) => effectiveStandard({
+  // The target THIS product is governed by, at every location — resolveTarget's
+  // full priority order folded into one run map (solvePlan.js resolvedRun):
+  // explicit /stock_targets row (wins, and survives the kill switch), else the
+  // subcategory policy, else the size run (both only where the switch is on).
+  //
+  // THE FIX (2026-08-10). This used to be effectiveStandard alone — subcategory
+  // policy over the size run — with the kill switch applied one level up in
+  // qualifyingSizes. That left out the engine's FIRST branch entirely, and the
+  // omission was not merely incomplete, it was structural: an explicit row is the
+  // only way a ONE-SIZE product can ever hold a target, because its single size is
+  // the "_" sentinel and putting "_" in defaultRunByStore was rejected outright
+  // (it is shared by every one-size product, so it would arm sunglasses and belts
+  // too). One-size products could therefore never be solved, no matter what an
+  // operator configured — which is what greyed out every beanie. Applying the kill
+  // switch per location INSIDE resolvedRun is the other half: explicit rows must
+  // outlive it, exactly as they do in resolveTarget.
+  const runFor = (pid) => resolvedRun({
     std: stdRun, subRun, subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
+    targets, pid, ruleBasedTargets: cfg?.ruleBasedTargets,
   });
-  // Sizes safe to seed — a positive standard at every seed location (solvePlan.js).
-  // A size with no standard would seed a cell the engine never refills, then vanish
+  // Sizes safe to seed — a positive target at every seed location (solvePlan.js).
+  // A size with no target would seed a cell the engine never refills, then vanish
   // with a false "solved", so it's excluded. (Codex fix a.)
   //
-  // The rule-switch check is the same guarantee one level up: with rule-based
-  // targeting off at a seed location the engine refills NOTHING there by rule, so
-  // no size qualifies, whatever the standards say. Returning empty here is what
-  // greys the button, disables the confirm action AND makes solve() bail — one
-  // choke point rather than three places to keep in step.
+  // Still ONE choke point: this greys the button, disables the confirm action AND
+  // makes solve() bail, rather than three places to keep in step. What changed is
+  // only what feeds it — the kill switch now lives inside runFor, per location, so
+  // that an explicit row can survive it.
+  //
+  // Targets not loaded yet → nothing qualifies, so Solve starts greyed and lights
+  // up on evidence, matching how cfg === null is already handled. The row says
+  // which of the two it is waiting on.
   const qualifyingSizes = (card, store) => {
-    if (!seedLocations(card.source, store).every(ruleOn)) return [];
+    if (!targetsReady) return [];
     return computeQualifyingSizes(catalogSizes(card.pid), card.source, store, runFor(card.pid));
   };
 
@@ -273,12 +305,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // keeps the button honest; the panel's own button still re-checks the store
         // actually nominated, so a store with no policy remains unsolvable.
         const solvable = STORES.some((s) => qualifyingSizes(card, s).length > 0);
-        // Why it's greyed — three genuinely different situations that all used to
+        // Why it's greyed — four genuinely different situations that all used to
         // read "no standard sizes", which sent people looking at the product when
         // the answer was the engine's switch or a config still loading.
         const armed = STORES.some((s) => seedLocations(card.source, s).every(ruleOn));
         const whyNot = !cfg ? "Checking the engine's settings…"
           : cfgErr ? "Couldn't read the engine's settings — Solve is off until it loads. Use Move manually."
+          : !targetsReady ? "Checking the engine's settings…"
           : !armed ? "Rule-based refills are switched off — the engine wouldn't refill this, so there's nothing to seed. Use Move manually."
           : "No refill policy covers this product — use Move manually";
         return (

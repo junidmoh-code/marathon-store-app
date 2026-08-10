@@ -52,6 +52,27 @@ export function stockSizeKey(size) {
   return encodeSizeKey(size);
 }
 
+// The key a raw catalogue size has in a DECODED cell map — the shape every
+// screen reads, because useStockCells decodes /stock's keys on the way in
+// (useStock.js decodeByProduct). Encode-then-decode, NOT identity: "5.5" → the
+// stored cell "5_5" → back to "5.5", while a padded " 8" → "_8" → "_8" (decode
+// only reverses digit_digit), which is exactly how the decoded map keys that
+// cell. Indexing a decoded map by the RAW catalogue size misses " 8"; indexing
+// it by the encoded key misses every half size. This is the one lookup that
+// matches both, and it is the ONLY correct way to ask "what is this catalogue
+// size's on-hand?" against a decoded map.
+//
+// WHY IT LIVES HERE. It was written inside missingFootwearCore, to close exactly
+// this bug on the sneaker side: Solve and Request looked up ENCODED size keys
+// against a DECODED cell map, so those sizes silently read as zero. The clothing
+// Solve had the same shape of lookup (raw size against the decoded map) in its
+// coverage estimate, so the helper is promoted to the encoder's own module —
+// one chokepoint, next to the encode/decode pair it is built from, rather than a
+// second copy in whichever screen notices next.
+export function decodedCellKey(size) {
+  return decodeSizeKey(stockSizeKey(size));
+}
+
 // ─── LAST-LINE GUARD: no illegal char may become a path segment ──────────────
 // Firebase's own key validation throws SYNCHRONOUSLY (before a promise exists),
 // so a raw "5.5" reaching update()/set() escapes every .catch() — the operator
