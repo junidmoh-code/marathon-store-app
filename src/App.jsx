@@ -17,7 +17,7 @@ import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex"
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
 import ClockWarningBanner from "./components/ClockWarningBanner";
-import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./utils/productCategory";
+import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -68,6 +68,7 @@ import { LocationPicker } from "./components/stock/widgets";
 import BarcodePrint from "./components/stock/BarcodePrint";
 import InitialDistributionWizard from "./components/stock/InitialDistributionWizard";
 import { ensureBarcodes } from "./components/stock/barcodeStore";
+import { registerPrintedBarcode } from "./components/stock/printedBarcodeStore";
 import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
@@ -93,6 +94,7 @@ import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
+import PrintedBarcodeCapture from "./components/admin/PrintedBarcodeCapture";
 import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
 // ── SNEAKER INTAKE — style code first ────────────────────────────────────────
 // Sneakers arrive without boxes, so there is no barcode. The inside-tongue style
@@ -4972,7 +4974,7 @@ function AdminView({ products, orders, onExit }) {
   // toggle; once true we stop auto-syncing it from the category.
   // sku + barcode are NOT in form state — they auto-generate at save time via
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
-  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   // ── STYLE CODE INTAKE (step 1) ──────────────────────────────────────────
   // While null, "Add Product" shows the style-code gate instead of the create
@@ -5077,6 +5079,19 @@ function AdminView({ products, orders, onExit }) {
   // applied, from the same single source of truth.
   const formLegacy = useMemo(() => legacyFor(taxonomy, form.categoryKey), [taxonomy, form.categoryKey]);
   const formIsClothing = formLegacy?.productType === "clothing";
+  // ── IS THIS A PERFUME? ────────────────────────────────────────────────────
+  // Answered from the LEGACY TRIPLE the chosen category will write, through the
+  // shared classifier — the same `category` field every automation reads, and
+  // the same test the Display Checks trigger uses. Not the category key, not
+  // the label: both are console-editable presentation, and a rename must never
+  // change whether a product's barcode is captured or minted.
+  const formIsPerfume = isPerfume(formLegacy);
+  // A perfume whose barcode will not read falls back to the ordinary minted
+  // shop code — but only by an explicit tap, which also clears any half-captured
+  // code so the two answers can never both be live.
+  const useAutoBarcode = () => setForm((f) => ({
+    ...f, printedBarcode: null, printedBarcodeAuto: !f.printedBarcodeAuto,
+  }));
 
   const addProduct = async () => {
     setSaveAttempted(true);
@@ -5090,6 +5105,14 @@ function AdminView({ products, orders, onExit }) {
     // The quantities themselves are not — an explicit 0 everywhere is a valid
     // answer ("received nothing yet"), it just writes no movements.
     if (!recvLoc) { alert("Pick the location this stock is being received into before saving."); return; }
+    // Perfume: the barcode question must be ANSWERED, one way or the other.
+    // Either the printed code was captured or the operator deliberately chose a
+    // shop-generated one. Falling through silently would mint a code for a box
+    // that already carries one — the exact waste this step exists to stop.
+    if (formIsPerfume && !form.printedBarcode && !form.printedBarcodeAuto) {
+      alert("Photograph the barcode printed on the box — or tap “generate a shop barcode instead” if it will not read.");
+      return;
+    }
     setSaving(true);
     try {
       const id = "p" + serverNowMs();
@@ -5152,6 +5175,9 @@ function AdminView({ products, orders, onExit }) {
         labelColorway: intake ? intake.labelColorway : null,
         labelUpc: intake ? intake.labelUpc : null,
         labelModelName: intake ? intake.labelModelName : null,
+        // The manufacturer's own printed code, when one was captured (perfume).
+        // Re-validated inside buildNewProduct; omitted, never nulled.
+        printedBarcode: form.printedBarcode || null,
         dominantColours,
         // The bypass, when one was used. buildNewProduct refuses to record an
         // exemption with no reason — a bypass with no reason is a gap.
@@ -5327,11 +5353,49 @@ function AdminView({ products, orders, onExit }) {
         }).catch((err) => console.warn("addProduct: filing the label's other codes failed:", err));
       }
 
-      // GUARANTEE ON SAVE: mint a barcode for every size now so the catalog never
-      // has gaps (a sizeless/one-size product mints the "_" slot). Best-effort —
-      // a creator without stockRole still saves the product; the index heals on
-      // the next mint and the backfill covers anything missed.
-      ensureBarcodes(id, sizes.length ? sizes : [null]).catch(() => {});
+      // ── THE BARCODE — CAPTURED, OR MINTED ─────────────────────────────────
+      // Default (every category): mint a code for every size now so the catalog
+      // never has gaps (a sizeless/one-size product mints the "_" slot).
+      // Best-effort — a creator without stockRole still saves the product; the
+      // index heals on the next mint and the backfill covers anything missed.
+      //
+      // PERFUME WITH A CAPTURED CODE takes the other branch: the box already
+      // carries a real EAN, so that code is registered into the SAME /barcodes
+      // index the POS scans, and no shop code is minted for it. Nothing is
+      // replaced — /barcodes is many-to-one, so this is an additional entry
+      // pointing at the same product and size, and any label already printed
+      // for this product keeps scanning.
+      //
+      // Registration runs AFTER the product write, never before: the rule on
+      // /barcodes/$code validates that the referenced product exists.
+      if (newProduct.printedBarcode) {
+        try {
+          const reg = await registerPrintedBarcode(id, newProduct.printedBarcode);
+          if (!reg.ok) {
+            // A code claimed by someone else between capture and save. The
+            // product is already written, so this is reported, not thrown — and
+            // a shop code is minted so the product is still scannable today.
+            alert(
+              `Saved — but barcode ${newProduct.printedBarcode} was registered to another product in the meantime, ` +
+              `so it was NOT attached to this one. A shop barcode has been generated instead. ` +
+              `An admin should check whether these are the same product (Stock → Merge Products).`
+            );
+            ensureBarcodes(id, sizes.length ? sizes : [null]).catch(() => {});
+          }
+        } catch (regErr) {
+          // Rules denial (no stockRole) or a network failure. The captured code
+          // is on the product record either way, so nothing is lost — but the
+          // product must not be left with NO scannable code, so mint one.
+          console.warn("printed barcode registration failed (product already saved):", regErr);
+          alert(
+            `Saved, but the printed barcode could not be registered (${regErr?.message || regErr}). ` +
+            `A shop barcode has been generated instead — ask an admin to register the printed code.`
+          );
+          ensureBarcodes(id, sizes.length ? sizes : [null]).catch(() => {});
+        }
+      } else {
+        ensureBarcodes(id, sizes.length ? sizes : [null]).catch(() => {});
+      }
 
       // Opening stock: the entered quantities become `received` movements at the
       // chosen location via applyMovement — ledger-paired, never raw. A size left
@@ -5396,7 +5460,7 @@ function AdminView({ products, orders, onExit }) {
         console.warn("opening-stock receive failed:", recErr);
       }
 
-      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true });
+      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
       setShoeboxTouched(false);
       setRecvQtys({});
       setSaveAttempted(false);
@@ -5540,6 +5604,7 @@ function AdminView({ products, orders, onExit }) {
     const detail = (
       <AdminProductDetail
         product={detailProduct}
+        allProducts={products}
         insightsLog={insightsLog}
         onBack={() => window.history.back()}
       />
@@ -5691,6 +5756,11 @@ function AdminView({ products, orders, onExit }) {
           recvQtys={recvQtys} setRecvQtys={setRecvQtys}
           recvLoc={recvLoc} setRecvLoc={setRecvLoc} recvRegistry={recvRegistry}
           fileInputRef={fileInputRef} handleImageUpload={handleImageUpload}
+          products={products}
+          isPerfume={formIsPerfume}
+          onCapturePrintedBarcode={(code) => setForm((f) => ({ ...f, printedBarcode: code, printedBarcodeAuto: false }))}
+          onClearPrintedBarcode={() => setForm((f) => ({ ...f, printedBarcode: null }))}
+          onUseAutoBarcode={useAutoBarcode}
           saving={saving} saveAttempted={saveAttempted} onSave={addProduct}
         />
       )}
@@ -5905,7 +5975,7 @@ function AdminProductRow({ product }) {
 // existing compression pipeline and uploads immediately on file pick (no
 // preview step; consistent with the auto-save theme). Delete prompts for
 // confirmation then navigates back.
-function AdminProductDetail({ product, insightsLog, onBack }) {
+function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) {
   const isClothing = (product.productType || "sneaker") === "clothing";
   const productSizes = Array.isArray(product.sizes) && product.sizes.length
     ? product.sizes
@@ -5986,6 +6056,47 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
     if (!window.confirm(`Remove the photo for "${product.name}"?`)) return;
     await update(ref(database, `products/${product.id}`), { photoUrl: null });
   };
+
+  // ── THE PRINTED BARCODE (perfume) ─────────────────────────────────────────
+  // Attaches the manufacturer's own EAN to a product that already exists. Two
+  // writes, in this order and no other:
+  //   1. /barcodes/{code} → { productId, size:"_" }   the scan resolution
+  //   2. /products/{id}/printedBarcode = code          the product's own copy
+  // The index write goes FIRST because it is the one that can be refused: it is
+  // create-only at the rules layer and needs stockRole. Recording the code on
+  // the product when the index write had failed would show a barcode on screen
+  // that no scanner could resolve.
+  //
+  // NOTHING IS EVER REMOVED. The auto-generated shop code this product already
+  // has stays exactly where it is, in /products/{id}/barcodes and in /barcodes,
+  // so every label already stuck on stock keeps scanning. /barcodes is
+  // many-to-one by design — both numbers resolve to this product, size "_".
+  const [recapture, setRecapture] = useState(false);
+  const [savingPrintedBarcode, setSavingPrintedBarcode] = useState(false);
+  const savePrintedBarcode = async (code) => {
+    setSavingPrintedBarcode(true);
+    try {
+      const reg = await registerPrintedBarcode(product.id, code);
+      if (!reg.ok) {
+        // Claimed by a different product between the capture check and now.
+        alert(`${code} is registered to another product. Nothing was changed.`);
+        return;
+      }
+      await update(ref(database, `products/${product.id}`), { printedBarcode: code });
+      setRecapture(false);
+    } catch (err) {
+      console.error("printed barcode save failed:", err);
+      alert(`Could not register ${code} (${err?.message || err}). Nothing was changed.`);
+    } finally {
+      setSavingPrintedBarcode(false);
+    }
+  };
+  // "Photograph it again" reopens the capture WITHOUT touching what is stored.
+  // A /barcodes entry cannot be deleted from the client (the rule permits a
+  // write only when the slot is empty), so an entry that has been made is
+  // permanent — capturing a different code adds another one rather than
+  // replacing it, and both keep resolving to this product.
+  const clearPrintedBarcode = () => setRecapture(true);
 
   // Box photo (sneakers) — the shoe's own retail-box shot, attached to AI
   // Photo Studio HOUSE-STYLE generations so the AI reproduces the real box.
@@ -6389,6 +6500,24 @@ function AdminProductDetail({ product, insightsLog, onBack }) {
             </div>
           </div>
         </div>
+        {/* ── THE PRINTED BARCODE — PERFUME ONLY ─────────────────────────────
+            Perfume that pre-dates this feature already has an auto-generated
+            shop code; capturing the manufacturer's EAN here ADDS a second
+            /barcodes entry pointing at the same product and size. The shop code
+            is never removed or replaced, so labels already stuck on stock keep
+            scanning, and either number resolves to this product. */}
+        {isPerfume(product) && (
+          <div style={{ borderTop:"1px solid rgba(255,255,255,.06)", padding:"14px 16px" }}>
+            <PrintedBarcodeCapture
+              productId={product.id}
+              products={allProducts}
+              value={recapture || typeof product.printedBarcode !== "string" ? null : product.printedBarcode}
+              busy={savingPrintedBarcode}
+              onCapture={savePrintedBarcode}
+              onClear={clearPrintedBarcode}
+            />
+          </div>
+        )}
       </div>
 
       {/* HUBS — iOS-style grouped list */}
