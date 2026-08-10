@@ -22,6 +22,7 @@ import { database } from "../../firebase";
 import {
   useStockExceptions, useEngineShadow, useEngineOpen, useEngineRuns,
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
+  useStockTargetsState,
   useStockTargets, useTransfers, useRetryState,
 } from "./useStock";
 import InTransit from "./InTransit";
@@ -255,7 +256,12 @@ export default function HealthView({ products = [], onExit }) {
   const session = useReceivingSession();
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const allStock = useStockCells();   // live — drives Negative Inventory truthfully
-  const allTargetsRaw = useStockTargets();   // null until the listener answers
+  // Value AND load/error state: NetworkTransfer gates Solve on the targets read,
+  // so it needs to tell "not answered yet" from "answered with nothing" from
+  // "could not read" — three states a bare null conflates. `allTargetsRaw` keeps
+  // its exact previous meaning for everything below.
+  const targetsState = useStockTargetsState();
+  const allTargetsRaw = targetsState.value;   // null until the listener answers
   const allTargets = allTargetsRaw || {};
   // Live count of existing products awaiting the one-tap engine migration
   // (v8) — live like Negative Inventory, so the card clears the moment the
@@ -455,7 +461,7 @@ export default function HealthView({ products = [], onExit }) {
             </div>
             {activeTab === "sneakers"
               ? <MissingFootwear products={products} />
-              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingProductCards || []} targets={allTargetsRaw} />}
+              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingProductCards || []} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} />}
           </DetailShell>
         );
       }

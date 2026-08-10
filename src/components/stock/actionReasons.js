@@ -31,7 +31,8 @@ export function solveReason({
   canAct,          // operator holds a stock role
   configLoaded,    // /config/refillEngine has answered
   configError,     // …or failed to read (fail-safe: treated as no switches)
-  targetsLoaded,   // /stock_targets has answered — explicit rows outrank the run
+  targetsLoaded,   // /stock_targets has ANSWERED (or failed) — not "is non-empty"
+  targetsError,    // …and the answer was a failure, so explicit rows are unknown
   hasSourceStock,  // real units at the card's source location
   policyAtAnyStore,// a positive target resolves for ≥1 size at ≥1 store
   ruleOnAnywhere,  // rule-based targeting enabled at ≥1 seed location
@@ -46,8 +47,11 @@ export function solveReason({
   // looking at a row whose stock was moved out from under them by another till.
   if (!hasSourceStock) return "No stock at any source — there's nothing to send.";
   if (policyAtAnyStore) return null;
-  // No policy: say WHICH of the two reasons, because they send you to different
-  // places. A killed switch is an engine setting; a missing policy is a target row.
+  // No policy: say WHICH of the three reasons, because they send you to three
+  // different places. A failed targets read is not the product's fault and must
+  // not be reported as "no policy" — the row may well have one we could not see.
+  // A killed switch is an engine setting; a missing policy is a target row.
+  if (targetsError) return "Can't read the refill settings, so any target set for this product can't be checked. Move it manually instead.";
   if (!ruleOnAnywhere) return "Automatic refills are switched off, so nothing would refill this. Move it manually instead.";
   return oneSize
     ? "No refill policy covers this one-size product yet — it needs a target set before the engine will refill it. Move it manually instead."

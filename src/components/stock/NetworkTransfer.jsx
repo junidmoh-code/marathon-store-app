@@ -56,7 +56,7 @@ const destChip = (on) => ({
 // one — the same count-disagrees-with-list class of bug this tab was just fixed
 // for. One subscription, one snapshot, and one less full-tree listener.
 // (Codex review, PR #308.) HealthView is the only renderer of this component.
-export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null }) {
+export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null, targetsSettled = false, targetsError = false }) {
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
@@ -101,11 +101,22 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   // /stock_targets, LIVE, handed down by HealthView (it already subscribes for
   // the migration count — a second full-tree listener here is the drift the
-  // allStock note below warns about). null = the listener has not answered yet,
-  // and that is NOT the same as "no explicit rows": treating a pending read as
-  // an empty one would grey Solve on exactly the products an explicit row
-  // enables. `targetsReady` is what keeps the button honest while it loads.
-  const targetsReady = targets != null;
+  // allStock note below warns about).
+  //
+  // GATE ON `settled`, NEVER ON THE VALUE. RTDB returns null for an empty node,
+  // for a node that has not answered yet, AND (via usePath's warn-only error
+  // path) for a read that was DENIED. Gating on `targets != null` therefore
+  // greyed EVERY clothing Solve — including sized products, which never needed a
+  // target row at all — behind a permanent "still loading" whenever
+  // /stock_targets was empty or unreadable. That was a regression on pre-PR
+  // behaviour, where Solve did not read this node at all. (Kimi review, PR #342.)
+  //
+  // A FAILED read degrades rather than blocks: explicit rows become UNKNOWN, so
+  // the rule-based path keeps working exactly as it did before this file learned
+  // about targets, and only an explicit-row-only product stays greyed — with a
+  // sentence that names the failed read instead of blaming the product.
+  const targetsReady = targetsSettled;
+  const targetRows = targetsError ? null : targets;
   // On-hand for a RAW catalogue size against the DECODED cell map HealthView
   // passes down (useStockCells decodes on the way in). decodedCellKey, never
   // `String(size)`: the raw size and the cell key part company the moment a size
@@ -175,7 +186,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // outlive it, exactly as they do in resolveTarget.
   const runFor = (pid) => resolvedRun({
     std: stdRun, subRun, subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
-    targets, pid, ruleBasedTargets: cfg?.ruleBasedTargets,
+    targets: targetRows, pid, ruleBasedTargets: cfg?.ruleBasedTargets,
   });
   // Sizes safe to seed — a positive target at every seed location (solvePlan.js).
   // A size with no target would seed a cell the engine never refills, then vanish
@@ -210,11 +221,28 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // overwritten (and the SEED rule branch itself rejects a write onto an existing
   // cell). Store for a hub2-stranded product; Hub 2 AND store for a central-stranded
   // one. NO targets, NO requests — the engine's standard + cascade does the refill.
+  // The store a Solve acts on. ONE function, because the panel's label and the
+  // write MUST agree: this used to be `solveDest[pid] || STORES[0]` here and
+  // `solveDest[pid] || STORES.find(qualifying) || STORES[0]` in the render, so
+  // with an asymmetric policy — a target row at Trophy but not at Marathon PE,
+  // exactly what a per-shop beanie policy creates — the panel read
+  // "Solve — carry at Trophy" while this wrote for Marathon PE, found no
+  // qualifying sizes there and returned silently. A button that says Trophy,
+  // does nothing, and reports nothing: the precise failure this tab is being
+  // fixed to abolish. (Kimi review, PR #342.)
+  const defaultStoreFor = (card) => STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
+  const storeFor = (card) => solveDest[card.pid] || defaultStoreFor(card);
+
   const solve = async (card) => {
-    const store = solveDest[card.pid] || STORES[0];
+    const store = storeFor(card);
     if (solveBusy || !canAct || !store) return;
     const sizes = qualifyingSizes(card, store);
-    if (!sizes.length) return; // guarded by the disabled button — never a false success
+    // Unreachable while the confirm button is gated on the same store — but a
+    // bare `return` here is a dead button by another name, so it speaks.
+    if (!sizes.length) {
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes: [], msg: `Nothing to seed at ${LOC_LABEL[store]} — no refill policy covers this product there.` } }));
+      return;
+    }
     const locs = seedLocations(card.source, store);
     setSolveBusy(card.pid);
     const uid = auth.currentUser?.uid || null;
@@ -297,7 +325,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // opened on a store that doesn't — leaving a correctly-disabled confirm
         // button under an enabled Solve, which reads as broken. The operator can
         // still pick either store; this only changes which one is pre-selected.
-        const sStore = solveDest[card.pid] || STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
+        const sStore = storeFor(card);
         const plan = sOpen ? solvePlan(card, sStore) : null;
         // The confirm button asks the question of the ONE nominated store, which
         // a per-location policy can answer differently from "any store".
@@ -321,7 +349,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         const armed = STORES.some((s) => seedLocations(card.source, s).every(ruleOn));
         const solveBlocked = solveReason({
           canAct, configLoaded: !!cfg, configError: cfgErr, targetsLoaded: targetsReady,
-          hasSourceStock: card.units > 0, policyAtAnyStore, ruleOnAnywhere: armed,
+          hasSourceStock: card.units > 0, policyAtAnyStore, ruleOnAnywhere: armed, targetsError,
           oneSize: catalogSizes(card.pid).every((s) => s === "_"),
         });
         return (

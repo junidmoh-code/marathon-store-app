@@ -69,12 +69,13 @@ const STOCK = {
 const BEANIE_ONLY = PRODUCTS.filter((p) => p.id === BEANIE);
 const JERSEY_ONLY = PRODUCTS.filter((p) => p.id === JERSEY);
 
-const render = (targets, { products = BEANIE_ONLY, stock = STOCK } = {}) => {
+const render = (targets, { products = BEANIE_ONLY, stock = STOCK, settled = true, error = false } = {}) => {
   const cards = computeMissingProducts({ allStock: stock, products });
   let tree;
   act(() => {
     tree = TestRenderer.create(
-      <NetworkTransfer products={products} category="clothing" allStock={stock} cards={cards} targets={targets} />
+      <NetworkTransfer products={products} category="clothing" allStock={stock} cards={cards}
+        targets={targets} targetsSettled={settled} targetsError={error} />
     );
   });
   return tree;
@@ -180,7 +181,10 @@ describe("no disabled action is silent", () => {
   });
 
   it("targets still loading is a 'one moment', never a false 'no policy'", () => {
-    const tree = render(null);   // null = the /stock_targets listener has not answered
+    // NOT ANSWERED YET — distinct from "answered with an empty node", which is
+    // also a null value and which must NOT read as loading (see the
+    // empty-or-unreadable block below).
+    const tree = render(null, { settled: false });
     expect(solveButton(tree).props.disabled).toBe(true);
     expect(textOf(tree)).toMatch(/one moment/i);
     // Crucially it must NOT accuse the product of having no policy.
@@ -199,6 +203,59 @@ describe("no disabled action is silent", () => {
       expect(typeof b.props.title, `a disabled button rendered with no reason: ${JSON.stringify(b.children)}`).toBe("string");
       expect(b.props.title.length).toBeGreaterThan(10);
     }
+  });
+});
+
+describe("an empty or unreadable /stock_targets must not disable everything", () => {
+  // RTDB returns null for an EMPTY node, for one that has not answered, and for a
+  // DENIED read. Gating Solve on the value greyed every clothing product — sized
+  // ones included, which never needed a target row — behind a permanent
+  // "still loading". Gate on SETTLED, and degrade on error. (Kimi, PR #342.)
+  it("an EMPTY targets node still lets the size run arm a sized product", () => {
+    const tree = render(null, { products: JERSEY_ONLY, settled: true });
+    expect(solveButton(tree).props.disabled).toBe(false);
+  });
+
+  it("a FAILED targets read leaves rule-based solving working", () => {
+    const tree = render(null, { products: JERSEY_ONLY, settled: true, error: true });
+    expect(solveButton(tree).props.disabled).toBe(false);
+  });
+
+  it("a FAILED targets read blames the read, not the product", () => {
+    // The beanie is explicit-row-only, so it genuinely stays greyed — but the
+    // reason must say the settings could not be read, not "no policy covers this".
+    const tree = render(null, { settled: true, error: true });
+    const btn = solveButton(tree);
+    expect(btn.props.disabled).toBe(true);
+    expect(btn.props.title).toMatch(/Can't read the refill settings/);
+    expect(btn.props.title).not.toMatch(/No refill policy covers/);
+  });
+});
+
+describe("the store the panel names is the store the write uses", () => {
+  // Asymmetric policy — a target row at Trophy but NOT at Marathon PE, exactly
+  // what a per-shop beanie policy creates. The panel pre-selects the first
+  // QUALIFYING store (Trophy); solve() used STORES[0] (Marathon PE), found no
+  // qualifying sizes and returned silently. A button reading "Solve — carry at
+  // Trophy" that does nothing and says nothing. (Kimi, PR #342.)
+  const TROPHY_ONLY = {
+    hub2: { [BEANIE]: { _: { target: 15 } } },
+    trophy: { [BEANIE]: { _: { target: 5 } } },
+  };
+
+  it("seeds the store shown on the button, not STORES[0]", async () => {
+    const tree = render(TROPHY_ONLY);
+    expect(solveButton(tree).props.disabled).toBe(false);
+    await act(async () => { solveButton(tree).props.onClick(); });
+    // The confirm button names Trophy…
+    expect(buttonSaying(tree, "Solve — carry at Trophy")).toBeDefined();
+    await act(async () => { buttonSaying(tree, "Solve — carry at Trophy").props.onClick(); });
+    // …and the write must be Trophy's, with nothing written for Marathon PE.
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const keys = Object.keys(updateMock.mock.calls[0][1]);
+    expect(keys.sort()).toEqual([`stock/hub2/${BEANIE}/_`, `stock/trophy/${BEANIE}/_`]);
+    expect(keys.some((k) => k.includes("marathon-pe"))).toBe(false);
+    expect(textOf(tree)).toMatch(/Carrying 1 size at Trophy/);
   });
 });
 

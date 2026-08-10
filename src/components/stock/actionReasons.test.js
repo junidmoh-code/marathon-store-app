@@ -129,6 +129,19 @@ describe("EXHAUSTIVE — no blocking input may return a silent disable", () => {
   it("configError is a blocker on solve and speaks", () => {
     expect(typeof solveReason({ ...OK, configError: true })).toBe("string");
   });
+  it("a failed targets read blames the READ, not the product", () => {
+    // "No refill policy covers this product" would be a lie: the product may
+    // well have a target row we could not see. (Kimi review, PR #342.)
+    const r = solveReason({ ...OK, policyAtAnyStore: false, targetsError: true });
+    expect(r).toMatch(/Can't read the refill settings/);
+    expect(r).not.toMatch(/No refill policy covers/);
+    // …and it must not be reported as the kill switch either.
+    expect(solveReason({ ...OK, policyAtAnyStore: false, targetsError: true, ruleOnAnywhere: false }))
+      .toMatch(/Can't read the refill settings/);
+  });
+  it("a failed targets read does NOT block a product the size run already covers", () => {
+    expect(solveReason({ ...OK, targetsError: true })).toBe(null);
+  });
   it("rule-based refills OFF but a policy still resolving stays AVAILABLE", () => {
     // The explicit-row-survives-the-kill-switch rule, at the reason layer.
     expect(solveReason({ ...OK, ruleOnAnywhere: false, policyAtAnyStore: true })).toBe(null);
