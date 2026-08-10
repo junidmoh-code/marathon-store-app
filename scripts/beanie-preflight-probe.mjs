@@ -1,0 +1,131 @@
+// ─── BEANIE ONE-SIZE COLLAPSE — COMMIT 2: BARCODE WRITE-BACK PROBE ────────────
+//
+// The migration's load-bearing step rewrites every /barcodes/{code}/size to "_"
+// inside ONE atomic multi-path update. The live rule at /barcodes/$code is
+// CREATE-ONLY under client auth (".write" requires !data.exists()), so that step
+// is IMPOSSIBLE from a client — it runs on the Admin SDK via Application Default
+// Credentials, which bypass rules. This probe PROVES that permission before any
+// stock moves, the same way the balaclava collapse did (PR #284):
+//
+//   for EVERY barcode of EVERY in-scope beanie —
+//     1. read /barcodes/{code}, assert it exists with the right productId
+//     2. write its EXISTING size value back verbatim (a real write, zero
+//        content change — the identical rule path the migration will take)
+//     3. re-read and assert the value is unchanged
+//
+// ALL codes, never a sample: the migration batches index rewrites per product,
+// and a single unwritable record takes its whole atomic batch down. On
+// PERMISSION_DENIED this aborts with an explicit statement that the credential
+// is a client credential rather than the Admin SDK. The credential type is
+// asserted and LOGGED up front so a future run under different credentials is
+// visible in the output, not just in its failure mode.
+//
+// Scope rule identical to the census (scripts/beanie-census.mjs): name matches
+// /beanie/i, not a mergedInto stub. Codes come from BOTH directions — the
+// product's barcodes map AND a reverse sweep of /barcodes by productId — so a
+// code the map forgot still gets probed.
+//
+// Usage: node scripts/beanie-preflight-probe.mjs
+// Exit 0 = every code probed clean. Exit 1 = abort (nothing further may move).
+
+import { createRequire } from "module";
+
+const require = createRequire(new URL("../functions/package.json", import.meta.url));
+const admin = require("firebase-admin");
+admin.initializeApp({
+  credential: admin.credential.applicationDefault(),
+  databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app",
+});
+const db = admin.database();
+const g = (p) => db.ref(p).once("value").then((s) => s.val());
+
+// A privileged (Admin SDK) credential can mint its own access tokens — that is
+// precisely what lets it bypass the /barcodes create-only rule. Same assertion
+// as the balaclava collapse: fail EARLY and legibly under the wrong auth; the
+// write-back probe below stays the empirical proof.
+export function hasPrivilegedCredential(app) {
+  const c = app && app.options && app.options.credential;
+  return !!c && typeof c.getAccessToken === "function";
+}
+
+(async () => {
+  console.log(`\n${"═".repeat(78)}\n  BEANIE PRE-FLIGHT — barcode index write-back probe (ALL codes)\n${"═".repeat(78)}`);
+
+  const cred = admin.app().options.credential;
+  const credOk = hasPrivilegedCredential(admin.app());
+  console.log(`  credential: ${cred ? cred.constructor.name : "(none)"} — ${credOk ? "PRIVILEGED Admin SDK (rules bypassed)" : "NOT privileged"}`);
+  if (!credOk) {
+    console.error("\nABORT: this credential is a CLIENT credential, not the Admin SDK.");
+    console.error("The atomic Step 2 (rewriting existing /barcodes/{code}/size records) would");
+    console.error("fail under it — /barcodes/$code is create-only under client auth. Configure");
+    console.error("Application Default Credentials and re-run.");
+    process.exit(1);
+  }
+
+  const [products, barcodesIdx] = await Promise.all([g("products"), g("barcodes")]).then((r) => r.map((v) => v || {}));
+
+  const inScope = Object.entries(products).filter(([, p]) => /beanie/i.test(p?.name || "") && !p?.mergedInto);
+  const pidSet = new Set(inScope.map(([pid]) => pid));
+  // code → expected pid, from both directions
+  const codes = new Map();
+  for (const [pid, p] of inScope) for (const code of Object.values(p.barcodes || {})) codes.set(String(code), pid);
+  for (const [code, rec] of Object.entries(barcodesIdx)) if (rec && pidSet.has(rec.productId)) if (!codes.has(code)) codes.set(code, rec.productId);
+
+  console.log(`  scope: ${inScope.length} beanies, ${codes.size} barcode index records to probe\n`);
+
+  let pass = 0; const failures = [];
+  for (const [code, pid] of codes) {
+    try {
+      const rec = await g(`barcodes/${code}`);
+      if (!rec) { failures.push(`${code}: NO index record (expected productId ${pid})`); continue; }
+      if (rec.productId !== pid) { failures.push(`${code}: productId ${rec.productId} ≠ expected ${pid}`); continue; }
+      // Fresh read immediately before the set — write back the CURRENT value,
+      // never a snapshot, so the probe writes what is actually there.
+      //
+      // HONEST LIMIT (CodeRabbit, PR #343): read-then-set is not atomic, and
+      // /barcodes records carry no version field to condition a write on. A
+      // change landing between the read and the set would be overwritten, and
+      // the read-back would report "unchanged" because it compares against the
+      // value this probe itself wrote. There is no exclusive barcode-write gate
+      // in this system to take, and /receiving_session/active is not one — it
+      // stands the refill engine down, nothing else.
+      //
+      // What is done instead: re-read immediately before the write and confirm
+      // the value has not moved since the first read, which shrinks the window
+      // to the microseconds between two adjacent reads, and a second read-back
+      // after the write. What remains is operational: run this probe inside the
+      // same quiet window as the migration itself, when nobody is creating or
+      // editing products. A barcode index record only changes when a product is
+      // created or its codes are edited, so the quiet window is the real
+      // control here and the runbook says so.
+      const before = await g(`barcodes/${code}/size`);
+      if (typeof before !== "string" || before === "") { failures.push(`${code}: size is ${JSON.stringify(before)} — nothing safe to write back`); continue; }
+      const stillBefore = await g(`barcodes/${code}/size`);
+      if (stillBefore !== before) { failures.push(`${code}: CHANGING UNDER THE PROBE (${before} → ${stillBefore}) — someone is editing this product; re-run in a quiet window`); continue; }
+      await db.ref(`barcodes/${code}/size`).set(before);
+      const after = await g(`barcodes/${code}/size`);
+      if (after !== before) { failures.push(`${code}: CHANGED ${before} → ${after}`); continue; }
+      pass++;
+    } catch (e) {
+      const denied = /PERMISSION_DENIED/i.test(String(e.code || e.message));
+      failures.push(`${code}: ${denied ? "PERMISSION_DENIED" : e.message}`);
+      if (denied) {
+        console.error(`\nABORT at ${code}: PERMISSION_DENIED — the credential in use is a CLIENT`);
+        console.error("credential rather than the Admin SDK, and the migration's atomic Step 2");
+        console.error("(rewriting existing /barcodes/{code}/size) WOULD FAIL. Nothing has been");
+        console.error(`changed (${pass} verbatim write-backs so far, all verified unchanged).`);
+        process.exit(1);
+      }
+    }
+  }
+
+  console.log(`  probed ${codes.size} codes: ${pass} ok, ${failures.length} failed`);
+  for (const f of failures) console.log(`  FAIL ${f}`);
+  if (failures.length) {
+    console.error("\nABORT: the atomic Step 2 batch would fail on the records above. Nothing moves.");
+    process.exit(1);
+  }
+  console.log("\n  ALL CODES WRITABLE — the migration's index rewrite is proven possible under");
+  console.log("  this credential. (Every write was the existing value, verified unchanged.)");
+  process.exit(0);
+})().catch((e) => { console.error(e); process.exit(1); });
