@@ -16,12 +16,13 @@ import { ref, get, update, onValue } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
-import { encodeSizeKey, stockCellPath } from "../../utils/sizeKey";
+import { encodeSizeKey, stockCellPath, decodedCellKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
-import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, effectiveStandard, ruleTargetsEnabledFor } from "./solvePlan";
+import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts } from "./missingProductsCore";
+import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -55,7 +56,7 @@ const destChip = (on) => ({
 // one — the same count-disagrees-with-list class of bug this tab was just fixed
 // for. One subscription, one snapshot, and one less full-tree listener.
 // (Codex review, PR #308.) HealthView is the only renderer of this component.
-export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null }) {
+export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null, targetsSettled = false, targetsError = false }) {
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
@@ -98,7 +99,32 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const ruleOn = (dest) => ruleTargetsEnabledFor(cfg?.ruleBasedTargets, dest);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
-  const qtyAt = (loc, pid, size) => Math.max(Number(allStock?.[loc]?.[pid]?.[String(size)]?.qty) || 0, 0);
+  // /stock_targets, LIVE, handed down by HealthView (it already subscribes for
+  // the migration count — a second full-tree listener here is the drift the
+  // allStock note below warns about).
+  //
+  // GATE ON `settled`, NEVER ON THE VALUE. RTDB returns null for an empty node,
+  // for a node that has not answered yet, AND (via usePath's warn-only error
+  // path) for a read that was DENIED. Gating on `targets != null` therefore
+  // greyed EVERY clothing Solve — including sized products, which never needed a
+  // target row at all — behind a permanent "still loading" whenever
+  // /stock_targets was empty or unreadable. That was a regression on pre-PR
+  // behaviour, where Solve did not read this node at all. (Kimi review, PR #342.)
+  //
+  // A FAILED read degrades rather than blocks: explicit rows become UNKNOWN, so
+  // the rule-based path keeps working exactly as it did before this file learned
+  // about targets, and only an explicit-row-only product stays greyed — with a
+  // sentence that names the failed read instead of blaming the product.
+  const targetsReady = targetsSettled;
+  const targetRows = targetsError ? null : targets;
+  // On-hand for a RAW catalogue size against the DECODED cell map HealthView
+  // passes down (useStockCells decodes on the way in). decodedCellKey, never
+  // `String(size)`: the raw size and the cell key part company the moment a size
+  // needs encoding — a padded " 8" lives in the cell "_8" — and a miss here reads
+  // as a silent zero, which is precisely how the sneaker Solve lost whole sizes.
+  // Letters and the "_" sentinel are unaffected either way; this is the lookup
+  // that is right for all three.
+  const qtyAt = (loc, pid, size) => Math.max(Number(allStock?.[loc]?.[pid]?.[decodedCellKey(size)]?.qty) || 0, 0);
   // ("carries" lived here and is now missingProductsCore's alone — the carriage
   // rule belongs with the card build it gates. Keeping a copy would be a second
   // implementation of the engine's storeCarries idea. CodeRabbit, PR #308.)
@@ -142,22 +168,40 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // only as the pre-load placeholder, where nothing can act on it.
   // (CodeRabbit, PR #305.)
   const stdRun = useMemo(() => (cfg ? (std || {}) : STD_FALLBACK), [cfg, std]);
-  // The standard THIS product is governed by — subcategory policy where one
-  // applies, the size run otherwise (solvePlan.js mirrors resolveTarget).
-  const runFor = (pid) => effectiveStandard({
+  // The target THIS product is governed by, at every location — resolveTarget's
+  // full priority order folded into one run map (solvePlan.js resolvedRun):
+  // explicit /stock_targets row (wins, and survives the kill switch), else the
+  // subcategory policy, else the size run (both only where the switch is on).
+  //
+  // THE FIX (2026-08-10). This used to be effectiveStandard alone — subcategory
+  // policy over the size run — with the kill switch applied one level up in
+  // qualifyingSizes. That left out the engine's FIRST branch entirely, and the
+  // omission was not merely incomplete, it was structural: an explicit row is the
+  // only way a ONE-SIZE product can ever hold a target, because its single size is
+  // the "_" sentinel and putting "_" in defaultRunByStore was rejected outright
+  // (it is shared by every one-size product, so it would arm sunglasses and belts
+  // too). One-size products could therefore never be solved, no matter what an
+  // operator configured — which is what greyed out every beanie. Applying the kill
+  // switch per location INSIDE resolvedRun is the other half: explicit rows must
+  // outlive it, exactly as they do in resolveTarget.
+  const runFor = (pid) => resolvedRun({
     std: stdRun, subRun, subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
+    targets: targetRows, pid, ruleBasedTargets: cfg?.ruleBasedTargets,
   });
-  // Sizes safe to seed — a positive standard at every seed location (solvePlan.js).
-  // A size with no standard would seed a cell the engine never refills, then vanish
+  // Sizes safe to seed — a positive target at every seed location (solvePlan.js).
+  // A size with no target would seed a cell the engine never refills, then vanish
   // with a false "solved", so it's excluded. (Codex fix a.)
   //
-  // The rule-switch check is the same guarantee one level up: with rule-based
-  // targeting off at a seed location the engine refills NOTHING there by rule, so
-  // no size qualifies, whatever the standards say. Returning empty here is what
-  // greys the button, disables the confirm action AND makes solve() bail — one
-  // choke point rather than three places to keep in step.
+  // Still ONE choke point: this greys the button, disables the confirm action AND
+  // makes solve() bail, rather than three places to keep in step. What changed is
+  // only what feeds it — the kill switch now lives inside runFor, per location, so
+  // that an explicit row can survive it.
+  //
+  // Targets not loaded yet → nothing qualifies, so Solve starts greyed and lights
+  // up on evidence, matching how cfg === null is already handled. The row says
+  // which of the two it is waiting on.
   const qualifyingSizes = (card, store) => {
-    if (!seedLocations(card.source, store).every(ruleOn)) return [];
+    if (!targetsReady) return [];
     return computeQualifyingSizes(catalogSizes(card.pid), card.source, store, runFor(card.pid));
   };
 
@@ -177,11 +221,28 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // overwritten (and the SEED rule branch itself rejects a write onto an existing
   // cell). Store for a hub2-stranded product; Hub 2 AND store for a central-stranded
   // one. NO targets, NO requests — the engine's standard + cascade does the refill.
+  // The store a Solve acts on. ONE function, because the panel's label and the
+  // write MUST agree: this used to be `solveDest[pid] || STORES[0]` here and
+  // `solveDest[pid] || STORES.find(qualifying) || STORES[0]` in the render, so
+  // with an asymmetric policy — a target row at Trophy but not at Marathon PE,
+  // exactly what a per-shop beanie policy creates — the panel read
+  // "Solve — carry at Trophy" while this wrote for Marathon PE, found no
+  // qualifying sizes there and returned silently. A button that says Trophy,
+  // does nothing, and reports nothing: the precise failure this tab is being
+  // fixed to abolish. (Kimi review, PR #342.)
+  const defaultStoreFor = (card) => STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
+  const storeFor = (card) => solveDest[card.pid] || defaultStoreFor(card);
+
   const solve = async (card) => {
-    const store = solveDest[card.pid] || STORES[0];
+    const store = storeFor(card);
     if (solveBusy || !canAct || !store) return;
     const sizes = qualifyingSizes(card, store);
-    if (!sizes.length) return; // guarded by the disabled button — never a false success
+    // Unreachable while the confirm button is gated on the same store — but a
+    // bare `return` here is a dead button by another name, so it speaks.
+    if (!sizes.length) {
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes: [], msg: `Nothing to seed at ${LOC_LABEL[store]} — no refill policy covers this product there.` } }));
+      return;
+    }
     const locs = seedLocations(card.source, store);
     setSolveBusy(card.pid);
     const uid = auth.currentUser?.uid || null;
@@ -255,6 +316,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         const result = done[card.pid];
         const dest = dests[card.pid] || destOptions(card)[0];
         const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
+        const moveBlocked = moveReason({ canAct, busy: busyPid === card.pid, units: total });
         const sOpen = solvePid === card.pid;
         const sResult = solved[card.pid];
         // Default to a store this product can ACTUALLY be solved at, not simply
@@ -263,8 +325,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // opened on a store that doesn't — leaving a correctly-disabled confirm
         // button under an enabled Solve, which reads as broken. The operator can
         // still pick either store; this only changes which one is pre-selected.
-        const sStore = solveDest[card.pid] || STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
+        const sStore = storeFor(card);
         const plan = sOpen ? solvePlan(card, sStore) : null;
+        // The confirm button asks the question of the ONE nominated store, which
+        // a per-location policy can answer differently from "any store".
+        const confirmBlocked = sOpen ? solveConfirmReason({
+          canAct, busy: solveBusy === card.pid, sizesInPlan: plan.sizes.length, storeLabel: LOC_LABEL[sStore],
+        }) : null;
         // Solvable only if the engine has a standard for at least one of its sizes
         // at at least one store. This used to probe STORES[0] alone, on the grounds
         // that the PE and Trophy size runs are identical — true of defaultRunByStore,
@@ -272,15 +339,22 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // location and could name one store and not the other. Probing every store
         // keeps the button honest; the panel's own button still re-checks the store
         // actually nominated, so a store with no policy remains unsolvable.
-        const solvable = STORES.some((s) => qualifyingSizes(card, s).length > 0);
-        // Why it's greyed — three genuinely different situations that all used to
-        // read "no standard sizes", which sent people looking at the product when
-        // the answer was the engine's switch or a config still loading.
+        const policyAtAnyStore = STORES.some((s) => qualifyingSizes(card, s).length > 0);
+        // Why it's greyed. Every disabled action on this row now carries its own
+        // sentence (actionReasons.js) and renders it as VISIBLE text — the old
+        // `whyNot` went to `title=`, a desktop hover tooltip, which on a warehouse
+        // tablet is no explanation at all. `solveBlocked` is both the reason string
+        // and the disabled test, so the button cannot go grey without the row
+        // saying why.
         const armed = STORES.some((s) => seedLocations(card.source, s).every(ruleOn));
-        const whyNot = !cfg ? "Checking the engine's settings…"
-          : cfgErr ? "Couldn't read the engine's settings — Solve is off until it loads. Use Move manually."
-          : !armed ? "Rule-based refills are switched off — the engine wouldn't refill this, so there's nothing to seed. Use Move manually."
-          : "No refill policy covers this product — use Move manually";
+        const solveBlocked = solveReason({
+          canAct, configLoaded: !!cfg, configError: cfgErr, targetsLoaded: targetsReady,
+          hasSourceStock: card.units > 0, policyAtAnyStore, ruleOnAnywhere: armed, targetsError,
+          // `.every` is vacuously true on an empty list, which would have called a
+          // product with no usable catalogue size "one-size" and told the operator
+          // to go and set a target for a size it does not have. (Sonnet, PR #342.)
+          oneSize: catalogSizes(card.pid).length > 0 && catalogSizes(card.pid).every((s) => s === "_"),
+        });
         return (
           <ProductCard key={card.pid}
             photo={card.photo} name={card.name}
@@ -290,9 +364,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
             </>}
             right={
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!canAct || !solvable}
-                        title={!solvable ? whyNot : undefined}
-                        style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: (canAct && solvable) ? "pointer" : "default", opacity: (canAct && solvable) ? 1 : 0.4, fontFamily: FONT }}>
+                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!!solveBlocked}
+                        title={solveBlocked || undefined}
+                        style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: solveBlocked ? "default" : "pointer", opacity: solveBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {sOpen ? "Close" : "Solve"}
                 </button>
                 <button onClick={() => { setOpenPid(open ? null : card.pid); setSolvePid(null); }}
@@ -302,6 +376,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
               </div>
             }
           >
+            {/* NEVER A SILENTLY DEAD BUTTON. Whenever Solve is greyed the row says
+                why, in the same words the (hover-only, tablet-invisible) tooltip
+                used to hide. It sits above the panels so it is readable with the
+                row collapsed — which is the state an operator meets it in. */}
+            {solveBlocked && (
+              <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: sOpen || open ? 8 : 0 }}>
+                Solve unavailable — {solveBlocked}
+              </div>
+            )}
             {sResult ? (
               <div style={{ fontSize: 12.5 }}>
                 <span style={{ color: sResult.ok ? GREEN : RED, fontWeight: 700 }}>{sResult.msg}</span>
@@ -333,8 +416,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                   </div>
                   <div style={{ marginTop: 5, color: "rgba(255,255,255,.4)", fontSize: 11 }}>No stock moves now — this just marks it carried; the engine raises the refills.</div>
                 </div>
-                <button onClick={() => solve(card)} disabled={solveBusy === card.pid || !canAct || plan.sizes.length === 0}
-                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: solveBusy === card.pid || !canAct || plan.sizes.length === 0 ? 0.5 : 1 }}>
+                {confirmBlocked && (
+                  <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{confirmBlocked}</div>
+                )}
+                <button onClick={() => solve(card)} disabled={!!confirmBlocked}
+                        title={confirmBlocked || undefined}
+                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked ? 0.5 : 1 }}>
                   {solveBusy === card.pid ? "Seeding…" : `Solve — carry at ${LOC_LABEL[sStore]}`}
                 </button>
               </>
@@ -365,8 +452,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                     </button>
                   ))}
                 </div>
-                <button onClick={() => transfer(card)} disabled={busyPid === card.pid || total === 0 || !canAct}
-                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: busyPid === card.pid || total === 0 || !canAct ? 0.5 : 1 }}>
+                {moveBlocked && (
+                  <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{moveBlocked}</div>
+                )}
+                <button onClick={() => transfer(card)} disabled={!!moveBlocked}
+                        title={moveBlocked || undefined}
+                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: moveBlocked ? 0.5 : 1 }}>
                   {busyPid === card.pid ? "Transferring…" : `Transfer ${total} unit${total === 1 ? "" : "s"} to ${LOC_LABEL[dest]}`}
                 </button>
               </>

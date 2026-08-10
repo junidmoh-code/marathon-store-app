@@ -28,6 +28,8 @@
 // filter, or it will offer to seed products the engine will not manage.
 // (Senior-architect review, PR #305.)
 
+import { encodeSizeKey } from "../../utils/sizeKey";
+
 // Is the engine's rule-based targeting on at this destination? A BYTE-FOR-BYTE
 // mirror of ruleTargetsEnabled() in refill-engine.cjs, including its fail-safe:
 // true = everywhere, an object = per-destination with absent meaning off, and
@@ -84,6 +86,86 @@ export function effectiveStandard({ std, subRun, subcategory, sizes }) {
     out[loc] = typeof t === "number" && Number.isFinite(t) && t > 0
       ? Object.fromEntries((sizes || []).map((sz) => [String(sz).toUpperCase(), t]))
       : ((std || {})[loc] || {});
+  }
+  return out;
+}
+
+// ── EXPLICIT /stock_targets ROWS — the engine's PRIORITY-1 SOURCE ────────────
+// resolveTarget's very first branch is an explicit row, and it is the branch
+// this file did not have. Everything below it (footwear, the kill switch, the
+// subcategory policy, the size run) is only reached when NO explicit row exists.
+// Two consequences, both of which Solve got wrong by omission:
+//
+//   1. An explicit row OUTRANKS the size run, so a size the run says nothing
+//      about is still refilled when a human wrote a row for it. That is the ONLY
+//      path a ONE-SIZE product can ever have a target on: its single size is the
+//      "_" sentinel, and adding "_" to defaultRunByStore was explicitly REJECTED
+//      by the owner (refill-engine.cjs: "_" is shared by every one-size product,
+//      so it would silently arm sunglasses, belts and jewellery alongside the
+//      intended class). With explicit rows invisible here, one-size products were
+//      structurally locked out of Solve — no reachable policy could ever enable
+//      them, whatever an operator configured. Beanies are that class.
+//
+//   2. An explicit row SURVIVES the kill switch, because resolveTarget returns
+//      it BEFORE `if (!ruleTargetsEnabled(...)) return null`. Switching rule-based
+//      targets off reverts the engine to explicit-rows-only — it does not stop
+//      the engine refilling them — so Solve must not grey those rows out either.
+//
+// EXPLICIT TARGET 0 IS "DELIBERATELY EXCLUDED" AND STILL WINS. The engine takes
+// the row and stops; it does NOT fall through to the size run. So a 0 must be
+// overlaid as 0 (which fails the `> 0` qualifying test), never dropped — dropping
+// it would let the run re-enable a size a human deliberately switched off.
+//
+// encodeSizeKey ON THE LOOKUP IS LOAD-BEARING. /stock_targets is keyed by the
+// ENCODED size (useStock.js:145, and resolveTarget encodes on the way in), while
+// the sizes flowing through this file are RAW catalogue sizes. Letters encode to
+// themselves and "_" is already "_", so the two agree today — but a half size
+// would not: a raw "5.5" would look for a key that cannot exist (RTDB rejects "."
+// in a key) and read as "no row". That is the ENCODED-vs-DECODED class that
+// silently zeroed the sneaker Solve's sizes; it is written correctly here at the
+// first opportunity rather than waiting to be found again.
+// A NON-FINITE target is still an EXPLICIT ROW, and must not fall through.
+// The engine's gate is `typeof explicit.target === "number"` and it then passes
+// the value through `num()`, which maps anything non-finite to 0 — so to the
+// engine a NaN row reads as "explicit, target 0" and WINS over the size run.
+// Requiring Number.isFinite here would have returned null instead, letting the
+// run re-enable a size the engine had already settled at 0. Mirroring `num()`
+// exactly keeps the two in step in both value AND branch. Unreachable today —
+// RTDB refuses to store NaN/Infinity, and every write path in the app writes a
+// validated numeric literal — but a mirror that is only right on reachable input
+// is a mirror waiting to drift. (Sonnet review, PR #342.)
+export function explicitTarget(targets, loc, pid, size) {
+  const row = targets?.[loc]?.[pid]?.[encodeSizeKey(size)];
+  if (!row || typeof row.target !== "number") return null;
+  return Number.isFinite(row.target) ? row.target : 0;
+}
+
+// The run map Solve should actually decide on: effectiveStandard (subcategory
+// policy over the size run) with the kill switch applied per location and the
+// explicit rows overlaid on top — resolveTarget's whole priority order, folded
+// into the ONE { loc: { SIZE: target } } shape qualifyingSizes/solvePlan already
+// speak, so neither needs a new argument or a new meaning.
+//
+// Order inside a location is exactly the engine's: rule/subcategory standards
+// FIRST (and only where the kill switch is on), explicit rows LAST so they win.
+export function resolvedRun({ std, subRun, subcategory, sizes, targets, pid, ruleBasedTargets }) {
+  const base = effectiveStandard({ std, subRun, subcategory, sizes });
+  // A location can be reachable through an explicit row alone — it need not
+  // appear in defaultRunByStore at all — so the location set is the union.
+  const locs = new Set([
+    ...Object.keys(base),
+    ...Object.keys(targets || {}).filter((loc) => targets?.[loc]?.[pid]),
+  ]);
+  const out = {};
+  for (const loc of locs) {
+    // Rule-based and subcategory standards die with the kill switch. Explicit
+    // rows below do not — that asymmetry IS resolveTarget's branch order.
+    const run = ruleTargetsEnabledFor(ruleBasedTargets, loc) ? { ...(base[loc] || {}) } : {};
+    for (const sz of sizes || []) {
+      const t = explicitTarget(targets, loc, pid, sz);
+      if (t !== null) run[String(sz).toUpperCase()] = t;   // incl. 0 = excluded
+    }
+    out[loc] = run;
   }
   return out;
 }
