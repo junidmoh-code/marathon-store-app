@@ -1,4 +1,4 @@
-// ─── BEANIE ONE-SIZE COLLAPSE — COMMIT 2: BARCODE WRITE-BACK PROBE ────────────
+// ─── HEADWEAR ONE-SIZE COLLAPSE — COMMIT 2: BARCODE WRITE-BACK PROBE ──────────
 //
 // The migration's load-bearing step rewrites every /barcodes/{code}/size to "_"
 // inside ONE atomic multi-path update. The live rule at /barcodes/$code is
@@ -7,7 +7,7 @@
 // Credentials, which bypass rules. This probe PROVES that permission before any
 // stock moves, the same way the balaclava collapse did (PR #284):
 //
-//   for EVERY barcode of EVERY in-scope beanie —
+//   for EVERY barcode of EVERY in-scope beanie AND CAP —
 //     1. read /barcodes/{code}, assert it exists with the right productId
 //     2. write its EXISTING size value back verbatim (a real write, zero
 //        content change — the identical rule path the migration will take)
@@ -20,15 +20,26 @@
 // asserted and LOGGED up front so a future run under different credentials is
 // visible in the output, not just in its failure mode.
 //
-// Scope rule identical to the census (scripts/beanie-census.mjs): name matches
-// /beanie/i, not a mergedInto stub. Codes come from BOTH directions — the
-// product's barcodes map AND a reverse sweep of /barcodes by productId — so a
-// code the map forgot still gets probed.
+// ── WHY THE CAP HALF MAKES THIS BIGGER, NOT JUST LONGER ──────────────────────
+// Every beanie carried exactly ONE barcode, so a beanie product's atomic Step 2
+// touched one index record and a failure could only ever cost that one product.
+// 87 caps carry two or more — one carries SEVEN — and Step 2 rewrites ALL of a
+// product's records in a single update. One unwritable record therefore takes
+// down its whole product, including the codes that were perfectly fine. That is
+// the reason this probes ALL codes and never a sample: a sample that misses the
+// one bad record tells you the batch will succeed when it will not.
 //
-// Usage: node scripts/beanie-preflight-probe.mjs
+// Scope rule is the ONE shared predicate (scripts/lib/headwearCollapseCore.mjs),
+// imported rather than restated so the probe cannot certify a set of codes that
+// differs from the set the migration will write. Codes come from BOTH directions
+// — the product's barcodes map AND a reverse sweep of /barcodes by productId —
+// so a code the map forgot still gets probed.
+//
+// Usage: node scripts/headwear-preflight-probe.mjs
 // Exit 0 = every code probed clean. Exit 1 = abort (nothing further may move).
 
 import { createRequire } from "module";
+import { isInScope, headwearKind } from "./lib/headwearCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -49,7 +60,7 @@ export function hasPrivilegedCredential(app) {
 }
 
 (async () => {
-  console.log(`\n${"═".repeat(78)}\n  BEANIE PRE-FLIGHT — barcode index write-back probe (ALL codes)\n${"═".repeat(78)}`);
+  console.log(`\n${"═".repeat(78)}\n  HEADWEAR PRE-FLIGHT — barcode index write-back probe (ALL codes)\n${"═".repeat(78)}`);
 
   const cred = admin.app().options.credential;
   const credOk = hasPrivilegedCredential(admin.app());
@@ -64,14 +75,20 @@ export function hasPrivilegedCredential(app) {
 
   const [products, barcodesIdx] = await Promise.all([g("products"), g("barcodes")]).then((r) => r.map((v) => v || {}));
 
-  const inScope = Object.entries(products).filter(([, p]) => /beanie/i.test(p?.name || "") && !p?.mergedInto);
+  const inScope = Object.entries(products).filter(([, p]) => isInScope(p));
   const pidSet = new Set(inScope.map(([pid]) => pid));
   // code → expected pid, from both directions
   const codes = new Map();
   for (const [pid, p] of inScope) for (const code of Object.values(p.barcodes || {})) codes.set(String(code), pid);
   for (const [code, rec] of Object.entries(barcodesIdx)) if (rec && pidSet.has(rec.productId)) if (!codes.has(code)) codes.set(code, rec.productId);
 
-  console.log(`  scope: ${inScope.length} beanies, ${codes.size} barcode index records to probe\n`);
+  const kinds = { beanie: 0, cap: 0 };
+  for (const [, p] of inScope) kinds[headwearKind(p)]++;
+  const perProduct = new Map();
+  for (const pid of codes.values()) perProduct.set(pid, (perProduct.get(pid) || 0) + 1);
+  const worst = [...perProduct.entries()].sort((a, b) => b[1] - a[1])[0];
+  console.log(`  scope: ${inScope.length} products (${kinds.beanie} beanies, ${kinds.cap} caps), ${codes.size} barcode index records to probe`);
+  console.log(`  largest single atomic batch: ${worst ? `${worst[1]} index record(s) on ${worst[0]}` : "n/a"} — all of them must be writable or that product cannot collapse\n`);
 
   let pass = 0; const failures = [];
   for (const [code, pid] of codes) {

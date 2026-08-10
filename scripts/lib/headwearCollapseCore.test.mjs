@@ -1,5 +1,5 @@
-// ─── BEANIE ONE-SIZE COLLAPSE — BEHAVIOURAL TESTS ────────────────────────────
-// Run: npx vitest run scripts/lib/beanieCollapseCore.test.mjs
+// ─── HEADWEAR ONE-SIZE COLLAPSE — BEHAVIOURAL TESTS ──────────────────────────
+// Run: npx vitest run scripts/lib/headwearCollapseCore.test.mjs
 //
 // Every test here asserts BEHAVIOUR against a fake RTDB — what the data looks
 // like after the operation, what a scan resolves to, what a re-run does.
@@ -22,7 +22,8 @@ import { describe, it, expect } from "vitest";
 import {
   applyMovementAdmin, planStep1, planStep2, planStep3, step2Done, verifyProduct,
   assertDrained, legIds, orderBlocks, transferBlocks, movementRecency, pushKeyMs, isInScope, isUnexpectedSubcategory,
-} from "./beanieCollapseCore.mjs";
+  headwearKind, isExcludedHeadwear, isCapByShelfOnly, isRetiredSize, isRetiredSizeKey,
+} from "./headwearCollapseCore.mjs";
 
 // ── fake RTDB ────────────────────────────────────────────────────────────────
 function makeDb(seed = {}) {
@@ -130,8 +131,12 @@ async function migrate(db, pid, { skipStep2 = false, skipStep3 = false } = {}) {
   const stock = (await db.io.read("stock")) || {};
   const cellsByLoc = {};
   for (const [loc, byPid] of Object.entries(stock)) if (byPid?.[pid]) cellsByLoc[loc] = byPid[pid];
-  const heldKeys = [];
-  for (const bySize of Object.values(cellsByLoc)) for (const [k, c] of Object.entries(bySize)) if (c.qty !== 0) heldKeys.push(k);
+  // UNITS per size key, summed across locations — the input the keep-code rule
+  // actually ranks on. Assembled exactly as the CLI assembles it.
+  const heldUnits = {};
+  for (const bySize of Object.values(cellsByLoc)) {
+    for (const [k, c] of Object.entries(bySize)) if (c.qty !== 0) heldUnits[k] = (heldUnits[k] || 0) + c.qty;
+  }
 
   const plans = await planStep1(db.io, pid, product.sizes || [], cellsByLoc);
   for (const pl of plans) for (const leg of pl.legs) {
@@ -141,7 +146,7 @@ async function migrate(db, pid, { skipStep2 = false, skipStep3 = false } = {}) {
   const idxCodes = {};
   const idx = (await db.io.read("barcodes")) || {};
   for (const [code, rec] of Object.entries(idx)) if (rec.productId === pid) idxCodes[code] = rec;
-  const s2 = planStep2(pid, product, idxCodes, heldKeys);
+  const s2 = planStep2(pid, product, idxCodes, heldUnits);
   if (!skipStep2) await db.io.update(s2.updates);
   if (!skipStep3) {
     const targets = (await db.io.read("stock_targets")) || {};
@@ -150,7 +155,8 @@ async function migrate(db, pid, { skipStep2 = false, skipStep3 = false } = {}) {
     const s3 = planStep3(pid, rows, NOW);
     if (Object.keys(s3).length) await db.io.update(s3);
   }
-  return { ok: true, keepCode: s2.keepCode, rule: s2.rule, codes: s2.codes, step2Paths: Object.keys(s2.updates).length };
+  return { ok: true, keepCode: s2.keepCode, rule: s2.rule, codes: s2.codes,
+    droppedCodes: s2.droppedCodes, step2Paths: Object.keys(s2.updates).length };
 }
 
 const totalAt = (raw, loc, pid) =>
@@ -217,6 +223,77 @@ describe("STEP 1 — stock merges into one \"_\" cell", () => {
     expect(cells._.qty).toBe(-1);
     expect(cells.S.qty).toBe(0);
     expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(-1);
+  });
+
+  // ── THE CAP CASES. Every one of these was unreachable on beanies (one size
+  // held per product, one barcode each) and fires for real on caps.
+  it("THREE sizes at one location sum into a single \"_\" cell", async () => {
+    // The live shape: New Era Cleveland Guardians at marathon-pe holds L 2,
+    // M 1, S 2, XL 1. On a per-LOCATION id scheme the second, third and fourth
+    // IN legs would collide with the first, no-op as idempotent, and 4 of the 6
+    // units would be silently dropped while every leg reported ok.
+    const db = makeDb(seedProduct({
+      sizes: ["S", "M", "L", "XL"],
+      barcodes: { S: "00010001", M: "00010002", L: "00010003", XL: "00010004" },
+      cells: { "marathon-pe": { S: 2, M: 1, L: 2, XL: 1 } },
+    }));
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(6);
+
+    const r = await migrate(db, "pB");
+    expect(r.ok).toBe(true);
+
+    const cells = db.raw().stock["marathon-pe"].pB;
+    expect(cells._.qty).toBe(6);
+    for (const k of ["S", "M", "L", "XL"]) expect(cells[k].qty).toBe(0);
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(6);
+    // Four distinct pairs, i.e. eight legs — one pair per size, not one per location.
+    expect(Object.keys(db.raw().stock_movements)).toHaveLength(8);
+  });
+
+  it("a negative and a positive size at the SAME location net correctly", async () => {
+    // Live: New Era 59FIFTY Atlanta Braves fitted cap cream, marathon-pe M −3
+    // and S 1. The mirrored pair (for M) and the normal pair (for S) both run
+    // against the same "_" cell, and the order they run in must not matter.
+    const db = makeDb(seedProduct({
+      sizes: ["S", "M"], barcodes: { S: "00020001", M: "00020002" },
+      cells: { "marathon-pe": { M: -3, S: 1 } },
+    }));
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(-2);
+
+    const r = await migrate(db, "pB");
+    expect(r.ok).toBe(true);
+
+    const cells = db.raw().stock["marathon-pe"].pB;
+    expect(cells._.qty).toBe(-2);      // the shortage survives, it is not laundered away
+    expect(cells.M.qty).toBe(0);
+    expect(cells.S.qty).toBe(0);
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(-2);
+  });
+
+  it("a negative that exactly cancels a positive leaves \"_\" at zero, not a phantom cell", async () => {
+    // Live: New Era 59FIFTY Toronto Blue Jays, marathon-pe L 1 and M −1.
+    const db = makeDb(seedProduct({
+      sizes: ["M", "L"], barcodes: { M: "00030001", L: "00030002" },
+      cells: { "marathon-pe": { L: 1, M: -1 } },
+    }));
+    await migrate(db, "pB");
+    const cells = db.raw().stock["marathon-pe"].pB;
+    expect(cells._.qty).toBe(0);
+    expect(totalAt(db.raw(), "marathon-pe", "pB")).toBe(0);
+  });
+
+  it("a fitted cap's centimetre sizes merge like any other — the key is not required to be a letter", async () => {
+    // Live: "Ny fitted caps" declares ["55"…"63"] and holds 55:1 and 62:1.
+    const db = makeDb(seedProduct({
+      sizes: ["55", "56", "62"], barcodes: { "55": "00040001", "56": "00040002", "62": "00040003" },
+      cells: { "marathon-pe": { "55": 1, "62": 1 } },
+    }));
+    const r = await migrate(db, "pB");
+    expect(r.ok).toBe(true);
+    const cells = db.raw().stock["marathon-pe"].pB;
+    expect(cells._.qty).toBe(2);
+    expect(cells["55"].qty).toBe(0);
+    expect(cells["62"].qty).toBe(0);
   });
 
   it("refuses to overdraw: a positive OUT leg can never drive a cell negative", async () => {
@@ -389,7 +466,7 @@ describe("STEP 2 — one atomic identity update", () => {
     const db = makeDb(seedProduct({ sizes: ["M"], barcodes: { M: "00011111" }, cells: { hub2: { M: 2 } } }));
     const before = db.stats.updates;
     const product = await db.io.read("products/pB");
-    const s2 = planStep2("pB", product, { "00011111": { productId: "pB", size: "M" } }, ["M"]);
+    const s2 = planStep2("pB", product, { "00011111": { productId: "pB", size: "M" } }, { M: 2 });
     await db.io.update(s2.updates);
     expect(db.stats.updates).toBe(before + 1);
     expect(db.stats.pathsPerUpdate.at(-1)).toBe(3);   // sizes + map + 1 index record
@@ -402,7 +479,7 @@ describe("STEP 2 — one atomic identity update", () => {
   it("a partial application is impossible — a failing update leaves the OLD identity intact and scannable", async () => {
     const db = makeDb(seedProduct({ sizes: ["M"], barcodes: { M: "00011111" }, cells: { hub2: { M: 2 } } }));
     const product = await db.io.read("products/pB");
-    const s2 = planStep2("pB", product, { "00011111": { productId: "pB", size: "M" } }, ["M"]);
+    const s2 = planStep2("pB", product, { "00011111": { productId: "pB", size: "M" } }, { M: 2 });
     db.failNextUpdateWith("rejected");
     await expect(db.io.update(s2.updates)).rejects.toThrow();
     const raw = db.raw();
@@ -435,8 +512,91 @@ describe("STEP 2 — one atomic identity update", () => {
       cells: { hub2: { M: 12 } } }));
     const r = await migrate(db, "pB");
     expect(r.keepCode).toBe("00060000");
-    expect(r.rule).toMatch(/stock-holding size M/);
+    expect(r.rule).toMatch(/most-stocked size/);
     expect(db.raw().products.pB.barcodes).toEqual({ _: "00060000" });
+  });
+
+  // ── THE KEEP-CODE RULE. Trivial on beanies (one code each), a real decision
+  // on the 87 caps that carry several.
+  it("every code of a SEVEN-code cap still resolves to it after the collapse", async () => {
+    // Live shape: New Era Atlanta Braves fitted cap cream carries six per-size
+    // codes plus a later one-size code. Losing a map slot must not mean losing
+    // a scan — a former-M label and a former-L label must both still ring up.
+    const barcodes = { S: "00014441", M: "00014442", L: "00014443", XL: "00014444", XXL: "00014445", XXXL: "00014446" };
+    const db = makeDb(seedProduct({ sizes: ["S", "M", "L", "XL", "XXL", "XXXL"], barcodes,
+      cells: { "marathon-pe": { M: 3, S: 1 } } }));
+    const r = await migrate(db, "pB");
+
+    const raw = db.raw();
+    expect(Object.keys(raw.products.pB.barcodes)).toEqual(["_"]);   // one slot, as a one-size product must have
+    for (const code of Object.values(barcodes)) {
+      // THE SCAN TEST: the reverse index still points at this product, at a size
+      // the product declares. That is the whole of what resolution needs.
+      expect(raw.barcodes[code].productId).toBe("pB");
+      expect(raw.barcodes[code].size).toBe("_");
+      expect(raw.products.pB.sizes).toContain(raw.barcodes[code].size);
+    }
+    // Exactly one keeps the slot; the other six are reported, not deleted.
+    expect(r.droppedCodes).toHaveLength(5);
+    expect([...r.droppedCodes, r.keepCode].sort()).toEqual(Object.values(barcodes).sort());
+    for (const code of r.droppedCodes) expect(raw.barcodes[code]).toBeTruthy();
+  });
+
+  it("the most-stocked size wins the slot, counting units across ALL locations", async () => {
+    // L leads at one location, M leads overall. The rule ranks on the network
+    // total, so a per-location reading would pick the wrong code.
+    const db = makeDb(seedProduct({ sizes: ["S", "M", "L"], barcodes: { S: "00050001", M: "00050002", L: "00050003" },
+      cells: { "marathon-pe": { S: 1, L: 4 }, hub2: { M: 6 }, central: { M: 2 } } }));
+    const r = await migrate(db, "pB");
+    expect(r.keepCode).toBe("00050002");                 // M: 8 units beats L: 4
+    expect(r.rule).toMatch(/size M, the most-stocked size \(8 units on hand\)/);
+  });
+
+  it("is deterministic — the answer does not depend on map order, and ties break the same way twice", async () => {
+    const mk = (barcodes) => makeDb(seedProduct({ sizes: ["S", "M", "L"], barcodes, cells: { hub2: { M: 2, L: 2 } } }));
+    // Same product, barcodes map enumerated in two different orders. RTDB gives
+    // no order guarantee, so a rule that read "the first stock-holding size"
+    // could return either code on different runs.
+    const a = await migrate(mk({ S: "00060001", M: "00060002", L: "00060003" }), "pB");
+    const b = await migrate(mk({ L: "00060003", M: "00060002", S: "00060001" }), "pB");
+    expect(a.keepCode).toBe(b.keepCode);
+    // M and L are tied at 2 units, so the size key breaks it: "L" < "M".
+    expect(a.keepCode).toBe("00060003");
+    expect(a.rule).toMatch(/size L, the most-stocked size \(2 units on hand\)/);
+  });
+
+  it("an existing \"_\" slot keeps the slot, whatever the stock says", async () => {
+    // 21 live caps are already one-size but still carry their old per-size
+    // codes in the index. Their "_" code is the one on every recent label, and
+    // re-pointing the slot at an older per-size code would be a regression.
+    const db = makeDb(seedProduct({ sizes: ["M"], barcodes: { M: "00070001", _: "00070009" },
+      cells: { hub2: { M: 40 } } }));
+    const r = await migrate(db, "pB");
+    expect(r.keepCode).toBe("00070009");
+    expect(r.rule).toMatch(/existing "_" slot/);
+    expect(db.raw().products.pB.barcodes).toEqual({ _: "00070009" });
+    expect(db.raw().barcodes["00070001"].productId).toBe("pB");   // still resolves
+  });
+
+  it("a cap with no stock anywhere falls back to declared order, and still yields exactly one code", async () => {
+    // 42 live caps hold nothing at all, so there is no "most-stocked size" to
+    // rank. The fallback must still be total and deterministic.
+    const db = makeDb(seedProduct({ sizes: ["S", "M", "L"], barcodes: { S: "00080001", M: "00080002", L: "00080003" },
+      cells: {} }));
+    const r = await migrate(db, "pB");
+    expect(r.keepCode).toBe("00080001");                 // first DECLARED size, i.e. S
+    expect(r.rule).toMatch(/declared size S \(no stock on hand anywhere\)/);
+    expect(Object.keys(db.raw().products.pB.barcodes)).toEqual(["_"]);
+  });
+
+  it("a size holding zero or a negative never wins the slot", async () => {
+    // A negative cell is an oversell signal, not stock, and there are no labels
+    // on shelves for it. M is at −3 and S at 1; S must take the slot.
+    const db = makeDb(seedProduct({ sizes: ["S", "M"], barcodes: { S: "00090001", M: "00090002" },
+      cells: { "marathon-pe": { M: -3, S: 1 } } }));
+    const r = await migrate(db, "pB");
+    expect(r.keepCode).toBe("00090001");
+    expect(r.rule).toMatch(/size S, the most-stocked size \(1 unit on hand\)/);
   });
 
   it("step2Done recognises the finished state, so a re-run needs no identity write", async () => {
@@ -506,48 +666,97 @@ describe("STEP 3 — target rows", () => {
   });
 });
 
-describe("scope — caps are untouched by every path", () => {
-  it("a cap sharing the subcategory is never selected, and its cells/identity survive a beanie run", async () => {
-    const seed = seedProduct({ pid: "pB", cells: { hub2: { M: 5 } } });
-    // A real multi-size cap alongside it.
-    seed.products.pCap = { name: "Nike cap black", productType: "clothing", subcategory: "Caps & Hats", sizes: ["S", "M", "L"], barcodes: { S: "00077771", M: "00077772", L: "00077773" } };
-    seed.barcodes["00077771"] = { productId: "pCap", size: "S" };
-    seed.barcodes["00077772"] = { productId: "pCap", size: "M" };
-    seed.barcodes["00077773"] = { productId: "pCap", size: "L" };
-    seed.stock.hub2.pCap = { S: cell(2), M: cell(3), L: cell(4) };
-    const db = makeDb(seed);
+describe("scope — beanies and caps are in, nothing else is", () => {
+  const CH = "Caps & Hats";
 
-    // THE SCOPE RULE — the same exported predicate the CLI filters with, not a
-    // restatement of it.
-    const products = db.raw().products;
-    const inScope = Object.entries(products).filter(([, p]) => isInScope(p)).map(([pid]) => pid);
-    expect(inScope).toEqual(["pB"]);
+  it("takes beanies by name and caps by the shelf, in one predicate", () => {
+    expect(headwearKind({ name: "Nike beanie green", subcategory: CH })).toBe("beanie");
+    expect(headwearKind({ name: "NIKE BEANIE GREEN" })).toBe("beanie");           // case-insensitive, shelf-independent
+    expect(headwearKind({ name: "Nike cap black", subcategory: CH })).toBe("cap");
+    // The 24 live caps whose name carries no headwear word at all. A /cap/i rule
+    // would have left every one of these sized while its siblings collapsed.
+    expect(headwearKind({ name: "Armani exchange mustard", subcategory: CH })).toBe("cap");
+    expect(headwearKind({ name: "New Era Atlanta Braves 59FIFTY fitted Black", subcategory: CH })).toBe("cap");
+    expect(headwearKind({ name: "Nike Dri-FIT Fly Maroon", subcategory: CH })).toBe("cap");
+    // …and one whose name says "cap" but with no word boundary after it, which
+    // is exactly why the shelf decides and the name only reports.
+    expect(headwearKind({ name: "New Era 59FIFTY Detroit Tigers capBlack", subcategory: CH })).toBe("cap");
+  });
 
-    for (const pid of inScope) await migrate(db, pid);
+  it("rejects the things that share the shelf without being caps, and everything off it", () => {
+    for (const name of [
+      "Alo Yoga Airlift Solar Visor White",
+      "Air Jordan bucket hat blue",
+      "Nike x Clemson tigers bucket hat red",
+      "Nike bucket hat green",
+    ]) {
+      expect(headwearKind({ name, subcategory: CH })).toBe(null);
+      expect(isExcludedHeadwear({ name, subcategory: CH })).toBe(true);
+    }
+    // Off the shelf and not beanie-named → not headwear, whatever it is called.
+    expect(headwearKind({ name: "Nike cap black", subcategory: "Clothing — Uncategorized" })).toBe(null);
+    expect(headwearKind({ name: "Alo yoga airlift solar visor black", subcategory: "Clothing — Uncategorized" })).toBe(null);
+    // Merge stubs are redirects with no stock identity — never collapsed in place.
+    expect(headwearKind({ name: "Nike beanie green", mergedInto: "pOther" })).toBe(null);
+    expect(headwearKind({ name: "Nike cap black", subcategory: CH, mergedInto: "pOther" })).toBe(null);
+    expect(isExcludedHeadwear({ name: "Air Jordan bucket hat blue", subcategory: CH, mergedInto: "pX" })).toBe(false);
+  });
 
-    const raw = db.raw();
-    expect(raw.products.pCap.sizes).toEqual(["S", "M", "L"]);
-    expect(raw.products.pCap.barcodes).toEqual({ S: "00077771", M: "00077772", L: "00077773" });
-    expect(raw.barcodes["00077772"].size).toBe("M");
-    expect(raw.stock.hub2.pCap).toEqual({ S: cell(2), M: cell(3), L: cell(4) });
-    expect(raw.stock.hub2.pCap._).toBeUndefined();
+  it("separates the caps admitted by the shelf alone, so the census can list them", () => {
+    expect(isCapByShelfOnly({ name: "Armani exchange mustard", subcategory: CH })).toBe(true);
+    expect(isCapByShelfOnly({ name: "Nike cap black", subcategory: CH })).toBe(false);
+    expect(isCapByShelfOnly({ name: "Nike beanie green", subcategory: CH })).toBe(false);
+    expect(isCapByShelfOnly({ name: "Air Jordan bucket hat blue", subcategory: CH })).toBe(false);
   });
 
   it("flags a beanie filed outside Caps & Hats, and only an in-scope one", () => {
     // In scope (the name decides) but worth a human's eye — the census exits
     // non-zero on it rather than reading as clean.
     expect(isUnexpectedSubcategory({ name: "Nike beanie green", subcategory: "Accessories" })).toBe(true);
-    expect(isUnexpectedSubcategory({ name: "Nike beanie green", subcategory: "Caps & Hats" })).toBe(false);
+    expect(isUnexpectedSubcategory({ name: "Nike beanie green", subcategory: CH })).toBe(false);
     expect(isUnexpectedSubcategory({ name: "Nike cap black", subcategory: "Accessories" })).toBe(false);
     expect(isUnexpectedSubcategory({ name: "Nike beanie green", subcategory: "Accessories", mergedInto: "pX" })).toBe(false);
   });
 
-  it("the scope predicate takes beanies by name and rejects caps and merge stubs", () => {
-    expect(isInScope({ name: "Nike beanie green", subcategory: "Caps & Hats" })).toBe(true);
-    expect(isInScope({ name: "NIKE BEANIE GREEN" })).toBe(true);              // case-insensitive
-    expect(isInScope({ name: "Nike cap black", subcategory: "Caps & Hats" })).toBe(false);
-    expect(isInScope({ name: "Alo Yoga Airlift Solar Visor White", subcategory: "Caps & Hats" })).toBe(false);
-    expect(isInScope({ name: "Nike beanie green", mergedInto: "pOther" })).toBe(false);
+  it("a visor and a bucket hat on the same shelf survive a full headwear run untouched", async () => {
+    const seed = seedProduct({ pid: "pB", cells: { hub2: { M: 5 } } });
+    // A real multi-size cap — now IN scope.
+    seed.products.pCap = { name: "Nike cap black", productType: "clothing", subcategory: CH, sizes: ["S", "M", "L"], barcodes: { S: "00077771", M: "00077772", L: "00077773" } };
+    seed.barcodes["00077771"] = { productId: "pCap", size: "S" };
+    seed.barcodes["00077772"] = { productId: "pCap", size: "M" };
+    seed.barcodes["00077773"] = { productId: "pCap", size: "L" };
+    seed.stock.hub2.pCap = { S: cell(2), M: cell(3), L: cell(4) };
+    // A visor and a bucket hat — on the same shelf, NOT in scope.
+    seed.products.pVisor = { name: "Alo Yoga Airlift Solar Visor White", productType: "clothing", subcategory: CH, sizes: ["M"], barcodes: { M: "00088881" } };
+    seed.barcodes["00088881"] = { productId: "pVisor", size: "M" };
+    seed.stock.hub2.pVisor = { M: cell(6) };
+    seed.products.pBucket = { name: "Nike bucket hat green", productType: "clothing", subcategory: CH, sizes: ["M"], barcodes: { M: "00088882" } };
+    seed.barcodes["00088882"] = { productId: "pBucket", size: "M" };
+    seed.stock.hub2.pBucket = { M: cell(7) };
+    const db = makeDb(seed);
+
+    // THE SCOPE RULE — the same exported predicate the CLI filters with, not a
+    // restatement of it.
+    const products = db.raw().products;
+    const inScope = Object.entries(products).filter(([, p]) => isInScope(p)).map(([pid]) => pid).sort();
+    expect(inScope).toEqual(["pB", "pCap"]);
+
+    for (const pid of inScope) await migrate(db, pid);
+
+    const raw = db.raw();
+    // Both in-scope products collapsed…
+    expect(raw.products.pB.sizes).toEqual(["_"]);
+    expect(raw.products.pCap.sizes).toEqual(["_"]);
+    expect(raw.stock.hub2.pCap._.qty).toBe(9);
+    // …and the two out-of-scope neighbours are byte-identical to how they began.
+    expect(raw.products.pVisor).toEqual(seed.products.pVisor);
+    expect(raw.products.pBucket).toEqual(seed.products.pBucket);
+    expect(raw.barcodes["00088881"]).toEqual({ productId: "pVisor", size: "M" });
+    expect(raw.barcodes["00088882"]).toEqual({ productId: "pBucket", size: "M" });
+    expect(raw.stock.hub2.pVisor).toEqual({ M: cell(6) });
+    expect(raw.stock.hub2.pBucket).toEqual({ M: cell(7) });
+    expect(raw.stock.hub2.pVisor._).toBeUndefined();
+    expect(raw.stock.hub2.pBucket._).toBeUndefined();
   });
 });
 
@@ -562,6 +771,41 @@ describe("verification", () => {
     await db.io.update({ "stock/hub2/pB/_/qty": 5 });
     const problems = await verifyProduct(db.io, "pB", r.keepCode, r.codes, before);
     expect(problems.join(" ")).toMatch(/hub2 total 6 → 5/);
+  });
+});
+
+describe("which sizes count as retired — the gate caps widened", () => {
+  it("treats every non-sentinel size as retired, including the ones caps actually use", () => {
+    // These are LIVE cap sizes. Under the old letter-only enumeration every one
+    // of them read as "not a real size", so an open order against a 59FIFTY in
+    // size 57 did not block and the product would have collapsed under it.
+    for (const s of ["S", "M", "L", "XL", "XXL", "XXXL", "4XL", "28", "55", "57", "62", "63"]) {
+      expect(isRetiredSize(s)).toBe(true);
+    }
+  });
+
+  it("does NOT treat the one-size sentinel or its display label as retired", () => {
+    expect(isRetiredSize("_")).toBe(false);
+    expect(isRetiredSize("Free Size")).toBe(false);   // the synthetic label, folded by the chokepoint
+    expect(isRetiredSize("")).toBe(false);
+    expect(isRetiredSize(null)).toBe(false);
+    expect(isRetiredSize(undefined)).toBe(false);
+    expect(isRetiredSizeKey("_")).toBe(false);
+    expect(isRetiredSizeKey("M")).toBe(true);
+  });
+
+  it("blocks a live order on a cap size the old enumeration could not see", () => {
+    const nowMs = Date.parse(NOW);
+    for (const size of ["4XL", "57", "28"]) {
+      expect(orderBlocks({ id: "O9", productId: "pB", size, customerName: "Thabo", status: "incoming" }, "pB", nowMs))
+        .toMatch(/live customer order/);
+    }
+  });
+
+  it("blocks an unreceived transfer carrying a centimetre size", () => {
+    expect(transferBlocks({ status: "sent", from: "central", to: "marathon-pe", lines: { pB: { "57": 1 } } }, "pB"))
+      .toMatch(/carrying size 57/);
+    expect(transferBlocks({ status: "sent", lines: { pB: { "4XL": 2 } } }, "pB")).toMatch(/carrying size 4XL/);
   });
 });
 

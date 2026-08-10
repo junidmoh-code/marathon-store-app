@@ -1,4 +1,21 @@
-// ─── BEANIE ONE-SIZE COLLAPSE — CORE (pure logic, io-injected) ────────────────
+// ─── HEADWEAR ONE-SIZE COLLAPSE — CORE (pure logic, io-injected) ──────────────
+//
+// Beanies AND caps are quantities, not sizes. This module is the shared brain of
+// the census, the pre-flight probe, the migration and the rollback, so none of
+// them can drift from the others on what is in scope or what a collapse does.
+//
+// ── CAPS ARE NOT BEANIES (2026-08-10) ────────────────────────────────────────
+// The beanie half of this work (PRs #343/#344) could take two shortcuts that the
+// cap half cannot:
+//   • every beanie held stock in at most ONE size, so "merge the quantities"
+//     never actually merged anything. 47 caps hold stock across two or more
+//     sizes at once, and one holds a negative and a positive at the SAME
+//     location, so the paired-movement path now has real arithmetic to get right.
+//   • every beanie had exactly ONE barcode, so "which code keeps the '_' slot"
+//     answered itself. 87 caps carry two or more, so the keep-code rule is a
+//     decision with consequences for labels already on physical stock.
+// Read planStep2's keep-code rule and legIds' per-size id scheme with that in
+// mind; both were written for the beanie case and both changed here.
 //
 // The migration's decision-making, extracted from the CLI so the behaviour is
 // testable against a fake RTDB. NOTHING in here touches firebase directly: every
@@ -46,8 +63,15 @@
 // the second pair's IN leg would hit the first's id, be skipped as idempotent,
 // and silently lose that size's units. Per-size ids keep re-runs no-ops AND
 // make the M+L merge correct — the mutation test "M 100 + L 100 → single _
-// cell of 200" fails on the collided shape. (Live census 2026-08-10 found zero
-// multi-size holders, so real ids differ from the spec only in suffix.)
+// cell of 200" fails on the collided shape.
+//
+// ON BEANIES THIS WAS INSURANCE. ON CAPS IT FIRES. The beanie census found zero
+// multi-size holders, so the collided shape would have passed unnoticed through
+// the entire live run. 47 caps hold two or more sizes at one location — one
+// holds four (marathon-pe L 2, M 1, S 2, XL 1) — so on the collided id shape
+// three of that product's four sizes would have been silently dropped on the
+// floor while every leg reported ok. The per-size id is the only reason the cap
+// half of this migration is arithmetically correct.
 //
 // A NEGATIVE sized cell (census: Nike beanie green, marathon-pe S = −1, an
 // oversell signal) cannot ride the normal pair — the OUT leg would overdraw.
@@ -59,21 +83,79 @@
 
 import { encodeSizeKey, stockSizeKey, stockCellPath, assertSafeSegment } from "../../src/utils/sizeKey.js";
 
-const ACTOR = "system:beanie-onesize-collapse";
-export const BATCH = "beanie-onesize-collapse";
+const ACTOR = "system:headwear-onesize-collapse";
+export const BATCH = "headwear-onesize-collapse";
 
-// ── SCOPE — THE ONE PLACE THAT DECIDES WHAT A BEANIE IS ──────────────────────
-// Beanies and caps share subcategory "Caps & Hats" (323 live records), so the
-// subcategory CANNOT separate them — the name is the only field that does. Caps
-// are out of scope: 86 of them declare two or more sizes and genuinely hold
-// stock across several, so a one-size row would orphan most of them.
+// ── SCOPE — THE ONE PLACE THAT DECIDES WHAT IS IN ────────────────────────────
+// In scope: beanies and caps. Nothing else, ever.
+//
+// The two are told apart by different evidence, and it is worth being exact
+// about why, because the asymmetry looks arbitrary until you look at the data:
+//
+//   A BEANIE IS DECIDED BY ITS NAME. /beanie/i, wherever it is filed. The name
+//   is unambiguous — no other product line uses the word — and a beanie
+//   mis-filed outside Caps & Hats is still a beanie. (Live 2026-08-10: all 134
+//   sit in Caps & Hats, so this admits nothing extra today; isUnexpectedSub-
+//   category below still flags one if it ever appears.)
+//
+//   A CAP IS DECIDED BY ITS SHELF, MINUS AN EXCLUSION LIST. A name rule cannot
+//   work here: 24 of the 167 live caps have no headwear word in the name at all
+//   ("Armani exchange mustard", "New Era Atlanta Braves 59FIFTY fitted Black",
+//   "Nike Dri-FIT Fly Maroon"). They are caps, they are on the cap shelf, and a
+//   /cap/i rule would silently leave them sized while their siblings collapsed.
+//   So the subcategory admits, and NOT_A_CAP removes the two things that share
+//   that shelf without being caps.
+//
+// ── WHAT NOT_A_CAP REMOVES, AND WHY IT IS NOT AN OVERSIGHT ───────────────────
+// Caps & Hats also holds 23 records that are neither a beanie nor a cap:
+//   • 16 bucket hats — 15 of which ALREADY declare ["_"], so there is nothing
+//     to collapse; the 16th (Nike bucket hat green, ["M"]) would be a one-line
+//     addition if the owner wants it.
+//   • 7 visors (6 on the shelf, 1 mis-filed under "Clothing — Uncategorized").
+// Neither is a cap, and the brief scopes this migration to beanies and caps, so
+// they are reported by the census and left alone. isExcludedHeadwear names them
+// so "excluded" is a stated decision with a list, not silence.
+//
 // A mergedInto record is a redirect stub with no stock identity of its own
 // (product-merge.cjs) and must never be collapsed in place.
 //
-// Exported and imported by the CLI and the tests rather than restated in each,
-// so a change to the rule cannot pass a test that still applies the old one.
+// Exported and imported by the CLI, the census, the probe and the tests rather
+// than restated in each, so a change to the rule cannot pass a test that still
+// applies the old one.
+export const HEADWEAR_SUBCATEGORY = "Caps & Hats";
+const BEANIE_NAME = /beanie/i;
+const NOT_A_CAP = /\bvisors?\b|\bbucket\s*hats?\b/i;
+// Reporting only — never gates anything. Splits the admitted caps into "the
+// name says cap" and "admitted because of where it is filed", so the census can
+// print the second list for a human to eyeball before anything moves.
+const CAP_NAME = /\bcaps?\b/i;
+
+export function headwearKind(product) {
+  if (!product || product.mergedInto) return null;
+  const name = String(product.name || "");
+  if (BEANIE_NAME.test(name)) return "beanie";
+  if (product.subcategory !== HEADWEAR_SUBCATEGORY) return null;
+  if (NOT_A_CAP.test(name)) return null;
+  return "cap";
+}
+
 export function isInScope(product) {
-  return !!product && /beanie/i.test(product.name || "") && !product.mergedInto;
+  return headwearKind(product) !== null;
+}
+
+// On the cap shelf, not a beanie, and excluded by name. The census lists these.
+export function isExcludedHeadwear(product) {
+  if (!product || product.mergedInto) return false;
+  if (product.subcategory !== HEADWEAR_SUBCATEGORY) return false;
+  const name = String(product.name || "");
+  return !BEANIE_NAME.test(name) && NOT_A_CAP.test(name);
+}
+
+// Admitted as a cap by the shelf alone — the name carries no "cap"/"caps". These
+// are the records whose scope decision rests entirely on the subcategory field,
+// so they are the ones worth reading before a run. In scope; reported, not gated.
+export function isCapByShelfOnly(product) {
+  return headwearKind(product) === "cap" && !CAP_NAME.test(String(product.name || ""));
 }
 
 // A record whose NAME says beanie but whose filing does not. It stays in scope
@@ -82,7 +164,7 @@ export function isInScope(product) {
 // scope rule it qualifies, so it is testable rather than buried in a live-data
 // script with no unit surface. (CodeRabbit, PR #343.)
 export function isUnexpectedSubcategory(product) {
-  return isInScope(product) && product.subcategory !== "Caps & Hats";
+  return headwearKind(product) === "beanie" && product.subcategory !== HEADWEAR_SUBCATEGORY;
 }
 
 // ── WHAT COUNTS AS AN OPEN REFERENCE ─────────────────────────────────────────
@@ -104,7 +186,38 @@ export function isUnexpectedSubcategory(product) {
 //   • An UNRESOLVED CR line is a live pick: Send fires the hub→shop transfer on
 //     that size. Always blocks.
 //   • A customer order in a live status still has its dispatch ahead of it.
-export const REAL_SIZE = /^(XS|S|M|L|XL|XXL|XXXL)$/;
+// ── WHAT COUNTS AS A SIZE THIS MIGRATION IS ABOUT TO RETIRE ──────────────────
+// This WAS an enumeration: /^(XS|S|M|L|XL|XXL|XXXL)$/. On beanies that was
+// complete — the only sizes in play were S and M. On caps it is a FAIL-OPEN
+// HOLE, and not a theoretical one. Live caps hold stock in "28", "55" and "62"
+// and declare "4XL" and "55"…"63" (fitted caps are sized by head circumference
+// in centimetres). Every one of those fails the old regex, so an open order, an
+// unreceived transfer or a live refill request against a 59FIFTY in size 57
+// read as "no real size — does not block" and the product would have been
+// collapsed out from under it.
+//
+// The fix is to stop enumerating and ask the question the gate actually means:
+// "would this reference still move stock in a cell that is about to stop
+// existing?" Every cell key except the one-size sentinel is about to be retired,
+// so a size blocks unless it already IS the sentinel — decided by the same
+// stockSizeKey chokepoint that decides the cell key itself, so the gate and the
+// storage can never disagree about what one-size means. "Free Size" (the
+// synthetic display label) folds to "_" and correctly does NOT block; a genuine
+// "M", "4XL" or "57" does.
+//
+// It errs toward blocking: an unrecognised size string is not proven safe, so
+// it gates the product and gets reported. That is the same direction every
+// other gate in this file takes.
+export function isRetiredSize(size) {
+  if (size == null || size === "") return false;         // no size named — nothing to retire
+  return stockSizeKey(size) !== "_";
+}
+
+// A /stock or transfer-line KEY (already encoded) that this migration retires.
+export function isRetiredSizeKey(sizeKey) {
+  return typeof sizeKey === "string" && sizeKey !== "" && sizeKey !== "_";
+}
+
 // out_of_stock is a LIVE hold, not a terminal state — the customer is still
 // owed the item and the order can be revived and dispatched on its size.
 // (Kimi review, PR #343: it was missing, which is the fail-OPEN direction.)
@@ -127,7 +240,7 @@ export function orderBlocks(order, pid, nowMs) {
       ? `order ${order.id || ""} references this product in a shape this gate does not understand (no top-level productId) — clear it or check it by hand`
       : null;
   }
-  if (!REAL_SIZE.test(String(order.size || ""))) return null;   // one-size / no real size — nothing to retire
+  if (!isRetiredSize(order.size)) return null;   // one-size / no size named — nothing to retire
   if (order.customerName === "Shop Refill") {
     if (order.clothingRefillStatus == null) return `unresolved refill line ${order.id || ""} (size ${order.size}) — Send would move stock in the retired size`;
     // An UNPARSEABLE resolution stamp must fail SAFE. `|| 0` treated a garbled
@@ -242,11 +355,25 @@ export function transferBlocks(transfer, pid) {
     if (!entry || typeof entry !== "object") continue;
     found = true;
     const values = Object.values(entry);
-    if (!(values.length && values.every((v) => typeof v === "number"))) malformed = true;
-    for (const k of Object.keys(entry)) if (REAL_SIZE.test(k)) sizes.add(k);
+    if (!(values.length && values.every((v) => typeof v === "number"))) { malformed = true; continue; }
+    // SIZES ARE ONLY HARVESTED FROM A NODE THAT READ CLEANLY. This used to be
+    // safe by accident: the size test was an enumeration of letter sizes, so a
+    // malformed { sizes: { M: 2 } } contributed nothing because "sizes" is not
+    // a letter size. Widening the test to "any key that is not the sentinel"
+    // (which is what caps required — 28, 55, 4XL are all real) made "sizes"
+    // itself look like a size, and the gate reported `carrying size sizes`
+    // instead of "I cannot read this record". Both block, so nothing was
+    // unsafe, but the operator was told a confident falsehood about a record
+    // nobody had actually parsed. Reading a node and trusting a node are now
+    // the same decision.
+    for (const k of Object.keys(entry)) if (isRetiredSizeKey(k)) sizes.add(k);
   }
   const understood = found && !malformed;
-  if (sizes.size) return `open transfer (${transfer.status || "no status"}) ${transfer.from || "?"}→${transfer.to || "?"} carrying size ${[...sizes].sort().join(", ")}`;
+  if (understood && sizes.size) return `open transfer (${transfer.status || "no status"}) ${transfer.from || "?"}→${transfer.to || "?"} carrying size ${[...sizes].sort().join(", ")}`;
+  if (malformed) {
+    return `open transfer (${transfer.status || "no status"}) presents this product in a shape this gate does not understand`
+      + `${sizes.size ? ` (a readable node also carries size ${[...sizes].sort().join(", ")})` : ""} — check it by hand`;
+  }
   // Unrecognised shape that still names the product: same fail-safe rule as
   // orderBlocks — block rather than assume.
   //
@@ -390,8 +517,12 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
       if (sizeKey === "_") continue;
       const q = cell && typeof cell.qty === "number" ? cell.qty : 0;
       const ids = legIds(pid, loc, sizeKey);
-      // raw size for the movement record: beanie sizes are letters, so the
-      // encoded key IS the raw size; assert that rather than assume it.
+      // Raw size for the movement record. Every headwear size in the live
+      // catalogue — letters (S/M/L/XL/4XL) and the fitted-cap centimetre sizes
+      // (28, 55…63) — encodes to itself, so the key IS the raw size. ASSERTED
+      // rather than assumed: if a size that does not round-trip ever appears
+      // (a half size, say), this throws instead of writing a movement whose
+      // recorded size disagrees with the cell it moved.
       const size = sizeKey;
       if (encodeSizeKey(size) !== sizeKey) throw new Error(`size key ${sizeKey} does not round-trip`);
 
@@ -444,31 +575,97 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
 // header for the two failure orderings) — so this function returns exactly ONE
 // updates object, and the CLI hands it to ONE io.update call.
 //
-// KEEP-CODE RULE (reported per product): the code minted for the size that
-// holds (or held) the product's stock owns the "_" slot, so labels already on
-// physical stock keep scanning and ensureBarcodes reuses the slot instead of
-// minting a fresh code. Every in-scope beanie has exactly ONE code (census
-// 2026-08-10), which is then trivially that code; with several, prefer the
-// stock-holding size's code, then the declared size's, then the smallest code
-// for determinism.
-export function planStep2(pid, product, indexCodes, stockSizeKeysHeld) {
-  const map = { ...(product.barcodes || {}) };
-  const codes = [...new Set([...Object.values(map).map(String), ...Object.keys(indexCodes || {})])].sort();
+// ── THE KEEP-CODE RULE ───────────────────────────────────────────────────────
+// A one-size product's `barcodes` map is keyed by size and therefore holds
+// exactly ONE entry: {"_": code}. So when a product carries several codes, one
+// of them has to own that slot. This was trivial for beanies (every one had
+// exactly one code) and is a real decision for caps: 87 of 167 carry two or
+// more, and the choice decides which physical labels keep their meaning.
+//
+// WHAT HAPPENS TO THE CODES THAT DO NOT WIN THE SLOT — the important half, and
+// the reason this is safe. NOTHING is deleted. Step 2 rewrites EVERY
+// /barcodes/{code} record of this product to size "_" and leaves productId
+// untouched, and /barcodes is the reverse index a scan actually resolves
+// through (barcode.js: "resolution is a reverse-index lookup, NOT parsing").
+// So every code — kept or not — still resolves to this product, at the one cell
+// the product now has. A former-M label and a former-L label scan to the same
+// place, which is exactly right, because the hat they are stuck to no longer
+// has a size. The only thing a losing code loses is its slot in the product's
+// own map, and that slot no longer exists for anyone.
+//
+// The slot matters for ONE thing: ensureBarcode reads
+// /products/{id}/barcodes/{sizeKey} and reuses a valid code rather than minting
+// a fresh one (barcodeStore.js:111). A filled "_" slot therefore stops the app
+// ever minting a NEW code for a product that already has perfectly good labels
+// in the field. Which of the existing codes fills it changes nothing about
+// resolution — only about which code a newly printed label carries.
+//
+// So the rule optimises for exactly that: newly printed labels should match the
+// codes already out there on the most stock.
+//
+//   1. AN EXISTING "_" SLOT WINS. If the product already has one, it is already
+//      correct and nothing should move.
+//   2. OTHERWISE THE CODE OF THE SIZE HOLDING THE MOST UNITS, network-wide.
+//      That is the code on the largest number of labels physically on stock, so
+//      it is the choice that makes the fewest future reprints disagree with the
+//      shelf. Ties break on size key ascending, then code ascending.
+//   3. NO STOCK ANYWHERE (42 live caps) — the code of the first DECLARED size
+//      that has one, in catalogue order. Nothing on a shelf to match, so the
+//      tie-break just has to be stable and explicable.
+//   4. LAST RESORT — the lowest code. Codes are 8-digit zero-padded, so
+//      lexicographic order IS numeric order, and the oldest code wins.
+//
+// Every branch is deterministic and total: the same product always yields the
+// same keepCode, whatever order its barcodes map happens to enumerate in, and
+// there is no input with a code that yields none.
+export function planStep2(pid, product, indexCodes, heldUnitsBySizeKey) {
+  const bySlot = {};
+  for (const [slot, c] of Object.entries(product.barcodes || {})) {
+    if (typeof c === "string" || typeof c === "number") bySlot[slot] = String(c);
+  }
+  const codes = [...new Set([...Object.values(bySlot), ...Object.keys(indexCodes || {}).map(String)])].sort();
   if (codes.length === 0) return { error: "no_barcodes" };
 
   let keepCode = null, rule = null;
-  const bySlot = Object.fromEntries(Object.entries(map).map(([slot, c]) => [slot, String(c)]));
-  const held = [...(stockSizeKeysHeld || [])].filter((k) => k !== "_");
-  if (codes.length === 1) { keepCode = codes[0]; rule = "only code"; }
-  else if (held.length && bySlot[held[0]]) { keepCode = bySlot[held[0]]; rule = `code of stock-holding size ${held[0]}`; }
-  else if (bySlot[(product.sizes || [])[0]]) { keepCode = bySlot[(product.sizes || [])[0]]; rule = `code of declared size ${(product.sizes || [])[0]}`; }
-  else { keepCode = codes[0]; rule = "smallest code (deterministic tie-break)"; }
+  if (bySlot["_"]) {
+    keepCode = bySlot["_"];
+    rule = `existing "_" slot`;
+  } else if (codes.length === 1) {
+    keepCode = codes[0];
+    rule = "only code";
+  } else {
+    // Units per SIZE KEY across every location, sentinel and non-positive
+    // excluded — a size holding 0 or a negative has no labels to protect.
+    const ranked = Object.entries(heldUnitsBySizeKey || {})
+      .filter(([k, n]) => isRetiredSizeKey(k) && Number(n) > 0 && bySlot[k])
+      .sort((a, b) => (Number(b[1]) - Number(a[1]))
+        || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)
+        || (bySlot[a[0]] < bySlot[b[0]] ? -1 : 1));
+    if (ranked.length) {
+      const [sizeKey, units] = ranked[0];
+      keepCode = bySlot[sizeKey];
+      rule = `code of size ${sizeKey}, the most-stocked size (${units} unit${units === 1 ? "" : "s"} on hand)`;
+    } else {
+      const declared = (product.sizes || []).map(String).find((s) => bySlot[encodeSizeKey(s)]);
+      if (declared) {
+        keepCode = bySlot[encodeSizeKey(declared)];
+        rule = `code of declared size ${declared} (no stock on hand anywhere)`;
+      } else {
+        keepCode = codes[0];
+        rule = "lowest code (no stock, no declared size carries a code)";
+      }
+    }
+  }
 
   const updates = {};
   updates[`products/${assertSafeSegment(pid, "productId")}/sizes`] = ["_"];
   updates[`products/${pid}/barcodes`] = { [stockSizeKey(null)]: keepCode };   // {"_": code} via the chokepoint
   for (const code of codes) updates[`barcodes/${assertSafeSegment(code, "barcode")}/size`] = "_";
-  return { updates, keepCode, rule, codes };
+  // droppedCodes is REPORTING, not a write — the codes that keep resolving via
+  // the index but lose their slot in the product's own map. The census and the
+  // dry run print them so "what happens to the others" is answered per product
+  // before anything moves, not inferred afterwards.
+  return { updates, keepCode, rule, codes, droppedCodes: codes.filter((c) => c !== keepCode) };
 }
 
 // ── THE DRAIN CHECK — Step 2's precondition, on FRESH reads ─────────────────
