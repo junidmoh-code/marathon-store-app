@@ -244,8 +244,12 @@ const MUTATIONS = [
     id: "M24",
     guard: "A code that is not a barcode is refused, not a silent no-op success",
     file: "src/components/stock/printedBarcodeStore.js",
-    from: `  if (!normalisePrintedBarcode(code).ok) {`,
-    to: `  if (false) {`,
+    from: `  if (!parsed.ok) {
+    return { kind: PRINTED_INVALID, code: String(code ?? ""), codes: [], indexCodes: [] };
+  }`,
+    to: `  if (false) {
+    return { kind: PRINTED_INVALID, code: String(code ?? ""), codes: [], indexCodes: [] };
+  }`,
     tests: ["src/components/stock/printedBarcodeStore.test.js"],
   },
   {
@@ -313,6 +317,14 @@ const MUTATIONS = [
     from: `            if (!labelIsRedundant(printedCode, indexCheck)) setPrintOpen(true);`,
     to: `            setPrintOpen(true);`,
     tests: ["src/components/stock/displayRegisterRemoved.test.js"],
+  },
+  {
+    id: "M37",
+    guard: "The NORMALISED code is what gets indexed and stored, not the raw input",
+    file: "src/components/stock/printedBarcodeStore.js",
+    from: `  const codes = indexCodesFor(parsed.code);`,
+    to: `  const codes = indexCodesFor(code);`,
+    tests: ["src/components/stock/printedBarcodeStore.test.js"],
   },
   {
     id: "M17",

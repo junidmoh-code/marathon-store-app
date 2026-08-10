@@ -73,10 +73,18 @@ export async function inspectPrintedBarcode(code, productId = null, size = ONE_S
   // An unusable code must not read as "free" — that made registerPrintedBarcode
   // report ok with nothing written, a silent success for garbage. It is refused
   // here, once, for every caller. (Kimi review, PR #340.)
-  if (!normalisePrintedBarcode(code).ok) {
+  // NORMALISE ONCE, THEN USE THE NORMALISED VALUE — validating through
+  // normalisePrintedBarcode and then looking up the RAW string is how
+  // "6291 1060 65114" passed the gate and produced no index keys at all: a FREE
+  // verdict with an empty code list, a commit that wrote only the product
+  // field, and ok:true for a registration that registered nothing. The
+  // separated string would then sit on the product naming a code no scanner
+  // resolves. (CodeRabbit, PR #340.)
+  const parsed = normalisePrintedBarcode(code);
+  if (!parsed.ok) {
     return { kind: PRINTED_INVALID, code: String(code ?? ""), codes: [], indexCodes: [] };
   }
-  const codes = indexCodesFor(code);
+  const codes = indexCodesFor(parsed.code);
   let owners;
   try {
     owners = await readBarcodeOwners(codes);
@@ -111,6 +119,12 @@ export async function registerPrintedBarcode(productId, code, size = ONE_SIZE, e
     // "invalid" are refusals. Reported as-is — the caller decides, this never
     // guesses, and it never writes on a verdict it did not understand.
     return { ok: verdict.kind === PRINTED_ALREADY, written: [], ...verdict };
+  }
+  // FREE WITH NOTHING TO WRITE IS NOT SUCCESS. Belt to the braces above: if a
+  // verdict ever reaches here with no index keys, committing would persist the
+  // extraUpdates alone — a product field naming a code that has no row.
+  if (!verdict.codes || !verdict.codes.length) {
+    return { ok: false, kind: PRINTED_INVALID, written: [], code: String(code ?? "") };
   }
 
   // ── ONE ATOMIC MULTI-PATH UPDATE, NOT A LOOP OF set() CALLS ───────────────
@@ -235,6 +249,15 @@ export function registrationRefusalText(reg, code) {
 //
 // @returns {{ok:true, kind, written}|{ok:false, kind, reason, indexed:boolean}}
 export async function attachPrintedBarcode({ productId, code, size = ONE_SIZE }) {
+  // The product field must hold the SAME value the index rows are keyed on —
+  // bare digits — not whatever spelling the caller happened to pass. Storing
+  // "6291 1060 65114" would name a code no /barcodes row exists for.
+  // (CodeRabbit, PR #340.)
+  const parsed = normalisePrintedBarcode(code);
+  if (!parsed.ok) {
+    return { ok: false, kind: PRINTED_INVALID, indexed: false, reason: parsed.message };
+  }
+  code = parsed.code;
   const extraUpdates = { [`products/${productId}/printedBarcode`]: code };
   let reg;
   try {

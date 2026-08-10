@@ -116,6 +116,38 @@ beforeEach(() => {
   setPath("products/pSomebodyElse", { id: "pSomebodyElse", name: "Theirs" });
 });
 
+describe("a code with print separators is normalised, not half-accepted", () => {
+  const SPACED = "6291 1060 65114";
+
+  it("registers the BARE DIGITS, and the product field matches the index key", async () => {
+    // The gate normalises, but the index lookup used the RAW string — so a
+    // separated code passed validation and produced NO index keys: a FREE
+    // verdict with an empty list, a commit that wrote only the product field,
+    // and ok:true for a registration that registered nothing.
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: SPACED });
+
+    expect(out.ok).toBe(true);
+    expect(store.barcodes[OUD_MOOD].productId).toBe("pPerfume");
+    expect(getPath("products/pPerfume/printedBarcode")).toBe(OUD_MOOD);
+    // The separated spelling must never become a key or a stored value.
+    expect(getPath(`barcodes/${SPACED}`)).toBe(null);
+  });
+
+  it("inspects a separated code against the row its digits own", async () => {
+    await registerPrintedBarcode("pOther", OUD_MOOD);
+    const verdict = await inspectPrintedBarcode(SPACED, "pPerfume");
+    expect(verdict.kind).toBe("conflict");
+    expect(verdict.otherProductId).toBe("pOther");
+  });
+
+  it("still refuses a code that normalises to nothing usable", async () => {
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: "62 91-10" });
+    expect(out.ok).toBe(false);
+    expect(out.kind).toBe("invalid");
+    expect(getPath("products/pPerfume/printedBarcode")).toBe(null);
+  });
+});
+
 describe("the product must exist before its barcode can be registered", () => {
   it("REFUSES to register against a product that has not been written yet", async () => {
     // The live rule validates
@@ -483,6 +515,16 @@ describe("inspection is read-only", () => {
     expect(await readBarcodeOwners([EPIC])).toEqual([{ code: EPIC, productId: null, size: null }]);
     await registerPrintedBarcode("pPerfume", EPIC);
     expect(await readBarcodeOwners([EPIC])).toEqual([{ code: EPIC, productId: "pPerfume", size: "_" }]);
+  });
+
+  it("inspectPrintedBarcode itself reports INVALID — the first of two guards", async () => {
+    // The behaviour is guarded twice (here, and again by the empty-codes check
+    // in registerPrintedBarcode), which is deliberate defence in depth — but it
+    // means neither guard alone can be mutation-proven through the composite.
+    // So this asserts the unit's own contract directly.
+    const verdict = await inspectPrintedBarcode("not-a-barcode", "pPerfume");
+    expect(verdict.kind).toBe("invalid");
+    expect(verdict.indexCodes).toEqual([]);
   });
 
   it("refuses a code that is not a printed barcode instead of reporting a no-op success", async () => {
