@@ -23,6 +23,7 @@ import {
   applyMovementAdmin, planStep1, planStep2, planStep3, step2Done, verifyProduct,
   assertDrained, legIds, orderBlocks, transferBlocks, movementRecency, pushKeyMs, isInScope, isUnexpectedSubcategory,
   headwearKind, isExcludedHeadwear, isCapByShelfOnly, isRetiredSize, isRetiredSizeKey,
+  invalidTargetRow, policyRowGate,
 } from "./headwearCollapseCore.mjs";
 
 // ── fake RTDB ────────────────────────────────────────────────────────────────
@@ -518,10 +519,13 @@ describe("STEP 2 — one atomic identity update", () => {
 
   // ── THE KEEP-CODE RULE. Trivial on beanies (one code each), a real decision
   // on the 87 caps that carry several.
-  it("every code of a SEVEN-code cap still resolves to it after the collapse", async () => {
-    // Live shape: New Era Atlanta Braves fitted cap cream carries six per-size
-    // codes plus a later one-size code. Losing a map slot must not mean losing
-    // a scan — a former-M label and a former-L label must both still ring up.
+  it("every code of a SIX-code cap still resolves to it after the collapse", async () => {
+    // Live shape: New Era Atlanta Braves fitted cap cream carries these six
+    // per-size codes (it also has a later one-size code, deliberately left out
+    // here so this exercises the most-stocked-size branch rather than the
+    // existing-"_"-slot branch, which its own test covers). Losing a map slot
+    // must not mean losing a scan — a former-M label and a former-L label must
+    // both still ring up.
     const barcodes = { S: "00014441", M: "00014442", L: "00014443", XL: "00014444", XXL: "00014445", XXXL: "00014446" };
     const db = makeDb(seedProduct({ sizes: ["S", "M", "L", "XL", "XXL", "XXXL"], barcodes,
       cells: { "marathon-pe": { M: 3, S: 1 } } }));
@@ -540,6 +544,24 @@ describe("STEP 2 — one atomic identity update", () => {
     expect(r.droppedCodes).toHaveLength(5);
     expect([...r.droppedCodes, r.keepCode].sort()).toEqual(Object.values(barcodes).sort());
     for (const code of r.droppedCodes) expect(raw.barcodes[code]).toBeTruthy();
+  });
+
+  it("never CREATES an index record for a code the index does not have", async () => {
+    // A code in the product's map with no /barcodes record: writing
+    // `barcodes/{code}/size = "_"` would not rewrite a record, it would MINT
+    // one holding a size and no productId — junk that resolves to nothing and
+    // that the live rule (hasChildren(['productId'])) would reject if the Admin
+    // SDK enforced rules rather than bypassing them.
+    const product = { name: "Test cap", sizes: ["S", "M"], barcodes: { S: "00099001", M: "00099002" } };
+    const indexCodes = { "00099001": { productId: "pB", size: "S" } };   // M's record is MISSING
+    const s2 = planStep2("pB", product, indexCodes, { S: 1, M: 4 });
+
+    expect(s2.unindexedCodes).toEqual(["00099002"]);
+    expect(Object.keys(s2.updates)).not.toContain("barcodes/00099002/size");
+    expect(Object.keys(s2.updates)).toContain("barcodes/00099001/size");
+    // The keep-code rule still ran on the full picture, so the report is honest
+    // about which code it would have kept.
+    expect(s2.keepCode).toBe("00099002");
   });
 
   it("the most-stocked size wins the slot, counting units across ALL locations", async () => {
@@ -624,6 +646,22 @@ describe("size keys — a display label can never reach a storage key", () => {
     expect(cells.Free_Size).toBeUndefined();
   });
 
+  it("the movement records the CATALOGUE size, not the encoded cell key", async () => {
+    // The cell key for a half size is "5_5"; the catalogue size is "5.5". The
+    // old code recorded the KEY in the ledger, so a movement said it moved
+    // "5_5" — arithmetic right, ledger disagreeing with the catalogue about
+    // what was moved. No headwear size does this today, which is exactly why it
+    // needs a test rather than an assertion that can never fire.
+    const db = makeDb(seedProduct({ sizes: ["5.5", "M"], barcodes: { "5_5": "00044001", M: "00044002" },
+      cells: { hub2: { "5_5": 2 } } }));
+    await migrate(db, "pB");
+    const raw = db.raw();
+    const out = Object.values(raw.stock_movements).find((m) => m.from === "hub2");
+    expect(out.size).toBe("5.5");                       // the catalogue form
+    expect(Object.keys(raw.stock.hub2.pB)).toContain("5_5");   // the storage form
+    expect(raw.stock.hub2.pB._.qty).toBe(2);
+  });
+
   it("a half size is ENCODED into the key, so no \".\" ever reaches RTDB", async () => {
     const db = makeDb(seedProduct({ cells: { hub2: { M: 4 } } }));
     const r = await applyMovementAdmin(db.io, {
@@ -695,7 +733,13 @@ describe("scope — beanies and caps are in, nothing else is", () => {
     }
     // Off the shelf and not beanie-named → not headwear, whatever it is called.
     expect(headwearKind({ name: "Nike cap black", subcategory: "Clothing — Uncategorized" })).toBe(null);
-    expect(headwearKind({ name: "Alo yoga airlift solar visor black", subcategory: "Clothing — Uncategorized" })).toBe(null);
+    // The one live mis-filed visor: out of scope AND still reported as an
+    // exclusion, so it cannot fall silently between the two census lists.
+    const strayVisor = { name: "Alo yoga airlift solar visor black", subcategory: "Clothing — Uncategorized" };
+    expect(headwearKind(strayVisor)).toBe(null);
+    expect(isExcludedHeadwear(strayVisor)).toBe(true);
+    // …but an ordinary off-shelf product is not dragged into the excluded list.
+    expect(isExcludedHeadwear({ name: "Nike Air Max 90", subcategory: "Footwear" })).toBe(false);
     // Merge stubs are redirects with no stock identity — never collapsed in place.
     expect(headwearKind({ name: "Nike beanie green", mergedInto: "pOther" })).toBe(null);
     expect(headwearKind({ name: "Nike cap black", subcategory: CH, mergedInto: "pOther" })).toBe(null);
@@ -757,6 +801,58 @@ describe("scope — beanies and caps are in, nothing else is", () => {
     expect(raw.stock.hub2.pBucket).toEqual({ M: cell(7) });
     expect(raw.stock.hub2.pVisor._).toBeUndefined();
     expect(raw.stock.hub2.pBucket._).toBeUndefined();
+  });
+});
+
+describe("the policy-row decisions", () => {
+  const collapsedCap = { name: "Nike cap black", subcategory: "Caps & Hats", sizes: ["_"] };
+
+  it("requires target AND minQty as numbers, matching the live rule", () => {
+    expect(invalidTargetRow({ target: 5, minQty: 3 })).toBe(null);
+    // The live rule is hasChildren(['target','minQty']) with both numeric. The
+    // policy statement never mentions minQty, so a row without it would have
+    // been written by the Admin SDK and then bounced any client write.
+    expect(invalidTargetRow({ target: 5 })).toMatch(/minQty/);
+    expect(invalidTargetRow({ minQty: 3 })).toMatch(/target/);
+    expect(invalidTargetRow({ target: "5", minQty: 3 })).toMatch(/target/);
+    expect(invalidTargetRow({ target: 5, minQty: -1 })).toMatch(/negative/);
+    expect(invalidTargetRow(null)).toMatch(/not an object/);
+  });
+
+  it("accepts an ABSENT reorderPoint but refuses a null one", () => {
+    // Absent is the hub's intended setting and must stay expressible.
+    expect(invalidTargetRow({ target: 15, minQty: 8 })).toBe(null);
+    expect(invalidTargetRow({ target: 5, minQty: 3, reorderPoint: 0 })).toBe(null);
+    // null is refused because RTDB DELETES a null child: the row would be
+    // written correctly (no reorderPoint) but read back as absent, and a verify
+    // comparing null to undefined would report a false failure.
+    expect(invalidTargetRow({ target: 15, minQty: 8, reorderPoint: null })).toMatch(/omit the key/);
+    // Anything the engine would silently ignore is refused rather than written.
+    expect(invalidTargetRow({ target: 15, minQty: 8, reorderPoint: -1 })).toMatch(/omit the key/);
+    expect(invalidTargetRow({ target: 15, minQty: 8, reorderPoint: "0" })).toMatch(/omit the key/);
+  });
+
+  it("arming demands scope AND a collapsed product", () => {
+    expect(policyRowGate(collapsedCap)).toEqual({ ok: true });
+    expect(policyRowGate({ ...collapsedCap, sizes: ["S", "M"] })).toMatchObject({ ok: false, reason: "not-collapsed" });
+    expect(policyRowGate({ name: "Alo Yoga Airlift Solar Visor White", subcategory: "Caps & Hats", sizes: ["_"] }))
+      .toMatchObject({ ok: false, reason: "not-headwear" });
+    expect(policyRowGate(undefined)).toMatchObject({ ok: false, reason: "missing" });
+  });
+
+  it("REMOVING is always possible — the off switch cannot depend on current scope", () => {
+    // The policy's only off switch is deleting the rows (an explicit row
+    // outlives the ruleBasedTargets kill switch since #342). A product merged
+    // or renamed AFTER arming fails isInScope while its rows are still live and
+    // still driving the engine — refusing to remove them would leave a policy
+    // that cannot be turned off.
+    expect(policyRowGate({ ...collapsedCap, mergedInto: "pOther" }, { remove: true })).toMatchObject({ ok: true });
+    expect(policyRowGate({ name: "Renamed to something else", subcategory: "Accessories" }, { remove: true })).toMatchObject({ ok: true });
+    expect(policyRowGate(undefined, { remove: true })).toMatchObject({ ok: true });
+    // …and each of those explains itself rather than passing silently.
+    expect(policyRowGate({ ...collapsedCap, mergedInto: "pOther" }, { remove: true }).note).toBeTruthy();
+    // A product that has NOT collapsed can still have a stray row removed.
+    expect(policyRowGate({ ...collapsedCap, sizes: ["S", "M"] }, { remove: true })).toMatchObject({ ok: true });
   });
 });
 

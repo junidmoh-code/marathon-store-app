@@ -263,8 +263,8 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
   const shelf = Object.values(products).filter((p) => p?.subcategory === HEADWEAR_SUBCATEGORY).length;
   console.log(`\nSCOPE — what the shared predicate now admits`);
   console.log(`  "${HEADWEAR_SUBCATEGORY}" shelf holds ${shelf} records. Admitted: ${inScope.length} (${beanies.length} beanies, ${caps.length} caps).`);
-  console.log(`  Excluded from the shelf (neither a beanie nor a cap): ${excluded.length}`);
-  for (const [pid, p] of excluded) console.log(`     ${pid} ${JSON.stringify((p.sizes || []).map(String)).padEnd(8)} ${p.name}`);
+  console.log(`  Excluded as a visor or bucket hat (neither a beanie nor a cap), wherever filed: ${excluded.length}`);
+  for (const [pid, p] of excluded) console.log(`     ${pid} ${JSON.stringify((p.sizes || []).map(String)).padEnd(8)} ${p.name}${p.subcategory === HEADWEAR_SUBCATEGORY ? "" : `   [filed under ${JSON.stringify(p.subcategory)}]`}`);
   console.log(`  Merged redirect stubs skipped: ${mergedStubs.length}`);
   for (const m of mergedStubs) console.log(`     ${m.pid} → ${m.mergedInto}  "${m.name}"`);
 

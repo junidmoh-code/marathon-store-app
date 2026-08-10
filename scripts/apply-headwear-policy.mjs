@@ -40,7 +40,7 @@
 
 import { createRequire } from "module";
 import { readFileSync } from "fs";
-import { isInScope, headwearKind } from "./lib/headwearCollapseCore.mjs";
+import { headwearKind, invalidTargetRow, policyRowGate } from "./lib/headwearCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -58,25 +58,6 @@ const args = process.argv.slice(2);
 const PAYLOAD_PATH = args.find((a) => !a.startsWith("--"));
 const EXECUTE = args.includes("--execute");
 const DELETE = args.includes("--delete");
-
-// Mirrors the LIVE rule at /stock_targets/$loc/$pid/$size:
-//   hasChildren(['target','minQty']) && target.isNumber() && minQty.isNumber()
-// The Admin SDK bypasses rules, so an invalid row would be accepted here and
-// then rejected the first time anything client-side tried to touch it. Validate
-// against the rule rather than discovering it later.
-function invalidRow(row) {
-  if (!row || typeof row !== "object") return "not an object";
-  if (typeof row.target !== "number" || !Number.isFinite(row.target)) return "target is not a finite number";
-  if (typeof row.minQty !== "number" || !Number.isFinite(row.minQty)) return "minQty is not a finite number (the live rule REQUIRES it)";
-  if (row.target < 0 || row.minQty < 0) return "negative target/minQty";
-  // reorderPoint is optional; when present the engine only honours a finite >= 0
-  // (anything else falls back to "no gate", i.e. eager ordering).
-  if ("reorderPoint" in row && row.reorderPoint !== null
-    && !(typeof row.reorderPoint === "number" && Number.isFinite(row.reorderPoint) && row.reorderPoint >= 0)) {
-    return `reorderPoint ${JSON.stringify(row.reorderPoint)} would be ignored by the engine — omit the key instead`;
-  }
-  return null;
-}
 
 (async () => {
   if (!PAYLOAD_PATH) {
@@ -104,7 +85,7 @@ function invalidRow(row) {
     if (DELETE) {
       if (row !== null) problems.push(`${path}: --delete expects every value to be null, got ${JSON.stringify(row)}`);
     } else {
-      const why = invalidRow(row);
+      const why = invalidTargetRow(row);
       if (why) problems.push(`${path}: ${why}`);
     }
   }
@@ -118,21 +99,21 @@ function invalidRow(row) {
 
   // ── the precondition: every product must have collapsed already ───────────
   const products = (await io.read("products")) || {};
-  const notCollapsed = [], notHeadwear = [];
+  const notCollapsed = [], notHeadwear = [], notes = [];
   for (const pid of pids) {
-    const p = products[pid];
-    if (!p) { notCollapsed.push(`${pid}: no such product`); continue; }
-    if (!isInScope(p)) { notHeadwear.push(`${pid} "${p.name}" is not a beanie or a cap`); continue; }
-    if (JSON.stringify(p.sizes || null) !== JSON.stringify(["_"])) {
-      notCollapsed.push(`${pid} "${p.name}" still declares ${JSON.stringify(p.sizes)}`);
-    }
+    const g = policyRowGate(products[pid], { remove: DELETE });
+    if (g.note) notes.push(`${pid} "${products[pid]?.name ?? "(gone)"}" — ${g.note}`);
+    if (g.ok) continue;
+    if (g.reason === "not-headwear") notHeadwear.push(`${pid} "${products[pid].name}" ${g.detail}`);
+    else notCollapsed.push(`${pid} ${products[pid] ? `"${products[pid].name}" ` : ""}${g.detail}`);
   }
+  for (const n of notes) console.log(`  note: ${n}`);
   if (notHeadwear.length) {
     console.error(`\nABORT: ${notHeadwear.length} product(s) in this payload are not headwear. Nothing written.`);
     for (const n of notHeadwear.slice(0, 10)) console.error(`  ${n}`);
     process.exit(1);
   }
-  if (notCollapsed.length && !DELETE) {
+  if (notCollapsed.length) {
     console.error(`\nABORT: ${notCollapsed.length} product(s) have NOT collapsed to one-size yet. Nothing written.`);
     console.error(`A "_" row on a product that still declares sizes is inert — the engine resolves`);
     console.error(`targets per catalogue size and "_" is not one of them — but it LOOKS armed, and it`);
@@ -160,7 +141,9 @@ function invalidRow(row) {
   }
 
   const kinds = { beanie: 0, cap: 0 };
-  for (const pid of pids) kinds[headwearKind(products[pid])]++;
+  // A --delete run can name a product that has since been merged or deleted;
+  // headwearKind(undefined) is null and kinds[null]++ yields NaN under a "null" key.
+  for (const pid of pids) { const k = headwearKind(products[pid]); if (k) kinds[k]++; }
   console.log(`\n  ${DELETE ? "REMOVING" : "ARMING"} ${entries.length} row(s) — ${kinds.beanie} beanie / ${kinds.cap} cap product(s)`);
   const byLoc = {};
   for (const [path] of entries) { const loc = path.split("/")[0]; byLoc[loc] = (byLoc[loc] || 0) + 1; }
@@ -193,8 +176,13 @@ function invalidRow(row) {
     if (live.target !== row.target || live.minQty !== row.minQty) bad.push(`${path} = ${JSON.stringify(live)}`);
     // reorderPoint ABSENT is load-bearing at the hub — an accidental 0 there
     // would flip it from "top up whenever below target" to "only when empty".
-    const wantRp = "reorderPoint" in row ? row.reorderPoint : undefined;
-    const gotRp = "reorderPoint" in (live || {}) ? live.reorderPoint : undefined;
+    // ?? undefined on BOTH sides: RTDB deletes a null child, so a row written
+    // with reorderPoint null reads back with the key absent. Comparing null
+    // against undefined reported a VERIFY FAILED on a write that did exactly
+    // what was asked. (invalidTargetRow now refuses null outright, so this is
+    // belt to that brace.) (CodeRabbit, PR #345.)
+    const wantRp = row.reorderPoint ?? undefined;
+    const gotRp = live.reorderPoint ?? undefined;
     if (wantRp !== gotRp) bad.push(`${path} reorderPoint ${JSON.stringify(gotRp)} ≠ intended ${JSON.stringify(wantRp)}`);
   }
   console.log(bad.length ? `\n  VERIFY FAILED:\n${bad.map((b) => `     ${b}`).join("\n")}` : `  verified on fresh reads: every row reads back as intended (reorderPoint presence included)`);

@@ -17,8 +17,16 @@
 //   • the MIRRORED pair for a negative cell (M3) — 9 live cells are negative.
 //   • the KEEP-CODE rule (M6–M8) — 87 caps carry several barcodes.
 // Plus the scope predicate (M9–M11), the fail-open size gate caps exposed (M4),
-// the atomicity of Step 2 (M12), the size-key chokepoint (M13), the drain
+// Step 2's identity write (M12), the size-key chokepoint (M13), the drain
 // precondition (M5) and the promise that nothing here ever arms a target (M14).
+//
+// M15–M20 cover the movement contract and the gates around it: the v+1 bump
+// (M15), the overdraw floor (M16), the concurrent-write re-check that replaces
+// the security rule the Admin SDK bypasses (M17), resuming an interrupted pair
+// from the ledger (M18), movement-id idempotency (M19), and the transfer gate's
+// refusal to name a size it could not parse (M20). M21–M24 cover what the
+// review round added: orphan index records, the ledger's recorded size, and the
+// two policy-row decisions.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -87,8 +95,8 @@ const MUTATIONS = [
     id: "M8",
     guard: "EVERY code of a multi-barcode product is rewritten, so none goes dead",
     file: CORE,
-    from: `  for (const code of codes) updates[\`barcodes/\${assertSafeSegment(code, "barcode")}/size\`] = "_";`,
-    to: `  updates[\`barcodes/\${assertSafeSegment(keepCode, "barcode")}/size\`] = "_";`,
+    from: `    updates[\`barcodes/\${assertSafeSegment(code, "barcode")}/size\`] = "_";`,
+    to: `    if (code === keepCode) updates[\`barcodes/\${assertSafeSegment(code, "barcode")}/size\`] = "_";`,
     tests: SUITE,
   },
   {
@@ -119,7 +127,14 @@ const MUTATIONS = [
   },
   {
     id: "M12",
-    guard: "Step 2 is ONE update — identity and index can never disagree in a window",
+    // NOT an atomicity proof. planStep2 returns an updates object; it does not
+    // perform the write, so no mutation of it can split one io.update into two.
+    // Atomicity is covered behaviourally instead — "sizes, the barcodes map and
+    // every index record land in a SINGLE update call" counts db.stats.updates,
+    // and "a partial application is impossible" fails the update and asserts the
+    // old identity is intact. This mutation proves the sizes write is required
+    // and that its absence is detected. (CodeRabbit, PR #345.)
+    guard: "Step 2's identity update must carry the sizes write, and its absence is caught",
     file: CORE,
     from: `  updates[\`products/\${pid}/barcodes\`] = { [stockSizeKey(null)]: keepCode };   // {"_": code} via the chokepoint`,
     to: `  updates[\`products/\${pid}/barcodes\`] = { [stockSizeKey(null)]: keepCode };
@@ -189,6 +204,42 @@ const MUTATIONS = [
     file: CORE,
     from: `    if (!(values.length && values.every((v) => typeof v === "number"))) { malformed = true; continue; }`,
     to: `    if (!(values.length && values.every((v) => typeof v === "number"))) { malformed = true; }`,
+    tests: SUITE,
+  },
+  {
+    id: "M21",
+    guard: "An index record is never CREATED for a code the index does not have",
+    file: CORE,
+    from: `    if (!indexed.has(code)) continue;`,
+    to: `    if (false) continue;`,
+    tests: SUITE,
+  },
+  {
+    id: "M22",
+    guard: "The movement records the CATALOGUE size, not the encoded cell key",
+    file: CORE,
+    from: `      const size = declaredMatch ?? sizeKey;`,
+    to: `      const size = sizeKey;`,
+    tests: SUITE,
+  },
+  {
+    id: "M23",
+    guard: "Removing a policy row never depends on the product still being in scope",
+    file: CORE,
+    from: `  if (remove) {
+    return isInScope(product)
+      ? { ok: true }
+      : { ok: true, note: "no longer in headwear scope (merged or renamed) — removing its row anyway" };
+  }`,
+    to: `  if (remove && isInScope(product)) return { ok: true };`,
+    tests: SUITE,
+  },
+  {
+    id: "M24",
+    guard: "A policy row must carry minQty, and reorderPoint null is refused rather than written",
+    file: CORE,
+    from: `  if (typeof row.minQty !== "number" || !Number.isFinite(row.minQty)) return "minQty is not a finite number (the live rule REQUIRES it)";`,
+    to: ``,
     tests: SUITE,
   },
 ];

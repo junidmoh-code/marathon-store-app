@@ -90,7 +90,20 @@ const SHOP_REORDER_POINT = 0;       // a shop re-asks only when the cell hits ze
 const BATCH_ID = "headwear-onesize-policy";
 // Overridable so the "what would trophy/pine cost" question can be answered by
 // running it, not by arguing about it.
-const SHOPS = (process.env.SHOPS || "marathon-pe").split(",").map((s) => s.trim()).filter(Boolean);
+//
+// VALIDATED, because the obvious misuse is silent and expensive. SHOPS=hub2
+// would build the hub's rows first and then overwrite every one of them with
+// the SHOP row — target 5 and reorderPoint 0 — quietly destroying the absent
+// reorderPoint that is the whole point of the hub setting. Duplicates would
+// emit duplicate rows. Neither would announce itself. (CodeRabbit, PR #345.)
+const SHOPS = [...new Set((process.env.SHOPS || "marathon-pe").split(",").map((s) => s.trim()).filter(Boolean))];
+if (SHOPS.includes(HUB)) {
+  console.error(`SHOPS must not contain the hub (${HUB}). The hub row is target ${HUB_TARGET} with NO`);
+  console.error(`reorderPoint; a shop row is target ${SHOP_TARGET} with reorderPoint ${SHOP_REORDER_POINT}, and it would`);
+  console.error(`silently overwrite the hub's. Set the hub through HUB_TARGET, not SHOPS.`);
+  process.exit(1);
+}
+if (!SHOPS.length) { console.error("SHOPS is empty — nothing to arm."); process.exit(1); }
 
 const OUT = process.env.MODEL_JSON || join(tmpdir(), `headwear-policy-model-${Date.now()}.json`);
 const PAYLOAD_OUT = process.env.PAYLOAD_JSON || join(tmpdir(), `headwear-policy-payload-${Date.now()}.json`);

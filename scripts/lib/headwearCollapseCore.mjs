@@ -111,10 +111,15 @@ export const BATCH = "headwear-onesize-collapse";
 //   • 16 bucket hats — 15 of which ALREADY declare ["_"], so there is nothing
 //     to collapse; the 16th (Nike bucket hat green, ["M"]) would be a one-line
 //     addition if the owner wants it.
-//   • 7 visors (6 on the shelf, 1 mis-filed under "Clothing — Uncategorized").
+//   • 7 visors — 6 on the shelf, plus one mis-filed under "Clothing —
+//     Uncategorized" (Alo yoga airlift solar visor black).
 // Neither is a cap, and the brief scopes this migration to beanies and caps, so
 // they are reported by the census and left alone. isExcludedHeadwear names them
-// so "excluded" is a stated decision with a list, not silence.
+// so "excluded" is a stated decision with a list, not silence — and it matches
+// on the NAME wherever the record is filed, not only on the shelf, because the
+// mis-filed visor is precisely the record a reader would want to see accounted
+// for and a shelf-only predicate made it vanish from both lists.
+// (CodeRabbit, PR #345.)
 //
 // A mergedInto record is a redirect stub with no stock identity of its own
 // (product-merge.cjs) and must never be collapsed in place.
@@ -143,10 +148,12 @@ export function isInScope(product) {
   return headwearKind(product) !== null;
 }
 
-// On the cap shelf, not a beanie, and excluded by name. The census lists these.
+// Named as a visor or a bucket hat, wherever it is filed, and not a beanie.
+// Reporting only — these are never in scope. Deliberately NOT restricted to the
+// shelf, so the one mis-filed visor is still accounted for in the census rather
+// than falling silently between "in scope" and "excluded".
 export function isExcludedHeadwear(product) {
   if (!product || product.mergedInto) return false;
-  if (product.subcategory !== HEADWEAR_SUBCATEGORY) return false;
   const name = String(product.name || "");
   return !BEANIE_NAME.test(name) && NOT_A_CAP.test(name);
 }
@@ -517,14 +524,24 @@ export async function planStep1(io, pid, declaredSizes, cellsByLoc) {
       if (sizeKey === "_") continue;
       const q = cell && typeof cell.qty === "number" ? cell.qty : 0;
       const ids = legIds(pid, loc, sizeKey);
-      // Raw size for the movement record. Every headwear size in the live
-      // catalogue — letters (S/M/L/XL/4XL) and the fitted-cap centimetre sizes
-      // (28, 55…63) — encodes to itself, so the key IS the raw size. ASSERTED
-      // rather than assumed: if a size that does not round-trip ever appears
-      // (a half size, say), this throws instead of writing a movement whose
-      // recorded size disagrees with the cell it moved.
-      const size = sizeKey;
-      if (encodeSizeKey(size) !== sizeKey) throw new Error(`size key ${sizeKey} does not round-trip`);
+      // ── RAW SIZE FOR THE MOVEMENT RECORD ────────────────────────────────
+      // This used to be `size = sizeKey` guarded by
+      // `if (encodeSizeKey(size) !== sizeKey) throw`. That guard could never
+      // fire: sizeKey comes from a /stock cell KEY, RTDB rejects every
+      // character encodeSizeKey substitutes, so the key is already encoded and
+      // encoding it again is a no-op. The one case the comment claimed to
+      // catch — a half size — was exactly the case that slipped through: "5.5"
+      // is stored under key "5_5", the assertion passed, and the movement
+      // recorded `size: "5_5"` rather than "5.5". The cell path re-encodes, so
+      // the arithmetic stayed right, but the ledger disagreed with the
+      // catalogue about what was moved. (CodeRabbit, PR #345.)
+      //
+      // So resolve the key back through the product's DECLARED sizes, which is
+      // where the raw form actually lives. Every live headwear size encodes to
+      // itself, so this changes nothing today; it stops the ledger lying the
+      // first time a size that does not.
+      const declaredMatch = (declaredSizes || []).map(String).find((s) => encodeSizeKey(s) === sizeKey);
+      const size = declaredMatch ?? sizeKey;
 
       if (q > 0) {
         plans.push({ loc, sizeKey, kind: "positive", qty: q, legs: [
@@ -657,15 +674,38 @@ export function planStep2(pid, product, indexCodes, heldUnitsBySizeKey) {
     }
   }
 
+  // ── ONLY REWRITE INDEX RECORDS THAT EXIST ───────────────────────────────────
+  // A code listed in the product's `barcodes` map with NO /barcodes record is
+  // possible (the two are written together but nothing enforces the pair). For
+  // such a code, `barcodes/{code}/size = "_"` does not rewrite a record — it
+  // CREATES one, holding a size and nothing else. That record has no productId,
+  // so it resolves to nothing on a scan, and it violates the live rule
+  // (`newData.hasChildren(['productId'])`) which the Admin SDK bypasses rather
+  // than enforces. The migration would silently mint junk in the index it is
+  // supposed to be repairing.
+  //
+  // The CLI does gate this (it refuses a product whose map names a code with no
+  // record), so no live run could reach it today. But planStep2 is called
+  // directly by the census for reporting and is the function that decides what
+  // gets written, so it must not depend on a caller's gate to stay correct.
+  // Unindexed codes come back named, rather than being written blind or dropped
+  // in silence. (CodeRabbit, PR #345.)
+  const indexed = new Set(Object.keys(indexCodes || {}).map(String));
+  const unindexedCodes = codes.filter((c) => !indexed.has(c));
+
   const updates = {};
   updates[`products/${assertSafeSegment(pid, "productId")}/sizes`] = ["_"];
   updates[`products/${pid}/barcodes`] = { [stockSizeKey(null)]: keepCode };   // {"_": code} via the chokepoint
-  for (const code of codes) updates[`barcodes/${assertSafeSegment(code, "barcode")}/size`] = "_";
+  for (const code of codes) {
+    if (!indexed.has(code)) continue;
+    updates[`barcodes/${assertSafeSegment(code, "barcode")}/size`] = "_";
+  }
   // droppedCodes is REPORTING, not a write — the codes that keep resolving via
   // the index but lose their slot in the product's own map. The census and the
   // dry run print them so "what happens to the others" is answered per product
   // before anything moves, not inferred afterwards.
-  return { updates, keepCode, rule, codes, droppedCodes: codes.filter((c) => c !== keepCode) };
+  return { updates, keepCode, rule, codes, unindexedCodes,
+    droppedCodes: codes.filter((c) => c !== keepCode) };
 }
 
 // ── THE DRAIN CHECK — Step 2's precondition, on FRESH reads ─────────────────
@@ -728,6 +768,58 @@ export function planStep3(pid, targetRowsByLoc, nowIso) {
     }
   }
   return updates;
+}
+
+// ── THE POLICY-ROW DECISIONS (used by scripts/apply-headwear-policy.mjs) ─────
+// They live here, next to the migration they depend on, so they are covered by
+// the same behavioural suite instead of being untestable logic inside a script
+// that only runs against live RTDB.
+
+// Mirrors the LIVE rule at /stock_targets/$loc/$pid/$size:
+//   hasChildren(['target','minQty']) && target.isNumber() && minQty.isNumber()
+// The Admin SDK bypasses rules, so an invalid row would be accepted here and
+// then rejected the first time anything client-side touched it.
+export function invalidTargetRow(row) {
+  if (!row || typeof row !== "object") return "not an object";
+  if (typeof row.target !== "number" || !Number.isFinite(row.target)) return "target is not a finite number";
+  if (typeof row.minQty !== "number" || !Number.isFinite(row.minQty)) return "minQty is not a finite number (the live rule REQUIRES it)";
+  if (row.target < 0 || row.minQty < 0) return "negative target/minQty";
+  // reorderPoint is optional. When present the engine honours only a finite
+  // >= 0; anything else silently falls back to "no gate" (eager ordering), so a
+  // row that MEANT to gate would quietly not. Refuse it rather than write it.
+  //
+  // null is refused for a second, sharper reason: RTDB DELETES a null child, so
+  // `reorderPoint: null` writes a row with no reorderPoint — which is a
+  // perfectly valid intent, but it then reads back as ABSENT and a verify that
+  // compares null against undefined reports a false failure on a write that
+  // did exactly what was asked. Omit the key to mean absent. (CodeRabbit #345.)
+  if ("reorderPoint" in row
+    && !(typeof row.reorderPoint === "number" && Number.isFinite(row.reorderPoint) && row.reorderPoint >= 0)) {
+    return `reorderPoint ${JSON.stringify(row.reorderPoint)} would be ignored by the engine — omit the key to mean absent`;
+  }
+  return null;
+}
+
+// Whether a product may have a policy row written / removed.
+//
+// ARMING and REMOVING are NOT symmetric, and treating them as one gate broke
+// the documented off switch. Arming demands the product be in scope AND already
+// collapsed. Removing must always be possible: a product that was merged or
+// renamed after being armed fails isInScope, and its rows are still live and
+// still driving the refill engine. Refusing to remove them would leave a policy
+// with no off switch — the one thing the design promises. (CodeRabbit #345.)
+export function policyRowGate(product, { remove = false } = {}) {
+  if (!product) return remove ? { ok: true, note: "product no longer exists — removing its row anyway" } : { ok: false, reason: "missing", detail: "no such product" };
+  if (remove) {
+    return isInScope(product)
+      ? { ok: true }
+      : { ok: true, note: "no longer in headwear scope (merged or renamed) — removing its row anyway" };
+  }
+  if (!isInScope(product)) return { ok: false, reason: "not-headwear", detail: "is not a beanie or a cap" };
+  if (JSON.stringify(product.sizes || null) !== JSON.stringify(["_"])) {
+    return { ok: false, reason: "not-collapsed", detail: `still declares ${JSON.stringify(product.sizes)}` };
+  }
+  return { ok: true };
 }
 
 // ── per-product verification (fresh reads, after execute) ────────────────────
