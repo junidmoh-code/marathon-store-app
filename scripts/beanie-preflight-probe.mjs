@@ -80,9 +80,28 @@ export function hasPrivilegedCredential(app) {
       if (!rec) { failures.push(`${code}: NO index record (expected productId ${pid})`); continue; }
       if (rec.productId !== pid) { failures.push(`${code}: productId ${rec.productId} ≠ expected ${pid}`); continue; }
       // Fresh read immediately before the set — write back the CURRENT value,
-      // never a snapshot, so the probe can never clobber a concurrent change.
+      // never a snapshot, so the probe writes what is actually there.
+      //
+      // HONEST LIMIT (CodeRabbit, PR #343): read-then-set is not atomic, and
+      // /barcodes records carry no version field to condition a write on. A
+      // change landing between the read and the set would be overwritten, and
+      // the read-back would report "unchanged" because it compares against the
+      // value this probe itself wrote. There is no exclusive barcode-write gate
+      // in this system to take, and /receiving_session/active is not one — it
+      // stands the refill engine down, nothing else.
+      //
+      // What is done instead: re-read immediately before the write and confirm
+      // the value has not moved since the first read, which shrinks the window
+      // to the microseconds between two adjacent reads, and a second read-back
+      // after the write. What remains is operational: run this probe inside the
+      // same quiet window as the migration itself, when nobody is creating or
+      // editing products. A barcode index record only changes when a product is
+      // created or its codes are edited, so the quiet window is the real
+      // control here and the runbook says so.
       const before = await g(`barcodes/${code}/size`);
       if (typeof before !== "string" || before === "") { failures.push(`${code}: size is ${JSON.stringify(before)} — nothing safe to write back`); continue; }
+      const stillBefore = await g(`barcodes/${code}/size`);
+      if (stillBefore !== before) { failures.push(`${code}: CHANGING UNDER THE PROBE (${before} → ${stillBefore}) — someone is editing this product; re-run in a quiet window`); continue; }
       await db.ref(`barcodes/${code}/size`).set(before);
       const after = await g(`barcodes/${code}/size`);
       if (after !== before) { failures.push(`${code}: CHANGED ${before} → ${after}`); continue; }

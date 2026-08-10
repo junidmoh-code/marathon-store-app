@@ -464,13 +464,13 @@ describe("size keys — a display label can never reach a storage key", () => {
     expect(cells.Free_Size).toBeUndefined();
   });
 
-  it("an illegal size key is refused at path-build time, before any write exists", async () => {
+  it("a half size is ENCODED into the key, so no \".\" ever reaches RTDB", async () => {
     const db = makeDb(seedProduct({ cells: { hub2: { M: 4 } } }));
-    await expect(applyMovementAdmin(db.io, {
+    const r = await applyMovementAdmin(db.io, {
       type: "adjustment", productId: "pB", size: "5.5", qty: 1, to: "hub2",
       movementId: "half_size", reason: "half size",
-    }, { nowIso: NOW })).resolves.toBeDefined();
-    // 5.5 is ENCODED (5_5), never written raw — no "." ever reaches a key.
+    }, { nowIso: NOW });
+    expect(r.ok).toBe(true);           // it applies — encoded, not refused
     expect(Object.keys(db.raw().stock.hub2.pB)).toContain("5_5");
     expect(Object.keys(db.raw().stock.hub2.pB).some((k) => k.includes("."))).toBe(false);
   });
@@ -579,6 +579,14 @@ describe("the open-reference gate", () => {
   });
   it("ignores an order that already carries the one-size sentinel", () => {
     expect(orderBlocks({ id: "O3", productId: pid, size: "_", customerName: "Thabo", status: "incoming" }, pid, nowMs)).toBe(null);
+  });
+  it("blocks a refill line whose resolution timestamp cannot be read", () => {
+    // Fail SAFE: an unreadable stamp cannot prove the 24h undo window closed.
+    for (const bad of [undefined, "", "not-a-date", null]) {
+      expect(orderBlocks({ id: "R9", productId: pid, size: "M", customerName: "Shop Refill",
+        status: "incoming", clothingRefillStatus: "available", clothingRefilledAt: bad }, pid, nowMs))
+        .toMatch(/unreadable resolution timestamp|undo window/);
+    }
   });
   it("blocks an out_of_stock order — the customer is still owed the item", () => {
     expect(orderBlocks({ id: "O4", productId: pid, size: "M", customerName: "Thabo", status: "out_of_stock" }, pid, nowMs)).toMatch(/live customer order/);

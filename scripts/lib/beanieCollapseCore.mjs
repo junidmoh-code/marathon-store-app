@@ -121,7 +121,16 @@ export function orderBlocks(order, pid, nowMs) {
   if (!REAL_SIZE.test(String(order.size || ""))) return null;   // one-size / no real size — nothing to retire
   if (order.customerName === "Shop Refill") {
     if (order.clothingRefillStatus == null) return `unresolved refill line ${order.id || ""} (size ${order.size}) — Send would move stock in the retired size`;
-    const resolvedMs = Date.parse(order.clothingRefilledAt || order.clothingOutOfStockAt || order.updatedAt || order.createdAt) || 0;
+    // An UNPARSEABLE resolution stamp must fail SAFE. `|| 0` treated a garbled
+    // or missing timestamp as the epoch, i.e. "resolved long ago, undo window
+    // closed, does not block" — the fail-OPEN direction on the one field that
+    // decides whether an undo can still reverse stock on this size.
+    // (CodeRabbit, PR #343.)
+    const stamp = order.clothingRefilledAt || order.clothingOutOfStockAt || order.updatedAt || order.createdAt;
+    const resolvedMs = Date.parse(stamp);
+    if (!Number.isFinite(resolvedMs)) {
+      return `refill line ${order.id || ""} has an unreadable resolution timestamp (${JSON.stringify(stamp)}) — cannot prove its undo window has closed`;
+    }
     if (nowMs - resolvedMs < CR_UNDO_WINDOW_MS) {
       return `refill line ${order.id || ""} resolved ${new Date(resolvedMs).toISOString()} — inside the 24h undo window, and undo reverses stock in size ${order.size}`;
     }

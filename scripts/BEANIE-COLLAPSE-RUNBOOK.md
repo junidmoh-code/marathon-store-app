@@ -38,13 +38,18 @@ Re-running the dry run after clearing shows exactly what is left.
 ## 1. Pause the engine
 
 ```bash
-# in the Firebase console, or via the CLI:
-#   /receiving_session/active = true
+firebase database:set /receiving_session/active --project marathon-club <<< 'true'
+# confirm it took:
+firebase database:get /receiving_session/active --project marathon-club     # → true
 ```
 
 The migration **refuses to execute** unless this is `true`. The health scan runs
 every 15 minutes regardless of shop hours, so a trading-hours freeze alone does
 not cover it.
+
+It pauses the refill engine and **nothing else** — tills keep selling. That is
+why the run also skips any product that moved in the last 15 minutes, and why
+the window below matters.
 
 ## 2. Trading-hours window
 
@@ -52,14 +57,25 @@ Run it **outside trading hours** — early morning before the shops open, or aft
 close. Two reasons, both concrete:
 
 - a till sale during the run lands in whichever cell that product's identity
-  currently points at; the paired movements are safe under concurrency (each is
-  atomic and version-guarded) but a sale landing between a product's Step 1 and
-  Step 2 leaves a unit in the sized cell that the next run has to sweep;
+  currently points at. Each movement re-reads and re-checks the cell before
+  committing, so a sale cannot be silently overwritten — but a sale landing
+  between a product's Step 1 and Step 2 leaves a unit in the sized cell, and the
+  drain check then refuses to collapse that product until it is swept;
 - the 18 Display Check clears in step 0 are floor work.
 
 The run itself is short — 67 products, 214 movement legs, 280 units.
 
-## 3. Dry run, and read it
+## 3. Pre-flight probe, then dry run
+
+Run the probe inside the same quiet window — it writes each barcode index
+record's existing value back, and a product being edited at that moment could be
+overwritten (there is no exclusive barcode-write lock in this system to take):
+
+```bash
+node scripts/beanie-preflight-probe.mjs      # expect: 134/134 ok, 0 failed
+```
+
+Then the dry run, and read it:
 
 ```bash
 cd /Users/junidmohammed/Documents/marathon-store-app
@@ -107,7 +123,8 @@ anything else.
 ## 6. Resume the engine
 
 ```bash
-#   /receiving_session/active = false
+firebase database:set /receiving_session/active --project marathon-club <<< 'false'
+firebase database:get /receiving_session/active --project marathon-club     # → false
 ```
 
 ---
@@ -116,9 +133,36 @@ anything else.
 
 The snapshot from step 4 holds, per product: `sizes`, the `barcodes` map, every
 barcode index record, every stock cell and every target row as they were before
-the run. Restoring identity (sizes + barcodes map + index records) puts scanning
-back exactly as it was. Stock is a ledger, not a snapshot — reversing it means
-new paired movements in the opposite direction, not overwriting cells.
+the run.
+
+**Identity is what you roll back, and it is the part that matters** — restoring
+`sizes`, the `barcodes` map and the index records puts scanning back exactly as
+it was. Using the snapshot file written in step 4:
+
+```bash
+node -e '
+const fs=require("fs"),snap=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+const {createRequire}=require("module");const req=createRequire(process.cwd()+"/functions/package.json");
+const admin=req("firebase-admin");
+admin.initializeApp({credential:admin.credential.applicationDefault(),
+  databaseURL:"https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app"});
+const u={};
+for (const [pid,p] of Object.entries(snap.products)) {
+  u[`products/${pid}/sizes`]=p.sizes; u[`products/${pid}/barcodes`]=p.barcodes;
+}
+for (const [code,rec] of Object.entries(snap.barcodeIndex)) if (rec) u[`barcodes/${code}/size`]=rec.size;
+console.log("restoring",Object.keys(u).length,"paths");
+admin.database().ref().update(u).then(()=>{console.log("identity restored");process.exit(0)});
+' ~/beanie-collapse-rollback-YYYYMMDD-HHMM.json
+```
+
+**Stock is a ledger, not a snapshot.** Do NOT overwrite cells from the file —
+that would erase every sale and receive that happened since. Reversing the stock
+half means new paired movements in the opposite direction, and in practice you
+almost never want it: the units are all still there, just in the `"_"` cell
+rather than the sized one, and the identity restore above makes the sized cell
+addressable again. If you do need it, take the movement ids from the run's JSON
+report and mirror each pair with a fresh id.
 
 ## What is NOT armed
 

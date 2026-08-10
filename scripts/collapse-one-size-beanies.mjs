@@ -200,6 +200,11 @@ function hasPrivilegedCredential(app) {
     return gateData;
   };
 
+  // Run-wide "before" baseline, accumulated from the per-product FRESH reads
+  // (not the startup snapshot) — the denominator of the final network proof.
+  const baselineFresh = {};
+  const baselinePids = new Set();
+
   // ── per-product ────────────────────────────────────────────────────────────
   const results = [];
   for (const [pid, p] of scope) {
@@ -306,10 +311,18 @@ function hasPrivilegedCredential(app) {
       continue;
     }
 
-    // execute — before-totals from the SAME fresh read the plan was built from
+    // execute — before-totals from the SAME fresh read the plan was built from,
+    // and accumulated into the run-wide baseline so the final network proof
+    // compares fresh against fresh. The startup snapshot is minutes old by the
+    // last product, and the tills are not paused by receiving_session, so
+    // measuring against it would report a legitimate sale as a migration loss
+    // (and could hide a real one). (CodeRabbit, PR #343.)
     const totalsBeforeProduct = {};
     for (const [loc, bySize] of Object.entries(freshCells)) {
-      totalsBeforeProduct[loc] = Object.values(bySize).reduce((t, c) => t + (typeof c?.qty === "number" ? c.qty : 0), 0);
+      const sum = Object.values(bySize).reduce((t, c) => t + (typeof c?.qty === "number" ? c.qty : 0), 0);
+      totalsBeforeProduct[loc] = sum;
+      baselineFresh[loc] = (baselineFresh[loc] || 0) + sum;
+      baselinePids.add(pid);
     }
     let failed = null;
     for (const pl of step1) {
@@ -357,27 +370,29 @@ function hasPrivilegedCredential(app) {
   // Machine-readable twin of the same run — the operator report and the
   // clear-first worklist are built from this, not from scraping stdout.
   const REPORT = process.env.REPORT_JSON || join(tmpdir(), `beanie-collapse-${EXECUTE ? "execute" : "dryrun"}-${Date.now()}.json`);
-  writeFileSync(REPORT, JSON.stringify({ ranAt: nowIso, mode: EXECUTE ? "execute" : "dry-run", scope: scope.length, totalsBefore, results }, null, 2));
+  writeFileSync(REPORT, JSON.stringify({ ranAt: nowIso, mode: EXECUTE ? "execute" : "dry-run", scope: scope.length, totalsBefore, baselineFresh, results }, null, 2));
   console.log(`  JSON report: ${REPORT}`);
 
   if (EXECUTE) {
-    // final proof: network totals across scope must be unchanged
+    // Final proof: network totals must be unchanged for the products this run
+    // actually touched, measured against the fresh per-product baselines.
     const stockAfter = (await io.read("stock")) || {};
     const totalsAfter = {};
     for (const [loc, byPid] of Object.entries(stockAfter)) {
-      for (const pid of pidSet) {
+      for (const pid of baselinePids) {
         for (const cell of Object.values(byPid?.[pid] || {})) {
           totalsAfter[loc] = (totalsAfter[loc] || 0) + (typeof cell?.qty === "number" ? cell.qty : 0);
         }
       }
     }
-    const locs = new Set([...Object.keys(totalsBefore), ...Object.keys(totalsAfter)]);
+    const locs = new Set([...Object.keys(baselineFresh), ...Object.keys(totalsAfter)]);
     let totalsOk = true;
     for (const loc of locs) {
-      const b = totalsBefore[loc] || 0, a = totalsAfter[loc] || 0;
+      const b = baselineFresh[loc] || 0, a = totalsAfter[loc] || 0;
       if (b !== a) { totalsOk = false; console.log(`  TOTALS MISMATCH ${loc}: ${b} → ${a}`); }
     }
-    console.log(`  network totals ${totalsOk ? "UNCHANGED" : "CHANGED — investigate before anything else"}: ${Object.entries(totalsAfter).sort().map(([l, q]) => `${l}=${q}`).join("  ")}`);
+    console.log(`  network totals for the ${baselinePids.size} products this run touched ${totalsOk ? "UNCHANGED" : "CHANGED — investigate before anything else"}: ${Object.entries(totalsAfter).sort().map(([l, q]) => `${l}=${q}`).join("  ")}`);
+    console.log(`  (measured against the fresh per-product baselines, not the startup snapshot)`);
     if (!totalsOk) process.exit(1);
   } else {
     console.log("  DRY RUN — nothing written except the rollback snapshot above.");

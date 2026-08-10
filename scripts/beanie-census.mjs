@@ -195,7 +195,12 @@ const LIVE_ORDER_STATUSES = new Set(["incoming", "ready", "coming_tomorrow", "on
   console.log(`CAPS (Caps & Hats, non-beanie): ${capsCount} products — OUT OF SCOPE (${capsMultiSize} declare 2+ sizes)`);
   console.log(`\nDECLARED-SIZES SPLIT (live, vs the briefed 32/78/10):`);
   for (const [k, v] of Object.entries(bySplit)) if (v.length) console.log(`  ${k.padEnd(8)} ${v.length}`);
+  // FLAGGED MEANS FLAGGED. These were printed as "flagged" but never passed
+  // through flag(), so a name-matched beanie filed under an unexpected
+  // subcategory could not affect the exit status and a scripted run would treat
+  // the census as clean. (CodeRabbit, PR #343.)
   const offSub = report.filter((r) => r.subcategory !== "Caps & Hats");
+  for (const r of offSub) flag("unexpected-subcategory", `${r.pid} "${r.name}" is name-matched as a beanie but filed under ${JSON.stringify(r.subcategory)} — confirm it belongs in scope`);
   if (offSub.length) console.log(`\nNAME-MATCHED OUTSIDE Caps & Hats (in scope, flagged):\n${offSub.map((r) => `  ${r.pid} "${r.name}" sub=${r.subcategory}`).join("\n")}`);
 
   console.log(`\nUNITS BEFORE, PER LOCATION (raw sums across all in-scope beanies):`);

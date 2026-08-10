@@ -96,12 +96,21 @@ const cellQty = (stock, loc, pid, key) => {
       const bySize = stock[loc]?.[pid];
       if (!bySize) continue;
       let merged = cellQty(stock, loc, pid, "_");
+      let moved = false;
       for (const [k, cell] of Object.entries(bySize)) {
         if (k === "_") continue;
-        merged += typeof cell?.qty === "number" ? cell.qty : 0;
+        const q = typeof cell?.qty === "number" ? cell.qty : 0;
+        if (q !== 0) moved = true;
+        merged += q;
         cell.qty = 0;                       // the husk stays — storeCarries reads node presence
       }
-      bySize._ = { ...(bySize._ || { v: 0, mv: "model", lastType: "adjustment" }), qty: merged };
+      // Create a "_" cell ONLY where the migration would: it takes a paired
+      // movement to mint one, and a location holding nothing but zero husks
+      // gets no pair and therefore no "_" cell. Minting one here would model a
+      // state the migration does not produce. (CodeRabbit, PR #343.)
+      if (moved || bySize._) {
+        bySize._ = { ...(bySize._ || { v: 0, mv: "model", lastType: "adjustment" }), qty: merged };
+      }
     }
     for (const loc of Object.keys(targetsBase)) {
       for (const k of Object.keys(targetsBase[loc]?.[pid] || {})) {
@@ -116,8 +125,13 @@ const cellQty = (stock, loc, pid, key) => {
   console.log(`  carried:  ${Object.entries(carried).map(([l, a]) => `${l}=${a.length}`).join("  ")}`);
   const centralHeld = beanies.reduce((t, pid) => t + cellQty(stock, "central", pid, "_"), 0);
   const hubHeld = beanies.reduce((t, pid) => t + cellQty(stock, HUB, pid, "_"), 0);
-  const peHeld = beanies.reduce((t, pid) => t + cellQty(stock, "marathon-pe", pid, "_"), 0);
-  console.log(`  post-collapse on hand: central=${centralHeld}  ${HUB}=${hubHeld}  marathon-pe=${peHeld}`);
+  // EVERY shop the policy arms, not just the one that happens to hold stock
+  // today — trophy is armed by buildTargets and counted by implied(), so
+  // leaving it out of the on-hand side compared unlike with unlike.
+  // (CodeRabbit, PR #343.)
+  const shopHeld = Object.fromEntries(SHOPS.map((s) => [s, beanies.reduce((t, pid) => t + cellQty(stock, s, pid, "_"), 0)]));
+  const shopsHeld = Object.values(shopHeld).reduce((a, b) => a + b, 0);
+  console.log(`  post-collapse on hand: central=${centralHeld}  ${HUB}=${hubHeld}  ${SHOPS.map((s) => `${s}=${shopHeld[s]}`).join("  ")}`);
 
   // ── the proposed rows (IN MEMORY ONLY) ─────────────────────────────────────
   // Two arming widths, because they imply very different numbers:
@@ -138,10 +152,20 @@ const cellQty = (stock, loc, pid, key) => {
     return t;
   };
 
-  // The engine reads a windowed slice of the ledger; pass it the same shape the
-  // scan does (array of movements).
-  const movements = Object.entries(movementsRaw).map(([id, m]) => ({ id, ...m }));
+  // WINDOW THE LEDGER THE WAY THE SCAN DOES. Production reads
+  // stock_movements orderByChild("ts").startAt(now − 45 days)
+  // (refill-scan.cjs MOVEMENTS_WINDOW_DAYS). Handing the engine the whole
+  // 50k-record ledger models a scan that never happens, and several gates read
+  // that slice as evidence — arrival lifts, the confirmed-out window, in-flight
+  // detection — so an unwindowed slice can change the classification it is
+  // supposed to be measuring. (CodeRabbit, PR #343.)
   const nowMs = Date.now();
+  const MOVEMENTS_WINDOW_DAYS = 45;
+  const windowStart = new Date(nowMs - MOVEMENTS_WINDOW_DAYS * 86400000).toISOString();
+  const movements = Object.entries(movementsRaw)
+    .map(([id, m]) => ({ id, ...m }))
+    .filter((m) => (m.ts || "") >= windowStart);
+  console.log(`  ledger slice: ${movements.length} of ${Object.keys(movementsRaw).length} movements (${MOVEMENTS_WINDOW_DAYS}-day window, as the scan reads it)`);
 
   const runModel = (targets) => {
     const plan = computeRefillPlan({
@@ -158,13 +182,27 @@ const cellQty = (stock, loc, pid, key) => {
       if (l && typeof l.count === "number" && l.items && l.count > l.items.length) truncated.push(`${name} ${l.items.length}/${l.count}`);
     }
     const inList = (list, loc, pid) => (plan.exceptions?.[list]?.items || []).some((r) => r.loc === loc && r.pid === pid);
+    // INBOUND, the way the engine counts it: units already promised to this
+    // cell by an open engine intent. AT TARGET is defined as on-hand PLUS
+    // inbound meeting the target (engine: deficit = target − have − inbound),
+    // so leaving inbound out would report a cell with stock already on the way
+    // as short. (CodeRabbit, PR #343.)
+    const inboundFor = (loc, pid) => {
+      let n = 0;
+      for (const [sizeKey, entry] of Object.entries(openIndex?.[loc]?.[pid] || {})) {
+        if (sizeKey !== "_") continue;
+        n += Number(entry?.qty) || 1;
+      }
+      return n;
+    };
     const rows = [];
     for (const loc of [HUB, ...SHOPS]) {
       for (const pid of beanies) {
         const t = resolveTarget({ targets, config, products, stock }, loc, pid, "_");
         if (!t || t.target <= 0) continue;
         const have = Math.max(cellQty(stock, loc, pid, "_"), 0);
-        const deficit = t.target - have;
+        const inbound = inboundFor(loc, pid);
+        const deficit = t.target - have - inbound;
         let cls;
         if (deficit <= 0) cls = "AT TARGET";
         else if (t.reorderPoint != null && have > t.reorderPoint) cls = "SILENT";
@@ -173,7 +211,7 @@ const cellQty = (stock, loc, pid, key) => {
           || inList("waitingForStock", loc, pid) || inList("missingSizes", loc, pid)
           || inList("recountNeeded", loc, pid)) cls = "PARKED";
         else cls = "PARKED";   // a below-target cell the scan produced no card for
-        rows.push({ loc, pid, name: products[pid].name, have, target: t.target, reorderPoint: t.reorderPoint ?? null, deficit: Math.max(deficit, 0), cls });
+        rows.push({ loc, pid, name: products[pid].name, have, inbound, target: t.target, reorderPoint: t.reorderPoint ?? null, deficit: Math.max(deficit, 0), cls });
       }
     }
     return { plan, rows, truncated };
@@ -222,9 +260,9 @@ const cellQty = (stock, loc, pid, key) => {
   };
   for (const width of ["CARRIED", "ALL"]) {
     const im = implied(width);
-    const netOnHand = hubHeld + peHeld;
+    const netOnHand = hubHeld + shopsHeld;
     console.log(`  ${width.padEnd(8)} hub2 wants ${String(im.hubWant).padStart(5)} (${im.hubPids} colours × ${HUB_TARGET})   shops want ${String(im.shopWant).padStart(5)}   TOTAL ${String(im.total).padStart(5)}`);
-    console.log(`  ${"".padEnd(8)} against on hand: hub2 ${hubHeld} + shops ${peHeld} = ${netOnHand}, central ${centralHeld}`);
+    console.log(`  ${"".padEnd(8)} against on hand: hub2 ${hubHeld} + shops ${shopsHeld} = ${netOnHand}, central ${centralHeld}`);
     console.log(`  ${"".padEnd(8)} shortfall vs everything in the network (${netOnHand + centralHeld}): ${im.total - netOnHand - centralHeld > 0 ? `${im.total - netOnHand - centralHeld} units SHORT — the policy cannot be met from stock on hand` : `${netOnHand + centralHeld - im.total} units spare`}`);
   }
 
@@ -240,12 +278,14 @@ const cellQty = (stock, loc, pid, key) => {
     if (!ts || ts < since) continue;
     if (spanFirst === null || ts < spanFirst) spanFirst = ts;
     if (m.from === HUB && m.to && m.to !== HUB) hubOut += Number(m.qty) || 0;
-    if (m.type === "sold") sold += Number(m.qty) || 0;
+    // "sold at the shops" must mean AT THE SHOPS — an unfiltered count would
+    // silently fold in a sale booked anywhere else. (CodeRabbit, PR #343.)
+    if (m.type === "sold" && SHOPS.includes(m.from)) sold += Number(m.qty) || 0;
   }
   const spanDays = spanFirst ? Math.max((nowMs - spanFirst) / DAY, 1) : 45;
   const drawPerDay = hubOut / spanDays;
   const soldPerDay = sold / spanDays;
-  console.log(`  measured over ${spanDays.toFixed(0)} days of ledger: ${hubOut} units left hub2 (${drawPerDay.toFixed(2)}/day), ${sold} sold at the shops (${soldPerDay.toFixed(2)}/day)`);
+  console.log(`  measured over ${spanDays.toFixed(0)} days of ledger: ${hubOut} units left hub2 (${drawPerDay.toFixed(2)}/day), ${sold} sold at ${SHOPS.join("/")} (${soldPerDay.toFixed(2)}/day)`);
   console.log(`  Central→hub2 lead time (that lane's own fulfilled requests): p50 ${LEAD_P50_H}h, p90 ${LEAD_P90_H}h`);
   // An average across 81 colours flatters the answer — the draw is concentrated.
   // Report the average AND the busiest colour, and judge cover on the busiest.
@@ -290,11 +330,12 @@ const cellQty = (stock, loc, pid, key) => {
   console.log(`   the rows is the off switch, and #342 made an explicit row outlive the kill switch.)`);
   const subPolicy = config?.subcategoryRunByLocation || {};
   const capsNamed = Object.entries(subPolicy).filter(([, run]) => run && "Caps & Hats" in run);
-  console.log(`  subcategoryRunByLocation naming "Caps & Hats": ${capsNamed.length ? JSON.stringify(Object.fromEntries(capsNamed)) : "none — adding one would arm all 190 caps too, not just beanies"}`);
+  const capsInSubcat = Object.values(products).filter((p) => p?.subcategory === "Caps & Hats" && !isInScope(p)).length;
+  console.log(`  subcategoryRunByLocation naming "Caps & Hats": ${capsNamed.length ? JSON.stringify(Object.fromEntries(capsNamed)) : `none — adding one would arm all ${capsInSubcat} non-beanie Caps & Hats records too, not just beanies`}`);
 
   writeFileSync(OUT, JSON.stringify({ modelledAt: new Date().toISOString(), scope: beanies.length, carried:
     Object.fromEntries(Object.entries(carried).map(([k, v]) => [k, v.length])),
-    onHand: { central: centralHeld, hub2: hubHeld, "marathon-pe": peHeld },
+    onHand: { central: centralHeld, hub2: hubHeld, ...shopHeld },
     leadTimeHours: { p50: LEAD_P50_H, p90: LEAD_P90_H }, drawPerDay, soldPerDay, results }, null, 2));
   console.log(`\n  JSON: ${OUT}`);
   console.log(`  NOTHING WAS WRITTEN — no target row, no config key.`);
