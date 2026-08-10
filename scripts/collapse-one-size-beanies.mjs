@@ -54,7 +54,7 @@ import { join } from "path";
 import { setServerTimeOffsetMs, serverNowIso } from "../src/utils/serverTime.js";
 import {
   applyMovementAdmin, planStep1, planStep2, step2Done, planStep3, verifyProduct,
-  assertDrained, orderBlocks, transferBlocks, isInScope, REAL_SIZE,
+  assertDrained, orderBlocks, transferBlocks, movementRecency, isInScope, REAL_SIZE,
 } from "./lib/beanieCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
@@ -110,13 +110,10 @@ function hasPrivilegedCredential(app) {
       io.read("stock_movements"),
     ]).then((r) => r.map((v) => v || {}));
 
-  // productId → most recent movement instant, for the recent-activity gate.
-  const lastMovementMs = new Map();
-  for (const m of Object.values(movements)) {
-    if (!m || !m.productId) continue;
-    const ts = Date.parse(m.appliedAt || m.ts || 0) || 0;
-    if (ts && ts > (lastMovementMs.get(m.productId) || 0)) lastMovementMs.set(m.productId, ts);
-  }
+  // productId → most recent movement instant (and a count of unreadable stamps)
+  // for the recent-activity gate — see movementRecency for why the unreadable
+  // case must block rather than read as quiet.
+  const { lastMs: lastMovementMs, unreadable: unreadableStamp } = movementRecency(movements);
 
   // ── scope ──────────────────────────────────────────────────────────────────
   let scope = Object.entries(products)
@@ -254,6 +251,10 @@ function hasPrivilegedCredential(app) {
     const lastMove = lastMovementMs.get(pid);
     if (lastMove && nowMs - lastMove < RECENT_ACTIVITY_MS) {
       gates.push(`moved ${Math.round((nowMs - lastMove) / 60000)} min ago (${new Date(lastMove).toISOString()}) — active at a till; re-run when it is quiet`);
+    }
+    const unreadable = unreadableStamp.get(pid);
+    if (unreadable) {
+      gates.push(`${unreadable} ledger movement(s) for this product have an unreadable timestamp — cannot prove it is quiet, so it is not migrated`);
     }
     for (const [rid, r] of Object.entries(refillRequestsNow)) {
       if (r && r.status === "open" && r.productId === pid && REAL_SIZE.test(String(r.size || ""))) gates.push(`open refill request ${rid} (size ${r.size})`);

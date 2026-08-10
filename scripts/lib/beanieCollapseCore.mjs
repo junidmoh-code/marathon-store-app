@@ -150,6 +150,28 @@ export function orderBlocks(order, pid, nowMs) {
     : null;
 }
 
+// ── WHEN DID THIS PRODUCT LAST MOVE? ─────────────────────────────────────────
+// Feeds the recent-activity gate. A movement whose timestamp cannot be read
+// must NOT leave the product looking quiet — that is the fail-open direction on
+// a gate whose entire job is to stop a race with a till. "I cannot tell when
+// this last moved" is not "it has not moved", so unreadable stamps are counted
+// separately and the caller blocks on them. (CodeRabbit, PR #343.)
+export function movementRecency(movements) {
+  const lastMs = new Map();
+  const unreadable = new Map();
+  for (const m of Object.values(movements || {})) {
+    if (!m || !m.productId) continue;
+    const raw = m.appliedAt || m.ts;
+    const ts = raw ? Date.parse(raw) : NaN;
+    if (!Number.isFinite(ts)) {
+      unreadable.set(m.productId, (unreadable.get(m.productId) || 0) + 1);
+      continue;
+    }
+    if (ts > (lastMs.get(m.productId) || 0)) lastMs.set(m.productId, ts);
+  }
+  return { lastMs, unreadable };
+}
+
 // ── TRANSFERS KEY THEIR SIZES, THEY DO NOT LABEL THEM ────────────────────────
 // A transfer record is { from, to, status, lines: { <pid>: { <sizeKey>: qty } },
 // received: { … same shape } }. The size is a KEY, so the obvious
@@ -158,14 +180,36 @@ export function orderBlocks(order, pid, nowMs) {
 // structure instead. (Kimi review, PR #343; proved against the live shape.)
 export function transferBlocks(transfer, pid) {
   if (!transfer || transfer.status === "received") return null;
+  // "Understood" is not merely "the pid key exists" — it is "the entry has the
+  // DOCUMENTED shape", { <sizeKey>: <qty number> }. An entry like
+  // { sizes: { M: 2 } } has the pid but hides its sizes one level down, and
+  // treating that as read would return a clean bill on a transfer that really
+  // does carry size M. Numbers all the way down, or it is not understood.
   const sizes = new Set();
+  let understood = false;
   for (const node of [transfer.lines, transfer.received]) {
-    for (const k of Object.keys(node?.[pid] || {})) if (REAL_SIZE.test(k)) sizes.add(k);
+    const entry = node?.[pid];
+    if (!entry || typeof entry !== "object") continue;
+    const values = Object.values(entry);
+    if (values.length && values.every((v) => typeof v === "number")) understood = true;
+    for (const k of Object.keys(entry)) if (REAL_SIZE.test(k)) sizes.add(k);
   }
   if (sizes.size) return `open transfer (${transfer.status || "no status"}) ${transfer.from || "?"}→${transfer.to || "?"} carrying size ${[...sizes].sort().join(", ")}`;
   // Unrecognised shape that still names the product: same fail-safe rule as
   // orderBlocks — block rather than assume.
-  if (!transfer.lines && !transfer.received && JSON.stringify(transfer).includes(pid)) {
+  //
+  // The mention check runs whenever the structural read did not actually FIND
+  // this product — not merely when both nodes are absent. A record nesting
+  // differently — lines: { <loc>: { <pid>: { M: 2 } } } — leaves `lines`
+  // present but `lines[pid]` missing, so the earlier guard skipped the check
+  // and returned "does not block": the fail-OPEN direction this function exists
+  // to close.
+  //
+  // `understood` is what keeps that from over-blocking: a transfer whose
+  // lines[pid] IS found and holds only "_" was read correctly and carries
+  // nothing this migration retires, so it passes. Read-and-found-nothing-real
+  // is a clean bill; could-not-read is not. (CodeRabbit, PR #343.)
+  if (!understood && JSON.stringify(transfer).includes(pid)) {
     return `open transfer (${transfer.status || "no status"}) references this product in a shape this gate does not understand — check it by hand`;
   }
   return null;

@@ -21,7 +21,7 @@
 import { describe, it, expect } from "vitest";
 import {
   applyMovementAdmin, planStep1, planStep2, planStep3, step2Done, verifyProduct,
-  assertDrained, legIds, orderBlocks, transferBlocks, isInScope, isUnexpectedSubcategory,
+  assertDrained, legIds, orderBlocks, transferBlocks, movementRecency, isInScope, isUnexpectedSubcategory,
 } from "./beanieCollapseCore.mjs";
 
 // ── fake RTDB ────────────────────────────────────────────────────────────────
@@ -628,6 +628,50 @@ describe("the transfer gate reads the real record shape", () => {
   });
   it("blocks an unrecognised shape that still names the product", () => {
     expect(transferBlocks({ status: "sent", payload: `something about ${pid}` }, pid)).toMatch(/shape this gate does not understand/);
+  });
+  it("blocks a `lines` node nested differently — an empty structural read is not a clean bill", () => {
+    // These carry `lines`, so an "only when both nodes are absent" fail-safe
+    // skipped the mention check and returned "does not block".
+    const byLocation = { status: "sent", lines: { "marathon-pe": { [pid]: { M: 2 } } } };
+    const nestedSizes = { status: "sent", lines: { [pid]: { sizes: { M: 2 } } } };
+    expect(transferBlocks(byLocation, pid)).toMatch(/shape this gate does not understand/);
+    expect(transferBlocks(nestedSizes, pid)).toMatch(/shape this gate does not understand/);
+    // …and an oddly-nested record about another product is still ignored.
+    expect(transferBlocks({ status: "sent", lines: { "marathon-pe": { pOther: { M: 2 } } } }, pid)).toBe(null);
+  });
+});
+
+describe("the recent-activity gate's input", () => {
+  it("takes the LATEST readable stamp, preferring appliedAt", () => {
+    const { lastMs, unreadable } = movementRecency({
+      a: { productId: "pB", appliedAt: "2026-08-10T09:00:00.000Z" },
+      b: { productId: "pB", appliedAt: "2026-08-10T11:00:00.000Z" },
+      c: { productId: "pB", ts: "2026-08-10T10:00:00.000Z" },
+      d: { productId: "pOther", appliedAt: "2026-08-10T12:00:00.000Z" },
+    });
+    expect(lastMs.get("pB")).toBe(Date.parse("2026-08-10T11:00:00.000Z"));
+    expect(unreadable.size).toBe(0);
+  });
+
+  it("counts an unreadable stamp instead of letting the product read as quiet", () => {
+    // Every stamp unreadable: without the separate count, lastMs would hold
+    // nothing for pB and the gate would treat a possibly-active product as idle.
+    const { lastMs, unreadable } = movementRecency({
+      a: { productId: "pB", appliedAt: "not-a-date" },
+      b: { productId: "pB" },                                  // no stamp at all
+      c: { productId: "pB", ts: "" },
+    });
+    expect(lastMs.has("pB")).toBe(false);
+    expect(unreadable.get("pB")).toBe(3);
+  });
+
+  it("a readable stamp alongside an unreadable one still counts the unreadable one", () => {
+    const { lastMs, unreadable } = movementRecency({
+      a: { productId: "pB", appliedAt: "2026-08-10T09:00:00.000Z" },
+      b: { productId: "pB", appliedAt: "garbage" },
+    });
+    expect(lastMs.get("pB")).toBe(Date.parse("2026-08-10T09:00:00.000Z"));
+    expect(unreadable.get("pB")).toBe(1);
   });
 });
 
