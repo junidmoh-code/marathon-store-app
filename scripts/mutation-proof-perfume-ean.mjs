@@ -189,7 +189,7 @@ const MUTATIONS = [
     id: "M21",
     guard: "An ALREADY-registered code still backfills a missing product field",
     file: "src/components/stock/printedBarcodeStore.js",
-    from: `  if (reg.kind === PRINTED_ALREADY && extraUpdates) {`,
+    from: `  if (reg.kind === PRINTED_ALREADY) {`,
     to: `  if (false) {`,
     tests: ["src/components/stock/printedBarcodeStore.test.js"],
   },
@@ -197,11 +197,9 @@ const MUTATIONS = [
     id: "M28",
     guard: "A refused registration never lets the record claim the code",
     file: "src/components/stock/printedBarcodeStore.js",
-    from: `  const extraUpdates = setProductField
-    ? { [\`products/\${productId}/printedBarcode\`]: code }
-    : null;`,
-    to: `  const extraUpdates = null;
-  if (setProductField) await update(ref(database), { [\`products/\${productId}/printedBarcode\`]: code });`,
+    from: `  const extraUpdates = { [\`products/\${productId}/printedBarcode\`]: code };`,
+    to: `  const extraUpdates = {};
+  await update(ref(database), { [\`products/\${productId}/printedBarcode\`]: code });`,
     tests: ["src/components/stock/printedBarcodeStore.test.js"],
   },
   {
@@ -315,6 +313,13 @@ function runTests(files) {
     const out = `${err.stdout || ""}${err.stderr || ""}`;
     // Vitest prints a "Tests  N failed" / "Test Files  N failed" tally only
     // when it actually executed a suite.
+    //
+    // CAVEAT, accepted for a dev script: this classifies on Vitest's English
+    // summary. A suite that dies via an unhandled rejection outside any test,
+    // or a future Vitest that rewords the tally, reports ERROR for a genuine
+    // guard failure — the same misclassification this replaced, one layer
+    // down. ERROR is loud and stops the run, so it fails safe rather than
+    // silently crediting a mutation. (Kimi review, PR #340.)
     if (/Tests\s+\d+\s+failed|Test Files\s+\d+\s+failed/.test(out)) return "FAIL";
     return `ERROR(${(out.trim().split("\n").pop() || "no output").slice(0, 120)})`;
   }

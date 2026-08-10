@@ -5420,8 +5420,21 @@ function AdminView({ products, orders, onExit }) {
         // above): it rides the same atomic commit as the index rows, so it can
         // never name a code that did not register. Nothing to compensate for.
         const attach = await attachPrintedBarcode({ productId: id, code: printedCode });
-        printedBarcodeActive = attach.ok;
-        const failure = attach.ok ? null
+        // ── "INDEXED" IS THE QUESTION THAT MATTERS FOR SCANNING ──────────────
+        // If the index rows landed, the box scans — even when recording the
+        // code on the product record afterwards did not. Treating that as a
+        // total failure minted a shop code the product did not need and told
+        // the operator the barcode "was NOT attached" when it demonstrably
+        // resolves. The two are reported separately. (Kimi review, PR #340.)
+        printedBarcodeActive = attach.ok || attach.indexed === true;
+        if (!attach.ok && attach.indexed) {
+          alert(
+            `Saved, and barcode ${printedCode} IS registered and scans correctly — but recording it on ` +
+            `the product record failed (${attach.reason}). No label is needed. Open the product and ` +
+            `photograph the barcode again to finish the record; it will report as already registered.`
+          );
+        }
+        const failure = attach.ok || attach.indexed ? null
           : attach.kind === "denied"
             ? `it could not be written (${attach.reason}) — you may not have stock permission`
             : attach.reason;
@@ -6183,8 +6196,10 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   const savePrintedBarcode = async (code) => {
     setSavingPrintedBarcode(true);
     try {
-      // ONE tested function owns the ordering: index first (it is the write
-      // that can be refused), product record second (it MEANS "registered").
+      // ONE tested function owns both writes, and they are ONE atomic commit —
+      // the index rows and the product's copy of the code land together or not
+      // at all. There is no ordering to get wrong any more, and nothing to
+      // compensate for. (Stale comment corrected — Kimi review, PR #340.)
       const attach = await attachPrintedBarcode({ productId: product.id, code });
       if (attach.ok) { setRecapture(false); setIndexWarning(null); return; }
       // TELL THE TRUTH ABOUT WHAT LANDED. An index row is PERMANENT — it cannot

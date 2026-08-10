@@ -157,7 +157,7 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     // stick a fallback shop label while suppressing the only screen that
     // prints one. (Codex review, PR #340.)
     expect(app).toMatch(/const usesPrintedBarcode = printedBarcodeActive;/);
-    expect(app).toMatch(/printedBarcodeActive = attach\.ok;/);
+    expect(app).toMatch(/printedBarcodeActive = attach\.ok \|\| attach\.indexed === true;/);
     // Review pins (#330): a failed seed is OBSERVED and reported (setCellState
     // resolves {ok:false}, it never throws), and the finder only ever hands
     // back records from the CURRENT catalog:

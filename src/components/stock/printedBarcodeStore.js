@@ -195,13 +195,13 @@ export function registrationRefusalText(reg, code) {
 // Now the database enforces the invariant: either the code resolves AND the
 // record claims it, or neither happened. (CodeRabbit, PR #340.)
 //
-// `setProductField` is a flag, not a callback: this function owns the path.
+// This function owns BOTH paths — there is no opt-out, because a caller that
+// registered the index without recording the field would recreate exactly the
+// disagreement this exists to prevent.
 //
 // @returns {{ok:true, kind, written}|{ok:false, kind, reason, indexed:boolean}}
-export async function attachPrintedBarcode({ productId, code, setProductField = true, size = ONE_SIZE }) {
-  const extraUpdates = setProductField
-    ? { [`products/${productId}/printedBarcode`]: code }
-    : null;
+export async function attachPrintedBarcode({ productId, code, size = ONE_SIZE }) {
+  const extraUpdates = { [`products/${productId}/printedBarcode`]: code };
   let reg;
   try {
     reg = await registerPrintedBarcode(productId, code, size, extraUpdates);
@@ -215,7 +215,7 @@ export async function attachPrintedBarcode({ productId, code, setProductField = 
   // ALREADY: the rows were there before, so the commit above never ran and the
   // product field may still be missing. Write it on its own — safe, because the
   // code demonstrably resolves to this product already.
-  if (reg.kind === PRINTED_ALREADY && extraUpdates) {
+  if (reg.kind === PRINTED_ALREADY) {
     try {
       await update(ref(database), extraUpdates);
     } catch (err) {

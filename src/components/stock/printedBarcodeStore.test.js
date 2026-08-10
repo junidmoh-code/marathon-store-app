@@ -19,6 +19,9 @@ let denyWrites = new Set();
 // That is what the real database does, and modelling anything softer would be
 // testing a scenario that cannot happen.
 let raceOnWrite = new Map();
+// Makes a /products write fail on its own — the offline / permission case for
+// the ALREADY backfill, which is the one branch that is not a single commit.
+let failProductWrites = false;
 
 function getPath(path) {
   let node = store;
@@ -58,7 +61,10 @@ vi.mock("firebase/database", () => ({
       if (path.startsWith("barcodes/") && winner) setPath(path, { productId: winner, size: "_" });
     }
     for (const [path, value] of paths) {
-      if (!path.startsWith("barcodes/")) continue;           // /products is a plain write
+      if (!path.startsWith("barcodes/")) {                   // /products is a plain write
+        if (failProductWrites) throw new Error("PERMISSION_DENIED: /products write failed");
+        continue;
+      }
       if (getPath(path) != null) {
         overwriteAttempts.push(path);
         throw new Error("PERMISSION_DENIED: /barcodes is create-only");
@@ -93,6 +99,7 @@ beforeEach(() => {
   overwriteAttempts = [];
   denyWrites = new Set();
   raceOnWrite = new Map();
+  failProductWrites = false;
   // The products these tests register against must EXIST — the live .validate
   // on /barcodes/$code requires it, and the fake above enforces it.
   setPath("products/pPerfume", { id: "pPerfume", name: "Oud Mood" });
@@ -341,10 +348,20 @@ describe("attachPrintedBarcode — the record and the index land TOGETHER", () =
     expect(getPath("products/pPerfume/printedBarcode")).toBe(OUD_MOOD);
   });
 
-  it("can skip the product field entirely when the caller owns that write", async () => {
-    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD, setProductField: false });
-    expect(out.ok).toBe(true);
-    expect(getPath("products/pPerfume/printedBarcode")).toBe(null);
+  it("reports indexed:true when only the BACKFILL write fails", async () => {
+    // The one branch that is not a single commit: the rows were already ours,
+    // so only the record field needs writing, and that write can fail on its
+    // own. The code still resolves — reporting a total failure would mint a
+    // shop label the box does not need. (Kimi review, PR #340.)
+    setPath(`barcodes/${OUD_MOOD}`, { productId: "pPerfume", size: "_" });
+    failProductWrites = true;
+
+    const out = await attachPrintedBarcode({ productId: "pPerfume", code: OUD_MOOD });
+
+    expect(out.ok).toBe(false);
+    expect(out.kind).toBe("record_write_failed");
+    expect(out.indexed).toBe(true);                 // the box still scans
+    expect(store.barcodes[OUD_MOOD].productId).toBe("pPerfume");
   });
 });
 
