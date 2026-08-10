@@ -62,6 +62,20 @@ import { encodeSizeKey, stockSizeKey, stockCellPath, assertSafeSegment } from ".
 const ACTOR = "system:beanie-onesize-collapse";
 const BATCH = "beanie-onesize-collapse";
 
+// ── SCOPE — THE ONE PLACE THAT DECIDES WHAT A BEANIE IS ──────────────────────
+// Beanies and caps share subcategory "Caps & Hats" (323 live records), so the
+// subcategory CANNOT separate them — the name is the only field that does. Caps
+// are out of scope: 86 of them declare two or more sizes and genuinely hold
+// stock across several, so a one-size row would orphan most of them.
+// A mergedInto record is a redirect stub with no stock identity of its own
+// (product-merge.cjs) and must never be collapsed in place.
+//
+// Exported and imported by the CLI and the tests rather than restated in each,
+// so a change to the rule cannot pass a test that still applies the old one.
+export function isInScope(product) {
+  return !!product && /beanie/i.test(product.name || "") && !product.mergedInto;
+}
+
 // ── WHAT COUNTS AS AN OPEN REFERENCE ─────────────────────────────────────────
 // A product is gated only when some FUTURE action would still move stock in the
 // size key this migration is about to retire. An order's base status alone does

@@ -54,7 +54,7 @@ import { join } from "path";
 import { setServerTimeOffsetMs, serverNowIso } from "../src/utils/serverTime.js";
 import {
   applyMovementAdmin, planStep1, planStep2, step2Done, planStep3, verifyProduct,
-  orderBlocks, REAL_SIZE,
+  orderBlocks, isInScope, REAL_SIZE,
 } from "./lib/beanieCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
@@ -108,7 +108,7 @@ function hasPrivilegedCredential(app) {
 
   // ── scope ──────────────────────────────────────────────────────────────────
   let scope = Object.entries(products)
-    .filter(([, p]) => /beanie/i.test(p?.name || "") && !p?.mergedInto)
+    .filter(([, p]) => isInScope(p))
     .sort((a, b) => (a[1].name || "").localeCompare(b[1].name || ""));
   if (ONLY.length) scope = scope.filter(([pid]) => ONLY.includes(pid));
   const pidSet = new Set(scope.map(([pid]) => pid));

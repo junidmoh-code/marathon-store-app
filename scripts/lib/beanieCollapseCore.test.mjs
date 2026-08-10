@@ -21,7 +21,7 @@
 import { describe, it, expect } from "vitest";
 import {
   applyMovementAdmin, planStep1, planStep2, planStep3, step2Done, verifyProduct,
-  legIds, orderBlocks,
+  legIds, orderBlocks, isInScope,
 } from "./beanieCollapseCore.mjs";
 
 // ── fake RTDB ────────────────────────────────────────────────────────────────
@@ -458,9 +458,10 @@ describe("scope — caps are untouched by every path", () => {
     seed.stock.hub2.pCap = { S: cell(2), M: cell(3), L: cell(4) };
     const db = makeDb(seed);
 
-    // THE SCOPE RULE, applied exactly as the CLI applies it.
+    // THE SCOPE RULE — the same exported predicate the CLI filters with, not a
+    // restatement of it.
     const products = db.raw().products;
-    const inScope = Object.entries(products).filter(([, p]) => /beanie/i.test(p.name || "") && !p.mergedInto).map(([pid]) => pid);
+    const inScope = Object.entries(products).filter(([, p]) => isInScope(p)).map(([pid]) => pid);
     expect(inScope).toEqual(["pB"]);
 
     for (const pid of inScope) await migrate(db, pid);
@@ -471,6 +472,14 @@ describe("scope — caps are untouched by every path", () => {
     expect(raw.barcodes["00077772"].size).toBe("M");
     expect(raw.stock.hub2.pCap).toEqual({ S: cell(2), M: cell(3), L: cell(4) });
     expect(raw.stock.hub2.pCap._).toBeUndefined();
+  });
+
+  it("the scope predicate takes beanies by name and rejects caps and merge stubs", () => {
+    expect(isInScope({ name: "Nike beanie green", subcategory: "Caps & Hats" })).toBe(true);
+    expect(isInScope({ name: "NIKE BEANIE GREEN" })).toBe(true);              // case-insensitive
+    expect(isInScope({ name: "Nike cap black", subcategory: "Caps & Hats" })).toBe(false);
+    expect(isInScope({ name: "Alo Yoga Airlift Solar Visor White", subcategory: "Caps & Hats" })).toBe(false);
+    expect(isInScope({ name: "Nike beanie green", mergedInto: "pOther" })).toBe(false);
   });
 });
 
