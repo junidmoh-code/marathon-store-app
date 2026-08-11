@@ -5,12 +5,12 @@ migration has **not** been executed, no target row has been written, and nothing
 has been deployed. There is no app change in this work at all — it is scripts
 only, so **no hosting deploy is needed or wanted**.
 
-State as at the census of 2026-08-10:
+State as at the census of 2026-08-11 (**bucket hats now in scope** — see below):
 
 ```text
-scope 301 products — 134 beanies + 167 caps
-units 1358          central=700  hub2=262  marathon-pe=396  marathon-pine=0
-already one-size    68 (47 beanies, 21 caps) — verify as no-ops
+scope 318 products — 134 beanies + 167 caps + 17 bucket hats
+units 1539          central=885  hub2=262  marathon-pe=392  marathon-pine=0
+already one-size    84 (47 beanies, 21 caps, 16 bucket hats) — verify as no-ops
 ```
 
 Caps are **not** an extension of the beanie job. Two things that were trivially
@@ -21,24 +21,50 @@ true of beanies are false of caps, and both change what can go wrong:
 - **87 caps carry more than one barcode** (one carries seven), so a rule has to
   decide which code keeps the `"_"` slot.
 
+### Bucket hats (added 2026-08-11)
+
+They were excluded alongside the visors in #345; that was wrong and they are now
+in scope as their own kind, runnable on their own with `--kind=bucket`.
+
+**They are the cheapest third of this job and carry none of the cap risk.**
+16 of the 17 already declare `["_"]`, so they verify as no-ops — 185 units, all
+at central, all already in a `"_"` cell. **No bucket hat holds stock in more
+than one size**, so nothing merges two fits into one quantity, and none carries
+a second barcode or an explicit target row.
+
+Exactly one has work to do:
+
+| product | declares | stock | gates |
+|---|---|---|---|
+| `p1785400263229` Nike bucket hat green | `["M"]` | central M 10 (plus empty M husks at hub2 and marathon-pe) | open refill request `-Ozfuu8y4iZlIpWXRURX`, engine lock `hub2/M`, active Display Check `marathon-pe/p1785400263229__M` |
+
+Clear those three the same way as every other gated product (§0) and it
+migrates; leave them and it is skipped, like any other gated product.
+
+**Visors stay out** — all 7 of them, 6 on the shelf plus the one mis-filed under
+Clothing — Uncategorized. Five carry live standard-policy target rows at hub2
+and marathon-pe, so collapsing one would quietly change what the refill engine
+is aiming at. Say the word if you want them and it is the same one-line change.
+
 ---
 
 ## 0. Clear the gates first
 
-**97 blockers across 70 products** (50 caps, 20 beanies). A gated product is
+**94 blockers across 71 products** (52 caps, 18 beanies, 1 bucket hat). A gated product is
 skipped, not failed — the run completes everything else and you re-run for these
 afterwards. Nothing about one product blocks another.
 
-**68 products gated by an active Display Check**, all at marathon-pe. A check is
+**65 products gated by an active Display Check**, all at marathon-pe. A check is
 keyed `{pid}__{sizeKey}`; after the collapse a sale keys `{pid}___`, so an
 existing `pid__M` check can never be matched or completed again. Complete or
 clear each one in Display Checks before migrating that product. This is floor
 work and it is the bulk of the job.
 
-**7 products gated by live refill activity** — an open refill request with its
-engine lock, an unresolved Shop Refill line, or one (`Polo Ralph beanie brown`)
-resolved this morning and still inside the 24h undo window. Fulfil or reject
-each in the refill queue; the undo-window one clears by itself.
+**9 products gated by live refill activity** — an open refill request with its
+engine lock (`Hugo boss beanie grey #4`, `Nike bucket hat green`), an unresolved
+Shop Refill line (six, all `R0xx` lines), or one (`Polo Ralph beanie brown`)
+still inside the 24h undo window. Fulfil or reject each in the refill queue; the
+undo-window one clears by itself.
 
 Re-running the census after clearing shows exactly what is left:
 
@@ -55,11 +81,10 @@ their siblings collapsed. The census prints all 15 under
 `ADMITTED AS A CAP BY THE SHELF ALONE`. **If any of those is not a cap, say so
 before the run** — that is the one scope decision the data cannot settle.
 
-**23 shelf-mates are deliberately excluded**: 7 visors and 16 bucket hats.
-Neither is a cap. 15 of the 16 bucket hats already declare `["_"]` and need
-nothing; the sixteenth (`Nike bucket hat green`, `["M"]`) is the only excluded
-record with a sized run left. Say the word and it is a one-line addition — it is
-out today because the brief scoped this to beanies and caps.
+**7 shelf-mates are still deliberately excluded** — the visors, and only the
+visors. `node scripts/headwear-excluded-report.mjs` prints them in full at any
+time: declared sizes, every stock cell, every barcode, target rows and open
+references. It is read-only.
 
 ---
 
@@ -92,23 +117,27 @@ close. Concretely:
   There is no exclusive barcode-write lock in this system to take, so a product
   being *edited* at that moment could be overwritten. The quiet window is the
   real control there;
-- the 68 Display Check clears in step 0 are floor work.
+- the 65 Display Check clears in step 0 are floor work.
 
 **Budget it as two sessions, not one.** The beanie half is mostly identity work;
-the cap half carries the arithmetic and the 68 Display Checks. `--kind` exists
+the cap half carries the arithmetic and the 65 Display Checks. `--kind` exists
 so you can run them on separate days:
 
 ```bash
 node scripts/collapse-one-size-headwear.mjs --kind=beanie --execute
 node scripts/collapse-one-size-headwear.mjs --kind=cap    --execute
+node scripts/collapse-one-size-headwear.mjs --kind=bucket --execute
 ```
+
+The bucket pass is the small one — 16 no-ops and one real product — so it can
+ride along with either of the other two or run on its own in a minute.
 
 ## 3. Pre-flight probe, then dry run
 
 Run the probe inside the same quiet window:
 
 ```bash
-node scripts/headwear-preflight-probe.mjs        # expect: 719/719 ok, 0 failed
+node scripts/headwear-preflight-probe.mjs        # expect: 736/736 ok, 0 failed
 ```
 
 It probes **every** code, never a sample, and that matters more on caps than it
@@ -128,7 +157,7 @@ GATE_MAX_AGE_SECONDS=3600 node scripts/collapse-one-size-headwear.mjs
 **Expect the dry run to take a while, and use that env var for it.** The gate
 data (transfers, orders, refill requests, engine locks, Display Checks) is
 re-read whenever it is more than 60 seconds old, so that a request opened
-mid-run cannot be missed. `/refill_requests` alone is ~12k records, and over 301
+mid-run cannot be missed. `/refill_requests` alone is ~12k records, and over 318
 products that refresh happens many times. That bounded staleness is exactly what
 you want on the **execute** run and is pure cost on a dry run, which writes
 nothing — so raise it for the dry run and leave it at the default when you
@@ -150,6 +179,20 @@ Note that raising `GATE_MAX_AGE_SECONDS` for the dry run also stops the ledger
 refresh firing, so **the dry run does not rehearse that code path**. That is
 fine — it writes nothing — but do not read a clean dry run as evidence about
 refresh behaviour.
+
+The dry run of 2026-08-11, before anything was cleared, came back:
+
+```text
+SUMMARY: GATED=70  PLANNED=164  ALREADY DONE=84
+  beanies  17 gated   70 planned  47 already done
+  caps     52 gated   94 planned  21 already done
+  buckets   1 gated    0 planned  16 already done
+units before: central=885  hub2=262  marathon-pe=392  marathon-pine=0  total=1539
+```
+
+(The census run half an hour earlier said 71 gated. The difference is
+`Polo Ralph beanie brown`, whose 24h undo window closed between the two runs —
+the self-clearing gate doing exactly what it says.)
 
 Confirm the summary matches the census and that GATED is down to whatever you
 chose not to clear. The dry run flags any planned leg whose movement id is
@@ -230,6 +273,25 @@ firebase database:get /receiving_session/active --project marathon-club     # �
 
 Nothing in steps 1–6 creates a target row. Do this only once the collapse has
 been verified.
+
+> **The payload sitting at `~/headwear-policy-payload.json` is STALE.** It was
+> generated before bucket hats were in scope and holds 390 rows against the old
+> product set. Regenerate it with the command below before arming anything —
+> `apply-headwear-policy.mjs` has no way to know the file is out of date.
+
+At `WIDTH=ALL` the current model is **636 rows** — 318 designs at hub2 (target
+15, minQty 8, no `reorderPoint`) and the same 318 at marathon-pe (target 5,
+minQty 3, `reorderPoint` 0). Day one the engine would classify:
+
+| location | REQUEST | SILENT | PARKED | AT TARGET |
+|---|---|---|---|---|
+| hub2 | 18 | 0 | 298 | 2 |
+| marathon-pe | 2 | 153 | 146 | 17 |
+
+20 intents, 197 units, against a `maxIntentsPerRun` cap of 75. The policy wants
+6,360 units against 1,539 in the whole network, so most of it parks against a
+purchase order rather than producing a card — that is the same picture as before
+the widening, 17 designs wider.
 
 ```bash
 MODEL_JSON=~/headwear-policy-model.json PAYLOAD_JSON=~/headwear-policy-payload.json \
