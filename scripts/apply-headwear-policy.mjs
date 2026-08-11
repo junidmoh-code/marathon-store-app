@@ -40,7 +40,7 @@
 
 import { createRequire } from "module";
 import { readFileSync } from "fs";
-import { headwearKind, invalidTargetRow, policyRowGate } from "./lib/headwearCollapseCore.mjs";
+import { headwearKind, invalidTargetRow, policyRowGate, emptyKindCount } from "./lib/headwearCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -140,11 +140,11 @@ const DELETE = args.includes("--delete");
     if (existing.length > 10) console.log(`     … and ${existing.length - 10} more`);
   }
 
-  const kinds = { beanie: 0, cap: 0 };
+  const kinds = emptyKindCount();
   // A --delete run can name a product that has since been merged or deleted;
   // headwearKind(undefined) is null and kinds[null]++ yields NaN under a "null" key.
   for (const pid of pids) { const k = headwearKind(products[pid]); if (k) kinds[k]++; }
-  console.log(`\n  ${DELETE ? "REMOVING" : "ARMING"} ${entries.length} row(s) — ${kinds.beanie} beanie / ${kinds.cap} cap product(s)`);
+  console.log(`\n  ${DELETE ? "REMOVING" : "ARMING"} ${entries.length} row(s) — ${kinds.beanie} beanie / ${kinds.cap} cap / ${kinds.bucket} bucket-hat product(s)`);
   const byLoc = {};
   for (const [path] of entries) { const loc = path.split("/")[0]; byLoc[loc] = (byLoc[loc] || 0) + 1; }
   for (const [loc, n] of Object.entries(byLoc)) console.log(`     ${loc.padEnd(16)} ${n}`);

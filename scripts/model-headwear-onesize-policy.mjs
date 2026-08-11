@@ -68,7 +68,7 @@ import { createRequire } from "module";
 import { writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { isInScope, headwearKind } from "./lib/headwearCollapseCore.mjs";
+import { isInScope, headwearKind, HEADWEAR_KINDS } from "./lib/headwearCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -132,7 +132,7 @@ const minQtyFor = (target) => Math.ceil(target / 2);
   const headwear = Object.entries(productsLive).filter(([, p]) => isInScope(p)).map(([pid]) => pid);
   const headwearSet = new Set(headwear);
   const kindOf = Object.fromEntries(Object.entries(productsLive).filter(([, p]) => isInScope(p)).map(([pid, p]) => [pid, headwearKind(p)]));
-  console.log(`  in scope: ${headwear.length} products (${headwear.filter((p) => kindOf[p] === "beanie").length} beanies, ${headwear.filter((p) => kindOf[p] === "cap").length} caps)`);
+  console.log(`  in scope: ${headwear.length} products (${HEADWEAR_KINDS.map((k) => `${headwear.filter((p) => kindOf[p] === k).length} ${k}`).join(", ")})`);
 
   // ── post-collapse simulation ───────────────────────────────────────────────
   const products = JSON.parse(JSON.stringify(productsLive));
@@ -428,7 +428,7 @@ const minQtyFor = (target) => Math.ceil(target / 2);
   console.log(`  explicit row outlives the kill switch, so DELETING THE ROWS IS THE OFF SWITCH.`);
   const capsInSubcat = Object.values(productsLive).filter((p) => p?.subcategory === "Caps & Hats" && !isInScope(p)).length;
   console.log(`  (Adding "Caps & Hats" to subcategoryRunByLocation would also arm the ${capsInSubcat} shelf-mates`);
-  console.log(`   this migration deliberately excludes — visors and bucket hats. Do not use that lever.)`);
+  console.log(`   this migration deliberately excludes — the visors. Do not use that lever.)`);
 
   // ── the payload + the commands ────────────────────────────────────────────
   writeFileSync(PAYLOAD_OUT, JSON.stringify(payload, null, 2));

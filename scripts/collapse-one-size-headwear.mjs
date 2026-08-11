@@ -53,7 +53,8 @@
 //   node scripts/collapse-one-size-headwear.mjs                  # dry run
 //   node scripts/collapse-one-size-headwear.mjs --execute        # real writes
 //   node scripts/collapse-one-size-headwear.mjs --only=pid1,pid2 # scope filter
-//   node scripts/collapse-one-size-headwear.mjs --kind=cap       # beanies only / caps only
+//   node scripts/collapse-one-size-headwear.mjs --kind=cap       # one kind only:
+//                                                  beanie | cap | bucket
 //   SNAPSHOT_PATH=/somewhere/rollback.json ... (default: os tmpdir, run-stamped)
 //
 // Exit 0 = every in-scope product done (or already done) and verified.
@@ -67,7 +68,7 @@ import { setServerTimeOffsetMs, serverNowIso } from "../src/utils/serverTime.js"
 import {
   applyMovementAdmin, planStep1, planStep2, step2Done, planStep3, verifyProduct,
   assertDrained, orderBlocks, transferBlocks, movementRecency, isInScope, headwearKind,
-  isRetiredSize, isRetiredSizeKey,
+  isRetiredSize, isRetiredSizeKey, HEADWEAR_KINDS, emptyKindCount,
 } from "./lib/headwearCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
@@ -85,8 +86,11 @@ const ONLY = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7).
 // the real arithmetic. --kind lets the operator run them as separate passes on
 // separate days without hand-listing 167 product ids into --only.
 const KIND = (process.argv.find((a) => a.startsWith("--kind=")) || "").slice(7).trim();
-if (KIND && KIND !== "beanie" && KIND !== "cap") {
-  console.error(`--kind must be "beanie" or "cap" (got ${JSON.stringify(KIND)})`);
+// Validated against the shared kind list, not a hand-written pair, so a kind
+// added to the scope rule is immediately runnable here instead of being
+// rejected by a check nobody remembered to widen.
+if (KIND && !HEADWEAR_KINDS.includes(KIND)) {
+  console.error(`--kind must be one of ${HEADWEAR_KINDS.map((k) => JSON.stringify(k)).join(", ")} (got ${JSON.stringify(KIND)})`);
   process.exit(1);
 }
 const SNAP = process.env.SNAPSHOT_PATH || join(tmpdir(), `rollback-headwear-collapse-${Date.now()}.json`);
@@ -177,9 +181,9 @@ function hasPrivilegedCredential(app) {
   if (KIND) scope = scope.filter(([, p]) => headwearKind(p) === KIND);
   if (ONLY.length) scope = scope.filter(([pid]) => ONLY.includes(pid));
   const pidSet = new Set(scope.map(([pid]) => pid));
-  const kindCount = { beanie: 0, cap: 0 };
+  const kindCount = emptyKindCount();
   for (const [, p] of scope) kindCount[headwearKind(p)]++;
-  console.log(`  scope: ${scope.length} headwear products (${kindCount.beanie} beanies, ${kindCount.cap} caps)`
+  console.log(`  scope: ${scope.length} headwear products (${kindCount.beanie} beanies, ${kindCount.cap} caps, ${kindCount.bucket} bucket hats)`
     + `${KIND ? ` — --kind=${KIND}` : ""}${ONLY.length ? ` — --only filter from ${ONLY.length} asked` : ""}`);
 
   // reverse index: code → record, per pid (catches codes the product map forgot)

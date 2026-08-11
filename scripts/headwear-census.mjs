@@ -27,9 +27,10 @@
 //
 // ── SCOPE RULE ───────────────────────────────────────────────────────────────
 // The ONE exported predicate (scripts/lib/headwearCollapseCore.mjs), shared with
-// the probe and the migration so they cannot drift. Beanies by name, caps by the
-// Caps & Hats shelf minus visors and bucket hats. This census prints the full
-// membership of that shelf split three ways — admitted beanies, admitted caps,
+// the probe and the migration so they cannot drift. Beanies by name anywhere;
+// bucket hats by the Caps & Hats shelf AND the name; caps by that shelf minus
+// the visors and the bucket hats. This census prints the full membership of that
+// shelf split four ways — admitted beanies, admitted caps, admitted bucket hats,
 // and excluded — so "what does the predicate now admit" is answered by a list,
 // not by a claim.
 //
@@ -47,7 +48,7 @@ import { writeFileSync } from "fs";
 import {
   isInScope, isUnexpectedSubcategory, isExcludedHeadwear, isCapByShelfOnly,
   headwearKind, isRetiredSizeKey, orderBlocks, transferBlocks, isRetiredSize,
-  HEADWEAR_SUBCATEGORY, planStep2,
+  HEADWEAR_SUBCATEGORY, HEADWEAR_KINDS, isBeanieNamed, planStep2,
 } from "./lib/headwearCollapseCore.mjs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -94,13 +95,13 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
     if (kind) { inScope.push([pid, p, kind]); continue; }
     if (isExcludedHeadwear(p)) { excluded.push([pid, p]); continue; }
     // A merged stub that WOULD have been in scope but for the redirect.
-    if (p?.mergedInto && (onShelf || /beanie/i.test(p?.name || ""))) {
+    if (p?.mergedInto && (onShelf || isBeanieNamed(p))) {
       mergedStubs.push({ pid, mergedInto: p.mergedInto, name: p.name });
     }
   }
   inScope.sort((a, b) => (a[1].name || "").localeCompare(b[1].name || ""));
-  const beanies = inScope.filter(([, , k]) => k === "beanie");
-  const caps = inScope.filter(([, , k]) => k === "cap");
+  const scopeByKind = Object.fromEntries(HEADWEAR_KINDS.map((k) => [k, inScope.filter(([, , kk]) => kk === k)]));
+  const beanies = scopeByKind.beanie, caps = scopeByKind.cap, bucketHats = scopeByKind.bucket;
 
   // Reverse barcode index: every /barcodes record pointing at an in-scope pid,
   // whether or not the product's own barcodes map still lists it. A code the map
@@ -122,7 +123,9 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
   const flag = (kind, detail) => blockers.push({ kind, detail });
   const note = (kind, detail) => notices.push({ kind, detail });
 
-  const locTotals = { beanie: {}, cap: {}, all: {} };
+  // Built from the shared kind list, not a literal — a literal missing a kind
+  // makes `locTotals[kind][loc]` a TypeError on the first product of that kind.
+  const locTotals = { ...Object.fromEntries(HEADWEAR_KINDS.map((k) => [k, {}])), all: {} };
   const bySplit = {};
   const multiSizeHolders = [];
   const multiBarcode = [];
@@ -260,10 +263,16 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
   }
 
   // ── print ──────────────────────────────────────────────────────────────────
+  // Every "n caps, m beanies" split is built from the shared kind list, so a new
+  // kind appears in each summary line instead of being folded silently into the
+  // total by a hand-written pair of filters.
+  const tally = (list) => HEADWEAR_KINDS.map((k) => `${list.filter((m) => m.kind === k).length} ${k}`).join(", ");
   const shelf = Object.values(products).filter((p) => p?.subcategory === HEADWEAR_SUBCATEGORY).length;
   console.log(`\nSCOPE — what the shared predicate now admits`);
-  console.log(`  "${HEADWEAR_SUBCATEGORY}" shelf holds ${shelf} records. Admitted: ${inScope.length} (${beanies.length} beanies, ${caps.length} caps).`);
-  console.log(`  Excluded as a visor or bucket hat (neither a beanie nor a cap), wherever filed: ${excluded.length}`);
+  console.log(`  "${HEADWEAR_SUBCATEGORY}" shelf holds ${shelf} records. Admitted: ${inScope.length} (${beanies.length} beanies, ${caps.length} caps, ${bucketHats.length} bucket hats).`);
+  console.log(`  Bucket hats are admitted ONLY from this shelf and only when the name says so;`);
+  console.log(`  a bucket hat filed elsewhere stays out and is listed as excluded below.`);
+  console.log(`  Excluded — a visor anywhere, or a bucket hat off the shelf: ${excluded.length}`);
   for (const [pid, p] of excluded) console.log(`     ${pid} ${JSON.stringify((p.sizes || []).map(String)).padEnd(8)} ${p.name}${p.subcategory === HEADWEAR_SUBCATEGORY ? "" : `   [filed under ${JSON.stringify(p.subcategory)}]`}`);
   console.log(`  Merged redirect stubs skipped: ${mergedStubs.length}`);
   for (const m of mergedStubs) console.log(`     ${m.pid} → ${m.mergedInto}  "${m.name}"`);
@@ -284,18 +293,18 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
   }
 
   console.log(`\nUNITS BEFORE, PER LOCATION — the numbers the migration must reproduce exactly:`);
-  const allLocs = [...new Set([...Object.keys(locTotals.beanie), ...Object.keys(locTotals.cap)])].sort();
-  console.log(`  ${"location".padEnd(16)} ${"beanies".padStart(9)} ${"caps".padStart(7)} ${"total".padStart(8)}`);
-  let gB = 0, gC = 0;
+  const allLocs = [...new Set(HEADWEAR_KINDS.flatMap((k) => Object.keys(locTotals[k])))].sort();
+  console.log(`  ${"location".padEnd(16)} ${HEADWEAR_KINDS.map((k) => k.padStart(9)).join(" ")} ${"total".padStart(8)}`);
+  const grand = Object.fromEntries(HEADWEAR_KINDS.map((k) => [k, 0]));
   for (const loc of allLocs) {
-    const b = locTotals.beanie[loc] || 0, c = locTotals.cap[loc] || 0;
-    gB += b; gC += c;
-    console.log(`  ${loc.padEnd(16)} ${String(b).padStart(9)} ${String(c).padStart(7)} ${String(b + c).padStart(8)}`);
+    const per = HEADWEAR_KINDS.map((k) => locTotals[k][loc] || 0);
+    HEADWEAR_KINDS.forEach((k, i) => { grand[k] += per[i]; });
+    console.log(`  ${loc.padEnd(16)} ${per.map((n) => String(n).padStart(9)).join(" ")} ${String(per.reduce((a, b) => a + b, 0)).padStart(8)}`);
   }
-  console.log(`  ${"TOTAL".padEnd(16)} ${String(gB).padStart(9)} ${String(gC).padStart(7)} ${String(gB + gC).padStart(8)}`);
+  console.log(`  ${"TOTAL".padEnd(16)} ${HEADWEAR_KINDS.map((k) => String(grand[k]).padStart(9)).join(" ")} ${String(Object.values(grand).reduce((a, b) => a + b, 0)).padStart(8)}`);
 
   console.log(`\nMULTI-SIZE HOLDERS — stock in 2+ size keys, where the merge actually COMBINES`);
-  console.log(`quantities rather than renaming a cell: ${multiSizeHolders.length} (${multiSizeHolders.filter((m) => m.kind === "cap").length} caps, ${multiSizeHolders.filter((m) => m.kind === "beanie").length} beanies)`);
+  console.log(`quantities rather than renaming a cell: ${multiSizeHolders.length} (${tally(multiSizeHolders)})`);
   for (const m of multiSizeHolders) {
     const combines = Object.entries(m.unitsBySizeKey).filter(([k]) => isRetiredSizeKey(k));
     console.log(`  ${m.pid} "${m.name}"`);
@@ -307,7 +316,7 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
   }
 
   console.log(`\nMULTI-BARCODE PRODUCTS — more than one code, so one must take the "_" slot:`);
-  console.log(`  ${multiBarcode.length} products (${multiBarcode.filter((m) => m.kind === "cap").length} caps, ${multiBarcode.filter((m) => m.kind === "beanie").length} beanies)`);
+  console.log(`  ${multiBarcode.length} products (${tally(multiBarcode)})`);
   console.log(`  Every listed code keeps resolving to its product at size "_" — only the map slot changes.`);
   for (const m of multiBarcode) {
     console.log(`  ${m.pid} "${m.name}"  codes ${m.codes.join(", ")}`);
@@ -344,7 +353,8 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
   }
 
   writeFileSync(OUT, JSON.stringify({ capturedAt: nowIso, notices,
-    scope: { total: inScope.length, beanies: beanies.length, caps: caps.length, shelf, excluded: excluded.length },
+    scope: { total: inScope.length, shelf, excluded: excluded.length,
+      ...Object.fromEntries(HEADWEAR_KINDS.map((k) => [k, scopeByKind[k].length])) },
     excluded: excluded.map(([pid, p]) => ({ pid, name: p.name, sizes: p.sizes || [] })),
     capsByShelfOnly: shelfOnly.map(([pid, p]) => ({ pid, name: p.name })),
     split: Object.fromEntries(Object.entries(bySplit).map(([k, v]) => [k, v.length])),

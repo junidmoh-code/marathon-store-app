@@ -17,6 +17,14 @@
 // Read planStep2's keep-code rule and legIds' per-size id scheme with that in
 // mind; both were written for the beanie case and both changed here.
 //
+// ── BUCKET HATS JOINED THE SCOPE (2026-08-11) ────────────────────────────────
+// #345 excluded them from the same shelf as visors. That was right for visors
+// and wrong for bucket hats: they are the same kind of thing as the rest, and
+// they are now in scope as their own kind. The full argument — including why
+// they are the only kind needing BOTH the shelf and the name, and why they were
+// not simply folded into "cap" — is at the scope rule below. NOTHING about the
+// migration's mechanics changed; the widening is a scope edit and nothing else.
+//
 // The migration's decision-making, extracted from the CLI so the behaviour is
 // testable against a fake RTDB. NOTHING in here touches firebase directly: every
 // read/write goes through an injected `io` with two methods —
@@ -87,9 +95,9 @@ const ACTOR = "system:headwear-onesize-collapse";
 export const BATCH = "headwear-onesize-collapse";
 
 // ── SCOPE — THE ONE PLACE THAT DECIDES WHAT IS IN ────────────────────────────
-// In scope: beanies and caps. Nothing else, ever.
+// In scope: beanies, caps and bucket hats. Nothing else, ever.
 //
-// The two are told apart by different evidence, and it is worth being exact
+// The three are told apart by different evidence, and it is worth being exact
 // about why, because the asymmetry looks arbitrary until you look at the data:
 //
 //   A BEANIE IS DECIDED BY ITS NAME. /beanie/i, wherever it is filed. The name
@@ -106,20 +114,46 @@ export const BATCH = "headwear-onesize-collapse";
 //   So the subcategory admits, and NOT_A_CAP removes the two things that share
 //   that shelf without being caps.
 //
-// ── WHAT NOT_A_CAP REMOVES, AND WHY IT IS NOT AN OVERSIGHT ───────────────────
-// Caps & Hats also holds 23 records that are neither a beanie nor a cap:
-//   • 16 bucket hats — 15 of which ALREADY declare ["_"], so there is nothing
-//     to collapse; the 16th (Nike bucket hat green, ["M"]) would be a one-line
-//     addition if the owner wants it.
-//   • 7 visors — 6 on the shelf, plus one mis-filed under "Clothing —
-//     Uncategorized" (Alo yoga airlift solar visor black).
-// Neither is a cap, and the brief scopes this migration to beanies and caps, so
-// they are reported by the census and left alone. isExcludedHeadwear names them
-// so "excluded" is a stated decision with a list, not silence — and it matches
-// on the NAME wherever the record is filed, not only on the shelf, because the
-// mis-filed visor is precisely the record a reader would want to see accounted
-// for and a shelf-only predicate made it vanish from both lists.
-// (CodeRabbit, PR #345.)
+//   A BUCKET HAT IS DECIDED BY ITS SHELF *AND* ITS NAME — BOTH. It is the only
+//   kind that needs two pieces of evidence, and the reason is a constraint the
+//   owner set rather than anything in the data: bucket hats are in scope, visors
+//   are NOT, and nothing outside the Caps & Hats shelf may be pulled in by
+//   widening. A name-only rule (the beanie treatment) would admit a bucket hat
+//   filed anywhere in the catalogue and break that second promise. A shelf-only
+//   rule (the cap treatment) cannot distinguish it from a cap at all. So it is
+//   the intersection, which is strictly narrower than either — and a bucket hat
+//   filed OFF the shelf stays out and is reported by isExcludedHeadwear, so it
+//   cannot fall silently between the two lists.
+//
+// ── WHY BUCKET HATS ARE THEIR OWN KIND AND NOT SIMPLY CAPS (2026-08-11) ──────
+// Deleting `bucket hats?` from NOT_A_CAP would have admitted them in one
+// character-level edit, as kind "cap". It was rejected for one operational
+// reason: a collapse is only free when the size run was never a real fit
+// distinction. On beanies and caps it never was. SOME BRANDS GENUINELY SHIP
+// BUCKET HATS IN S/M AND L/XL, which are two different physical fits, and
+// merging those makes one quantity out of two things a customer cannot swap
+// between — irreversibly, because the sized cells are gone afterwards.
+//
+// Live today that hazard does not fire (no bucket hat holds positive stock in
+// more than one size key; 16 of 17 already declare ["_"]), so nothing is being
+// guarded against right now. What the separate kind buys is that the cohort
+// stays VISIBLE and separately runnable — the census counts them apart, the
+// operator can run `--kind=bucket` on its own, and the day a two-fit bucket hat
+// does arrive it is discussed as a bucket-hat question rather than disappearing
+// into a count of caps. The scope decision the owner is asked to confirm should
+// be the one they actually made.
+//
+// ── WHAT IS STILL EXCLUDED, AND WHY IT IS NOT AN OVERSIGHT ───────────────────
+// VISORS — 7 of them, 6 on the shelf plus one mis-filed under "Clothing —
+// Uncategorized" (Alo yoga airlift solar visor black). A visor is not headwear
+// of this kind and the owner has not scoped it in; five of the seven carry live
+// standard-policy target rows at hub2 and marathon-pe, so collapsing one would
+// silently change what the refill engine is aiming at. They are reported by the
+// census and left alone. isExcludedHeadwear names them so "excluded" is a stated
+// decision with a list, not silence — and it matches on the NAME wherever the
+// record is filed, not only on the shelf, because the mis-filed visor is
+// precisely the record a reader would want to see accounted for and a
+// shelf-only predicate made it vanish from both lists. (CodeRabbit, PR #345.)
 //
 // A mergedInto record is a redirect stub with no stock identity of its own
 // (product-merge.cjs) and must never be collapsed in place.
@@ -129,18 +163,42 @@ export const BATCH = "headwear-onesize-collapse";
 // applies the old one.
 export const HEADWEAR_SUBCATEGORY = "Caps & Hats";
 const BEANIE_NAME = /beanie/i;
-const NOT_A_CAP = /\bvisors?\b|\bbucket\s*hats?\b/i;
+const VISOR_NAME = /\bvisors?\b/i;
+const BUCKET_NAME = /\bbucket\s*hats?\b/i;
 // Reporting only — never gates anything. Splits the admitted caps into "the
 // name says cap" and "admitted because of where it is filed", so the census can
 // print the second list for a human to eyeball before anything moves.
 const CAP_NAME = /\bcaps?\b/i;
+
+// The canonical kind list. Every caller that tallies by kind builds its counter
+// from this rather than from a `{ beanie: 0, cap: 0 }` literal — such a literal
+// yields `undefined++` → NaN the moment a kind is added, which is exactly what
+// adding "bucket" would have done to four separate scripts' summary lines.
+export const HEADWEAR_KINDS = ["beanie", "cap", "bucket"];
+export const emptyKindCount = () => Object.fromEntries(HEADWEAR_KINDS.map((k) => [k, 0]));
+
+// ── THE NAME PATTERNS ARE NEVER COPIED OUT OF THIS FILE ──────────────────────
+// Reporting-only classifiers, exported so that no other script needs its own
+// copy of these regexes. That matters more than it looks: this widening moved
+// bucket hats from "rejected" to "admitted" by editing ONE pattern, and any
+// second copy elsewhere would have kept quietly applying the old answer to
+// whatever it decided. A test enforces the invariant directly — this module is
+// the ONLY file under scripts/ that may contain a headwear name pattern.
+// None of these three gates anything; headwearKind is the only scope decision.
+export const isBeanieNamed = (product) => BEANIE_NAME.test(String(product?.name || ""));
+export const isVisorNamed = (product) => VISOR_NAME.test(String(product?.name || ""));
+export const isBucketHatNamed = (product) => BUCKET_NAME.test(String(product?.name || ""));
 
 export function headwearKind(product) {
   if (!product || product.mergedInto) return null;
   const name = String(product.name || "");
   if (BEANIE_NAME.test(name)) return "beanie";
   if (product.subcategory !== HEADWEAR_SUBCATEGORY) return null;
-  if (NOT_A_CAP.test(name)) return null;
+  // VISOR IS TESTED FIRST, deliberately. A name matching both words is
+  // pathological, but the conservative reading of one is "the thing the owner
+  // did not authorise", so it loses nothing by winning the tie.
+  if (VISOR_NAME.test(name)) return null;
+  if (BUCKET_NAME.test(name)) return "bucket";
   return "cap";
 }
 
@@ -148,14 +206,19 @@ export function isInScope(product) {
   return headwearKind(product) !== null;
 }
 
-// Named as a visor or a bucket hat, wherever it is filed, and not a beanie.
-// Reporting only — these are never in scope. Deliberately NOT restricted to the
-// shelf, so the one mis-filed visor is still accounted for in the census rather
-// than falling silently between "in scope" and "excluded".
+// Named as a visor or a bucket hat, and NOT admitted by the scope rule above.
+// Reporting only — these are never in scope. Defined as the complement of
+// isInScope rather than as its own independent name test, so the two can never
+// drift into either overlapping (a record in both lists) or leaving a gap (a
+// record in neither): widening the scope rule automatically shrinks this one.
+//
+// It therefore covers the 7 visors wherever they are filed, plus any bucket hat
+// filed OFF the Caps & Hats shelf — which the scope rule declines on purpose,
+// and which would otherwise be accounted for nowhere at all.
 export function isExcludedHeadwear(product) {
   if (!product || product.mergedInto) return false;
-  const name = String(product.name || "");
-  return !BEANIE_NAME.test(name) && NOT_A_CAP.test(name);
+  if (isInScope(product)) return false;
+  return isVisorNamed(product) || isBucketHatNamed(product);
 }
 
 // Admitted as a cap by the shelf alone — the name carries no "cap"/"caps". These

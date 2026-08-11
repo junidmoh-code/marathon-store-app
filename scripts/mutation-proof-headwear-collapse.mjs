@@ -113,18 +113,18 @@ const MUTATIONS = [
     id: "M9",
     guard: "Caps are IN scope — the shelf admits them, not the name",
     file: CORE,
-    from: `  if (NOT_A_CAP.test(name)) return null;
+    from: `  if (BUCKET_NAME.test(name)) return "bucket";
   return "cap";`,
-    to: `  if (NOT_A_CAP.test(name)) return null;
+    to: `  if (BUCKET_NAME.test(name)) return "bucket";
   return null;`,
     tests: SUITE,
   },
   {
     id: "M10",
-    guard: "Visors and bucket hats are OUT of scope even though they share the shelf",
+    guard: "Visors are OUT of scope even though they share the shelf",
     file: CORE,
-    from: `const NOT_A_CAP = /\\bvisors?\\b|\\bbucket\\s*hats?\\b/i;`,
-    to: `const NOT_A_CAP = /\\bnothingmatchesthis\\b/i;`,
+    from: `const VISOR_NAME = /\\bvisors?\\b/i;`,
+    to: `const VISOR_NAME = /\\bnothingmatchesthis\\b/i;`,
     tests: SUITE,
   },
   {
@@ -317,6 +317,88 @@ const MUTATIONS = [
     file: CORE,
     from: `    const b = (totalsBefore?.[loc] || 0) + (expectedDelta?.[loc] || 0), a = totalsAfter[loc] || 0;`,
     to: `    const b = (totalsBefore?.[loc] || 0), a = totalsAfter[loc] || 0;`,
+    tests: SUITE,
+  },
+
+  // ── M33–M41: THE BUCKET-HAT WIDENING (2026-08-11) ──────────────────────────
+  // Bucket hats moved from "rejected shelf-mate" to "in scope, own kind". Each
+  // half of that sentence gets a mutation, and so does the structural promise
+  // that the four consumer scripts cannot answer the scope question differently
+  // from the core — the failure mode this widening would otherwise have created.
+  {
+    id: "M33",
+    guard: "A bucket hat on the Caps & Hats shelf is IN scope",
+    file: CORE,
+    from: `  if (BUCKET_NAME.test(name)) return "bucket";`,
+    to: `  if (BUCKET_NAME.test(name)) return null;`,
+    tests: SUITE,
+  },
+  {
+    id: "M34",
+    guard: "A bucket hat is admitted ONLY from the shelf — never by its name alone, wherever it is filed",
+    file: CORE,
+    from: `  if (product.subcategory !== HEADWEAR_SUBCATEGORY) return null;`,
+    to: `  if (product.subcategory !== HEADWEAR_SUBCATEGORY) return BUCKET_NAME.test(name) ? "bucket" : null;`,
+    tests: SUITE,
+  },
+  {
+    id: "M35",
+    guard: "The visor test runs BEFORE the bucket-hat test, so a name carrying both words stays out",
+    file: CORE,
+    from: `  if (VISOR_NAME.test(name)) return null;
+  if (BUCKET_NAME.test(name)) return "bucket";`,
+    to: `  if (BUCKET_NAME.test(name)) return "bucket";
+  if (VISOR_NAME.test(name)) return null;`,
+    tests: SUITE,
+  },
+  {
+    id: "M36",
+    guard: "Exclusion is the COMPLEMENT of scope — no record can be in both lists, and none in neither",
+    file: CORE,
+    from: `  if (isInScope(product)) return false;
+  return isVisorNamed(product) || isBucketHatNamed(product);`,
+    to: `  return isVisorNamed(product) || isBucketHatNamed(product);`,
+    tests: SUITE,
+  },
+  {
+    id: "M37",
+    guard: "Every kind the scope rule can return is in the shared kind list the counters are built from",
+    file: CORE,
+    from: `export const HEADWEAR_KINDS = ["beanie", "cap", "bucket"];`,
+    to: `export const HEADWEAR_KINDS = ["beanie", "cap"];`,
+    tests: SUITE,
+  },
+  {
+    id: "M38",
+    guard: "The census takes its name test from the core instead of restating it locally",
+    file: "scripts/headwear-census.mjs",
+    from: `    if (p?.mergedInto && (onShelf || isBeanieNamed(p))) {`,
+    to: `    if (p?.mergedInto && (onShelf || /beanie/i.test(p?.name || ""))) {`,
+    tests: SUITE,
+  },
+  {
+    id: "M39",
+    guard: "The CLI validates --kind against the shared kind list, so a newly admitted kind is runnable",
+    file: "scripts/collapse-one-size-headwear.mjs",
+    from: `if (KIND && !HEADWEAR_KINDS.includes(KIND)) {`,
+    to: `if (KIND && KIND !== "beanie" && KIND !== "cap") {`,
+    tests: SUITE,
+  },
+  {
+    id: "M40",
+    guard: "No consumer counts kinds from a hardcoded literal (which reads NaN for a kind it omits)",
+    file: "scripts/headwear-preflight-probe.mjs",
+    from: `  const kinds = emptyKindCount();`,
+    to: `  const kinds = { beanie: 0, cap: 0 };`,
+    tests: SUITE,
+  },
+  {
+    id: "M41",
+    guard: "Step 2 writes ONLY identity and index — a widening can leak no stock cell into it",
+    file: CORE,
+    from: `  updates[\`products/\${assertSafeSegment(pid, "productId")}/sizes\`] = ["_"];`,
+    to: `  updates[\`products/\${assertSafeSegment(pid, "productId")}/sizes\`] = ["_"];
+  updates[\`stock/hub2/\${pid}/_/qty\`] = 0;`,
     tests: SUITE,
   },
 ];

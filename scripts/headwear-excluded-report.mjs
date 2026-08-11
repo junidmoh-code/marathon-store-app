@@ -1,12 +1,19 @@
 // ─── HEADWEAR — THE EXCLUDED SHELF-MATES, IN FULL (READ-ONLY) ─────────────────
 //
-// PR #345 put beanies and caps in scope and deliberately left 23 records on the
+// PR #345 put beanies and caps in scope and deliberately left 24 records on the
 // "Caps & Hats" shelf out: bucket hats and visors. That decision was made from a
-// name list and a size count. Before widening it, this script prints the whole
+// name list and a size count. Before widening it, this script printed the whole
 // evidence base for those records — declared sizes, EVERY stock cell by location
 // and quantity, every barcode with the size its /barcodes index record carries,
-// explicit target rows, and any open reference — so the widening is argued from
+// explicit target rows, and any open reference — so the widening was argued from
 // live data rather than from the earlier summary.
+//
+// The bucket hats are now IN scope, so what this prints today is what is STILL
+// excluded: the 7 visors, plus any bucket hat filed off the Caps & Hats shelf
+// (the scope rule declines those on purpose). It is deliberately unchanged
+// otherwise — the same report against the same paths is what makes the before
+// and after comparable, and it stays the standing answer to "what is left out
+// and what is sitting in it".
 //
 // ── THE ONE QUESTION THIS SCRIPT EXISTS TO ANSWER ────────────────────────────
 // A collapse merges every sized cell into one. On a beanie or a cap that is
@@ -40,13 +47,13 @@ import { join } from "path";
 import {
   isExcludedHeadwear, isInScope, isRetiredSizeKey, isRetiredSize,
   orderBlocks, transferBlocks, HEADWEAR_SUBCATEGORY,
+  isBucketHatNamed, isVisorNamed,
 } from "./lib/headwearCollapseCore.mjs";
-
-// Reporting-only classifiers. They are deliberately NOT the scope predicate —
-// nothing here gates anything — but they use the same wording the scope rule
-// uses so a reader can line the two up.
-const BUCKET_NAME = /\bbucket\s*hats?\b/i;
-const VISOR_NAME = /\bvisors?\b/i;
+// The bucket/visor classifiers are IMPORTED, never restated. A local copy here
+// would have kept sorting records by the pre-widening wording while the scope
+// rule moved on, and this file's whole job is to be comparable with the scope
+// rule. The core is the only file under scripts/ holding a headwear name
+// pattern, and a test enforces it.
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -134,8 +141,8 @@ const OUT = process.env.EXCLUDED_JSON || join(tmpdir(), `headwear-excluded-${Dat
     }
 
     const name = String(p.name || "");
-    const isBucket = BUCKET_NAME.test(name);
-    const isVisor = VISOR_NAME.test(name);
+    const isBucket = isBucketHatNamed(p);
+    const isVisor = isVisorNamed(p);
     // Sized keys holding REAL stock — the merge risk. A negative is a shortage
     // signal, not two fits sitting on a shelf, so it is reported but does not
     // raise the two-fit stop on its own.

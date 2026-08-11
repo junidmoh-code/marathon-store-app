@@ -39,7 +39,7 @@
 // Exit 0 = every code probed clean. Exit 1 = abort (nothing further may move).
 
 import { createRequire } from "module";
-import { isInScope, headwearKind } from "./lib/headwearCollapseCore.mjs";
+import { isInScope, headwearKind, emptyKindCount } from "./lib/headwearCollapseCore.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -82,12 +82,12 @@ export function hasPrivilegedCredential(app) {
   for (const [pid, p] of inScope) for (const code of Object.values(p.barcodes || {})) codes.set(String(code), pid);
   for (const [code, rec] of Object.entries(barcodesIdx)) if (rec && pidSet.has(rec.productId)) if (!codes.has(code)) codes.set(code, rec.productId);
 
-  const kinds = { beanie: 0, cap: 0 };
+  const kinds = emptyKindCount();
   for (const [, p] of inScope) kinds[headwearKind(p)]++;
   const perProduct = new Map();
   for (const pid of codes.values()) perProduct.set(pid, (perProduct.get(pid) || 0) + 1);
   const worst = [...perProduct.entries()].sort((a, b) => b[1] - a[1])[0];
-  console.log(`  scope: ${inScope.length} products (${kinds.beanie} beanies, ${kinds.cap} caps), ${codes.size} barcode index records to probe`);
+  console.log(`  scope: ${inScope.length} products (${kinds.beanie} beanies, ${kinds.cap} caps, ${kinds.bucket} bucket hats), ${codes.size} barcode index records to probe`);
   console.log(`  largest single atomic batch: ${worst ? `${worst[1]} index record(s) on ${worst[0]}` : "n/a"} — all of them must be writable or that product cannot collapse\n`);
 
   let pass = 0; const failures = []; const addsSize = [];

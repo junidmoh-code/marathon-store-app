@@ -19,12 +19,17 @@
 // test, so it would pass vacuously.
 
 import { describe, it, expect } from "vitest";
+import { readFileSync, readdirSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import {
   applyMovementAdmin, planStep1, planStep2, planStep3, step2Done, verifyProduct,
   assertDrained, legIds, orderBlocks, transferBlocks, movementRecency, pushKeyMs, isInScope, isUnexpectedSubcategory,
   headwearKind, isExcludedHeadwear, isCapByShelfOnly, isRetiredSize, isRetiredSizeKey,
-  invalidTargetRow, policyRowGate,
+  invalidTargetRow, policyRowGate, HEADWEAR_KINDS, emptyKindCount,
 } from "./headwearCollapseCore.mjs";
+
+const SCRIPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ── fake RTDB ────────────────────────────────────────────────────────────────
 function makeDb(seed = {}) {
@@ -876,10 +881,129 @@ describe("STEP 3 — target rows", () => {
   });
 });
 
-describe("scope — beanies and caps are in, nothing else is", () => {
+// ── ONE PREDICATE, STRUCTURALLY — the census, the migration, the probe and the
+// policy model must be UNABLE to disagree about who is in scope ──────────────
+// The behavioural tests above prove what the rule decides. These prove that
+// every consumer asks the same rule, which is the property that actually failed
+// in the field: PR #345's scope decision lived in one place, but the moment a
+// second file restates a name pattern the two answer different questions and
+// nothing fails until a live run collapses the wrong product. The check is on
+// the SOURCE, because that is where the duplication would appear.
+describe("the scope rule cannot be restated anywhere else", () => {
+  const CONSUMERS = [
+    "headwear-census.mjs",
+    "collapse-one-size-headwear.mjs",
+    "headwear-preflight-probe.mjs",
+    "model-headwear-onesize-policy.mjs",
+    "apply-headwear-policy.mjs",
+    "headwear-excluded-report.mjs",
+  ];
+  const src = (f) => readFileSync(join(SCRIPTS_DIR, f), "utf8");
+
+  it("every consumer imports its scope decision from the shared core", () => {
+    for (const f of CONSUMERS) {
+      const text = src(f);
+      expect(text, `${f} must import from the shared core`).toMatch(/from "\.\/lib\/headwearCollapseCore\.mjs"/);
+      // …and it must actually take a scope decision from there, not merely
+      // import some unrelated helper out of the same module.
+      expect(text, `${f} must take its scope decision from the core`)
+        .toMatch(/\b(isInScope|headwearKind|isExcludedHeadwear|policyRowGate)\b/);
+    }
+  });
+
+  it("the core is the ONLY file under scripts/ holding a headwear name pattern", () => {
+    // A second copy of /beanie/i or /bucket\s*hats?/i anywhere else is the exact
+    // shape of the drift this suite exists to prevent: this widening changed one
+    // pattern, and any duplicate would have kept answering the old question.
+    // The classifiers are exported for reporting precisely so no copy is needed.
+    // Regex-literal-shaped spans only, and only those naming a HEADWEAR word.
+    // Bare "bucket" is deliberately not enough — `storageBucket` is all over
+    // this repo and a check that trips on it would be turned off within a week.
+    // "bucket" must be followed by "hat" inside the same literal, as it is in
+    // the real pattern (`\bbucket\s*hats?\b`).
+    const RE_LITERAL = /\/(?:[^\n/\\[]|\\.|\[(?:[^\]\\]|\\.)*\])+\/[a-z]*/g;
+    const HEADWEAR_WORD = /beanie|bucket[^a-z]{0,8}hat|visor/i;
+    // The mutation harness is the one exemption, and for the opposite reason to
+    // a loophole: its entire job is to quote the core's source text verbatim so
+    // it can reintroduce each bug. Every pattern in it is a QUOTATION of the
+    // core, never a second decision — nothing in that file is ever imported or
+    // run against live data.
+    const QUOTES_THE_CORE = "mutation-proof-headwear-collapse.mjs";
+    const offenders = [];
+    for (const f of readdirSync(SCRIPTS_DIR).filter((n) => n.endsWith(".mjs") && n !== QUOTES_THE_CORE)) {
+      const body = readFileSync(join(SCRIPTS_DIR, f), "utf8")
+        // Comments quote the patterns constantly, and prose is not a decision.
+        .split("\n").filter((l) => !/^\s*(\/\/|\*)/.test(l)).join("\n");
+      if ((body.match(RE_LITERAL) || []).some((lit) => HEADWEAR_WORD.test(lit))) offenders.push(f);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("the shared kind list is what the CLI validates --kind against", () => {
+    // A hand-written `KIND !== "beanie" && KIND !== "cap"` check makes a newly
+    // added kind unrunnable while the scope rule happily admits it — the
+    // operator sees the products in the census and cannot pass them to the CLI.
+    const text = src("collapse-one-size-headwear.mjs");
+    expect(text).toMatch(/HEADWEAR_KINDS\.includes\(KIND\)/);
+    expect(text).not.toMatch(/KIND !== "beanie"/);
+  });
+
+  it("no consumer builds a per-kind counter from a hardcoded literal", () => {
+    // `{ beanie: 0, cap: 0 }` yields `undefined++` → NaN the moment a third kind
+    // appears, and NaN in a summary line is a silent wrong number, not a crash.
+    for (const f of CONSUMERS) {
+      expect(src(f), `${f} must build its kind counter from the shared list`)
+        .not.toMatch(/\{\s*beanie:\s*0\s*,\s*cap:\s*0\s*\}/);
+    }
+  });
+});
+
+describe("the scope decision writes nothing", () => {
+  it("deciding scope over a whole catalogue touches no cell and no target row", async () => {
+    // Widening scope must not be able to move stock or arm the refill engine as
+    // a side effect. The predicates are pure functions, and this pins that:
+    // every scope/reporting entry point is called over a catalogue that includes
+    // the newly admitted bucket hats, against a db that records every write.
+    const seed = seedProduct({ pid: "pB", cells: { hub2: { M: 5 } } });
+    seed.products.pBucket = { name: "Nike bucket hat green", productType: "clothing", subcategory: "Caps & Hats", sizes: ["M"], barcodes: { M: "00088882" } };
+    seed.barcodes["00088882"] = { productId: "pBucket", size: "M" };
+    seed.stock.hub2.pBucket = { M: cell(7) };
+    seed.stock_targets = { hub2: { pBucket: { M: { target: 3, minQty: 1 } } } };
+    const db = makeDb(seed);
+    const before = JSON.stringify(db.raw());
+
+    for (const p of Object.values(db.raw().products)) {
+      headwearKind(p); isInScope(p); isExcludedHeadwear(p); isCapByShelfOnly(p); isUnexpectedSubcategory(p);
+      policyRowGate(p); policyRowGate(p, { remove: true });
+    }
+    emptyKindCount();
+    expect(JSON.stringify(db.raw())).toBe(before);
+    expect(db.stats.updates).toBe(0);
+  });
+
+  it("a newly in-scope bucket hat's own plans write no cell outside its product and no NEW target row", async () => {
+    // planStep2 is the identity update and planStep3 the target retirement —
+    // the two things a widening could plausibly leak into. Step 2 must name only
+    // this product's identity and index; Step 3 must write nothing at all for a
+    // product that has no explicit target row to retire.
+    const product = { name: "Nike bucket hat green", subcategory: "Caps & Hats", sizes: ["M"], barcodes: { M: "00088882" } };
+    const s2 = planStep2("pBucket", product, { "00088882": { productId: "pBucket", size: "M" } }, { M: 7 });
+    expect(Object.keys(s2.updates).sort()).toEqual([
+      "barcodes/00088882/size", "products/pBucket/barcodes", "products/pBucket/sizes",
+    ]);
+    expect(Object.keys(s2.updates).some((p) => p.startsWith("stock/") || p.startsWith("stock_targets/"))).toBe(false);
+    expect(planStep3("pBucket", {}, NOW)).toEqual({});
+    // …and where a row DOES exist, Step 3 retires it rather than arming one:
+    // target 0 is the engine's own word for "deliberately excluded".
+    const s3 = planStep3("pBucket", { hub2: { M: { target: 3, minQty: 1 } } }, NOW);
+    expect(Object.values(s3).every((r) => r.target === 0 && r.minQty === 0)).toBe(true);
+  });
+});
+
+describe("scope — beanies, caps and bucket hats are in; visors are not", () => {
   const CH = "Caps & Hats";
 
-  it("takes beanies by name and caps by the shelf, in one predicate", () => {
+  it("takes beanies by name, caps by the shelf, and bucket hats by BOTH", () => {
     expect(headwearKind({ name: "Nike beanie green", subcategory: CH })).toBe("beanie");
     expect(headwearKind({ name: "NIKE BEANIE GREEN" })).toBe("beanie");           // case-insensitive, shelf-independent
     expect(headwearKind({ name: "Nike cap black", subcategory: CH })).toBe("cap");
@@ -893,16 +1017,110 @@ describe("scope — beanies and caps are in, nothing else is", () => {
     expect(headwearKind({ name: "New Era 59FIFTY Detroit Tigers capBlack", subcategory: CH })).toBe("cap");
   });
 
-  it("rejects the things that share the shelf without being caps, and everything off it", () => {
+  // ── THE WIDENING (2026-08-11) ──────────────────────────────────────────────
+  it("admits a bucket hat on the shelf, as its OWN kind — not folded into caps", () => {
     for (const name of [
-      "Alo Yoga Airlift Solar Visor White",
       "Air Jordan bucket hat blue",
       "Nike x Clemson tigers bucket hat red",
       "Nike bucket hat green",
+      "Lacoste bucket hat khaki",
+      "NIKE BUCKET HATS PINK CAMO",     // case and plural
+      "Kangol bucket  hat beige",       // the space in "bucket hat" is optional/repeatable
+      "Adidas buckethat black",         // …including absent entirely
     ]) {
-      expect(headwearKind({ name, subcategory: CH })).toBe(null);
-      expect(isExcludedHeadwear({ name, subcategory: CH })).toBe(true);
+      const p = { name, subcategory: CH };
+      expect(headwearKind(p)).toBe("bucket");
+      expect(isInScope(p)).toBe(true);
+      // In scope means NOT in the excluded list — the two must partition, never
+      // overlap, or the census would print the same record under both headings.
+      expect(isExcludedHeadwear(p)).toBe(false);
     }
+  });
+
+  it("keeps a bucket hat OFF the Caps & Hats shelf out, and still reports it", () => {
+    // The owner's constraint on this widening was that nothing outside the shelf
+    // may be pulled in. A bucket hat filed elsewhere is therefore NOT admitted —
+    // unlike a beanie, whose name alone decides wherever it is filed. It is
+    // still named as an exclusion so it cannot fall between the two lists.
+    for (const sub of ["Clothing — Uncategorized", "Accessories", undefined]) {
+      const p = { name: "Air Jordan bucket hat blue", subcategory: sub };
+      expect(headwearKind(p)).toBe(null);
+      expect(isInScope(p)).toBe(false);
+      expect(isExcludedHeadwear(p)).toBe(true);
+    }
+  });
+
+  it("still rejects every visor — on the shelf and off it", () => {
+    for (const sub of [CH, "Clothing — Uncategorized"]) {
+      for (const name of ["Alo Yoga Airlift Solar Visor White", "Alo yoga airlift solar visor black", "NIKE VISORS"]) {
+        const p = { name, subcategory: sub };
+        expect(headwearKind(p)).toBe(null);
+        expect(isInScope(p)).toBe(false);
+        expect(isExcludedHeadwear(p)).toBe(true);
+      }
+    }
+    // A pathological name carrying both words is read as the visor — the
+    // conservative side, since the visor is the thing not authorised.
+    const both = { name: "Nike visor bucket hat hybrid", subcategory: CH };
+    expect(headwearKind(both)).toBe(null);
+    expect(isExcludedHeadwear(both)).toBe(true);
+  });
+
+  it("admits NOTHING that is not on the Caps & Hats shelf, except a beanie by name", () => {
+    // The widening's stop condition, stated as a sweep rather than as a claim:
+    // over a catalogue of every off-shelf shape this migration could plausibly
+    // meet, the ONLY thing admitted is a beanie.
+    const offShelf = [
+      { name: "Nike Air Max 90", subcategory: "Footwear" },
+      { name: "Nike bucket hat green", subcategory: "Footwear" },
+      { name: "Alo Yoga Airlift Solar Visor Pink", subcategory: "Clothing — Uncategorized" },
+      { name: "Nike cap black", subcategory: "Clothing — Uncategorized" },
+      { name: "Armani exchange mustard", subcategory: "Clothing — Uncategorized" },
+      { name: "Gucci bucket bag", subcategory: "Bags" },              // "bucket", no hat
+      { name: "Nike hat rack", subcategory: "Accessories" },          // "hat", no bucket
+      { name: "Ralph Lauren polo shirt", subcategory: "Clothing — Tops" },
+      { name: "Casio watch", subcategory: "Watches" },
+      { name: "", subcategory: "Footwear" },
+      { name: "Nike beanie grey", subcategory: "Accessories" },       // the one exception
+    ];
+    const admitted = offShelf.filter(isInScope).map((p) => p.name);
+    expect(admitted).toEqual(["Nike beanie grey"]);
+    expect(headwearKind(offShelf.at(-1))).toBe("beanie");
+  });
+
+  it("admits from the shelf ONLY beanies, caps and bucket hats — never a visor", () => {
+    const shelf = [
+      { name: "Nike beanie green", subcategory: CH },
+      { name: "Nike cap black", subcategory: CH },
+      { name: "Armani exchange mustard", subcategory: CH },
+      { name: "Air Jordan bucket hat blue", subcategory: CH },
+      { name: "Alo Yoga Airlift Solar Visor White", subcategory: CH },
+    ];
+    expect(shelf.map(headwearKind)).toEqual(["beanie", "cap", "cap", "bucket", null]);
+    // …and the one rejected shelf-mate is the visor, accounted for as excluded.
+    expect(shelf.filter((p) => !isInScope(p)).map((p) => isExcludedHeadwear(p))).toEqual([true]);
+  });
+
+  it("scope and exclusion PARTITION every headwear-named record — no overlap, no gap", () => {
+    // The two lists are the census's entire account of the Caps & Hats shelf. A
+    // record in both is printed twice; a record in neither vanishes from the
+    // report altogether, which is how the mis-filed visor was once lost.
+    const catalogue = [
+      { name: "Nike beanie green", subcategory: CH },
+      { name: "Nike beanie green", subcategory: "Accessories" },
+      { name: "Nike cap black", subcategory: CH },
+      { name: "Air Jordan bucket hat blue", subcategory: CH },
+      { name: "Air Jordan bucket hat blue", subcategory: "Accessories" },
+      { name: "Alo Yoga Airlift Solar Visor White", subcategory: CH },
+      { name: "Alo yoga airlift solar visor black", subcategory: "Clothing — Uncategorized" },
+    ];
+    for (const p of catalogue) {
+      expect(isInScope(p) && isExcludedHeadwear(p)).toBe(false);        // no overlap
+      expect(isInScope(p) || isExcludedHeadwear(p)).toBe(true);         // no gap
+    }
+  });
+
+  it("rejects everything off the shelf that is not beanie-named, and every merge stub", () => {
     // Off the shelf and not beanie-named → not headwear, whatever it is called.
     expect(headwearKind({ name: "Nike cap black", subcategory: "Clothing — Uncategorized" })).toBe(null);
     // The one live mis-filed visor: out of scope AND still reported as an
@@ -915,13 +1133,17 @@ describe("scope — beanies and caps are in, nothing else is", () => {
     // Merge stubs are redirects with no stock identity — never collapsed in place.
     expect(headwearKind({ name: "Nike beanie green", mergedInto: "pOther" })).toBe(null);
     expect(headwearKind({ name: "Nike cap black", subcategory: CH, mergedInto: "pOther" })).toBe(null);
+    expect(headwearKind({ name: "Air Jordan bucket hat blue", subcategory: CH, mergedInto: "pOther" })).toBe(null);
     expect(isExcludedHeadwear({ name: "Air Jordan bucket hat blue", subcategory: CH, mergedInto: "pX" })).toBe(false);
+    expect(isExcludedHeadwear({ name: "Alo Yoga Airlift Solar Visor White", subcategory: CH, mergedInto: "pX" })).toBe(false);
   });
 
   it("separates the caps admitted by the shelf alone, so the census can list them", () => {
     expect(isCapByShelfOnly({ name: "Armani exchange mustard", subcategory: CH })).toBe(true);
     expect(isCapByShelfOnly({ name: "Nike cap black", subcategory: CH })).toBe(false);
     expect(isCapByShelfOnly({ name: "Nike beanie green", subcategory: CH })).toBe(false);
+    // A bucket hat's name IS decisive, so it never appears on the "trust the
+    // shelf" list a human is asked to eyeball.
     expect(isCapByShelfOnly({ name: "Air Jordan bucket hat blue", subcategory: CH })).toBe(false);
   });
 
@@ -932,47 +1154,79 @@ describe("scope — beanies and caps are in, nothing else is", () => {
     expect(isUnexpectedSubcategory({ name: "Nike beanie green", subcategory: CH })).toBe(false);
     expect(isUnexpectedSubcategory({ name: "Nike cap black", subcategory: "Accessories" })).toBe(false);
     expect(isUnexpectedSubcategory({ name: "Nike beanie green", subcategory: "Accessories", mergedInto: "pX" })).toBe(false);
+    // A bucket hat cannot be off-shelf AND in scope, so the flag can never fire
+    // on one — it is not a beanie and the shelf is already required.
+    expect(isUnexpectedSubcategory({ name: "Air Jordan bucket hat blue", subcategory: "Accessories" })).toBe(false);
   });
 
-  it("a visor and a bucket hat on the same shelf survive a full headwear run untouched", async () => {
+  it("every kind the scope rule can return is in the exported kind list", () => {
+    // The list is what four separate scripts build their per-kind counters and
+    // the CLI builds its --kind validation from. A kind the rule can return but
+    // the list omits is an `undefined++` → NaN in every one of those summaries,
+    // and a --kind the operator cannot run.
+    const samples = [
+      { name: "Nike beanie green", subcategory: CH },
+      { name: "Nike cap black", subcategory: CH },
+      { name: "Air Jordan bucket hat blue", subcategory: CH },
+    ];
+    const returned = [...new Set(samples.map(headwearKind))];
+    expect(returned.every((k) => HEADWEAR_KINDS.includes(k))).toBe(true);
+    expect([...HEADWEAR_KINDS].sort()).toEqual([...returned].sort());
+    // emptyKindCount is the counter those scripts start from — it must be
+    // total over the kind list and start every kind at zero.
+    expect(emptyKindCount()).toEqual({ beanie: 0, cap: 0, bucket: 0 });
+  });
+
+  it("a visor survives a full headwear run untouched while a bucket hat collapses", async () => {
     const seed = seedProduct({ pid: "pB", cells: { hub2: { M: 5 } } });
-    // A real multi-size cap — now IN scope.
+    // A real multi-size cap — in scope.
     seed.products.pCap = { name: "Nike cap black", productType: "clothing", subcategory: CH, sizes: ["S", "M", "L"], barcodes: { S: "00077771", M: "00077772", L: "00077773" } };
     seed.barcodes["00077771"] = { productId: "pCap", size: "S" };
     seed.barcodes["00077772"] = { productId: "pCap", size: "M" };
     seed.barcodes["00077773"] = { productId: "pCap", size: "L" };
     seed.stock.hub2.pCap = { S: cell(2), M: cell(3), L: cell(4) };
-    // A visor and a bucket hat — on the same shelf, NOT in scope.
+    // A visor — same shelf, still NOT in scope.
     seed.products.pVisor = { name: "Alo Yoga Airlift Solar Visor White", productType: "clothing", subcategory: CH, sizes: ["M"], barcodes: { M: "00088881" } };
     seed.barcodes["00088881"] = { productId: "pVisor", size: "M" };
     seed.stock.hub2.pVisor = { M: cell(6) };
+    // A bucket hat on the shelf — NOW in scope, and it really collapses.
     seed.products.pBucket = { name: "Nike bucket hat green", productType: "clothing", subcategory: CH, sizes: ["M"], barcodes: { M: "00088882" } };
     seed.barcodes["00088882"] = { productId: "pBucket", size: "M" };
     seed.stock.hub2.pBucket = { M: cell(7) };
+    // A bucket hat filed OFF the shelf — out, and untouched, exactly like the visor.
+    seed.products.pStray = { name: "Kangol bucket hat beige", productType: "clothing", subcategory: "Accessories", sizes: ["M"], barcodes: { M: "00088883" } };
+    seed.barcodes["00088883"] = { productId: "pStray", size: "M" };
+    seed.stock.hub2.pStray = { M: cell(8) };
     const db = makeDb(seed);
 
     // THE SCOPE RULE — the same exported predicate the CLI filters with, not a
     // restatement of it.
     const products = db.raw().products;
     const inScope = Object.entries(products).filter(([, p]) => isInScope(p)).map(([pid]) => pid).sort();
-    expect(inScope).toEqual(["pB", "pCap"]);
+    expect(inScope).toEqual(["pB", "pBucket", "pCap"]);
 
     for (const pid of inScope) await migrate(db, pid);
 
     const raw = db.raw();
-    // Both in-scope products collapsed…
+    // All three in-scope products collapsed…
     expect(raw.products.pB.sizes).toEqual(["_"]);
     expect(raw.products.pCap.sizes).toEqual(["_"]);
     expect(raw.stock.hub2.pCap._.qty).toBe(9);
+    // …including the bucket hat, whose 7 units moved into the "_" cell.
+    expect(raw.products.pBucket.sizes).toEqual(["_"]);
+    expect(raw.products.pBucket.barcodes).toEqual({ _: "00088882" });
+    expect(raw.barcodes["00088882"]).toEqual({ productId: "pBucket", size: "_" });
+    expect(raw.stock.hub2.pBucket._.qty).toBe(7);
+    expect(raw.stock.hub2.pBucket.M.qty).toBe(0);
     // …and the two out-of-scope neighbours are byte-identical to how they began.
     expect(raw.products.pVisor).toEqual(seed.products.pVisor);
-    expect(raw.products.pBucket).toEqual(seed.products.pBucket);
+    expect(raw.products.pStray).toEqual(seed.products.pStray);
     expect(raw.barcodes["00088881"]).toEqual({ productId: "pVisor", size: "M" });
-    expect(raw.barcodes["00088882"]).toEqual({ productId: "pBucket", size: "M" });
+    expect(raw.barcodes["00088883"]).toEqual({ productId: "pStray", size: "M" });
     expect(raw.stock.hub2.pVisor).toEqual({ M: cell(6) });
-    expect(raw.stock.hub2.pBucket).toEqual({ M: cell(7) });
+    expect(raw.stock.hub2.pStray).toEqual({ M: cell(8) });
     expect(raw.stock.hub2.pVisor._).toBeUndefined();
-    expect(raw.stock.hub2.pBucket._).toBeUndefined();
+    expect(raw.stock.hub2.pStray._).toBeUndefined();
   });
 });
 
