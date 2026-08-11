@@ -343,9 +343,15 @@ const MUTATIONS = [
   },
   {
     id: "M35",
+    // The anchor spans all four lines on purpose. Appending a SECOND visor
+    // check after the bucket test proves nothing — the one at the top has
+    // already returned — so the mutation has to MOVE the check, not duplicate
+    // it. The first attempt at this mutation was exactly that no-op, and the
+    // harness correctly reported NOT PROVEN rather than crediting it.
     guard: "The visor test runs BEFORE the bucket-hat test, so a name carrying both words stays out",
     file: CORE,
-    from: `  if (BEANIE_NAME.test(name)) return "beanie";
+    from: `  if (VISOR_NAME.test(name)) return null;
+  if (BEANIE_NAME.test(name)) return "beanie";
   if (product.subcategory !== HEADWEAR_SUBCATEGORY) return null;
   if (BUCKET_NAME.test(name)) return "bucket";`,
     to: `  if (BEANIE_NAME.test(name)) return "beanie";
