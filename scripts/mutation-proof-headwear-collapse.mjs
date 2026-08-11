@@ -345,10 +345,33 @@ const MUTATIONS = [
     id: "M35",
     guard: "The visor test runs BEFORE the bucket-hat test, so a name carrying both words stays out",
     file: CORE,
-    from: `  if (VISOR_NAME.test(name)) return null;
+    from: `  if (BEANIE_NAME.test(name)) return "beanie";
+  if (product.subcategory !== HEADWEAR_SUBCATEGORY) return null;
   if (BUCKET_NAME.test(name)) return "bucket";`,
-    to: `  if (BUCKET_NAME.test(name)) return "bucket";
+    to: `  if (BEANIE_NAME.test(name)) return "beanie";
+  if (product.subcategory !== HEADWEAR_SUBCATEGORY) return null;
+  if (BUCKET_NAME.test(name)) return "bucket";
   if (VISOR_NAME.test(name)) return null;`,
+    tests: SUITE,
+  },
+  {
+    id: "M42",
+    guard: "The visor test runs BEFORE the BEANIE test — the beanie rule is shelf-independent, so a later visor check is bypassable everywhere",
+    file: CORE,
+    from: `  if (VISOR_NAME.test(name)) return null;
+  if (BEANIE_NAME.test(name)) return "beanie";`,
+    to: `  if (BEANIE_NAME.test(name)) return "beanie";
+  if (VISOR_NAME.test(name)) return null;`,
+    tests: SUITE,
+  },
+  {
+    id: "M43",
+    guard: "The excluded report's grouping breaks the visor/bucket tie the same way the scope rule does",
+    file: CORE,
+    from: `  if (isVisorNamed(product)) return "visor";
+  if (isBucketHatNamed(product)) return "bucket";`,
+    to: `  if (isBucketHatNamed(product)) return "bucket";
+  if (isVisorNamed(product)) return "visor";`,
     tests: SUITE,
   },
   {

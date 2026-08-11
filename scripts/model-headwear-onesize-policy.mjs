@@ -429,6 +429,11 @@ const minQtyFor = (target) => Math.ceil(target / 2);
   const capsInSubcat = Object.values(productsLive).filter((p) => p?.subcategory === "Caps & Hats" && !isInScope(p)).length;
   console.log(`  (Adding "Caps & Hats" to subcategoryRunByLocation would also arm the ${capsInSubcat} shelf-mates`);
   console.log(`   this migration deliberately excludes — the visors. Do not use that lever.)`);
+  // The count above is shelf-scoped (that is what the lever arms), so it cannot
+  // see a bucket hat filed elsewhere — which the scope rule also excludes. Say
+  // so, or the line reads as "every bucket hat is eligible". (CodeRabbit #346.)
+  console.log(`  (A bucket hat filed OUTSIDE "Caps & Hats" is excluded too, and this lever would not`);
+  console.log(`   reach it either — it arms by subcategory.)`);
 
   // ── the payload + the commands ────────────────────────────────────────────
   writeFileSync(PAYLOAD_OUT, JSON.stringify(payload, null, 2));

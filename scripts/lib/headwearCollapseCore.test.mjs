@@ -26,7 +26,7 @@ import {
   applyMovementAdmin, planStep1, planStep2, planStep3, step2Done, verifyProduct,
   assertDrained, legIds, orderBlocks, transferBlocks, movementRecency, pushKeyMs, isInScope, isUnexpectedSubcategory,
   headwearKind, isExcludedHeadwear, isCapByShelfOnly, isRetiredSize, isRetiredSizeKey,
-  invalidTargetRow, policyRowGate, HEADWEAR_KINDS, emptyKindCount,
+  invalidTargetRow, policyRowGate, HEADWEAR_KINDS, emptyKindCount, excludedHeadwearGroup,
 } from "./headwearCollapseCore.mjs";
 
 const SCRIPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -1066,6 +1066,26 @@ describe("scope — beanies, caps and bucket hats are in; visors are not", () =>
     expect(isExcludedHeadwear(both)).toBe(true);
   });
 
+  it("the visor word beats the BEANIE word too, and off the shelf as well", () => {
+    // The beanie rule is shelf-independent, so with the visor test after it a
+    // "…visor beanie…" record was admitted as a beanie ANYWHERE in the
+    // catalogue — and isExcludedHeadwear then reported it as not-excluded,
+    // because it was in scope. It would have collapsed with nothing in either
+    // census list mentioning that a visor word was involved. There is no such
+    // record live today; the ordering is what keeps it that way.
+    for (const sub of [CH, "Accessories", "Clothing — Uncategorized", undefined]) {
+      for (const name of ["Nike visor beanie navy", "Alo Yoga Solar Visor beanie"]) {
+        const p = { name, subcategory: sub };
+        expect(headwearKind(p)).toBe(null);
+        expect(isInScope(p)).toBe(false);
+        expect(isExcludedHeadwear(p)).toBe(true);      // named, never silent
+      }
+    }
+    // …and an ordinary beanie is untouched by the reordering, on the shelf or off.
+    expect(headwearKind({ name: "Nike beanie navy", subcategory: CH })).toBe("beanie");
+    expect(headwearKind({ name: "Nike beanie navy", subcategory: "Accessories" })).toBe("beanie");
+  });
+
   it("admits NOTHING that is not on the Caps & Hats shelf, except a beanie by name", () => {
     // The widening's stop condition, stated as a sweep rather than as a claim:
     // over a catalogue of every off-shelf shape this migration could plausibly
@@ -1136,6 +1156,21 @@ describe("scope — beanies, caps and bucket hats are in; visors are not", () =>
     expect(headwearKind({ name: "Air Jordan bucket hat blue", subcategory: CH, mergedInto: "pOther" })).toBe(null);
     expect(isExcludedHeadwear({ name: "Air Jordan bucket hat blue", subcategory: CH, mergedInto: "pX" })).toBe(false);
     expect(isExcludedHeadwear({ name: "Alo Yoga Airlift Solar Visor White", subcategory: CH, mergedInto: "pX" })).toBe(false);
+  });
+
+  it("groups an excluded record under the SAME tie-break the scope rule uses", () => {
+    // The excluded report prints under these headings. If its tie broke the
+    // other way, a dual match would be filed as "the name cannot classify this"
+    // — a false claim about a record headwearKind reads fine as a visor — and
+    // would vanish from the visor count at the same time.
+    expect(excludedHeadwearGroup({ name: "Alo Yoga Airlift Solar Visor White" })).toBe("visor");
+    expect(excludedHeadwearGroup({ name: "Air Jordan bucket hat blue" })).toBe("bucket");
+    expect(excludedHeadwearGroup({ name: "Nike visor bucket hat hybrid" })).toBe("visor");
+    expect(headwearKind({ name: "Nike visor bucket hat hybrid", subcategory: CH })).toBe(null);
+    // "unclassifiable" keeps its real meaning: neither word present.
+    expect(excludedHeadwearGroup({ name: "Nike Air Max 90" })).toBe("unclassifiable");
+    expect(excludedHeadwearGroup({ name: "" })).toBe("unclassifiable");
+    expect(excludedHeadwearGroup(null)).toBe("unclassifiable");
   });
 
   it("separates the caps admitted by the shelf alone, so the census can list them", () => {

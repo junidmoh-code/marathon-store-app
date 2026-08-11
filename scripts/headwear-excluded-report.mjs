@@ -47,7 +47,7 @@ import { join } from "path";
 import {
   isExcludedHeadwear, isInScope, isRetiredSizeKey, isRetiredSize,
   orderBlocks, transferBlocks, HEADWEAR_SUBCATEGORY,
-  isBucketHatNamed, isVisorNamed,
+  excludedHeadwearGroup,
 } from "./lib/headwearCollapseCore.mjs";
 // The bucket/visor classifiers are IMPORTED, never restated. A local copy here
 // would have kept sorting records by the pre-widening wording while the scope
@@ -141,8 +141,10 @@ const OUT = process.env.EXCLUDED_JSON || join(tmpdir(), `headwear-excluded-${Dat
     }
 
     const name = String(p.name || "");
-    const isBucket = isBucketHatNamed(p);
-    const isVisor = isVisorNamed(p);
+    // The grouping — and the visor-wins-the-tie rule inside it — is the CORE's,
+    // so this report cannot contradict the scope rule it exists to be compared
+    // against.
+    const group = excludedHeadwearGroup(p);
     // Sized keys holding REAL stock — the merge risk. A negative is a shortage
     // signal, not two fits sitting on a shelf, so it is reported but does not
     // raise the two-fit stop on its own.
@@ -150,7 +152,7 @@ const OUT = process.env.EXCLUDED_JSON || join(tmpdir(), `headwear-excluded-${Dat
 
     rows.push({ pid, name, sizes, subcategory: p.subcategory ?? null, productType: p.productType ?? null,
       onShelf: p.subcategory === HEADWEAR_SUBCATEGORY,
-      group: isBucket && !isVisor ? "bucket" : isVisor && !isBucket ? "visor" : "unclassifiable",
+      group,
       cells, unitsBySizeKey, totalUnits, positiveSized, codes, targetRows, openRefs: refs,
       alreadyOneSize: JSON.stringify(sizes) === JSON.stringify(["_"]),
       wouldBeInScopeToday: isInScope(p) });
@@ -219,5 +221,15 @@ const OUT = process.env.EXCLUDED_JSON || join(tmpdir(), `headwear-excluded-${Dat
       bucketsStillSized: bucketSized.length, bucketsTwoFit: twoFit.length },
     rows }, null, 2));
   console.log(`\nJSON report: ${OUT}`);
-  process.exit(0);
-})().catch((e) => { console.error(e); process.exit(1); });
+})()
+  // ── LET THE OUTPUT DRAIN ───────────────────────────────────────────────────
+  // process.exit() tears the process down without waiting for stdout, and this
+  // script's entire product is what it prints. Piped or redirected — which is
+  // exactly how a long report gets read — stdout is not synchronous, so the
+  // tail can be lost and the report looks like it simply stopped. Setting
+  // exitCode and closing the RTDB connection instead lets Node drain and exit
+  // on its own. (CodeRabbit, PR #346. The older scripts in this family still
+  // use process.exit; they are not touched here, but this is the pattern to
+  // move them to.)
+  .catch((e) => { console.error(e); process.exitCode = 1; })
+  .finally(() => admin.app().delete().catch(() => {}));

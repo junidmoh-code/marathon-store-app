@@ -189,15 +189,41 @@ export const isBeanieNamed = (product) => BEANIE_NAME.test(String(product?.name 
 export const isVisorNamed = (product) => VISOR_NAME.test(String(product?.name || ""));
 export const isBucketHatNamed = (product) => BUCKET_NAME.test(String(product?.name || ""));
 
+// Which heading an EXCLUDED record is printed under. Reporting only, and it
+// lives here rather than in the report script for one reason: the tie between
+// "visor" and "bucket hat" has to break the same way the scope rule breaks it,
+// or the report contradicts the rule it exists to be compared against. Grouping
+// on "matches one and not the other" put a dual match under "the name cannot
+// classify this" — a false claim, about a record headwearKind reads perfectly
+// well as a visor, while also dropping it from the visor count.
+// "unclassifiable" is therefore reserved for its real meaning: a record the
+// caller believes is excluded headwear whose name says neither word.
+// (CodeRabbit, PR #346.)
+export function excludedHeadwearGroup(product) {
+  if (isVisorNamed(product)) return "visor";
+  if (isBucketHatNamed(product)) return "bucket";
+  return "unclassifiable";
+}
+
 export function headwearKind(product) {
   if (!product || product.mergedInto) return null;
   const name = String(product.name || "");
+  // ── THE VISOR TEST RUNS FIRST, BEFORE EVERY ADMISSION ──────────────────────
+  // Ahead of the bucket-hat test, and ahead of the BEANIE test too. A name
+  // matching two of these words is pathological and there is none live today —
+  // but the tie has to break somewhere, and "visor" is the one word the owner
+  // explicitly did not authorise, so it wins every tie by refusing admission.
+  //
+  // Ahead of the beanie test specifically because the beanie rule is
+  // shelf-independent: with the order reversed, a record named "…visor beanie…"
+  // was admitted as a beanie ANYWHERE in the catalogue, and isExcludedHeadwear
+  // then reported it as not-excluded (it is in scope), so it would have been
+  // collapsed with nothing in either census list saying a visor word was
+  // involved. First is the only position where this check cannot be bypassed.
+  // (CodeRabbit, PR #346.)
+  if (VISOR_NAME.test(name)) return null;
   if (BEANIE_NAME.test(name)) return "beanie";
   if (product.subcategory !== HEADWEAR_SUBCATEGORY) return null;
-  // VISOR IS TESTED FIRST, deliberately. A name matching both words is
-  // pathological, but the conservative reading of one is "the thing the owner
-  // did not authorise", so it loses nothing by winning the tie.
-  if (VISOR_NAME.test(name)) return null;
   if (BUCKET_NAME.test(name)) return "bucket";
   return "cap";
 }

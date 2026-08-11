@@ -21,7 +21,7 @@ true of beanies are false of caps, and both change what can go wrong:
 - **87 caps carry more than one barcode** (one carries seven), so a rule has to
   decide which code keeps the `"_"` slot.
 
-### Bucket hats (added 2026-08-11)
+## Bucket hats (added 2026-08-11)
 
 They were excluded alongside the visors in #345; that was wrong and they are now
 in scope as their own kind, runnable on their own with `--kind=bucket`.
@@ -119,18 +119,26 @@ close. Concretely:
   real control there;
 - the 65 Display Check clears in step 0 are floor work.
 
-**Budget it as two sessions, not one.** The beanie half is mostly identity work;
-the cap half carries the arithmetic and the 65 Display Checks. `--kind` exists
-so you can run them on separate days:
+**Budget it as two sessions, not one — but THREE passes.** The beanie half is
+mostly identity work; the cap half carries the arithmetic and the 65 Display
+Checks. `--kind` exists so you can run them on separate days:
 
 ```bash
+# SESSION 1
 node scripts/collapse-one-size-headwear.mjs --kind=beanie --execute
+node scripts/collapse-one-size-headwear.mjs --kind=bucket --execute   # REQUIRED
+
+# SESSION 2 (its own day)
 node scripts/collapse-one-size-headwear.mjs --kind=cap    --execute
-node scripts/collapse-one-size-headwear.mjs --kind=bucket --execute
 ```
 
-The bucket pass is the small one — 16 no-ops and one real product — so it can
-ride along with either of the other two or run on its own in a minute.
+**The bucket pass is not optional and it is not covered by the other two** —
+`--kind` filters, so a beanie run and a cap run between them touch no bucket hat
+at all. It is bound to session 1 above because it is the small one: 16 no-ops
+and one real product, done in a minute. Section 4 runs all three.
+
+(Omitting `--kind` entirely migrates every eligible beanie, cap AND bucket hat in
+one run, which is also correct — it is just not the two-session plan.)
 
 ## 3. Pre-flight probe, then dry run
 
@@ -202,9 +210,11 @@ collapse that product rather than strand the units.
 
 ## 4. Execute
 
-Run it as **two passes**, each with its own snapshot and report, matching the
-two-session plan above. Without `--kind` a single run migrates every eligible
-beanie AND cap, which is not what the session plan says:
+Run it as **three passes**, each with its own snapshot and report, matching the
+two-session plan above. **All three are required** — `--kind` filters, so a kind
+you never name is a kind that never migrates. Without `--kind` at all, a single
+run migrates every eligible beanie, cap AND bucket hat, which is correct but is
+not the session plan:
 
 ```bash
 # PASS 1 — beanies
@@ -212,7 +222,12 @@ SNAPSHOT_PATH=~/headwear-beanie-rollback-$(date +%Y%m%d-%H%M).json \
 REPORT_JSON=~/headwear-beanie-report-$(date +%Y%m%d-%H%M).json \
 node scripts/collapse-one-size-headwear.mjs --kind=beanie --execute
 
-# PASS 2 — caps (the arithmetic half; run it on its own day)
+# PASS 2 — bucket hats (same session; 16 no-ops and one real product)
+SNAPSHOT_PATH=~/headwear-bucket-rollback-$(date +%Y%m%d-%H%M).json \
+REPORT_JSON=~/headwear-bucket-report-$(date +%Y%m%d-%H%M).json \
+node scripts/collapse-one-size-headwear.mjs --kind=bucket --execute
+
+# PASS 3 — caps (the arithmetic half; run it on its own day)
 SNAPSHOT_PATH=~/headwear-cap-rollback-$(date +%Y%m%d-%H%M).json \
 REPORT_JSON=~/headwear-cap-report-$(date +%Y%m%d-%H%M).json \
 node scripts/collapse-one-size-headwear.mjs --kind=cap --execute
@@ -241,8 +256,8 @@ every write is idempotent or ledger-derived, and a re-run completes the rest.
 
 The script verifies per product on fresh reads (identity collapsed, every index
 record at `"_"`, no sized cell holding units, per-location totals unchanged) and
-prints the network total before and after. **The totals are the headline: 1358
-units in, 1358 units out.** That is necessary and not sufficient.
+prints the network total before and after. **The totals are the headline: 1539
+units in, 1539 units out.** That is necessary and not sufficient.
 
 **Scan physical labels at the till.** Reading records back cannot prove the
 index repair worked; only a scan does, and for caps there is a second thing to
