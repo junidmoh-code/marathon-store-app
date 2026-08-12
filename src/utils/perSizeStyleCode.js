@@ -90,12 +90,12 @@ export function findPerSizeSiblings(scanned, products) {
  *     exactly one member of such a cluster must NOT be pulled in silently.
  */
 export function perSizeAutoCandidate(scanned, products) {
-  const code = normaliseStyleCode(scanned);
-  // An exact live owner is never a per-size question — never guess past it.
-  // (The count reaches here only after exact resolution failed, but the sweep
-  // and future callers carry no such guarantee — CodeRabbit, PR #348.)
-  if ((products || []).some((p) => p && p.id && !isMergedAway(p)
-      && String(p.styleCodeNormalised || "") === code)) return null;
+  // Callers without the count's resolve-first guarantee (the sweep, future
+  // surfaces) still never guess past an exact live owner: an exact owner's
+  // code is by construction one digit from any candidate sibling's code, so
+  // it always appears in that candidate's cluster and the cluster gate below
+  // refuses. Pinned by test — no separate exact-owner branch exists because
+  // it would be unreachable (CodeRabbit, PR #348, resolved by proof).
   const sibs = findPerSizeSiblings(scanned, products);
   if (sibs.length !== 1) return null;
   const only = sibs[0];

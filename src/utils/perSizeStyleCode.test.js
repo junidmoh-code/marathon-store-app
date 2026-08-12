@@ -167,8 +167,10 @@ describe("perSizeAutoCandidate — the only gate the count's auto-link passes", 
   });
 
   it("never guesses past an exact live owner (callers without the resolve-first guarantee)", () => {
-    // The scanned code IS registered: sibling maths must not run at all —
-    // pAud sits one digit away, but the exact owner answers, not the rule.
+    // The scanned code IS registered. No separate guard exists for this —
+    // the exact owner is by construction one digit from the candidate
+    // sibling's code, lands in its cluster, and the cluster gate refuses.
+    // This test pins that the refusal holds whichever gate provides it.
     const withExact = [...CLEAN, { id: "pExact", name: "Audysol Navy", styleCodeNormalised: "745SMA00621G" }];
     expect(perSizeAutoCandidate("745SMA006-21G", withExact)).toBe(null);
   });
