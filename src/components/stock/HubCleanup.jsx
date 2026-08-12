@@ -435,15 +435,19 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         const cp = p ? countPanelFor(p) : null;
         if (cp) { fileAllCodes(p.id); setPanel(cp); return; }
         // p is genuinely gone (alias points at nothing live) — fall through
-        // to the never-registered note; that IS the truthful state.
+        // to the link offer; the operator decides what this code is.
       }
-      const noted = await recordUnresolvedScan({ hub, code: display, context: "count" });
-      if (noted.ok) {
-        setUnresolved((u) => ({ ...u, [display.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code: display, context: "count" } }));
-        flash("warn", `${display} reads cleanly but nothing owns it — noted as never registered. Carry on.`);
-      } else {
-        flash("err", `${display} isn't owned by anything, but the note could not be saved (${noted.message || "write failed"}) — try the scan again.`);
-      }
+      // A clean read nothing owns NEVER dead-ends (owner spec 2026-08-12: the
+      // Lacoste per-size labels blocked a live count exactly here). The
+      // operator is holding a real shoe — offer "this is the same shoe as…"
+      // with a product search; the pick files a code alias through the
+      // existing labelAlias door, so the next scan of this size resolves
+      // silently. "Note as never registered" survives inside the panel as the
+      // deliberate answer, no longer the automatic one.
+      setPanel({
+        mode: "link", kind: "code", display, normalised,
+        allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+      });
     } finally { setBusy(false); }
   }, [hub, products, flash]);
 
@@ -481,14 +485,11 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         }
         if (candidates.length) { setAliasConfirm({ tokens, candidates, index: 0 }); return; }
       }
+      // A reading nothing matches NEVER dead-ends (same rule as the
+      // style-number path): offer the link panel — the pick files this reading
+      // as a token alias, so the next read of this label resolves.
       const preview = `reading: ${tokens.slice(0, 5).join(" ")}`;
-      const noted = await recordUnresolvedScan({ hub, code: preview, context: "count" });
-      if (noted.ok) {
-        setUnresolved((u) => ({ ...u, [preview.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code: preview, context: "count" } }));
-        flash("warn", "That label isn't registered to anything — noted as never registered. Carry on.");
-      } else {
-        flash("err", `That label isn't registered, but the note could not be saved (${noted.message || "write failed"}) — try again.`);
-      }
+      setPanel({ mode: "link", kind: "tokens", tokens, preview });
     } finally { setBusy(false); }
   }, [hub, products, flash]);
 
@@ -615,6 +616,64 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       else flash("ok", actual === shelfExpected ? "Confirmed." : canAdjust ? `Shelf adjusted to ${actual}${offShelf ? ` (+${offShelf} off-shelf stays booked)` : ""}.` : `Flagged for an admin (${actual}).`);
     } finally { setBusy(false); }
   }, [hub, session, canAdjust, actorRole, flash]);
+
+  // ── The LINK panel's two exits (owner spec 2026-08-12) ─────────────────────
+  // A pick files the reading through the EXISTING labelAlias door — a code
+  // files as an exact code alias (recordLabelCodes), a token reading as a
+  // token alias (addLabelAlias) — then counting continues on the picked
+  // product. Filing is best-effort: a failed write warns and still opens the
+  // count (the human vouched for the identity; blocking the count on a network
+  // blink is the exact dead-end this panel removes). Note-as-never-registered
+  // is the deliberate second exit, with the same failed-write honesty as ever.
+  const doLinkPick = useCallback(async (p) => {
+    if (!panel || panel.mode !== "link" || !p) return;
+    setBusy(true);
+    try {
+      if (panel.kind === "code") {
+        const shown = formatStyleCodeForDisplay(panel.normalised) || panel.display;
+        try {
+          const res = await recordLabelCodes({
+            productId: p.id, chosenCode: panel.normalised,
+            otherCodes: (panel.allCodes || []).filter((c) => normaliseStyleCode(c) !== panel.normalised),
+          });
+          const clash = res && res.conflicts && res.conflicts.find((c) => c.code === panel.normalised);
+          if (clash) {
+            flash("warn", `${shown} already belongs to another product — flagged as a possible duplicate for review. Counting “${p.name}” anyway.`, 9000);
+          } else {
+            flash("ok", `${shown} linked to “${p.name}” — the next scan of this label resolves by itself.`);
+          }
+        } catch (err) {
+          flash("warn", `Counting “${p.name}”, but the link could not be saved (${err?.message || err}) — the next scan of ${shown} will ask again.`, 8000);
+        }
+      } else {
+        try {
+          await addLabelAlias({ productId: p.id, tokens: panel.tokens });
+          flash("ok", `Label linked to “${p.name}” — the next read of it resolves by itself.`);
+        } catch (err) {
+          flash("warn", `Counting “${p.name}”, but the link could not be saved (${err?.message || err}) — the next read will ask again.`, 8000);
+        }
+      }
+      setPanel(countPanelFor(p));
+      setQuery("");
+    } finally { setBusy(false); }
+  }, [panel, flash]);
+
+  const doLinkNote = useCallback(async () => {
+    if (!panel || panel.mode !== "link") return;
+    const label = panel.kind === "code" ? panel.display : panel.preview;
+    setBusy(true);
+    try {
+      const noted = await recordUnresolvedScan({ hub, code: label, context: "count" })
+        .catch((e) => ({ ok: false, message: String(e?.message || e) }));
+      if (noted.ok) {
+        setUnresolved((u) => ({ ...u, [label.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code: label, context: "count" } }));
+        setPanel(null);
+        flash("warn", `${label} noted as never registered. Carry on.`);
+      } else {
+        flash("err", `The note could not be saved (${noted.message || "write failed"}) — try again.`);
+      }
+    } finally { setBusy(false); }
+  }, [panel, hub, flash]);
 
   // ── Screens ────────────────────────────────────────────────────────────────
 
@@ -990,6 +1049,17 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                      onClose={() => setPanel(null)} />
       )}
 
+      {/* ── THE LINK PANEL — a scan must NEVER dead-end (owner spec
+          2026-08-12) ── a clean label read nothing owns offers "this is the
+          same shoe as…" with a product search. The pick files the reading
+          through the existing labelAlias mechanism so the next scan resolves
+          silently; "never registered" survives as the deliberate answer. */}
+      {panel && panel.mode === "link" && (
+        <LinkPanel key={`lnk_${panel.kind === "code" ? panel.normalised : "tokens"}`}
+                   panel={panel} products={products} busy={busy}
+                   onPick={doLinkPick} onNote={doLinkNote} onClose={() => setPanel(null)} />
+      )}
+
       {merge && (
         <MergeProducts initialLoser={merge.loser} initialSurvivor={merge.other}
                        products={products} allStock={allStock} registry={registry}
@@ -1027,7 +1097,13 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                   onClick={() => {
                     const next = aliasConfirm.index + 1;
                     if (next < aliasConfirm.candidates.length) setAliasConfirm({ ...aliasConfirm, index: next });
-                    else { setAliasConfirm(null); flash("warn", "None matched — find it by name below, or it was never registered."); }
+                    else {
+                      // Every candidate said no — same rule as everywhere else:
+                      // never a dead end. The link panel takes over.
+                      const { tokens } = aliasConfirm;
+                      setAliasConfirm(null);
+                      setPanel({ mode: "link", kind: "tokens", tokens, preview: `reading: ${tokens.slice(0, 5).join(" ")}` });
+                    }
                   }}
                   style={{ ...bGray, flex: 1, minHeight: 52, fontSize: 14 }}>
                   No — {aliasConfirm.index + 1 < aliasConfirm.candidates.length ? "show the next match" : "none of these"}
@@ -1048,6 +1124,66 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
 
       <Toast msg={toast} />
     </div>
+  );
+}
+
+// ─── LINK PANEL — a scan must NEVER dead-end (owner spec 2026-08-12) ─────────
+// The Lacoste incident: the brand prints a DIFFERENT article reference per
+// size (745SMA004-21G is the UK 6.5, 745SMA006-21G the UK 9.5 of ONE shoe), so
+// a product registered off one size's label rejected every other size during
+// the live hub count. This panel is the generic unblocking move for every
+// brand that does this, known or not: a clean read nothing owns offers "this
+// is the same shoe as…" with a product search. The pick files the reading
+// through the EXISTING label-alias mechanism (PR #329/#334 — recordLabelCodes
+// for a printed code, addLabelAlias for a token reading), so the next scan of
+// this label resolves silently. No product record is created, merged or
+// modified here — an alias row is the ONLY write. "Never registered" stays
+// available as the deliberate second exit.
+function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
+  const [q, setQ] = useState("");
+  const hits = useMemo(() => (q.trim() ? searchProducts(products, q, { limit: 12 }) : []), [products, q]);
+  const shown = panel.kind === "code" ? (formatStyleCodeForDisplay(panel.normalised) || panel.display) : null;
+  return (
+    <Panel title="Nothing owns this label — link it" onClose={onClose}>
+      <div style={{ fontSize: 14.5, fontWeight: 700, lineHeight: 1.5, marginBottom: 6 }}>
+        {shown ? <>“{shown}” reads cleanly but isn't registered to any product.</>
+               : <>This label's wording doesn't match anything registered.</>}
+      </div>
+      <div style={{ fontSize: 12.5, color: GRAY, lineHeight: 1.55, marginBottom: 14 }}>
+        Some brands print a different code on every size of the same shoe. If this is a shoe
+        we already have, find it below and link it — the next scan of this label will resolve
+        by itself.
+      </div>
+      <input value={q} onChange={(e) => setQ(e.target.value)} autoFocus
+             placeholder="This is the same shoe as…"
+             style={{ ...input, width: "100%", boxSizing: "border-box", minHeight: 54, fontSize: 16, fontWeight: 600 }} />
+      {hits.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 10 }}>
+          {hits.map((p) => (
+            <button key={p.id} type="button" disabled={busy} onClick={() => onPick(p)}
+              style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 12px", textAlign: "left",
+                       cursor: "pointer", background: CARD, border: BORDER, borderRadius: 13 }}>
+              <Photo url={p.photoUrl} size={52} radius={10} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                <div style={{ fontSize: 11.5, color: GRAY }}>
+                  {p.styleCodeNormalised ? `${formatStyleCodeForDisplay(p.styleCodeNormalised)} · ` : ""}{realSizes(p).length} sizes
+                </div>
+              </div>
+              <span style={{ fontSize: 12, fontWeight: 800, color: BLUE_L }}>Link →</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {q.trim() && hits.length === 0 && (
+        <div style={{ fontSize: 13, color: GRAY, padding: "10px 2px" }}>No product matches “{q}”.</div>
+      )}
+      <div style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,.07)" }}>
+        <BigButton tone="ghost" disabled={busy} onClick={onNote} style={{ minHeight: 52, fontSize: 14 }}>
+          It's genuinely not in the catalogue — note as never registered
+        </BigButton>
+      </div>
+    </Panel>
   );
 }
 
