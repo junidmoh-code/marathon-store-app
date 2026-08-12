@@ -42,8 +42,13 @@ import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 // COUNT-INTEGRITY (owner spec 2026-08-12) — the display SLOT: which size is on
 // which shop's floor, informational only, read by the hub count as "1 on
 // display at Marathon PE". Slot writes are one-liners on the existing display
-// flows; they move no stock.
+// flows; they move no stock. Beside it, TEMPORARY like the count card: the
+// Shipment Release surface for the central→hub held-credit lane — the card and
+// route render nothing once STOCK_HOLD_ENABLED is off.
 import { setDisplaySlot, clearDisplaySlot } from "./components/stock/displaySlots";
+import StockHoldCard from "./components/stock/StockHoldCard";
+import StockHoldRelease from "./components/stock/StockHoldRelease";
+import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
@@ -294,7 +299,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2623,6 +2628,14 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
   const hubCountCard = hubCountVisible
     ? <HubCleanupCard onOpen={() => onSelect(ROLES.HUB_SNEAKER_COUNT)} />
     : null;
+  // TEMPORARY — the Shipment Release card (count-integrity hold lane), beside
+  // the count card. The card gates ITSELF (owner email or a named delegate in
+  // /settings/stockHold/config) and renders null for everyone else, so no
+  // per-viewer wiring is needed here beyond the identity.
+  const stockHoldCard = STOCK_HOLD_ENABLED
+    ? <StockHoldCard viewer={{ email: homeUser?.email, uid: homeUser?.uid }}
+                     onOpen={() => onSelect(ROLES.STOCK_HOLD)} />
+    : null;
 
   // Shared, permission-gated role data — rendered as a desktop tile grid or the
   // mobile RoleCard list.
@@ -2775,6 +2788,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
               the current job, and outside the anyCards branch so it still shows
               for an admin with no other tiles. */}
           {hubCountCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".18s" }}>{hubCountCard}</div>}
+          {stockHoldCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".19s" }}>{stockHoldCard}</div>}
 
           {!anyCards ? (
             <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
@@ -2836,6 +2850,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
       <div style={{ padding:"10px 14px 36px", background:"#000" }}>
         {/* TEMPORARY — hub sneaker stock-take (see the desktop branch above). */}
         {hubCountCard}
+        {stockHoldCard}
         {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
           <GroupSection key={g.label} label={g.label}>
             {g.cards.map((c, i) => (
@@ -16805,6 +16820,10 @@ function AppInner() {
   // 'admin' only; a warehouse counter would be refused by RTDB on every
   // correction, so the door is closed here rather than at the write.
   const hubCountRouteOpen = hubSneakerCountVisibleForViewer({ email: authUser?.email, stockRole });
+  // Shipment Release: the flag opens the door; the view itself re-checks the
+  // owner/delegate gate against the live config (it needs the config loaded
+  // anyway) and shows a plain refusal to anyone else.
+  const stockHoldRouteOpen = STOCK_HOLD_ENABLED && !!authUser;
   const canMint = isSuperAdmin || !!permRecord?.stockRole || hasPermission("barcode");
 
   // hash tracks the URL fragment for the #admin sign-in trigger and any
@@ -16855,9 +16874,11 @@ function AppInner() {
     // Same for the temporary count: a persisted role must not survive the master
     // flag being switched off after the stock-take.
     if (role === ROLES.HUB_SNEAKER_COUNT && !hubCountRouteOpen) { setRole(null); return; }
+    // The temporary Shipment Release surface obeys the same rule.
+    if (role === ROLES.STOCK_HOLD && !stockHoldRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -17107,6 +17128,14 @@ function AppInner() {
     ? <HubCleanup products={products} actorRole={stockRole}
         viewer={{ email: authUser?.email, stockRole: permRecord?.stockRole || null }}
         onExit={() => setRole(null)} />
+    : null;
+  // TEMPORARY — Shipment Release (count-integrity hold lane). The view
+  // re-checks owner/delegate against the live config; actorRole is the widened
+  // stockRole because the release writes are transfer_in movements, which the
+  // live rules allow for any stockRole holder.
+  else if (role === ROLES.STOCK_HOLD) view = stockHoldRouteOpen
+    ? <StockHoldRelease viewer={{ email: authUser?.email, uid: authUser?.uid }}
+        actorRole={stockRole} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.ATTENTION) view = canAccessStock ? <AttentionView products={products} onExit={() => setRole(null)} /> : null;
