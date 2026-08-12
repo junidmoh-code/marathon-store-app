@@ -388,7 +388,7 @@ async function runScan() {
     // evidence and a size stays confirmed-out longer than configured.
     const windowDays = Math.max(MOVEMENTS_WINDOW_DAYS, (Number(config.confirmedOutDays) || 14) + 1);
     const windowStart = new Date(nowMs - windowDays * 864e5).toISOString();
-    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, movementsSnap, ...stockSnaps] = await Promise.all([
+    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, heldLines, movementsSnap, ...stockSnaps] = await Promise.all([
       db.ref("stock_targets_decisions").once("value").then((s) => s.val() || {}),
       db.ref("stock_targets").once("value").then((s) => s.val() || {}),
       db.ref("products").once("value").then((s) => s.val() || {}),
@@ -397,6 +397,10 @@ async function runScan() {
       db.ref("orders").once("value").then((s) => s.val() || {}),
       db.ref("refill_engine/rejectStreak").once("value").then((s) => s.val() || {}),
       db.ref("refill_engine/retryState").once("value").then((s) => s.val() || {}),
+      // Count-integrity hold lane: central→hub credits parked in transit until
+      // the owner releases the box. computeRefillPlan counts them as INBOUND —
+      // without this read every held cell double-orders (see refill-engine.cjs).
+      db.ref("settings/stockHold/held").once("value").then((s) => s.val() || {}),
       db.ref("stock_movements").orderByChild("ts").startAt(windowStart).once("value"),
       ...locs.map((l) => db.ref(`stock/${l}`).once("value").then((s) => [l, s.val() || {}])),
     ]);
@@ -404,7 +408,7 @@ async function runScan() {
     const movements = Object.values(movementsSnap.val() || {});
 
     const plan = engine.computeRefillPlan({
-      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState,
+      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines,
     });
     counts.errors.push(...plan.errors);
 

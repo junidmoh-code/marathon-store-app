@@ -42,7 +42,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, get, push, update } from "firebase/database";
 import { database, auth } from "../../firebase";
-import { useStockCells } from "./useStock";
+import { useStockCells, useStockHeld } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { GLASS, GRAY, GREEN, AMBER, BLUE_L, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
@@ -96,9 +96,12 @@ export default function MissingFootwear({ products = [] }) {
   }, []);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+  // Held (parked-box) units count as hub stock — a fully-in-transit product is
+  // not missing, and a Solve on it would double-send (count-integrity hold lane).
+  const heldLines = useStockHeld();
   const cards = useMemo(
-    () => computeMissingFootwear({ allStock, products, hubs: HUBS }),
-    [allStock, products],
+    () => computeMissingFootwear({ allStock, products, hubs: HUBS, heldLines }),
+    [allStock, products, heldLines],
   );
 
   const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter((s) => s && s !== "_");

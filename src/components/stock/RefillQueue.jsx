@@ -41,7 +41,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, update, get } from "firebase/database";
 import { database, auth } from "../../firebase";
-import { useRefillRequests, useStockCells, useEngineOpen, useEngineConfig } from "./useStock";
+import { useRefillRequests, useStockCells, useEngineOpen, useEngineConfig, useStockHoldConfig } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { GRAY, GREEN, RED, AMBER, BLUE, FONT, bGreen } from "./ui";
@@ -50,10 +50,17 @@ import { formatDuration, refillAgeTone } from "../../utils/duration";
 import { partitionSatisfied, lockedRefillIds } from "./refillSatisfied";
 import { parseReleaseTimes, partitionReleased, nextReleaseMs, saTimeLabel, releaseEarlyPatch } from "./releaseWindows";
 import { queueStatusLine, sortQueueRows } from "./refillQueueCore";
-import { warehouseLocations, labelFor } from "./locations";
-import { stockCellPath } from "../../utils/sizeKey";
+import { warehouseLocations, labelFor, IN_TRANSIT } from "./locations";
+import { stockCellPath, stockSizeKey } from "../../utils/sizeKey";
 import { checkSourceMovementDuplicate } from "./sourceMovementDedupe";
 import { sizeRank } from "./hubSizeRank";
+// COUNT-INTEGRITY HOLD LANE (owner spec 2026-08-12): when the RTDB switch is
+// on, a cross-building fulfil parks its destination credit at stock/in_transit
+// and files a held line under its release-window SHIPMENT; the owner's release
+// card lands the credit when the physical box arrives. Staff see NOTHING new —
+// same buttons, same toasts, same request lifecycle.
+import { holdActive, shipmentIdFor } from "./stockHoldCore";
+import { recordHeldLine } from "./stockHoldStore";
 import { canFulfilCard } from "../../utils/productIdentity";
 import { SizeTag } from "../SizeTag";
 
@@ -301,6 +308,10 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   const engineConfig = useEngineConfig();
   const rawReleaseWindows = engineConfig?.releaseWindows;
   const windows = useMemo(() => parseReleaseTimes(rawReleaseWindows), [rawReleaseWindows]);
+  // The held-credit switch (stockHoldCore.holdActive: RTDB enabled + windows
+  // live + the leg crosses buildings). Read live so flipping the kill switch
+  // takes effect on the NEXT fulfil, no reload.
+  const stockHoldConfig = useStockHoldConfig();
 
   const [openRow, setOpenRow] = useState(null);      // rowKey with the fulfil panel open
   const [busyRow, setBusyRow] = useState(null);
@@ -375,6 +386,14 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     } catch { return { ok: false, reason: "Couldn't read the live request — check your connection and retry. Nothing was sent." }; }
     const counted = (Number(avail) || 0) > 0;
     const mvId = already === 0 ? `rrf_${r.id}` : `rrf_${r.id}_${already}`;
+    // HOLD LANE: on, and this leg physically crosses buildings → the credit
+    // parks at in_transit and the release card lands it when the box arrives.
+    // The movement id is UNCHANGED, so a retry that races a config flip stays
+    // idempotent; where the units actually went is read back off the recorded
+    // movement (`to`), never re-guessed.
+    const hold = holdActive({ config: stockHoldConfig, windows, from: SOURCE_LOC, to: DEST_LOC });
+    const creditTo = hold ? IN_TRANSIT : DEST_LOC;
+    let wentToTransit = hold;
     // Credit what ACTUALLY moved (the sourceMovementDedupe idiom): if this
     // tranche id already carries a recorded movement — a retry after a failed
     // bookkeeping write — do not re-send; credit the recorded quantity, which
@@ -388,22 +407,23 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         appliedQty = Math.min(Number(prior.qty) || 0, liveQty);
         if (appliedQty <= 0) return { ok: false, reason: "A previous send under this id couldn't be verified — retry." };
         res = { ok: true, idempotent: true };
+        wentToTransit = prior.to === IN_TRANSIT;
       } else res = null;
     } catch { res = null; }
     try {
       if (!res) {
         res = await applyMovement(counted ? {
           type: "transfer_out", productId: r.productId, size: r.size, qty: q,
-          from: SOURCE_LOC, to: DEST_LOC, actorRole,
+          from: SOURCE_LOC, to: creditTo, actorRole,
           reason: `${DEST_LOC}_auto_refill`,
           movementId: mvId,
-          link: { refillId: r.id },
+          link: { refillId: r.id, ...(hold ? { holdDest: DEST_LOC } : {}) },
         } : {
           type: "received", productId: r.productId, size: r.size, qty: q,
-          to: DEST_LOC, actorRole,
+          to: creditTo, actorRole,
           reason: `${DEST_LOC}_refill_uncounted`,
           movementId: mvId,
-          link: { refillId: r.id },
+          link: { refillId: r.id, ...(hold ? { holdDest: DEST_LOC } : {}) },
         });
         // A concurrent send can land between the pre-check and this call;
         // applyMovement then replays idempotently WITHOUT moving stock. Credit
@@ -412,10 +432,29 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
           const recorded = (await get(ref(database, `stock_movements/${mvId}`))).val();
           appliedQty = Math.min(Number(recorded?.qty) || 0, liveQty);
           if (appliedQty <= 0) return { ok: false, reason: "Another device just sent this tranche — refresh before sending more." };
+          wentToTransit = recorded?.to === IN_TRANSIT;
         }
       }
     } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
     if (!res.ok) return { ok: false, reason: `Transfer failed: ${res.reason || "unknown"} — retry.` };
+    // The shipment line — what the release card releases and what the engine
+    // reads as INBOUND. Written create-once under the movement id BEFORE the
+    // request bookkeeping: if it fails, the whole fulfil reports as retryable
+    // and the retry replays the movement idempotently. Stock parked with no
+    // line would otherwise be invisible to the release card.
+    if (wentToTransit) {
+      const ship = shipmentIdFor(serverNowMs(), windows);
+      if (ship) {
+        const filed = await recordHeldLine({
+          dest: DEST_LOC, lineId: mvId,
+          productId: r.productId, productName: byId.get(r.productId)?.name || r.productId,
+          size: r.size, sizeKey: stockSizeKey(r.size), qty: appliedQty,
+          refillId: r.id, shipmentId: ship.id, windowLabel: ship.label,
+          uncounted: !counted,
+        });
+        if (!filed.ok) return { ok: false, reason: `Sent, but the shipment line could not be saved (${filed.message || "write failed"}) — retry (stock will not move twice).` };
+      }
+    }
     const remaining = liveQty - appliedQty;
     if (remaining > 0) {
       // Deduct the sent tranche; the request stays OPEN for the remainder.
@@ -480,6 +519,13 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   const fulfilSale = async (row, pickLoc, qty, avail) => {
     const counted = typeof avail === "number";
     const mvId = `${row.movementIdSeed}_${row.sent}`;
+    // HOLD LANE (same contract as fulfilRequest): a cross-building pick parks
+    // the credit at in_transit under its release-window shipment. The pick
+    // location decides — an uncounted send has no source leg and is treated as
+    // Central's building (that is where the physical box leaves from).
+    const hold = holdActive({ config: stockHoldConfig, windows, from: counted ? pickLoc : SOURCE_LOC, to: DEST_LOC });
+    const creditTo = hold ? IN_TRANSIT : DEST_LOC;
+    let wentToTransit = hold;
     let res, viaLegacy = false, appliedQty = qty;
     try {
       const dup = await checkSourceMovementDuplicate({
@@ -492,22 +538,39 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         viaLegacy = dup.viaLegacy;
         appliedQty = dup.appliedQty;
         res = { ok: true, idempotent: true };
+        // Where the recorded movement actually put the units decides whether a
+        // held line is owed — never the current config, which may have flipped.
+        const recorded = (await get(ref(database, `stock_movements/${viaLegacy ? `${row.legacyMovementIdSeed}_${row.sent}` : mvId}`))).val();
+        wentToTransit = recorded?.to === IN_TRANSIT;
       } else {
         res = await applyMovement(counted ? {
           type: "transfer_out", productId: row.resolvedId, size: row.size, qty,
-          from: pickLoc, to: DEST_LOC, actorRole,
+          from: pickLoc, to: creditTo, actorRole,
           allowNegative: true,
           reason: SOURCE_REFILL_REASON,
-          movementId: mvId, link: { refillId: row.movementIdSeed },
+          movementId: mvId, link: { refillId: row.movementIdSeed, ...(hold ? { holdDest: DEST_LOC } : {}) },
         } : {
           type: "received", productId: row.resolvedId, size: row.size, qty,
-          to: DEST_LOC, actorRole,
+          to: creditTo, actorRole,
           reason: SOURCE_UNCOUNTED_REASON,
-          movementId: mvId, link: { refillId: row.movementIdSeed },
+          movementId: mvId, link: { refillId: row.movementIdSeed, ...(hold ? { holdDest: DEST_LOC } : {}) },
         });
       }
     } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
     if (!res.ok) return { ok: false, reason: `Transfer failed: ${res.reason || "unknown"}. Check your stock access and retry.` };
+    if (wentToTransit) {
+      const ship = shipmentIdFor(serverNowMs(), windows);
+      if (ship) {
+        const filed = await recordHeldLine({
+          dest: DEST_LOC, lineId: mvId,
+          productId: row.resolvedId, productName: row.productName || row.resolvedId,
+          size: row.size, sizeKey: stockSizeKey(row.size), qty: appliedQty,
+          refillId: row.movementIdSeed, shipmentId: ship.id, windowLabel: ship.label,
+          uncounted: !counted,
+        });
+        if (!filed.ok) return { ok: false, reason: `Sent, but the shipment line could not be saved (${filed.message || "write failed"}) — retry (stock will not move twice).` };
+      }
+    }
     const newSent = row.sent + appliedQty;
     onSaleProgress?.(row, newSent, newSent >= row.qty, { lastFrom: pickLoc, counted, ...(viaLegacy ? { viaLegacyMovementId: true } : {}) });
     setMsg((m) => ({ ...m, [row.rowKey]: `${appliedQty} unit${appliedQty === 1 ? "" : "s"} → ${destLabel} ✓` }));

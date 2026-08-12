@@ -432,6 +432,7 @@ function computeRefillPlan(snapshot) {
     targetDecisions = {},   // /stock_targets_decisions — "keep as is" acks from the No Target queue
     rejectStreak = {},      // /refill_engine/rejectStreak — persisted reject-while-stock-shown counters (loop guard)
     retryState = {},        // /refill_engine/retryState — persisted rejected-request retry state
+    heldLines = {},         // /settings/stockHold/held — central→hub credits parked in transit (count-integrity hold lane)
   } = snapshot;
 
   const errors = [];
@@ -471,6 +472,20 @@ function computeRefillPlan(snapshot) {
     if (o.clothingRefillStatus != null || o.status !== "incoming") continue;
     if (!o.destShop || !o.productId || o.size == null) continue;
     bump(inbound, `${o.destShop}|${o.productId}|${encodeSizeKey(o.size)}`, num(o.qty) || 1);
+  }
+  // HELD central→hub credits (count-integrity hold lane, 2026-08-12): a fulfil
+  // with holding on deducts the source and parks the units at stock/in_transit
+  // until the owner releases the physical box. The request is CLOSED as
+  // fulfilled — so without this walk the same scan would see the destination
+  // still short, no lock, no inbound, and raise a brand-new request for every
+  // held cell. A held line IS inbound until it is released or withdrawn.
+  // No sourceReserved leg: the units already left the source cell at fulfil.
+  for (const [dest, byLine] of Object.entries(heldLines || {})) {
+    for (const line of Object.values(byLine || {})) {
+      if (!line || !line.productId || (line.sizeKey == null && line.size == null)) continue;
+      const sizeKey = line.sizeKey != null ? String(line.sizeKey) : encodeSizeKey(line.size);
+      bump(inbound, `${dest}|${line.productId}|${sizeKey}`, num(line.qty) || 1);
+    }
   }
 
   // ── reconcile: close locks whose intent finished; flag stale ones (L6) ─────

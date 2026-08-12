@@ -174,6 +174,19 @@ export function useEngineConfig() {
   return usePath("config/refillEngine");
 }
 
+// /settings/stockHold/config → { enabled, delegates, ... } — the central→hub
+// held-credit switch (absent/false = OFF = today's instant behaviour).
+export function useStockHoldConfig() {
+  return usePath("settings/stockHold/config");
+}
+
+// /settings/stockHold/held → { dest: { lineId: line } } — credits parked in
+// transit awaiting the owner's release. Readers that reason about "stock on
+// its way" (MoveExcess netting, Missing Sneakers) treat these as inbound.
+export function useStockHeld() {
+  return usePath("settings/stockHold/held");
+}
+
 // /stock_targets/{loc} → { pid: { sizeKey: {target,minQty,...} } } (encoded keys).
 export function useStockTargets(locationId) {
   return usePath(locationId ? `stock_targets/${locationId}` : "stock_targets");

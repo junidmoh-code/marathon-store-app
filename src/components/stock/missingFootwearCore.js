@@ -80,8 +80,20 @@ const carries = (allStock, loc, pid) => cellsOf(allStock, loc, pid).length > 0;
 // Normalised name, for spotting duplicate catalogue records of one physical shoe.
 const nameKey = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
 
-export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1", "hub2"] }) {
+export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1", "hub2"], heldLines = null }) {
   const byId = products instanceof Map ? products : new Map((products || []).map((p) => [p.id, p]));
+  // Held central→hub credits (count-integrity hold lane): units a fulfil has
+  // parked at stock/in_transit awaiting the owner's release. They ARE hub
+  // stock in every sense this screen cares about — a product whose whole hub
+  // holding sits in a parked box is NOT missing, and listing it would invite a
+  // Solve that double-sends the same shoes.
+  const heldUnitsAt = (hub, pid) => {
+    let n = 0;
+    for (const line of Object.values((heldLines && heldLines[hub]) || {})) {
+      if (line && line.productId === pid) n += Math.max(Number(line.qty) || 0, 0);
+    }
+    return n;
+  };
   // ── SAME-NAME INDEX ────────────────────────────────────────────────────────
   // NOT a duplicate detector. Owner, 2026-07-30: "the name might be the same but
   // the photo is different" — same-named records are frequently DIFFERENT shoes,
@@ -114,8 +126,8 @@ export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1"
     if (!isFootwearProduct(p)) continue;
     const centralUnits = unitsAt(allStock, "central", pid);
     if (centralUnits <= 0) continue;
-    // Missing = no UNITS at any hub that holds buffer.
-    if (hubs.some((h) => unitsAt(allStock, h, pid) > 0)) continue;
+    // Missing = no UNITS at any hub that holds buffer — parked-box units count.
+    if (hubs.some((h) => unitsAt(allStock, h, pid) > 0 || heldUnitsAt(h, pid) > 0)) continue;
 
     const sizes = cellsOf(allStock, "central", pid)
       .map(([sizeKey, c]) => ({ sizeKey, size: String(sizeKey).replace(/(\d)_(\d)/, "$1.$2"), avail: Math.max(Number(c?.qty) || 0, 0) }))
