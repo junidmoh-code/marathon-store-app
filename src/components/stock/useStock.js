@@ -9,6 +9,7 @@ import { ref, onValue } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
 import { decodeSizeKey } from "../../utils/sizeKey";
+import { STOCK_HOLD_ROOT } from "../../config/stockHold";
 
 function useAuthReady() {
   const [ready, setReady] = useState(() => !!auth.currentUser);
@@ -172,6 +173,21 @@ export function useEngineRuns(limit = 8) {
 // /config/refillEngine → { enabled, mode, routes, ... }
 export function useEngineConfig() {
   return usePath("config/refillEngine");
+}
+
+// /settings/stockHold/config → { enabled, delegates, ... } — the central→hub
+// held-credit switch (absent/false = OFF = today's instant behaviour). Paths
+// derive from STOCK_HOLD_ROOT so these subscriptions can never drift from the
+// writers in stockHoldStore.js (CodeRabbit, PR #347).
+export function useStockHoldConfig() {
+  return usePath(`${STOCK_HOLD_ROOT}/config`);
+}
+
+// /settings/stockHold/held → { dest: { lineId: line } } — credits parked in
+// transit awaiting the owner's release. Readers that reason about "stock on
+// its way" (MoveExcess netting, Missing Sneakers) treat these as inbound.
+export function useStockHeld() {
+  return usePath(`${STOCK_HOLD_ROOT}/held`);
 }
 
 // /stock_targets/{loc} → { pid: { sizeKey: {target,minQty,...} } } (encoded keys).

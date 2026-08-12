@@ -16,7 +16,7 @@
 import React, { useMemo, useState } from "react";
 import { ref, get } from "firebase/database";
 import { database } from "../../firebase";
-import { useStockCells, useStockTargets, useRefillRequests, useEngineConfig } from "./useStock";
+import { useStockCells, useStockTargets, useRefillRequests, useEngineConfig, useStockHeld } from "./useStock";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
@@ -58,6 +58,10 @@ export default function MoveExcess({ products = [], actorRole }) {
   // netting these, a store card would route excess to a Hub 2 need that a
   // Central fulfilment is about to cover (over-delivery → ping-pong hop back).
   const openRequests = useRefillRequests("open");
+  // Held central→hub credits (count-integrity hold lane): a fulfilled-but-
+  // unreleased box is inbound to its hub exactly like an open request — the
+  // netting must not route store excess at a need a parked box already covers.
+  const heldLines = useStockHeld();
   const engineConfig = useEngineConfig();
   const routesCfg = engineConfig?.routes || { "marathon-pe": "hub2", trophy: "hub2", hub2: "central" };
   // Same deterministic order as the engine (downstream stores before their
@@ -89,6 +93,13 @@ export default function MoveExcess({ products = [], actorRole }) {
       if (!r?.productId || !r.requestingLocation || r.shadow) continue;
       const k = `${r.requestingLocation}|${r.productId}|${encodeSizeKey(r.size)}`;
       inbound.set(k, (inbound.get(k) || 0) + (Number(r.qty) || 1));
+    }
+    for (const [dest, byLine] of Object.entries(heldLines || {})) {
+      for (const line of Object.values(byLine || {})) {
+        if (!line?.productId || (line.sizeKey == null && line.size == null)) continue;
+        const k = `${dest}|${line.productId}|${line.sizeKey != null ? String(line.sizeKey) : encodeSizeKey(line.size)}`;
+        inbound.set(k, (inbound.get(k) || 0) + (Number(line.qty) || 1));
+      }
     }
     for (const loc of sources) {
       for (const [pid, bySize] of Object.entries(allTargets?.[loc] || {})) {
@@ -147,7 +158,7 @@ export default function MoveExcess({ products = [], actorRole }) {
       }
     }
     return out.sort((a, b) => b.totalExcess - a.totalExcess);
-  }, [allStock, allTargets, byId]);
+  }, [allStock, allTargets, byId, openRequests, heldLines]);
 
   const [locFilter, setLocFilter] = useState("all");
   const [search, setSearch] = useState("");

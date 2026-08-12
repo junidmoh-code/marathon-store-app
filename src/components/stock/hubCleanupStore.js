@@ -34,6 +34,7 @@ import {
   isCleanupHub, registerKey, registerMovementId, extraUnitMovementId,
   STYLE_SKIP_REASONS,
 } from "./hubCleanupCore";
+import { setDisplaySlot } from "./displaySlots";
 
 const one = async (path) => (await get(child(ref(database), path))).val();
 
@@ -154,7 +155,7 @@ export async function loadUnresolved(hub) {
  * the same save: a failure is reported as a warning, never a lost registration
  * (the stock unit is the fact that must not be dropped).
  */
-export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCode = null }) {
+export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCode = null, store = null }) {
   if (!isCleanupHub(hub)) return { ok: false, message: "Only Hub 1 and Hub 2 are in scope." };
   if (!product || !product.id) return { ok: false, message: "No product." };
   const n = Number(qty);
@@ -205,6 +206,25 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
     }
   };
 
+  // The DISPLAY SLOT — which shop floor this display stands on, at which size
+  // (displaySlots.js; owner spec 2026-08-12). Best-effort on BOTH branches
+  // below: re-registering an already-registered display with a store is the
+  // supported way to attach a store to a legacy row (the movement is deduped,
+  // no stock moves, only the slot updates). A failed slot write downgrades to
+  // a warning — the stock unit is the fact that must never be lost.
+  const fileSlot = async () => {
+    if (!store) return null;
+    try {
+      const res = await setDisplaySlot({
+        store, productId: product.id, productName: product.name || "",
+        size: rawSize, bookedHub: hub, source: "registration",
+      });
+      return res.ok ? null : `Registered, but the display slot could not be saved (${res.message || "write failed"}) — save once more to retry.`;
+    } catch (err) {
+      return `Registered, but the display slot could not be saved (${String(err?.message || err)}) — save once more to retry.`;
+    }
+  };
+
   const existing = await one(recPath);
   if (existing) {
     // The slot is already registered — but a freshly captured READING still
@@ -218,7 +238,9 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
       }
     }
     const codesWarning = await fileLabelCodes();
-    return { ok: true, already: true, record: existing, ...(codesWarning ? { warning: codesWarning } : {}) };
+    const slotWarning = await fileSlot();
+    const warning = [codesWarning, slotWarning].filter(Boolean).join(" ") || undefined;
+    return { ok: true, already: true, record: existing, ...(warning ? { warning } : {}) };
   }
 
   const res = await applyMovement({
@@ -289,6 +311,11 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
     const codesWarning = await fileLabelCodes();
     if (codesWarning) warnings.push(codesWarning);
   }
+  // The store fact rides the same save (see fileSlot above).
+  {
+    const slotWarning = await fileSlot();
+    if (slotWarning) warnings.push(slotWarning);
+  }
   if (capturedNormalised && capturedNormalised !== codeOnFile) {
     try {
       const q = await enqueueStyleCodeCapture({
@@ -327,7 +354,7 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
  * the same id and only one unit lands; the record moves qty by a guarded
  * transaction against that same base.
  */
-export async function addExtraDisplayUnit({ hub, product, size }) {
+export async function addExtraDisplayUnit({ hub, product, size, store = null }) {
   if (!isCleanupHub(hub)) return { ok: false, message: "Only Hub 1 and Hub 2 are in scope." };
   if (!product || !product.id) return { ok: false, message: "No product." };
   const rawSize = String(size ?? "").trim();
@@ -358,7 +385,21 @@ export async function addExtraDisplayUnit({ hub, product, size }) {
   try {
     await runTransaction(ref(database, `${recPath}/qty`), (cur) => (cur === base ? base + 1 : undefined));
   } catch { /* movement carries the truth; the next load shows it */ }
-  return { ok: true, idempotent: !!res.idempotent };
+  // A second physical display usually stands at the OTHER shop — the store
+  // pick files its slot there (one slot per product per store; best-effort).
+  let warning;
+  if (store) {
+    try {
+      const slot = await setDisplaySlot({
+        store, productId: product.id, productName: product.name || "",
+        size: rawSize, bookedHub: hub, source: "registration",
+      });
+      if (!slot.ok) warning = `Added, but the display slot could not be saved (${slot.message || "write failed"}).`;
+    } catch (err) {
+      warning = `Added, but the display slot could not be saved (${String(err?.message || err)}).`;
+    }
+  }
+  return { ok: true, idempotent: !!res.idempotent, ...(warning ? { warning } : {}) };
 }
 
 /**

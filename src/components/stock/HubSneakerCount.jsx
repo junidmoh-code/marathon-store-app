@@ -34,12 +34,13 @@ import {
 } from "../../config/hubSneakerCount";
 import {
   hubOptions, buildHubRows, seededRowFor, mergeSeededRows, progressOf,
-  isRowSettled, historyRows, filterRows, cellKey, recoverSeededRows,
+  isRowSettled, historyRows, filterRows, cellKey, recoverSeededRows, recordIsCurrent,
 } from "./hubCountCore";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
   confirmCell, adjustCell, flagCell, useLocationRegistryOnce, rememberHub, rememberedHub,
 } from "./hubCountStore";
+import { loadOffShelfSources, offShelfForCell, expectedOnShelf } from "./offShelf";
 
 function Thumb({ url, onOpen, size = 44 }) {
   // "Image if cheap": the catalogue's existing thumbnail URL, lazy-loaded, and
@@ -99,6 +100,13 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   const [snapshot, setSnapshot] = useState(null);   // { hubStock, catalogue }
   const [session, setSession] = useState(null);
   const [counted, setCounted] = useState({});
+  // Off-shelf sources (offShelf.js) — displays at shops, ready orders — frozen
+  // with the snapshot and refreshed by the ↻ button. Every shelf expectation
+  // below is booked − off-shelf (owner spec 2026-08-12). A FAILED load BLOCKS
+  // all count writes (CodeRabbit, PR #347): recording against bare booked
+  // totals is the unit-destroying bug this rework removes.
+  const [offSources, setOffSources] = useState(null);
+  const [offError, setOffError] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
 
@@ -160,10 +168,18 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
     (async () => {
       try {
         const [hubStock, sess] = await Promise.all([loadHubStock(hub), openOrResumeSession(hub)]);
+        // Off-shelf failure is NON-FATAL for browsing but FATAL for writing:
+        // the list renders, the buttons stay off until a retry succeeds.
+        let offSrc = null, offErr = "";
+        try {
+          offSrc = await loadOffShelfSources(hub, new Map(products.filter((p) => p && p.id).map((p) => [p.id, p])));
+        } catch (e) { offErr = String(e?.message || e); }
         const recorded = await loadCounted(hub, sess.sessionId);
         if (cancelled) return;
         setSnapshot({ hubStock, catalogue: products });
         setSession(sess);
+        setOffSources(offSrc);
+        setOffError(offErr);
         setCounted(recorded || {});
         // Rebuild the added-from-zero rows this session already recorded, so a
         // reload — or the second counter's tablet — sees them. Without this the
@@ -260,6 +276,12 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   }, [hub]);
 
   const runWrite = async (row, size, fn) => {
+    // THE WRITE CHOKEPOINT for the off-shelf guard: no complete picture, no
+    // recorded count — whatever button was tapped (CodeRabbit, PR #347).
+    if (!offSources) {
+      flash("err", "Counting is paused — the off-shelf picture did not load. Tap ↻ Refresh to retry.", 7000);
+      return;
+    }
     const key = cellKey(row.id, size.sizeKey);
     setBusyCell(key);
     try {
@@ -287,27 +309,50 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
     }
   };
 
-  const onConfirm = (row, size) => runWrite(row, size, () =>
-    confirmCell({ hub, sessionId: session.sessionId, productId: row.id, sizeKey: size.sizeKey, expected: size.expected }));
+  // Off-shelf units for one cell — displays at shops, ready orders (offShelf.js).
+  // Every write below carries this so the arithmetic moves the SHELF figure and
+  // never destroys a unit the system knows is elsewhere.
+  const offFor = useCallback((row, size) => {
+    if (!offSources) return { total: 0, parts: [] };
+    return offShelfForCell({
+      hub, productId: row.id, sizeKey: size.sizeKey, sources: offSources,
+      labelOf: (s) => labelFor(s, registry),
+    });
+  }, [offSources, hub, registry]);
+  const offNoteOf = (off) => off.parts.map((p) => `${p.qty} ${p.label}`).join(" · ") || null;
 
-  const onAdjust = (row, size, actual) => runWrite(row, size, () =>
-    adjustCell({ hub, sessionId: session.sessionId, productId: row.id, sizeKey: size.sizeKey, expected: size.expected, actual, actorRole }));
+  const onConfirm = (row, size) => { const off = offFor(row, size); return runWrite(row, size, () =>
+    confirmCell({ hub, sessionId: session.sessionId, productId: row.id, sizeKey: size.sizeKey, expected: size.expected,
+                  offShelf: off.total, offShelfNote: offNoteOf(off) })); };
+
+  const onAdjust = (row, size, actual) => { const off = offFor(row, size); return runWrite(row, size, () =>
+    adjustCell({ hub, sessionId: session.sessionId, productId: row.id, sizeKey: size.sizeKey, expected: size.expected, actual, actorRole,
+                 offShelf: off.total, offShelfNote: offNoteOf(off) })); };
 
   // The warehouse counter's mismatch path: record the shelf truth, move no
   // stock. The difference queues in Variance for an admin to apply.
-  const onFlag = (row, size, actual) => runWrite(row, size, () =>
-    flagCell({ hub, sessionId: session.sessionId, productId: row.id, sizeKey: size.sizeKey, expected: size.expected, actual }));
+  const onFlag = (row, size, actual) => { const off = offFor(row, size); return runWrite(row, size, () =>
+    flagCell({ hub, sessionId: session.sessionId, productId: row.id, sizeKey: size.sizeKey, expected: size.expected, actual,
+               offShelf: off.total, offShelfNote: offNoteOf(off) })); };
 
   // ADMIN: apply a counter's flagged correction. Same adjustCell, same fence —
   // if the cell moved since the counter looked at the shelf, this rejects and
   // the row needs a fresh count, never a blind write of an old number.
   const [busyVariance, setBusyVariance] = useState("");
   const applyVariance = async (row) => {
+    if (!offSources) {
+      flash("err", "Applying is paused — the off-shelf picture did not load. Tap ↻ Refresh to retry.", 7000);
+      return;
+    }
     setBusyVariance(row.key);
     try {
       const res = await adjustCell({
         hub, sessionId: session.sessionId, productId: row.productId, sizeKey: row.sizeKey,
+        // The flag recorded a SHELF count with its off-shelf context — the
+        // apply must carry both, or it would destroy the off-shelf units the
+        // counter deliberately left booked.
         expected: row.expected, actual: row.actual, actorRole,
+        offShelf: Number(row.offShelf) || 0, offShelfNote: row.offShelfNote || null,
       });
       if (res.ok) {
         setCounted((c) => ({ ...c, [row.key]: res.record }));
@@ -347,6 +392,13 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
       const recorded = await loadCounted(hub, session.sessionId);
       setCounted(recorded || {});
       setSeeded(recoverSeededRows({ counted: recorded || {}, hubStock: snapshot?.hubStock || {}, products: catalogue }));
+      // The off-shelf picture refreshes on the same tap — a display that
+      // changed size since entry moves to its new cell here, and a failed
+      // entry load gets its retry (writes unblock only on success).
+      try {
+        setOffSources(await loadOffShelfSources(hub, productsById));
+        setOffError("");
+      } catch (e) { setOffError(String(e?.message || e)); }
       flash("ok", "Refreshed — showing what every counter has recorded.", 2400);
     } catch (err) {
       flash("err", `Could not refresh: ${String(err?.message || err)}`);
@@ -357,6 +409,9 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   const history = useMemo(() => historyRows(counted, productsById), [counted, productsById]);
   const pendingApply = useMemo(() => history.filter((r) => r.pending).length, [history]);
   const canAdjust = canAdjustHubCount(viewer);
+  // No off-shelf picture → no count writes. Browsing stays open; the buttons
+  // come back when ↻ Refresh succeeds.
+  const writesBlocked = !!snapshot && !offSources;
 
   return (
     <div style={{ minHeight: "100vh", background: BG, fontFamily: FONT, padding: "14px 12px 60px" }}>
@@ -414,6 +469,14 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
               title="Re-read what every counter has recorded (one-shot, no live subscription)">↻ Refresh</button>
           </div>
 
+          {writesBlocked && (
+            <div style={{ background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.4)", borderRadius: 11,
+                          padding: "10px 12px", margin: "0 0 10px", fontSize: 12, color: "#FFC9C9", lineHeight: 1.5 }}>
+              The off-shelf picture (displays at shops, waiting orders) could not load
+              {offError ? ` (${offError})` : ""} — counting is paused so nothing gets recorded against bare
+              booked totals. Tap ↻ Refresh to retry.
+            </div>
+          )}
           {tab === "count" ? (
             <CountList
               rows={visible} totalRows={filtered.length} counted={counted} query={query} setQuery={setQuery}
@@ -421,7 +484,7 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
               openRow={openRow} setOpenRow={setOpenRow}
               inputs={inputs} setInputs={setInputs} busyCell={busyCell}
               onConfirm={onConfirm} onAdjust={onAdjust} onFlag={onFlag} onRecount={onRecount}
-              recounting={recounting} canAdjust={canAdjust} onOpenPhoto={setPhoto}
+              recounting={recounting} canAdjust={canAdjust} onOpenPhoto={setPhoto} offFor={offFor}
               addQuery={addQuery} setAddQuery={setAddQuery} addMatches={addMatches} onAdd={addProduct}
             />
           ) : (
@@ -439,7 +502,7 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
 function CountList({
   rows, totalRows, counted, query, setQuery, page, pageCount, setPage,
   openRow, setOpenRow, inputs, setInputs, busyCell, onConfirm, onAdjust, onFlag, onRecount,
-  recounting, canAdjust, onOpenPhoto, addQuery, setAddQuery, addMatches, onAdd,
+  recounting, canAdjust, onOpenPhoto, offFor, addQuery, setAddQuery, addMatches, onAdd,
 }) {
   return (
     <>
@@ -489,7 +552,7 @@ function CountList({
               open={openRow === row.id} onToggle={() => setOpenRow(openRow === row.id ? "" : row.id)}
               inputs={inputs} setInputs={setInputs} busyCell={busyCell}
               onConfirm={onConfirm} onAdjust={onAdjust} onFlag={onFlag} onRecount={onRecount}
-              recounting={recounting} canAdjust={canAdjust} onOpenPhoto={onOpenPhoto} />
+              recounting={recounting} canAdjust={canAdjust} onOpenPhoto={onOpenPhoto} offFor={offFor} />
           ))}
         </div>
       )}
@@ -506,9 +569,10 @@ function CountList({
 }
 
 // ── One product, collapsed to a summary until tapped ──────────────────────────
-function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell, onConfirm, onAdjust, onFlag, onRecount, recounting, canAdjust, onOpenPhoto }) {
+function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell, onConfirm, onAdjust, onFlag, onRecount, recounting, canAdjust, onOpenPhoto, offFor }) {
   const settled = isRowSettled(row, counted);
-  const doneCount = row.sizes.filter((s) => counted[cellKey(row.id, s.sizeKey)]).length;
+  const doneCount = row.sizes.filter((s) => recordIsCurrent(counted[cellKey(row.id, s.sizeKey)])).length;
+  const staleCount = row.sizes.filter((s) => { const r = counted[cellKey(row.id, s.sizeKey)]; return r && r.staleAt; }).length;
 
   return (
     <div style={{ background: CARD, border: settled ? "1px solid rgba(74,222,128,.3)" : BORDER, borderRadius: 11, opacity: settled && !open ? 0.55 : 1 }}>
@@ -523,6 +587,7 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
             {row.code ? `${row.code} · ` : ""}{row.sizes.length} size{row.sizes.length === 1 ? "" : "s"}
             {row.seeded && <span style={{ color: AMBER }}> · added from zero</span>}
             {doneCount > 0 && !settled && <span style={{ color: BLUE_L }}> · {doneCount} done</span>}
+            {staleCount > 0 && <span style={{ color: AMBER }}> · {staleCount} changed since counting — recount</span>}
           </div>
         </div>
         <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -539,6 +604,7 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
               record={counted[cellKey(row.id, size.sizeKey)]}
               recounting={recounting.has(cellKey(row.id, size.sizeKey))}
               canAdjust={canAdjust}
+              off={offFor ? offFor(row, size) : { total: 0, parts: [] }}
               value={inputs[cellKey(row.id, size.sizeKey)] ?? ""}
               onChange={(v) => setInputs((i) => ({ ...i, [cellKey(row.id, size.sizeKey)]: v }))}
               busy={busyCell === cellKey(row.id, size.sizeKey)}
@@ -561,40 +627,51 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
 // SYSTEM expects → what the SHELF says → one action. The size sits in a labeled
 // box so it can never be mistaken for a quantity (owner feedback), and the
 // expected number is boxed with its own caption for the same reason.
-function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, onConfirm, onAdjust, onFlag, onRecount }) {
+function SizeRow({ size, record, recounting, canAdjust, off = { total: 0, parts: [] }, value, onChange, busy, onConfirm, onAdjust, onFlag, onRecount }) {
   const typed = String(value ?? "").trim();
   const parsed = /^\d+$/.test(typed) ? parseInt(typed, 10) : null;
-  const done = !!record && !recounting;
-  // No negative numbers on screen (owner direction): a below-zero cell DISPLAYS
-  // as 0, but the TRUE value stays underneath — every write fences and computes
-  // against it, which is exactly how counting the cell repairs it.
-  const negative = Number(size.expected) < 0;
-  const expDisp = negative ? 0 : Number(size.expected);
+  // THE RACE GUARD'S OTHER HALF (owner spec 2026-08-12): a record staled by a
+  // shipment release is NOT done — the shelf may now hold units this counter
+  // never saw. The row reopens with what changed and when.
+  const stale = !!record && !!record.staleAt;
+  const done = !!record && !stale && !recounting;
+  // The number the counter answers for is the SHELF: booked − known off-shelf
+  // (displays at shops, ready orders — owner spec 2026-08-12). With nothing
+  // off-shelf this is the booked number, exactly as before.
+  const shelfRaw = Number(size.expected) - off.total;
+  // No negative numbers on screen (owner direction): a below-zero expectation
+  // DISPLAYS as 0, but the TRUE values stay underneath — every write fences and
+  // computes against them, which is exactly how counting the cell repairs it.
+  const negative = Number(size.expected) < 0 || shelfRaw < 0;
+  const expDisp = Math.max(0, shelfRaw);
   // On a negative cell even "matches the shown 0" is a correction in truth, so
   // every submission routes through adjust/record — never a bare confirm, which
   // would notarize the negative.
-  const isMismatch = parsed != null && (negative || parsed !== Number(size.expected));
+  const isMismatch = parsed != null && (negative || parsed !== shelfRaw);
 
   const pendingFlag = done && record.action === "flag";
+  const recDelta = record ? Number(record.actual) + (Number(record.offShelf) || 0) - Number(record.expected) : 0;
   const doneColor = record
-    ? (record.settled === false ? RED : pendingFlag ? AMBER : record.actual === record.expected ? GREEN : AMBER)
+    ? (record.settled === false ? RED : pendingFlag ? AMBER : recDelta === 0 ? GREEN : AMBER)
     : GREEN;
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 8px", borderRadius: 10,
+    <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "7px 8px", borderRadius: 10,
                   background: done ? "transparent" : "rgba(255,255,255,.025)", opacity: done ? 0.55 : 1 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
       <SizeBox label={size.label} />
       <div style={{ width: 64, textAlign: "center", flexShrink: 0, background: "rgba(255,255,255,.04)",
                     border: BORDER, borderRadius: 9, padding: "4px 6px" }}>
         <div style={{ fontSize: 14.5, fontWeight: 700, color: "#fff" }}>{expDisp}</div>
-        <div style={{ fontSize: 8.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".06em" }}>expected</div>
+        <div style={{ fontSize: 8.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".06em" }}>on shelf</div>
       </div>
 
       {done ? (
         <>
           <div style={{ flex: 1, fontSize: 11.5, color: doneColor }}>
             {record.settled === false ? "⚠ re-check shelf —" : pendingFlag ? "✎ counted" : "✓ counted"} {record.actual}
-            {record.actual !== record.expected && ` (was ${Math.max(0, record.expected)}${record.expected < 0 ? ", under 0" : ""}, ${record.actual > record.expected ? "+" : ""}${record.actual - record.expected})`}
+            {Number(record.offShelf) > 0 && ` (+${record.offShelf} off-shelf)`}
+            {recDelta !== 0 && ` (${recDelta > 0 ? "+" : ""}${recDelta})`}
             {pendingFlag && <div style={{ fontSize: 10, color: AMBER }}>waiting for an admin to apply</div>}
             {record.settled === false && <div style={{ fontSize: 10, color: RED }}>cell now reads {record.live}</div>}
           </div>
@@ -606,7 +683,7 @@ function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, o
       ) : (
         <>
           <input value={value} onChange={(e) => onChange(e.target.value)} inputMode="numeric"
-            placeholder="on shelf" autoFocus={recounting}
+            placeholder={stale ? "recount this shelf" : "on shelf"} autoFocus={recounting}
             style={{ ...input, flex: 1, minWidth: 0, padding: "8px 10px", fontSize: "0.85rem" }} />
           {/* One button, three faces: Confirm (matches) / Adjust (admin writes
               stock) / Record (staff — saves the difference for an admin). */}
@@ -618,6 +695,28 @@ function SizeRow({ size, record, recounting, canAdjust, value, onChange, busy, o
             {busy ? "…" : isMismatch ? (canAdjust ? "Adjust" : "Record") : "Confirm"}
           </button>
         </>
+      )}
+      </div>
+      {/* What changed since this cell was counted, and when — the reopened row
+          says WHY it is asking again. */}
+      {stale && !done && (
+        <div style={{ fontSize: 10.5, color: AMBER, lineHeight: 1.5, paddingLeft: 2 }}>
+          Counted {record.actual} on {String(record.at || "").slice(0, 10)}, then{" "}
+          <strong>+{Number(record.staleDelta) || 0} landed from a released shipment</strong>
+          {record.staleAt ? ` on ${String(record.staleAt).slice(0, 10)}` : ""} — count this shelf again.
+        </div>
+      )}
+      {/* The breakdown, in plain warehouse language — only when something IS
+          off the shelf, so an ordinary cell renders exactly as before. */}
+      {!done && off.total > 0 && (
+        <div style={{ fontSize: 10.5, color: BLUE_L, lineHeight: 1.45, paddingLeft: 2 }}>
+          {Math.max(0, Number(size.expected))} booked{off.parts.map((p, i) => (
+            <span key={i}> · {p.qty} {p.label}</span>
+          ))} · expect {expDisp} here
+          {off.parts.some((p) => !p.verified) && (
+            <span style={{ color: AMBER }}> · the display's shop is not on record — count only this shelf</span>
+          )}
+        </div>
       )}
     </div>
   );
@@ -659,7 +758,9 @@ function HistoryList({ rows, canAdjust, onApply, busyKey }) {
           // system value displays as 0; the true value still drives the write.
           const expDisp = Math.max(0, Number(r.expected));
           const wasNegative = Number(r.expected) < 0;
-          const changed = Number(r.actual) !== Number(r.expected);
+          // r.delta is the BOOKED delta (shelf + offShelf − booked) — an
+          // off-shelf confirm is delta 0 and must not render as a change.
+          const changed = r.delta !== 0;
           return (
             <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
               <span style={{ fontSize: 13, flexShrink: 0, width: 18, textAlign: "center",
@@ -669,7 +770,8 @@ function HistoryList({ rows, canAdjust, onApply, busyKey }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
                 <div style={{ fontSize: 10, color: GRAY }}>
-                  Size {r.sizeLabel} · {changed ? `${expDisp} → ${r.actual}` : `counted ${r.actual}`}
+                  Size {r.sizeLabel} · {changed ? `${expDisp} → ${r.actual + r.offShelf}` : `counted ${r.actual}`}
+                  {r.offShelf > 0 && <span style={{ color: BLUE_L }}> · {r.offShelfNote || `${r.offShelf} off-shelf`} stays booked</span>}
                   {wasNegative && " · was under 0"}
                   {r.pending && <span style={{ color: AMBER }}> · stock not yet corrected</span>}
                   {r.unsettled && <span style={{ color: RED }}> · cell reads {r.live}</span>}

@@ -25,6 +25,13 @@ export function isCleanupHub(hub) {
   return CLEANUP_HUBS.includes(hub);
 }
 
+// The shop floors a hub display can stand on (owner spec 2026-08-12: a display
+// is a SLOT per product per STORE). A closed list for the same reason as
+// CLEANUP_HUBS — Pine is out of scope, and deriving "everything store-shaped"
+// from the registry would leak marathon-pine in.
+export const DISPLAY_STORES = Object.freeze(["marathon-pe", "trophy"]);
+export const DISPLAY_STORE_LABELS = Object.freeze({ "marathon-pe": "Marathon PE", trophy: "Trophy" });
+
 // ── REGISTRATION KEYS ────────────────────────────────────────────────────────
 // One registration slot per (product, size) per hub, and a DETERMINISTIC
 // movement id derived from that slot. The movement id is the idempotency key
