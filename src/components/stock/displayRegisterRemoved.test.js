@@ -83,10 +83,12 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     expect(hubCleanup).toMatch(/<TongueLabelReader busy=\{busy\} onCode=\{takeCode\} onTokens=\{takeTokens\} \/>/);
     // The count tab must NOT lead with a barcode scan any more:
     expect(hubCleanup).not.toMatch(/SCAN A SHOE/);
-    // The never-registered signal fires on the LABEL path (style-number
-    // resolution), not only on the barcode shortcut:
-    expect(hubCleanup).toMatch(/reads cleanly but nothing owns it/);
-    expect(hubCleanup).toMatch(/recordUnresolvedScan\(\{ hub, code: display, context: "count" \}\)/);
+    // The label path's unresolved outcome is the LINK OFFER, never a silent
+    // auto-note (owner spec 2026-08-12, the Lacoste per-size incident: a scan
+    // must never dead-end). The never-registered note survives as the
+    // deliberate second exit inside the link panel:
+    expect(hubCleanup).toMatch(/mode: "link", kind: "code", display, normalised/);
+    expect(hubCleanup).toMatch(/recordUnresolvedScan\(\{ hub, code: label, context: "count" \}\)/);
     // Substitute-review pins (Kimi + Sonnet round):
     // exactly ONE name-search input on the count tab — the leftover twin is gone:
     expect((hubCleanup.match(/or search by name/g) || []).length).toBe(1);

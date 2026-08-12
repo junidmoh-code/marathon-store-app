@@ -406,9 +406,17 @@ export async function addExtraDisplayUnit({ hub, product, size, store = null }) 
  * A scan nothing owns. NOT an error — in pass two it is exactly how we learn an
  * item was never registered. Keyed by the (sanitised) code so re-scanning the
  * same mystery item updates one row instead of piling up.
+ *
+ * unresolvedScanKey is THE key derivation — exported so the UI's optimistic
+ * row uses the exact key this write persists (CodeRabbit, PR #348: a second
+ * copy of the sanitisation drifts the moment either changes).
  */
+export function unresolvedScanKey(code) {
+  return String(code ?? "").replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_";
+}
+
 export async function recordUnresolvedScan({ hub, code, context }) {
-  const codeKey = String(code ?? "").replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_";
+  const codeKey = unresolvedScanKey(code);
   const user = auth.currentUser;
   try {
     await update(ref(database, `${unresolvedPath(hub)}/${codeKey}`), {
