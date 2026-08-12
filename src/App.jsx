@@ -39,6 +39,11 @@ import StockView from "./components/stock/StockView";
 import HubCleanup from "./components/stock/HubCleanup";
 import HubCleanupCard from "./components/stock/HubCleanupCard";
 import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
+// COUNT-INTEGRITY (owner spec 2026-08-12) — the display SLOT: which size is on
+// which shop's floor, informational only, read by the hub count as "1 on
+// display at Marathon PE". Slot writes are one-liners on the existing display
+// flows; they move no stock.
+import { setDisplaySlot, clearDisplaySlot } from "./components/stock/displaySlots";
 import RefillQueue from "./components/stock/RefillQueue";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
@@ -8505,6 +8510,16 @@ function AssistantView({ products, onExit, orders = [] }) {
           displayRefilledBy:           null,
         };
         await writeOrder(order);
+        // A display-partner order means the DISPLAYED pair is being sold — the
+        // display is leaving the shop floor, so its slot clears now (the
+        // replacement send sets the new size later via setDisplayRefillStatus).
+        // Best-effort: the order is the fact that must never be lost.
+        if (order.requestDisplayPartner && order.destShop) {
+          clearDisplaySlot({
+            store: order.destShop, productId: order.productId,
+            source: "display_sold", orderId: order.id,
+          }).catch(() => {});
+        }
         logInsight({
           timestamp: now,
           // productId (p{timestamp}) is the durable product key. Logging it on
@@ -10029,11 +10044,22 @@ function WarehouseView({ products = [], orders, onExit }) {
       // never is. Recording it here is what lets the register say what is
       // actually on the floor — and what stops the sale of that pair being
       // unattributable to a hub cell later.
-      // NOTE: this no longer feeds a display register — the register was removed
-      // (owner spec 2026-08-06: displays are hub stock; nothing tracks what is
-      // on display). The size stays on the ORDER, where the POS reads it.
+      // The size stays on the ORDER, where the POS reads it — and ALSO sets the
+      // display SLOT for the destination shop (owner spec 2026-08-12: the count
+      // reads the slot's CURRENT state, so a mid-count size change needs no
+      // re-walk of the floor). Best-effort: a lost slot write costs the count
+      // one label, never the refill itself.
       if (refillSize) {
         patch.displayRefillSize = String(refillSize);
+        if (order.destShop && order.productId) {
+          setDisplaySlot({
+            store: order.destShop, productId: order.productId,
+            productName: order.productName || "",
+            size: String(refillSize),
+            bookedHub: order.displayRefillHub || order.placedAtHub || order.hub || null,
+            source: "display_refill", orderId: order.id,
+          }).catch(() => {});
+        }
       }
     } else if (status === "stockDepleted") {
       patch.displayRefillStockDepletedAt = now;

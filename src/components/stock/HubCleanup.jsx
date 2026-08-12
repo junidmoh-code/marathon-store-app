@@ -47,6 +47,7 @@ import {
   buildLeftovers, locationsHolding, registrationProgress, realSizes,
   registerPanelFor, styleStepSatisfied, styleCodeOwners, collisionQuestion,
   STYLE_SKIP_REASONS, countPanelFor, resolveStyleNumber, registerSearchPool,
+  DISPLAY_STORES, DISPLAY_STORE_LABELS,
 } from "./hubCleanupCore";
 import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
@@ -521,11 +522,12 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   }, [hub]);
 
   // ── Registration writes ────────────────────────────────────────────────────
-  const doRegister = useCallback(async ({ product, size, qty, styleCode = null }) => {
+  const doRegister = useCallback(async ({ product, size, qty, styleCode = null, store = null }) => {
     setBusy(true);
     try {
-      // BOTH facts ride this one call — the size AND the style number.
-      const res = await registerDisplayUnit({ hub, product, size, qty, styleCode });
+      // ALL the facts ride this one call — size, style number AND the shop
+      // the display stands at (the slot the count reads).
+      const res = await registerDisplayUnit({ hub, product, size, qty, styleCode, store });
       if (!res.ok) { flash("err", res.message || "Could not register."); return; }
       setRegistered(await loadRegister(hub));
       setHubStock(await loadHubStock(hub));
@@ -537,14 +539,15 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
     } finally { setBusy(false); }
   }, [hub, flash]);
 
-  const doExtra = useCallback(async ({ product, size }) => {
+  const doExtra = useCallback(async ({ product, size, store = null }) => {
     setBusy(true);
     try {
-      const res = await addExtraDisplayUnit({ hub, product, size });
+      const res = await addExtraDisplayUnit({ hub, product, size, store });
       if (!res.ok) { flash("err", res.message || "Could not add."); return; }
       setRegistered(await loadRegister(hub));
       setHubStock(await loadHubStock(hub));
-      flash("ok", `One more size ${size} added.`);
+      if (res.warning) flash("warn", res.warning, 8000);
+      else flash("ok", `One more size ${size} added.`);
     } finally { setBusy(false); }
   }, [hub, flash]);
 
@@ -1178,6 +1181,11 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   const sizes = realSizes(product);
   const [size, setSize] = useState(panel.size && sizes.includes(String(panel.size)) ? String(panel.size) : null);
   const [qty, setQty] = useState(1);
+  // FACT 3 — which shop floor the display stands on (owner spec 2026-08-12:
+  // one display SLOT per product per store; the count reads the slot). Required
+  // for a NEW registration; on an already-registered display it is the way to
+  // attach the store a legacy row never captured.
+  const [dispStore, setDispStore] = useState(null);
 
   // ── The style-number step's state ──────────────────────────────────────────
   const codeOnFile = product.styleCodeNormalised || null;
@@ -1490,6 +1498,30 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
       </div>
       <SizeGrid sizes={sizes} chosen={size} onPick={setSize} marks={marks} disabled={busy} />
 
+      {/* ── FACT 3 — WHICH SHOP the display stands on ─────────────────────
+          Feeds the display SLOT (one per product per store) that the count
+          reads as "1 on display at Marathon PE". Required on a new
+          registration; on an existing one it attaches the store a legacy
+          row never captured (no stock moves — the movement id dedupes). */}
+      {size && (
+        <div style={{ margin: "18px 0 0" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: ".05em", margin: "0 0 10px" }}>
+            3 · WHICH SHOP IS THIS DISPLAY AT?
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            {DISPLAY_STORES.map((s) => (
+              <button key={s} type="button" disabled={busy} onClick={() => setDispStore(s)}
+                style={{ flex: 1, minHeight: 56, borderRadius: 14, cursor: "pointer", fontSize: 16, fontWeight: 800, fontFamily: FONT,
+                         background: dispStore === s ? "rgba(74,222,128,.22)" : "rgba(74,127,255,.13)",
+                         border: dispStore === s ? "2px solid rgba(74,222,128,.9)" : "2px solid rgba(74,127,255,.45)",
+                         color: dispStore === s ? "#B7F0CC" : "#D7E3FF" }}>
+                {DISPLAY_STORE_LABELS[s]}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {size && !existing && (
         <>
           <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "20px 0" }}>
@@ -1504,11 +1536,12 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
                 style={{ ...bGray, minWidth: 52, minHeight: 52, fontSize: 22, borderRadius: 13 }}>+</button>
             </div>
           </div>
-          {/* ONE action, BOTH facts. Disabled until the style-number step is
-              satisfied (on file, captured, or deliberately skipped) AND a size
-              is picked — never split into a second screen. */}
-          <BigButton tone="green" disabled={busy || !styleReady}
-                     onClick={() => onRegister({ product, size, qty, styleCode: styleCodePayload })}
+          {/* ONE action, ALL THREE facts. Disabled until the style-number step
+              is satisfied (on file, captured, or deliberately skipped), a size
+              is picked AND the shop is named — never split into a second
+              screen. */}
+          <BigButton tone="green" disabled={busy || !styleReady || !dispStore}
+                     onClick={() => onRegister({ product, size, qty, styleCode: styleCodePayload, store: dispStore })}
                      style={{ minHeight: 68, fontSize: 19 }}>
             ✓ REGISTER — size {size}{codeOnFile || chosenCode ? " + style number" : aliasTokens ? " + label reading" : ""}
           </BigButton>
@@ -1519,17 +1552,29 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
                 : "Capture the style number off the tongue label first (or mark it unreadable)."}
             </div>
           )}
+          {styleReady && !dispStore && (
+            <div style={{ fontSize: 12, color: AMBER, marginTop: 8 }}>
+              Pick which shop the display stands at — the count needs to know where it is.
+            </div>
+          )}
         </>
       )}
 
       {size && existing && (
         <div style={{ marginTop: 20 }}>
           <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
-                        padding: "12px 14px", marginBottom: 12, fontSize: 14, color: "#B7F0CC" }}>
+                        padding: "12px 14px", margin: "18px 0 12px", fontSize: 14, color: "#B7F0CC" }}>
             ✓ Already registered — {existing.qty} unit{existing.qty > 1 ? "s" : ""} of size <SizeTag size={size} />.
             Registering it again adds nothing.
           </div>
-          <BigButton tone="ghost" disabled={busy} onClick={() => onExtra({ product, size })}>
+          {/* Attaching the store to an existing registration is the supported
+              migration for pre-slot rows: no stock moves, only the slot files. */}
+          <BigButton tone="blue" disabled={busy || !dispStore}
+                     onClick={() => onRegister({ product, size, qty: existing.qty || 1, styleCode: styleCodePayload, store: dispStore })}>
+            Save which shop this display is at{dispStore ? ` — ${DISPLAY_STORE_LABELS[dispStore]}` : ""}
+          </BigButton>
+          <div style={{ height: 10 }} />
+          <BigButton tone="ghost" disabled={busy} onClick={() => onExtra({ product, size, store: dispStore })}>
             This is a SECOND physical display — add one more
           </BigButton>
         </div>
