@@ -186,6 +186,42 @@ describe("the count's unresolved-scan link panel", () => {
     expect(recordLabelCodes).not.toHaveBeenCalled();
   });
 
+  it("745SMA004-21G and 745SMA006-21G resolve to the SAME product — one by stamp, one by the per-size rule", async () => {
+    // The registered size resolves through its own stamped code:
+    const tr1 = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("745SMA004-21G", null); });
+    expect(textOf(tr1)).toContain("Lacoste Audysol White");
+    expect(textOf(tr1)).not.toContain("link it");
+    // The OTHER size's label auto-links: filed via recordLabelCodes, counted
+    // on the same product, no question asked:
+    const tr2 = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("745SMA006-21G", null); });
+    expect(recordLabelCodes).toHaveBeenCalledWith({ productId: "pAud", chosenCode: "745SMA00621G", otherCodes: [] });
+    const after = textOf(tr2);
+    expect(after).toContain("Lacoste Audysol White");
+    expect(after).not.toContain("link it");
+    expect(recordUnresolvedScan).not.toHaveBeenCalled();
+  });
+
+  it("a different colourway suffix NEVER auto-links — it asks via the link panel", async () => {
+    // 743SMA0169-4M3 is the Missouri Mid in ANOTHER colour than the registered
+    // …1M3. One character apart — and the rule must stay silent.
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("743SMA0169-4M3", null); });
+    expect(recordLabelCodes).not.toHaveBeenCalled();
+    expect(textOf(tr)).toContain("link it");
+  });
+
+  it("a near-miss Nike code never auto-links — Lacoste's rule is Lacoste-only", async () => {
+    // HF5509-004 is one digit off the registered HF5509-002 — but Nike prints
+    // one code across every size AND colourway, so a digit off means a
+    // DIFFERENT code, and the human decides.
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("HF5509-004", null); });
+    expect(recordLabelCodes).not.toHaveBeenCalled();
+    expect(textOf(tr)).toContain("link it");
+  });
+
   it("no path here writes a product record — alias rows are the only writes", async () => {
     const tr = await mountOnCountTab();
     await act(async () => { await readerProps.onCode("CT8527-999", null); });

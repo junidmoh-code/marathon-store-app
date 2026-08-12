@@ -41,6 +41,7 @@ import { canAdjustHubCount } from "../../config/hubSneakerCount";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/styleCode";
+import { findPerSizeSiblings } from "../../utils/perSizeStyleCode";
 import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
@@ -437,17 +438,50 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // p is genuinely gone (alias points at nothing live) — fall through
         // to the link offer; the operator decides what this code is.
       }
-      // A clean read nothing owns NEVER dead-ends (owner spec 2026-08-12: the
-      // Lacoste per-size labels blocked a live count exactly here). The
-      // operator is holding a real shoe — offer "this is the same shoe as…"
-      // with a product search; the pick files a code alias through the
-      // existing labelAlias door, so the next scan of this size resolves
-      // silently. "Note as never registered" survives inside the panel as the
-      // deliberate answer, no longer the automatic one.
-      setPanel({
+      // THE PER-SIZE RULE (owner spec 2026-08-12, utils/perSizeStyleCode.js):
+      // Lacoste prints a different article reference per SIZE — same prefix,
+      // same colourway suffix, one article digit moved. When exactly ONE
+      // registered product is a per-size sibling of this code, that IS the
+      // shoe: file the alias without asking and count it. Two candidates, or
+      // a conflict the server can see that this client cannot, drop to the
+      // link panel — never a guess. A DIFFERENT colourway suffix never gets
+      // here (the rule refuses it), because same fit in another colour is a
+      // different product.
+      const openLink = () => setPanel({
         mode: "link", kind: "code", display, normalised,
         allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
       });
+      const sibs = findPerSizeSiblings(normalised, products);
+      if (sibs.length === 1) {
+        const p = sibs[0];
+        try {
+          const res = await recordLabelCodes({
+            productId: p.id, chosenCode: normalised,
+            otherCodes: (meta && Array.isArray(meta.allCodes) ? meta.allCodes : [])
+              .filter((c) => normaliseStyleCode(c) !== normalised),
+          });
+          if (res && res.conflicts && res.conflicts.some((c) => c.code === normalised)) {
+            // The server knows an owner this client could not see — flagged
+            // for review over there; over here the human decides, never the rule.
+            flash("warn", `${display} already belongs to another product — flagged for review. Pick the shoe yourself.`, 8000);
+            openLink();
+            return;
+          }
+          flash("ok", `${display} is “${p.name}” — this brand prints a different code per size. Linked; the next scan resolves by itself.`, 6500);
+        } catch (err) {
+          flash("warn", `${display} matched “${p.name}” (per-size label), but the link could not be saved (${err?.message || err}) — the next scan will match again.`, 8000);
+        }
+        setPanel(countPanelFor(p));
+        return;
+      }
+      // A clean read nothing owns NEVER dead-ends (the Lacoste labels blocked
+      // a live count exactly here). The operator is holding a real shoe —
+      // offer "this is the same shoe as…" with a product search; the pick
+      // files a code alias through the existing labelAlias door, so the next
+      // scan of this size resolves silently. "Note as never registered"
+      // survives inside the panel as the deliberate answer, not the automatic
+      // one.
+      openLink();
     } finally { setBusy(false); }
   }, [hub, products, flash]);
 
