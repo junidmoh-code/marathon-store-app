@@ -77,3 +77,23 @@ export function findPerSizeSiblings(scanned, products) {
   }
   return out;
 }
+
+/**
+ * The ONE product a scanned code may auto-link to, or null when a human must
+ * decide. Two gates beyond findPerSizeSiblings:
+ *
+ *   • exactly one live sibling — two candidates is a question, never a guess;
+ *   • that sibling must not ITSELF sit in a per-size cluster. The 2026-08-12
+ *     sweep found five live Gripshot records (742CFA0005/6/7/12/16-2G4) whose
+ *     codes rule-link but whose names claim different colours — data that
+ *     incoherent must go to a human, and a new scan one digit away from
+ *     exactly one member of such a cluster must NOT be pulled in silently.
+ */
+export function perSizeAutoCandidate(scanned, products) {
+  const sibs = findPerSizeSiblings(scanned, products);
+  if (sibs.length !== 1) return null;
+  const only = sibs[0];
+  const cluster = findPerSizeSiblings(only.styleCodeNormalised, products)
+    .filter((p) => p.id !== only.id);
+  return cluster.length ? null : only;
+}

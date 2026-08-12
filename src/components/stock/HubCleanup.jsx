@@ -41,7 +41,7 @@ import { canAdjustHubCount } from "../../config/hubSneakerCount";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/styleCode";
-import { findPerSizeSiblings } from "../../utils/perSizeStyleCode";
+import { perSizeAutoCandidate } from "../../utils/perSizeStyleCode";
 import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
@@ -451,9 +451,8 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         mode: "link", kind: "code", display, normalised,
         allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
       });
-      const sibs = findPerSizeSiblings(normalised, products);
-      if (sibs.length === 1) {
-        const p = sibs[0];
+      const p = perSizeAutoCandidate(normalised, products);
+      if (p) {
         try {
           const res = await recordLabelCodes({
             productId: p.id, chosenCode: normalised,

@@ -9,7 +9,7 @@
 //      Active families) or unrelated. The rule can therefore only ever fire on
 //      a code arriving from a NOT-yet-registered size of a registered shoe.
 import { describe, it, expect } from "vitest";
-import { perSizeSiblingCodes, findPerSizeSiblings } from "./perSizeStyleCode.js";
+import { perSizeSiblingCodes, findPerSizeSiblings, perSizeAutoCandidate } from "./perSizeStyleCode.js";
 import { normaliseStyleCode } from "./styleCode.js";
 
 // Every live styleCodeNormalised matching the Lacoste article shape, verbatim
@@ -137,5 +137,36 @@ describe("findPerSizeSiblings — the catalogue lookup the count uses", () => {
     expect(findPerSizeSiblings("", CATALOGUE)).toEqual([]);
     expect(findPerSizeSiblings("745SMA006-21G", null)).toEqual([]);
     expect(findPerSizeSiblings("745SMA006-21G", [null, {}, { id: "x" }])).toEqual([]);
+  });
+});
+
+describe("perSizeAutoCandidate — the only gate the count's auto-link passes", () => {
+  // The live Gripshot family the 2026-08-12 sweep surfaced, verbatim: five
+  // records whose codes rule-link but whose NAMES claim different colours.
+  const GRIPSHOT = [
+    { id: "g07", name: "Lacoste Gripshot Mid Green", styleCodeNormalised: "742CFA00072G4" },
+    { id: "g12", name: "Lacoste Gripshot White Green Orange", styleCodeNormalised: "742CFA00122G4" },
+    { id: "g05", name: "Lacoste Gripshot Mid White", styleCodeNormalised: "742CFA00052G4" },
+    { id: "g06", name: "Lacoster gripshot mid white and brown", styleCodeNormalised: "742CFA00062G4" },
+    { id: "g16", name: "Lacoster gripshot green", styleCodeNormalised: "742CFA00162G4" },
+  ];
+  const CLEAN = [
+    { id: "pAud", name: "Lacoste Audysol White", styleCodeNormalised: "745SMA00421G" },
+    { id: "pMissouri", name: "Missouri Mid Green Grey", styleCodeNormalised: "743SMA01691M3" },
+  ];
+
+  it("a lone registered sibling auto-links — the physical-label case", () => {
+    expect(perSizeAutoCandidate("745SMA006-21G", CLEAN)?.id).toBe("pAud");
+  });
+
+  it("two candidate siblings never auto-link", () => {
+    // 742CFA0004-2G4 sits one digit from 0005, 0006 AND 0007 — a question.
+    expect(perSizeAutoCandidate("742CFA00042G4", GRIPSHOT)).toBe(null);
+  });
+
+  it("REFUSES to auto-link into an already-split cluster, even via exactly one sibling", () => {
+    // 742CFA0022-2G4 is one digit from ONLY 0012 — but 0012 itself rule-links
+    // to 0016: the cluster's identity is a human question, so no silent pull.
+    expect(perSizeAutoCandidate("742CFA00222G4", GRIPSHOT)).toBe(null);
   });
 });
