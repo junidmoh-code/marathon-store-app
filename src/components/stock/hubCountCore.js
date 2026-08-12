@@ -235,21 +235,34 @@ export function recoverSeededRows({ counted = {}, hubStock = {}, products = [] }
   return rows;
 }
 
-/** N of M for the progress readout: M = countable cells, N = those recorded. */
+/**
+ * Is this record still a live count? A release landing AFTER a cell was
+ * counted stamps the record `staleAt` (stockHoldStore.releaseShipment) — the
+ * shelf may now hold units the counter never saw, so the cell must resurface
+ * for re-confirmation. A stale record is NOT counted; recounting overwrites
+ * the whole record and the stamp disappears with it.
+ */
+export function recordIsCurrent(rec) {
+  return !!rec && !rec.staleAt;
+}
+
+/** N of M for the progress readout: M = countable cells, N = those recorded
+ *  and still current (a release-staled cell goes back into the to-do). */
 export function progressOf(rows, counted = {}) {
   let total = 0, done = 0;
   for (const row of rows) {
     for (const s of row.sizes) {
       total++;
-      if (counted[cellKey(row.id, s.sizeKey)]) done++;
+      if (recordIsCurrent(counted[cellKey(row.id, s.sizeKey)])) done++;
     }
   }
   return { done, total };
 }
 
-/** Is every size on this row already recorded? Drives the settled/dimmed state. */
+/** Is every size on this row already recorded (and none staled by a release)?
+ *  Drives the settled/dimmed state. */
 export function isRowSettled(row, counted = {}) {
-  return row.sizes.length > 0 && row.sizes.every((s) => counted[cellKey(row.id, s.sizeKey)]);
+  return row.sizes.length > 0 && row.sizes.every((s) => recordIsCurrent(counted[cellKey(row.id, s.sizeKey)]));
 }
 
 /**

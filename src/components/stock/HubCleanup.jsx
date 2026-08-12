@@ -64,7 +64,7 @@ import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
   confirmCell, adjustCell, flagCell, useLocationRegistryOnce, rememberHub, rememberedHub,
 } from "./hubCountStore";
-import { isCountableSizeKey, cellKey, sizeLabelOf } from "./hubCountCore";
+import { isCountableSizeKey, cellKey, sizeLabelOf, recordIsCurrent } from "./hubCountCore";
 import { loadOffShelfSources, offShelfForCell, expectedOnShelf } from "./offShelf";
 import { loadDisplaySlots } from "./displaySlots";
 import { stockSizeKey } from "../../utils/sizeKey";
@@ -583,7 +583,22 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         : canAdjust
           ? await adjustCell({ ...args, actual, actorRole })
           : await flagCell({ ...args, actual });
-      if (!res.ok) { flash(res.stale ? "warn" : "err", res.message || "Could not record.", 6500); return; }
+      if (!res.ok) {
+        flash(res.stale ? "warn" : "err", res.message || "Could not record.", 6500);
+        // The fence rejected because the cell moved (a POS sale, a released
+        // shipment). Pull that ONE cell back into the frozen snapshot so the
+        // panel's next attempt is against the number the fence will accept —
+        // without this a released-then-recounted cell loops on the same toast.
+        if (res.stale && typeof res.live === "number") {
+          setHubStock((s) => {
+            if (!s) return s;
+            const node = { ...(s[product.id] || {}) };
+            node[sizeKey] = { ...(node[sizeKey] || {}), qty: res.live };
+            return { ...s, [product.id]: node };
+          });
+        }
+        return;
+      }
       setCounted((c) => ({ ...c, [cellKey(product.id, sizeKey)]: res.record }));
       if (res.warning) flash("warn", res.warning, 9000);
       else flash("ok", actual === shelfExpected ? "Confirmed." : canAdjust ? `Shelf adjusted to ${actual}${offShelf ? ` (+${offShelf} off-shelf stays booked)` : ""}.` : `Flagged for an admin (${actual}).`);
@@ -1654,7 +1669,12 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources
   }, [offSources, freshSlots]);
 
   const expected = sizeKey ? qtyOf(cells[sizeKey]) : 0;
-  const record = sizeKey ? counted[cellKey(product.id, sizeKey)] : null;
+  const rawRecord = sizeKey ? counted[cellKey(product.id, sizeKey)] : null;
+  // A record staled by a shipment release is NOT a count any more — the shelf
+  // gained units this counter never saw. The panel reopens the cell and says
+  // what changed and when (owner spec 2026-08-12, the shelve-then-count race).
+  const staleRecord = rawRecord && rawRecord.staleAt ? rawRecord : null;
+  const record = recordIsCurrent(rawRecord) ? rawRecord : null;
 
   const labelOf = (s) => labelFor(s, registry);
   const off = sizeKey && sources
@@ -1666,7 +1686,11 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources
   const hasUnverifiable = off.parts.some((p) => !p.verified);
 
   const marks = {};
-  for (const k of sizeKeys) if (counted[cellKey(product.id, k)]) marks[sizeLabelOf(k)] = "✓";
+  for (const k of sizeKeys) {
+    const r = counted[cellKey(product.id, k)];
+    if (recordIsCurrent(r)) marks[sizeLabelOf(k)] = "✓";
+    else if (r && r.staleAt) marks[sizeLabelOf(k)] = "↻";     // changed since counting
+  }
 
   const labels = sizeKeys.map(sizeLabelOf);
   const keyByLabel = Object.fromEntries(sizeKeys.map((k) => [sizeLabelOf(k), k]));
@@ -1698,6 +1722,14 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources
                           padding: "12px 14px", marginBottom: 12, fontSize: 14, color: "#B7F0CC" }}>
               ✓ Already counted this session ({record.action} · {record.actual} on the shelf
               {Number(record.offShelf) > 0 ? ` + ${record.offShelf} off-shelf` : ""}).
+            </div>
+          )}
+          {staleRecord && (
+            <div style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.35)", borderRadius: 13,
+                          padding: "12px 14px", marginBottom: 12, fontSize: 13, color: "#FDE9B0", lineHeight: 1.55 }}>
+              ↻ Counted {staleRecord.actual} on {String(staleRecord.at || "").slice(0, 10)}, then{" "}
+              <strong>+{Number(staleRecord.staleDelta) || 0} landed from a released shipment</strong>
+              {staleRecord.staleAt ? ` on ${String(staleRecord.staleAt).slice(0, 10)}` : ""} — count this shelf again.
             </div>
           )}
           {!record && (

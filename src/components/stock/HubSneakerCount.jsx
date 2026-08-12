@@ -34,7 +34,7 @@ import {
 } from "../../config/hubSneakerCount";
 import {
   hubOptions, buildHubRows, seededRowFor, mergeSeededRows, progressOf,
-  isRowSettled, historyRows, filterRows, cellKey, recoverSeededRows,
+  isRowSettled, historyRows, filterRows, cellKey, recoverSeededRows, recordIsCurrent,
 } from "./hubCountCore";
 import {
   loadHubStock, openOrResumeSession, loadCounted, publishSessionTotal,
@@ -540,7 +540,8 @@ function CountList({
 // ── One product, collapsed to a summary until tapped ──────────────────────────
 function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell, onConfirm, onAdjust, onFlag, onRecount, recounting, canAdjust, onOpenPhoto, offFor }) {
   const settled = isRowSettled(row, counted);
-  const doneCount = row.sizes.filter((s) => counted[cellKey(row.id, s.sizeKey)]).length;
+  const doneCount = row.sizes.filter((s) => recordIsCurrent(counted[cellKey(row.id, s.sizeKey)])).length;
+  const staleCount = row.sizes.filter((s) => { const r = counted[cellKey(row.id, s.sizeKey)]; return r && r.staleAt; }).length;
 
   return (
     <div style={{ background: CARD, border: settled ? "1px solid rgba(74,222,128,.3)" : BORDER, borderRadius: 11, opacity: settled && !open ? 0.55 : 1 }}>
@@ -555,6 +556,7 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
             {row.code ? `${row.code} · ` : ""}{row.sizes.length} size{row.sizes.length === 1 ? "" : "s"}
             {row.seeded && <span style={{ color: AMBER }}> · added from zero</span>}
             {doneCount > 0 && !settled && <span style={{ color: BLUE_L }}> · {doneCount} done</span>}
+            {staleCount > 0 && <span style={{ color: AMBER }}> · {staleCount} changed since counting — recount</span>}
           </div>
         </div>
         <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -597,7 +599,11 @@ function ProductRow({ row, counted, open, onToggle, inputs, setInputs, busyCell,
 function SizeRow({ size, record, recounting, canAdjust, off = { total: 0, parts: [] }, value, onChange, busy, onConfirm, onAdjust, onFlag, onRecount }) {
   const typed = String(value ?? "").trim();
   const parsed = /^\d+$/.test(typed) ? parseInt(typed, 10) : null;
-  const done = !!record && !recounting;
+  // THE RACE GUARD'S OTHER HALF (owner spec 2026-08-12): a record staled by a
+  // shipment release is NOT done — the shelf may now hold units this counter
+  // never saw. The row reopens with what changed and when.
+  const stale = !!record && !!record.staleAt;
+  const done = !!record && !stale && !recounting;
   // The number the counter answers for is the SHELF: booked − known off-shelf
   // (displays at shops, ready orders — owner spec 2026-08-12). With nothing
   // off-shelf this is the booked number, exactly as before.
@@ -646,7 +652,7 @@ function SizeRow({ size, record, recounting, canAdjust, off = { total: 0, parts:
       ) : (
         <>
           <input value={value} onChange={(e) => onChange(e.target.value)} inputMode="numeric"
-            placeholder="on shelf" autoFocus={recounting}
+            placeholder={stale ? "recount this shelf" : "on shelf"} autoFocus={recounting}
             style={{ ...input, flex: 1, minWidth: 0, padding: "8px 10px", fontSize: "0.85rem" }} />
           {/* One button, three faces: Confirm (matches) / Adjust (admin writes
               stock) / Record (staff — saves the difference for an admin). */}
@@ -660,6 +666,15 @@ function SizeRow({ size, record, recounting, canAdjust, off = { total: 0, parts:
         </>
       )}
       </div>
+      {/* What changed since this cell was counted, and when — the reopened row
+          says WHY it is asking again. */}
+      {stale && !done && (
+        <div style={{ fontSize: 10.5, color: AMBER, lineHeight: 1.5, paddingLeft: 2 }}>
+          Counted {record.actual} on {String(record.at || "").slice(0, 10)}, then{" "}
+          <strong>+{Number(record.staleDelta) || 0} landed from a released shipment</strong>
+          {record.staleAt ? ` on ${String(record.staleAt).slice(0, 10)}` : ""} — count this shelf again.
+        </div>
+      )}
       {/* The breakdown, in plain warehouse language — only when something IS
           off the shelf, so an ordinary cell renders exactly as before. */}
       {!done && off.total > 0 && (
