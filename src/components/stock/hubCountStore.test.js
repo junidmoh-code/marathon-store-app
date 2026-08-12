@@ -564,3 +564,77 @@ describe("recording and provenance", () => {
     expect(applyMovementMock.mock.calls[0][0].size).toBe("5.5");   // RAW size to the writer
   });
 });
+
+// ─── OFF-SHELF ARITHMETIC (owner spec 2026-08-12) ────────────────────────────
+// The counter answers for the SHELF; `offShelf` is what the system knows is
+// booked here but standing elsewhere (a display at a shop, a ready order).
+// These pins ARE the count-integrity contract: an honest shelf count can never
+// destroy an off-shelf unit, and a cell with nothing off-shelf behaves
+// byte-for-byte as before.
+describe("off-shelf arithmetic", () => {
+  it("worked example: booked 2, 1 on display, counter sees 1 → CONFIRM, no movement", async () => {
+    seedCell(2);
+    const res = await confirmCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8",
+                                    expected: 2, offShelf: 1, offShelfNote: "1 on display at Marathon PE" });
+    expect(res.ok).toBe(true);
+    expect(applyMovementMock).not.toHaveBeenCalled();     // the display unit survives
+    expect(cellNow().qty).toBe(2);
+    expect(recordNow()).toMatchObject({ action: "confirm", expected: 2, actual: 1, offShelf: 1 });
+  });
+
+  it("adjust moves the SHELF figure: booked 8, 1 off-shelf, shelf shows 4 → cell lands at 5, not 4", async () => {
+    seedCell(8);
+    const res = await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8",
+                                   expected: 8, actual: 4, offShelf: 1 });
+    expect(res.ok).toBe(true);
+    expect(cellNow().qty).toBe(5);                        // 4 on the shelf + 1 off-shelf stays booked
+    expect(recordNow()).toMatchObject({ action: "adjust", expected: 8, actual: 4, offShelf: 1, settled: true });
+    const mv = applyMovementMock.mock.calls[0][0];
+    expect(mv.qty).toBe(3);                               // |5 − 8|
+    expect(mv.from).toBe(HUB);
+    expect(mv.link.countOffShelf).toBe(1);
+  });
+
+  it("a shelf count matching booked − offShelf via the adjust path is just a confirm", async () => {
+    seedCell(5);
+    const res = await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8",
+                                   expected: 5, actual: 4, offShelf: 1 });
+    expect(res.ok).toBe(true);
+    expect(applyMovementMock).not.toHaveBeenCalled();
+    expect(recordNow().action).toBe("confirm");
+  });
+
+  it("flag records the shelf count with its off-shelf context for the admin apply", async () => {
+    seedCell(5);
+    const res = await flagCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8",
+                                 expected: 5, actual: 2, offShelf: 1, offShelfNote: "1 on display at Trophy" });
+    expect(res.ok).toBe(true);
+    expect(cellNow().qty).toBe(5);                        // flags never move stock
+    expect(recordNow()).toMatchObject({ action: "flag", actual: 2, offShelf: 1, offShelfNote: "1 on display at Trophy" });
+  });
+
+  it("flag whose shelf count matches booked − offShelf collapses to a confirm", async () => {
+    seedCell(5);
+    const res = await flagCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8",
+                                 expected: 5, actual: 4, offShelf: 1 });
+    expect(res.ok).toBe(true);
+    expect(recordNow().action).toBe("confirm");
+  });
+
+  it("offShelf 0 (or absent) is EXACTLY the old behaviour", async () => {
+    seedCell(4);
+    const res = await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 4, actual: 2 });
+    expect(res.ok).toBe(true);
+    expect(cellNow().qty).toBe(2);
+    expect(recordNow()).toMatchObject({ actual: 2, offShelf: 0 });
+  });
+
+  it("the stale fence still compares BOOKED numbers — a moved cell rejects regardless of offShelf", async () => {
+    seedCell(7);   // the counter was shown 8
+    const res = await adjustCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8",
+                                   expected: 8, actual: 4, offShelf: 1 });
+    expect(res.ok).toBe(false);
+    expect(res.stale).toBe(true);
+    expect(applyMovementMock).not.toHaveBeenCalled();
+  });
+});

@@ -171,7 +171,7 @@ export async function loadCardSummary(hub) {
   };
 }
 
-function recordFor({ productId, sizeKey, expected, actual, action, movementId, live, settled }) {
+function recordFor({ productId, sizeKey, expected, actual, action, movementId, live, settled, offShelf = 0, offShelfNote = null }) {
   const user = auth.currentUser;
   return {
     productId,
@@ -179,6 +179,13 @@ function recordFor({ productId, sizeKey, expected, actual, action, movementId, l
     expected: Number(expected),
     actual: Number(actual),                  // what the counter said was on the shelf
     action,                                  // "confirm" | "adjust"
+    // Units the system KNOWS are booked here but not on this shelf (displays at
+    // shops, ready orders — offShelf.js). The counter was asked about
+    // expected − offShelf, and every delta below is computed so these units
+    // are never destroyed by an honest shelf count. Legacy records (absent
+    // field) read as 0 — the old behaviour, exactly.
+    offShelf: Number(offShelf) || 0,
+    offShelfNote: offShelfNote || null,      // "1 on display at Marathon PE" — for History
     at: serverNowIso(),
     by: user ? user.uid : null,
     movementId: movementId || null,
@@ -228,13 +235,22 @@ async function writeRecord(hub, sessionId, rec) {
  * matching count, but that is a rollout-gate concern for seeding tracked stock,
  * and this is a temporary audit — "records the count, no stock change" is taken
  * literally. The record itself is the evidence the cell was verified.
+ *
+ * ── THE SHELF, NOT THE TOTAL (owner spec 2026-08-12) ─────────────────────────
+ * `expected` stays the BOOKED quantity (the fence compares it to the live
+ * cell); `offShelf` is what the system knows is booked here but standing
+ * elsewhere (displays at shops, ready orders). The counter confirms
+ * expected − offShelf — the number physically in front of them — and a
+ * confirm can therefore never invite destroying an off-shelf unit.
  */
-export async function confirmCell({ hub, sessionId, productId, sizeKey, expected }) {
+export async function confirmCell({ hub, sessionId, productId, sizeKey, expected, offShelf = 0, offShelfNote = null }) {
   const live = await readLiveQty(hub, productId, sizeKey);
   if (live.error) return live;
   if (Number(live.qty) !== Number(expected)) return staleResult(live.qty, expected);
 
-  const rec = recordFor({ productId, sizeKey, expected, actual: expected, action: "confirm" });
+  const shelf = Number(expected) - (Number(offShelf) || 0);
+  const rec = recordFor({ productId, sizeKey, expected, actual: shelf, action: "confirm",
+                          live: Number(expected), offShelf, offShelfNote });
   // A confirm changed no stock, so a failed record write means simply nothing
   // happened — safe to report as a failure and let the counter tap again.
   try {
@@ -259,22 +275,23 @@ export async function confirmCell({ hub, sessionId, productId, sizeKey, expected
  * Same staleness fence as confirm/adjust — a count against a shelf that no
  * longer matches the number the counter was shown is not a count.
  */
-export async function flagCell({ hub, sessionId, productId, sizeKey, expected, actual }) {
-  const target = Number(actual);
+export async function flagCell({ hub, sessionId, productId, sizeKey, expected, actual, offShelf = 0, offShelfNote = null }) {
+  const target = Number(actual);            // the SHELF count the counter typed
   if (!Number.isInteger(target) || target < 0) {
     return { ok: false, message: "Enter a whole number of pairs (0 or more)." };
   }
   const live = await readLiveQty(hub, productId, sizeKey);
   if (live.error) return live;
   if (Number(live.qty) !== Number(expected)) return staleResult(live.qty, expected);
-  if (target === Number(expected)) {
-    return confirmCell({ hub, sessionId, productId, sizeKey, expected });   // it matches — just a confirm
+  if (target === Number(expected) - (Number(offShelf) || 0)) {
+    // The shelf matches once the off-shelf units are accounted for — a confirm.
+    return confirmCell({ hub, sessionId, productId, sizeKey, expected, offShelf, offShelfNote });
   }
 
   // Stock stays exactly where it is: `live` on the record is the UNCHANGED cell
   // value, and settled is true because nothing was written that could fail to
   // settle. `action: "flag"` is what marks it as awaiting an admin.
-  const rec = recordFor({ productId, sizeKey, expected, actual: target, action: "flag", live: Number(expected), settled: true });
+  const rec = recordFor({ productId, sizeKey, expected, actual: target, action: "flag", live: Number(expected), settled: true, offShelf, offShelfNote });
   try {
     await writeRecord(hub, sessionId, rec);
   } catch (err) {
@@ -337,8 +354,8 @@ const staleResult = (live, expected) => ({
  *      cell really holds) so it survives the toast and surfaces in Variance as a
  *      cell a human must physically re-check. Never swallowed.
  */
-export async function adjustCell({ hub, sessionId, productId, sizeKey, expected, actual, actorRole }) {
-  const target = Number(actual);
+export async function adjustCell({ hub, sessionId, productId, sizeKey, expected, actual, actorRole, offShelf = 0, offShelfNote = null }) {
+  const target = Number(actual);            // the SHELF count the counter typed
   if (!Number.isInteger(target) || target < 0) {
     return { ok: false, message: "Enter a whole number of pairs (0 or more)." };
   }
@@ -347,8 +364,16 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
   if (live.error) return live;
   if (Number(live.qty) !== Number(expected)) return staleResult(live.qty, expected);   // layer 1
 
-  const delta = target - Number(expected);
-  if (delta === 0) return confirmCell({ hub, sessionId, productId, sizeKey, expected });
+  // ── AN ADJUSTMENT MOVES THE SHELF FIGURE, NEVER THE OFF-SHELF UNITS ────────
+  // (Owner spec 2026-08-12.) The counter answered "what is on this shelf"; the
+  // booked cell also carries `offShelf` units standing at shops. The corrected
+  // BOOKED quantity is therefore shelf + offShelf — the delta below leaves
+  // every known off-shelf unit alive. With offShelf 0 this is byte-for-byte
+  // the old arithmetic.
+  const off = Number(offShelf) || 0;
+  const bookedTarget = target + off;
+  const delta = bookedTarget - Number(expected);
+  if (delta === 0) return confirmCell({ hub, sessionId, productId, sizeKey, expected, offShelf, offShelfNote });
 
   const res = await applyMovement(
     {
@@ -371,6 +396,7 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
         countSize: live.rawSize,
         countExpected: Number(expected),
         countActual: target,
+        countOffShelf: off,
         countDelta: delta,
         countAt: serverNowIso(),
       },
@@ -408,16 +434,19 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
   } catch (err) {
     after = { error: true, unverified: String(err?.message || err) };
   }
-  const settled = !after.error && Number(after.qty) === target;
+  // The cell must now hold shelf + offShelf — the booked figure, not the bare
+  // shelf count (they are the same number when nothing is off-shelf).
+  const settled = !after.error && Number(after.qty) === bookedTarget;
 
   const rec = recordFor({
     productId, sizeKey, expected, actual: target, action: "adjust",
     movementId: res.movementId,
-    live: after.error ? target : Number(after.qty),
+    live: after.error ? bookedTarget : Number(after.qty),
     // An unverifiable write is recorded as settled — we have no evidence it went
     // wrong, and flagging every dropped read as a discrepancy would fill Variance
     // with noise on bad shop wifi. The caller is told separately.
     settled: after.error ? true : settled,
+    offShelf, offShelfNote,
   });
 
   // The stock movement has ALREADY committed at this point. If the progress
@@ -432,7 +461,7 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
     return {
       ok: true,
       record: rec,
-      warning: `Stock WAS updated to ${target}, but this device could not save the progress record (${String(err?.message || err)}). Movement ${res.movementId} has the full count in its provenance — do not count this cell again.`,
+      warning: `Stock WAS updated to ${bookedTarget}${off ? ` (${target} on the shelf + ${off} off-shelf)` : ""}, but this device could not save the progress record (${String(err?.message || err)}). Movement ${res.movementId} has the full count in its provenance — do not count this cell again.`,
     };
   }
 
@@ -448,7 +477,7 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
     return {
       ok: true,
       record: rec,
-      warning: `Recorded, but the cell now reads ${after.qty} instead of ${target} — another write landed at the same moment. Movement ${res.movementId} can be traced in History.`,
+      warning: `Recorded, but the cell now reads ${after.qty} instead of ${bookedTarget} — another write landed at the same moment. Movement ${res.movementId} can be traced in History.`,
     };
   }
   return { ok: true, record: rec };

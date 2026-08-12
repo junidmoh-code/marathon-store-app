@@ -278,9 +278,15 @@ export function historyRows(counted = {}, productsById = new Map()) {
     .map(([key, rec]) => ({ key, ...rec }))
     .map((r) => ({
       ...r,
-      delta: Number(r.actual) - Number(r.expected),
+      // `actual` is the SHELF count; `offShelf` (0 on legacy records) is what
+      // the system knows stands elsewhere. The BOOKED delta the count applied
+      // is therefore (shelf + offShelf) − booked — with offShelf 0 this is the
+      // old arithmetic byte for byte.
+      delta: Number(r.actual) + (Number(r.offShelf) || 0) - Number(r.expected),
+      offShelf: Number(r.offShelf) || 0,
       pending: r.action === "flag",
       unsettled: r.settled === false,
+      stale: !!r.staleAt,
       live: r.live == null ? Number(r.actual) : Number(r.live),
       name: byId.get(r.productId)?.name || r.productId,
       sizeLabel: sizeLabelOf(r.sizeKey),

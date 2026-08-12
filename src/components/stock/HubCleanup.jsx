@@ -65,6 +65,8 @@ import {
   confirmCell, adjustCell, flagCell, useLocationRegistryOnce, rememberHub, rememberedHub,
 } from "./hubCountStore";
 import { isCountableSizeKey, cellKey, sizeLabelOf } from "./hubCountCore";
+import { loadOffShelfSources, offShelfForCell, expectedOnShelf } from "./offShelf";
+import { loadDisplaySlots } from "./displaySlots";
 import { stockSizeKey } from "../../utils/sizeKey";
 import CameraScanner from "./CameraScanner.jsx";
 import { TongueLabelReader } from "./TongueLabelReader.jsx";
@@ -179,6 +181,11 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   const [session, setSession] = useState(null);
   const [counted, setCounted] = useState({});
   const [allStock, setAllStock] = useState(null);       // lazy — Leftovers / Merge only
+  // Off-shelf sources (offShelf.js): display slots, legacy register rows, ready
+  // orders, the layby blind-spot count. Loaded when the count session opens and
+  // frozen like the stock snapshot; the SLOT half is re-read per cell inside
+  // CountPanel so a display changing size mid-count is read at its CURRENT size.
+  const [offSources, setOffSources] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
 
@@ -192,6 +199,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
     setSession(null);
     setCounted({});
     setAllStock(null);
+    setOffSources(null);
     setPanel(null);
     setLoading(true);
     setLoadError("");
@@ -218,6 +226,13 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         const s = await openOrResumeSession(hub);
         if (cancelled) return;
         setSession(s);
+        // The off-shelf picture loads WITH the session: without it the panel
+        // would show booked totals and the count would destroy display units —
+        // the exact bug this rework removes. A failed load degrades to
+        // offShelf 0 (today's behaviour) with the failure visible, not silent.
+        loadOffShelfSources(hub, new Map((products || []).map((p) => [p?.id, p])))
+          .then((src) => { if (!cancelled) setOffSources(src); })
+          .catch((err) => { if (!cancelled) flash("warn", `Off-shelf data did not load (${err?.message || err}) — counts will show booked totals.`, 8000); });
         const c = await loadCounted(hub, s.sessionId);
         if (cancelled) return;
         setCounted(c || {});
@@ -553,12 +568,17 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
 
   // ── Count writes (the proven fences) ───────────────────────────────────────
   const canAdjust = canAdjustHubCount(viewer);
-  const doCount = useCallback(async ({ product, sizeKey, expected, actual }) => {
+  // `actual` is the SHELF count; `offShelf` the units the system knows stand
+  // elsewhere (displays at shops, ready orders). The stores compute every
+  // delta as shelf + offShelf − booked, so an honest count never destroys an
+  // off-shelf unit (owner spec 2026-08-12).
+  const doCount = useCallback(async ({ product, sizeKey, expected, actual, offShelf = 0, offShelfNote = null }) => {
     if (!session) return;
     setBusy(true);
     try {
-      const args = { hub, sessionId: session.sessionId, productId: product.id, sizeKey, expected };
-      const res = actual === expected
+      const args = { hub, sessionId: session.sessionId, productId: product.id, sizeKey, expected, offShelf, offShelfNote };
+      const shelfExpected = expected - offShelf;
+      const res = actual === shelfExpected
         ? await confirmCell(args)
         : canAdjust
           ? await adjustCell({ ...args, actual, actorRole })
@@ -566,7 +586,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       if (!res.ok) { flash(res.stale ? "warn" : "err", res.message || "Could not record.", 6500); return; }
       setCounted((c) => ({ ...c, [cellKey(product.id, sizeKey)]: res.record }));
       if (res.warning) flash("warn", res.warning, 9000);
-      else flash("ok", actual === expected ? "Confirmed." : canAdjust ? `Adjusted to ${actual}.` : `Flagged for an admin (${actual}).`);
+      else flash("ok", actual === shelfExpected ? "Confirmed." : canAdjust ? `Shelf adjusted to ${actual}${offShelf ? ` (+${offShelf} off-shelf stays booked)` : ""}.` : `Flagged for an admin (${actual}).`);
     } finally { setBusy(false); }
   }, [hub, session, canAdjust, actorRole, flash]);
 
@@ -738,6 +758,19 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
               Pick up a shoe and photograph the label <u>inside the tongue</u> — the style number
               brings up its count. Not the shop barcode sticker, not the box.
             </div>
+            {/* The layby blind spot, said plainly rather than hidden: those
+                pulls carry no product or size, so no cell's shelf number can
+                ever include them (offShelf.js header). */}
+            {offSources && offSources.laybyItems > 0 && (
+              <div style={{ fontSize: 11.5, color: AMBER, margin: "0 2px 10px", lineHeight: 1.5,
+                            background: "rgba(251,191,36,.06)", border: "1px solid rgba(251,191,36,.22)",
+                            borderRadius: 10, padding: "8px 11px" }}>
+                {offSources.laybyItems} layby unit{offSources.laybyItems === 1 ? "" : "s"} pulled to shops are
+                still booked at this hub, and the layby records carry no product or size — a shelf here can be
+                short by units this screen cannot name. If a shortfall looks layby-shaped, flag it rather than
+                adjusting.
+              </div>
+            )}
             <TongueLabelReader big busy={busy} onCode={(code, meta) => handleStyleNumber(code, meta)} onTokens={handleAliasTokens} />
 
             {/* Fallback 2 — search by name, small on purpose. */}
@@ -875,6 +908,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         <CountPanel key={`cnt_${panel.product.id}_${panel.size ?? ""}`}
                     panel={panel} hub={hub} hubStock={hubStock || {}} counted={counted}
                     busy={busy} canAdjust={canAdjust}
+                    offSources={offSources} registry={registry}
                     onRecord={doCount} onClose={() => setPanel(null)} />
       )}
       {/* ── THE PICKER — one code, several products, the HUMAN decides ──────
@@ -1583,8 +1617,14 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   );
 }
 
-// ─── COUNT PANEL — scan → size (dominant) → confirm quantity → continue ──────
-function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, onRecord, onClose }) {
+// ─── COUNT PANEL — scan → size (dominant) → confirm the SHELF → continue ─────
+// The counter is only ever asked about what should physically be in front of
+// them: booked − known off-shelf = EXPECTED ON SHELF (owner spec 2026-08-12).
+// The breakdown renders in plain warehouse language ("12 booked · 1 on display
+// at Marathon PE · expect 11 here"), the big number is the SHELF expectation,
+// and every write carries offShelf so an adjustment moves the shelf figure and
+// never destroys a unit the system knows is elsewhere.
+function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources, registry, onRecord, onClose }) {
   const { product } = panel;
   const cells = hubStock[product.id] || {};
   const sizeKeys = useMemo(() => {
@@ -1596,14 +1636,45 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, onRecord, 
   const [sizeKey, setSizeKey] = useState(scannedKey && sizeKeys.includes(scannedKey) ? scannedKey : null);
   const [actual, setActual] = useState("");
 
+  // A display can change size MID-COUNT (one sells, another goes out). The
+  // slots half of the off-shelf picture is re-read one-shot when this panel
+  // opens, so the count reads the slot's CURRENT state — no floor re-walk.
+  const [freshSlots, setFreshSlots] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadDisplaySlots()
+      .then((s) => { if (!cancelled) setFreshSlots(s); })
+      .catch(() => { /* the entry-time snapshot still answers */ });
+    return () => { cancelled = true; };
+  }, [product.id]);
+
+  const sources = useMemo(() => {
+    if (!offSources) return null;
+    return freshSlots ? { ...offSources, slots: freshSlots } : offSources;
+  }, [offSources, freshSlots]);
+
   const expected = sizeKey ? qtyOf(cells[sizeKey]) : 0;
   const record = sizeKey ? counted[cellKey(product.id, sizeKey)] : null;
+
+  const labelOf = (s) => labelFor(s, registry);
+  const off = sizeKey && sources
+    ? offShelfForCell({ hub, productId: product.id, sizeKey, sources, labelOf })
+    : { total: 0, parts: [] };
+  const offNote = off.parts.map((p) => `${p.qty} ${p.label}`).join(" · ") || null;
+  const shelfRaw = expectedOnShelf(expected, off);
+  const shelfExpected = Math.max(0, shelfRaw);
+  const hasUnverifiable = off.parts.some((p) => !p.verified);
 
   const marks = {};
   for (const k of sizeKeys) if (counted[cellKey(product.id, k)]) marks[sizeLabelOf(k)] = "✓";
 
   const labels = sizeKeys.map(sizeLabelOf);
   const keyByLabel = Object.fromEntries(sizeKeys.map((k) => [sizeLabelOf(k), k]));
+
+  const record_ = ({ actualCount }) => onRecord({
+    product, sizeKey, expected, actual: actualCount,
+    offShelf: off.total, offShelfNote: offNote,
+  });
 
   return (
     <Panel title="Count" onClose={onClose}>
@@ -1625,26 +1696,46 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, onRecord, 
           {record && (
             <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
                           padding: "12px 14px", marginBottom: 12, fontSize: 14, color: "#B7F0CC" }}>
-              ✓ Already counted this session ({record.action} · {record.actual}).
+              ✓ Already counted this session ({record.action} · {record.actual} on the shelf
+              {Number(record.offShelf) > 0 ? ` + ${record.offShelf} off-shelf` : ""}).
             </div>
           )}
           {!record && (
             <>
               <div style={{ textAlign: "center", margin: "6px 0 16px" }}>
-                <div style={{ fontSize: 13, color: GRAY }}>System expects</div>
-                <div style={{ fontSize: 44, fontWeight: 900, fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>{expected}</div>
+                <div style={{ fontSize: 13, color: GRAY }}>Expect on this shelf</div>
+                <div style={{ fontSize: 44, fontWeight: 900, fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>{shelfExpected}</div>
                 <div style={{ fontSize: 13, color: GRAY }}>pairs of size {sizeLabelOf(sizeKey)}</div>
+                {off.total > 0 && (
+                  <div style={{ fontSize: 12.5, color: BLUE_L, marginTop: 8, lineHeight: 1.5 }}>
+                    {Math.max(0, expected)} booked{off.parts.map((p, i) => (
+                      <span key={i}> · {p.qty} {p.label}</span>
+                    ))} · expect {shelfExpected} here
+                  </div>
+                )}
+                {hasUnverifiable && (
+                  <div style={{ fontSize: 11.5, color: AMBER, marginTop: 6, lineHeight: 1.5 }}>
+                    Part of this cell is a display with no shop on record — you cannot check it from here.
+                    Count the shelf in front of you; the display unit stays booked.
+                  </div>
+                )}
+                {shelfRaw < 0 && (
+                  <div style={{ fontSize: 11.5, color: AMBER, marginTop: 6, lineHeight: 1.5 }}>
+                    The books disagree: {Math.max(0, expected)} booked but {off.total} known to be off the
+                    shelf. Count what you see — the difference is recorded honestly.
+                  </div>
+                )}
               </div>
               <BigButton tone="green" disabled={busy} style={{ minHeight: 68, fontSize: 19 }}
-                onClick={() => onRecord({ product, sizeKey, expected, actual: expected })}>
-                ✓ SHELF MATCHES — {expected}
+                onClick={() => record_({ actualCount: shelfExpected })}>
+                ✓ SHELF MATCHES — {shelfExpected}
               </BigButton>
               <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
                 <input inputMode="numeric" pattern="[0-9]*" value={actual} placeholder="Different? Enter the real count"
                        onChange={(e) => setActual(e.target.value.replace(/\D/g, ""))}
                        style={{ ...input, flex: 1, minHeight: 56, fontSize: 17, textAlign: "center" }} />
                 <button type="button" disabled={busy || actual === ""}
-                  onClick={() => onRecord({ product, sizeKey, expected, actual: Number(actual) })}
+                  onClick={() => record_({ actualCount: Number(actual) })}
                   style={{ ...bGreen, minHeight: 56, padding: "0 20px", fontSize: 15, opacity: actual === "" ? 0.4 : 1 }}>
                   {canAdjust ? "Adjust" : "Flag"}
                 </button>
