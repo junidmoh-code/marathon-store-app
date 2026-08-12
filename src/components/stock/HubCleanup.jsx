@@ -232,7 +232,14 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // offShelf 0 (today's behaviour) with the failure visible, not silent.
         loadOffShelfSources(hub, new Map((products || []).map((p) => [p?.id, p])))
           .then((src) => { if (!cancelled) setOffSources(src); })
-          .catch((err) => { if (!cancelled) flash("warn", `Off-shelf data did not load (${err?.message || err}) — counts will show booked totals.`, 8000); });
+          .catch((err) => {
+            if (cancelled) return;
+            // The panel refuses to count with NO answer, but a failed load must
+            // not dead-end the whole pass — degrade to empty sources (booked
+            // totals) and keep the failure loud on screen via the toast.
+            setOffSources({ slots: {}, register: {}, readyCells: {}, laybyItems: 0, failed: true });
+            flash("warn", `Off-shelf data did not load (${err?.message || err}) — counts will show booked totals; displays at shops are NOT protected until you reload.`, 10000);
+          });
         const c = await loadCounted(hub, s.sessionId);
         if (cancelled) return;
         setCounted(c || {});
@@ -1732,7 +1739,17 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources
               {staleRecord.staleAt ? ` on ${String(staleRecord.staleAt).slice(0, 10)}` : ""} — count this shelf again.
             </div>
           )}
-          {!record && (
+          {/* The off-shelf picture is LOAD-BEARING: counting against the bare
+              booked number is the exact unit-destroying bug this rework
+              removes, so the panel refuses to take a count before it knows
+              what is off the shelf (or has been told the load failed). */}
+          {!record && !sources && (
+            <div style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.35)", borderRadius: 13,
+                          padding: "12px 14px", marginBottom: 12, fontSize: 13, color: "#FDE9B0" }}>
+              Loading the off-shelf picture (displays, waiting orders)… one moment.
+            </div>
+          )}
+          {!record && sources && (
             <>
               <div style={{ textAlign: "center", margin: "6px 0 16px" }}>
                 <div style={{ fontSize: 13, color: GRAY }}>Expect on this shelf</div>
