@@ -54,7 +54,7 @@ import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
   recordUnresolvedScan, lookupBarcode, loadAllStock, loadDuplicateCandidates,
   fetchProductFollowingMerge, lookupStyleClaim, matchLabelAlias, addLabelAlias,
-  answerStyleCodeSibling, lookupCodeAlias, recordLabelCodes,
+  answerStyleCodeSibling, lookupCodeAlias, recordLabelCodes, unresolvedScanKey,
   fetchColourwayAnswers, recordColourwayAnswer,
 } from "./hubCleanupStore";
 import { allRegisteredSiblings, claimOwnerIds } from "../../utils/styleCodeSiblings";
@@ -326,7 +326,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       } else if (tab === "count") {
         const noted = await recordUnresolvedScan({ hub, code, context: tab });
         if (noted.ok) {
-          setUnresolved((u) => ({ ...u, [code.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code, context: tab } }));
+          setUnresolved((u) => ({ ...u, [unresolvedScanKey(code)]: { code, context: tab } }));
           flash("warn", `Nothing owns “${code}” — noted as never registered. Carry on.`);
         } else {
           flash("err", `Nothing owns “${code}”, but the note could not be saved (${noted.message || "write failed"}) — try again.`);
@@ -466,7 +466,13 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             openLink();
             return;
           }
-          flash("ok", `${display} is “${p.name}” — this brand prints a different code per size. Linked; the next scan resolves by itself.`, 6500);
+          const otherClashes = (res && res.conflicts ? res.conflicts : []).filter((c) => c.code !== normalised);
+          if (otherClashes.length) {
+            const codes = otherClashes.map((c) => formatStyleCodeForDisplay(c.code) || c.code).join(", ");
+            flash("warn", `${codes} on this label already belongs to another product — flagged as a possible duplicate for review.`, 9000);
+          } else {
+            flash("ok", `${display} is “${p.name}” — this brand prints a different code per size. Linked; the next scan resolves by itself.`, 6500);
+          }
         } catch (err) {
           flash("warn", `${display} matched “${p.name}” (per-size label), but the link could not be saved (${err?.message || err}) — the next scan will match again.`, 8000);
         }
@@ -521,7 +527,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // A reading nothing matches NEVER dead-ends (same rule as the
       // style-number path): offer the link panel — the pick files this reading
       // as a token alias, so the next read of this label resolves.
-      const preview = `reading: ${tokens.slice(0, 5).join(" ")}`;
+      const preview = `reading (${tokens.length} tokens): ${tokens.slice(0, 5).join(" ")}`;
       setPanel({ mode: "link", kind: "tokens", tokens, preview });
     } finally { setBusy(false); }
   }, [hub, products, flash]);
@@ -699,7 +705,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       const noted = await recordUnresolvedScan({ hub, code: label, context: "count" })
         .catch((e) => ({ ok: false, message: String(e?.message || e) }));
       if (noted.ok) {
-        setUnresolved((u) => ({ ...u, [label.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code: label, context: "count" } }));
+        setUnresolved((u) => ({ ...u, [unresolvedScanKey(label)]: { code: label, context: "count" } }));
         setPanel(null);
         flash("warn", `${label} noted as never registered. Carry on.`);
       } else {
@@ -1069,7 +1075,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                        }
                        setUnresolved((u) => ({
                          ...u,
-                         [label.replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_"]: { code: label, context: tab },
+                         [unresolvedScanKey(label)]: { code: label, context: tab },
                        }));
                        setPanel(null);
                        flash("warn", `Noted — “${panel.code}” on a colourway we don't have. Register it in Admin → Add Sneaker; the code will attach as a sibling.`);
@@ -1088,7 +1094,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           through the existing labelAlias mechanism so the next scan resolves
           silently; "never registered" survives as the deliberate answer. */}
       {panel && panel.mode === "link" && (
-        <LinkPanel key={`lnk_${panel.kind === "code" ? panel.normalised : "tokens"}`}
+        <LinkPanel key={`lnk_${panel.kind === "code" ? panel.normalised : (panel.tokens || []).join("_")}`}
                    panel={panel} products={products} busy={busy}
                    onPick={doLinkPick} onNote={doLinkNote} onClose={() => setPanel(null)} />
       )}
@@ -1135,7 +1141,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                       // never a dead end. The link panel takes over.
                       const { tokens } = aliasConfirm;
                       setAliasConfirm(null);
-                      setPanel({ mode: "link", kind: "tokens", tokens, preview: `reading: ${tokens.slice(0, 5).join(" ")}` });
+                      setPanel({ mode: "link", kind: "tokens", tokens, preview: `reading (${tokens.length} tokens): ${tokens.slice(0, 5).join(" ")}` });
                     }
                   }}
                   style={{ ...bGray, flex: 1, minHeight: 52, fontSize: 14 }}>
@@ -1174,7 +1180,13 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
 // available as the deliberate second exit.
 function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
   const [q, setQ] = useState("");
-  const hits = useMemo(() => (q.trim() ? searchProducts(products, q, { limit: 12 }) : []), [products, q]);
+  // UNCAPPED, like every other search in this file (the { limit: 12 } cap
+  // silently truncated name searches once already — see the count search's
+  // comment). Rendering is paged so a broad query cannot stall the phone.
+  const LINK_PAGE = 12;
+  const [linkShown, setLinkShown] = useState(LINK_PAGE);
+  useEffect(() => { setLinkShown(LINK_PAGE); }, [q]);
+  const hits = useMemo(() => (q.trim() ? searchProducts(products, q, { limit: Infinity }) : []), [products, q]);
   const shown = panel.kind === "code" ? (formatStyleCodeForDisplay(panel.normalised) || panel.display) : null;
   return (
     <Panel title="Nothing owns this label — link it" onClose={onClose}>
@@ -1192,7 +1204,7 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
              style={{ ...input, width: "100%", boxSizing: "border-box", minHeight: 54, fontSize: 16, fontWeight: 600 }} />
       {hits.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 10 }}>
-          {hits.map((p) => (
+          {hits.slice(0, linkShown).map((p) => (
             <button key={p.id} type="button" disabled={busy} onClick={() => onPick(p)}
               style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 12px", textAlign: "left",
                        cursor: "pointer", background: CARD, border: BORDER, borderRadius: 13 }}>
@@ -1206,6 +1218,13 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
               <span style={{ fontSize: 12, fontWeight: 800, color: BLUE_L }}>Link →</span>
             </button>
           ))}
+          {hits.length > linkShown && (
+            <button type="button" onClick={() => setLinkShown((n) => n + LINK_PAGE)}
+              style={{ background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.14)", color: "rgba(233,238,255,.75)",
+                       borderRadius: 12, minHeight: 46, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
+              Show more — {hits.length - linkShown} of {hits.length} matches below
+            </button>
+          )}
         </div>
       )}
       {q.trim() && hits.length === 0 && (

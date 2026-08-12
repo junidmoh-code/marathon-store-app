@@ -98,6 +98,8 @@ test("a conflicting link routes to the duplicate queue and STILL touches no prod
   assert.strictEqual(res.conflicts.length, 1);
   assert.strictEqual(res.conflicts[0].ownerId, "pOther");
   assert.strictEqual(JSON.stringify(db.data.products), before);
-  assert.ok(db.data.duplicate_candidates, "the collision is surfaced for a human, never swallowed");
+  const dups = Object.values(db.data.duplicate_candidates || {});
+  assert.strictEqual(dups.length, 1, "the collision is surfaced for a human, never swallowed");
+  assert.deepStrictEqual([dups[0].productIdA, dups[0].productIdB].sort(), ["pAud", "pOther"]);
   assert.strictEqual(db.data.label_aliases, undefined, "nothing was attached");
 });

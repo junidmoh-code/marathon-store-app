@@ -66,11 +66,33 @@ for (let i = 0; i < lacoste.length; i++) {
   if (!groups.has(root)) groups.set(root, []);
   groups.get(root).push(lacoste[i]);
 }
-const split = [...groups.values()].filter((g) => new Set(g.map((r) => r.id)).size > 1);
+// perSizeSiblingCodes is PAIRWISE, not transitive (A~B and B~C do not imply
+// A~C — CodeRabbit, PR #348). A connected component only counts as ONE shoe
+// when EVERY cross-record pair in it matches; a component held together
+// transitively is an AMBIGUOUS cluster for human review, exactly like the
+// count flow, which never auto-links past a one-pair boundary.
+const multi = [...groups.values()].filter((g) => new Set(g.map((r) => r.id)).size > 1);
+const isComplete = (g) => {
+  for (let i = 0; i < g.length; i++) {
+    for (let j = i + 1; j < g.length; j++) {
+      if (g[i].id === g[j].id) continue;
+      if (!perSizeSiblingCodes(g[i].code, g[j].code)) return false;
+    }
+  }
+  return true;
+};
+const split = multi.filter(isComplete);
+const clusters = multi.filter((g) => !isComplete(g));
 
-console.log(`\n═══ 1. ONE SHOE SPLIT ACROSS PRODUCT RECORDS (rule-linked) — ${split.length} group(s) ═══`);
-if (!split.length) console.log("(none — no two live product records carry per-size sibling codes today)");
+console.log(`\n═══ 1a. ONE SHOE SPLIT ACROSS PRODUCT RECORDS (every pair rule-linked) — ${split.length} group(s) ═══`);
+if (!split.length) console.log("(none — no fully rule-linked group of live product records today)");
 for (const g of split) {
+  console.log("");
+  for (const r of g) console.log(`  ${r.code.padEnd(16)} [${r.field}] ${r.name} (${r.id})`);
+}
+
+console.log(`\n═══ 1b. AMBIGUOUS CLUSTERS — chained by pairwise links but NOT pairwise-complete (human review) — ${clusters.length} ═══`);
+for (const g of clusters) {
   console.log("");
   for (const r of g) console.log(`  ${r.code.padEnd(16)} [${r.field}] ${r.name} (${r.id})`);
 }

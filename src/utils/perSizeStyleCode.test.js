@@ -12,8 +12,10 @@ import { describe, it, expect } from "vitest";
 import { perSizeSiblingCodes, findPerSizeSiblings, perSizeAutoCandidate } from "./perSizeStyleCode.js";
 import { normaliseStyleCode } from "./styleCode.js";
 
-// Every live styleCodeNormalised matching the Lacoste article shape, verbatim
-// from the 2026-08-12 read-only evidence pull (59 products, duplicates kept).
+// Every live styleCodeNormalised matching the Lacoste article shape, from the
+// 2026-08-12 read-only evidence pull: 59 products carrying 57 DISTINCT codes
+// (737SMA0015082 sits on three records — a shared-code case for the sibling
+// flow, not this rule).
 const LIVE_LACOSTE = [
   "42SMA00407E9", "42SMA0128", "45SFA0005235", "45SFA0022026", "45SFA005075",
   "45SMA0016", "45SMA0106082", "46SMA0086DA7", "46SMA0121237", "46SMA0121311",
@@ -92,7 +94,7 @@ describe("perSizeSiblingCodes — the Lacoste per-size rule", () => {
     expect(perSizeSiblingCodes(42, {})).toBe(false);
   });
 
-  it("fires on ZERO pairs across the entire live Lacoste catalogue", () => {
+  it("fires on ZERO pairs across all 57 distinct live Lacoste codes", () => {
     // The load-bearing evidence claim: every already-registered pair is either
     // a colourway family or unrelated. If a future catalogue change makes two
     // LIVE products auto-linkable, this fails and a human looks first.
@@ -162,6 +164,13 @@ describe("perSizeAutoCandidate — the only gate the count's auto-link passes", 
   it("two candidate siblings never auto-link", () => {
     // 742CFA0004-2G4 sits one digit from 0005, 0006 AND 0007 — a question.
     expect(perSizeAutoCandidate("742CFA00042G4", GRIPSHOT)).toBe(null);
+  });
+
+  it("never guesses past an exact live owner (callers without the resolve-first guarantee)", () => {
+    // The scanned code IS registered: sibling maths must not run at all —
+    // pAud sits one digit away, but the exact owner answers, not the rule.
+    const withExact = [...CLEAN, { id: "pExact", name: "Audysol Navy", styleCodeNormalised: "745SMA00621G" }];
+    expect(perSizeAutoCandidate("745SMA006-21G", withExact)).toBe(null);
   });
 
   it("REFUSES to auto-link into an already-split cluster, even via exactly one sibling", () => {

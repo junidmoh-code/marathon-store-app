@@ -90,6 +90,12 @@ export function findPerSizeSiblings(scanned, products) {
  *     exactly one member of such a cluster must NOT be pulled in silently.
  */
 export function perSizeAutoCandidate(scanned, products) {
+  const code = normaliseStyleCode(scanned);
+  // An exact live owner is never a per-size question — never guess past it.
+  // (The count reaches here only after exact resolution failed, but the sweep
+  // and future callers carry no such guarantee — CodeRabbit, PR #348.)
+  if ((products || []).some((p) => p && p.id && !isMergedAway(p)
+      && String(p.styleCodeNormalised || "") === code)) return null;
   const sibs = findPerSizeSiblings(scanned, products);
   if (sibs.length !== 1) return null;
   const only = sibs[0];

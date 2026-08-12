@@ -52,6 +52,7 @@ vi.mock("./hubCleanupStore", () => ({
   recordLabelCodes: (...a) => recordLabelCodes(...a),
   fetchColourwayAnswers: async () => [],
   recordColourwayAnswer: async () => ({}),
+  unresolvedScanKey: (code) => String(code ?? "").replace(/[.#$/\[\]\s]/g, "_").slice(0, 64) || "_",
   REGISTER_REASON: "display_registration",
 }));
 vi.mock("./hubCountStore", () => ({
@@ -119,6 +120,7 @@ beforeEach(() => {
   lookupStyleClaim.mockImplementation(async () => null);
   lookupCodeAlias.mockImplementation(async () => null);
   matchLabelAlias.mockImplementation(async () => ({ band: "low", candidates: [] }));
+  recordLabelCodes.mockImplementation(async () => ({ ok: true, attached: [], conflicts: [] }));
 });
 
 describe("the count's unresolved-scan link panel", () => {
@@ -201,6 +203,17 @@ describe("the count's unresolved-scan link panel", () => {
     expect(after).toContain("Lacoste Audysol White");
     expect(after).not.toContain("link it");
     expect(recordUnresolvedScan).not.toHaveBeenCalled();
+  });
+
+  it("an auto-link whose OTHER label token collides still warns — no silent conflict", async () => {
+    // The label carried a second code that another product owns: the server
+    // flags it; the operator must hear it even on the auto path.
+    recordLabelCodes.mockImplementation(async () => ({ ok: true, attached: ["745SMA00621G"], conflicts: [{ code: "38019001", ownerId: "pOther" }] }));
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("745SMA006-21G", { allCodes: ["745SMA00621G", "380190-01"] }); });
+    const after = textOf(tr);
+    expect(after).toContain("Lacoste Audysol White");        // counting continues
+    expect(after).toContain("already belongs to another product"); // …but the clash is said out loud
   });
 
   it("a different colourway suffix NEVER auto-links — it asks via the link panel", async () => {
