@@ -638,3 +638,15 @@ describe("off-shelf arithmetic", () => {
     expect(applyMovementMock).not.toHaveBeenCalled();
   });
 });
+
+// Negative shelf confirmation is refused — never notarised (CodeRabbit, PR #347).
+describe("books-disagree confirm rejection", () => {
+  it("confirmCell refuses when known off-shelf exceeds booked", async () => {
+    seedCell(1);
+    const res = await confirmCell({ hub: HUB, sessionId: SESSION, productId: PID, sizeKey: "8", expected: 1, offShelf: 2 });
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/books disagree/i);
+    expect(recordNow()).toBeNull();
+    expect(applyMovementMock).not.toHaveBeenCalled();
+  });
+});

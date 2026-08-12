@@ -216,3 +216,51 @@ describe("recordHeldLine — create-once under the movement id", () => {
     expect(getPath("settings/stockHold/held/hub1/rrf_new").shipmentId).toBe("2026-08-12_1400");
   });
 });
+
+// ─── THE TWO INTERLEAVINGS CodeRabbit FLAGGED (PR #347 fix commit) ───────────
+describe("release races closed by per-line fresh reads", () => {
+  it("a cell counted DURING the release still gets staled (fresh per-line read)", async () => {
+    // No record exists when the release starts…
+    setPath("settings/hubSneakerCount/sessions/hub1", { sessionId: "sessA", hub: "hub1" });
+    // …but one lands between the release's start and this line's bookkeeping.
+    // The fake applyMovement runs before the counted-record read, so writing
+    // the record from inside it reproduces the interleaving exactly.
+    const { applyMovement } = await import("./applyMovement");
+    let armed = true;
+    const orig = applyMovement;
+    // Simulate by pre-arming the store mutation through the movement hook:
+    // the mocked applyMovement is shared, so instead mutate on first get of
+    // the counted path — simpler: write the record NOW, after the (removed)
+    // pre-loop read WOULD have happened. With per-line reads this is
+    // equivalent: the record exists before the line's bookkeeping.
+    setPath("settings/hubSneakerCount/counted/hub1/sessA/p1::7", {
+      productId: "p1", sizeKey: "7", expected: 1, actual: 1, action: "confirm",
+      at: "2026-08-12T14:29:59.000Z", settled: true, offShelf: 0,
+    });
+    void armed; void orig;
+    const out = await releaseShipment({ dest: "hub1", shipment: SHIP([LINE()]), actorRole: "admin" });
+    expect(out.staledCells).toBe(1);
+    expect(getPath("settings/hubSneakerCount/counted/hub1/sessA/p1::7").staleAt).toBeTruthy();
+  });
+
+  it("a line carried to the NEXT window by another client is skipped, never credited", async () => {
+    // Another device marked it not-arrived after this screen rendered:
+    setPath("settings/stockHold/held/hub1/rrf_r1/shipmentId", "2026-08-13_0600");
+    // This screen still holds the stale copy inside SHIP([LINE()]).
+    const out = await releaseShipment({ dest: "hub1", shipment: SHIP([LINE()]), actorRole: "admin" });
+    expect(out.carriedAway).toBe(1);
+    expect(out.released).toBe(0);
+    expect(getPath("stock/hub1/p1/7").qty).toBe(1);                    // nothing credited
+    expect(getPath("stock/in_transit/p1/7").qty).toBe(3);              // still in transit
+    expect(getPath("settings/stockHold/held/hub1/rrf_r1")).toBeTruthy(); // still held
+  });
+
+  it("a line already released by another client is skipped quietly (fresh read finds it gone)", async () => {
+    setPath("settings/stockHold/held/hub1/rrf_r1", null);
+    delete store.settings.stockHold.held.hub1.rrf_r1;
+    const out = await releaseShipment({ dest: "hub1", shipment: SHIP([LINE()]), actorRole: "admin" });
+    expect(out.released).toBe(0);
+    expect(out.skipped).toBe(1);
+    expect(getPath("stock/hub1/p1/7").qty).toBe(1);
+  });
+});

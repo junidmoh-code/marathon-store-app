@@ -47,7 +47,7 @@
 // that) but they cannot be lifted into per-store slots without a human walking
 // the floors once more. Nothing here rewrites them.
 
-import { ref, child, get, update } from "firebase/database";
+import { ref, child, get, runTransaction } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { serverNowIso } from "../../utils/serverTime";
@@ -66,10 +66,21 @@ export async function loadDisplaySlots() {
   return (await one(DISPLAY_SLOTS_ROOT)) || {};
 }
 
+// ── THE STALENESS FENCE (CodeRabbit, PR #347) ────────────────────────────────
+// Both writers below run as a TRANSACTION carrying the instant the write was
+// INITIATED (`notAfterIso`, stamped before any network round trip). If the
+// slot already holds a transition NEWER than that instant, the write aborts:
+// a clear delayed on bad wifi can no longer erase the replacement that landed
+// while it was in flight, and a delayed refill write can no longer resurrect a
+// slot a later sale already cleared. Fresh truth always wins; the loser
+// reports { superseded: true } and nothing retries it — the newer state IS the
+// state.
+const supersededBy = (cur, notAfterIso) =>
+  !!(cur && typeof cur.at === "string" && notAfterIso && cur.at > notAfterIso);
+
 /**
  * Set (or replace) the slot: this size is on this store's floor now, booked at
- * `bookedHub`. Last write wins by design — the slot IS "current state", and a
- * replacement overwrites the size that just left.
+ * `bookedHub`. Last INITIATED write wins — the slot IS "current state".
  */
 export async function setDisplaySlot({ store, productId, productName = "", size, bookedHub, source, orderId = null }) {
   const rawSize = String(size ?? "").trim();
@@ -77,20 +88,24 @@ export async function setDisplaySlot({ store, productId, productName = "", size,
   if (!store || !productId) return { ok: false, message: "Store and product are required." };
   if (!rawSize || sizeKey === "_") return { ok: false, message: "A display slot needs a real size." };
   const user = auth.currentUser;
+  const notAfterIso = serverNowIso();
+  const next = {
+    productId,
+    productName: productName || "",
+    size: rawSize,
+    sizeKey,
+    bookedHub: bookedHub || null,
+    source: source || "manual",
+    at: notAfterIso,
+    by: user ? user.uid : null,
+    orderId: orderId || null,
+    prevSize: null,
+  };
   try {
-    await update(ref(database, slotPath(store, productId)), {
-      productId,
-      productName: productName || "",
-      size: rawSize,
-      sizeKey,
-      bookedHub: bookedHub || null,
-      source: source || "manual",
-      at: serverNowIso(),
-      by: user ? user.uid : null,
-      orderId: orderId || null,
-      prevSize: null,
-    });
-    return { ok: true };
+    const res = await runTransaction(ref(database, slotPath(store, productId)), (cur) =>
+      supersededBy(cur, notAfterIso) ? undefined : next
+    );
+    return res && res.committed ? { ok: true } : { ok: true, superseded: true };
   } catch (err) {
     return { ok: false, message: String(err?.message || err) };
   }
@@ -99,27 +114,30 @@ export async function setDisplaySlot({ store, productId, productName = "", size,
 /**
  * Clear the slot — the display left the floor (sold, or pulled). Keeps the
  * record as a tombstone with sizeKey null so the transition is auditable.
- * Clearing a slot that does not exist is a quiet no-op: the shop may raise a
- * display-partner order for a product whose display was never slot-tracked.
+ * Clearing a slot that does not exist (or was already cleared) is a quiet
+ * no-op: the shop may raise a display-partner order for a product whose
+ * display was never slot-tracked.
  */
 export async function clearDisplaySlot({ store, productId, source = "display_sold", orderId = null }) {
   if (!store || !productId) return { ok: false, message: "Store and product are required." };
-  const path = slotPath(store, productId);
-  let existing = null;
-  try { existing = await one(path); } catch { /* fall through — clear blind is still safe */ }
-  if (!existing || existing.sizeKey == null) return { ok: true, noop: true };
   const user = auth.currentUser;
+  const notAfterIso = serverNowIso();
   try {
-    await update(ref(database, path), {
-      size: null,
-      sizeKey: null,
-      source,
-      at: serverNowIso(),
-      by: user ? user.uid : null,
-      orderId: orderId || null,
-      prevSize: existing.size || null,
+    const res = await runTransaction(ref(database, slotPath(store, productId)), (cur) => {
+      if (!cur || cur.sizeKey == null) return undefined;            // nothing out there — no-op
+      if (supersededBy(cur, notAfterIso)) return undefined;         // a newer transition already landed
+      return {
+        ...cur,
+        size: null,
+        sizeKey: null,
+        source,
+        at: notAfterIso,
+        by: user ? user.uid : null,
+        orderId: orderId || null,
+        prevSize: cur.size || null,
+      };
     });
-    return { ok: true };
+    return res && res.committed ? { ok: true } : { ok: true, noop: true };
   } catch (err) {
     return { ok: false, message: String(err?.message || err) };
   }

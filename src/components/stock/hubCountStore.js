@@ -244,11 +244,19 @@ async function writeRecord(hub, sessionId, rec) {
  * confirm can therefore never invite destroying an off-shelf unit.
  */
 export async function confirmCell({ hub, sessionId, productId, sizeKey, expected, offShelf = 0, offShelfNote = null }) {
+  const shelf = Number(expected) - (Number(offShelf) || 0);
+  // A negative shelf expectation is the books DISAGREEING (more units known
+  // off-shelf than booked at all) — there is no shelf count that "matches",
+  // and notarising one as a confirm would mark an inconsistent cell complete.
+  // It must go through adjust/flag with the real shelf number instead
+  // (CodeRabbit, PR #347).
+  if (shelf < 0) {
+    return { ok: false, message: "The books disagree here — more units are known to be off the shelf than are booked. Enter what you actually see so it records as a correction, not a confirm." };
+  }
   const live = await readLiveQty(hub, productId, sizeKey);
   if (live.error) return live;
   if (Number(live.qty) !== Number(expected)) return staleResult(live.qty, expected);
 
-  const shelf = Number(expected) - (Number(offShelf) || 0);
   const rec = recordFor({ productId, sizeKey, expected, actual: shelf, action: "confirm",
                           live: Number(expected), offShelf, offShelfNote });
   // A confirm changed no stock, so a failed record write means simply nothing

@@ -3,12 +3,16 @@
 // changing size mid-count moves the off-shelf unit to the NEW size's cell with
 // no re-walk of the floor, and that cleared slots stop counting entirely.
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("firebase/database", () => ({
-  ref: vi.fn(), child: vi.fn(), get: vi.fn(), update: vi.fn(),
+  ref: vi.fn(), child: vi.fn(), get: vi.fn(), update: vi.fn(), runTransaction: vi.fn(),
 }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
+vi.mock("../../utils/serverTime", () => ({
+  serverNowIso: vi.fn(() => "2026-08-12T12:00:00.000Z"),
+  serverNowMs: vi.fn(() => Date.parse("2026-08-12T12:00:00.000Z")),
+}));
 
 const { slotIsLive, slotsForCell, liveSlotsForProduct } = await import("./displaySlots");
 
@@ -69,5 +73,65 @@ describe("liveSlotsForProduct", () => {
     };
     const out = liveSlotsForProduct(slots, { hub: "hub1", productId: "p1" });
     expect(out.map((s) => s.slot.sizeKey).sort()).toEqual(["6", "9"]);
+  });
+});
+
+// ─── THE STALENESS FENCE (CodeRabbit, PR #347) ───────────────────────────────
+// Writers carry the instant they were INITIATED; a slot transition NEWER than
+// that instant wins, so a clear delayed on bad wifi can never erase the
+// replacement that landed while it was in flight — and vice versa.
+describe("slot write fence — fresh truth always wins", () => {
+  let store;
+  beforeEach(async () => {
+    store = {};
+    const db = await import("firebase/database");
+    db.runTransaction.mockImplementation(async (node, fn) => {
+      const cur = store[node.path] ?? null;
+      const next = fn(cur);
+      if (next === undefined) return { committed: false, snapshot: { val: () => cur } };
+      store[node.path] = next;
+      return { committed: true, snapshot: { val: () => next } };
+    });
+    db.ref.mockImplementation((_db, path) => ({ path }));
+  });
+
+  it("a DELAYED clear does not erase a replacement that landed after it was initiated", async () => {
+    const { setDisplaySlot, clearDisplaySlot } = await import("./displaySlots");
+    const st = await import("../../utils/serverTime");
+    // The replacement lands at 12:05…
+    st.serverNowIso.mockReturnValue("2026-08-12T12:05:00.000Z");
+    await setDisplaySlot({ store: "marathon-pe", productId: "p1", size: "7", bookedHub: "hub1", source: "display_refill" });
+    // …then a clear INITIATED at 12:00 finally arrives off a bad connection.
+    st.serverNowIso.mockReturnValue("2026-08-12T12:00:00.000Z");
+    const res = await clearDisplaySlot({ store: "marathon-pe", productId: "p1", source: "display_sold" });
+    expect(res.noop).toBe(true);
+    expect(store["settings/displaySlots/marathon-pe/p1"].sizeKey).toBe("7");   // replacement survives
+  });
+
+  it("a DELAYED refill write does not resurrect a slot a later sale cleared", async () => {
+    const { setDisplaySlot, clearDisplaySlot } = await import("./displaySlots");
+    const st = await import("../../utils/serverTime");
+    st.serverNowIso.mockReturnValue("2026-08-12T12:00:00.000Z");
+    await setDisplaySlot({ store: "marathon-pe", productId: "p1", size: "6", bookedHub: "hub1", source: "registration" });
+    st.serverNowIso.mockReturnValue("2026-08-12T12:10:00.000Z");
+    await clearDisplaySlot({ store: "marathon-pe", productId: "p1", source: "display_sold" });
+    // A refill write initiated at 12:03 arrives late:
+    st.serverNowIso.mockReturnValue("2026-08-12T12:03:00.000Z");
+    const res = await setDisplaySlot({ store: "marathon-pe", productId: "p1", size: "8", bookedHub: "hub1", source: "display_refill" });
+    expect(res.superseded).toBe(true);
+    expect(store["settings/displaySlots/marathon-pe/p1"].sizeKey).toBeNull();  // stays cleared
+  });
+
+  it("in-order writes still apply normally", async () => {
+    const { setDisplaySlot, clearDisplaySlot } = await import("./displaySlots");
+    const st = await import("../../utils/serverTime");
+    st.serverNowIso.mockReturnValue("2026-08-12T12:00:00.000Z");
+    await setDisplaySlot({ store: "marathon-pe", productId: "p1", size: "6", bookedHub: "hub1", source: "registration" });
+    st.serverNowIso.mockReturnValue("2026-08-12T12:10:00.000Z");
+    await clearDisplaySlot({ store: "marathon-pe", productId: "p1" });
+    expect(store["settings/displaySlots/marathon-pe/p1"].sizeKey).toBeNull();
+    st.serverNowIso.mockReturnValue("2026-08-12T12:20:00.000Z");
+    await setDisplaySlot({ store: "marathon-pe", productId: "p1", size: "9", bookedHub: "hub1", source: "display_refill" });
+    expect(store["settings/displaySlots/marathon-pe/p1"].sizeKey).toBe("9");
   });
 });

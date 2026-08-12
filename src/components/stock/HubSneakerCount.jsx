@@ -102,8 +102,11 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   const [counted, setCounted] = useState({});
   // Off-shelf sources (offShelf.js) — displays at shops, ready orders — frozen
   // with the snapshot and refreshed by the ↻ button. Every shelf expectation
-  // below is booked − off-shelf (owner spec 2026-08-12).
+  // below is booked − off-shelf (owner spec 2026-08-12). A FAILED load BLOCKS
+  // all count writes (CodeRabbit, PR #347): recording against bare booked
+  // totals is the unit-destroying bug this rework removes.
   const [offSources, setOffSources] = useState(null);
+  const [offError, setOffError] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
 
@@ -164,16 +167,19 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
 
     (async () => {
       try {
-        const [hubStock, sess, offSrc] = await Promise.all([
-          loadHubStock(hub), openOrResumeSession(hub),
-          loadOffShelfSources(hub, new Map(products.filter((p) => p && p.id).map((p) => [p.id, p])))
-            .catch(() => null),   // degrades to booked totals, never a broken count
-        ]);
+        const [hubStock, sess] = await Promise.all([loadHubStock(hub), openOrResumeSession(hub)]);
+        // Off-shelf failure is NON-FATAL for browsing but FATAL for writing:
+        // the list renders, the buttons stay off until a retry succeeds.
+        let offSrc = null, offErr = "";
+        try {
+          offSrc = await loadOffShelfSources(hub, new Map(products.filter((p) => p && p.id).map((p) => [p.id, p])));
+        } catch (e) { offErr = String(e?.message || e); }
         const recorded = await loadCounted(hub, sess.sessionId);
         if (cancelled) return;
         setSnapshot({ hubStock, catalogue: products });
         setSession(sess);
         setOffSources(offSrc);
+        setOffError(offErr);
         setCounted(recorded || {});
         // Rebuild the added-from-zero rows this session already recorded, so a
         // reload — or the second counter's tablet — sees them. Without this the
@@ -270,6 +276,12 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   }, [hub]);
 
   const runWrite = async (row, size, fn) => {
+    // THE WRITE CHOKEPOINT for the off-shelf guard: no complete picture, no
+    // recorded count — whatever button was tapped (CodeRabbit, PR #347).
+    if (!offSources) {
+      flash("err", "Counting is paused — the off-shelf picture did not load. Tap ↻ Refresh to retry.", 7000);
+      return;
+    }
     const key = cellKey(row.id, size.sizeKey);
     setBusyCell(key);
     try {
@@ -328,6 +340,10 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   // the row needs a fresh count, never a blind write of an old number.
   const [busyVariance, setBusyVariance] = useState("");
   const applyVariance = async (row) => {
+    if (!offSources) {
+      flash("err", "Applying is paused — the off-shelf picture did not load. Tap ↻ Refresh to retry.", 7000);
+      return;
+    }
     setBusyVariance(row.key);
     try {
       const res = await adjustCell({
@@ -377,8 +393,12 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
       setCounted(recorded || {});
       setSeeded(recoverSeededRows({ counted: recorded || {}, hubStock: snapshot?.hubStock || {}, products: catalogue }));
       // The off-shelf picture refreshes on the same tap — a display that
-      // changed size since entry moves to its new cell here.
-      loadOffShelfSources(hub, productsById).then(setOffSources).catch(() => {});
+      // changed size since entry moves to its new cell here, and a failed
+      // entry load gets its retry (writes unblock only on success).
+      try {
+        setOffSources(await loadOffShelfSources(hub, productsById));
+        setOffError("");
+      } catch (e) { setOffError(String(e?.message || e)); }
       flash("ok", "Refreshed — showing what every counter has recorded.", 2400);
     } catch (err) {
       flash("err", `Could not refresh: ${String(err?.message || err)}`);
@@ -389,6 +409,9 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
   const history = useMemo(() => historyRows(counted, productsById), [counted, productsById]);
   const pendingApply = useMemo(() => history.filter((r) => r.pending).length, [history]);
   const canAdjust = canAdjustHubCount(viewer);
+  // No off-shelf picture → no count writes. Browsing stays open; the buttons
+  // come back when ↻ Refresh succeeds.
+  const writesBlocked = !!snapshot && !offSources;
 
   return (
     <div style={{ minHeight: "100vh", background: BG, fontFamily: FONT, padding: "14px 12px 60px" }}>
@@ -446,6 +469,14 @@ export default function HubSneakerCount({ products = [], actorRole, viewer, onEx
               title="Re-read what every counter has recorded (one-shot, no live subscription)">↻ Refresh</button>
           </div>
 
+          {writesBlocked && (
+            <div style={{ background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.4)", borderRadius: 11,
+                          padding: "10px 12px", margin: "0 0 10px", fontSize: 12, color: "#FFC9C9", lineHeight: 1.5 }}>
+              The off-shelf picture (displays at shops, waiting orders) could not load
+              {offError ? ` (${offError})` : ""} — counting is paused so nothing gets recorded against bare
+              booked totals. Tap ↻ Refresh to retry.
+            </div>
+          )}
           {tab === "count" ? (
             <CountList
               rows={visible} totalRows={filtered.length} counted={counted} query={query} setQuery={setQuery}

@@ -185,7 +185,18 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   // orders, the layby blind-spot count. Loaded when the count session opens and
   // frozen like the stock snapshot; the SLOT half is re-read per cell inside
   // CountPanel so a display changing size mid-count is read at its CURRENT size.
+  // A FAILED load blocks counting (never a silent booked-totals fallback) and
+  // the panel offers this retry.
   const [offSources, setOffSources] = useState(null);
+  const [offError, setOffError] = useState("");
+  const loadOffShelf = useCallback((forHub) => {
+    setOffError("");
+    loadOffShelfSources(forHub, new Map((products || []).map((p) => [p?.id, p])))
+      .then((src) => setOffSources(src))
+      .catch((err) => setOffError(String(err?.message || err)));
+    // products identity churns with the live catalogue; the map is rebuilt per call.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
 
@@ -200,6 +211,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
     setCounted({});
     setAllStock(null);
     setOffSources(null);
+    setOffError("");
     setPanel(null);
     setLoading(true);
     setLoadError("");
@@ -228,18 +240,10 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         setSession(s);
         // The off-shelf picture loads WITH the session: without it the panel
         // would show booked totals and the count would destroy display units —
-        // the exact bug this rework removes. A failed load degrades to
-        // offShelf 0 (today's behaviour) with the failure visible, not silent.
-        loadOffShelfSources(hub, new Map((products || []).map((p) => [p?.id, p])))
-          .then((src) => { if (!cancelled) setOffSources(src); })
-          .catch((err) => {
-            if (cancelled) return;
-            // The panel refuses to count with NO answer, but a failed load must
-            // not dead-end the whole pass — degrade to empty sources (booked
-            // totals) and keep the failure loud on screen via the toast.
-            setOffSources({ slots: {}, register: {}, readyCells: {}, laybyItems: 0, failed: true });
-            flash("warn", `Off-shelf data did not load (${err?.message || err}) — counts will show booked totals; displays at shops are NOT protected until you reload.`, 10000);
-          });
+        // the exact bug this rework removes. A failed load BLOCKS counting
+        // (the panel offers a retry); partial data is never presented as
+        // complete (CodeRabbit, PR #347).
+        loadOffShelf(hub);
         const c = await loadCounted(hub, s.sessionId);
         if (cancelled) return;
         setCounted(c || {});
@@ -251,7 +255,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       }
     })();
     return () => { cancelled = true; };
-  }, [hub, tab, session, hubStock, flash]);
+  }, [hub, tab, session, hubStock, flash, loadOffShelf]);
 
   // All-location stock loads once, when Leftovers (or Merge) first needs it.
   const ensureAllStock = useCallback(async () => {
@@ -930,7 +934,8 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         <CountPanel key={`cnt_${panel.product.id}_${panel.size ?? ""}`}
                     panel={panel} hub={hub} hubStock={hubStock || {}} counted={counted}
                     busy={busy} canAdjust={canAdjust}
-                    offSources={offSources} registry={registry}
+                    offSources={offSources} offError={offError} onRetryOffShelf={() => loadOffShelf(hub)}
+                    registry={registry}
                     onRecord={doCount} onClose={() => setPanel(null)} />
       )}
       {/* ── THE PICKER — one code, several products, the HUMAN decides ──────
@@ -1646,7 +1651,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
 // at Marathon PE · expect 11 here"), the big number is the SHELF expectation,
 // and every write carries offShelf so an adjustment moves the shelf figure and
 // never destroys a unit the system knows is elsewhere.
-function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources, registry, onRecord, onClose }) {
+function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources, offError, onRetryOffShelf, registry, onRecord, onClose }) {
   const { product } = panel;
   const cells = hubStock[product.id] || {};
   const sizeKeys = useMemo(() => {
@@ -1742,11 +1747,22 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources
           {/* The off-shelf picture is LOAD-BEARING: counting against the bare
               booked number is the exact unit-destroying bug this rework
               removes, so the panel refuses to take a count before it knows
-              what is off the shelf (or has been told the load failed). */}
-          {!record && !sources && (
+              what is off the shelf. A failed load blocks with a retry — never
+              a silent booked-totals fallback (CodeRabbit, PR #347). */}
+          {!record && !sources && !offError && (
             <div style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.35)", borderRadius: 13,
                           padding: "12px 14px", marginBottom: 12, fontSize: 13, color: "#FDE9B0" }}>
               Loading the off-shelf picture (displays, waiting orders)… one moment.
+            </div>
+          )}
+          {!record && !sources && offError && (
+            <div style={{ background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.4)", borderRadius: 13,
+                          padding: "12px 14px", marginBottom: 12, fontSize: 13, color: "#FFC9C9", lineHeight: 1.55 }}>
+              The off-shelf picture could not load ({offError}). Counting is paused — recording against
+              bare booked totals is how display units get destroyed.
+              <BigButton tone="ghost" disabled={busy} style={{ marginTop: 10, minHeight: 48 }} onClick={onRetryOffShelf}>
+                ↻ Retry loading
+              </BigButton>
             </div>
           )}
           {!record && sources && (
@@ -1775,10 +1791,15 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources
                   </div>
                 )}
               </div>
-              <BigButton tone="green" disabled={busy} style={{ minHeight: 68, fontSize: 19 }}
-                onClick={() => record_({ actualCount: shelfExpected })}>
-                ✓ SHELF MATCHES — {shelfExpected}
-              </BigButton>
+              {/* Books-disagree cells get NO one-tap confirm — a "matches 0"
+                  tap would notarise an inconsistent cell. The typed count
+                  below routes through adjust/flag (CodeRabbit, PR #347). */}
+              {shelfRaw >= 0 && (
+                <BigButton tone="green" disabled={busy} style={{ minHeight: 68, fontSize: 19 }}
+                  onClick={() => record_({ actualCount: shelfExpected })}>
+                  ✓ SHELF MATCHES — {shelfExpected}
+                </BigButton>
+              )}
               <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
                 <input inputMode="numeric" pattern="[0-9]*" value={actual} placeholder="Different? Enter the real count"
                        onChange={(e) => setActual(e.target.value.replace(/\D/g, ""))}

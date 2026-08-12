@@ -55,11 +55,16 @@ const one = async (path) => (await get(child(ref(database), path))).val();
  *                per-cell attribution impossible, see header)
  */
 export async function loadOffShelfSources(hub, productsById) {
+  // ALL FOUR SOURCES OR NOTHING (CodeRabbit, PR #347): a swallowed single-
+  // source failure would present partial data as the complete off-shelf
+  // picture, and a counter would adjust away exactly the units the missing
+  // source knew about. A failed load REJECTS; the count views block counting
+  // and say so, rather than degrading silently to booked totals.
   const [slots, register, orders, pulls] = await Promise.all([
-    loadDisplaySlots().catch(() => ({})),
-    one(`${HUB_COUNT_ROOT}/register/${hub}`).catch(() => ({})),
-    one("orders").catch(() => ({})),
-    one("laybyPulls").catch(() => ({})),
+    loadDisplaySlots(),
+    one(`${HUB_COUNT_ROOT}/register/${hub}`),
+    one("orders"),
+    one("laybyPulls"),
   ]);
 
   const readyCells = {};

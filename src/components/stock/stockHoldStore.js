@@ -133,41 +133,53 @@ export async function markLineNotArrived({ dest, lineId, toShipment }) {
  */
 export async function releaseShipment({ dest, shipment, skipLineIds = new Set(), actorRole = "admin" }) {
   const user = auth.currentUser;
-  const out = { released: 0, releasedUnits: 0, skipped: 0, staledCells: 0, failures: [] };
+  const out = { released: 0, releasedUnits: 0, skipped: 0, carriedAway: 0, staledCells: 0, failures: [] };
 
-  // The count session's records, read once — release stales counted cells in
-  // the same update that retires the line. No session (or a failed read) just
-  // means nothing to stale.
-  let sessionId = null, countedCells = {};
+  // The count SESSION id, read once — the per-cell records are re-read inside
+  // the loop (see below). No session just means nothing to stale.
+  let sessionId = null;
   try {
     const session = await one(`${HUB_COUNT_ROOT}/sessions/${safeSeg(dest)}`);
-    if (session && session.sessionId) {
-      sessionId = session.sessionId;
-      countedCells = (await one(`${HUB_COUNT_ROOT}/counted/${safeSeg(dest)}/${sessionId}`)) || {};
-    }
+    if (session && session.sessionId) sessionId = session.sessionId;
   } catch { /* staling is best-effort; the release itself must not block on it */ }
 
   for (const line of shipment.lines) {
     if (skipLineIds.has(line.lineId)) { out.skipped++; continue; }
 
+    // FRESH READ OF THE HELD LINE (CodeRabbit, PR #347): this screen's copy
+    // may be stale. Gone → another release already landed it (nothing to do).
+    // Moved to a different shipment → someone marked it not-arrived after
+    // this render; releasing it here would credit a line the box does NOT
+    // contain — skip it, it belongs to the next box.
+    let liveLine = null;
+    try {
+      liveLine = await one(heldLinePath(dest, line.lineId));
+    } catch (err) {
+      out.failures.push({ lineId: line.lineId, productName: line.productName, reason: `could not re-check the line (${String(err?.message || err)}) — release again to retry` });
+      continue;
+    }
+    if (!liveLine) { out.skipped++; continue; }
+    if (liveLine.shipmentId !== shipment.shipmentId) { out.carriedAway++; continue; }
+
     const relId = `rel_${safeSeg(line.lineId)}`;
+    const qty = Number(liveLine.qty) || 1;
     const res = await applyMovement({
       type: "transfer_in",
-      productId: line.productId,
-      size: line.size,                    // RAW size — applyMovement owns the key encoding
-      qty: Number(line.qty) || 1,
+      productId: liveLine.productId,
+      size: liveLine.size,                // RAW size — applyMovement owns the key encoding
+      qty,
       from: IN_TRANSIT,
       to: dest,
       actorRole,
       reason: "stock_hold_release",
       movementId: relId,
-      link: { refillId: line.refillId || null, holdShipmentId: shipment.shipmentId, holdLineId: line.lineId },
+      link: { refillId: liveLine.refillId || null, holdShipmentId: shipment.shipmentId, holdLineId: line.lineId },
     });
     if (!res.ok) {
       // insufficient_stock here means the fulfil never parked this line's
       // units (a phantom) — refusing is the guard, not a bug. The line stays
       // held and the failure is shown.
-      out.failures.push({ lineId: line.lineId, productName: line.productName, reason: res.reason || "write failed" });
+      out.failures.push({ lineId: line.lineId, productName: liveLine.productName, reason: res.reason || "write failed" });
       continue;
     }
 
@@ -175,41 +187,42 @@ export async function releaseShipment({ dest, shipment, skipLineIds = new Set(),
     const updates = {
       [heldLinePath(dest, line.lineId)]: null,
       [releasedLinePath(dest, shipment.shipmentId, line.lineId)]: {
-        ...line, lineId: null,            // lineId is the key; RTDB drops null
+        ...liveLine,
         releasedAt: now,
         releasedBy: user ? user.uid : null,
         releaseMovementId: relId,
       },
     };
     // The race guard: a counted cell whose stock this release just changed is
-    // no longer a settled count. Stamp it stale IN THE SAME atomic update —
-    // the count views treat a stale record as "needs re-confirmation" and show
-    // the delta and when it landed.
+    // no longer a settled count. The record is read FRESH here, per line —
+    // reading once before the loop left a window where a cell counted during
+    // the release was never staled and a wrong count got notarised
+    // (CodeRabbit, PR #347). Stamped in the SAME atomic update that retires
+    // the line; the count views treat a stale record as "needs
+    // re-confirmation" and show the delta and when it landed.
     if (sessionId) {
-      const ck = cellKey(line.productId, line.sizeKey);
-      const rec = countedCells[ck];
+      const ck = cellKey(liveLine.productId, liveLine.sizeKey);
+      const base = `${HUB_COUNT_ROOT}/counted/${safeSeg(dest)}/${sessionId}/${ck}`;
+      let rec = null;
+      try { rec = await one(base); } catch { /* best-effort — see above */ }
       if (rec && !rec.staleAt) {
-        const base = `${HUB_COUNT_ROOT}/counted/${safeSeg(dest)}/${sessionId}/${ck}`;
         updates[`${base}/staleAt`] = now;
-        updates[`${base}/staleDelta`] = Number(line.qty) || 1;
+        updates[`${base}/staleDelta`] = qty;
         updates[`${base}/staleMovementId`] = relId;
-        countedCells[ck] = { ...rec, staleAt: now };   // one stamp per cell per release
         out.staledCells++;
       } else if (rec && rec.staleAt) {
         // Already awaiting a recount — accumulate the delta so the card shows
         // the full change since the count.
-        const base = `${HUB_COUNT_ROOT}/counted/${safeSeg(dest)}/${sessionId}/${ck}`;
-        updates[`${base}/staleDelta`] = (Number(rec.staleDelta) || 0) + (Number(line.qty) || 1);
-        countedCells[ck] = { ...rec, staleDelta: (Number(rec.staleDelta) || 0) + (Number(line.qty) || 1) };
+        updates[`${base}/staleDelta`] = (Number(rec.staleDelta) || 0) + qty;
       }
     }
     try {
       await update(ref(database), updates);
       out.released++;
-      out.releasedUnits += Number(line.qty) || 1;
+      out.releasedUnits += qty;
     } catch (err) {
       // The movement committed; the line will replay idempotently next time.
-      out.failures.push({ lineId: line.lineId, productName: line.productName,
+      out.failures.push({ lineId: line.lineId, productName: liveLine.productName,
                           reason: `credited, but the bookkeeping failed (${String(err?.message || err)}) — release again to finish` });
     }
   }
