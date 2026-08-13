@@ -69,3 +69,16 @@ describe("migrateToEngine — the writer refuses mapped items even from a stale 
     expect(keys.some((k) => k.includes("/tee1/"))).toBe(true);
   });
 });
+
+describe("migrateToEngine — the LIVE policy re-read beats a config armed after render", () => {
+  it("refuses a mapped item even when the handed config predates the arming", async () => {
+    gets["stock_targets"] = {};
+    gets["config/refillEngine/categoryPolicy"] = POLICY;   // armed AFTER the screen rendered
+    const items = computeUnintroduced(STOCK, {}, PRODUCTS, ["marathon-pe", "trophy", "hub2"]);
+    const res = await migrateToEngine(items, { config: {} });   // stale config: no map
+    expect(res.done).toBe(1);
+    expect(res.skippedTaken).toBe(1);
+    const keys = updateMock.mock.calls.flatMap((c) => Object.keys(c[1]));
+    expect(keys.some((k) => k.includes("/fc1/"))).toBe(false);
+  });
+});

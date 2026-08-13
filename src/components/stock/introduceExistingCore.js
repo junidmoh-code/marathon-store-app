@@ -23,6 +23,7 @@ import { database, auth } from "../../firebase";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { serverNowIso } from "../../utils/serverTime";
 import { categoryPolicyLocs } from "./solvePlan";
+import { categoryPolicyLocs } from "./solvePlan";
 
 // Approved standard runs — owner policy 2026-07-13 (corrected same day):
 //   STORES (marathon-pe, trophy) — REDUCED run: both stores were full before
@@ -90,6 +91,12 @@ export function computeUnintroduced(allStock, allTargets, productsById, dests = 
       // one-tap write of generic standard-run rows that OUTRANK the map
       // forever and quietly disable its off switch. (Sonnet review, PR #352.)
       if (categoryPolicyLocs(categoryPolicy, productsById.get(pid)?.categoryKey).length) continue;
+      // CATEGORY-MAPPED = ALREADY GOVERNED (2026-08-13). The category policy
+      // arms a product with no row at all, so "no explicit row" no longer
+      // means "unintroduced". Listing a mapped product here would offer a
+      // one-tap write of generic standard-run rows that OUTRANK the map
+      // forever and quietly disable its off switch. (Sonnet review, PR #352.)
+      if (categoryPolicyLocs(categoryPolicy, productsById.get(pid)?.categoryKey).length) continue;
       // Cell PRESENCE, not quantity: a sold-to-zero cell still proves the
       // product circulated (lockstep with the engine) — it migrates too, so
       // its proven demand gets redistributed the moment targets exist.
@@ -133,8 +140,15 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
   // that now has targets ANYWHERE, so the migration never overwrites a
   // human-set target with the standard run.
   let liveTargets = {};
+  let livePolicy = null;
   try {
     liveTargets = (await get(ref(database, "stock_targets"))).val() || {};
+    // The category policy is re-read in the SAME pre-write stage, for the same
+    // reason: an operator can arm a category between this screen rendering and
+    // the tap, and a row written past a stale config outranks the map forever.
+    // (CodeRabbit, PR #352.) The union below refuses everything EITHER source
+    // maps, so a failed policy read inside this same try degrades to abort.
+    livePolicy = (await get(ref(database, "config/refillEngine/categoryPolicy"))).val();
   } catch (e) {
     return { done: 0, total: 0, cells: 0, batchId, failed: [`could not re-check current targets — nothing written (${String(e?.message || e)})`] };
   }
