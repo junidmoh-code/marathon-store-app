@@ -47,6 +47,7 @@ import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 // route render nothing once STOCK_HOLD_ENABLED is off.
 import { setDisplaySlot, clearDisplaySlot } from "./components/stock/displaySlots";
 import StockHoldCard from "./components/stock/StockHoldCard";
+import ShopifyPublishCard from "./components/shopify/ShopifyPublishCard";
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
@@ -2584,7 +2585,7 @@ function MiniTile({ icon, name, desc, onClick }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessStock, isSuperAdmin }) {
+function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin }) {
   const isDesktop = !useIsNarrow(1024);
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   // Who-am-I, home only (owner directive 2026-08-08): the global "Signed in:"
@@ -2637,6 +2638,16 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
     ? <StockHoldCard viewer={{ email: homeUser?.email, uid: homeUser?.uid }}
                      onOpen={() => onSelect(ROLES.STOCK_HOLD)} />
     : null;
+  // Shopify Publishing — the online-store push pipeline (clean names,
+  // condition grades, nominations). Self-gating like StockHoldCard: renders
+  // null unless super-admin or stockRole admin, mirroring the console write
+  // rule on /shopify_publish. Writes only /shopify_publish.
+  const shopifyCard = (
+    <ShopifyPublishCard
+      viewer={{ isSuperAdmin, stockRole: isSuperAdmin ? "admin" : (homePerm?.stockRole || null) }}
+      products={products}
+    />
+  );
 
   // Shared, permission-gated role data — rendered as a desktop tile grid or the
   // mobile RoleCard list.
@@ -2790,6 +2801,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
               for an admin with no other tiles. */}
           {hubCountCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".18s" }}>{hubCountCard}</div>}
           {stockHoldCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".19s" }}>{stockHoldCard}</div>}
+          <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".2s" }}>{shopifyCard}</div>
 
           {!anyCards ? (
             <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
@@ -2852,6 +2864,7 @@ function RoleSelector({ onSelect, orders, returnsLog, hasPermission, canAccessSt
         {/* TEMPORARY — hub sneaker stock-take (see the desktop branch above). */}
         {hubCountCard}
         {stockHoldCard}
+        {shopifyCard}
         {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
           <GroupSection key={g.label} label={g.label}>
             {g.cards.map((c, i) => (
@@ -17371,7 +17384,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);
