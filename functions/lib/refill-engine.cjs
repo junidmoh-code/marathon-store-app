@@ -332,6 +332,91 @@ function subcategoryRun(config, products, pid, dest) {
 // over-ordering is merely visible noise — so garbage resolves to "no gate",
 // matching the file's standing rule that the engine takes the conservative side
 // (see the kill switch's fail-safe note above).
+// ═══ CATEGORY POLICY — the map itself ════════════════════════════════════════
+// Shape, at /config/refillEngine/categoryPolicy:
+//
+//   {
+//     "<categoryKey>": {
+//       "perSize": true,                       // absent/false → one-size mode
+//       "<dest>": { "target": N, "reorderPoint": N, "minQty": N },
+//     },
+//   }
+//
+// A location absent from an entry gets NOTHING there (decision 5: Trophy and
+// marathon-pine are simply not named). reorderPoint absent → null → eager
+// top-up, matching resolveTarget's standing fail-safe direction. minQty absent
+// → ceil(target/2), the ratio every armed batch has used (8/4, 10/5, 5/3).
+//
+// TWO SIZE MODES, because the two mapped classes keep different promises:
+//
+//   ONE-SIZE (default) — the entry speaks for the "_" sentinel cell ONLY.
+//   Any other size falls through to the branches below. This is what makes
+//   arming a one-size category safe while its legacy records still carry
+//   letter cells: the letters keep their existing clothing-rule resolution
+//   (they are collapsed later by the migration, not starved now by the map),
+//   while every "_" cell — and every script-imported one-size record —
+//   resolves the category numbers with no row.
+//
+//   PER-SIZE (perSize: true) — the entry speaks for EVERY declared catalogue
+//   size, replacing the garment run outright. A size that is declared but
+//   holds ZERO units anywhere in the network right now resolves an EXPLICIT
+//   TARGET 0 — a stop, not a fall-through — so a fitted cap's paper-only XXXL
+//   (declared on 54 products, stocked on none) can never be re-armed by the
+//   letter run below, exactly like a human-written 0 row. The moment real
+//   units of that size arrive anywhere, the same test arms it automatically:
+//   the category — not a row — is the policy.
+function categoryPolicyEntry(config, products, pid, dest) {
+  const key = products?.[pid]?.categoryKey;
+  if (typeof key !== "string" || !key) return null;
+  const cat = config?.categoryPolicy?.[key];
+  if (!cat || typeof cat !== "object" || Array.isArray(cat)) return null;
+  const loc = cat[dest];
+  if (!loc || typeof loc !== "object" || Array.isArray(loc)) return null;
+  // target must be a positive finite number — the entry arms; the computed
+  // dead-size 0 below is the only zero this branch ever produces. Garbage
+  // (string "5", NaN, negative) arms nothing, the conservative side.
+  if (typeof loc.target !== "number" || !Number.isFinite(loc.target) || loc.target <= 0) return null;
+  return { target: loc.target, reorderPoint: loc.reorderPoint, minQty: loc.minQty, perSize: cat.perSize === true };
+}
+
+// Units of one size across EVERY location — the per-size dead-size test.
+// Negative counted cells clamp to 0: a count error must not arm a size.
+function sizeUnitsAnywhere(stock, pid, size) {
+  const k = encodeSizeKey(size);
+  let n = 0;
+  for (const loc of Object.keys(stock || {})) n += avail(num(stock[loc]?.[pid]?.[k]?.qty));
+  return n;
+}
+
+function categoryPolicyTarget(config, products, stock, dest, pid, size) {
+  const entry = categoryPolicyEntry(config, products, pid, dest);
+  if (!entry) return null;
+  const rp = entry.reorderPoint;
+  const shaped = (target) => ({
+    target,
+    minQty: typeof entry.minQty === "number" && Number.isFinite(entry.minQty) && entry.minQty >= 0
+      ? entry.minQty
+      : (target > 0 ? Math.ceil(target / 2) : 0),
+    reorderPoint: typeof rp === "number" && Number.isFinite(rp) && rp >= 0 ? rp : null,
+    source: "category_policy",
+  });
+  if (!entry.perSize) {
+    // One-size mode: the "_" cell only; letters fall through (see block above).
+    return encodeSizeKey(size) === "_" ? shaped(entry.target) : null;
+  }
+  // Per-size mode: declared catalogue sizes only — a size the product does not
+  // come in resolves nothing here, exactly like the clothing rule below. The
+  // "_" sentinel is REFUSED outright: a per-size product declaring one-size is
+  // a data error, and answering for it would put a one-size target on a sized
+  // product from a map entry that was written about its sizes. Fall through
+  // (no run holds a "_" key, so it resolves nothing) and let the record be
+  // fixed, conservatively — the same direction every malformed input takes.
+  // (CodeRabbit, PR #352 — and mirrored byte-for-byte in solvePlan.js.)
+  if (encodeSizeKey(size) === "_") return null;
+  if (!productSizes(products, pid).includes(String(size))) return null;
+  return shaped(sizeUnitsAnywhere(stock, pid, size) > 0 ? entry.target : 0);
+}
+
 function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
@@ -346,6 +431,30 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
       source: "explicit",
     };
   }
+  // ── CATEGORY POLICY — /config/refillEngine/categoryPolicy (2026-08-13) ─────
+  // The owner's standing rule: THE CATEGORY A PRODUCT IS GIVEN IS WHAT ARMS IT.
+  // A category in this map is managed at the mapped locations with no
+  // per-product row, ever — a perfume script-imported tomorrow is governed the
+  // moment it exists, because resolution happens LIVE here rather than by
+  // stamping rows at creation (which bulk imports never pass through).
+  //
+  // Placement is the precedence: explicit row > category policy > footwear
+  // rule > kill switch > clothing rules. An explicit row still wins — so
+  // deleting a row is NO LONGER the off switch for a mapped product. THE OFF
+  // SWITCH IS THE MAP ENTRY: delete /config/refillEngine/categoryPolicy/<key>
+  // and the very next scan drops the whole category back to exactly what the
+  // branches below say (live, no deploy). Fail-safe by the same construction
+  // as every switch in this file: an absent, garbled or unreadable entry arms
+  // NOTHING.
+  //
+  // Sitting ABOVE the kill switch is deliberate and mirrors explicit rows:
+  // this map is owner-armed policy, not a rule the engine invented, so
+  // ruleBasedTargets=false does not silence it. Sitting ABOVE the clothing
+  // rules means a mapped clothing category (headwear) overrides the garment
+  // size run for exactly the sizes the entry speaks for — and no others; see
+  // categoryPolicyTarget for the two size modes and their fall-through.
+  const catT = categoryPolicyTarget(config, products, stock, dest, pid, size);
+  if (catT) return catT;
   // ── FOOTWEAR RULE (2026-07-30) ─────────────────────────────────────────────
   // Evaluated BEFORE the clothing kill switch below — see footwearTargetsEnabled
   // for why that ordering is load-bearing (a shared early-return would couple the
@@ -882,8 +991,19 @@ function computeRefillPlan(snapshot) {
     const out = new Set(Object.keys(targets?.[dest] || {}));
     const ruleOn = ruleTargetsEnabled(config, dest);
     const footOn = footwearTargetsEnabled(config, dest);
-    if (!ruleOn && !footOn) return out;
+    // CATEGORY POLICY (2026-08-13): a mapped category's products are managed at
+    // the mapped locations UNCONDITIONALLY — no carriage gate, exactly like
+    // explicit-target keys, because the category IS the owner's arming act. A
+    // stranded perfume with no cell anywhere must still resolve its buffer
+    // target at hub2 or the standing policy would only govern products someone
+    // had already introduced by hand — the per-product step it abolishes. The
+    // map is empty in production until the owner writes it, so this admits
+    // nothing by default; and it survives the kill switches below by the same
+    // reasoning resolveTarget's branch order does.
+    const catOn = config?.categoryPolicy && typeof config.categoryPolicy === "object";
+    if (!ruleOn && !footOn && !catOn) return out;
     for (const [pid, p] of Object.entries(products || {})) {
+      if (catOn && categoryPolicyEntry(config, products, pid, dest)) { out.add(pid); continue; }
       if (!storeCarries(stock, dest, pid)) continue;
       if (ruleOn && isClothing(p)) out.add(pid);
       else if (footOn && isFootwear(p)) out.add(pid);
@@ -894,6 +1014,17 @@ function computeRefillPlan(snapshot) {
     const out = new Set(Object.keys(targets?.[dest]?.[pid] || {}));
     const ruleOn = ruleTargetsEnabled(config, dest);
     const footOn = footwearTargetsEnabled(config, dest);
+    // Mapped sizes ride along regardless of the switches, mirroring
+    // managedPids: one-size mode walks the "_" cell alone (letters stay the
+    // clothing rules' business and are added below only when those rules
+    // manage this product); per-size mode walks every declared size —
+    // resolveTarget then answers 0 for the dead ones, and the deficit loop's
+    // `target <= 0` guard skips them at nearly zero cost.
+    const cat = categoryPolicyEntry(config, products, pid, dest);
+    if (cat) {
+      if (cat.perSize) for (const s of productSizes(products, pid)) out.add(encodeSizeKey(s));
+      else out.add("_");
+    }
     if (!ruleOn && !footOn) return out;
     const p = products?.[pid];
     const managedHere = (ruleOn && isClothing(p)) || (footOn && isFootwear(p));
@@ -1163,8 +1294,12 @@ function computeRefillPlan(snapshot) {
       // is added here for the same reason it is added there: without it a shoe
       // with no explicit row is dropped before resolveTarget is consulted. Still
       // safe when footwear is off — resolveTarget then returns null and the
-      // `!t` guard below skips the cell, exactly as it does today.
-      if (!isClothing(products?.[pid]) && !isFootwear(products?.[pid]) && !targets?.[dest]?.[pid]) continue;
+      // `!t` guard below skips the cell, exactly as it does today. A mapped
+      // category (perfume is neither clothing nor footwear and needs no row)
+      // passes for the same reason explicit-target pids do: the class filter
+      // must not drop what managedPids deliberately admitted.
+      if (!isClothing(products?.[pid]) && !isFootwear(products?.[pid]) && !targets?.[dest]?.[pid]
+          && !categoryPolicyEntry(config, products, pid, dest)) continue;
       for (const sizeKey of sizesFor(dest, pid)) {
         const size = rawSize(pid, sizeKey);
         const t = resolveTarget(ctx, dest, pid, size);
@@ -1624,6 +1759,15 @@ function computeRefillPlan(snapshot) {
   // as managed — a human already decided. Otherwise fall back to the rule.
   const managedHere = (loc, pid) => {
     if (targets?.[loc]?.[pid]) return true;
+    // The category policy is a decision too — and it survives the kill switch
+    // (resolveTarget's branch order), so it must be consulted BEFORE the
+    // switch return below. Skipping this had the Decision Queue calling a
+    // mapped product "needs a decision" at the exact moment the planner was
+    // refilling it — the drift the block comment above exists to prevent.
+    // Entry presence is the test, not a positive resolution: an entry whose
+    // sizes all resolve dead-0 is "deliberately excluded", the same reading
+    // an explicit 0 row gets one branch up. (CodeRabbit + Sonnet, PR #352.)
+    if (categoryPolicyEntry(config, products, pid, loc)) return true;
     if (!ruleTargetsEnabled(config, loc)) return false;
     for (const s of productSizes(products, pid)) if (targetResolves(loc, pid, s)) return true;
     return false;
@@ -1861,4 +2005,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate };
+module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry };

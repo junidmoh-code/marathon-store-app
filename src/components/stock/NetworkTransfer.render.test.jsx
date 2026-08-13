@@ -388,6 +388,30 @@ describe("perfume — visible, and solvable against the correct hub (2026-08-13)
     expect(solveButton(armed).props.disabled).toBe(false);
   });
 
+  it("CATEGORY POLICY: a mapped perfume is SOLVABLE with no row at all, and seeds the mapped legs", async () => {
+    // The standing policy (2026-08-13): /config/refillEngine/categoryPolicy
+    // arms every product of a category with no per-product row — so a perfume
+    // imported by script tomorrow renders an ARMED Solve the moment it is
+    // stranded, exactly as the engine will refill it.
+    paths["config/refillEngine"] = {
+      ...CONFIG,
+      categoryPolicy: {
+        perfumes: {
+          "marathon-pe": { target: 8, reorderPoint: 3, minQty: 4 },
+          hub2: { target: 10, reorderPoint: 5, minQty: 5 },
+        },
+      },
+    };
+    const tree = renderScent({});          // NO /stock_targets rows anywhere
+    expect(solveButton(tree).props.disabled).toBe(false);
+    await act(async () => { solveButton(tree).props.onClick(); });
+    // Only Marathon PE is mapped — Trophy is not a qualifying store.
+    expect(buttonSaying(tree, "Solve — carry at Marathon PE")).toBeDefined();
+    await act(async () => { buttonSaying(tree, "Solve — carry at Marathon PE").props.onClick(); });
+    const keys = Object.keys(updateMock.mock.calls[0][1]);
+    expect(keys.sort()).toEqual([`stock/hub2/${SCENT}/_`, `stock/marathon-pe/${SCENT}/_`]);
+  });
+
   it("with the kill switch OFF, a row-less perfume still asks for a TARGET — never blames the switch", () => {
     // "Automatic refills are switched off" is a remedy sentence: it tells the
     // operator that flipping the switch will fix this row. For a perfume it

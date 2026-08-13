@@ -140,27 +140,95 @@ export function explicitTarget(targets, loc, pid, size) {
   return Number.isFinite(row.target) ? row.target : 0;
 }
 
+// ── CATEGORY POLICY — /config/refillEngine/categoryPolicy (2026-08-13) ───────
+// The engine's second owner-armed source (resolveTarget's branch right after
+// explicit rows): the CATEGORY a product carries is what arms it, with no
+// per-product row. This mirror must speak it or every mapped-but-row-less
+// product (a freshly imported perfume) would render a greyed Solve over a
+// target the engine is actively serving — the exact lie this module exists to
+// prevent, in the opposite direction from the usual false-solve.
+//
+// The validation is BYTE-FOR-BYTE the engine's categoryPolicyEntry /
+// categoryPolicyTarget: non-empty string categoryKey, object entry, per-
+// location object, positive finite numeric target — anything else arms
+// NOTHING (fail-safe, both sides). Two size modes, same meanings:
+//   one-size (default)  — speaks for the "_" sentinel ONLY; letters fall
+//                         through to the rule standards below it.
+//   perSize: true       — speaks for every declared size; a size holding ZERO
+//                         units anywhere resolves an explicit 0 (dead size —
+//                         the run must not re-arm it), and units arriving
+//                         anywhere re-arm it with no config change.
+// `unitsAnywhere(size)` is the caller's live network sum for this product —
+// NetworkTransfer closes it over the same allStock map everything else reads.
+// The locations a category-policy entry validly governs for one categoryKey —
+// the SAME validation as categoryRun below (and the engine), answered as a
+// membership question. Exists for callers that must not treat a mapped product
+// as "unmanaged": the Introduce Existing migration used to see only explicit
+// rows, so it would happily stamp generic standard-run rows onto a mapped
+// product — rows that then outrank the map FOREVER and quietly break its off
+// switch (delete-the-entry no longer restores anything for that product).
+// (Sonnet review, PR #352.)
+export function categoryPolicyLocs(policy, categoryKey) {
+  if (typeof categoryKey !== "string" || !categoryKey) return [];
+  const cat = policy && typeof policy === "object" && !Array.isArray(policy) ? policy[categoryKey] : null;
+  if (!cat || typeof cat !== "object" || Array.isArray(cat)) return [];
+  return Object.entries(cat)
+    .filter(([loc, entry]) => loc !== "perSize" && entry && typeof entry === "object" && !Array.isArray(entry)
+      && typeof entry.target === "number" && Number.isFinite(entry.target) && entry.target > 0)
+    .map(([loc]) => loc);
+}
+
+export function categoryRun({ policy, categoryKey, sizes, unitsAnywhere }) {
+  if (typeof categoryKey !== "string" || !categoryKey) return {};
+  const cat = policy && typeof policy === "object" && !Array.isArray(policy) ? policy[categoryKey] : null;
+  if (!cat || typeof cat !== "object" || Array.isArray(cat)) return {};
+  const at = typeof unitsAnywhere === "function" ? unitsAnywhere : () => 0;
+  const out = {};
+  for (const [loc, entry] of Object.entries(cat)) {
+    if (loc === "perSize") continue;   // the mode flag, not a location
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const t = entry.target;
+    if (typeof t !== "number" || !Number.isFinite(t) || t <= 0) continue;
+    // Per-size mode REFUSES the "_" sentinel (a per-size product declaring
+    // one-size is a data error; the engine falls through for it too — the two
+    // must refuse in lockstep or Solve would arm a cell the engine never
+    // refills). (CodeRabbit, PR #352.)
+    out[loc] = cat.perSize === true
+      ? Object.fromEntries((sizes || []).filter((sz) => String(sz) !== "_").map((sz) => [String(sz).toUpperCase(), at(sz) > 0 ? t : 0]))
+      : { "_": t };
+  }
+  return out;
+}
+
 // The run map Solve should actually decide on: effectiveStandard (subcategory
-// policy over the size run) with the kill switch applied per location and the
-// explicit rows overlaid on top — resolveTarget's whole priority order, folded
-// into the ONE { loc: { SIZE: target } } shape qualifyingSizes/solvePlan already
-// speak, so neither needs a new argument or a new meaning.
+// policy over the size run) with the kill switch applied per location, the
+// category policy overlaid above it, and the explicit rows overlaid on top —
+// resolveTarget's whole priority order, folded into the ONE
+// { loc: { SIZE: target } } shape qualifyingSizes/solvePlan already speak, so
+// neither needs a new argument or a new meaning.
 //
 // Order inside a location is exactly the engine's: rule/subcategory standards
-// FIRST (and only where the kill switch is on), explicit rows LAST so they win.
-export function resolvedRun({ std, subRun, subcategory, sizes, targets, pid, ruleBasedTargets }) {
+// FIRST (and only where the kill switch is on), the category policy NEXT (it
+// survives the kill switch, like the explicit rows it generalises), explicit
+// rows LAST so they win.
+export function resolvedRun({ std, subRun, subcategory, sizes, targets, pid, ruleBasedTargets, categoryPolicy, categoryKey, unitsAnywhere }) {
   const base = effectiveStandard({ std, subRun, subcategory, sizes });
-  // A location can be reachable through an explicit row alone — it need not
-  // appear in defaultRunByStore at all — so the location set is the union.
+  const catRun = categoryRun({ policy: categoryPolicy, categoryKey, sizes, unitsAnywhere });
+  // A location can be reachable through an explicit row alone — or through the
+  // category policy alone (a mapped perfume has no run at all) — so the
+  // location set is the union of all three sources.
   const locs = new Set([
     ...Object.keys(base),
+    ...Object.keys(catRun),
     ...Object.keys(targets || {}).filter((loc) => targets?.[loc]?.[pid]),
   ]);
   const out = {};
   for (const loc of locs) {
-    // Rule-based and subcategory standards die with the kill switch. Explicit
-    // rows below do not — that asymmetry IS resolveTarget's branch order.
+    // Rule-based and subcategory standards die with the kill switch. The
+    // category policy and explicit rows below do not — that asymmetry IS
+    // resolveTarget's branch order.
     const run = ruleTargetsEnabledFor(ruleBasedTargets, loc) ? { ...(base[loc] || {}) } : {};
+    Object.assign(run, catRun[loc] || {});     // map beats the rules, incl. its dead-size 0s
     for (const sz of sizes || []) {
       const t = explicitTarget(targets, loc, pid, sz);
       if (t !== null) run[String(sz).toUpperCase()] = t;   // incl. 0 = excluded

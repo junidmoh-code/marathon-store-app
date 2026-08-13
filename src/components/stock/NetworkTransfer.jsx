@@ -201,6 +201,14 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       std: ruleEligible ? stdRun : {}, subRun: ruleEligible ? subRun : undefined,
       subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
       targets: targetRows, pid, ruleBasedTargets: cfg?.ruleBasedTargets,
+      // CATEGORY POLICY (2026-08-13): the engine's standing owner-armed source,
+      // between the rules and the explicit rows — a mapped category (perfume)
+      // is solvable with NO row, exactly as the engine will refill it. Rides
+      // the same config subscription as every other switch on this screen.
+      // unitsAnywhere feeds the per-size dead-size test from the same decoded
+      // allStock map the coverage estimate reads.
+      categoryPolicy: cfg?.categoryPolicy, categoryKey: byId.get(pid)?.categoryKey,
+      unitsAnywhere: (sz) => Object.keys(allStock || {}).reduce((t, loc) => t + qtyAt(loc, pid, sz), 0),
     });
   };
   // Sizes safe to seed — a positive target at every seed location (solvePlan.js).

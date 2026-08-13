@@ -38,6 +38,7 @@ import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { computeUnintroduced, stockedStandardSizes, destsFrom, effectiveRun } from "./introduceExistingCore";
+import { categoryPolicyLocs } from "./solvePlan";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { sizeRank } from "./hubSizeRank";
 
@@ -115,6 +116,19 @@ export default function NoTargetQueue({ products = [] }) {
   const cards = useMemo(() => {
     const out = [];
     if (loading) return out;
+    // CATEGORY-MAPPED = ALREADY DECIDED (2026-08-13). The category policy
+    // governs a product with no explicit row, and it survives the kill switch
+    // — so a mapped product must never be offered as a manual decision here.
+    // Mirrors the engine's managedHere fix (same review, PR #352): the moment
+    // the 136 old-number rows fall through to the map, their products would
+    // otherwise flood this queue as row-less "decisions". Per-size entries
+    // decide every declared size; one-size entries decide the "_" cell (the
+    // blind-spot loop below filters that size rather than the whole product,
+    // because its letter cells genuinely stay the run's business).
+    const policy = engineConfig?.categoryPolicy;
+    const mappedAt = (pid, loc) => categoryPolicyLocs(policy, byId.get(pid)?.categoryKey).includes(loc);
+    const mappedAnywhere = (pid) => categoryPolicyLocs(policy, byId.get(pid)?.categoryKey).length > 0;
+    const mappedPerSize = (pid) => policy?.[byId.get(pid)?.categoryKey]?.perSize === true;
     // GENUINELY NEW at Central — no targets anywhere AND never circulated.
     // Circulation evidence is cell PRESENCE, not quantity (lockstep with the
     // engine): a sold-to-zero destination cell still proves the product was
@@ -122,6 +136,7 @@ export default function NoTargetQueue({ products = [] }) {
     for (const [pid, bySize] of Object.entries(allStock?.central || {})) {
       const p = byId.get(pid);
       if (!isClothing(p)) continue;
+      if (mappedAnywhere(pid)) continue;   // the category already decided
       if (dests.some((d) => allTargets?.[d]?.[pid])) continue;
       if (dests.some((d) => Object.keys(allStock?.[d]?.[pid] || {}).length)) continue;
       if (decisionActive("central", pid)) continue;
@@ -144,6 +159,7 @@ export default function NoTargetQueue({ products = [] }) {
       for (const [pid, bySize] of Object.entries(allStock?.[loc] || {})) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
+        if (mappedAt(pid, loc)) continue;   // the category already decided here
         if (allTargets?.[loc]?.[pid]) continue;
         const introducedElsewhere = dests.some((d) => allTargets?.[d]?.[pid]);
         if (!introducedElsewhere && stockedStandardSizes(allStock, pid).length) continue; // → migration
@@ -171,10 +187,14 @@ export default function NoTargetQueue({ products = [] }) {
       for (const [pid, byTarget] of Object.entries(allTargets?.[loc] || {})) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
+        if (mappedAt(pid, loc) && mappedPerSize(pid)) continue;   // every declared size decided
         if (decisionActive(loc, pid)) continue;
         const sizes = Object.entries(allStock?.[loc]?.[pid] || {})
           .map(([size, c]) => ({ size, qty: Math.max(Number(c?.qty) || 0, 0) }))
-          .filter((s) => s.qty > 0 && !byTarget[encodeSizeKey(s.size)]);
+          .filter((s) => s.qty > 0 && !byTarget[encodeSizeKey(s.size)])
+          // a one-size map entry decides the "_" cell — its letter cells stay
+          // the run's business exactly as before.
+          .filter((s) => !(mappedAt(pid, loc) && encodeSizeKey(s.size) === "_"));
         if (loc === "hub2") {
           const seen = new Set(sizes.map((s) => encodeSizeKey(s.size)));
           for (const [size, c] of Object.entries(allStock?.central?.[pid] || {})) {
@@ -196,12 +216,12 @@ export default function NoTargetQueue({ products = [] }) {
       }
     }
     return out.sort((a, b) => (a.isNew === b.isNew ? b.units - a.units : a.isNew ? -1 : 1));
-  }, [loading, allStock, allTargets, decisions, byId, dests]);
+  }, [loading, allStock, allTargets, decisions, byId, dests, engineConfig]);
 
   // Pointer only — migration lives on the Health screen, not in this queue.
   const migratableCount = useMemo(
-    () => (loading ? 0 : computeUnintroduced(allStock, allTargets, byId, dests).filter((i) => i.migratable).length),
-    [loading, allStock, allTargets, byId, dests],
+    () => (loading ? 0 : computeUnintroduced(allStock, allTargets, byId, dests, engineConfig?.categoryPolicy).filter((i) => i.migratable).length),
+    [loading, allStock, allTargets, byId, dests, engineConfig],
   );
 
   if (loading) {
