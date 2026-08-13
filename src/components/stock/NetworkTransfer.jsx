@@ -23,7 +23,7 @@ import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets"
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts, isClothing } from "./missingProductsCore";
-import { HIDDEN_ROOT, HIDE_REASONS, hideEntry } from "./hiddenProductsCore";
+import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -93,6 +93,30 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       setHideErr((prev) => ({ ...prev, [card.pid]: `Couldn't hide — nothing changed, retry. (${e?.message || "error"})` }));
     }
     setHideBusy(null);
+  };
+
+  // ── BULK HIDE — the scale path (hundreds of seasonal entries at once) ──────
+  // Select mode turns every card into a checkbox; the action bar hides the
+  // WHOLE selection in ONE multi-path update built by bulkHideUpdate, which
+  // writes exactly the selected pids' entries and nothing else (pinned in
+  // hiddenProductsCore.test.js). Same provenance shape as a single hide: one
+  // gesture, one at/by/reason for the batch.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState({});   // pid → true
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkErr, setBulkErr] = useState(null);
+  const selectedPids = Object.keys(selected).filter((k) => selected[k]);
+  const exitSelect = () => { setSelectMode(false); setSelected({}); setBulkErr(null); };
+  const bulkHide = async (reason) => {
+    if (bulkBusy || !canAct || !selectedPids.length) return;
+    setBulkBusy(true);
+    try {
+      await update(ref(database), bulkHideUpdate(selectedPids, { at: serverNowMs(), by: auth.currentUser?.uid, reason }));
+      exitSelect();
+    } catch (e) {
+      setBulkErr(`Couldn't hide — nothing changed, retry. (${e?.message || "error"})`);
+    }
+    setBulkBusy(false);
   };
 
   // Solve (engine-managed) — separate from the manual transfer above.
@@ -361,7 +385,52 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   return (
     <>
       {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to transfer — viewing only.</div>}
+      {canAct && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", justifyContent: "flex-end" }}>
+          {selectMode ? (
+            <>
+              <span style={{ fontSize: 11.5, color: GRAY, marginRight: "auto" }}>{selectedPids.length} selected — tap cards to add</span>
+              <button onClick={() => setSelected(Object.fromEntries(cards.map((c) => [c.pid, true])))}
+                      style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
+                Select all ({cards.length})
+              </button>
+              <button onClick={exitSelect}
+                      style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button onClick={() => setSelectMode(true)}
+                    style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.4)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
+              Select
+            </button>
+          )}
+        </div>
+      )}
       {cards.map((card) => {
+        // Select mode: the card IS the checkbox — panels and actions stand
+        // down so a mis-tap can only toggle selection, never move stock.
+        if (selectMode) {
+          const on = !!selected[card.pid];
+          return (
+            <div key={card.pid} onClick={() => setSelected((s) => ({ ...s, [card.pid]: !s[card.pid] }))} style={{ cursor: "pointer" }}>
+              <ProductCard
+                photo={card.photo} name={card.name}
+                badges={<>
+                  <Badge tone={AMBER}>{card.kind.toUpperCase()}</Badge>
+                  <Badge tone={BLUE_L}>{card.units} units at {LOC_LABEL[card.source]}</Badge>
+                </>}
+                right={
+                  <div style={{ width: 26, height: 26, borderRadius: 13, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14,
+                                border: on ? "1px solid rgba(74,222,128,.6)" : "1px solid rgba(255,255,255,.2)",
+                                background: on ? "rgba(74,222,128,.2)" : "rgba(255,255,255,.03)", color: on ? GREEN : "rgba(255,255,255,.3)" }}>
+                    {on ? "✓" : ""}
+                  </div>
+                }
+              />
+            </div>
+          );
+        }
         const open = openPid === card.pid;
         const result = done[card.pid];
         const dest = dests[card.pid] || destOptions(card)[0];
@@ -553,6 +622,22 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           </ProductCard>
         );
       })}
+      {selectMode && selectedPids.length > 0 && (
+        <div style={{ ...GLASS, position: "sticky", bottom: 8, padding: "10px 12px", marginTop: 10, background: "rgba(20,22,30,.97)" }}>
+          <div style={{ fontSize: 11.5, color: GRAY, marginBottom: 8 }}>
+            Hide <b style={{ color: "#fff" }}>{selectedPids.length}</b> product{selectedPids.length === 1 ? "" : "s"} from this list — reason is optional, stock and refills carry on as normal.
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {HIDE_REASONS.map((r) => (
+              <button key={r.key} onClick={() => bulkHide(r.key)} disabled={bulkBusy} style={destChip(false)}>{r.label}</button>
+            ))}
+            <button onClick={() => bulkHide()} disabled={bulkBusy} style={destChip(false)}>
+              {bulkBusy ? "Hiding…" : "Hide without a reason"}
+            </button>
+          </div>
+          {bulkErr && <div style={{ fontSize: 11.5, color: RED, marginTop: 8 }}>{bulkErr}</div>}
+        </div>
+      )}
     </>
   );
 }

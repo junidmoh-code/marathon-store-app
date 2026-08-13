@@ -24,7 +24,7 @@ import { usePermissions } from "./../PermissionsContext";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, FONT } from "./ui";
 import { ProductCard, Badge } from "./healthWidgets";
 import { serverNowMs } from "../../utils/serverTime";
-import { reasonLabel, hiddenRows, sortAndFilterHidden, unhideUpdate } from "./hiddenProductsCore";
+import { HIDE_REASONS, reasonLabel, hiddenRows, sortAndFilterHidden, unhideUpdate } from "./hiddenProductsCore";
 
 const fmtAt = (ms) => {
   if (!ms) return "—";
@@ -44,9 +44,14 @@ export default function HiddenProducts({ products = [], cards = [], hiddenMap = 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const [busyPid, setBusyPid] = useState(null);
   const [errPid, setErrPid] = useState({});
+  // Sort + filter by reason and by date hidden — the scale controls: with
+  // hundreds of seasonal entries parked here, "show me only Seasonal, oldest
+  // first" is how a batch gets reviewed and unhidden.
+  const [reasonFilter, setReasonFilter] = useState("all");
+  const [sort, setSort] = useState("newest");
 
   const rows = useMemo(() => hiddenRows(hiddenMap, cards), [hiddenMap, cards]);
-  const shown = useMemo(() => sortAndFilterHidden(rows), [rows]);
+  const shown = useMemo(() => sortAndFilterHidden(rows, { reason: reasonFilter, sort }), [rows, reasonFilter, sort]);
 
   // Unhide is ONE action — delete the entry; the card (if the product is
   // still stranded) reappears in the main list via the same subscription
@@ -67,8 +72,24 @@ export default function HiddenProducts({ products = [], cards = [], hiddenMap = 
     return <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>Nothing hidden — every stranded product is showing in the main list.</div>;
   }
 
+  const pill = (on) => ({
+    padding: "7px 12px", borderRadius: 999, fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+    border: on ? "1px solid rgba(60,110,255,.5)" : "1px solid rgba(255,255,255,.1)",
+    background: on ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.03)",
+    color: on ? BLUE_L : "rgba(255,255,255,.45)",
+  });
+
   return (
     <>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+        {[["all", "All"], ...HIDE_REASONS.map((r) => [r.key, r.label]), ["none", "No reason"]].map(([key, label]) => (
+          <button key={key} onClick={() => setReasonFilter(key)} style={pill(reasonFilter === key)}>{label}</button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <button onClick={() => setSort(sort === "newest" ? "oldest" : "newest")} style={pill(false)}>
+          {sort === "newest" ? "Newest first" : "Oldest first"} ⇅
+        </button>
+      </div>
       {shown.map((r) => {
         const p = byId.get(r.pid);
         return (
@@ -92,6 +113,9 @@ export default function HiddenProducts({ products = [], cards = [], hiddenMap = 
           </ProductCard>
         );
       })}
+      {!shown.length && (
+        <div style={{ ...GLASS, padding: 14, color: GRAY, fontSize: 12.5 }}>Nothing hidden matches this filter.</div>
+      )}
     </>
   );
 }

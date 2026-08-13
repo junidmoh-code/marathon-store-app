@@ -70,4 +70,22 @@ describe("the writes stay inside the one small node", () => {
   it("NetworkTransfer's hide writes ONLY the hidden-root entry for that pid", () => {
     expect(NETWORK).toMatch(/\[`\$\{HIDDEN_ROOT\}\/\$\{card\.pid\}`\]: hideEntry\(/);
   });
+  it("bulk hide is ONE update over exactly the selection, via the pinned builder", () => {
+    // bulkHideUpdate is the tested guarantee that only the selected set is
+    // written; bulk hide must go through it, in a single update().
+    expect(NETWORK).toMatch(/update\(ref\(database\), bulkHideUpdate\(selectedPids, \{ at: serverNowMs\(\), by: auth\.currentUser\?\.uid, reason \}\)\)/);
+  });
+});
+
+describe("select mode — a mis-tap can only toggle selection", () => {
+  it("select-mode cards render no actions and no panels — Solve/Transfer/Hide all stand down", () => {
+    // The early-return block for selectMode must not reach any acting code:
+    // the whole card is a checkbox, so tapping around at speed over hundreds
+    // of cards can never move stock or seed cells.
+    const start = NETWORK.indexOf("if (selectMode) {");
+    expect(start).toBeGreaterThan(-1);
+    const block = NETWORK.slice(start, NETWORK.indexOf("\n        }", start));
+    expect(block).not.toMatch(/solve\(|transfer\(|hide\(|applyMovement|setSolvePid|setOpenPid/);
+    expect(block).toMatch(/setSelected/);
+  });
 });
