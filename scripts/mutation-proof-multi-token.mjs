@@ -263,6 +263,14 @@ const MUTATIONS = [
     tests: ["src/components/admin/StyleCodeGate.multiToken.test.jsx"],
   },
   {
+    id: "M34",
+    guard: "A prefix-dropped tier-2 pick confers no preference (Kimi #354)",
+    file: "functions/styleCode/readStyleCodeLabel.js",
+    from: `        preferred = candidates.includes(g.code) ? g.code : null;`,
+    to: `        preferred = g.code;`,
+    nodeTests: ["test/multi-token-label.test.cjs"],
+  },
+  {
     id: "M30",
     guard: "The till tries the label's other tokens before its dead-end (review #354)",
     file: "src/App.jsx",

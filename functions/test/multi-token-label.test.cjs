@@ -369,6 +369,24 @@ test("P6f: a TRUNCATED tier-2 primary does not take its otherCodes down with it 
   assert.strictEqual(out.preferred, null, "a discarded primary confers no preference");
 });
 
+test("P6g: a preferred that the prefix guard dropped confers NO preference (Kimi #354)", async () => {
+  // The model truncates its own primary (A8425) while listing the full token
+  // (A84251) in otherCodes. The guard drops the truncation from candidates —
+  // and the pick must fall with it, or the truncated code would pre-fill,
+  // file as the identity, and be voided from the cache on every retake.
+  const db = fakeDb({});
+  const out = await runLabelRead(db, baseRead({
+    visionFetch: visionOk("MADE IN VIETNAM"),
+    geminiFetch: geminiOk({ styleCode: "A8425", otherCodes: ["A84251"], styleCodeConfidence: 0.9 }),
+  }));
+  assert.ok(!out.candidates.includes("A8425"), "the truncated primary is dropped");
+  assert.ok(out.candidates.includes("A84251"), "its fuller spelling stands");
+  assert.strictEqual(out.preferred, null, "a dropped pick confers no preference");
+  const row = Object.values(db.data.style_code_ocr_cache || {})[0];
+  assert.ok(row, "the read still settles (one candidate) and caches");
+  assert.strictEqual(row.pk, undefined, "…without a stale pick");
+});
+
 test("P7: a learned layout rule answers BEFORE tier 2 is paid for", async () => {
   // The Lacoste layout, already taught: lacoste-ref is the style number among
   // {lacoste-ref, numeric-6-3, label-serial}. Tier 2 must NOT be called.

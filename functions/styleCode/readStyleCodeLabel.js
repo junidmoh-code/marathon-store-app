@@ -399,7 +399,12 @@ async function runLabelRead(db, {
         candidates = dropStrictPrefixes([g.code,
           ...[...new Set([...(g.otherCodes || []), ...candidates])].filter((c) => c !== g.code),
         ]).slice(0, MAX_CANDIDATES);
-        preferred = g.code;
+        // The guard can strip g.code ITSELF — a tier-2 otherCode may be the
+        // fuller spelling of a primary the model truncated (A8425 beside
+        // A84251). A dropped pick confers no preference: crowning it would
+        // pre-fill and file the truncated identity, and the cache's pk gate
+        // would void it on every retake anyway (Kimi review, PR #354).
+        preferred = candidates.includes(g.code) ? g.code : null;
         source = "gemini";
         brand = g.brand; size = g.size; confidence = g.confidence;
       } else {
