@@ -55,7 +55,12 @@ export default function BulkPricingTab({ products = [] }) {
     loadRecentBatches(15).then(setHistory).catch((e) => setHistory({ error: String(e?.message || e) }));
   };
   useEffect(() => { refreshHistory(); }, []);
-  useEffect(() => { loadSpecials().then(setSpecials).catch(() => setSpecials({})); }, []);
+  useEffect(() => {
+    loadSpecials().then(setSpecials).catch((e) => {
+      setSpecials({});
+      setNotice({ kind: "err", text: `Active specials could not be read (${e?.message || e}). Products on special are not marked here — repricing them will still be refused at write time.` });
+    });
+  }, []);
 
   const categories = useMemo(() => {
     const set = new Set(products.filter((p) => p && p.id).map((p) => typeOf(p)));
@@ -77,6 +82,9 @@ export default function BulkPricingTab({ products = [] }) {
 
   const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
   const pageItems = list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // Live data can shrink the list under the pager — clamp so the operator is
+  // never stranded on an empty page (CodeRabbit, PR #355).
+  useEffect(() => { setPage((p) => Math.min(p, totalPages)); }, [totalPages]);
 
   const selectable = (p) => !specials[p.id];
   const toggleSelect = (id) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -99,27 +107,41 @@ export default function BulkPricingTab({ products = [] }) {
     setPreviewOpen(true);
   };
 
+  // The store's write/restore paths return {ok:false} rather than throwing,
+  // but every handler still try/finally-resets busy so no rejection can strand
+  // the controls disabled (CodeRabbit, PR #355).
   const applyPlan = async () => {
     if (!plan?.ok || busy) return;
     setBusy(true);
-    const res = await applyPriceBatch({
-      action: "bulk_change",
-      lines: plan.lines,
-      label: mode === "percent"
-        ? `Bulk change ${percentDraft.trim()}% — ${plan.count} products`
-        : `Bulk change to fixed price — ${plan.count} products`,
-    });
-    setBusy(false);
-    if (!res.ok) { setNotice({ kind: "err", text: "Nothing was written: " + res.message }); setPreviewOpen(false); return; }
-    setPreviewOpen(false);
-    setSelected(new Set());
-    setStockDraft(""); setRetailDraft(""); setPercentDraft("");
-    setNotice({ kind: "ok", text: `Repriced ${res.count} products — batch ${res.batchId}. Undo from History below.` });
-    refreshHistory();
+    try {
+      const res = await applyPriceBatch({
+        action: "bulk_change",
+        lines: plan.lines,
+        label: mode === "percent"
+          ? `Bulk change ${percentDraft.trim()}% — ${plan.count} products`
+          : `Bulk change to fixed price — ${plan.count} products`,
+      });
+      setPreviewOpen(false);
+      if (!res.ok) { setNotice({ kind: "err", text: "Nothing was written: " + res.message }); return; }
+      setSelected(new Set());
+      setStockDraft(""); setRetailDraft(""); setPercentDraft("");
+      setNotice({ kind: "ok", text: `Repriced ${res.count} products — batch ${res.batchId}. Undo from History below.` });
+      refreshHistory();
+    } catch (e) {
+      setNotice({ kind: "err", text: "Nothing was written: " + (e?.message || e) });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const openRestore = async (batchId) => {
-    const pv = await previewRestore(batchId, productsById);
+    let pv;
+    try {
+      pv = await previewRestore(batchId, productsById);
+    } catch (e) {
+      setNotice({ kind: "err", text: `Could not read batch ${batchId}: ${e?.message || e}` });
+      return;
+    }
     if (!pv.ok) { setNotice({ kind: "err", text: pv.message }); return; }
     setRestoreCandidate({ batchId, record: pv.record, drift: pv.drift });
   };
@@ -127,13 +149,27 @@ export default function BulkPricingTab({ products = [] }) {
   const doRestore = async () => {
     if (!restoreCandidate || busy) return;
     setBusy(true);
-    const res = await restorePriceBatch(restoreCandidate.batchId, productsById);
-    setBusy(false);
-    setRestoreCandidate(null);
-    if (!res.ok) { setNotice({ kind: "err", text: "Restore failed — nothing was changed: " + res.message }); return; }
-    setNotice({ kind: "ok", text: `Restored ${res.count} products to their prior prices (batch ${res.restored}).` });
-    refreshHistory();
+    try {
+      const res = await restorePriceBatch(restoreCandidate.batchId, productsById);
+      setRestoreCandidate(null);
+      if (!res.ok) { setNotice({ kind: "err", text: "Restore failed — nothing was changed: " + res.message }); return; }
+      setNotice({ kind: "ok", text: `Restored ${res.count} products to their prior prices (batch ${res.restored}).` });
+      refreshHistory();
+    } catch (e) {
+      setNotice({ kind: "err", text: "Restore failed — nothing was changed: " + (e?.message || e) });
+    } finally {
+      setBusy(false);
+    }
   };
+
+  // If live product changes invalidate the open plan, close the modal WITH a
+  // message instead of letting it vanish silently (CodeRabbit, PR #355).
+  useEffect(() => {
+    if (previewOpen && plan && !plan.ok) {
+      setPreviewOpen(false);
+      setNotice({ kind: "err", text: "The selection changed and the plan is no longer valid: " + plan.error });
+    }
+  }, [previewOpen, plan]);
 
   return (
     <div style={{ padding: "0 14px 30px" }}>
@@ -203,8 +239,11 @@ export default function BulkPricingTab({ products = [] }) {
             <div key={p.id}
               style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, opacity: onSpecial ? 0.55 : 1, background: sel ? "rgba(74,127,255,.08)" : "rgba(255,255,255,.03)", border: "1px solid " + (sel ? "rgba(74,127,255,.4)" : "rgba(255,255,255,.07)") }}>
               <input type="checkbox" checked={sel} disabled={onSpecial} onChange={() => toggleSelect(p.id)}
+                aria-label={`Select ${p.name || p.id}`}
                 style={{ width: 16, height: 16, accentColor: "#4A7FFF", cursor: onSpecial ? "default" : "pointer", flexShrink: 0 }} />
-              <img src={p.photoUrl || ""} alt="" loading="lazy" style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
+              {p.photoUrl
+                ? <img src={p.photoUrl} alt="" loading="lazy" style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
+                : <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
                 <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)", marginTop: 2 }}>

@@ -147,14 +147,48 @@ export async function loadRecentBatches(n = 20) {
 }
 
 /**
+ * The restore-side specials interlock (CodeRabbit, PR #355): a restore writes
+ * each line's `from` retailPrice directly, so without this check the History
+ * card could undo a pre-special batch UNDER an active special — retail would
+ * jump while the special stayed listed, and the parked wasPrice would restore
+ * a price nobody chose when the special later ends. Same rule as apply: end
+ * the special first. Returns null when clear, else a refusal result.
+ */
+async function specialsRestoreRefusal(record) {
+  let specials;
+  try {
+    specials = (await loadSpecials()) || {};
+  } catch (e) {
+    return { ok: false, code: "specials_unreadable", message: `Could not check active specials — nothing was written. (${e?.message || e})` };
+  }
+  const blocked = Object.keys(record.lines || {}).filter(
+    (pid) => specials[pid] && record.lines[pid]?.from && "retailPrice" in record.lines[pid].from,
+  );
+  if (blocked.length > 0) {
+    return {
+      ok: false, code: "on_special", products: blocked,
+      message: `${blocked.length} product${blocked.length === 1 ? " is" : "s are"} on special — end the special first, then restore.`,
+    };
+  }
+  return null;
+}
+
+/**
  * Restore preview: the batch record plus drift — products whose current value
  * is no longer what the batch wrote (edited since). productsById comes from
- * the caller's existing /products subscription; no extra reads.
+ * the caller's existing /products subscription; no extra reads. Never throws.
  */
 export async function previewRestore(batchId, productsById) {
-  const record = await loadPriceBatch(batchId);
+  let record;
+  try {
+    record = await loadPriceBatch(batchId);
+  } catch (e) {
+    return { ok: false, code: "read_failed", message: `Could not read batch ${batchId}: ${e?.message || e}` };
+  }
   if (!record) return { ok: false, code: "not_found", message: "Batch not found." };
   if (record.restoredAt) return { ok: false, code: "already_restored", message: `Already restored at ${record.restoredAt}.` };
+  const refusal = await specialsRestoreRefusal(record);
+  if (refusal) return refusal;
   return { ok: true, record, drift: computeRestoreDrift(record, productsById || {}) };
 }
 
@@ -162,11 +196,19 @@ export async function previewRestore(batchId, productsById) {
  * Restore a batch by id — THE undo. One atomic update returns every product in
  * the batch to its exact prior values (and reverses any aux paths), records the
  * reversal as its own batch, and stamps the original restored. Refuses a
- * second restore of the same batch.
+ * second restore of the same batch, and refuses to reprice under an active
+ * special. Never throws.
  */
 export async function restorePriceBatch(batchId, productsById) {
-  const record = await loadPriceBatch(batchId);
+  let record;
+  try {
+    record = await loadPriceBatch(batchId);
+  } catch (e) {
+    return { ok: false, code: "read_failed", message: `Could not read batch ${batchId}: ${e?.message || e}` };
+  }
   if (!record) return { ok: false, code: "not_found", message: "Batch not found." };
+  const refusal = await specialsRestoreRefusal(record);
+  if (refusal) return refusal;
   const restoreBatchId = mintBatchId();
   let built;
   try {

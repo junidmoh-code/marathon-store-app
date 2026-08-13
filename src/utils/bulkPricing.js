@@ -110,6 +110,9 @@ export function buildBulkChangePlan({ products = [], selectedIds = [], mode = "a
     const retail = parseDraft(retailDraft);
     if (retail.error) return { ok: false, error: `Retail price: ${retail.error}` };
     if (stock.value === null && retail.value === null) return { ok: false, error: "Enter a stock price, a retail price, or both." };
+    if (stock.value !== null && retail.value !== null && retail.value < stock.value) {
+      return { ok: false, error: `Retail (R${retail.value}) is below stock (R${stock.value}) — swap them or adjust.` };
+    }
     stockTo = stock.value; retailTo = retail.value;
   } else if (mode === "percent") {
     const t = String(percentDraft ?? "").trim();
@@ -150,10 +153,16 @@ export function buildBulkChangePlan({ products = [], selectedIds = [], mode = "a
     if (Object.keys(to).length === 0) { noop.push({ pid, name: p.name || pid }); continue; }
     if (lacked) missingPrice.push({ pid, name: p.name || pid, partial: true });
     lines[pid] = { name: p.name || "", from, to };
+    // Flag (not refuse) a new retail that lands under the product's stock
+    // price — the preview must say so before the operator confirms.
+    const newRetail = "retailPrice" in to ? to.retailPrice : curRetail;
+    const newStock = "stockPrice" in to ? to.stockPrice : curStock;
+    const under = newRetail !== null && newStock !== null && newRetail < newStock;
     rows.push({
       pid, name: p.name || pid, photoUrl: p.photoUrl || "",
       fromStock: curStock, toStock: "stockPrice" in to ? to.stockPrice : undefined,
       fromRetail: curRetail, toRetail: "retailPrice" in to ? to.retailPrice : undefined,
+      ...(under ? { badge: "below stock price" } : {}),
     });
   }
   return { ok: true, lines, rows, missingPrice, noop, count: rows.length };

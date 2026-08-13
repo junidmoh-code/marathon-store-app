@@ -179,7 +179,9 @@ export function computeRestoreDrift(record, productsById) {
   for (const [pid, line] of Object.entries(record.lines || {})) {
     const p = productsById[pid];
     for (const [field, expected] of Object.entries(line.to)) {
-      const current = p && typeof p[field] === "number" ? p[field] : null;
+      // asStoredPrice, not a raw number check: a legacy 0 must read as "not
+      // set", exactly as every writer treats it (CodeRabbit, PR #355).
+      const current = p ? asStoredPrice(p[field]) : null;
       if (!p) { drift.push({ pid, field, expected, current: null, missing: true }); continue; }
       if (current !== expected) drift.push({ pid, name: line.name, field, expected, current });
     }
@@ -208,7 +210,10 @@ export function buildRestoreBatch({ record, batchId, restoreBatchId, at, atMs, b
     const p = currentById[pid];
     const from = {};
     for (const field of Object.keys(line.to)) {
-      from[field] = p && typeof p[field] === "number" ? p[field] : (p ? null : line.to[field]);
+      // asStoredPrice: a product holding a legacy 0 must record from:null, not
+      // from:0 — a raw 0 would fail validation and BLOCK the undo entirely
+      // (CodeRabbit, PR #355). Product gone → fall back to the batch's to.
+      from[field] = p ? asStoredPrice(p[field]) : line.to[field];
     }
     lines[pid] = { name: line.name || "", from, to: { ...line.from } };
   }

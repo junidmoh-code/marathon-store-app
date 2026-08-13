@@ -139,6 +139,21 @@ test("restore survives a hand-edit back to the prior value (no-op line) and reco
   assert.equal(rr.lines.p1.from.retailPrice, 100); // live value, not the batch's to
 });
 
+test("a legacy 0 price on the live product cannot block the undo — it reads as not-set (CodeRabbit PR #355)", () => {
+  const { record } = buildPriceBatch({ batchId: "pb_2_z", action: "bulk_change",
+    lines: { p1: { name: "X", from: { retailPrice: 100 }, to: { retailPrice: 120 } } }, ...STAMPS });
+  // Someone (or legacy data) put a raw 0 on the product since the batch.
+  const { updates, record: rr } = buildRestoreBatch({
+    record, batchId: "pb_2_z", restoreBatchId: "pb_2_y",
+    currentById: { p1: { retailPrice: 0 } }, ...RESTAMPS,
+  });
+  assert.equal(updates["products/p1/retailPrice"], 100); // undo still lands
+  assert.equal(rr.lines.p1.from.retailPrice, null);      // 0 recorded as not-set
+  // And drift reports null, not 0.
+  const drift = computeRestoreDrift(record, { p1: { retailPrice: 0 } });
+  assert.equal(drift[0].current, null);
+});
+
 test("restore reverses aux paths (to → from)", () => {
   const { record } = buildPriceBatch({
     batchId: "pb_2_g", action: "bulk_change",

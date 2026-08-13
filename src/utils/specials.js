@@ -70,6 +70,7 @@ export function buildSpecialStartPlan({ products = [], specials = {}, selectedId
   const skippedOnSpecial = [];
   const missingPrice = [];
   const noop = [];
+  const aboveRetail = [];
   for (const pid of selectedIds) {
     const p = byId.get(pid);
     if (!p) continue;
@@ -81,6 +82,10 @@ export function buildSpecialStartPlan({ products = [], specials = {}, selectedId
       sale = roundPrice(cur * (1 - pct / 100));
     } else {
       sale = abs;
+      // A "special" must never RAISE the shelf price (CodeRabbit, PR #355) —
+      // one absolute price across a mixed selection can land above a cheaper
+      // product's retail. Skip that product and say so in the preview.
+      if (cur !== null && sale > cur) { aboveRetail.push({ pid, name: p.name || pid, cur, sale }); continue; }
     }
     if (sale === cur) { noop.push({ pid, name: p.name || pid }); continue; }
     const entry = {
@@ -95,7 +100,7 @@ export function buildSpecialStartPlan({ products = [], specials = {}, selectedId
     entries[pid] = entry;
     rows.push({ pid, name: p.name || pid, photoUrl: p.photoUrl || "", fromRetail: cur, toRetail: sale, ...(cur === null ? { badge: "no old price to restore" } : {}) });
   }
-  return { ok: true, lines, aux, entries, rows, skippedOnSpecial, missingPrice, noop, count: rows.length };
+  return { ok: true, lines, aux, entries, rows, skippedOnSpecial, missingPrice, noop, aboveRetail, count: rows.length };
 }
 
 /**

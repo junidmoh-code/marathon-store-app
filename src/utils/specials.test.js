@@ -52,6 +52,15 @@ test("start: bad discounts refused; sale equal to current is a no-op", () => {
   assert.deepEqual(plan.noop.map((n) => n.pid), ["p1"]);
 });
 
+test("start absolute: a sale price ABOVE a product's current retail SKIPS that product and reports it (CodeRabbit PR #355)", () => {
+  // One price across a mixed selection: fine for p2 (800), above p1's 300.
+  const plan = buildSpecialStartPlan({ products: CATALOG, specials: {}, selectedIds: ["p1", "p2"], mode: "absolute", priceDraft: "500", ...STAMP });
+  assert.equal(plan.count, 1);
+  assert.equal(plan.lines.p2.to.retailPrice, 500);
+  assert.equal(plan.lines.p1, undefined); // never raises a shelf price
+  assert.deepEqual(plan.aboveRetail.map((m) => m.pid), ["p1"]);
+});
+
 // ── end plan ─────────────────────────────────────────────────────────────────
 
 test("end: retail returns to the parked wasPrice exactly and the entry deletes — in one batch", () => {

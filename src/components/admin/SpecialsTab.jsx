@@ -86,16 +86,23 @@ export default function SpecialsTab({ products = [] }) {
     setStartPreview(plan);
   };
 
+  // try/finally on every handler so a rejection can never strand the controls
+  // disabled (CodeRabbit, PR #355).
   const doStart = async () => {
     if (!startPreview || busy) return;
     setBusy(true);
-    const res = await startSpecials(startPreview);
-    setBusy(false);
-    setStartPreview(null);
-    if (!res.ok) { setNotice({ kind: "err", text: "Nothing was written: " + res.message }); refresh(); return; }
-    setNotice({ kind: "ok", text: `Special started on ${res.count} product${res.count === 1 ? "" : "s"} (batch ${res.batchId}). End it from the list above — the old price comes back exactly.` });
-    setAddSelected(new Set()); setSearch(""); setPercentDraft(""); setPriceDraft(""); setPlannedEnd("");
-    refresh();
+    try {
+      const res = await startSpecials(startPreview);
+      setStartPreview(null);
+      if (!res.ok) { setNotice({ kind: "err", text: "Nothing was written: " + res.message }); refresh(); return; }
+      setNotice({ kind: "ok", text: `Special started on ${res.count} product${res.count === 1 ? "" : "s"} (batch ${res.batchId}). End it from the list above — the old price comes back exactly.` });
+      setAddSelected(new Set()); setSearch(""); setPercentDraft(""); setPriceDraft(""); setPlannedEnd("");
+      refresh();
+    } catch (e) {
+      setNotice({ kind: "err", text: "Nothing was written: " + (e?.message || e) });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const openEndPreview = () => {
@@ -108,12 +115,17 @@ export default function SpecialsTab({ products = [] }) {
   const doEnd = async () => {
     if (!endPreview || busy) return;
     setBusy(true);
-    const res = await endSpecials(endPreview);
-    setBusy(false);
-    setEndPreview(null);
-    if (!res.ok) { setNotice({ kind: "err", text: "Nothing was written: " + res.message }); refresh(); return; }
-    setNotice({ kind: "ok", text: `Special ended on ${res.count} product${res.count === 1 ? "" : "s"} — normal prices restored (batch ${res.batchId}).` });
-    refresh();
+    try {
+      const res = await endSpecials(endPreview);
+      setEndPreview(null);
+      if (!res.ok) { setNotice({ kind: "err", text: "Nothing was written: " + res.message }); refresh(); return; }
+      setNotice({ kind: "ok", text: `Special ended on ${res.count} product${res.count === 1 ? "" : "s"} — normal prices restored (batch ${res.batchId}).` });
+      refresh();
+    } catch (e) {
+      setNotice({ kind: "err", text: "Nothing was written: " + (e?.message || e) });
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -147,8 +159,12 @@ export default function SpecialsTab({ products = [] }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {active.map((e) => (
               <div key={e.pid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: endSelected.has(e.pid) ? "rgba(255,99,99,.07)" : "rgba(255,255,255,.03)", border: "1px solid " + (endSelected.has(e.pid) ? "rgba(255,99,99,.4)" : "rgba(255,255,255,.07)") }}>
-                <input type="checkbox" checked={endSelected.has(e.pid)} onChange={() => toggleEnd(e.pid)} style={{ width: 16, height: 16, accentColor: "#FF6363", cursor: "pointer", flexShrink: 0 }} />
-                <img src={e.photoUrl || ""} alt="" loading="lazy" style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
+                <input type="checkbox" checked={endSelected.has(e.pid)} onChange={() => toggleEnd(e.pid)}
+                  aria-label={`End special on ${e.name || e.pid}`}
+                  style={{ width: 16, height: 16, accentColor: "#FF6363", cursor: "pointer", flexShrink: 0 }} />
+                {e.photoUrl
+                  ? <img src={e.photoUrl} alt="" loading="lazy" style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
+                  : <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.name}</div>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)", marginTop: 2 }}>
@@ -180,13 +196,17 @@ export default function SpecialsTab({ products = [] }) {
       {candidates.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 10 }}>
           {candidates.map((p) => (
-            <div key={p.id} onClick={() => toggleAdd(p.id)}
+            <label key={p.id}
               style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 9px", borderRadius: 9, cursor: "pointer", background: addSelected.has(p.id) ? "rgba(74,127,255,.08)" : "rgba(255,255,255,.03)", border: "1px solid " + (addSelected.has(p.id) ? "rgba(74,127,255,.4)" : "rgba(255,255,255,.07)") }}>
-              <input type="checkbox" readOnly checked={addSelected.has(p.id)} style={{ width: 15, height: 15, accentColor: "#4A7FFF", flexShrink: 0, pointerEvents: "none" }} />
-              <img src={p.photoUrl || ""} alt="" loading="lazy" style={{ width: 34, height: 34, borderRadius: 7, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
+              <input type="checkbox" checked={addSelected.has(p.id)} onChange={() => toggleAdd(p.id)}
+                aria-label={`Select ${p.name || p.id}`}
+                style={{ width: 15, height: 15, accentColor: "#4A7FFF", flexShrink: 0 }} />
+              {p.photoUrl
+                ? <img src={p.photoUrl} alt="" loading="lazy" style={{ width: 34, height: 34, borderRadius: 7, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
+                : <div style={{ width: 34, height: 34, borderRadius: 7, background: "rgba(255,255,255,.08)", flexShrink: 0 }} />}
               <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
               <div style={{ fontSize: 12, color: "rgba(255,255,255,.6)", fontVariantNumeric: "tabular-nums" }}>{fmt(typeof p.retailPrice === "number" && p.retailPrice > 0 ? p.retailPrice : null)}</div>
-            </div>
+            </label>
           ))}
         </div>
       )}

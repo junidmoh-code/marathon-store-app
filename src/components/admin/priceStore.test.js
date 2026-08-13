@@ -146,6 +146,32 @@ test("loadRecentBatches reads only the compact index, newest first", async () =>
 test("batch ids are key-safe and chronologically ordered by key", () => {
   const id = mintBatchId();
   assert.match(id, /^pb_\d{13}_[a-z0-9]+$/);
+  const ids = [id, mintBatchId(), mintBatchId()];
+  assert.deepEqual([...ids].sort(), ids); // lexicographic order IS mint order
+});
+
+test("restore refuses to reprice UNDER an active special — wasPrice can never be stranded (CodeRabbit PR #355)", async () => {
+  // 1. An ordinary bulk change reprices p200's retail.
+  const res = await applyPriceBatch({ action: "bulk_change",
+    lines: { p200: { name: "Puma Tee", from: { retailPrice: 180 }, to: { retailPrice: 200 } } } });
+  assert.equal(res.ok, true);
+  // 2. A special then starts on p200 (parks wasPrice 200).
+  store["specials/p200/price"] = 150;
+  store["specials/p200/wasPrice"] = 200;
+  // 3. Undoing the earlier batch must now be refused — preview AND restore.
+  const pv = await previewRestore(res.batchId, { p200: { retailPrice: 150 } });
+  assert.equal(pv.ok, false);
+  assert.equal(pv.code, "on_special");
+  const undo = await restorePriceBatch(res.batchId, { p200: { retailPrice: 150 } });
+  assert.equal(undo.ok, false);
+  assert.equal(undo.code, "on_special");
+  assert.equal(store["products/p200/retailPrice"], 200); // unchanged by the refusal
+  // 4. Once the special ends, the restore goes through.
+  delete store["specials/p200/price"];
+  delete store["specials/p200/wasPrice"];
+  const undo2 = await restorePriceBatch(res.batchId, { p200: { retailPrice: 200 } });
+  assert.equal(undo2.ok, true);
+  assert.equal(store["products/p200/retailPrice"], 180);
 });
 
 test("specials lifecycle in the store: start changes the shelf price + writes the entry; end restores the EXACT prior price + deletes it — each one atomic batch", async () => {

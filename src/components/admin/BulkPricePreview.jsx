@@ -43,10 +43,12 @@ export default function BulkPricePreview({ title, subtitle, plan, busy = false,
   const skipped = plan.skippedAlready || [];
   const missing = plan.missingPrice || [];
   const noop = plan.noop || [];
+  const above = plan.aboveRetail || [];
   const nothing = rows.length === 0;
   return (
-    <div style={S.backdrop} onClick={busy ? undefined : onCancel}>
-      <div style={S.sheet} onClick={(e) => e.stopPropagation()}>
+    <div style={S.backdrop} onClick={busy ? undefined : onCancel}
+      onKeyDown={(e) => { if (e.key === "Escape" && !busy) onCancel(); }}>
+      <div role="dialog" aria-modal="true" aria-label={title} style={S.sheet} onClick={(e) => e.stopPropagation()}>
         <div style={S.title}>{title}</div>
         <div style={S.sub}>
           {subtitle ? <>{subtitle} · </> : null}
@@ -54,6 +56,7 @@ export default function BulkPricePreview({ title, subtitle, plan, busy = false,
           {skipped.length > 0 && <> · {skipped.length} kept as is</>}
           {missing.length > 0 && <> · {missing.length} missing a price</>}
           {noop.length > 0 && <> · {noop.length} already there</>}
+          {above.length > 0 && <> · {above.length} would cost more</>}
         </div>
 
         <div style={S.list}>
@@ -77,6 +80,11 @@ export default function BulkPricePreview({ title, subtitle, plan, busy = false,
                 Overwrite existing prices with the entered values
               </label>
             )}
+          </div>
+        )}
+        {above.length > 0 && (
+          <div style={S.warn}>
+            Skipped — the sale price is ABOVE their current retail (a special never raises a price): {above.slice(0, 5).map((m) => `${m.name} (R${m.cur})`).join(", ")}{above.length > 5 ? ` +${above.length - 5} more` : ""}
           </div>
         )}
         {missing.length > 0 && (

@@ -4473,29 +4473,40 @@ function MissingPricesTab({ products = [] }) {
     setBulkPreviewOpen(true);
   };
 
+  // try/finally so no rejection can strand the busy flag (CodeRabbit, PR #355).
   const applyBulkFill = async () => {
     if (!bulkPlan?.ok || bulkBusy) return;
     setBulkBusy(true);
-    const res = await applyPriceBatch({
-      action: "bulk_fill",
-      lines: bulkPlan.lines,
-      label: `Missing Prices bulk fill — ${bulkPlan.count} products`,
-    });
-    setBulkBusy(false);
-    if (!res.ok) { alert("Nothing was written: " + res.message); return; }
-    setBulkPreviewOpen(false);
-    setSelected(new Set());
-    setBulkStock(""); setBulkRetail(""); setBulkOverwrite(false);
-    setLastBatch({ batchId: res.batchId, count: res.count });
+    try {
+      const res = await applyPriceBatch({
+        action: "bulk_fill",
+        lines: bulkPlan.lines,
+        label: `Missing Prices bulk fill — ${bulkPlan.count} products`,
+      });
+      if (!res.ok) { alert("Nothing was written: " + res.message); return; }
+      setBulkPreviewOpen(false);
+      setSelected(new Set());
+      setBulkStock(""); setBulkRetail(""); setBulkOverwrite(false);
+      setLastBatch({ batchId: res.batchId, count: res.count });
+    } catch (e) {
+      alert("Nothing was written: " + (e?.message || e));
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   const undoLastBatch = async () => {
     if (!lastBatch || bulkBusy) return;
     setBulkBusy(true);
-    const res = await restorePriceBatch(lastBatch.batchId, productsById);
-    setBulkBusy(false);
-    if (!res.ok) { alert("Undo failed — nothing was changed: " + res.message); return; }
-    setLastBatch(null);
+    try {
+      const res = await restorePriceBatch(lastBatch.batchId, productsById);
+      if (!res.ok) { alert("Undo failed — nothing was changed: " + res.message); return; }
+      setLastBatch(null);
+    } catch (e) {
+      alert("Undo failed — nothing was changed: " + (e?.message || e));
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   return (
@@ -6512,6 +6523,10 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
     if (field === "stockPrice")  setStockPriceDraft( typeof product.stockPrice  === "number" ? String(product.stockPrice)  : "");
     if (field === "retailPrice") setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
   };
+  // Serialized: one price save in flight at a time (CodeRabbit, PR #355) — two
+  // interleaved saves could each record a stale `from` and land out of order.
+  // Both inputs are disabled while a save runs.
+  const [priceSaving, setPriceSaving] = useState(false);
   const savePrice = (field, draft) => {
     const trimmed = String(draft).trim();
     const num = trimmed === "" ? null : Number(trimmed);
@@ -6521,6 +6536,8 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
     if (num !== null && (!Number.isFinite(num) || num <= 0)) { revertPriceDraft(field); return; }
     const from = asStoredPrice(product[field]);
     if (num === from) return; // unchanged — nothing to write or record
+    if (priceSaving) { revertPriceDraft(field); return; } // one save at a time
+    setPriceSaving(true);
     // Through the guarded batch path: audited under a batchId, and refused if
     // the product is on special (its retailPrice IS the special price; end the
     // special first so wasPrice can't go stale).
@@ -6534,7 +6551,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
         if (res.code === "on_special") alert(res.message);
         else console.warn(`update ${field} failed:`, res.message);
       }
-    });
+    }).finally(() => setPriceSaving(false));
   };
   const toggleShoebox = () => {
     if (isClothing) return; // clothing never has a shoebox
@@ -6806,7 +6823,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           <div style={{ flex:1, padding:"14px 16px", borderRight:"1px solid rgba(255,255,255,.06)" }}>
             <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Stock Price</div>
             <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="—"
-                   value={stockPriceDraft}
+                   value={stockPriceDraft} disabled={priceSaving}
                    onChange={e => setStockPriceDraft(e.target.value)}
                    onBlur={() => savePrice("stockPrice", stockPriceDraft)}
                    onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
@@ -6815,7 +6832,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           <div style={{ flex:1, padding:"14px 16px" }}>
             <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Retail Price</div>
             <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="—"
-                   value={retailPriceDraft}
+                   value={retailPriceDraft} disabled={priceSaving}
                    onChange={e => setRetailPriceDraft(e.target.value)}
                    onBlur={() => savePrice("retailPrice", retailPriceDraft)}
                    onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}

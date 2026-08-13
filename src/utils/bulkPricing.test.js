@@ -82,6 +82,19 @@ test("change percent: rounding is nearest whole rand with an R1 floor", () => {
   assert.equal(plan.lines.p9.to.retailPrice, 227); // 226.8 → 227
 });
 
+test("change absolute: retail below stock refused, same rule as the fill tool (CodeRabbit PR #355)", () => {
+  const plan = buildBulkChangePlan({ products: CATALOG, selectedIds: ["p3"], mode: "absolute", stockDraft: "300", retailDraft: "200" });
+  assert.equal(plan.ok, false);
+  assert.match(plan.error, /below stock/);
+});
+
+test("change percent: a new retail landing under the product's stock price is badged in the preview (CodeRabbit PR #355)", () => {
+  const plan = buildBulkChangePlan({ products: [{ id: "p9", name: "X", stockPrice: 100, retailPrice: 110 }], selectedIds: ["p9"], mode: "percent", percentDraft: "-20", applyToRetail: true });
+  // 110 → 88, under stock 100.
+  assert.equal(plan.lines.p9.to.retailPrice, 88);
+  assert.equal(plan.rows[0].badge, "below stock price");
+});
+
 test("change percent: refuses 0, -100 and worse, and no-field choices", () => {
   const base = { products: CATALOG, selectedIds: ["p3"], mode: "percent", applyToRetail: true };
   assert.equal(buildBulkChangePlan({ ...base, percentDraft: "0" }).ok, false);
