@@ -172,6 +172,7 @@ export const TRIGGERS = [
 
   // ── (b) SUB-LABELS & COLLABS ───────────────────────────────────────────────
   T("nocta", { cat: "sublabel" }),                    // REVERSED line-mark keep
+  T("certified lover boy", { cat: "sublabel" }),      // Drake collab designation (census: 2 AF1s)
   T("yeezy", { cat: "sublabel" }),
   T("off white", { cat: "sublabel", label: "off-white" }),
   T("travis scott", { cat: "sublabel" }),
