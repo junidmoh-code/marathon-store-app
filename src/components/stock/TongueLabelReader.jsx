@@ -205,9 +205,14 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
           // the caller files them all as identities for the resolved product
           // (owner spec 2026-08-08: one shoe in hand, one identity, however
           // many tokens the label shows). `auto` marks a learned-layout pick.
+          // `modelName` is the label's printed model line when the OCR funnel
+          // carried one (tier-2 residual, or the cached `mn`) — the link
+          // panel's second-strongest suggestion source. Null on clean tier-1
+          // reads by the funnel's documented cost design.
           onCode(formattedChosen, {
             source: "label", labelPhoto: frame,
             allCodes: out.allCandidates || null, auto: !!out.auto,
+            modelName: typeof data.modelName === "string" ? data.modelName : null,
           });
           // A learned-layout pick must never be INVISIBLE (Sonnet review,
           // PR #334): the flow proceeds, but the pick is announced with the
@@ -222,11 +227,12 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
               options: out.allCandidates.filter((c) => formatStyleCodeForDisplay(c) !== formattedChosen).map(formatStyleCodeForDisplay),
               candidates: out.allCandidates,
               labelPhoto: frame,
+              modelName: typeof data.modelName === "string" ? data.modelName : null,
             });
           }
           return;
         }
-        if (out.kind === "options" && !sawOptions) sawOptions = { out, frame };
+        if (out.kind === "options" && !sawOptions) sawOptions = { out, frame, modelName: typeof data.modelName === "string" ? data.modelName : null };
         if (out.kind === "tokens") frameTokens.push(out.tokens);
       }
       if (sawOptions) {
@@ -238,6 +244,7 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
           options: sawOptions.out.options,
           candidates: sawOptions.out.candidates || null,
           labelPhoto: sawOptions.frame,
+          modelName: sawOptions.modelName,
         });
         return;
       }
@@ -324,6 +331,7 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
                     onCode(f, {
                       source: "label", labelPhoto: readNote.labelPhoto || null,
                       allCodes: readNote.candidates || null,
+                      modelName: readNote.modelName || null,
                     });
                   }}
                   style={{ ...bBlue, fontSize: 13.5, minHeight: 42, fontVariantNumeric: "tabular-nums" }}>{c}</button>
