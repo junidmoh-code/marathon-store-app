@@ -7997,7 +7997,12 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
         products,
       });
       if (close.length) {
-        setNote({ text: `No product carries ${display} exactly — but these are close. Check the photo against the shoe:`, suggestions: close });
+        // weak rows are browsing evidence (linkSuggestions.js): when they are
+        // all there is, say "closest we have" — never claim "close"
+        // (substitute review, PR #353, same honesty rule as the count panel).
+        setNote({ text: close.some((s) => !s.weak)
+          ? `No product carries ${display} exactly — but these are close. Check the photo against the shoe:`
+          : `No product carries ${display} exactly — nothing matched closely, but these are the closest we have. Check the photo against the shoe:`, suggestions: close });
         return;
       }
       setNote({ text: `The label reads ${display}, but no registered product carries it — search by name instead.` });
@@ -8040,7 +8045,10 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
         products,
       });
       if (close.length) {
-        setNote({ text: "The label isn't registered to any product — but these look close. Check the photo against the shoe:", suggestions: close });
+        // Same honesty rule as handleCode: weak-only lists never claim "close".
+        setNote({ text: close.some((s) => !s.weak)
+          ? "The label isn't registered to any product — but these look close. Check the photo against the shoe:"
+          : "The label isn't registered to any product — nothing matched closely, but these are the closest we have. Check the photo against the shoe:", suggestions: close });
         return;
       }
       setNote({ text: "The label reads fine, but it isn't registered to any product — search by name instead." });

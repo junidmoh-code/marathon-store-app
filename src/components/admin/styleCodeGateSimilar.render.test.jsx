@@ -15,6 +15,11 @@
 //      code kept (onProceed), suggestions or not.
 //   5. A code with no plausible relative shows NO cards — the unknown step is
 //      unchanged for genuinely new shoes.
+//   6. weak rows (brandSegment/substring — browsing evidence) NEVER trip this
+//      gate: a code whose only relatives share a prefix shows NO cards
+//      (2026-08-13 loosening: the gate filters s.weak).
+//   7. The SFA/SMA colour-code relative DOES trip it — that is the label that
+//      used to sail into the create form and mint a duplicate.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
@@ -47,11 +52,11 @@ const textOf = (tr) => JSON.stringify(tr.toJSON());
 const textIn = (inst) => (typeof inst === "string" ? inst : (inst.children || []).map(textIn).join(" "));
 const buttonWith = (tr, needle) => tr.root.findAll((n) => (n.type === "button" || n.props?.role === "button") && textIn(n).includes(needle))[0];
 
-async function mountAndLookup(code, { onProceed = vi.fn(), onAddStock = vi.fn() } = {}) {
+async function mountAndLookup(code, { onProceed = vi.fn(), onAddStock = vi.fn(), products = GRIPSHOTS } = {}) {
   let tr;
   await act(async () => {
     tr = TestRenderer.create(
-      <StyleCodeGate products={GRIPSHOTS} onCancel={() => {}} onProceed={onProceed} onAddStock={onAddStock} />,
+      <StyleCodeGate products={products} onCancel={() => {}} onProceed={onProceed} onAddStock={onAddStock} />,
     );
   });
   const input = tr.root.findAll((n) => n.type === "input" && n.props.placeholder === "CT8527-016")[0];
@@ -119,5 +124,31 @@ describe("the intake gate's pre-duplicate question", () => {
     expect(after).toContain("Not in the catalogue");
     expect(after).not.toContain("But check these first");
     expect(after).not.toContain("ADD STOCK");
+  });
+
+  it("weak rows NEVER trip the gate: a prefix-cousin-only code shows NO cards (claim 6)", async () => {
+    // 742CFA0099-9Z9 shares the Gripshots' 742CFA00 lead and nothing else —
+    // browsing evidence in the count panel, but an interstitial here on every
+    // registration would be the gate crying wolf. The gate filters s.weak.
+    const { tr } = await mountAndLookup("742CFA0099-9Z9");
+    const after = textOf(tr);
+    expect(after).toContain("Not in the catalogue");
+    expect(after).not.toContain("But check these first");
+    expect(after).not.toContain("ADD STOCK");
+  });
+
+  it("the SFA/SMA colour-code relative DOES trip the gate (claim 7) — the duplicate-minting label", async () => {
+    // The floor case of 2026-08-13: Audysol registered off the women's-family
+    // label, the men's-family label in hand. Registering it as new is exactly
+    // how the duplicate gets minted — the gate must ask first.
+    const AUDYSOL = { id: "aud", name: "Lacoste Audysol White", styleCodeNormalised: "745SFA000521G", photoUrl: "https://x/aud.jpg" };
+    const { tr, onAddStock } = await mountAndLookup("745SMA004-21G", { products: [...GRIPSHOTS, AUDYSOL] });
+    const after = textOf(tr);
+    expect(after).toContain("But check these first");
+    expect(after).toContain("Lacoste Audysol White");
+    expect(after).toContain("same colour code 21G");
+    const card = buttonWith(tr, "Lacoste Audysol White");
+    await act(async () => { card.props.onClick(); });
+    expect(onAddStock).toHaveBeenCalledWith("aud");
   });
 });

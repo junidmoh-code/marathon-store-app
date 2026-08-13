@@ -1205,21 +1205,30 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
   const hits = useMemo(() => (q.trim() ? searchProducts(products, q, { limit: Infinity }) : []), [products, q]);
   const shown = panel.kind === "code" ? (formatStyleCodeForDisplay(panel.normalised) || panel.display) : null;
 
-  // ── RANKED SUGGESTIONS — the panel must never open BLANK (owner spec
-  // 2026-08-13) ── an empty search box sent the operator hunting BY NAME,
-  // the exact duplicate-creating behaviour the style-code system removes.
-  // buildLinkSuggestions ranks the in-memory catalogue against everything
-  // this label gave us — code family, near-miss codes, the printed model
-  // name, the alias store's own candidates — with zero extra reads. Tapping
-  // one goes through the SAME onPick as a search hit: the operator decides,
-  // nothing auto-links.
+  // ── RANKED SUGGESTIONS — the panel must NEVER be empty (owner spec
+  // 2026-08-13, hardened same day after the SFA/SMA floor case) ── an empty
+  // search box sent the operator hunting BY NAME, the exact duplicate-creating
+  // behaviour the style-code system removes. buildLinkSuggestions ranks the
+  // in-memory catalogue against everything this label gave us — code family,
+  // same colour code, near-miss codes, shared code fragments, the printed
+  // model name, the alias store's own candidates — with zero extra reads, and
+  // fillToMin pads the tail with the closest catalogue rows (honestly worded)
+  // so the operator ALWAYS gets photos to compare before falling back to
+  // search. Tapping one goes through the SAME onPick as a search hit: the
+  // operator decides, nothing auto-links (the tight auto-link threshold lives
+  // in perSizeStyleCode.js and is untouched by any of this).
+  const SUGGEST_PAGE = 10; // the owner asked for at least 10 on screen
   const suggestions = useMemo(() => buildLinkSuggestions({
     kind: panel.kind, normalised: panel.normalised, modelName: panel.modelName,
     tokens: panel.tokens, aliasCandidates: panel.aliasCandidates,
-    excludeIds: panel.excludeIds, products,
+    excludeIds: panel.excludeIds, products, fillToMin: SUGGEST_PAGE,
   }), [panel, products]);
-  const SUGGEST_PAGE = 4;
   const [suggestShown, setSuggestShown] = useState(SUGGEST_PAGE);
+  // weak rows are BROWSING evidence (linkSuggestions.js) — when they are all
+  // there is, the heading must say "closest we have", not claim a match
+  // (substitute review, PR #353: prefix-cousins under "is it one of these?"
+  // dressed weak rows up as suggestions).
+  const anyRealMatch = suggestions.some((s) => !s.weak);
 
   return (
     <Panel title="Nothing owns this label — link it" onClose={onClose}>
@@ -1236,7 +1245,9 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
         <div style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase",
                         color: "rgba(233,238,255,.55)", marginBottom: 8 }}>
-            Is it one of these? Compare the shoe in your hand to the photo.
+            {anyRealMatch
+              ? "Is it one of these? Compare the shoe in your hand to the photo."
+              : "Nothing matched closely — the closest we have. Compare the photos carefully."}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {suggestions.slice(0, suggestShown).map((s) => (
@@ -1270,8 +1281,9 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
           )}
         </div>
       ) : (
-        // NOTHING scored — say so plainly (never dress a weak match up as a
-        // suggestion) and hand over to search as the honest fallback.
+        // Reachable when the catalogue is empty OR excludeIds/merges have
+        // exhausted it (closestCandidates honours both) — the honest last
+        // resort, not dead code.
         <div style={{ fontSize: 12.5, color: AMBER, lineHeight: 1.5, marginBottom: 14,
                       background: "rgba(251,191,36,.06)", border: "1px solid rgba(251,191,36,.22)",
                       borderRadius: 10, padding: "8px 11px" }}>

@@ -167,3 +167,45 @@ describe("the switch really is a switch — the full flow is intact", () => {
     expect(JSON.stringify(r.toJSON())).toMatch(/We already have this shoe/i);
   });
 });
+
+// ─── CAPTURE-ONLY + THE PRE-DUPLICATE QUESTION (2026-08-13 loosening) ────────
+// The capture path runs the same ranking as the count's link panel before the
+// form opens — but it BLOCKS with a question, so weak rows (prefix-cousins,
+// browsing evidence) must never trip it, while the SFA/SMA colour-code
+// relative must (that is the label that used to mint duplicates).
+describe("capture-only: which relatives block the form", () => {
+  const CATALOGUE = [
+    { id: "g5", name: "Lacoste Gripshot Mid White", styleCodeNormalised: "742CFA00052G4", photoUrl: "x" },
+    { id: "g7", name: "Lacoste Gripshot Mid Green", styleCodeNormalised: "742CFA00072G4", photoUrl: "x" },
+    { id: "aud", name: "Lacoste Audysol White", styleCodeNormalised: "745SFA000521G", photoUrl: "x" },
+  ];
+  async function mountWith() {
+    const onProceed = vi.fn(), onAddStock = vi.fn();
+    let r;
+    await act(async () => {
+      r = TestRenderer.create(React.createElement(StyleCodeGate, {
+        products: CATALOGUE, onCancel: vi.fn(), onAddStock, onProceed,
+      }));
+    });
+    return { r, onProceed, onAddStock };
+  }
+
+  it("weak prefix-cousins NEVER block: the form opens straight away", async () => {
+    const { r, onProceed } = await mountWith();
+    await type(r, "742CFA0099-9Z9"); // shares only the Gripshots' lead
+    await go(r);
+    expect(onProceed).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(r.toJSON())).not.toMatch(/Check before creating/i);
+  });
+
+  it("the SFA/SMA colour-code relative DOES block — ask before the duplicate is minted", async () => {
+    const { r, onProceed } = await mountWith();
+    await type(r, "745SMA004-21G"); // the 2026-08-13 floor label
+    await go(r);
+    expect(onProceed).not.toHaveBeenCalled();
+    const after = JSON.stringify(r.toJSON());
+    expect(after).toMatch(/Check before creating/i);
+    expect(after).toContain("Lacoste Audysol White");
+    expect(after).toContain("same colour code 21G");
+  });
+});

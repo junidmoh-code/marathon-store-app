@@ -67,6 +67,17 @@ describe("perSizeSiblingCodes — the Lacoste per-size rule", () => {
     expect(perSizeSiblingCodes("744SMA0113", "744SMA0213")).toBe(false);
   });
 
+  it("refuses a gender-letter difference — the SFA/SMA suggestion loosening must NEVER reach auto-link", () => {
+    // 2026-08-13: the SUGGESTION engine (linkSuggestions.js) learned to pair
+    // codes across article families on the trailing colour code alone —
+    // 745SFA… women's vs 745SMA… men's. That is a HUMAN-confirmed suggestion.
+    // This clause is the wall between the two thresholds: same prefix, same
+    // colour, article one digit apart, but SFA ≠ SMA — never automatic.
+    expect(perSizeSiblingCodes("745SMA000521G", "745SFA000421G")).toBe(false);
+    expect(perSizeAutoCandidate("745SMA000521G",
+      [{ id: "x", name: "Lacoste Audysol White", styleCodeNormalised: "745SFA000421G" }])).toBe(null);
+  });
+
   it("refuses a season/size-prefix difference — unproven territory", () => {
     // Same article + colour, different leading block (742 vs 48): the live
     // catalogue holds both as separate records; the prefix's meaning is not

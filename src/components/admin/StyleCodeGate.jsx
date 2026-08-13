@@ -277,11 +277,17 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       // runs (linkSuggestions.js — in-memory catalogue, zero reads) asks
       // FIRST; the operator decides. Nothing blocks: "it's a new shoe" is one
       // tap away, and the save-time claim still guards uniqueness.
+      // weak rows (shared prefix / shared substring — browsing evidence, see
+      // linkSuggestions.js) are dropped HERE: this step BLOCKS with a question,
+      // and prefix-cousins would trip it on almost every registration. The
+      // loose colourCode tier is NOT weak and does reach it — that is the
+      // 745SFA/745SMA label that used to sail into the create form. The count
+      // panel keeps the weak rows; only this gate filters.
       const similar = buildLinkSuggestions({
         kind: "code", normalised, includeExact: true,
         modelName: (photoMatchesCode && labelExtras && labelExtras.modelName) || null,
         products,
-      });
+      }).filter((s) => !s.weak);
       if (similar.length) {
         setSimilarStep({ payload, suggestions: similar });
         setStep("similar");
@@ -299,11 +305,13 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     // the "unknown" and "found" steps; the resolver's own outcome still rules.
     setSimilarStep({
       payload: null,
+      // Same weak-row filter as the capture path — this list renders inside
+      // the resolver's own steps and must carry the same meaning there.
       suggestions: buildLinkSuggestions({
         kind: "code", normalised, includeExact: true,
         modelName: (photoMatchesCode && labelExtras && labelExtras.modelName) || null,
         products,
-      }),
+      }).filter((s) => !s.weak),
     });
     try {
       // confusableRetry is on ONLY when the code came off a photo — a human who
