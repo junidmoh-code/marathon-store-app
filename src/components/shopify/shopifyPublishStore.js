@@ -17,7 +17,17 @@ import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { CONDITIONS, nominationState, checkCleanName } from "./shopifyPublishCore";
 
-const safeSeg = (s) => String(s ?? "").replace(/[.#$/\[\]\s]/g, "_");
+// REJECT, never repair: silently rewriting an illegal key could make the card
+// and the Admin-SDK scripts (which use assertSafeSegment) address DIFFERENT
+// /shopify_publish nodes for the same product. Product ids are "p<digits>",
+// so this never fires in practice — it exists to fail loudly if that changes.
+const safeSeg = (s) => {
+  const seg = String(s ?? "");
+  if (seg === "" || /[.#$/\[\]\s]/.test(seg)) {
+    throw new Error(`illegal /shopify_publish key: "${seg}"`);
+  }
+  return seg;
+};
 const stamp = () => ({ updatedAt: serverNowMs(), updatedBy: auth.currentUser ? auth.currentUser.uid : null });
 
 export async function loadPublishNodes() {
@@ -60,8 +70,19 @@ export async function withdrawNomination(productId, node) {
 /** Set the condition grade. Unblocks a blocked nomination (blocked → nominated). */
 export async function setCondition(productId, node, condition) {
   if (!CONDITIONS.includes(condition)) return { ok: false, message: "Not one of the three condition grades." };
+  if (node?.state === "live") {
+    // A LIVE listing's description carries the old grade — changing it here
+    // would make the card lie about what customers see. Live edits are the
+    // update slice's job.
+    return { ok: false, message: "Listing is LIVE — condition changes for live products aren't wired yet." };
+  }
   const patch = { condition, ...stamp() };
-  if (node?.state === "blocked" || node?.state === "nominated") patch.state = "nominated";
+  // blocked/nominated → nominated (unblocks); draft → nominated too, which
+  // RE-QUEUES the product so the next publish run reconciles the new grade
+  // onto the Shopify draft and returns it to state draft.
+  if (node?.state === "blocked" || node?.state === "nominated" || node?.state === "draft") {
+    patch.state = "nominated";
+  }
   try {
     await update(ref(database, `shopify_publish/${safeSeg(productId)}`), patch);
     return { ok: true };

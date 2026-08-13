@@ -140,7 +140,8 @@ describe("docs/RETURNS-AND-CONDITION.md", () => {
     expect(doc).toContain("not an authorised dealer for");
     expect(doc).toContain("not affiliated with");
     expect(doc).toContain("endorsed by, any third-party rights holder");
-    expect(doc).toContain("14 days of\ndelivery");
+    // whitespace-collapsed so a Markdown re-wrap can't break the assertion
+    expect(doc.replace(/\s+/g, " ")).toContain("14 days of delivery");
   });
   it("never states or implies branded goods are featured", () => {
     expect(doc.toLowerCase()).not.toContain("branded");

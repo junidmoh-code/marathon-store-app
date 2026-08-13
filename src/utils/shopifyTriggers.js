@@ -364,7 +364,7 @@ function stripTriggerTokens(name) {
       if (t.mode === "squash") {
         for (let i = 0; i < tokens.length; i++) {
           if (v.sq && sqs[i].includes(v.sq)) {                 // inside one token
-            if (t.label === "palace") continue;
+            if (t.label === "palace") continue; // defensive only — palace is word-mode today; live iff its mode ever flips
             drop[i] = true; removed = true; continue;
           }
           // Multi-token windows: the squashed join CONTAINING the trigger marks

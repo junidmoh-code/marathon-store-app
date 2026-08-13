@@ -86,7 +86,7 @@ const SYSTEM = `You name products for a South African clothing/footwear reseller
 Return ONLY a short descriptive product title — no quotes, no explanation, no punctuation at the end.
 The title must contain NO brand name, NO model or silhouette name, NO collaboration or sub-label name of any kind.
 Describe only: the product type, its style or material, and its colour. Do not invent facts not given to you.
-The title must start with a letter and be 3 to 60 characters long.`;
+The title must start with a letter and be 3 to 80 characters long.`;
 
 async function askOnce(product, feedback) {
   const colours = coloursIn(product.name);
@@ -104,6 +104,9 @@ async function askOnce(product, feedback) {
     messages: [{ role: "user", content: user }],
   });
   if (response.stop_reason === "refusal") throw new Error("model refused the request");
+  // A max_tokens cut can truncate mid-title into something that still passes
+  // the gate — never cache a truncated name.
+  if (response.stop_reason === "max_tokens") throw new Error("response truncated (max_tokens)");
   const text = response.content.find((b) => b.type === "text")?.text ?? "";
   return text.trim().replace(/^["']|["'.]$/g, "").trim();
 }

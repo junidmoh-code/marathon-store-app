@@ -38,7 +38,12 @@ const MAX_PUSH = 10;
 const flags = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
 const pidIdx = flags.indexOf("--pids");
-const ONLY = pidIdx !== -1 ? new Set(flags[pidIdx + 1].split(",")) : null;
+const pidArg = pidIdx !== -1 ? flags[pidIdx + 1] : null;
+if (pidIdx !== -1 && (!pidArg || pidArg.startsWith("--"))) {
+  console.error("--pids needs a comma-separated productId list");
+  process.exit(2);
+}
+const ONLY = pidArg ? new Set(pidArg.split(",")) : null;
 const pubIdx = flags.indexOf("--publish");
 const PUBLISH_PID = pubIdx !== -1 ? flags[pubIdx + 1] : null;
 if (pubIdx !== -1 && (!PUBLISH_PID || PUBLISH_PID.startsWith("--"))) {
@@ -54,7 +59,10 @@ admin.initializeApp({
 const db = admin.database();
 
 // ── Worklist: nominated products, capped ─────────────────────────────────────
-const publishNodes = await readAllPublishNodes(db);
+// --publish is a STANDALONE owner action on one existing draft — it never
+// piggybacks a batch of new drafts (a surprising side effect), and it needs
+// no --commit (publishing is inherently a commit).
+const publishNodes = PUBLISH_PID ? {} : await readAllPublishNodes(db);
 let worklist = Object.entries(publishNodes)
   .filter(([pid, n]) => n?.state === "nominated" && (!ONLY || ONLY.has(pid)))
   .map(([pid, node]) => ({ pid, node }));
@@ -72,6 +80,9 @@ const blocked = [];
 for (const { pid, node } of worklist) {
   const product = (await db.ref(`products/${assertSafeSegment(pid, "productId")}`).get()).val();
   if (!product) { blocked.push({ pid, why: "no /products record" }); continue; }
+  // A record merged away after nomination is a dead identity — its stock,
+  // barcodes and sales now belong to the survivor. Never push it.
+  if (product.mergedInto) { blocked.push({ pid, why: `merged into ${product.mergedInto} — nominate the survivor` }); continue; }
 
   // Condition gate — NO default, unset means blocked (owner spec).
   if (!CONDITIONS.includes(node.condition)) {
@@ -135,7 +146,7 @@ for (const { pid, node } of worklist) {
 for (const b of blocked) console.error(`  ✗ skipped ${b.pid}: ${b.why}`);
 console.log(`payloads built and validated: ${jobs.length}`);
 
-if (!COMMIT) {
+if (!COMMIT && !PUBLISH_PID) {
   for (const j of jobs) {
     console.log(`\n── ${j.pid}  "${j.product.name}"`);
     console.log(JSON.stringify({ ...j.payload, media: j.payload.media.map((m) => ({ ...m, originalSource: m.originalSource.slice(0, 60) + "…" })) }, null, 2));
@@ -169,7 +180,30 @@ for (const j of jobs) {
     const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
     let gid = mapNode?.shopifyProductId ?? null;
     if (gid) {
-      console.log(`  /shopify_sync maps to ${gid} — reconciling, not creating`);
+      // RECONCILE means the validated payload fields too, not just media and
+      // inventory — a card rename or condition change after the draft was
+      // created must land on Shopify on the next run.
+      console.log(`  /shopify_sync maps to ${gid} — reconciling fields, media, inventory`);
+      const upd = await graphql(
+        `mutation ($input: ProductUpdateInput!) {
+          productUpdate(product: $input) { product { id } userErrors { field message } }
+        }`,
+        {
+          input: {
+            id: gid,
+            title: payload.title,
+            handle: payload.handle,
+            vendor: payload.vendor,
+            productType: payload.productType,
+            tags: payload.tags,
+            descriptionHtml: payload.descriptionHtml,
+            seo: payload.seo,
+          },
+        },
+        { mutation: true }
+      );
+      const uErrs = upd.productUpdate.userErrors;
+      if (uErrs?.length) { results.push({ pid, ok: false, why: `reconcile productUpdate userErrors: ${JSON.stringify(uErrs)}` }); continue; }
     } else {
       const dupe = await graphql(
         `query ($q: String!) { products(first: 25, query: $q) { nodes { id title } } }`,

@@ -49,10 +49,11 @@ export async function preflightPhotoUrls(urls) {
   for (const url of urls) {
     let ok = false;
     try {
-      const head = await fetch(url, { method: "HEAD" });
+      // Bounded: one hung URL must not stall the whole run.
+      const head = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(15000) });
       ok = head.ok;
       if (!ok) {
-        const get = await fetch(url, { headers: { Range: "bytes=0-0" } });
+        const get = await fetch(url, { headers: { Range: "bytes=0-0" }, signal: AbortSignal.timeout(15000) });
         ok = get.ok;
         if (get.body) await get.body.cancel();
       }

@@ -140,6 +140,13 @@ function ProductRow({ product, node, onChanged }) {
                 Nominate →
               </button>
             )}
+            {state === "draft" && (
+              <button disabled={busy}
+                onClick={() => run(() => nominateProduct(product.id, node))}
+                style={{ ...bBlue, padding: "7px 12px", fontSize: "0.76rem" }}>
+                Queue update →
+              </button>
+            )}
             {(state === "nominated" || state === "blocked") && (
               <button disabled={busy}
                 onClick={() => run(() => withdrawNomination(product.id, node))}
