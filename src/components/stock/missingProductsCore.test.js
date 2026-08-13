@@ -24,10 +24,11 @@ const HYBRID  = { id: "hy1", name: "Perfume Gift Bag", category: "Accessories", 
 const PRODUCTS = [TEE, JERSEY, UNCAT, BAG, WATCH, BELT, SNEAKER, PERFUME, HYBRID];
 const cell = (qty) => ({ qty });
 
-// Owner directive 2026-08-05: exactly two chips — Sneakers and Clothing, with
-// Clothing holding EVERYTHING non-sneaker. This supersedes the 2026-08-04
-// per-subcategory chips (PR #308); these tests pin the new contract so a revert
-// to per-type chips fails here.
+// Owner directives, layered: 2026-08-05 — Sneakers and Clothing, with Clothing
+// holding everything non-sneaker (superseding the 2026-08-04 per-subcategory
+// chips of PR #308); 2026-08-13 — Perfume added as its own third fixed chip,
+// with the Clothing count unchanged. These tests pin that three-chip contract
+// so a revert to per-type chips, or perfume bleeding into Clothing, fails here.
 describe("groupOf — clothing is one pile, perfume is its own chip", () => {
   it("puts every clothing product under the ONE Clothing chip", () => {
     for (const p of [TEE, JERSEY, BAG, WATCH, BELT, UNCAT]) {
