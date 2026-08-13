@@ -500,9 +500,12 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   // MID shows the candidate LARGE and asks (a yes files the reading as another
   // alias, so the next scan of it is silent); LOW is the calm never-registered
   // path. A network failure is an error, never a false never-registered.
-  const [aliasConfirm, setAliasConfirm] = useState(null);  // { tokens, candidates:[product], index }
-  const handleAliasTokens = useCallback(async (tokens) => {
+  const [aliasConfirm, setAliasConfirm] = useState(null);  // { tokens, candidates:[product], index, modelName }
+  const handleAliasTokens = useCallback(async (tokens, meta = null) => {
     if (!hub) return;
+    // A code-less read still often prints the MODEL NAME — it rides the meta
+    // and feeds the link panel's name tier (CodeRabbit, PR #349).
+    const modelName = meta && typeof meta.modelName === "string" ? meta.modelName : null;
     setBusy(true);
     try {
       let match;
@@ -526,7 +529,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           const p = await resolveCandidate(c.productId);
           if (p) candidates.push(p);
         }
-        if (candidates.length) { setAliasConfirm({ tokens, candidates, index: 0 }); return; }
+        if (candidates.length) { setAliasConfirm({ tokens, candidates, index: 0, modelName }); return; }
       }
       // A reading nothing matches NEVER dead-ends (same rule as the
       // style-number path): offer the link panel — the pick files this reading
@@ -535,7 +538,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // DISCARDED here, which is how the panel opened blank on the floor —
       // now they seed the suggestion list (linkSuggestions.js, alias tier).
       const preview = `reading (${tokens.length} tokens): ${tokens.slice(0, 5).join(" ")}`;
-      setPanel({ mode: "link", kind: "tokens", tokens, preview,
+      setPanel({ mode: "link", kind: "tokens", tokens, preview, modelName,
                  aliasCandidates: match && Array.isArray(match.candidates) ? match.candidates : null });
     } finally { setBusy(false); }
   }, [hub, products, flash]);
@@ -1150,9 +1153,9 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                       // rejected candidates must NOT resurface as suggestions:
                       // the operator just said, one by one, that none of them
                       // is this shoe.
-                      const { tokens, candidates } = aliasConfirm;
+                      const { tokens, candidates, modelName } = aliasConfirm;
                       setAliasConfirm(null);
-                      setPanel({ mode: "link", kind: "tokens", tokens,
+                      setPanel({ mode: "link", kind: "tokens", tokens, modelName: modelName || null,
                                  preview: `reading (${tokens.length} tokens): ${tokens.slice(0, 5).join(" ")}`,
                                  excludeIds: candidates.map((p) => p.id) });
                     }

@@ -307,6 +307,10 @@ export function buildLinkSuggestions({ kind, normalised, modelName, tokens, alia
     if (modelName) hits = hits.concat(modelNameSuggestions(modelName, products));
   } else if (kind === "tokens") {
     hits = hits.concat(modelNameSuggestions(tokens, products));
+    // A code-less read may still carry a clean model-name line the merged
+    // token set dropped (≥2-of-3 frame agreement) — score it too; the
+    // per-product dedupe folds any overlap (CodeRabbit, PR #349).
+    if (modelName) hits = hits.concat(modelNameSuggestions(modelName, products));
     hits = hits.concat(aliasSuggestions(aliasCandidates, products, excludeIds));
   }
   if (excludeIds && excludeIds.length) {

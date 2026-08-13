@@ -187,6 +187,19 @@ describe("the link panel's ranked suggestions", () => {
     expect(recordLabelCodes).not.toHaveBeenCalled();
   });
 
+  it("a token read whose ONLY evidence is meta.modelName still gets name suggestions (CodeRabbit, PR #349)", async () => {
+    const tr = await mountOnCountTab();
+    // The merged token set is junk (address-line words), but one frame's OCR
+    // read the model-name line cleanly — it must reach the panel's name tier.
+    await act(async () => {
+      await readerProps.onTokens(["FABRIQUE", "IMPORTED", "DESIGNED", "CAMBODIA"], { modelName: "GRIPSHOT MID 2233SP2" });
+    });
+    const after = textOf(tr);
+    expect(after).toContain("Is it one of these");
+    expect(after).toContain("GRIPSHOT");
+    expect(after).toContain("the label prints");
+  });
+
   it("a code with no plausible relative says so plainly and the name search still works", async () => {
     const tr = await mountOnCountTab();
     await act(async () => { await readerProps.onCode("CT8527-999", null); });

@@ -187,6 +187,10 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
       const frameTokens = [];
       let sawOptions = null;
       let frameError = null;
+      // The model-name line off ANY frame survives to the token path below —
+      // a code-less read still often prints the model name, and the link
+      // panel's name tier is built on it (CodeRabbit, PR #349).
+      let sawModelName = null;
       for (const frame of frames) {
         // ONE frame failing (a transient request error) must not discard the
         // other frames' readings — a burst with two usable frames still
@@ -198,6 +202,7 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
           frameError = err;
           continue;
         }
+        if (!sawModelName && typeof data.modelName === "string" && data.modelName) sawModelName = data.modelName;
         const out = chooseFromLabelRead(data);
         const formattedChosen = out.kind === "chosen" ? formatStyleCodeForDisplay(out.code) : "";
         if (out.kind === "chosen" && formattedChosen) {
@@ -250,7 +255,7 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
       }
       const merged = mergeFrameTokens(frameTokens);
       if (merged.length >= 2 && onTokens) {
-        onTokens(merged, { labelPhoto: frames[0] });
+        onTokens(merged, { labelPhoto: frames[0], modelName: sawModelName });
         return;
       }
       setReadNote({ text: frameError && frameTokens.length === 0
