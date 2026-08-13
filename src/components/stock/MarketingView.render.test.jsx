@@ -26,11 +26,19 @@ const getPath = (p) => {
   return Object.keys(out).length ? out : null;
 };
 
+const failGets = new Set(); // paths whose one-shot get() rejects (missing rule)
+const subscribers = {}; // path → [cb] — lets tests push live specials updates
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path || "" }),
   child: (node, path) => ({ path: node.path ? `${node.path}/${path}` : path }),
-  onValue: (r, cb) => { cb({ val: () => getPath(r.path) }); return () => {}; },
-  get: (r) => Promise.resolve({ val: () => getPath(r.path), exists: () => getPath(r.path) != null }),
+  onValue: (r, cb) => {
+    (subscribers[r.path] = subscribers[r.path] || []).push(cb);
+    cb({ val: () => getPath(r.path) });
+    return () => {};
+  },
+  get: (r) => failGets.has(r.path)
+    ? Promise.reject(new Error("Permission denied"))
+    : Promise.resolve({ val: () => getPath(r.path), exists: () => getPath(r.path) != null }),
   set: () => Promise.resolve(),
   remove: () => Promise.resolve(),
   update: () => Promise.resolve(),
@@ -107,4 +115,38 @@ test("Edit price opens the single-product modal with current values loaded", asy
   const inputs = tree.root.findAllByType("input").filter((i) => i.props.type === "number");
   expect(inputs.length).toBe(2);
   expect(inputs.map((i) => i.props.value)).toEqual(["200", "450"]); // stock, retail of Slow Mover One
+});
+
+test("LIVE specials: a special started elsewhere un-ticks its tile on the next snapshot", async () => {
+  const tree = await render();
+  const tick = tree.root.findAllByType("input").find((i) => i.props["aria-label"] === "Select Slow Mover One");
+  await act(async () => { tick.props.onChange(); });
+  expect(plain(tree)).toContain("1 ticked");
+  // A special lands on p1 from another device → push the new snapshot.
+  store["specials/p1"] = { name: "Slow Mover One", price: 300, wasPrice: 450 };
+  await act(async () => { for (const cb of subscribers["specials"] || []) cb({ val: () => getPath("specials") }); });
+  const text = plain(tree);
+  expect(text).not.toContain("1 ticked"); // selection dropped, bulk bar gone
+  const labels = tree.root.findAllByType("input").filter((i) => i.props.type === "checkbox").map((i) => i.props["aria-label"]);
+  expect(labels).not.toContain("Select Slow Mover One"); // no longer tickable
+  delete store["specials/p1"];
+});
+
+test("per-tile edit surfaces the fail-open bypass — a silent unguarded save is impossible (Sonnet review PR #360)", async () => {
+  failGets.add("specials"); // the store's interlock read fails; save proceeds fail-open
+  const tree = await render();
+  const edit = tree.root.findAllByType("button").find((b) =>
+    b.children.some((c) => typeof c === "string" && c.includes("Edit price")));
+  await act(async () => { edit.props.onClick(); });
+  const retail = tree.root.findAllByType("input").find((i) => i.props["aria-label"] === "Retail price");
+  await act(async () => { retail.props.onChange({ target: { value: "500" } }); });
+  const saveBtn = tree.root.findAllByType("button").find((b) =>
+    b.children.some((c) => typeof c === "string" && c === "Save"));
+  await act(async () => { await saveBtn.props.onClick(); });
+  await flush();
+  const text = plain(tree);
+  expect(text).toContain("Saved Slow Mover One");
+  expect(text).toContain("could not read /specials"); // the bypass is named
+  expect(text).toContain("on-special guard cannot read /specials"); // standing banner armed
+  failGets.delete("specials");
 });

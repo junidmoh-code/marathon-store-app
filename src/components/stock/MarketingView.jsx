@@ -20,10 +20,12 @@
 // height), paddings tightened. Desktop keeps the familiar ~196px tiles.
 
 import React, { useEffect, useMemo, useState } from "react";
+import { onValue, ref } from "firebase/database";
+import { database } from "../../firebase";
 import { LISTS, resolveListProducts } from "./attentionLists";
 import { useAttentionLists } from "./useAttentionLists";
 import { FONT, GLASS, GRAY, RED, AMBER, BLUE_L } from "./ui";
-import { applyPriceBatch, restorePriceBatch, loadSpecials } from "../admin/priceStore";
+import { applyPriceBatch, restorePriceBatch } from "../admin/priceStore";
 import { buildBulkChangePlan } from "../../utils/bulkPricing";
 import { asStoredPrice } from "../../utils/priceBatch";
 import BulkPricePreview from "../admin/BulkPricePreview";
@@ -41,8 +43,10 @@ export default function MarketingView({ products, onExit }) {
   const { lists, removeFromList, ready } = useAttentionLists();
 
   // ── Pricing state ──
-  const [specials, setSpecials] = useState({});
+  // null = first snapshot not in yet (nothing tickable during that window)
+  const [specials, setSpecials] = useState(null);
   const [guardDown, setGuardDown] = useState(false);
+  const [specialsSubGen, setSpecialsSubGen] = useState(0);
   const [selected, setSelected] = useState(() => new Set());
   const [mode, setMode] = useState("percent");
   const [percentDraft, setPercentDraft] = useState("");
@@ -54,10 +58,17 @@ export default function MarketingView({ products, onExit }) {
   const [lastBatch, setLastBatch] = useState(null); // { batchId, count } → Undo
   const [editTarget, setEditTarget] = useState(null); // product being edited one-by-one
 
-  const reloadSpecials = () =>
-    loadSpecials().then((sp) => { setSpecials(sp); setGuardDown(false); })
-      .catch(() => { setSpecials({}); setGuardDown(true); });
-  useEffect(() => { reloadSpecials(); }, []);
+  // LIVE subscription, not a one-shot: /specials is a compact purpose-built
+  // node (~9 KB at 20 active specials), so holding it open is cheap — and it
+  // means a special started on another device drops its tile out of the
+  // selection here within moments. A read error (missing rule) flips the
+  // standing guardDown banner; Retry re-arms the subscription.
+  useEffect(() => onValue(
+    ref(database, "specials"),
+    (snap) => { setSpecials(snap.val() || {}); setGuardDown(false); },
+    () => { setSpecials({}); setGuardDown(true); },
+  ), [specialsSubGen]);
+  const reloadSpecials = () => setSpecialsSubGen((g) => g + 1);
 
   const productsById = useMemo(() => {
     const out = {};
@@ -68,9 +79,12 @@ export default function MarketingView({ products, onExit }) {
   const open = lists.find((l) => l.id === openListId) || lists[0];
   const contents = useMemo(() => resolveListProducts(open, productsById), [open, productsById]);
 
-  // Selection only ever holds products that are present and not on special —
-  // and it is re-filtered live so a special started elsewhere drops out.
-  const selectable = (c) => !c.missing && !specials[c.id];
+  // Selection only ever holds products that are present and not on special.
+  // The /specials subscription above keeps this genuinely live: a special
+  // started elsewhere drops its product out of the selection on the next
+  // snapshot. Until the FIRST snapshot arrives nothing is tickable — the brief
+  // pre-load window must not offer on-special products.
+  const selectable = (c) => specials !== null && !c.missing && !specials[c.id];
   const liveSelected = useMemo(() => {
     const ids = new Set(contents.filter((c) => selectable(c)).map((c) => c.id));
     return new Set([...selected].filter((id) => ids.has(id)));
@@ -193,14 +207,14 @@ export default function MarketingView({ products, onExit }) {
       {notice && (
         <div style={{ ...GLASS, padding: "9px 12px", marginBottom: 12, fontSize: 12, color: notice.kind === "ok" ? "#4ACA7A" : RED, display: "flex", gap: 10 }}>
           <span style={{ flex: 1, overflowWrap: "anywhere" }}>{notice.text}</span>
-          <button onClick={() => setNotice(null)} style={{ background: "none", border: "none", color: GRAY, cursor: "pointer", fontFamily: FONT }}>✕</button>
+          <button onClick={() => setNotice(null)} aria-label="Dismiss message" style={{ background: "none", border: "none", color: GRAY, cursor: "pointer", fontFamily: FONT }}>✕</button>
         </div>
       )}
       {lastBatch && (
         <div style={{ ...GLASS, padding: "9px 12px", marginBottom: 12, fontSize: 12, color: "#4ACA7A", display: "flex", gap: 10, alignItems: "center" }}>
           <span style={{ flex: 1 }}>Prices changed on {lastBatch.count} product{lastBatch.count === 1 ? "" : "s"} — still undoable.</span>
           <button onClick={undoLastBatch} disabled={priceBusy} style={BTN(false)}>{priceBusy ? "Undoing…" : "Undo"}</button>
-          <button onClick={() => setLastBatch(null)} style={{ background: "none", border: "none", color: GRAY, cursor: "pointer", fontFamily: FONT }}>✕</button>
+          <button onClick={() => setLastBatch(null)} aria-label="Dismiss undo" style={{ background: "none", border: "none", color: GRAY, cursor: "pointer", fontFamily: FONT }}>✕</button>
         </div>
       )}
 
@@ -211,10 +225,10 @@ export default function MarketingView({ products, onExit }) {
           <button onClick={() => setMode("percent")} style={BTN(mode === "percent")}>% change</button>
           <button onClick={() => setMode("absolute")} style={BTN(mode === "absolute")}>Set price</button>
           {mode === "percent"
-            ? <input value={percentDraft} onChange={(e) => setPercentDraft(e.target.value)} placeholder="% e.g. -20" inputMode="decimal" style={{ ...INPUT, width: 92 }} />
+            ? <input value={percentDraft} onChange={(e) => setPercentDraft(e.target.value)} placeholder="% e.g. -20" aria-label="Percentage change" inputMode="decimal" style={{ ...INPUT, width: 92 }} />
             : <>
-                <input value={stockDraft} onChange={(e) => setStockDraft(e.target.value)} placeholder="Stock (R)" inputMode="decimal" style={{ ...INPUT, width: 90 }} />
-                <input value={retailDraft} onChange={(e) => setRetailDraft(e.target.value)} placeholder="Retail (R)" inputMode="decimal" style={{ ...INPUT, width: 90 }} />
+                <input value={stockDraft} onChange={(e) => setStockDraft(e.target.value)} placeholder="Stock (R)" aria-label="New stock price" inputMode="decimal" style={{ ...INPUT, width: 90 }} />
+                <input value={retailDraft} onChange={(e) => setRetailDraft(e.target.value)} placeholder="Retail (R)" aria-label="New retail price" inputMode="decimal" style={{ ...INPUT, width: 90 }} />
               </>}
           <button onClick={openPreview} style={{ ...BTN(true), border: "none" }}>Preview…</button>
           <button onClick={() => setSelected(new Set())} style={{ background: "none", border: "none", color: GRAY, fontSize: 12, cursor: "pointer", fontFamily: FONT }}>Clear</button>
@@ -233,7 +247,7 @@ export default function MarketingView({ products, onExit }) {
         // narrow tiles stay proportioned instead of towering.
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(196px, 42vw), 1fr))", gap: 10, alignItems: "start" }}>
           {contents.map((c) => {
-            const onSpecial = !!specials[c.id];
+            const onSpecial = !!(specials || {})[c.id];
             const sel = liveSelected.has(c.id);
             const retail = c.product ? asStoredPrice(c.product.retailPrice) : null;
             const stock = c.product ? asStoredPrice(c.product.stockPrice) : null;
@@ -309,9 +323,16 @@ export default function MarketingView({ products, onExit }) {
       {editTarget && (
         <PriceEditModal
           product={editTarget}
-          onSpecial={!!specials[editTarget.id]}
+          getCurrent={() => productsById[editTarget.id] || editTarget}
+          onSpecial={!!(specials || {})[editTarget.id]}
           onClose={() => setEditTarget(null)}
-          onSaved={(msg) => { setEditTarget(null); setNotice({ kind: "ok", text: msg }); }}
+          onSaved={(msg, skipped) => {
+            setEditTarget(null);
+            // The fail-open bypass is never silent — the per-tile edit reports
+            // it exactly like the bulk paths do (Sonnet review, PR #360).
+            if (skipped) setGuardDown(true);
+            setNotice({ kind: "ok", text: msg + (skipped ? " ⚠ The on-special check could not read /specials for this write." : "") });
+          }}
         />
       )}
     </div>
@@ -321,7 +342,7 @@ export default function MarketingView({ products, onExit }) {
 // Small one-product price modal: shows current values, writes only what
 // changed, through the guarded batch path (audited; on-special retail edits
 // are refused by the store with its own message).
-function PriceEditModal({ product, onSpecial, onClose, onSaved }) {
+function PriceEditModal({ product, getCurrent, onSpecial, onClose, onSaved }) {
   const [stockDraft, setStockDraft] = useState(asStoredPrice(product.stockPrice) !== null ? String(asStoredPrice(product.stockPrice)) : "");
   const [retailDraft, setRetailDraft] = useState(asStoredPrice(product.retailPrice) !== null ? String(asStoredPrice(product.retailPrice)) : "");
   const [saving, setSaving] = useState(false);
@@ -329,10 +350,14 @@ function PriceEditModal({ product, onSpecial, onClose, onSaved }) {
 
   const save = async () => {
     if (saving) return;
+    // Compare against the LIVE record, not the snapshot captured when the
+    // modal opened — a price changed elsewhere while it sat open must not
+    // produce a stale audit `from` or a phantom no-op (Kimi review, PR #360).
+    const live = getCurrent ? getCurrent() : product;
     const from = {};
     const to = {};
     for (const [field, draft] of [["stockPrice", stockDraft], ["retailPrice", retailDraft]]) {
-      const cur = asStoredPrice(product[field]);
+      const cur = asStoredPrice(live[field]);
       const t = String(draft).trim();
       const next = t === "" ? null : Number(t);
       if (next !== null && (!Number.isFinite(next) || next <= 0)) { setErr(`${field === "stockPrice" ? "Stock" : "Retail"} price must be a number above 0 (or empty to clear).`); return; }
@@ -350,7 +375,7 @@ function PriceEditModal({ product, onSpecial, onClose, onSaved }) {
         lines: { [product.id]: { name: product.name || "", from, to } },
       });
       if (!res.ok) { setErr(res.message); return; }
-      onSaved(`Saved ${product.name || product.id}.`);
+      onSaved(`Saved ${product.name || product.id}.`, res.specialsCheckSkipped === true);
     } catch (e) {
       setErr(String(e?.message || e));
     } finally {
@@ -376,10 +401,11 @@ function PriceEditModal({ product, onSpecial, onClose, onSaved }) {
         </div>
         <label style={{ display: "block", fontSize: 11, color: "rgba(255,255,255,.45)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4 }}>Stock price (R)</label>
         <input type="number" inputMode="decimal" min="0" step="0.01" value={stockDraft} onChange={(e) => setStockDraft(e.target.value)} disabled={saving}
+          onKeyDown={(e) => { if (e.key === "Enter") save(); }} aria-label="Stock price"
           style={{ ...INPUT, width: "100%", boxSizing: "border-box", marginBottom: 10 }} />
         <label style={{ display: "block", fontSize: 11, color: "rgba(255,255,255,.45)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4 }}>Retail price (R)</label>
         <input type="number" inputMode="decimal" min="0" step="0.01" value={retailDraft} onChange={(e) => setRetailDraft(e.target.value)} disabled={saving}
-          onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+          onKeyDown={(e) => { if (e.key === "Enter") save(); }} aria-label="Retail price"
           style={{ ...INPUT, width: "100%", boxSizing: "border-box", marginBottom: 10 }} />
         {err && <div style={{ fontSize: 11.5, color: RED, marginBottom: 10, overflowWrap: "anywhere" }}>{err}</div>}
         <div style={{ display: "flex", gap: 8 }}>
