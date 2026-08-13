@@ -42,6 +42,7 @@ import MissingFootwear from "./MissingFootwear";
 import { computeMissingFootwear } from "./missingFootwearCore";
 import { computeMissingProducts, buildChips, pickActiveTab } from "./missingProductsCore";
 import { partitionHidden } from "./hiddenProductsCore";
+import HiddenProducts, { HoldSpot } from "./HiddenProducts";
 import NoTargetQueue from "./NoTargetQueue";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { sizeRank } from "./hubSizeRank";
@@ -462,8 +463,13 @@ export default function HealthView({ products = [], onExit }) {
         // Three fixed chips — Clothing (owner directive 2026-08-05), Perfume
         // (2026-08-13) and Sneakers (its own list). All always render, even at
         // 0, so the row never reshuffles under the operator.
+        // The Hidden tab is NOT in the chip list — its entrance is the
+        // unlabelled HoldSpot below, so pickActiveTab (which only knows the
+        // visible chips) is bypassed for it. Leaving the tab any normal way
+        // (tapping a chip) drops back to chip-world and the Hidden chip
+        // disappears again.
         const chips = buildChips(missingVisible, missingSneakerCards.length);
-        const activeTab = pickActiveTab(chips, missingTab);
+        const activeTab = missingTab === "hidden" ? "hidden" : pickActiveTab(chips, missingTab);
         return (
           <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts ?? "—"} onBack={back}>
             <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
@@ -478,8 +484,26 @@ export default function HealthView({ products = [], onExit }) {
                   {label} ({n})
                 </button>
               ))}
+              {/* Once OPEN the hidden tab announces itself — the discretion is
+                  about the entrance, not about pretending the screen you are
+                  on doesn't exist. Leaving via any chip hides it again. */}
+              {activeTab === "hidden" && (
+                <button onClick={() => setMissingTab("hidden")}
+                  style={{
+                    padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+                    border: "1px solid rgba(60,110,255,.5)", background: "rgba(60,110,255,.14)", color: BLUE_L,
+                  }}>
+                  Hidden ({missingHidden.length})
+                </button>
+              )}
+              {/* The unlabelled entrance: press-and-hold the empty space at
+                  the end of the chip row (see HiddenProducts.jsx HoldSpot for
+                  the full rationale — discretion, NOT access control). */}
+              <HoldSpot onTrigger={() => setMissingTab("hidden")} />
             </div>
-            {activeTab === "sneakers"
+            {activeTab === "hidden"
+              ? <HiddenProducts products={products} cards={missingProductCards || []} hiddenMap={hiddenMap} />
+              : activeTab === "sneakers"
               ? <MissingFootwear products={products} />
               : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingVisible} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} />}
           </DetailShell>

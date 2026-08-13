@@ -1,0 +1,73 @@
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Source-pinned gates, in the house idiom (UserManagement.gate.test.jsx,
+// refill-cadence.test.cjs): this environment has no component renderer, so
+// the wiring decisions that make hide SAFE are asserted against the source.
+// Each is a real decision a refactor could silently undo.
+const here = dirname(fileURLToPath(import.meta.url));
+const HEALTH = readFileSync(join(here, "HealthView.jsx"), "utf8");
+const HIDDEN = readFileSync(join(here, "HiddenProducts.jsx"), "utf8");
+const NETWORK = readFileSync(join(here, "NetworkTransfer.jsx"), "utf8");
+
+describe("HealthView wiring — the partition is downstream and the lists don't cross", () => {
+  it("the main list renders the VISIBLE set, the hidden tab joins against the FULL set", () => {
+    // NetworkTransfer must get missingVisible (a hidden card leaves the list),
+    // while HiddenProducts must get the FULL card list — the join that labels
+    // rows STILL MISSING vs NO LONGER MISSING needs cards the main list no
+    // longer shows.
+    expect(HEALTH).toMatch(/<NetworkTransfer[^>]*cards=\{missingVisible\}/);
+    expect(HEALTH).toMatch(/<HiddenProducts[^>]*cards=\{missingProductCards \|\| \[\]\}/);
+  });
+  it("chips and the headline count are built from the visible set", () => {
+    expect(HEALTH).toMatch(/buildChips\(missingVisible,/);
+    expect(HEALTH).toMatch(/missingProductCards == null \? null : missingVisible\.length/);
+  });
+  it("the hidden tab bypasses pickActiveTab — it is not a chip, so the fallback must not eat it", () => {
+    // pickActiveTab only knows the visible chips; without the special case,
+    // selecting "hidden" would silently fall back to Clothing and the
+    // entrance would appear dead.
+    expect(HEALTH).toMatch(/missingTab === "hidden" \? "hidden" : pickActiveTab\(chips, missingTab\)/);
+  });
+  it("the entrance is the unlabelled HoldSpot in the chip row, and the Hidden chip only shows once open", () => {
+    expect(HEALTH).toMatch(/<HoldSpot onTrigger=\{\(\) => setMissingTab\("hidden"\)\} \/>/);
+    // The visible "Hidden (n)" chip is inside the activeTab === "hidden" branch.
+    expect(HEALTH).toMatch(/\{activeTab === "hidden" && \([\s\S]{0,600}?Hidden \(\{missingHidden\.length\}\)/);
+  });
+});
+
+describe("HoldSpot — deliberate, invisible, accident-proof", () => {
+  it("renders no label, no icon, no text — a customer over the counter sees nothing", () => {
+    const holdSpot = HIDDEN.slice(HIDDEN.indexOf("export function HoldSpot"));
+    // Its one element is an empty self-closing div (handlers + style only).
+    expect(holdSpot).toMatch(/\/>\s*\);\s*}\s*$/);
+    expect(holdSpot).not.toMatch(/>[A-Za-z]/);
+  });
+  it("requires a 600 ms hold — a stray tap can never open it", () => {
+    expect(HIDDEN).toMatch(/holdMs = 600/);
+    expect(HIDDEN).toMatch(/setTimeout\(\(\) => \{ setPressed\(null\); onTrigger\(\); \}, holdMs\)/);
+  });
+  it("cancels on movement — a scroll gesture over the spot cannot fire it", () => {
+    expect(HIDDEN).toMatch(/Math\.hypot\(e\.clientX - p\.x, e\.clientY - p\.y\) > 12/);
+    expect(HIDDEN).toMatch(/onPointerUp=\{cancel\} onPointerLeave=\{cancel\} onPointerCancel=\{cancel\}/);
+  });
+  it("is discretion, not security — no password, no role gate on viewing", () => {
+    const holdSpot = HIDDEN.slice(HIDDEN.indexOf("export function HoldSpot"));
+    expect(holdSpot).not.toMatch(/password|permRecord|isSuperAdmin|stockRole/i);
+  });
+});
+
+describe("the writes stay inside the one small node", () => {
+  it("HiddenProducts writes ONLY via unhideUpdate (one action, entry delete, nothing else)", () => {
+    const writes = HIDDEN.match(/update\(ref\(database\)[^)]*\)/g) || [];
+    expect(writes).toEqual(["update(ref(database), unhideUpdate([pid])"]);
+    // No set(), no other update targets — unhide restores by deleting the
+    // entry; it must never touch stock, targets, or anything beside the node.
+    expect(HIDDEN).not.toMatch(/\bset\(/);
+  });
+  it("NetworkTransfer's hide writes ONLY the hidden-root entry for that pid", () => {
+    expect(NETWORK).toMatch(/\[`\$\{HIDDEN_ROOT\}\/\$\{card\.pid\}`\]: hideEntry\(/);
+  });
+});
