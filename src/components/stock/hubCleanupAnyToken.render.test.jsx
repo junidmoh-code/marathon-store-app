@@ -181,10 +181,12 @@ describe("any-token resolution in the count flow", () => {
         { productId: "pOther", code: "352890625", via: "index" },
       ],
     }));
-    lookupStyleClaim.mockImplementation(async () => ({
-      productId: "pLW", claimedAt: 1, node: null,
-      siblings: { pOther: { addedAt: 1 } },
-    }));
+    // The TAPPED code must own nothing — otherwise the ordinary claim path
+    // resolves before the any-token branch is ever reached. Only the SHARED
+    // owner code carries the sibling claim.
+    lookupStyleClaim.mockImplementation(async (code) => (code === "352890625"
+      ? { productId: "pLW", claimedAt: 1, siblings: { pOther: { addedAt: 1 } } }
+      : null));
     const tr = await mountOnCountTab();
     await act(async () => { await readerProps.onCode("45SMA0018", LACOSTE_META); });
     const after = textOf(tr);
