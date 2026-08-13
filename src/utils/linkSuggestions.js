@@ -104,7 +104,7 @@ export const TIER_SCORES = Object.freeze({
   name: 50,          // + 2 per extra distinctive token hit, capped at 58
   alias: 20,         // + containment * 25, capped at 45
   colourway: 30,
-  brandSegment: 28,  // + 2 per shared prefix char beyond 4, capped at 40. weak
+  brandSegment: 24,  // + 1 per shared prefix char beyond 4, capped at 29. weak
   substring: 12,     // + 3 per shared char beyond 6, capped at 27. weak
   closest: 10,       // CAP for fillToMin fallback rows — under every real tier
 });
@@ -310,10 +310,13 @@ export function codeSuggestions(scanNormalised, products, { includeExact = false
                     reason: `same colour code ${ss.colour} — its registered code is ${formatStyleCodeForDisplay(code)}, and some brands split one shoe across code families by size. Check the photo.` });
         continue;
       }
-      // BRAND-SEGMENT — the codes start the same way. Browsing evidence only.
+      // BRAND-SEGMENT — the codes start the same way. Browsing evidence only,
+      // capped UNDER the colourway warning tier: measured on the live
+      // 2026-08-13 unresolved list, a higher cap let a prefix-cousin outrank
+      // a one-edit colour sibling on four real scans — the wrong order.
       if (ss.format && ss.format === sc.format && prefixLen >= BRAND_SEGMENT_MIN) {
         hits.push({ product: p, code, field, tier: "brandSegment", weak: true,
-                    score: Math.min(TIER_SCORES.brandSegment + (prefixLen - BRAND_SEGMENT_MIN) * 2, 40),
+                    score: Math.min(TIER_SCORES.brandSegment + (prefixLen - BRAND_SEGMENT_MIN), 29),
                     reason: `same code family — both start ${scan.slice(0, prefixLen)}… (registered as ${formatStyleCodeForDisplay(code)})` });
         continue;
       }

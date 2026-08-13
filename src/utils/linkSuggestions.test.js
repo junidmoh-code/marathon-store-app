@@ -221,9 +221,12 @@ describe("the loose browsing tiers (claim 12) — shared lead, shared fragment",
     expect(codeSuggestions("742CF999999", [{ id: "x", name: "Odd", styleCodeNormalised: "888742CF11111" }])
       .filter((s) => s.tier === "substring")).toEqual([]); // 5 shared < the floor of 6
   });
-  it("every code-evidence tier outranks every weak tier's cap — weak rows can never displace evidence", () => {
-    for (const strong of ["family", "misread", "colourCode", "truncated", "name"]) {
-      expect(TIER_SCORES[strong]).toBeGreaterThan(40); // brandSegment's cap
+  it("every real tier outranks every weak tier's cap — weak rows can never displace evidence", () => {
+    // 29 is brandSegment's cap — measured on the live 2026-08-13 unresolved
+    // list: a cap above the colourway tier let a prefix-cousin outrank a
+    // one-edit colour sibling on four real scans.
+    for (const strong of ["family", "misread", "colourCode", "truncated", "name", "colourway"]) {
+      expect(TIER_SCORES[strong]).toBeGreaterThan(29);
     }
   });
 });
