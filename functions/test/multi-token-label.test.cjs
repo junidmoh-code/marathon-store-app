@@ -354,6 +354,21 @@ test("P5c: owners via DIFFERENT codes are label ambiguity, NOT a filed duplicate
   assert.strictEqual(db.data.duplicate_candidates, undefined, "cross-code owners file nothing");
 });
 
+test("P6f: a TRUNCATED tier-2 primary does not take its otherCodes down with it (architect #354)", async () => {
+  // Tier 1 read two candidates; tier 2's primary is a truncation of one
+  // (discarded — correctly) but its otherCodes carry an independently valid
+  // third token. That token must survive.
+  const db = fakeDb({});
+  const out = await runLabelRead(db, baseRead({
+    visionFetch: visionOk("CT8527-016\nIE3437"),
+    geminiFetch: geminiOk({ styleCode: "CT8527", otherCodes: ["A9931"], styleCodeConfidence: 0.9 }),
+  }));
+  assert.ok(!out.candidates.includes("CT8527"), "the truncated primary is discarded");
+  assert.ok(out.candidates.includes("A9931"), "…but its independently valid otherCode survives");
+  assert.ok(out.candidates.includes("CT8527016") && out.candidates.includes("IE3437"));
+  assert.strictEqual(out.preferred, null, "a discarded primary confers no preference");
+});
+
 test("P7: a learned layout rule answers BEFORE tier 2 is paid for", async () => {
   // The Lacoste layout, already taught: lacoste-ref is the style number among
   // {lacoste-ref, numeric-6-3, label-serial}. Tier 2 must NOT be called.

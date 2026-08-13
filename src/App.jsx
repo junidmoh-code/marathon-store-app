@@ -7988,9 +7988,11 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
       // ── ANY-TOKEN RESOLUTION AT THE TILL (review, PR #354) ─────────────────
       // The label printed OTHER code-shaped tokens and the shoe may be
       // registered under one of THEM ("Lacoster white" holds its production
-      // line). Read-only round trip — same door the count flow uses; a tap
-      // still only SELECTS for this sale, nothing files. A failed call just
-      // falls through to the ranked list below.
+      // line). Same door the count flow uses; a tap still only SELECTS for
+      // this sale — no alias is ever filed from here. (The door itself
+      // carries codeLookup's one PR #334 bookkeeping exception: a same-code
+      // owner dispute it detects files a duplicate-review row.) A failed
+      // call just falls through to the ranked list below.
       const scanNorm = normaliseStyleCode(display);
       const tillAlternates = (meta && Array.isArray(meta.allCodes) ? meta.allCodes : [])
         .map(normaliseStyleCode).filter((c) => c && c !== scanNorm);

@@ -174,8 +174,10 @@ const MUTATIONS = [
     id: "M21",
     guard: "A code-less tier-2 answer keeps its validated otherCodes (CR #354)",
     file: "functions/styleCode/readStyleCodeLabel.js",
-    from: `      } else if (Array.isArray(g.otherCodes) && g.otherCodes.length) {`,
-    to: `      } else if (false) {`,
+    from: `      const mergeOtherCodes = () => {
+        if (!Array.isArray(g.otherCodes) || !g.otherCodes.length) return;`,
+    to: `      const mergeOtherCodes = () => {
+        return;`,
     nodeTests: ["test/multi-token-label.test.cjs"],
   },
   {
@@ -233,6 +235,31 @@ const MUTATIONS = [
     file: "src/components/admin/StyleCodeGate.jsx",
     from: `            similar.unshift({`,
     to: `            if (false) similar.unshift({`,
+    tests: ["src/components/admin/StyleCodeGate.multiToken.test.jsx"],
+  },
+  {
+    id: "M31",
+    guard: "An unloadable any-token owner is surfaced, never silently dropped (architect #354)",
+    file: "src/components/stock/HubCleanup.jsx",
+    from: `            else if (!p) anyTokUnloaded.push(o.productId);`,
+    to: ``,
+    tests: ["src/components/stock/hubCleanupAnyToken.render.test.jsx"],
+  },
+  {
+    id: "M32",
+    guard: "A truncated tier-2 primary keeps its otherCodes (architect #354)",
+    file: "functions/styleCode/readStyleCodeLabel.js",
+    from: `        console.warn(\`readStyleCodeLabel: tier 2 returned \${g.code}, a prefix of a tier-1 candidate — discarded as a truncation\`);
+        mergeOtherCodes();`,
+    to: `        console.warn(\`readStyleCodeLabel: tier 2 returned \${g.code}, a prefix of a tier-1 candidate — discarded as a truncation\`);`,
+    nodeTests: ["test/multi-token-label.test.cjs"],
+  },
+  {
+    id: "M33",
+    guard: "The gate's server-owner check runs on BOTH roads (architect #354)",
+    file: "src/components/admin/StyleCodeGate.jsx",
+    from: `      await addServerOwners(similar);`,
+    to: ``,
     tests: ["src/components/admin/StyleCodeGate.multiToken.test.jsx"],
   },
   {

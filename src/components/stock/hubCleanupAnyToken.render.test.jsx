@@ -169,6 +169,47 @@ describe("any-token resolution in the count flow", () => {
     expect(recordUnresolvedScan).not.toHaveBeenCalled();
   });
 
+  it("an owner whose record fails to load is SURFACED as unloaded, never silently dropped (architect #354)", async () => {
+    // Three owners; the third's fetch fails. The panel must warn that a
+    // further owner exists and keep the collision framing — a hidden third
+    // owner behind a sibling picker could invite a merge of the wrong pair.
+    resolveAnyCodes.mockImplementation(async () => ({
+      resolved: null,
+      owners: [
+        { productId: "pLW", code: "352890625", via: "index" },
+        { productId: "pOther", code: "352890625", via: "index" },
+        { productId: "pGhost", code: "352890625", via: "alias" },
+      ],
+    }));
+    lookupStyleClaim.mockImplementation(async (code) => (code === "352890625"
+      ? { productId: "pLW", claimedAt: 1, siblings: { pOther: { addedAt: 1 } } }
+      : null));
+    fetchProductFollowingMerge.mockImplementation(async () => { throw new Error("blip"); });
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("45SMA0018", LACOSTE_META); });
+    const after = textOf(tr);
+    expect(after).toContain("One code, more than one product"); // NOT the sibling picker
+    expect(after).not.toContain("Which colourway is it?");
+    expect(after).toContain("loaded on this device");           // the unloaded warning (singular: "isn't")
+  });
+
+  it("ALL owners unloadable is an error — the server proved owners exist (architect #354)", async () => {
+    resolveAnyCodes.mockImplementation(async () => ({
+      resolved: null,
+      owners: [
+        { productId: "pGhost1", code: "352890625", via: "index" },
+        { productId: "pGhost2", code: "352890625", via: "alias" },
+      ],
+    }));
+    fetchProductFollowingMerge.mockImplementation(async () => { throw new Error("down"); });
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("45SMA0018", LACOSTE_META); });
+    const after = textOf(tr);
+    expect(after).not.toContain("link it");
+    expect(after).toContain("none could be loaded");
+    expect(recordUnresolvedScan).not.toHaveBeenCalled();
+  });
+
   it("same-code owners the index registers as SIBLINGS get the colourway picker, never the merge framing (review #354)", async () => {
     // Both owners rode ONE code, and the claim vouches for both — a
     // registered colourway set. The collision framing would offer the live

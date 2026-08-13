@@ -75,8 +75,11 @@ export async function lookupCodeAlias(code) {
 // code-shaped token the label printed; the server checks each against the
 // index claim, the code-alias store and the stamped-products index. Exactly
 // one distinct live owner → `resolved` names it; several → `owners` rides
-// back and the human picks. Read-only — filing still goes through
-// recordLabelCodes with its conflict routing.
+// back and the human picks. Read-only for product/alias/stock state — with
+// the ONE bookkeeping exception codeLookup already carries (PR #334): a
+// same-code owner DISPUTE it detects (the alias write race) files a
+// /duplicate_candidates review row so a human resolves it. Filing label
+// identities still goes through recordLabelCodes with its conflict routing.
 export async function resolveAnyCodes(codesList) {
   const { data } = await labelAliasFn({ action: "resolveAnyCode", codes: codesList });
   return {

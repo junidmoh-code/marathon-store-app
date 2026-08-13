@@ -257,6 +257,30 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     }
   }
 
+  // Server half of the pre-duplicate question (review, PR #354): alias-only
+  // owners never stamp a product row, so the local ranking cannot see them.
+  // Mutates the given suggestion list in place; a failed call leaves it
+  // standing. Shared by the capture-only and enforced roads.
+  async function addServerOwners(list) {
+    try {
+      const { data } = await labelAliasFn({
+        action: "resolveAnyCode",
+        codes: [normalised, ...((photoMatchesCode && labelAllCodes) || [])],
+      });
+      for (const o of (data && Array.isArray(data.owners) ? data.owners : [])) {
+        const p = products.find((x) => x && x.id === o.productId);
+        if (p && !list.some((s) => s.product.id === p.id)) {
+          list.unshift({
+            product: p, code: normaliseStyleCode(o.code) || null, field: "confirmed",
+            tier: "exact", score: 105,
+            reasons: ["a number on this label already identifies this product"],
+          });
+        }
+      }
+    } catch { /* the local ranking still stands */ }
+    return list;
+  }
+
   // ── Look the code up ──────────────────────────────────────────────────────
   async function lookup() {
     if (!normalised) return;
@@ -313,26 +337,13 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       // ── ALIAS-ONLY OWNERSHIP IS INVISIBLE TO THE LOCAL SCAN (review,
       // PR #354) ── the count flow files code aliases that never stamp a
       // product row, so the in-memory ranking above cannot see them. One
-      // read-only round trip asks the server the same any-token question the
-      // count flow asks; a known owner blocks HERE, photo-first, instead of
-      // surfacing post-hoc as a duplicate pair after the record exists.
-      // Best-effort: a failed call leaves the local ranking standing.
-      try {
-        const { data } = await labelAliasFn({
-          action: "resolveAnyCode",
-          codes: [normalised, ...((photoMatchesCode && labelAllCodes) || [])],
-        });
-        for (const o of (data && Array.isArray(data.owners) ? data.owners : [])) {
-          const p = products.find((x) => x && x.id === o.productId);
-          if (p && !similar.some((s) => s.product.id === p.id)) {
-            similar.unshift({
-              product: p, code: normaliseStyleCode(o.code) || null, field: "confirmed",
-              tier: "exact", score: 105,
-              reasons: ["a number on this label already identifies this product"],
-            });
-          }
-        }
-      } catch { /* the local ranking still stands */ }
+      // any-token round trip asks the server; a known owner blocks HERE,
+      // photo-first, instead of surfacing post-hoc as a duplicate pair after
+      // the record exists. Runs on BOTH roads (capture-only and enforced —
+      // architect review: fixing only one would re-open the gap the day the
+      // lookup flag flips). Best-effort: a failed call leaves the local
+      // ranking standing.
+      await addServerOwners(similar);
       if (similar.length) {
         setSimilarStep({ payload, suggestions: similar });
         setStep("similar");
@@ -352,7 +363,9 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       payload: null,
       // Same weak-row filter as the capture path — this list renders inside
       // the resolver's own steps and must carry the same meaning there.
-      suggestions: buildLinkSuggestions({
+      // addServerOwners runs here too (architect review, PR #354): the
+      // alias-only gap must not re-open the day the lookup flag flips on.
+      suggestions: await addServerOwners(buildLinkSuggestions({
         kind: "code", normalised, includeExact: true,
         modelName: (photoMatchesCode && labelExtras && labelExtras.modelName) || null,
         // Same pooling as the capture path — the list must carry the same
@@ -360,7 +373,7 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
         allCodes: (photoMatchesCode && labelAllCodes) || null,
         tokens: (photoMatchesCode && labelExtras && labelExtras.tokens) || null,
         products,
-      }).filter((s) => !s.weak),
+      }).filter((s) => !s.weak)),
     });
     try {
       // confusableRetry is on ONLY when the code came off a photo — a human who

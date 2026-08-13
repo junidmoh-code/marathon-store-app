@@ -367,9 +367,20 @@ async function runLabelRead(db, {
       // Nike code returns something that looks perfectly valid. What DOES catch
       // it is context — if tier 1 read a longer code and tier 2's answer is a
       // strict prefix of it, tier 2 truncated and tier 1 is right.
+      // A code-less-OR-truncated primary must not take its otherCodes down
+      // with it (architect review, PR #354): those extra tokens are
+      // independently validated reads with nothing to do with the primary's
+      // fate. One merge helper, used by both non-primary branches below.
+      const mergeOtherCodes = () => {
+        if (!Array.isArray(g.otherCodes) || !g.otherCodes.length) return;
+        const hadNone = candidates.length === 0;
+        candidates = dropStrictPrefixes([...new Set([...candidates, ...g.otherCodes])]).slice(0, MAX_CANDIDATES);
+        if (hadNone && candidates.length) source = "gemini";
+      };
       const truncates = g.code && candidates.some((c) => c !== g.code && c.startsWith(g.code));
       if (truncates) {
         console.warn(`readStyleCodeLabel: tier 2 returned ${g.code}, a prefix of a tier-1 candidate — discarded as a truncation`);
+        mergeOtherCodes();
       } else if (g.code) {
         // ── TIER 2 PREFERS, IT NO LONGER ERASES (owner root cause 2026-08-13:
         // the OCR captured ONE line and WHICH line varied between
@@ -391,16 +402,14 @@ async function runLabelRead(db, {
         preferred = g.code;
         source = "gemini";
         brand = g.brand; size = g.size; confidence = g.confidence;
-      } else if (Array.isArray(g.otherCodes) && g.otherCodes.length) {
+      } else {
         // No trusted PRIMARY code — but the validated extra tokens are still
         // real tokens off a real label; dropping them re-created the one-line
         // loss one branch over (CodeRabbit, PR #354). No `preferred` is set:
         // nothing here says which token is the style number, so a
         // multi-candidate result still asks. The same both-ways prefix guard
-        // applies.
-        const hadNone = candidates.length === 0;
-        candidates = dropStrictPrefixes([...new Set([...candidates, ...g.otherCodes])]).slice(0, MAX_CANDIDATES);
-        if (hadNone && candidates.length) source = "gemini";
+        // applies inside the merge helper.
+        mergeOtherCodes();
       }
       // Extras: tier 2 only FILLS GAPS tier 1 left. Both were validated
       // through the same gates (lexicon line / digit run), and a code-less

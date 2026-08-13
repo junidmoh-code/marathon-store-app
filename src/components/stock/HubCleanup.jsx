@@ -477,13 +477,26 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           }
         } else if (anyTok && anyTok.owners.length > 1) {
           // Two tokens, two owners — the human decides, never a coin-flip.
+          // An owner whose record cannot be loaded is NOT silently dropped
+          // (architect review, PR #354): it rides `unloadedIds`, which the
+          // panel surfaces as "N more products own this … reload before
+          // trusting this list" and which forces the collision framing — a
+          // hidden third owner behind a sibling picker could invite a merge
+          // of the wrong pair. All owners unloadable = an error, never the
+          // link panel: the server just proved owners exist.
           const claimants = [];
+          const anyTokUnloaded = [];
           for (const o of anyTok.owners) {
             const p = products.find((x) => x && x.id === o.productId && !isMergedAway(x))
               || await fetchProductFollowingMerge(o.productId).catch(() => null);
             if (p && !claimants.some((c) => c.id === p.id)) claimants.push(p);
+            else if (!p) anyTokUnloaded.push(o.productId);
           }
-          if (claimants.length > 1) {
+          if (!claimants.length) {
+            flash("err", "This label's numbers match registered products, but none could be loaded — try again.");
+            return;
+          }
+          if (claimants.length + anyTokUnloaded.length > 1) {
             // SIBLINGS, NOT COLLISION, when every owner rode ONE code and the
             // index registers them as that code's colourway set (review,
             // PR #354): the collision framing offers the live Merge
@@ -492,7 +505,11 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             // one label naming two products IS the duplicate question.
             const ownerCodes = [...new Set(anyTok.owners.map((o) => normaliseStyleCode(o.code)).filter(Boolean))];
             let siblingSet = false;
-            if (ownerCodes.length === 1) {
+            // An unloaded owner also blocks the sibling framing — the claim
+            // may vouch for the VISIBLE ones while the hidden one is the
+            // genuine collision (same rule as resolveStyleNumber's
+            // `!unloadedIds.length`).
+            if (ownerCodes.length === 1 && !anyTokUnloaded.length) {
               try {
                 const sharedClaim = await lookupStyleClaim(ownerCodes[0]);
                 siblingSet = allRegisteredSiblings(sharedClaim, claimants.map((c) => c.id));
@@ -500,7 +517,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             }
             setPanel({
               mode: "choose", code: ownerCodes.length === 1 ? (formatStyleCodeForDisplay(ownerCodes[0]) || display) : display,
-              claimants, siblings: siblingSet, unloadedIds: [],
+              claimants, siblings: siblingSet, unloadedIds: anyTokUnloaded,
               allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
             });
             return;
