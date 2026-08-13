@@ -250,6 +250,11 @@ export default function HealthView({ products = [], onExit }) {
   // owner directive 2026-08-05), and a stale per-type selection persisted from
   // the old per-subcategory row ("bags", "watches", …) falls back the same way.
   const [missingTab, setMissingTab] = useState(null);
+  // Solve-undo records live HERE, not in NetworkTransfer: a glance at the
+  // Sneakers or Hidden chip unmounts that component, and a fresh undo for a
+  // mistaken solve must survive exactly that glance. HealthView persists for
+  // the whole Inventory Health visit. (Sonnet substitute review, PR #361.)
+  const [solveUndoables, setSolveUndoables] = useState([]);
   const exceptions = useStockExceptions();
   const shadow = useEngineShadow();
   const openEngine = useEngineOpen();
@@ -508,7 +513,7 @@ export default function HealthView({ products = [], onExit }) {
               ? <HiddenProducts products={products} cards={missingProductCards || []} hiddenMap={hiddenMap} />
               : activeTab === "sneakers"
               ? <MissingFootwear products={products} />
-              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingVisible} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} />}
+              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingVisible} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} undoables={solveUndoables} setUndoables={setSolveUndoables} />}
           </DetailShell>
         );
       }

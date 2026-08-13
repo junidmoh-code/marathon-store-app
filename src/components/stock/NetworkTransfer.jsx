@@ -12,8 +12,8 @@
 // retires its card instantly. Clothing and perfume (2026-08-13 — see
 // missingProductsCore's isPerfume note); strictly existing tokens.
 
-import React, { useEffect, useMemo, useState } from "react";
-import { ref, get, update, onValue } from "firebase/database";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { ref, get, update, onValue, runTransaction } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
@@ -24,7 +24,7 @@ import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
-import { seedCellUntouched, solveUndoBlockers, undoUpdate } from "./solveUndo";
+import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -59,7 +59,7 @@ const destChip = (on) => ({
 // one — the same count-disagrees-with-list class of bug this tab was just fixed
 // for. One subscription, one snapshot, and one less full-tree listener.
 // (Codex review, PR #308.) HealthView is the only renderer of this component.
-export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null, targetsSettled = false, targetsError = false }) {
+export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null, targetsSettled = false, targetsError = false, undoables: undoablesProp = null, setUndoables: setUndoablesProp = null }) {
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
@@ -133,30 +133,58 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // ── SOLVE UNDO — this session's solves, each reversible while safe ─────────
   // A solved card leaves the list the moment its seed lands, so the undo
   // affordance cannot live on the card: each successful solve is recorded
-  // here and rendered as a strip above the list. Undo re-reads the exact
-  // cells the solve wrote and deletes them ONLY if every one is still the
-  // untouched seed and the engine has not raised work on it since — the full
-  // rule and its rationale live in solveUndo.js.
-  const [undoables, setUndoables] = useState([]);   // [{key,pid,name,store,locs,paths,at,err,busy,done}]
+  // and rendered as a strip above the list. The record and every guard rule
+  // live in solveUndo.js. The list itself is OWNED BY HealthView and passed
+  // down, so a glance at the Sneakers or Hidden chip — which unmounts this
+  // component — cannot silently drop a fresh undo (Sonnet substitute review,
+  // PR #361); the local fallback only serves standalone use.
+  const [localUndoables, setLocalUndoables] = useState([]);
+  const undoables = undoablesProp ?? localUndoables;
+  const setUndoables = setUndoablesProp ?? setLocalUndoables;
+  // In-flight keys in a ref: the render-closure `u.busy` is stale under a
+  // double-tap, and two overlapping undos of one entry would race their own
+  // reads (Kimi substitute review, PR #361).
+  const undoInFlight = useRef(new Set());
   const undoSolve = async (u) => {
-    if (!canAct || u.busy || u.done) return;
+    if (!canAct || u.busy || undoInFlight.current.has(u.key)) return;
+    undoInFlight.current.add(u.key);
     setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: true, err: null } : x)));
     try {
-      const cellsByPath = {};
-      for (const p of u.paths) cellsByPath[p] = (await get(ref(database, p))).val();
+      // Engine guard first: any CURRENT lock on a seeded size that was not in
+      // the solve-time snapshot means the engine has raised work on the seed —
+      // deleting its cells would orphan queue entries, so refuse before
+      // touching anything. (No clock comparisons — see solveUndo.js.)
       const openByLoc = {};
-      for (const loc of u.locs) openByLoc[loc] = (await get(ref(database, `refill_engine/open/${loc}/${u.pid}`))).val();
-      const blockers = solveUndoBlockers({ cellsByPath, openByLoc, solvedAtMs: u.at });
+      await Promise.all(u.locs.map(async (loc) => {
+        openByLoc[loc] = (await get(ref(database, `refill_engine/open/${loc}/${u.pid}`))).val();
+      }));
+      const blockers = solveUndoBlockers({ paths: u.paths, openByLoc, priorOpenByLoc: u.priorOpen });
       if (blockers.length) {
         setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: blockers[0] } : x)));
         return;
       }
-      // All-or-nothing, exactly the recorded paths — the card returns via the
-      // same live subscription that retired it.
-      await update(ref(database), undoUpdate(u.paths));
-      setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, done: true } : x)));
+      // Per-cell TRANSACTIONS, not read-then-delete: each cell is re-verified
+      // as the untouched seed INSIDE the CAS, so a count/sale/transfer landing
+      // mid-undo aborts that cell's delete instead of being erased (the
+      // substitute pair's TOCTOU HIGH). A cell that aborts stays, and the row
+      // says which and why; the committed ones are genuinely just seeds, so a
+      // partial undo leaves nothing broken — the product simply still carries
+      // the touched sizes.
+      const results = await Promise.all(u.paths.map((p) => runTransaction(ref(database, p), undoCellTxn)));
+      const kept = u.paths.filter((p, i) => !results[i].committed);
+      if (kept.length) {
+        setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `${u.paths.length - kept.length} of ${u.paths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.` } : x)));
+      } else {
+        // Fully undone: the entry leaves the strip (the card reappearing IS
+        // the feedback), and the stale "Solved ✓" banner is cleared so the
+        // returning card offers Solve again, not last week's success message.
+        setUndoables((l) => l.filter((x) => x.key !== u.key));
+        setSolved((d) => { const n = { ...d }; delete n[u.pid]; return n; });
+      }
     } catch (e) {
       setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` } : x)));
+    } finally {
+      undoInFlight.current.delete(u.key);
     }
   };
 
@@ -368,8 +396,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const okMsg = `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
     try {
       const updates = {};
+      // The engine locks that exist BEFORE this solve, snapshotted into the
+      // undo record. Undo blocks on any lock NOT in this snapshot — identity
+      // comparison, never clocks: a lock's createdAt is its scan's START
+      // time, so a scan spanning the solve would timestamp-classify as
+      // "before" while being causally after (substitute pair, PR #361).
+      const priorOpen = {};
       for (const loc of locs) {
         const existing = (await get(ref(database, `stock/${loc}/${card.pid}`))).val() || {};
+        priorOpen[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val();
         for (const sz of sizes) {
           if (existing[encodeSizeKey(sz)] === undefined) {
             updates[stockCellPath(loc, card.pid, sz)] = { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: now, updatedBy: uid };
@@ -383,7 +418,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // Reversible while safe — recorded with the EXACT paths written, so
         // undo can never touch a cell the solve did not create (a cell that
         // already existed was skipped above and must survive an undo).
-        setUndoables((l) => [{ key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs, paths: Object.keys(updates), at: serverNowMs() }, ...l]);
+        setUndoables((l) => [{ key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs, paths: Object.keys(updates), priorOpen }, ...l]);
       }
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, store, sizes, msg: okMsg } }));
     } catch (e) {
@@ -430,7 +465,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
 
   // The undo strip renders in BOTH branches — solving the last card empties
   // the list, and that is exactly when its undo must not vanish.
-  const undoStrip = undoables.filter((u) => !u.done).map((u) => (
+  const undoStrip = undoables.map((u) => (
     <div key={u.key} style={{ ...GLASS, padding: "9px 12px", marginBottom: 8, fontSize: 12.5 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ flex: 1, color: "rgba(255,255,255,.75)" }}>
