@@ -4307,6 +4307,11 @@ function AdminReviewCategoriesTab({ products = [] }) {
 }
 
 import { needsCost, needsRetail, needsAny, typeOf, createdAt, updatedAt, buildUpdates, validatePrices } from "./utils/missingPrices";
+// EVERY product price write goes through the guarded batch path (audit trail +
+// specials interlock + restore-by-batchId) — never a bare update() on
+// products/{id}/stockPrice|retailPrice. See priceStore.js.
+import { applyPriceBatch } from "./components/admin/priceStore";
+import { asStoredPrice } from "./utils/priceBatch";
 
 // Missing-Prices category chips: All + the real top-levels (so a new category
 // appears automatically) + an Uncategorized catch-all. Keys match typeOf()
@@ -4388,7 +4393,22 @@ function MissingPricesTab({ products = [] }) {
     setSaving(true);
     try {
       const updates = buildUpdates(editProduct, costDraft, retailDraft);
-      await update(ref(database, `products/${editProduct.id}`), updates);
+      // Through the guarded batch path: records who/when/from/to under a
+      // batchId and refuses to touch a product whose retail price is currently
+      // a special (wasPrice would go stale).
+      if (Object.keys(updates).length > 0) {
+        const from = {}, to = {};
+        for (const field of Object.keys(updates)) {
+          from[field] = asStoredPrice(editProduct[field]);
+          to[field] = updates[field];
+        }
+        const res = await applyPriceBatch({
+          action: "single_edit",
+          label: `Missing Prices: ${editProduct.name || editProduct.id}`,
+          lines: { [editProduct.id]: { name: editProduct.name || "", from, to } },
+        });
+        if (!res.ok) { alert("Save failed: " + res.message); return; } // finally resets saving
+      }
       // Open the next missing-price product for continuous entry.
       // Use openEdit so drafts are derived from the next product (preserves
       // the retail<cost confirmation for single-missing-price products).
@@ -6356,24 +6376,33 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   const [retailPriceDraft, setRetailPriceDraft] = useState(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
   useEffect(() => { setStockPriceDraft( typeof product.stockPrice  === "number" ? String(product.stockPrice)  : ""); }, [product.stockPrice]);
   useEffect(() => { setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : ""); }, [product.retailPrice]);
+  const revertPriceDraft = (field) => {
+    if (field === "stockPrice")  setStockPriceDraft( typeof product.stockPrice  === "number" ? String(product.stockPrice)  : "");
+    if (field === "retailPrice") setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
+  };
   const savePrice = (field, draft) => {
     const trimmed = String(draft).trim();
-    if (trimmed === "") {
-      update(ref(database, `products/${product.id}`), { [field]: null })
-        .catch(err => console.warn(`update ${field} failed:`, err));
-      return;
-    }
-    const num = Number(trimmed);
+    const num = trimmed === "" ? null : Number(trimmed);
     // Reject 0 (and negatives / NaN) — matching the create flow's `> 0` rule.
     // The POS contract is that prices are unset/null, never `0` (a free price
     // would mis-ring at checkout). Restore the previous value from RTDB.
-    if (!Number.isFinite(num) || num <= 0) {
-      if (field === "stockPrice")  setStockPriceDraft( typeof product.stockPrice  === "number" ? String(product.stockPrice)  : "");
-      if (field === "retailPrice") setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
-      return;
-    }
-    update(ref(database, `products/${product.id}`), { [field]: num })
-      .catch(err => console.warn(`update ${field} failed:`, err));
+    if (num !== null && (!Number.isFinite(num) || num <= 0)) { revertPriceDraft(field); return; }
+    const from = asStoredPrice(product[field]);
+    if (num === from) return; // unchanged — nothing to write or record
+    // Through the guarded batch path: audited under a batchId, and refused if
+    // the product is on special (its retailPrice IS the special price; end the
+    // special first so wasPrice can't go stale).
+    applyPriceBatch({
+      action: "single_edit",
+      label: `Edit: ${product.name || product.id}`,
+      lines: { [product.id]: { name: product.name || "", from: { [field]: from }, to: { [field]: num } } },
+    }).then((res) => {
+      if (!res.ok) {
+        revertPriceDraft(field);
+        if (res.code === "on_special") alert(res.message);
+        else console.warn(`update ${field} failed:`, res.message);
+      }
+    });
   };
   const toggleShoebox = () => {
     if (isClothing) return; // clothing never has a shoebox
