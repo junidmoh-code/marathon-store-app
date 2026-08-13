@@ -388,6 +388,20 @@ describe("perfume — visible, and solvable against the correct hub (2026-08-13)
     expect(solveButton(armed).props.disabled).toBe(false);
   });
 
+  it("with the kill switch OFF, a row-less perfume still asks for a TARGET — never blames the switch", () => {
+    // "Automatic refills are switched off" is a remedy sentence: it tells the
+    // operator that flipping the switch will fix this row. For a perfume it
+    // never will — the rule branches are nested inside isClothing on both
+    // sides of the mirror — so the row must ask for the one thing that works:
+    // a target row. (Sonnet review, PR #350.)
+    paths["config/refillEngine"] = { ...CONFIG, ruleBasedTargets: false };
+    const tree = renderScent({});
+    const btn = solveButton(tree);
+    expect(btn.props.disabled).toBe(true);
+    expect(btn.props.title).toMatch(/target/i);
+    expect(btn.props.title).not.toMatch(/switched off/i);
+  });
+
   it("a perfume the shop already carries never becomes a card — the engine owns it from there", () => {
     const carried = { ...SCENT_STOCK, "marathon-pe": { [SCENT]: { _: cell(0) } } };
     const cards = computeMissingProducts({ allStock: carried, products: SCENT_ONLY });

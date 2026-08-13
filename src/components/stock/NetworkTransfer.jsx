@@ -362,9 +362,19 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // and the disabled test, so the button cannot go grey without the row
         // saying why.
         const armed = STORES.some((s) => seedLocations(card.source, s).every(ruleOn));
+        // The kill switch is only a REMEDY for products the rule branches can
+        // serve — and those are nested inside isClothing (see runFor). For a
+        // perfume the switch's position changes nothing: on or off, only an
+        // explicit row can arm it. So a non-clothing card must never be told
+        // "automatic refills are switched off" — that sends the operator to
+        // flip a switch that cannot help — and instead falls through to the
+        // one-size "needs a target set" sentence, which is the actual remedy.
+        // Clothing keeps the real switch state, byte-for-byte. (Sonnet review,
+        // PR #350.)
         const solveBlocked = solveReason({
           canAct, configLoaded: !!cfg, configError: cfgErr, targetsLoaded: targetsReady,
-          hasSourceStock: card.units > 0, policyAtAnyStore, ruleOnAnywhere: armed, targetsError,
+          hasSourceStock: card.units > 0, policyAtAnyStore,
+          ruleOnAnywhere: isClothing(byId.get(card.pid)) ? armed : true, targetsError,
           // `.every` is vacuously true on an empty list, which would have called a
           // product with no usable catalogue size "one-size" and told the operator
           // to go and set a target for a size it does not have. (Sonnet, PR #342.)
