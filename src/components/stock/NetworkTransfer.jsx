@@ -9,7 +9,8 @@
 //   → Transfer — immediate one-step applyMovement, straight from Health.
 //
 // Data is computed LIVE from /stock (not the scan snapshot) so a transfer
-// retires its card instantly. Strictly clothing; strictly existing tokens.
+// retires its card instantly. Clothing and perfume (2026-08-13 — see
+// missingProductsCore's isPerfume note); strictly existing tokens.
 
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, get, update, onValue } from "firebase/database";
@@ -21,7 +22,7 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
-import { computeMissingProducts } from "./missingProductsCore";
+import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -184,10 +185,24 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // operator configured — which is what greyed out every beanie. Applying the kill
   // switch per location INSIDE resolvedRun is the other half: explicit rows must
   // outlive it, exactly as they do in resolveTarget.
-  const runFor = (pid) => resolvedRun({
-    std: stdRun, subRun, subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
-    targets: targetRows, pid, ruleBasedTargets: cfg?.ruleBasedTargets,
-  });
+  // NON-CLOTHING CARDS (perfume, 2026-08-13) SEE EXPLICIT ROWS ONLY. The
+  // engine's rule branches — the size run AND the subcategory policy — are both
+  // nested inside isClothing(product) (refill-engine.cjs resolveTarget), so for
+  // a perfume they can never fire, whatever the config says. This mirror must
+  // refuse them too, or a mis-filed perfume carrying a stray letter size would
+  // light Solve up on the strength of a garment run the engine will never
+  // apply — the exact false-solve (seed, vanish, never refill) this module
+  // exists to prevent. solvePlan.js's own header called this the "one mirror
+  // gap that lives elsewhere" back when the cards list was clothing-only; with
+  // perfume admitted, "elsewhere" is here. Clothing is byte-for-byte unchanged.
+  const runFor = (pid) => {
+    const ruleEligible = isClothing(byId.get(pid));
+    return resolvedRun({
+      std: ruleEligible ? stdRun : {}, subRun: ruleEligible ? subRun : undefined,
+      subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
+      targets: targetRows, pid, ruleBasedTargets: cfg?.ruleBasedTargets,
+    });
+  };
   // Sizes safe to seed — a positive target at every seed location (solvePlan.js).
   // A size with no target would seed a cell the engine never refills, then vanish
   // with a false "solved", so it's excluded. (Codex fix a.)
