@@ -115,14 +115,18 @@ export function normaliseLines(lines, action) {
   return out;
 }
 
+// aux exists for exactly one thing: the /specials entry that rides a
+// special_start / special_end batch. The whitelist is the money-safety fence —
+// a price batch can touch price fields, its own history, and specials, and
+// STRUCTURALLY nothing else (/pos/sales, /laybys, /orders, /stock are
+// unreachable even from a buggy or hostile plan).
 function normaliseAux(aux) {
   if (aux == null) return null;
   if (!Array.isArray(aux) || aux.length === 0) throw err("bad_aux", "aux must be a non-empty array when present");
   return aux.map((a, i) => {
-    if (!a || typeof a.path !== "string" || !/^[A-Za-z0-9_\-/]+$/.test(a.path) || a.path.includes("//")) {
-      throw err("bad_aux", `aux[${i}]: unsafe path`);
+    if (!a || typeof a.path !== "string" || !/^specials\/[A-Za-z0-9_-]+$/.test(a.path)) {
+      throw err("bad_aux", `aux[${i}]: only specials/{productId} may ride a price batch`);
     }
-    if (a.path.startsWith("products/")) throw err("bad_aux", `aux[${i}]: product prices belong in lines, not aux`);
     return { path: a.path, from: a.from === undefined ? null : a.from, to: a.to === undefined ? null : a.to };
   });
 }

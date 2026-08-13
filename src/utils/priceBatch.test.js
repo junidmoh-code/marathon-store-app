@@ -85,7 +85,7 @@ test("aux paths ride the same atomic update; product paths are barred from aux",
       aux: [{ path: "products/p1/retailPrice", from: 300, to: 1 }],
       ...STAMPS,
     }),
-    /belong in lines/,
+    /only specials/,
   );
 });
 
@@ -143,11 +143,11 @@ test("restore reverses aux paths (to → from)", () => {
   const { record } = buildPriceBatch({
     batchId: "pb_2_g", action: "bulk_change",
     lines: { p1: { name: "X", from: { retailPrice: 100 }, to: { retailPrice: 120 } } },
-    aux: [{ path: "some/side/path", from: "old", to: "new" }],
+    aux: [{ path: "specials/p1", from: "old", to: "new" }],
     ...STAMPS,
   });
   const { updates } = buildRestoreBatch({ record, batchId: "pb_2_g", restoreBatchId: "pb_2_h", currentById: { p1: { retailPrice: 120 } }, ...RESTAMPS });
-  assert.equal(updates["some/side/path"], "old");
+  assert.equal(updates["specials/p1"], "old");
 });
 
 test("specials batches must be reversed on the Specials card, not by generic restore", () => {
@@ -158,6 +158,31 @@ test("specials batches must be reversed on the Specials card, not by generic res
     ...STAMPS,
   });
   assert.throws(() => buildRestoreBatch({ record, batchId: "pb_2_i", restoreBatchId: "pb_2_j", ...RESTAMPS }), /Specials card/);
+});
+
+test("MONEY FENCE: a price batch can only reach price fields, its own history, and specials — settled-money nodes are structurally unreachable", () => {
+  // Every update path a legal batch produces is under one of the three roots.
+  const { updates } = buildPriceBatch({
+    batchId: "pb_4_a", action: "special_start",
+    lines: { p1: { name: "X", from: { retailPrice: 300 }, to: { retailPrice: 200 } } },
+    aux: [{ path: "specials/p1", from: null, to: { price: 200 } }],
+    ...STAMPS,
+  });
+  const legal = /^(products\/[A-Za-z0-9_-]+\/(stockPrice|retailPrice)|price_history\/[A-Za-z0-9_-]+|price_history_index\/[A-Za-z0-9_-]+|specials\/[A-Za-z0-9_-]+)$/;
+  for (const path of Object.keys(updates)) assert.match(path, legal);
+  // And a plan that tries to smuggle a settled-money write via aux is refused.
+  for (const money of ["laybys/L1/balanceRemaining", "pos/sales/s1/total", "orders/o1", "stock/hub1/p1/8", "sales/s1"]) {
+    assert.throws(
+      () => buildPriceBatch({
+        batchId: "pb_4_b", action: "special_start",
+        lines: { p1: { name: "X", from: { retailPrice: 300 }, to: { retailPrice: 200 } } },
+        aux: [{ path: money, from: null, to: 0 }],
+        ...STAMPS,
+      }),
+      /only specials/,
+      `expected refusal for aux path ${money}`,
+    );
+  }
 });
 
 // ── computeRestoreDrift ──────────────────────────────────────────────────────
