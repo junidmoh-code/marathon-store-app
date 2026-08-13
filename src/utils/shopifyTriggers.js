@@ -41,6 +41,11 @@
 //   • "On" (On Running) is only stripped as the LEADING word before its own
 //     model vocabulary; its model names (Cloud*) are triggers in their own
 //     right.
+//   • A filler word INSIDE a multi-word trigger ("New thing Balance") is not
+//     matched unless each half is independently a trigger — a documented gap,
+//     accepted because names here are staff-authored descriptions of real
+//     stock, not adversarial input. Same for non-Latin homoglyphs (Cyrillic
+//     "о"): NFKD folding handles accents, not lookalike alphabets.
 
 // T(spec, opts) — spec is the canonical word sequence, space-separated.
 // alts: alternative spellings/misspellings folded onto the same label.
@@ -287,9 +292,17 @@ const CRYSTAL_PALACE = /crystal[\s-]+palace/i;
 
 const WINDOW_MAX = 5; // longest trigger is 4 words; +1 slack for split tokens
 
-const tokenize = (text) => String(text ?? "").match(/[A-Za-z0-9'’]+/g) || [];
-const squash = (text) => String(text ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-const wordOf = (tok) => tok.toLowerCase().replace(/[^a-z0-9]+/g, "");
+// Every COMPARISON runs on NFKD-folded text with combining marks stripped, so
+// "Nìke" / "Adídas" cannot slip past as trigger-free (full homoglyph mapping —
+// Cyrillic "о" for Latin "o" — is out of scope and a documented residual
+// risk; catalogue names and the card's typed input are Latin-script).
+// tokenize keeps the ORIGINAL characters — residue tokens are reassembled
+// into the rebuilt title, which must not lose its casing or accents.
+const fold = (text) =>
+  String(text ?? "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase();
+const tokenize = (text) => String(text ?? "").match(/[\p{L}\p{N}'’]+/gu) || [];
+const squash = (text) => fold(text).replace(/[^a-z0-9]+/g, "");
+const wordOf = (tok) => fold(tok).replace(/[^a-z0-9]+/g, "");
 
 // Exact word-sequence present anywhere in `words` (word-mode variants).
 // The palace guard lives here: "crystal palace" is a football club, not the
@@ -479,6 +492,7 @@ export function cleanTitleFor(product) {
       name === "" ? "empty name"
       : /^\d/.test(name) ? "digit-leading name"
       : name.length < 3 ? "name under 3 chars"
+      : name.length > 80 ? "name over 80 chars"
       : null;
     return reason
       ? { title: null, source: null, needsAI: true, reason, triggers }
@@ -513,6 +527,7 @@ export function cleanTitleFor(product) {
     title === "" ? "empty after strip"
     : /^\d/.test(title) ? "digit-leading after strip"
     : title.length < 3 ? "under 3 chars after strip"
+    : title.length > 80 ? "over 80 chars after rebuild"
     : !isTriggerFree(title) ? "trigger survived rebuild"
     : null;
   return reason

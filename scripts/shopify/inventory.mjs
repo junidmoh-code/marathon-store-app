@@ -13,10 +13,17 @@ import { stockSizeKey } from "../../src/utils/sizeKey.js";
 // where a cell is the movement-stamped object { qty, lastType, mv, … } the
 // applyMovement pipeline writes (a bare number is tolerated for old data).
 // → { [sizeKey]: networkQty } for this product's sizes (encoded keys).
+// stock/in_transit is NOT sellable (src/components/stock/locations.js marks it
+// kind "transit", sellable false — boxes that left their source but haven't
+// landed, incl. count-integrity holds). Pushing it as available would let the
+// storefront sell stock nobody can pick.
+const UNSELLABLE_LOCATIONS = new Set(["in_transit"]);
+
 export function networkTotals(stockTree, productId, sizes) {
   const totals = {};
   for (const size of sizes) totals[stockSizeKey(size)] = 0;
-  for (const perProduct of Object.values(stockTree || {})) {
+  for (const [loc, perProduct] of Object.entries(stockTree || {})) {
+    if (UNSELLABLE_LOCATIONS.has(loc)) continue;
     const cells = perProduct?.[productId];
     if (!cells) continue;
     for (const [key, cell] of Object.entries(cells)) {

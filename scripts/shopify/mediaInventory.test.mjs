@@ -38,17 +38,20 @@ describe("networkTotals — one sellable pool", () => {
   const stock = {
     "marathon-pe": { p1: { "8": cell(3), "9": cell(1), "5_5": cell(2) } },
     hub2:          { p1: { "8": cell(2), "9": cell(-4) } },   // negative clamps to 0
-    in_transit:    { p1: { "8": 1 } },                        // legacy bare number
+    in_transit:    { p1: { "8": 100 } },                      // NOT sellable — excluded
     trophy:        { p2: { "8": cell(99) } },                 // other product — ignored
   };
-  it("sums every location per size, clamping negative cells to 0", () => {
+  it("sums every SELLABLE location per size, clamping negative cells to 0", () => {
     expect(networkTotals(stock, "p1", ["8", "9", "5.5"])).toEqual({
-      "8": 6, "9": 1, "5_5": 2,
+      "8": 5, "9": 1, "5_5": 2,
     });
+  });
+  it("in_transit stock never counts as sellable", () => {
+    expect(networkTotals({ in_transit: { p1: { "8": cell(9) } } }, "p1", ["8"])).toEqual({ "8": 0 });
   });
   it("sizes not in the record are excluded; missing cells read 0", () => {
     const totals = networkTotals(stock, "p1", ["8"]);
-    expect(totals).toEqual({ "8": 6 });
+    expect(totals).toEqual({ "8": 5 });
     expect(networkTotals(stock, "p1", ["12"])).toEqual({ "12": 0 });
   });
   it("one-size uses the '_' sentinel cell", () => {

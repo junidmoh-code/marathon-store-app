@@ -27,6 +27,14 @@ export function buildMediaPlan(product, cleanTitle) {
     if (!/^https:\/\//.test(u)) {
       throw new Error(`photo URL is not public HTTPS: ${u.slice(0, 80)}`);
     }
+    // /products is client-writable; this privileged script must not be a
+    // fetch-anything proxy (and Shopify must not be handed arbitrary hosts).
+    // Product photos live in the app's Firebase Storage bucket, full stop.
+    let host = "";
+    try { host = new URL(u).host; } catch { /* handled below */ }
+    if (host !== "firebasestorage.googleapis.com") {
+      throw new Error(`photo URL host "${host}" is not the app's Firebase Storage — refusing: ${u.slice(0, 80)}`);
+    }
   }
   const alt = String(cleanTitle ?? "").trim();
   if (!alt) throw new Error("media alt text requires the cleaned title");

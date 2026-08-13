@@ -41,6 +41,11 @@ describe("detection — three trigger categories", () => {
       expect(triggersInText(name).length, name).toBeGreaterThan(0);
     }
   });
+  it("folds diacritics before matching — accented spellings cannot slip past", () => {
+    for (const name of ["Nìke hoodie", "Adídas tracksuit", "Gucçi belt", "Lacosté polo"]) {
+      expect(triggersInText(name).length, name).toBeGreaterThan(0);
+    }
+  });
   it("detection is stricter than removal: triggers spanning word joins still flag", () => {
     expect(triggersInText("cloud monster shoe").length).toBeGreaterThan(0);
     expect(triggersInText("LGuard Breaker Black")).toContain("guard breaker");

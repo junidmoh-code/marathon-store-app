@@ -20,6 +20,7 @@ import { graphql } from "./client.mjs";
 import { encodeSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs";
 import { cleanTitleFor, isTriggerFree } from "../../src/utils/shopifyTriggers.js";
+import { VENDOR, validatePayload } from "./compliance.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
 
 const [productId, ...flags] = process.argv.slice(2);
@@ -93,6 +94,7 @@ if (publishNode?.cleanName && isTriggerFree(publishNode.cleanName)) {
 
 const input = {
   title,
+  vendor: VENDOR, // the fixed string — never a brand, never from the record
   status: "DRAFT", // never storefront-visible in this slice
   productOptions: [
     { name: "Size", position: 1, values: sizes.map((s) => ({ name: sizeName(s) })) },
@@ -103,6 +105,19 @@ const input = {
     ...(product.sku ? { sku: `${product.sku}-${encodeSizeKey(s)}` } : {}),
   })),
 };
+
+// The SAME full-field gate the publish run uses — this script is a push path
+// too, and every pushed field (SKUs included) must be trigger-free.
+const verdict = validatePayload({
+  title: input.title,
+  vendor: input.vendor,
+  variants: input.variants.map((v) => ({ sku: v.sku })),
+});
+if (!verdict.ok) {
+  console.error(`Refusing to push ${productId} — compliance validator:`);
+  for (const v of verdict.violations) console.error(`  ${v.field}: ${v.problem}`);
+  process.exit(1);
+}
 
 if (!COMMIT) {
   // Dry run: the exact payload and nothing else.

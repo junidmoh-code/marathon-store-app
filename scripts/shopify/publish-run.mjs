@@ -106,6 +106,11 @@ for (const { pid, node } of worklist) {
   })();
   if (!mediaPlan) continue;
 
+  // Variant SKUs are pushed fields too — validated with everything else
+  // (catalogue SKUs are 4-digit codes today, but the gate fails closed).
+  const variantSkus = product.sku
+    ? sizes.map((s) => ({ sku: `${product.sku}-${encodeSizeKey(s)}` }))
+    : [];
   const payload = {
     title,
     handle: buildHandle(title),
@@ -115,6 +120,7 @@ for (const { pid, node } of worklist) {
     descriptionHtml: buildDescriptionHtml(node.condition),
     seo: buildSeo(title, node.condition),
     media: mediaPlan,
+    variants: variantSkus,
   };
   const verdict = validatePayload(payload);
   if (!verdict.ok) {
@@ -147,6 +153,14 @@ for (const j of jobs) {
   const { pid, product, sizes, payload, mediaPlan } = j;
   console.log(`\n▶ ${pid}  "${payload.title}"`);
   try {
+    // Re-check the nomination at the last moment — the card may have
+    // withdrawn or re-conditioned it since the worklist was read.
+    const fresh = (await db.ref(`shopify_publish/${pid}`).get()).val();
+    if (fresh?.state !== "nominated" || fresh?.condition !== j.node.condition) {
+      results.push({ pid, ok: false, why: `nomination changed since the run started (state=${fresh?.state}) — skipped` });
+      continue;
+    }
+
     // Photos must answer BEFORE anything is created.
     await preflightPhotoUrls(mediaPlan.map((m) => m.originalSource));
 
@@ -230,8 +244,15 @@ for (const j of jobs) {
       console.log(`  media already present (${p.media.nodes.length}) — not re-attaching`);
     }
 
-    // Inventory — absolute network totals at the single location.
-    const totals = networkTotals(stockTree, pid, sizes);
+    // Inventory — absolute network totals at the single location, from a
+    // FRESH read of this product's cells (the run-start snapshot only names
+    // the locations): a sale mid-run must not be pushed back as sellable.
+    const freshTree = {};
+    for (const loc of Object.keys(stockTree)) {
+      const cells = (await db.ref(`stock/${loc}/${pid}`).get()).val();
+      if (cells) freshTree[loc] = { [pid]: cells };
+    }
+    const totals = networkTotals(freshTree, pid, sizes);
     await setAvailable(
       graphql,
       locationId,
@@ -261,6 +282,76 @@ if (PUBLISH_PID) {
     console.error(`--publish ${PUBLISH_PID}: no /shopify_sync mapping — push it as a draft first`);
     process.exit(1);
   }
+
+  // FAIL-CLOSED GATE: the draft may have been edited in the Shopify admin (or
+  // created by an older tool) since it was pushed — re-read the CANONICAL
+  // object and run the full-field validator on what is actually there. A
+  // trigger anywhere refuses; nothing becomes storefront-visible unvalidated.
+  const liveNode = (await db.ref(`shopify_publish/${PUBLISH_PID}`).get()).val();
+  const canon = await graphql(
+    `query ($id: ID!) {
+      product(id: $id) {
+        id title handle vendor productType tags descriptionHtml
+        seo { title description }
+        options { name optionValues { name } }
+        media(first: 50) { nodes { alt } }
+        variants(first: 100) { nodes { sku } }
+      }
+    }`,
+    { id: mapNode.shopifyProductId }
+  );
+  const cp = canon.product;
+  if (!cp) { console.error(`--publish: ${mapNode.shopifyProductId} not found on the shop`); process.exit(1); }
+  const verdict = validatePayload({
+    title: cp.title, handle: cp.handle, vendor: cp.vendor, productType: cp.productType,
+    tags: cp.tags, descriptionHtml: cp.descriptionHtml, seo: cp.seo,
+    media: cp.media.nodes.map((m) => ({ alt: m.alt })),
+    variants: cp.variants.nodes.map((v) => ({ sku: v.sku })),
+  });
+  for (const o of cp.options ?? []) {
+    for (const ov of o.optionValues ?? []) {
+      if (!isTriggerFree(`${o.name} ${ov.name}`)) {
+        verdict.ok = false;
+        verdict.violations.push({ field: `option ${o.name}`, problem: `trigger in value "${ov.name}"` });
+      }
+    }
+  }
+  if (!verdict.ok) {
+    console.error(`🛑 --publish REFUSED: the product on Shopify fails the compliance validator:`);
+    for (const v of verdict.violations) console.error(`   ${v.field}: ${v.problem}`);
+    process.exit(1);
+  }
+  if (liveNode?.condition && !cp.descriptionHtml.includes(liveNode.condition)) {
+    console.error(
+      `⚠ the card's condition ("${liveNode.condition}") is not the one in the live ` +
+        `description — update the draft before publishing if that matters.`
+    );
+  }
+
+  // Re-sync inventory at the moment it starts mattering to real customers —
+  // draft-time quantities can be days stale by the time the owner publishes.
+  const pubProduct = (await db.ref(`products/${PUBLISH_PID}`).get()).val();
+  const pubSizes = Array.isArray(pubProduct?.sizes) ? sortSizes(pubProduct.sizes) : null;
+  if (pubSizes && mapNode.variants) {
+    const locNames = Object.keys((await db.ref("stock").get()).val() || {});
+    const tree = {};
+    for (const loc of locNames) {
+      const cells = (await db.ref(`stock/${loc}/${PUBLISH_PID}`).get()).val();
+      if (cells) tree[loc] = { [PUBLISH_PID]: cells };
+    }
+    const totals = networkTotals(tree, PUBLISH_PID, pubSizes);
+    const locId = await requireSingleLocation(graphql);
+    await setAvailable(
+      graphql,
+      locId,
+      Object.entries(mapNode.variants).map(([sizeKey, v]) => ({
+        inventoryItemId: v.shopifyInventoryItemId,
+        quantity: totals[sizeKey] ?? 0,
+      }))
+    );
+    console.log(`  pre-publish inventory re-sync: ${JSON.stringify(totals)}`);
+  }
+
   const pubs = await graphql(
     `query { publications(first: 10) { nodes { id catalog { title } } } }`
   );
@@ -275,13 +366,19 @@ if (PUBLISH_PID) {
   );
   const errs = res.publishablePublish.userErrors;
   if (errs?.length) { console.error(`publishablePublish userErrors: ${JSON.stringify(errs)}`); process.exit(1); }
-  await graphql(
+  const upd = await graphql(
     `mutation ($input: ProductUpdateInput!) {
       productUpdate(product: $input) { product { id status } userErrors { field message } }
     }`,
     { input: { id: mapNode.shopifyProductId, status: "ACTIVE" } },
     { mutation: true }
   );
+  const updErrs = upd.productUpdate.userErrors;
+  if (updErrs?.length) { console.error(`productUpdate userErrors: ${JSON.stringify(updErrs)} — NOT marking live`); process.exit(1); }
+  if (upd.productUpdate.product?.status !== "ACTIVE") {
+    console.error(`productUpdate returned status ${upd.productUpdate.product?.status} — NOT marking live`);
+    process.exit(1);
+  }
   await setPublishState(db, PUBLISH_PID, "live", "script:publish-run");
   console.log(`published ${PUBLISH_PID} → live`);
 }

@@ -36,13 +36,17 @@ export async function readAllPublishNodes(db) {
 }
 
 // Cache a generated/typed clean name. Returns "cached" | "kept-existing".
+// The never-overwrite guarantee is a TRANSACTION on the cleanName child — a
+// read-then-update here would let an AI run and a card save both observe
+// "no name" and the later write clobber the earlier reviewed one.
 export async function cachePublishName(db, productId, { cleanName, source, updatedBy }) {
   assertSafeSegment(productId, "productId");
-  const ref = db.ref(`shopify_publish/${productId}`);
-  const existing = (await ref.get()).val();
-  if (existing?.cleanName) return "kept-existing";
-  await ref.update({
-    cleanName: String(cleanName),
+  const nameRef = db.ref(`shopify_publish/${productId}/cleanName`);
+  const result = await nameRef.transaction((cur) =>
+    cur === null ? String(cleanName) : undefined
+  );
+  if (!result.committed) return "kept-existing";
+  await db.ref(`shopify_publish/${productId}`).update({
     cleanNameSource: source,
     updatedAt: Date.now(),
     updatedBy,

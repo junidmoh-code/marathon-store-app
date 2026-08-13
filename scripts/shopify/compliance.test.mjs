@@ -20,7 +20,12 @@ const cleanPayload = () => ({
   tags: ["Footwear", "Sneakers"],
   descriptionHtml: buildDescriptionHtml(CONDITIONS[0]),
   seo: buildSeo("Low-top sneaker black with blue laces", CONDITIONS[0]),
-  media: [{ alt: "Low-top sneaker black with blue laces" }],
+  media: [{
+    alt: "Low-top sneaker black with blue laces",
+    originalSource:
+      "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/products%2Fp123%2Fphoto.jpg?alt=media&token=abc",
+  }],
+  variants: [{ sku: "0014-5_5" }, { sku: "0014-8" }],
 });
 
 describe("condition", () => {
@@ -82,6 +87,11 @@ describe("validatePayload — the pre-flight gate", () => {
     ["seo.title", (p) => { p.seo.title = "Jordan retro | Marathon Club"; }],
     ["seo.description", (p) => { p.seo.description = "Off-White belt, checked by hand."; }],
     ["media[0].alt", (p) => { p.media[0].alt = "AIRFORCE1 side view"; }],
+    ["media[0].originalSource", (p) => {
+      p.media[0].originalSource =
+        "https://firebasestorage.googleapis.com/v0/b/x/o/products%2FNike-Air-Max-front.jpg?alt=media&token=zzz";
+    }],
+    ["variants[0].sku", (p) => { p.variants[0].sku = "NIKE-123-5_5"; }],
   ];
   for (const [field, dirty] of dirtyPerField) {
     it(`refuses a trigger in ${field}`, () => {
@@ -98,6 +108,13 @@ describe("validatePayload — the pre-flight gate", () => {
     expect(validatePayload({ ...cleanPayload(), title: "9060 grey" }).ok).toBe(false);
     expect(validatePayload({ ...cleanPayload(), vendor: "marathon club" }).ok).toBe(false);
     expect(validatePayload({ ...cleanPayload(), handle: "Bad Handle!" }).ok).toBe(false);
+  });
+
+  it("does NOT block on a random storage token that happens to contain letters", () => {
+    const p = cleanPayload();
+    p.media[0].originalSource =
+      "https://firebasestorage.googleapis.com/v0/b/x/o/products%2Fp1%2Fphoto.jpg?alt=media&token=aXnikeQz9"; // trigger text in the TOKEN only
+    expect(validatePayload(p).ok).toBe(true);
   });
 
   it("catches concatenated and misspelt triggers in any field", () => {

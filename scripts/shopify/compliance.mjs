@@ -76,7 +76,14 @@ export function buildTags(product) {
 //
 // payload shape (superset tolerated; absent optional fields are skipped):
 //   { title, handle, vendor, productType, tags: [], descriptionHtml,
-//     seo: { title, description }, media: [{ alt }] }
+//     seo: { title, description }, media: [{ alt, originalSource }],
+//     variants: [{ sku }] }
+//
+// Media source URLs are pushed fields too (Shopify fetches and keeps them, and
+// the filename shows in admin): the DECODED PATH of each originalSource is
+// trigger-checked. Deliberately not the query string — Firebase Storage access
+// tokens are random and a random token containing "puma" must not block a
+// clean product; the path is the only part a human named.
 export function validatePayload(payload) {
   const violations = [];
   const check = (field, value) => {
@@ -91,6 +98,7 @@ export function validatePayload(payload) {
   } else {
     if (/^\d/.test(String(title))) violations.push({ field: "title", problem: "digit-leading" });
     if (String(title).trim().length < 3) violations.push({ field: "title", problem: "under 3 chars" });
+    if (String(title).trim().length > 80) violations.push({ field: "title", problem: "over 80 chars" });
   }
   check("title", title);
 
@@ -109,7 +117,18 @@ export function validatePayload(payload) {
   check("descriptionHtml", payload?.descriptionHtml);
   check("seo.title", payload?.seo?.title);
   check("seo.description", payload?.seo?.description);
-  for (const [i, m] of (payload?.media ?? []).entries()) check(`media[${i}].alt`, m?.alt);
+  for (const [i, m] of (payload?.media ?? []).entries()) {
+    check(`media[${i}].alt`, m?.alt);
+    if (m?.originalSource != null) {
+      let path = String(m.originalSource);
+      try { path = decodeURIComponent(new URL(m.originalSource).pathname); } catch { /* checked raw */ }
+      const hits = triggersInText(path);
+      if (hits.length) {
+        violations.push({ field: `media[${i}].originalSource`, problem: `brand trigger(s) in URL path: ${hits.join(", ")}` });
+      }
+    }
+  }
+  for (const [i, v] of (payload?.variants ?? []).entries()) check(`variants[${i}].sku`, v?.sku);
 
   return { ok: violations.length === 0, violations };
 }
