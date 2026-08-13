@@ -33,13 +33,20 @@ from `functions/node_modules`.
 | `smoke.mjs` — mint token, print shop info + locations, `expires_in` (never the token) | nothing | `node scripts/shopify/smoke.mjs` |
 | `round-trip.mjs <productId>` — map one RTDB product to a `productSet` payload and print it | nothing | `node scripts/shopify/round-trip.mjs p1234567890123` |
 | `round-trip.mjs <productId> --commit` — create that product ONCE (as DRAFT), read it back, print IDs, persist the ID map | **one Shopify product + `/shopify_sync/<productId>`** (no other RTDB path, ever) | `node scripts/shopify/round-trip.mjs p1234567890123 --commit` |
-| `title-report.mjs [--all]` — flagged-title census: products whose brand-strip trips a guard and would ship their original name | nothing | `node scripts/shopify/title-report.mjs` |
+| `clean-report.mjs [--residue] [--json <f>]` — trigger-engine census: how many names clean automatically, 40 deterministic before/after pairs, and the residue worklist for the AI pass | nothing | `node scripts/shopify/clean-report.mjs` |
+| `ai-rename.mjs [--dry-run] [--limit N]` — AI names for the lexicon residue only; every output re-checked by the trigger engine, cached once, never regenerated. Hard-stops without `ANTHROPIC_API_KEY` | **`/shopify_publish/{pid}` (cleanName cache)** | `node scripts/shopify/ai-rename.mjs --dry-run` |
+| `publish-run.mjs [--commit] [--pids a,b]` — push nominated products as **DRAFT** with description, SEO, tags, photos and one-pool inventory; full-field validator gates every payload; a re-run reconciles fields/media/inventory onto the existing product; hard cap 10/run | **Shopify DRAFTs + `/shopify_sync` + `/shopify_publish`** | `node scripts/shopify/publish-run.mjs` |
+| `publish-run.mjs --publish <pid>` — **owner-run only**, standalone (never pushes the worklist): re-validates the CANONICAL Shopify object field-by-field, re-syncs inventory, then makes that ONE draft storefront-visible | **one Shopify product live + `/shopify_publish` state** | owner runs it, deliberately |
 
 Pure modules, tested via the normal `npm test`:
 
-- `nameRewrite.mjs` — brand stripping + the kept line-mark allowlist (Air
-  Jordan / Jordan / NOCTA) + `shopifyTitle()` title guards (empty /
-  digit-leading / <3 chars after strip → original name ships, product flagged).
+- `src/utils/shopifyTriggers.js` (NOT in this directory — shared with the
+  home-page card's live input check) — brand-trigger engine v2: the
+  three-category lexicon (parent brands / sub-labels / model + silhouette
+  names, the line-mark keep is REVERSED), squash + word matching that catches
+  concatenated and misspelt forms, and `cleanTitleFor()` which rebuilds a
+  generic descriptive title and REFUSES (needsAI) instead of ever shipping a
+  triggered original name.
 - `sizeOrder.mjs` — storefront size ordering: numeric ascending (halves
   included), letter sizes in garment order, `"_"` sentinel last.
 - `idMap.mjs` — the `/shopify_sync/{productId}` mapping: `buildMapping`
@@ -63,9 +70,11 @@ Pure modules, tested via the normal `npm test`:
   (`sizeOrder.mjs`); the `"_"` one-size sentinel maps to option value
   `"One Size"`; `"5.5"` keeps its dot. Variant price = `retailPrice`. Media,
   inventory levels and publication are later slices.
-- Listing titles are brand-stripped via `shopifyTitle()` — parent brands go,
-  line marks stay; a guard violation ships the original name and flags the
-  product (`title-report.mjs` is the worklist).
+- Listing titles come from the trigger engine (`cleanTitleFor()`), or a
+  trigger-free `cleanName` on `/shopify_publish/{productId}` when one exists.
+  NOTHING pushed to Shopify may contain a brand trigger in ANY field — a name
+  neither path can clean refuses the push (`clean-report.mjs --residue` is the
+  worklist; the original name NEVER ships for a triggered product).
 - Returned Shopify IDs are persisted to `/shopify_sync/{productId}` — a
   dedicated Admin-SDK-only node, deliberately NOT on the client-writable
   product record (a lost mapping would mean duplicate Shopify products).

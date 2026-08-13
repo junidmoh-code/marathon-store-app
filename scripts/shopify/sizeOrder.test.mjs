@@ -1,6 +1,6 @@
 // ── Size-order tests over REAL catalogue size arrays ─────────────────────────
 // Every input is a live product's sizes[] lifted verbatim from the 2026-08-13
-// read-only census (same convention as nameRewrite.test.mjs). Expected outputs
+// read-only census (same convention as shopifyTriggers.test.js). Expected outputs
 // are the storefront dropdown order we want frozen.
 import { describe, it, expect } from "vitest";
 import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs";
