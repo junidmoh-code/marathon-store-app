@@ -65,6 +65,7 @@ import { isMergedAway } from "./mergedProducts.js";
 // Tier scores — spacing is deliberate: family always beats misread, misread
 // beats name, name beats alias containment, colourway sits under everything.
 export const TIER_SCORES = Object.freeze({
+  exact: 105,        // includeExact callers only — see codeSuggestions
   pendingExact: 100,
   family: 90,        // + (2 - artDiff) * 3  → 93 for one digit apart, 90 for two
   misread: 60,
@@ -179,7 +180,7 @@ function familyMask(scanSplit, articles) {
  * every confirmed AND pending style code in the in-memory catalogue.
  * Pure, zero reads. Returns [{ product, code, field, tier, score, reason }].
  */
-export function codeSuggestions(scanNormalised, products) {
+export function codeSuggestions(scanNormalised, products, { includeExact = false } = {}) {
   const scan = normaliseStyleCode(scanNormalised);
   if (!scan) return [];
   const ss = splitStyleCode(scan);
@@ -188,11 +189,16 @@ export function codeSuggestions(scanNormalised, products) {
     if (!p || !p.id || isMergedAway(p)) continue;
     for (const { code, field } of productCodes(p)) {
       if (code === scan) {
-        // Confirmed exact owners resolve before the panel ever opens — an
-        // exact hit surviving to here is a PENDING code, the strongest
-        // suggestion there is.
-        hits.push({ product: p, code, field, tier: "pendingExact", score: TIER_SCORES.pendingExact,
-                    reason: `carries exactly this code — awaiting confirmation` });
+        // In the COUNT flow, confirmed exact owners resolve before the panel
+        // ever opens — an exact hit surviving to there is a PENDING code. The
+        // INTAKE gate (capture-only mode) does no exact pre-check at all, so
+        // it asks for confirmed owners too via includeExact.
+        if (field === "confirmed" && !includeExact) continue;
+        hits.push(field === "confirmed"
+          ? { product: p, code, field, tier: "exact", score: TIER_SCORES.exact,
+              reason: `already registered with exactly this code` }
+          : { product: p, code, field, tier: "pendingExact", score: TIER_SCORES.pendingExact,
+              reason: `carries exactly this code — awaiting confirmation` });
         continue;
       }
       const sc = splitStyleCode(code);
@@ -300,10 +306,10 @@ export function aliasSuggestions(candidates, products, excludeIds = []) {
  * nothing plausible exists and the caller must say so honestly — never pad
  * this list to avoid the message.
  */
-export function buildLinkSuggestions({ kind, normalised, modelName, tokens, aliasCandidates, excludeIds, products }) {
+export function buildLinkSuggestions({ kind, normalised, modelName, tokens, aliasCandidates, excludeIds, products, includeExact = false }) {
   let hits = [];
   if (kind === "code") {
-    hits = hits.concat(codeSuggestions(normalised, products));
+    hits = hits.concat(codeSuggestions(normalised, products, { includeExact }));
     if (modelName) hits = hits.concat(modelNameSuggestions(modelName, products));
   } else if (kind === "tokens") {
     hits = hits.concat(modelNameSuggestions(tokens, products));
