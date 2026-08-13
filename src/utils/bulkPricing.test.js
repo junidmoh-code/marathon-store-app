@@ -96,6 +96,32 @@ test("change: a percent that rounds back to the current price is a no-op, not a 
   assert.deepEqual(plan.noop.map((n) => n.pid), ["p9"]);
 });
 
+test("SCALE: the whole catalogue in one batch stays a single atomic update within RTDB limits", async () => {
+  // Live catalogue is 4,166 products (measured 2026-08-13, shallow keys-only
+  // read); 5,000 gives headroom. Both price fields on every product — the
+  // worst plausible bulk change.
+  const { buildPriceBatch } = await import("./priceBatch");
+  const N = 5000;
+  const products = Array.from({ length: N }, (_, i) => ({
+    id: `p17860000${String(i).padStart(5, "0")}`,
+    name: `Product with a fairly long realistic name ${i}`,
+    stockPrice: 100 + (i % 400), retailPrice: 250 + (i % 900),
+  }));
+  const plan = buildBulkChangePlan({ products, selectedIds: products.map((p) => p.id), mode: "percent", percentDraft: "-15", applyToStock: true, applyToRetail: true });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.count, N);
+  const { updates } = buildPriceBatch({
+    batchId: "pb_1786615200000_scale", action: "bulk_change", lines: plan.lines,
+    at: "2026-08-13T10:00:00.000Z", atMs: 1786615200000, by: "u1", byEmail: "junid@marathon.internal",
+  });
+  // ONE update object: 2 price paths per product + the record + the index.
+  assert.equal(Object.keys(updates).length, N * 2 + 2);
+  // Well inside the 16 MB RTDB write ceiling (history record included).
+  const bytes = Buffer.byteLength(JSON.stringify(updates));
+  assert.ok(bytes < 16 * 1024 * 1024, `payload ${bytes} bytes exceeds RTDB write limit`);
+  assert.ok(bytes < 4 * 1024 * 1024, `payload ${bytes} bytes — unexpectedly large, investigate`);
+});
+
 test("plans and batch guards agree: a confirmed plan's lines apply cleanly", async () => {
   const { normaliseLines } = await import("./priceBatch");
   const fill = buildBulkFillPlan({ products: CATALOG, selectedIds: ["p1", "p2", "p3"], stockDraft: "120", retailDraft: "280" });
