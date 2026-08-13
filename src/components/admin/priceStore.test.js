@@ -51,7 +51,7 @@ vi.mock("firebase/database", () => ({
 }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u_test", email: "junid@marathon.internal" } } }));
 
-const { applyPriceBatch, restorePriceBatch, previewRestore, loadRecentBatches, mintBatchId } =
+const { applyPriceBatch, restorePriceBatch, previewRestore, loadRecentBatches, mintBatchId, startSpecials, endSpecials } =
   await import("./priceStore.js");
 
 beforeEach(() => {
@@ -146,6 +146,39 @@ test("loadRecentBatches reads only the compact index, newest first", async () =>
 test("batch ids are key-safe and chronologically ordered by key", () => {
   const id = mintBatchId();
   assert.match(id, /^pb_\d{13}_[a-z0-9]+$/);
+});
+
+test("specials lifecycle in the store: start changes the shelf price + writes the entry; end restores the EXACT prior price + deletes it — each one atomic batch", async () => {
+  const { buildSpecialStartPlan, buildSpecialEndPlan } = await import("../../utils/specials.js");
+  const products = [{ id: "p200", name: "Puma Tee", stockPrice: 90, retailPrice: 180 }];
+  const start = buildSpecialStartPlan({ products, specials: {}, selectedIds: ["p200"], mode: "percent", percentDraft: "25",
+    startedAt: "2026-08-13T10:00:00.000Z", startedBy: "u_test", startedByEmail: "junid@marathon.internal" });
+  const res = await startSpecials(start);
+  assert.equal(res.ok, true);
+  assert.equal(updateCalls.length, 1); // atomic
+  assert.equal(store["products/p200/retailPrice"], 135); // 180 - 25%
+  const entry = read("specials/p200");
+  assert.equal(entry.wasPrice, 180);
+  assert.equal(entry.price, 135);
+  assert.equal(entry.batchId, res.batchId); // entry names its creating batch
+
+  // A second start on the same product is refused by the FRESH re-check.
+  const again = await startSpecials(buildSpecialStartPlan({ products: [{ id: "p200", name: "Puma Tee", retailPrice: 135 }], specials: {}, selectedIds: ["p200"], mode: "percent", percentDraft: "10",
+    startedAt: "2026-08-13T11:00:00.000Z" }));
+  assert.equal(again.ok, false);
+  assert.equal(again.code, "on_special");
+  assert.equal(store["products/p200/retailPrice"], 135); // untouched
+
+  // End: exact prior retail returns, entry deletes, stockPrice never touched.
+  const end = buildSpecialEndPlan({ products: [{ id: "p200", name: "Puma Tee", retailPrice: 135 }], specials: { p200: entry }, selectedIds: ["p200"] });
+  const ended = await endSpecials(end);
+  assert.equal(ended.ok, true);
+  assert.equal(store["products/p200/retailPrice"], 180); // EXACT pre-special price
+  assert.equal(store["products/p200/stockPrice"], 90);
+  assert.equal(read("specials/p200"), null);
+  // Both transitions are audited batches.
+  assert.equal(read(`price_history/${res.batchId}`).action, "special_start");
+  assert.equal(read(`price_history/${ended.batchId}`).action, "special_end");
 });
 
 test("bulk fill end to end: the write is EXACTLY the previewed plan — same products, same values, nothing else", async () => {

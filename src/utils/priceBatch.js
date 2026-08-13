@@ -98,10 +98,11 @@ export function normaliseLines(lines, action) {
     if (!toKeys) throw err("bad_line", `${pid}: no price fields`);
     if (fromKeys !== toKeys) throw err("bad_line", `${pid}: from records [${fromKeys}] but to writes [${toKeys}] — history must cover exactly what changes`);
     // A line where nothing changes is a caller bug — plans must drop no-ops so
-    // the preview count is honest. EXCEPT in a restore: a hand-edit back to the
-    // prior value makes that line a no-op, and the restore must still succeed
-    // for the rest of the batch (writing the same value back is harmless).
-    if (action !== "restore" && !Object.keys(to).some((k) => to[k] !== from[k])) {
+    // the preview count is honest. EXCEPT restore and special_end: a hand-edit
+    // back to the prior value makes such a line a no-op, and the batch must
+    // still succeed — a restore for the rest of its lines, a special end
+    // because the /specials entry (aux) must be deleted regardless.
+    if (action !== "restore" && action !== "special_end" && !Object.keys(to).some((k) => to[k] !== from[k])) {
       throw err("noop_line", `${pid}: every field already holds the target value — drop no-op lines before applying`);
     }
     for (const k of Object.keys(to)) {

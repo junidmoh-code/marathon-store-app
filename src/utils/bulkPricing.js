@@ -82,8 +82,8 @@ export function buildBulkFillPlan({ products = [], selectedIds = [], stockDraft 
     lines[pid] = { name: p.name || "", from, to };
     rows.push({
       pid, name: p.name || pid, photoUrl: p.photoUrl || "",
-      fromStock: asStoredPrice(p.stockPrice), toStock: "stockPrice" in to ? to.stockPrice : null,
-      fromRetail: asStoredPrice(p.retailPrice), toRetail: "retailPrice" in to ? to.retailPrice : null,
+      fromStock: asStoredPrice(p.stockPrice), toStock: "stockPrice" in to ? to.stockPrice : undefined,
+      fromRetail: asStoredPrice(p.retailPrice), toRetail: "retailPrice" in to ? to.retailPrice : undefined,
       overwrites: hadPricedField,
     });
   }
@@ -152,8 +152,8 @@ export function buildBulkChangePlan({ products = [], selectedIds = [], mode = "a
     lines[pid] = { name: p.name || "", from, to };
     rows.push({
       pid, name: p.name || pid, photoUrl: p.photoUrl || "",
-      fromStock: curStock, toStock: "stockPrice" in to ? to.stockPrice : null,
-      fromRetail: curRetail, toRetail: "retailPrice" in to ? to.retailPrice : null,
+      fromStock: curStock, toStock: "stockPrice" in to ? to.stockPrice : undefined,
+      fromRetail: curRetail, toRetail: "retailPrice" in to ? to.retailPrice : undefined,
     });
   }
   return { ok: true, lines, rows, missingPrice, noop, count: rows.length };

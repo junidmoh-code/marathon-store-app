@@ -21,8 +21,10 @@ const S = {
   btn: (primary, disabled) => ({ flex: 1, background: disabled ? "rgba(255,255,255,.06)" : primary ? "#4A7FFF" : "rgba(255,255,255,.07)", color: disabled ? "rgba(255,255,255,.3)" : "#fff", border: "1px solid " + (primary && !disabled ? "#4A7FFF" : "rgba(255,255,255,.14)"), borderRadius: 10, padding: "11px 12px", fontSize: 13, fontWeight: 700, cursor: disabled ? "default" : "pointer" }),
 };
 
+// to === undefined ⇒ this field is untouched (hidden). to === null ⇒ the
+// field WILL be cleared ("not set") and renders as an explicit —.
 function Delta({ label, from, to }) {
-  if (to === null || to === undefined) return null;
+  if (to === undefined) return null;
   return (
     <div style={S.cell}>
       <span style={{ color: "rgba(255,255,255,.35)", fontSize: 10, marginRight: 5 }}>{label}</span>
@@ -58,7 +60,7 @@ export default function BulkPricePreview({ title, subtitle, plan, busy = false,
           {rows.map((r) => (
             <div key={r.pid} style={S.row}>
               {r.photoUrl ? <img src={r.photoUrl} alt="" loading="lazy" style={{ width: 30, height: 30, borderRadius: 6, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} /> : null}
-              <div style={S.name}>{r.name}{r.overwrites ? <span style={{ color: "#FBBF24", fontSize: 10, marginLeft: 6 }}>overwrites</span> : null}</div>
+              <div style={S.name}>{r.name}{(r.badge || r.overwrites) ? <span style={{ color: "#FBBF24", fontSize: 10, marginLeft: 6 }}>{r.badge || "overwrites"}</span> : null}</div>
               <Delta label="Stock" from={r.fromStock} to={r.toStock} />
               <Delta label="Retail" from={r.fromRetail} to={r.toRetail} />
             </div>

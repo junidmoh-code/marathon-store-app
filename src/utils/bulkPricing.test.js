@@ -62,7 +62,7 @@ test("change absolute: entered fields replace, blank fields untouched", () => {
   assert.equal(plan.ok, true);
   assert.deepEqual(plan.lines.p3.from, { retailPrice: 250 });
   assert.deepEqual(plan.lines.p3.to, { retailPrice: 199 });
-  assert.equal(plan.rows[0].toStock, null); // stock untouched
+  assert.equal(plan.rows[0].toStock, undefined); // stock untouched (hidden in preview)
 });
 
 test("change percent: -20% sale on retail rounds to whole rand and skips unpriced honestly", () => {

@@ -58,7 +58,7 @@ export async function loadSpecials() {
  * { ok:true, batchId } or { ok:false, code, message, products? } — never
  * throws. A failed write writes NOTHING (single update() call).
  */
-export async function applyPriceBatch({ action, lines, aux = null, label = "", allowSpecials = false }) {
+export async function applyPriceBatch({ action, lines, aux = null, label = "", allowSpecials = false, batchId = null }) {
   let specials = {};
   if (!allowSpecials) {
     try {
@@ -77,7 +77,7 @@ export async function applyPriceBatch({ action, lines, aux = null, label = "", a
     }
   }
 
-  const batchId = mintBatchId();
+  if (!batchId) batchId = mintBatchId();
   let built;
   try {
     built = buildPriceBatch({ batchId, action, lines, aux, label, ...stamps() });
@@ -90,6 +90,42 @@ export async function applyPriceBatch({ action, lines, aux = null, label = "", a
   } catch (e) {
     return { ok: false, code: "write_failed", message: String(e?.message || e) };
   }
+}
+
+/**
+ * START specials from a confirmed buildSpecialStartPlan. Re-checks /specials
+ * FRESH before writing: the plan was built off the card's snapshot, and a
+ * special started elsewhere meanwhile must not be overwritten — that would
+ * orphan its parked wasPrice. The minted batchId is stamped into every
+ * /specials entry so each special names the batch that created it.
+ */
+export async function startSpecials(plan) {
+  if (!plan?.ok || !plan.aux?.length) return { ok: false, code: "invalid_plan", message: "Nothing to start." };
+  let fresh;
+  try {
+    fresh = (await loadSpecials()) || {};
+  } catch (e) {
+    return { ok: false, code: "specials_unreadable", message: `Could not re-check active specials — nothing was written. (${e?.message || e})` };
+  }
+  const clash = Object.keys(plan.lines).filter((pid) => fresh[pid]);
+  if (clash.length > 0) {
+    return { ok: false, code: "on_special", products: clash, message: `${clash.length} product${clash.length === 1 ? " is" : "s are"} already on special (started meanwhile) — refresh the card.` };
+  }
+  const batchId = mintBatchId();
+  const aux = plan.aux.map((a) => ({ ...a, to: { ...a.to, batchId } }));
+  return applyPriceBatch({
+    action: "special_start", lines: plan.lines, aux, batchId, allowSpecials: true,
+    label: `Special started — ${plan.count} product${plan.count === 1 ? "" : "s"}`,
+  });
+}
+
+/** END specials from a confirmed buildSpecialEndPlan: wasPrice returns, entries delete. */
+export async function endSpecials(plan) {
+  if (!plan?.ok || !plan.aux?.length) return { ok: false, code: "invalid_plan", message: "Nothing to end." };
+  return applyPriceBatch({
+    action: "special_end", lines: plan.lines, aux: plan.aux, allowSpecials: true,
+    label: `Special ended — ${plan.count} product${plan.count === 1 ? "" : "s"}`,
+  });
 }
 
 /** Full record for one batch, by id. */
