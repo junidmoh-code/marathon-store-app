@@ -135,7 +135,7 @@ export const TRIGGERS = [
   T("iceberg", { cat: "parent" }),
   T("represent", { cat: "parent", mode: "word" }),
   T("loewe", { cat: "parent" }),
-  T("celine", { cat: "parent" }),
+  T("celine", { cat: "parent", mode: "word" }),       // word: "clearance lines" squashes to contain it
   T("hermes", { cat: "parent", alts: ["hemes"] }),
   T("skechers", { cat: "parent" }),
   T("stussy", { cat: "parent", alts: ["stssy"] }),
