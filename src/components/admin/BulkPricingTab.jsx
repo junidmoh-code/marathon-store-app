@@ -58,7 +58,7 @@ export default function BulkPricingTab({ products = [] }) {
   useEffect(() => {
     loadSpecials().then(setSpecials).catch((e) => {
       setSpecials({});
-      setNotice({ kind: "err", text: `Active specials could not be read (${e?.message || e}). Products on special are not marked here — repricing them will still be refused at write time.` });
+      setNotice({ kind: "err", text: `Active specials could not be read (${e?.message || e}). Products on special are not marked here and the on-special guard is OFF for this session — refresh before repricing anything that might be on special.` });
     });
   }, []);
 

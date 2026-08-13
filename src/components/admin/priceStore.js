@@ -64,7 +64,13 @@ export async function applyPriceBatch({ action, lines, aux = null, label = "", a
     try {
       specials = (await loadSpecials()) || {};
     } catch (e) {
-      return { ok: false, code: "specials_unreadable", message: `Could not check active specials — nothing was written. (${e?.message || e})` };
+      // FAIL OPEN (live incident 2026-08-13): before the /specials console rule
+      // was published, this read's permission denial blocked EVERY price save.
+      // A special that cannot be read must never block a price — the interlock
+      // is a courtesy guard for a rare state, the save is the job. Proceed as
+      // if no specials exist, and log so an unreadable node is still visible.
+      console.warn("specials check unreadable — price save proceeds without the interlock:", e?.message || e);
+      specials = {};
     }
     const blocked = Object.keys(lines || {}).filter(
       (pid) => specials[pid] && lines[pid]?.to && "retailPrice" in lines[pid].to,
@@ -105,6 +111,11 @@ export async function startSpecials(plan) {
   try {
     fresh = (await loadSpecials()) || {};
   } catch (e) {
+    // Deliberately FAIL CLOSED, unlike the price-save interlock: proceeding
+    // blind here could overwrite a special that exists but couldn't be read,
+    // stranding its parked wasPrice. And nothing is being "blocked" that could
+    // otherwise succeed — if /specials can't be read, this batch's own write
+    // to /specials would be denied by the same missing rule.
     return { ok: false, code: "specials_unreadable", message: `Could not re-check active specials — nothing was written. (${e?.message || e})` };
   }
   const clash = Object.keys(plan.lines).filter((pid) => fresh[pid]);
@@ -159,7 +170,10 @@ async function specialsRestoreRefusal(record) {
   try {
     specials = (await loadSpecials()) || {};
   } catch (e) {
-    return { ok: false, code: "specials_unreadable", message: `Could not check active specials — nothing was written. (${e?.message || e})` };
+    // FAIL OPEN — same rule as applyPriceBatch: an unreadable specials node
+    // must never block a restore. Logged, then treated as "no active specials".
+    console.warn("specials check unreadable — restore proceeds without the interlock:", e?.message || e);
+    return null;
   }
   const blocked = Object.keys(record.lines || {}).filter(
     (pid) => specials[pid] && record.lines[pid]?.from && "retailPrice" in record.lines[pid].from,
