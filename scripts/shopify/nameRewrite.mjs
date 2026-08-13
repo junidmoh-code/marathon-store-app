@@ -39,20 +39,25 @@
 // pin both directions.
 //
 // Ordered longest-phrase-first; each pattern removes every occurrence.
-const P = (s) => new RegExp(`\\b(?:${s})\\b`, "gi");
+// Each regex carries a .label — the canonical display name brandsIn reports.
+// Default label = first alternative; patterns whose first alternative contains
+// NESTED regex syntax pass an explicit label (deriving one from re.source
+// splits inside inner groups — that bug is pinned by tests).
+const P = (s, label) =>
+  Object.assign(new RegExp(`\\b(?:${s})\\b`, "gi"), { label: label ?? s.split("|")[0] });
 export const BRAND_PATTERNS = [
   // multi-word phrases and their fragments/misspellings first
   P("new balance"),
   P("new era"),
   P("hugo boss|boss|hugo"),
   P("karl lagerfeld|kalr lagerfeld|karl|kalr"),
-  P("g[\\s-]?star"),
+  P("g[\\s-]?star", "g-star"),
   P("fear of god|essentials|essentially|essential"),
   P("loro piana"),
   P("louis vuitton|lv"),
-  P("dolce ?(?:&|and)? ?gabbana|d&g"),
+  P("dolce ?(?:&|and)? ?gabbana|d&g", "dolce & gabbana"),
   P("emporio armani|armani exchange|giorgio armani|armani|armai|emporio|glorgio"),
-  P("under armou?r"),
+  P("under armou?r", "under armour"),
   P("alo yoga|alo"),
   P("calvin klein|kelvin klein|ck"),
   P("tommy hilfiger|tommy"),
@@ -60,19 +65,19 @@ export const BRAND_PATTERNS = [
   P("off[\\s-]?white"),
   P("true religion"),
   P("stone island"),
-  P("ralph lauren|polo ralph(?: lauren)?"),
+  P("ralph lauren|polo ralph(?: lauren)?", "ralph lauren"),
   P("daniel wellington"),
-  P("dr\\.? martens?"),
+  P("dr\\.? martens?", "dr martens"),
   P("michael kors"),
   P("saint laurent|ysl"),
   P("alexander mcqueen|mcqueen"),
   P("brunello cucinelli"),
-  P("comme des gar[cç]ons|cdg"),
+  P("comme des gar[cç]ons|cdg", "comme des garcons"),
   P("philipp plein|phillip plein|plein"),
   P("bottega veneta|bottega"),
   P("dsquared2|dsquared"),
   P("a bathing ape|bape"),
-  P("levi[’']?s?"),
+  P("levi[’']?s?", "levi's"),
   // single-word marks (incl. live misspellings)
   P("nike"),
   P("adidas"),
@@ -108,7 +113,7 @@ export const BRAND_PATTERNS = [
   P("rolex"),
   P("hermes"),
   P("skechers"),
-  P("stussy|stüssy"),
+  P("stussy|stüssy", "stussy"),
   P("zara"),
   P("asics"),
   P("burberry"),
@@ -172,11 +177,7 @@ export function brandsIn(name) {
   if (ON_LEADING.test(s)) hits.push("On");
   for (const re of BRAND_PATTERNS) {
     re.lastIndex = 0;
-    if (re.test(s)) {
-      // \b(?:foo|bar)\b → "foo": strip BOTH anchors before taking the first
-      // alternative (a single-alternative pattern otherwise leaks ")\b").
-      hits.push(re.source.replace(/^\\b\(\?:/, "").replace(/\)\\b$/, "").split("|")[0]);
-    }
+    if (re.test(s)) hits.push(re.label);
   }
   return hits;
 }

@@ -93,23 +93,36 @@ export function planIdMapWrite(existing, mapping) {
 // committed invocation's plan is returned.
 export async function writeIdMap(db, productId, mapping) {
   const ref = db.ref(`shopify_sync/${assertSafeSegment(productId, "productId")}`);
-  let plan = null;
-  let conflict = null;
-  const result = await ref.transaction((existing) => {
-    conflict = null;
-    try {
-      plan = planIdMapWrite(existing, mapping);
-    } catch (e) {
-      conflict = e;
-      return undefined; // abort the transaction, existing data untouched
+  for (let attempt = 0; ; attempt++) {
+    let plan = null;
+    let conflict = null;
+    const result = await ref.transaction((existing) => {
+      conflict = null;
+      try {
+        plan = planIdMapWrite(existing, mapping);
+      } catch (e) {
+        conflict = e;
+        return undefined; // abort the transaction, existing data untouched
+      }
+      if (plan.action === "noop") return existing;
+      if (plan.action === "create") return mapping;
+      const merged = { ...existing, variants: { ...(existing.variants || {}) } };
+      for (const key of plan.newKeys) merged.variants[key] = mapping.variants[key];
+      return merged;
+    });
+    if (conflict) {
+      // An abort is one-shot and may have fired against a STALE LOCAL CACHE
+      // (the update function's first invocation is not guaranteed the server
+      // value). Confirm against a fresh server read before surfacing it —
+      // planIdMapWrite throws here iff the conflict is real; otherwise retry
+      // the transaction once with the cache now warmed.
+      if (attempt === 0) {
+        planIdMapWrite((await ref.get()).val(), mapping);
+        continue;
+      }
+      throw conflict;
     }
-    if (plan.action === "noop") return existing;
-    if (plan.action === "create") return mapping;
-    const merged = { ...existing, variants: { ...(existing.variants || {}) } };
-    for (const key of plan.newKeys) merged.variants[key] = mapping.variants[key];
-    return merged;
-  });
-  if (conflict) throw conflict;
-  if (!result.committed) throw new Error("ID-map transaction did not commit");
-  return plan;
+    if (!result.committed) throw new Error("ID-map transaction did not commit");
+    return plan;
+  }
 }

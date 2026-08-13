@@ -153,6 +153,10 @@ describe("stripBrandFromName — real catalogue names", () => {
     expect(brandsIn("Nike Air Force 1")).toEqual(["nike"]);
     expect(brandsIn("New Balance 9060")).toEqual(["new balance"]);
     expect(brandsIn("Hugo Boss beanie")).toEqual(["hugo boss"]);
+    // patterns with NESTED alternation must report their explicit label,
+    // not a fragment sliced out of the regex source
+    expect(brandsIn("Dolce & Gabbana White Blue Denim")).toEqual(["dolce & gabbana"]);
+    expect(brandsIn("Levi’s beanie navy #5")).toEqual(["levi's"]);
   });
 
   it("no pattern strips a kept line mark (list-level pin of the allowlist)", () => {

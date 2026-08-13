@@ -98,6 +98,16 @@ describe("graphql client — retry matrix", () => {
     expect(gqlCalls.length).toBe(1);
   });
 
+  it("a 5xx on a QUERY retries and succeeds (Retry-After honoured)", async () => {
+    const { gqlCalls } = stubFetch([
+      () => new Response("flaky", { status: 503, headers: { "Retry-After": "1" } }),
+      () => gqlOk({ recovered: true }),
+    ]);
+    const { graphql } = await freshClient();
+    await expect(graphql("query { x }")).resolves.toEqual({ recovered: true });
+    expect(gqlCalls.length).toBe(2);
+  }, 10000);
+
   it("plain GraphQL errors throw with the error payload", async () => {
     stubFetch([
       () => new Response(JSON.stringify({ errors: [{ message: "bad" }] }), { status: 200 }),

@@ -14,7 +14,7 @@ if (existsSync(ENV_FILE)) {
     if (!m || line.trim().startsWith("#")) continue;
     const [, key, raw] = m;
     if (process.env[key] !== undefined) continue; // real env wins
-    const quoted = raw.match(/^(["'])(.*)\1$/);
+    const quoted = raw.match(/^(["'])(.*?)\1\s*(?:#.*)?$/);
     if (quoted) {
       process.env[key] = quoted[2];
     } else if (/^["']/.test(raw)) {

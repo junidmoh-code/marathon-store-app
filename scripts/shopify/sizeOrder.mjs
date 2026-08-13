@@ -62,13 +62,15 @@ export function findSizeCollisions(sizes) {
     }
     const display = displaySizeName(s);
     const key = encodeSizeKey(s);
-    if (byDisplay.has(display) && byDisplay.get(display) !== s) {
+    // "8" and 8 are the same size twice, not a collision — compare as strings.
+    const same = (a, b) => String(a) === String(b);
+    if (byDisplay.has(display) && !same(byDisplay.get(display), s)) {
       problems.push(`sizes ${JSON.stringify(byDisplay.get(display))} and ${JSON.stringify(s)} collide as option "${display}"`);
     }
-    if (byKey.has(key) && byKey.get(key) !== s) {
+    if (byKey.has(key) && !same(byKey.get(key), s)) {
       problems.push(`sizes ${JSON.stringify(byKey.get(key))} and ${JSON.stringify(s)} collide as RTDB key "${key}"`);
     }
-    if (byDisplay.get(display) === s || byKey.get(key) === s) {
+    if ((byDisplay.has(display) && same(byDisplay.get(display), s)) || (byKey.has(key) && same(byKey.get(key), s))) {
       problems.push(`duplicate size token ${JSON.stringify(s)}`);
     }
     if (!byDisplay.has(display)) byDisplay.set(display, s);
