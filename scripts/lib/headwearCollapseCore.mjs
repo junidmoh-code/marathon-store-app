@@ -135,8 +135,25 @@ const NOT_A_CAP = /\bvisors?\b|\bbucket\s*hats?\b/i;
 // print the second list for a human to eyeball before anything moves.
 const CAP_NAME = /\bcaps?\b/i;
 
+// ── FITTED CAPS ARE NOT ONE-SIZE — OUT OF SCOPE, BY KEY (owner, 2026-08-13) ──
+// The 96 records carrying categoryKey "fitted-caps" hold REAL sized stock:
+// 244 units across S–XXL (45 of them in two or more sizes), sized by head, not
+// by garment letter convention. Collapsing them would fold genuinely different
+// physical sizes into one "_" cell — destroying the size information the shop
+// sells by. They get their own PER-SIZE policy instead (2 at the shop, 5 at
+// Hub 2 — see the category policy map in refill-engine.cjs).
+//
+// The KEY decides, not the name: 21 fitted caps have no "fitted" in the name
+// at all ("TC fitted…" vs "New Era 59FIFTY Detroit Tigers capBlack"), and the
+// name rule already mis-shelved once. categoryKey is the field the admin
+// category system maintains, it is present on all 96, and it is the same
+// predicate the per-size policy keys on — so a record cannot be in the
+// collapse scope and the per-size policy at the same time, by construction.
+export const FITTED_CAPS_KEY = "fitted-caps";
+
 export function headwearKind(product) {
   if (!product || product.mergedInto) return null;
+  if (product.categoryKey === FITTED_CAPS_KEY) return null;   // sized by design
   const name = String(product.name || "");
   if (BEANIE_NAME.test(name)) return "beanie";
   if (product.subcategory !== HEADWEAR_SUBCATEGORY) return null;

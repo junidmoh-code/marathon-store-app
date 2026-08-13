@@ -45,7 +45,7 @@
 import { createRequire } from "module";
 import { writeFileSync } from "fs";
 import {
-  isInScope, isUnexpectedSubcategory, isExcludedHeadwear, isCapByShelfOnly,
+  isInScope, isUnexpectedSubcategory, isExcludedHeadwear, isCapByShelfOnly, FITTED_CAPS_KEY,
   headwearKind, isRetiredSizeKey, orderBlocks, transferBlocks, isRetiredSize,
   HEADWEAR_SUBCATEGORY, planStep2,
 } from "./lib/headwearCollapseCore.mjs";
@@ -87,11 +87,16 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
   // ── scope ──────────────────────────────────────────────────────────────────
   const inScope = [];        // [pid, product, kind]
   const excluded = [];       // on the shelf, deliberately not a beanie or a cap
+  const fittedCaps = [];     // sized by design — out of scope BY KEY (2026-08-13)
   const mergedStubs = [];    // redirect stubs — no stock identity of their own
   for (const [pid, p] of Object.entries(products)) {
     const onShelf = p?.subcategory === HEADWEAR_SUBCATEGORY;
     const kind = headwearKind(p);
     if (kind) { inScope.push([pid, p, kind]); continue; }
+    // Stated exclusion, never silence: fitted caps left the scope on
+    // 2026-08-13 (they hold real sized stock — see headwearCollapseCore), so
+    // the census lists them the same way it lists visors and bucket hats.
+    if (!p?.mergedInto && p?.categoryKey === FITTED_CAPS_KEY) { fittedCaps.push([pid, p]); continue; }
     if (isExcludedHeadwear(p)) { excluded.push([pid, p]); continue; }
     // A merged stub that WOULD have been in scope but for the redirect.
     if (p?.mergedInto && (onShelf || /beanie/i.test(p?.name || ""))) {
@@ -263,6 +268,7 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
   const shelf = Object.values(products).filter((p) => p?.subcategory === HEADWEAR_SUBCATEGORY).length;
   console.log(`\nSCOPE — what the shared predicate now admits`);
   console.log(`  "${HEADWEAR_SUBCATEGORY}" shelf holds ${shelf} records. Admitted: ${inScope.length} (${beanies.length} beanies, ${caps.length} caps).`);
+  console.log(`  Excluded as FITTED CAPS (sized by design, categoryKey "${FITTED_CAPS_KEY}" — per-size policy, never collapsed): ${fittedCaps.length}`);
   console.log(`  Excluded as a visor or bucket hat (neither a beanie nor a cap), wherever filed: ${excluded.length}`);
   for (const [pid, p] of excluded) console.log(`     ${pid} ${JSON.stringify((p.sizes || []).map(String)).padEnd(8)} ${p.name}${p.subcategory === HEADWEAR_SUBCATEGORY ? "" : `   [filed under ${JSON.stringify(p.subcategory)}]`}`);
   console.log(`  Merged redirect stubs skipped: ${mergedStubs.length}`);
@@ -344,7 +350,8 @@ const OUT = process.env.CENSUS_JSON || join(tmpdir(), `headwear-census-${Date.no
   }
 
   writeFileSync(OUT, JSON.stringify({ capturedAt: nowIso, notices,
-    scope: { total: inScope.length, beanies: beanies.length, caps: caps.length, shelf, excluded: excluded.length },
+    scope: { total: inScope.length, beanies: beanies.length, caps: caps.length, shelf, excluded: excluded.length, fittedCaps: fittedCaps.length },
+    fittedCapsExcluded: fittedCaps.map(([pid, p]) => ({ pid, name: p.name, sizes: p.sizes || [] })),
     excluded: excluded.map(([pid, p]) => ({ pid, name: p.name, sizes: p.sizes || [] })),
     capsByShelfOnly: shelfOnly.map(([pid, p]) => ({ pid, name: p.name })),
     split: Object.fromEntries(Object.entries(bySplit).map(([k, v]) => [k, v.length])),

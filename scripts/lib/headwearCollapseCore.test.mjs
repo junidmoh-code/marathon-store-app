@@ -893,6 +893,25 @@ describe("scope — beanies and caps are in, nothing else is", () => {
     expect(headwearKind({ name: "New Era 59FIFTY Detroit Tigers capBlack", subcategory: CH })).toBe("cap");
   });
 
+  it("a FITTED CAP can never be selected — the categoryKey removes it whatever the name or shelf says", () => {
+    // Owner, 2026-08-13: fitted caps hold real sized stock (244 units, 45
+    // products in 2+ sizes) and are governed by a PER-SIZE policy. Collapsing
+    // one would fold genuinely different head sizes into a single "_" cell.
+    // The key decides — the two live spellings both carry it:
+    const FITTED = { categoryKey: "fitted-caps", subcategory: CH };
+    expect(headwearKind({ ...FITTED, name: "New Era 59FIFTY Detroit Tigers capBlack" })).toBe(null);
+    expect(headwearKind({ ...FITTED, name: "TC fitted cap navy/red" })).toBe(null);
+    // …even a fitted cap whose name says "beanie" (data error) stays out: the
+    // key wins over the name rule that would otherwise admit it.
+    expect(headwearKind({ ...FITTED, name: "NY beanie fitted" })).toBe(null);
+    expect(isInScope({ ...FITTED, name: "LA fitted black/white" })).toBe(false);
+    // The exclusion is the KEY, not the word "fitted": an ordinary shelf cap
+    // without the key is still in scope exactly as before…
+    expect(headwearKind({ name: "New Era Atlanta Braves 59FIFTY fitted Black", subcategory: CH, categoryKey: "caps-beanies" })).toBe("cap");
+    // …and a beanie with the ABSENT key is untouched.
+    expect(headwearKind({ name: "Nike beanie green", subcategory: CH })).toBe("beanie");
+  });
+
   it("rejects the things that share the shelf without being caps, and everything off it", () => {
     for (const name of [
       "Alo Yoga Airlift Solar Visor White",
