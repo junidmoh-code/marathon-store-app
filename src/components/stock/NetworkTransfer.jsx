@@ -24,6 +24,7 @@ import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
+import { seedCellUntouched, solveUndoBlockers, undoUpdate } from "./solveUndo";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -128,6 +129,36 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [solveDest, setSolveDest] = useState({});   // pid → nominated store
   const [solveBusy, setSolveBusy] = useState(null);
   const [solved, setSolved] = useState({});         // pid → {store, sizes, msg, ok}
+
+  // ── SOLVE UNDO — this session's solves, each reversible while safe ─────────
+  // A solved card leaves the list the moment its seed lands, so the undo
+  // affordance cannot live on the card: each successful solve is recorded
+  // here and rendered as a strip above the list. Undo re-reads the exact
+  // cells the solve wrote and deletes them ONLY if every one is still the
+  // untouched seed and the engine has not raised work on it since — the full
+  // rule and its rationale live in solveUndo.js.
+  const [undoables, setUndoables] = useState([]);   // [{key,pid,name,store,locs,paths,at,err,busy,done}]
+  const undoSolve = async (u) => {
+    if (!canAct || u.busy || u.done) return;
+    setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: true, err: null } : x)));
+    try {
+      const cellsByPath = {};
+      for (const p of u.paths) cellsByPath[p] = (await get(ref(database, p))).val();
+      const openByLoc = {};
+      for (const loc of u.locs) openByLoc[loc] = (await get(ref(database, `refill_engine/open/${loc}/${u.pid}`))).val();
+      const blockers = solveUndoBlockers({ cellsByPath, openByLoc, solvedAtMs: u.at });
+      if (blockers.length) {
+        setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: blockers[0] } : x)));
+        return;
+      }
+      // All-or-nothing, exactly the recorded paths — the card returns via the
+      // same live subscription that retired it.
+      await update(ref(database), undoUpdate(u.paths));
+      setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, done: true } : x)));
+    } catch (e) {
+      setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` } : x)));
+    }
+  };
 
   // The engine config, LIVE (onValue, not the one-shot get this used to do).
   // Solve's enabled state is a promise about what the engine will do next, so it
@@ -347,7 +378,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       }
       // All-or-nothing: one update() writes every absent cell together, so a
       // failure leaves NOTHING seeded and the row stays for a clean retry.
-      if (Object.keys(updates).length) await update(ref(database), updates);
+      if (Object.keys(updates).length) {
+        await update(ref(database), updates);
+        // Reversible while safe — recorded with the EXACT paths written, so
+        // undo can never touch a cell the solve did not create (a cell that
+        // already existed was skipped above and must survive an undo).
+        setUndoables((l) => [{ key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs, paths: Object.keys(updates), at: serverNowMs() }, ...l]);
+      }
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, store, sizes, msg: okMsg } }));
     } catch (e) {
       // Nothing was written (atomic). Collapse the panel and surface the error on
@@ -391,13 +428,36 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     setBusyPid(null);
   };
 
+  // The undo strip renders in BOTH branches — solving the last card empties
+  // the list, and that is exactly when its undo must not vanish.
+  const undoStrip = undoables.filter((u) => !u.done).map((u) => (
+    <div key={u.key} style={{ ...GLASS, padding: "9px 12px", marginBottom: 8, fontSize: 12.5 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ flex: 1, color: "rgba(255,255,255,.75)" }}>
+          Solved — <b style={{ color: "#fff" }}>{u.name}</b> now carried at {LOC_LABEL[u.store]}{u.locs.includes("hub2") && u.store !== "hub2" ? " (via Hub 2)" : ""}
+        </span>
+        {canAct && (
+          <button onClick={() => undoSolve(u)} disabled={u.busy}
+                  style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.4)", color: AMBER, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>
+            {u.busy ? "…" : "Undo"}
+          </button>
+        )}
+      </div>
+      {u.err && <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 6 }}>{u.err}</div>}
+    </div>
+  ));
+
   if (!cards.length) {
-    return <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded products — everything upstream also exists in at least one shop.</div>;
+    return <>
+      {undoStrip}
+      <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded products — everything upstream also exists in at least one shop.</div>
+    </>;
   }
 
   return (
     <>
       {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to transfer — viewing only.</div>}
+      {undoStrip}
       {canAct && (
         <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", justifyContent: "flex-end" }}>
           {selectMode ? (
