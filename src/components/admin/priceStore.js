@@ -60,6 +60,7 @@ export async function loadSpecials() {
  */
 export async function applyPriceBatch({ action, lines, aux = null, label = "", allowSpecials = false, batchId = null }) {
   let specials = {};
+  let specialsCheckSkipped = false;
   if (!allowSpecials) {
     try {
       specials = (await loadSpecials()) || {};
@@ -71,6 +72,7 @@ export async function applyPriceBatch({ action, lines, aux = null, label = "", a
       // if no specials exist, and log so an unreadable node is still visible.
       console.warn("specials check unreadable — price save proceeds without the interlock:", e?.message || e);
       specials = {};
+      specialsCheckSkipped = true; // surfaced on the result — a bypassed guard is never silent
     }
     const blocked = Object.keys(lines || {}).filter(
       (pid) => specials[pid] && lines[pid]?.to && "retailPrice" in lines[pid].to,
@@ -92,7 +94,7 @@ export async function applyPriceBatch({ action, lines, aux = null, label = "", a
   }
   try {
     await rtdbUpdate(ref(database), built.updates);
-    return { ok: true, batchId, count: built.record.count };
+    return { ok: true, batchId, count: built.record.count, ...(specialsCheckSkipped ? { specialsCheckSkipped: true } : {}) };
   } catch (e) {
     return { ok: false, code: "write_failed", message: String(e?.message || e) };
   }
@@ -165,6 +167,9 @@ export async function loadRecentBatches(n = 20) {
  * a price nobody chose when the special later ends. Same rule as apply: end
  * the special first. Returns null when clear, else a refusal result.
  */
+// Returns { blocked, skipped }: blocked is a refusal result or null; skipped
+// is true when the check could not read and the caller proceeds unguarded —
+// callers stamp that onto their results so a bypassed guard is never silent.
 async function specialsRestoreRefusal(record) {
   let specials;
   try {
@@ -173,18 +178,21 @@ async function specialsRestoreRefusal(record) {
     // FAIL OPEN — same rule as applyPriceBatch: an unreadable specials node
     // must never block a restore. Logged, then treated as "no active specials".
     console.warn("specials check unreadable — restore proceeds without the interlock:", e?.message || e);
-    return null;
+    return { blocked: null, skipped: true };
   }
   const blocked = Object.keys(record.lines || {}).filter(
     (pid) => specials[pid] && record.lines[pid]?.from && "retailPrice" in record.lines[pid].from,
   );
   if (blocked.length > 0) {
     return {
-      ok: false, code: "on_special", products: blocked,
-      message: `${blocked.length} product${blocked.length === 1 ? " is" : "s are"} on special — end the special first, then restore.`,
+      blocked: {
+        ok: false, code: "on_special", products: blocked,
+        message: `${blocked.length} product${blocked.length === 1 ? " is" : "s are"} on special — end the special first, then restore.`,
+      },
+      skipped: false,
     };
   }
-  return null;
+  return { blocked: null, skipped: false };
 }
 
 /**
@@ -201,9 +209,10 @@ export async function previewRestore(batchId, productsById) {
   }
   if (!record) return { ok: false, code: "not_found", message: "Batch not found." };
   if (record.restoredAt) return { ok: false, code: "already_restored", message: `Already restored at ${record.restoredAt}.` };
-  const refusal = await specialsRestoreRefusal(record);
-  if (refusal) return refusal;
-  return { ok: true, record, drift: computeRestoreDrift(record, productsById || {}) };
+  const check = await specialsRestoreRefusal(record);
+  if (check.blocked) return check.blocked;
+  return { ok: true, record, drift: computeRestoreDrift(record, productsById || {}),
+           ...(check.skipped ? { specialsCheckSkipped: true } : {}) };
 }
 
 /**
@@ -221,8 +230,8 @@ export async function restorePriceBatch(batchId, productsById) {
     return { ok: false, code: "read_failed", message: `Could not read batch ${batchId}: ${e?.message || e}` };
   }
   if (!record) return { ok: false, code: "not_found", message: "Batch not found." };
-  const refusal = await specialsRestoreRefusal(record);
-  if (refusal) return refusal;
+  const check = await specialsRestoreRefusal(record);
+  if (check.blocked) return check.blocked;
   const restoreBatchId = mintBatchId();
   let built;
   try {
@@ -232,7 +241,8 @@ export async function restorePriceBatch(batchId, productsById) {
   }
   try {
     await rtdbUpdate(ref(database), built.updates);
-    return { ok: true, batchId: restoreBatchId, restored: batchId, count: built.record.count };
+    return { ok: true, batchId: restoreBatchId, restored: batchId, count: built.record.count,
+             ...(check.skipped ? { specialsCheckSkipped: true } : {}) };
   } catch (e) {
     return { ok: false, code: "write_failed", message: String(e?.message || e) };
   }

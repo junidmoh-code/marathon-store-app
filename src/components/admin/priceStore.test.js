@@ -247,6 +247,13 @@ test("FAIL OPEN: a price save proceeds when the specials check cannot read — t
   assert.equal(res.ok, true);
   assert.equal(store["products/p200/retailPrice"], 200);
   assert.ok(read(`price_history/${res.batchId}`).lines); // audit still rides the write
+  assert.equal(res.specialsCheckSkipped, true); // the bypass is never silent
+  // A readable check does NOT carry the flag.
+  failReads.clear();
+  const clean = await applyPriceBatch({ action: "bulk_change",
+    lines: { p200: { name: "Puma Tee", from: { retailPrice: 200 }, to: { retailPrice: 210 } } } });
+  assert.equal(clean.ok, true);
+  assert.equal(clean.specialsCheckSkipped, undefined);
 });
 
 test("FAIL OPEN: a restore proceeds when the specials check cannot read — exact priors still return", async () => {
@@ -257,6 +264,7 @@ test("FAIL OPEN: a restore proceeds when the specials check cannot read — exac
   const undo = await restorePriceBatch(res.batchId, { p200: { retailPrice: 200 } });
   assert.equal(undo.ok, true);
   assert.equal(store["products/p200/retailPrice"], 180);
+  assert.equal(undo.specialsCheckSkipped, true); // the bypass is never silent
 });
 
 test("FAIL CLOSED stays for starting a special: an unreadable re-check writes nothing (an unseen existing special must not be overwritten)", async () => {

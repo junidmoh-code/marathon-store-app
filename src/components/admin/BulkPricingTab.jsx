@@ -45,6 +45,10 @@ export default function BulkPricingTab({ products = [] }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null); // { kind: "ok"|"err", text }
   const [specials, setSpecials] = useState({});
+  // Standing (not transient) banner: true from the moment ANY operation ran
+  // with the specials check unreadable, cleared only by a successful reload —
+  // a bypassed guard must stay visible (CodeRabbit, PR #358).
+  const [guardDown, setGuardDown] = useState(false);
   // History panel: recent batch metas (compact index only) + per-batch state.
   const [history, setHistory] = useState(null); // null = loading
   const [restoreCandidate, setRestoreCandidate] = useState(null); // { batchId, record, drift }
@@ -55,12 +59,8 @@ export default function BulkPricingTab({ products = [] }) {
     loadRecentBatches(15).then(setHistory).catch((e) => setHistory({ error: String(e?.message || e) }));
   };
   useEffect(() => { refreshHistory(); }, []);
-  useEffect(() => {
-    loadSpecials().then(setSpecials).catch((e) => {
-      setSpecials({});
-      setNotice({ kind: "err", text: `Active specials could not be read (${e?.message || e}). Products on special are not marked here and the on-special guard is OFF for this session — refresh before repricing anything that might be on special.` });
-    });
-  }, []);
+  const reloadSpecials = () => loadSpecials().then((sp) => { setSpecials(sp); setGuardDown(false); }).catch(() => { setSpecials({}); setGuardDown(true); });
+  useEffect(() => { reloadSpecials(); }, []);
 
   const categories = useMemo(() => {
     const set = new Set(products.filter((p) => p && p.id).map((p) => typeOf(p)));
@@ -125,7 +125,8 @@ export default function BulkPricingTab({ products = [] }) {
       if (!res.ok) { setNotice({ kind: "err", text: "Nothing was written: " + res.message }); return; }
       setSelected(new Set());
       setStockDraft(""); setRetailDraft(""); setPercentDraft("");
-      setNotice({ kind: "ok", text: `Repriced ${res.count} products — batch ${res.batchId}. Undo from History below.` });
+      if (res.specialsCheckSkipped) setGuardDown(true);
+      setNotice({ kind: "ok", text: `Repriced ${res.count} products — batch ${res.batchId}. Undo from History below.${res.specialsCheckSkipped ? " ⚠ The on-special check could not read /specials for this write." : ""}` });
       refreshHistory();
     } catch (e) {
       setNotice({ kind: "err", text: "Nothing was written: " + (e?.message || e) });
@@ -153,7 +154,8 @@ export default function BulkPricingTab({ products = [] }) {
       const res = await restorePriceBatch(restoreCandidate.batchId, productsById);
       setRestoreCandidate(null);
       if (!res.ok) { setNotice({ kind: "err", text: "Restore failed — nothing was changed: " + res.message }); return; }
-      setNotice({ kind: "ok", text: `Restored ${res.count} products to their prior prices (batch ${res.restored}).` });
+      if (res.specialsCheckSkipped) setGuardDown(true);
+      setNotice({ kind: "ok", text: `Restored ${res.count} products to their prior prices (batch ${res.restored}).${res.specialsCheckSkipped ? " ⚠ The on-special check could not read /specials for this write." : ""}` });
       refreshHistory();
     } catch (e) {
       setNotice({ kind: "err", text: "Restore failed — nothing was changed: " + (e?.message || e) });
@@ -181,6 +183,12 @@ export default function BulkPricingTab({ products = [] }) {
         Select products, then set a fixed price or apply a percentage change. Every change previews first and is undoable by batch from History.
       </div>
 
+      {guardDown && (
+        <div style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.35)", borderRadius: 10, padding: "9px 12px", marginBottom: 12, fontSize: 12, color: "#FBBF24", display: "flex", gap: 10, alignItems: "center" }}>
+          <span style={{ flex: 1 }}>⚠ The on-special guard cannot read /specials (rule missing or read failing). Products on special are NOT marked and writes are NOT checked against them.</span>
+          <button onClick={reloadSpecials} style={{ background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.2)", borderRadius: 8, color: "#fff", padding: "6px 12px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>Retry</button>
+        </div>
+      )}
       {notice && (
         <div style={{ background: notice.kind === "ok" ? "rgba(74,202,122,.08)" : "rgba(255,99,99,.08)", border: `1px solid ${notice.kind === "ok" ? "rgba(74,202,122,.35)" : "rgba(255,99,99,.4)"}`, borderRadius: 10, padding: "9px 12px", marginBottom: 12, fontSize: 12, color: notice.kind === "ok" ? "#4ACA7A" : "#FF8A8A", display: "flex", gap: 10 }}>
           <span style={{ flex: 1, overflowWrap: "anywhere" }}>{notice.text}</span>
