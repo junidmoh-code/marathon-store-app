@@ -107,6 +107,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [bulkErr, setBulkErr] = useState(null);
   const selectedPids = Object.keys(selected).filter((k) => selected[k]);
   const exitSelect = () => { setSelectMode(false); setSelected({}); setBulkErr(null); };
+  // A selection is a statement about the cards the operator was LOOKING AT.
+  // Switching chips swaps the list under the checkboxes, so carrying the
+  // selection across would let a Clothing selection ride silently into a
+  // Perfume bulk hide. Reset on category change.
+  useEffect(() => { exitSelect(); }, [category]);   // eslint-disable-line react-hooks/exhaustive-deps
   const bulkHide = async (reason) => {
     if (bulkBusy || !canAct || !selectedPids.length) return;
     setBulkBusy(true);

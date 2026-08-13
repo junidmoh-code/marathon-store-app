@@ -33,8 +33,10 @@ describe("HealthView wiring — the partition is downstream and the lists don't 
   });
   it("the entrance is the unlabelled HoldSpot in the chip row, and the Hidden chip only shows once open", () => {
     expect(HEALTH).toMatch(/<HoldSpot onTrigger=\{\(\) => setMissingTab\("hidden"\)\} \/>/);
-    // The visible "Hidden (n)" chip is inside the activeTab === "hidden" branch.
-    expect(HEALTH).toMatch(/\{activeTab === "hidden" && \([\s\S]{0,600}?Hidden \(\{missingHidden\.length\}\)/);
+    // The visible "Hidden (n)" chip is inside the activeTab === "hidden"
+    // branch, and counts ENTRIES (what the tab lists — resolved included),
+    // not hidden cards.
+    expect(HEALTH).toMatch(/\{activeTab === "hidden" && \([\s\S]{0,800}?Hidden \(\{Object\.keys\(hiddenMap \|\| \{\}\)\.length\}\)/);
   });
 });
 

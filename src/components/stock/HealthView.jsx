@@ -380,7 +380,7 @@ export default function HealthView({ products = [], onExit }) {
   // (loading or unreadable) fails open to "nothing hidden". Hiding changes
   // NOTHING the engine or the scan reads — a hidden product still refills.
   const hiddenMap = useHiddenMissingProducts();
-  const { visible: missingVisible, hidden: missingHidden } = useMemo(
+  const { visible: missingVisible } = useMemo(
     () => partitionHidden(missingProductCards || [], hiddenMap),
     [missingProductCards, hiddenMap],
   );
@@ -493,7 +493,10 @@ export default function HealthView({ products = [], onExit }) {
                     padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
                     border: "1px solid rgba(60,110,255,.5)", background: "rgba(60,110,255,.14)", color: BLUE_L,
                   }}>
-                  Hidden ({missingHidden.length})
+                  {/* Entry count, not hidden-CARD count: the tab lists every
+                      entry including NO LONGER MISSING ones (the state-change
+                      rule), so its chip must count what the tab shows. */}
+                  Hidden ({Object.keys(hiddenMap || {}).length})
                 </button>
               )}
               {/* The unlabelled entrance: press-and-hold the empty space at
