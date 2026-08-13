@@ -235,7 +235,9 @@ test("P6: tier 2's own otherCodes join the candidate set — nothing it saw is d
   const db = fakeDb({});
   const out = await runLabelRead(db, baseRead({
     visionFetch: visionOk("MADE IN VIETNAM"), // tier 1 empty → tier 2 fires
-    geminiFetch: geminiOk({ styleCode: "A6CWNEN3", otherCodes: ["A8425"], styleCodeConfidence: 0.9 }),
+    // The junk entries face the same shape gate as the code itself — a size
+    // line or prose in otherCodes must never become a candidate.
+    geminiFetch: geminiOk({ styleCode: "A6CWNEN3", otherCodes: ["A8425", "US 9", "MADE IN VIETNAM"], styleCodeConfidence: 0.9 }),
   }));
   assert.deepStrictEqual(out.candidates, ["A6CWNEN3", "A8425"]);
   assert.strictEqual(out.preferred, "A6CWNEN3");
