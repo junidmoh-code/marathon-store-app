@@ -34,8 +34,8 @@ export default function IntroduceExisting({ products = [] }) {
   const dests = useMemo(() => destsFrom(config), [config]);
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const items = useMemo(
-    () => (loading ? [] : computeUnintroduced(allStock, allTargets, byId, dests)),
-    [loading, allStock, allTargets, byId, dests],
+    () => (loading ? [] : computeUnintroduced(allStock, allTargets, byId, dests, config?.categoryPolicy)),
+    [loading, allStock, allTargets, byId, dests, config],
   );
   const migratable = items.filter((i) => i.migratable);
   const numeric = items.filter((i) => !i.migratable);

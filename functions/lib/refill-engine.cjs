@@ -406,8 +406,13 @@ function categoryPolicyTarget(config, products, stock, dest, pid, size) {
   }
   // Per-size mode: declared catalogue sizes only — a size the product does not
   // come in resolves nothing here, exactly like the clothing rule below. The
-  // "_" sentinel is never a declared size on a per-size product; if a record
-  // carries it anyway the fall-through treats it as the branches below would.
+  // "_" sentinel is REFUSED outright: a per-size product declaring one-size is
+  // a data error, and answering for it would put a one-size target on a sized
+  // product from a map entry that was written about its sizes. Fall through
+  // (no run holds a "_" key, so it resolves nothing) and let the record be
+  // fixed, conservatively — the same direction every malformed input takes.
+  // (CodeRabbit, PR #352 — and mirrored byte-for-byte in solvePlan.js.)
+  if (encodeSizeKey(size) === "_") return null;
   if (!productSizes(products, pid).includes(String(size))) return null;
   return shaped(sizeUnitsAnywhere(stock, pid, size) > 0 ? entry.target : 0);
 }
@@ -1754,6 +1759,15 @@ function computeRefillPlan(snapshot) {
   // as managed — a human already decided. Otherwise fall back to the rule.
   const managedHere = (loc, pid) => {
     if (targets?.[loc]?.[pid]) return true;
+    // The category policy is a decision too — and it survives the kill switch
+    // (resolveTarget's branch order), so it must be consulted BEFORE the
+    // switch return below. Skipping this had the Decision Queue calling a
+    // mapped product "needs a decision" at the exact moment the planner was
+    // refilling it — the drift the block comment above exists to prevent.
+    // Entry presence is the test, not a positive resolution: an entry whose
+    // sizes all resolve dead-0 is "deliberately excluded", the same reading
+    // an explicit 0 row gets one branch up. (CodeRabbit + Sonnet, PR #352.)
+    if (categoryPolicyEntry(config, products, pid, loc)) return true;
     if (!ruleTargetsEnabled(config, loc)) return false;
     for (const s of productSizes(products, pid)) if (targetResolves(loc, pid, s)) return true;
     return false;

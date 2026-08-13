@@ -270,7 +270,7 @@ export default function HealthView({ products = [], onExit }) {
   // against half-loaded data — with targets null EVERYTHING looks unintroduced).
   const stockReady = allTargetsRaw != null && allStock && Object.keys(allStock).length > 0;
   const migratableLive = useMemo(
-    () => (stockReady ? computeUnintroduced(allStock, allTargets, byId, destsFrom(config)).filter((i) => i.migratable).length : null),
+    () => (stockReady ? computeUnintroduced(allStock, allTargets, byId, destsFrom(config), config?.categoryPolicy).filter((i) => i.migratable).length : null),
     [stockReady, allStock, allTargets, byId, config],
   );
 

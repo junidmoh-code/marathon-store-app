@@ -200,8 +200,8 @@ export default function NoTargetQueue({ products = [] }) {
 
   // Pointer only — migration lives on the Health screen, not in this queue.
   const migratableCount = useMemo(
-    () => (loading ? 0 : computeUnintroduced(allStock, allTargets, byId, dests).filter((i) => i.migratable).length),
-    [loading, allStock, allTargets, byId, dests],
+    () => (loading ? 0 : computeUnintroduced(allStock, allTargets, byId, dests, config?.categoryPolicy).filter((i) => i.migratable).length),
+    [loading, allStock, allTargets, byId, dests, config],
   );
 
   if (loading) {

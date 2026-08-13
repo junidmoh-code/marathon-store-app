@@ -2006,3 +2006,41 @@ test("category policy: the WHOLE PLAN is byte-identical for an unmapped snapshot
   const noMap = computeRefillPlan(base());
   assert.deepEqual(withMap, noMap);
 });
+
+test("category policy: the Decision Queue agrees with the planner even with the kill switch OFF", () => {
+  // managedHere consulted the kill switch before the map, so a mapped product
+  // was listed as "needs a decision" while the planner refilled it.
+  // (CodeRabbit + Sonnet, PR #352.)
+  const cfg = { ...CAT_CONFIG, ruleBasedTargets: false };
+  const snap = (config) => ({
+    nowMs: NOW, config, products: CAT_PRODUCTS, targets: {},
+    stock: {
+      central: {}, hub2: { beanie1: { _: cell(10) } },
+      "marathon-pe": { beanie1: { _: cell(0) } }, trophy: {},
+    },
+    openIndex: {}, refillRequests: {}, orders: {}, movements: [],
+  });
+  const plan = computeRefillPlan(snap(cfg));
+  // The planner IS refilling it…
+  assert.ok(plan.intents.find((x) => x.productId === "beanie1" && x.dest === "marathon-pe"));
+  // …so the queues must not demand a decision for it.
+  const flagged = [...plan.exceptions.noTarget.items, ...plan.exceptions.unintroduced.items]
+    .filter((x) => x.pid === "beanie1");
+  assert.deepEqual(flagged, []);
+  // Control: with the entry deleted (the off switch) and the switch still off,
+  // the product genuinely needs a decision again — the test can fail.
+  const off = computeRefillPlan(snap({ ...cfg, categoryPolicy: {} }));
+  const reflagged = [...off.exceptions.noTarget.items, ...off.exceptions.unintroduced.items]
+    .filter((x) => x.pid === "beanie1");
+  assert.ok(reflagged.length > 0, "without the map the queue must flag it again");
+});
+
+test("category policy per-size mode REFUSES the '_' sentinel — a data error falls through, on both sides", () => {
+  // A per-size product declaring one-size is a record error; answering for it
+  // would put a one-size target on a sized product. (CodeRabbit, PR #352.)
+  const products = { ...CAT_PRODUCTS, fittedOdd: { name: "Odd fitted", productType: "clothing", categoryKey: "fitted-caps", sizes: ["_", "M"] } };
+  const ctx = { targets: {}, config: CAT_CONFIG, products, stock: { central: { fittedOdd: { _: cell(4), M: cell(2) } }, hub2: {}, "marathon-pe": {}, trophy: {} } };
+  assert.equal(resolveTarget(ctx, "marathon-pe", "fittedOdd", "_"), null);
+  // …while its real letter size still resolves the map.
+  assert.equal(resolveTarget(ctx, "marathon-pe", "fittedOdd", "M").target, 2);
+});

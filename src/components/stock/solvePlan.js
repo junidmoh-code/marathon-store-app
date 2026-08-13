@@ -160,6 +160,24 @@ export function explicitTarget(targets, loc, pid, size) {
 //                         anywhere re-arm it with no config change.
 // `unitsAnywhere(size)` is the caller's live network sum for this product —
 // NetworkTransfer closes it over the same allStock map everything else reads.
+// The locations a category-policy entry validly governs for one categoryKey —
+// the SAME validation as categoryRun below (and the engine), answered as a
+// membership question. Exists for callers that must not treat a mapped product
+// as "unmanaged": the Introduce Existing migration used to see only explicit
+// rows, so it would happily stamp generic standard-run rows onto a mapped
+// product — rows that then outrank the map FOREVER and quietly break its off
+// switch (delete-the-entry no longer restores anything for that product).
+// (Sonnet review, PR #352.)
+export function categoryPolicyLocs(policy, categoryKey) {
+  if (typeof categoryKey !== "string" || !categoryKey) return [];
+  const cat = policy && typeof policy === "object" && !Array.isArray(policy) ? policy[categoryKey] : null;
+  if (!cat || typeof cat !== "object" || Array.isArray(cat)) return [];
+  return Object.entries(cat)
+    .filter(([loc, entry]) => loc !== "perSize" && entry && typeof entry === "object" && !Array.isArray(entry)
+      && typeof entry.target === "number" && Number.isFinite(entry.target) && entry.target > 0)
+    .map(([loc]) => loc);
+}
+
 export function categoryRun({ policy, categoryKey, sizes, unitsAnywhere }) {
   if (typeof categoryKey !== "string" || !categoryKey) return {};
   const cat = policy && typeof policy === "object" && !Array.isArray(policy) ? policy[categoryKey] : null;
@@ -171,8 +189,12 @@ export function categoryRun({ policy, categoryKey, sizes, unitsAnywhere }) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const t = entry.target;
     if (typeof t !== "number" || !Number.isFinite(t) || t <= 0) continue;
+    // Per-size mode REFUSES the "_" sentinel (a per-size product declaring
+    // one-size is a data error; the engine falls through for it too — the two
+    // must refuse in lockstep or Solve would arm a cell the engine never
+    // refills). (CodeRabbit, PR #352.)
     out[loc] = cat.perSize === true
-      ? Object.fromEntries((sizes || []).map((sz) => [String(sz).toUpperCase(), at(sz) > 0 ? t : 0]))
+      ? Object.fromEntries((sizes || []).filter((sz) => String(sz) !== "_").map((sz) => [String(sz).toUpperCase(), at(sz) > 0 ? t : 0]))
       : { "_": t };
   }
   return out;

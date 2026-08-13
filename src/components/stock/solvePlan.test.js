@@ -163,7 +163,7 @@ describe("solvePlan", () => {
 // between explicit rows and the rule standards; these tests pin this file's
 // mirror of it: same validation, same two size modes, same precedence, same
 // survival of the kill switch.
-import { categoryRun, resolvedRun } from "./solvePlan";
+import { categoryRun, resolvedRun, categoryPolicyLocs } from "./solvePlan";
 
 const POLICY = {
   perfumes: {
@@ -258,5 +258,25 @@ describe("resolvedRun with the category policy — precedence is the engine's, e
     const args = { std: { "marathon-pe": { M: 2 }, hub2: { M: 3 } }, sizes: ["M"], targets: null, pid: "tee1", ruleBasedTargets: true };
     expect(resolvedRun({ ...args, categoryPolicy: POLICY, categoryKey: "t-shirts" }))
       .toEqual(resolvedRun(args));
+  });
+});
+
+describe("categoryPolicyLocs + the Introduce-Existing guard (Sonnet review, PR #352)", () => {
+  it("names exactly the validly-mapped locations, and nothing for malformed entries", () => {
+    expect(categoryPolicyLocs(POLICY, "perfumes").sort()).toEqual(["hub2", "marathon-pe"]);
+    expect(categoryPolicyLocs(POLICY, "fitted-caps").sort()).toEqual(["hub2", "marathon-pe"]);
+    expect(categoryPolicyLocs(POLICY, "t-shirts")).toEqual([]);
+    expect(categoryPolicyLocs(undefined, "perfumes")).toEqual([]);
+    expect(categoryPolicyLocs(POLICY, undefined)).toEqual([]);
+    expect(categoryPolicyLocs({ perfumes: { "marathon-pe": { target: "8" } } }, "perfumes")).toEqual([]);
+    expect(categoryPolicyLocs({ perfumes: { perSize: true } }, "perfumes")).toEqual([]);
+  });
+  it("per-size mode REFUSES the '_' sentinel — mirrored with the engine", () => {
+    const run = categoryRun({
+      policy: POLICY, categoryKey: "fitted-caps", sizes: ["_", "M"],
+      unitsAnywhere: () => 4,
+    });
+    expect(run["marathon-pe"]).toEqual({ M: 2 });   // no "_" key, ever
+    expect(run.hub2).toEqual({ M: 5 });
   });
 });

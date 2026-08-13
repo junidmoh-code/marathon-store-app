@@ -19,6 +19,13 @@ runbook; nothing here was executed).
 
 Trophy and marathon-pine are not named — they get nothing (decision 5).
 
+One side effect to eyeball BEFORE arming (CodeRabbit, PR #352): a target is
+also what the EXCESS report classifies against, so a mapped `"_"` cell holding
+more than the entry's target (say 25 beanies at hub2 against target 10) will
+start appearing in Excess Rebalance the scan after arming. That is the policy
+speaking, not a bug — but review high-stock `"_"` cells first and write an
+explicit row for any that should keep a deeper buffer (explicit beats map).
+
 The slugs `beanies` / `caps` / `bucket-hats` do NOT exist in the catalogue.
 The live key `caps-beanies` holds all three (135 beanies, 73 caps, 16 bucket
 hats) — identical numbers, so one entry serves — **and all 7 visors**, which
@@ -65,9 +72,13 @@ after the collapse avoids the noise; arming before it is safe but untidy.
 68 × hub2 `_` 15/8 (no rp, eager) and 68 × marathon-pe `_` 5/3 rp 0. Because
 an explicit row beats the map, these 68 products would keep 15/8 forever.
 
-Prepared to disk, NOT run: `~/headwear-136-delete.json` (136 multi-path
-nulls), `~/headwear-136-rollback.json` (exact rows as read). **Order is
-load-bearing:** all 68 hub2 rows have OPEN engine requests raised under them
+Prepared to disk, NOT run: `~/headwear-136-delete-guarded.mjs` — a guarded
+runner that re-reads every row LIVE at run time, verifies batchId and exact
+values against `~/headwear-136-rollback.json`, regenerates the nulls from the
+same live snapshot, ABORTS on any drift, and writes a fresh at-run-time
+rollback before deleting (a blind multi-path file could remove a row someone
+changed since preparation — CodeRabbit, PR #352). `~/headwear-136-delete.json`
+remains as the reviewable list of paths. **Order is load-bearing:** all 68 hub2 rows have OPEN engine requests raised under them
 on 2026-08-11 (67 × qty 10, 1 × qty 15). Deleting before `caps-beanies` is
 armed strands that open work target-less (the engine withdraws it); deleting
 after, they fall through to the map's identical hub2 target 10 (the qty-15
