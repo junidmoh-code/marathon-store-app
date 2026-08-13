@@ -509,13 +509,14 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
               <Badge tone={BLUE_L}>{card.units} units at {LOC_LABEL[card.source]}</Badge>
             </>}
             right={
+              // The action row keeps the card's established language — ONE
+              // green primary (Solve), ONE ghost secondary (Move manually).
+              // Hide is deliberately NOT a third button box: as one it read
+              // as a disabled sibling and crowded the name column (owner
+              // feedback, 2026-08-13). It rides below the row as a small dim
+              // text control — subordinate, but a full-size tap target.
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
               <div style={{ display: "flex", gap: 6 }}>
-                {canAct && (
-                  <button onClick={() => { setHidePid(hOpen ? null : card.pid); setSolvePid(null); setOpenPid(null); }}
-                          style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.4)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-                    {hOpen ? "Close" : "Hide"}
-                  </button>
-                )}
                 <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setHidePid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!!solveBlocked}
                         title={solveBlocked || undefined}
                         style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: solveBlocked ? "default" : "pointer", opacity: solveBlocked ? 0.4 : 1, fontFamily: FONT }}>
@@ -525,6 +526,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                         style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
                   {open ? "Close" : "Move manually"}
                 </button>
+              </div>
+              {canAct && (
+                <button onClick={() => { setHidePid(hOpen ? null : card.pid); setSolvePid(null); setOpenPid(null); }}
+                        style={{ background: "none", border: "none", color: "rgba(255,255,255,.35)", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: "1px 2px", fontFamily: FONT }}>
+                  {hOpen ? "Cancel" : "Hide from list"}
+                </button>
+              )}
               </div>
             }
           >

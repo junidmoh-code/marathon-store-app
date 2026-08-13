@@ -84,6 +84,13 @@ describe("the writes stay inside the one small node", () => {
   it("NetworkTransfer's hide writes ONLY the hidden-root entry for that pid", () => {
     expect(NETWORK).toMatch(/\[`\$\{HIDDEN_ROOT\}\/\$\{card\.pid\}`\]: hideEntry\(/);
   });
+  it("Hide is a dim text control BELOW the action row, never a third button box", () => {
+    // The card's action language is one green primary + one ghost secondary;
+    // a third bordered box read as a disabled sibling and crowded the name
+    // column (owner feedback, 2026-08-13).
+    expect(NETWORK).toMatch(/flexDirection: "column", alignItems: "flex-end"/);
+    expect(NETWORK).toMatch(/background: "none", border: "none"[^}]*\}\}>\s*\{hOpen \? "Cancel" : "Hide from list"\}/);
+  });
   it("bulk hide is ONE update over exactly the selection, via the pinned builder", () => {
     // bulkHideUpdate is the tested guarantee that only the selected set is
     // written; bulk hide must go through it, in a single update().
