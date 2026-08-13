@@ -150,8 +150,8 @@ Proposal: a **dedicated top-level node, off the product record**:
       shopifyInventoryItemId: "gid://shopify/InventoryItem/…"
     }
   },
-  syncedAt: <epoch ms>
-}
+  syncedAt: <epoch ms>          // NOT yet written by idMap.mjs — deferred to
+}                               // the slice that needs staleness (deliberate)
 ```
 
 Why off-record rather than fields on `/products/{id}`:

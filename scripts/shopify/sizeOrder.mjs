@@ -15,6 +15,8 @@
 //      a dropdown on the 1 live record that mixes "_" with a real size)
 // A pure one-size product (sizes === ["_"]) is returned as-is: single option
 // value, nothing to sort.
+import { encodeSizeKey } from "../../src/utils/sizeKey.js";
+
 const NUMERIC = /^\d+(\.\d+)?$/;
 
 // Canonical garment run. 2XL/3XL/4XL/5XL/6XL are digit spellings of the same
@@ -36,6 +38,43 @@ function rankOf(size, index) {
   const g = GARMENT_RANK.get(s.toUpperCase());
   if (g !== undefined) return [G_GARMENT, g];
   return [G_UNKNOWN, index]; // stable: unknowns keep their catalogue order
+}
+
+// The Shopify option value a catalogue size renders as. "_" is the app's
+// one-size sentinel; everything else displays verbatim.
+export function displaySizeName(size) {
+  return size === "_" ? "One Size" : String(size);
+}
+
+// Pre-flight validation BEFORE any Shopify mutation: a size array whose tokens
+// collide — as display values ("_" next to a literal "One Size") or as RTDB
+// keys ("5.5" next to "5_5") — would create variants that cannot be told apart
+// in the ID map. Catching it here beats a thrown error AFTER the product was
+// already created. Returns human-readable problem strings; empty = clean.
+export function findSizeCollisions(sizes) {
+  const problems = [];
+  const byDisplay = new Map();
+  const byKey = new Map();
+  for (const s of sizes) {
+    if ((typeof s !== "string" && typeof s !== "number") || String(s).trim() === "") {
+      problems.push(`invalid size token: ${JSON.stringify(s)}`);
+      continue;
+    }
+    const display = displaySizeName(s);
+    const key = encodeSizeKey(s);
+    if (byDisplay.has(display) && byDisplay.get(display) !== s) {
+      problems.push(`sizes ${JSON.stringify(byDisplay.get(display))} and ${JSON.stringify(s)} collide as option "${display}"`);
+    }
+    if (byKey.has(key) && byKey.get(key) !== s) {
+      problems.push(`sizes ${JSON.stringify(byKey.get(key))} and ${JSON.stringify(s)} collide as RTDB key "${key}"`);
+    }
+    if (byDisplay.get(display) === s || byKey.get(key) === s) {
+      problems.push(`duplicate size token ${JSON.stringify(s)}`);
+    }
+    if (!byDisplay.has(display)) byDisplay.set(display, s);
+    if (!byKey.has(key)) byKey.set(key, s);
+  }
+  return problems;
 }
 
 // Sort a record's sizes for the storefront. Returns a NEW array of the

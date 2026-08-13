@@ -67,6 +67,15 @@ describe("planIdMapWrite — idempotency contract", () => {
     expect(planIdMapWrite(existing, mapping)).toEqual({ action: "merge", newKeys: ["M", "_"] });
   });
 
+  it("pending node (product id only, no variants yet) → merge of every key", () => {
+    // round-trip --commit writes {shopifyProductId, variants:{}} immediately
+    // after creation; the full mapping after read-back must merge cleanly.
+    const existing = { shopifyProductId: gid.product(9) };
+    const plan = planIdMapWrite(existing, mapping);
+    expect(plan.action).toBe("merge");
+    expect(plan.newKeys.sort()).toEqual(["5_5", "6", "M", "_"].sort());
+  });
+
   it("different shopifyProductId → refuses (duplicate-product guard)", () => {
     const existing = { ...JSON.parse(JSON.stringify(mapping)), shopifyProductId: gid.product(8) };
     expect(() => planIdMapWrite(existing, mapping)).toThrow(/refusing to overwrite/);

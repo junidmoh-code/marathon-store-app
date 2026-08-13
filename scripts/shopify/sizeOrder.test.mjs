@@ -3,7 +3,7 @@
 // read-only census (same convention as nameRewrite.test.mjs). Expected outputs
 // are the storefront dropdown order we want frozen.
 import { describe, it, expect } from "vitest";
-import { sortSizes } from "./sizeOrder.mjs";
+import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs";
 
 describe("sortSizes — real catalogue size arrays", () => {
   it("shoe run with trailing small sizes and a half (p1777899156322 Zoom Vomero)", () => {
@@ -70,5 +70,34 @@ describe("sortSizes — real catalogue size arrays", () => {
     const input = ["6", "3", "5.5"];
     sortSizes(input);
     expect(input).toEqual(["6", "3", "5.5"]);
+  });
+});
+
+describe("displaySizeName", () => {
+  it("maps the sentinel to One Size and everything else verbatim", () => {
+    expect(displaySizeName("_")).toBe("One Size");
+    expect(displaySizeName("5.5")).toBe("5.5");
+    expect(displaySizeName(6)).toBe("6");
+  });
+});
+
+describe("findSizeCollisions — pre-flight refusal before any Shopify call", () => {
+  it("clean real-world arrays pass", () => {
+    expect(findSizeCollisions(["3", "4", "5", "5.5", "6"])).toEqual([]);
+    expect(findSizeCollisions(["S", "M", "L", "XL"])).toEqual([]);
+    expect(findSizeCollisions(["_"])).toEqual([]);
+  });
+
+  it("catches an RTDB key collision (5.5 vs 5_5)", () => {
+    expect(findSizeCollisions(["5.5", "5_5"]).join(" ")).toMatch(/collide as RTDB key "5_5"/);
+  });
+
+  it("catches a display collision (sentinel vs literal One Size)", () => {
+    expect(findSizeCollisions(["_", "One Size"]).join(" ")).toMatch(/collide as option "One Size"/);
+  });
+
+  it("catches exact duplicates and invalid tokens", () => {
+    expect(findSizeCollisions(["M", "M"]).join(" ")).toMatch(/duplicate size token "M"/);
+    expect(findSizeCollisions(["", null]).length).toBe(2);
   });
 });

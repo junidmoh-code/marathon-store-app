@@ -172,7 +172,11 @@ export function brandsIn(name) {
   if (ON_LEADING.test(s)) hits.push("On");
   for (const re of BRAND_PATTERNS) {
     re.lastIndex = 0;
-    if (re.test(s)) hits.push(re.source.replace(/^\\b\(\?:/, "").split("|")[0]);
+    if (re.test(s)) {
+      // \b(?:foo|bar)\b → "foo": strip BOTH anchors before taking the first
+      // alternative (a single-alternative pattern otherwise leaks ")\b").
+      hits.push(re.source.replace(/^\\b\(\?:/, "").replace(/\)\\b$/, "").split("|")[0]);
+    }
   }
   return hits;
 }

@@ -83,16 +83,33 @@ export function planIdMapWrite(existing, mapping) {
 }
 
 // db = admin.database(). Returns the plan it executed.
+//
+// Runs as an RTDB TRANSACTION, not read-then-write: two concurrent writers
+// (or a writer racing a partial earlier run) each get planIdMapWrite re-run
+// against the CURRENT server value, so a conflicting mapping aborts instead
+// of silently replacing what the other writer just committed. The update
+// function may be invoked more than once (first against the local cache) —
+// plan and conflict are recomputed every invocation and only the final,
+// committed invocation's plan is returned.
 export async function writeIdMap(db, productId, mapping) {
   const ref = db.ref(`shopify_sync/${assertSafeSegment(productId, "productId")}`);
-  const existing = (await ref.get()).val();
-  const plan = planIdMapWrite(existing, mapping);
-  if (plan.action === "create") {
-    await ref.set(mapping);
-  } else if (plan.action === "merge") {
-    const updates = {};
-    for (const key of plan.newKeys) updates[`variants/${key}`] = mapping.variants[key];
-    await ref.update(updates);
-  }
+  let plan = null;
+  let conflict = null;
+  const result = await ref.transaction((existing) => {
+    conflict = null;
+    try {
+      plan = planIdMapWrite(existing, mapping);
+    } catch (e) {
+      conflict = e;
+      return undefined; // abort the transaction, existing data untouched
+    }
+    if (plan.action === "noop") return existing;
+    if (plan.action === "create") return mapping;
+    const merged = { ...existing, variants: { ...(existing.variants || {}) } };
+    for (const key of plan.newKeys) merged.variants[key] = mapping.variants[key];
+    return merged;
+  });
+  if (conflict) throw conflict;
+  if (!result.committed) throw new Error("ID-map transaction did not commit");
   return plan;
 }

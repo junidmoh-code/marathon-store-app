@@ -18,7 +18,7 @@
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey } from "../../src/utils/sizeKey.js";
-import { sortSizes } from "./sizeOrder.mjs";
+import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs";
 import { shopifyTitle } from "./nameRewrite.mjs";
 import { buildMapping, writeIdMap } from "./idMap.mjs";
 
@@ -50,13 +50,16 @@ if (!(Number(product.retailPrice) > 0)) problems.push("no retailPrice > 0");
 const sizes =
   Array.isArray(product.sizes) && product.sizes.length ? sortSizes(product.sizes) : null;
 if (!sizes) problems.push("no sizes array");
+// Colliding tokens must refuse BEFORE any Shopify call — after creation they
+// would be indistinguishable in the ID map (see findSizeCollisions).
+if (sizes) problems.push(...findSizeCollisions(sizes));
 if (problems.length) {
   console.error(`Refusing to map ${productId}: ${problems.join("; ")}`);
   process.exit(1);
 }
 
 // "_" is the one-size sentinel; Shopify needs a human-readable option value.
-const sizeName = (s) => (s === "_" ? "One Size" : String(s));
+const sizeName = displaySizeName;
 const price = Number(product.retailPrice).toFixed(2);
 
 // Listing title = brand-stripped name; a guard violation ships the ORIGINAL
@@ -88,42 +91,77 @@ if (!COMMIT) {
   process.exit(0);
 }
 
-// ── --commit: duplicate guard, create once, read back ────────────────────────
-const dupe = await graphql(
-  `query ($q: String!) { products(first: 3, query: $q) { nodes { id title } } }`,
-  { q: `title:'${input.title.replace(/'/g, "\\'")}'` }
-);
-const exact = dupe.products.nodes.filter((n) => n.title === input.title);
-if (exact.length) {
+// ── --commit: map-first check, duplicate guard, create once, read back ───────
+// Order of authority for "does this product already exist on the shop?":
+//   1. /shopify_sync/{productId} — the durable record; if present, RECONCILE
+//      that product (a title edit on either side must not cause a re-create).
+//   2. exact-title search — catches the orphan state where a prior run created
+//      the product but died before the ID map was written; ADOPT, don't create.
+//   3. neither → create, and persist a pending {shopifyProductId} node BEFORE
+//      the read-back, so even a crash right here leaves a durable pointer.
+const db = admin.database();
+const mapNode = (await db.ref(`shopify_sync/${productId}`).get()).val();
+let shopifyProductId;
+if (mapNode) {
   console.error(
-    `Refusing to create: ${exact.length} product(s) with this exact title already exist ` +
-      `on the shop (${exact.map((n) => n.id).join(", ")}). This script creates a product ` +
-      `at most once.`
+    `/shopify_sync/${productId} already maps to ${mapNode.shopifyProductId} — ` +
+      `reconciling that product (nothing will be created).`
   );
-  process.exit(1);
-}
-
-const created = await graphql(
-  `mutation ($input: ProductSetInput!) {
-    productSet(synchronous: true, input: $input) {
-      product { id }
-      userErrors { field message }
+  shopifyProductId = mapNode.shopifyProductId;
+} else {
+  const dupe = await graphql(
+    `query ($q: String!) { products(first: 25, query: $q) { nodes { id title } } }`,
+    // Escape the Shopify search DSL's own metacharacters (backslash first).
+    { q: `title:'${input.title.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'` }
+  );
+  const exact = dupe.products.nodes.filter((n) => n.title === input.title);
+  if (exact.length === 1) {
+    // A prior --commit died between productSet and the ID-map write — the
+    // product exists with NO /shopify_sync node, which is exactly the
+    // lost-mapping state that causes duplicate creation. ADOPT it.
+    console.error(
+      `Product with this exact title already exists (${exact[0].id}) and ` +
+        `/shopify_sync/${productId} is empty — adopting it instead of creating.`
+    );
+    shopifyProductId = exact[0].id;
+  } else if (exact.length > 1) {
+    console.error(
+      `Refusing to create: ${exact.length} products with this exact title already exist ` +
+        `on the shop (${exact.map((n) => n.id).join(", ")}). Ambiguous — needs a human.`
+    );
+    process.exit(1);
+  } else {
+    const created = await graphql(
+      `mutation ($input: ProductSetInput!) {
+        productSet(synchronous: true, input: $input) {
+          product { id }
+          userErrors { field message }
+        }
+      }`,
+      { input },
+      { mutation: true } // a 5xx may have applied server-side — never blind-retry
+    );
+    const errs = created.productSet.userErrors;
+    if (errs?.length) {
+      console.error(`productSet userErrors: ${JSON.stringify(errs, null, 2)}`);
+      process.exit(1);
     }
-  }`,
-  { input }
-);
-const errs = created.productSet.userErrors;
-if (errs?.length) {
-  console.error(`productSet userErrors: ${JSON.stringify(errs, null, 2)}`);
-  process.exit(1);
+    shopifyProductId = created.productSet.product.id;
+    // Surface the ID before anything else can fail — if every later step dies,
+    // the operator still has the created product's handle in the output.
+    console.error(`created: ${shopifyProductId}`);
+    // Durable pointer FIRST: if the read-back below fails, a re-run finds this
+    // pending node (map-first check) and reconciles instead of re-creating.
+    await writeIdMap(db, productId, { shopifyProductId, variants: {} });
+  }
 }
-const shopifyProductId = created.productSet.product.id;
 
 const back = await graphql(
   `query ($id: ID!) {
     product(id: $id) {
       id title status
       variants(first: 100) {
+        pageInfo { hasNextPage }
         nodes { id title sku inventoryItem { id } }
       }
     }
@@ -132,7 +170,14 @@ const back = await graphql(
 );
 
 const p = back.product;
-console.log(`created (status ${p.status}): ${p.title}`);
+if (!p) {
+  console.error(
+    `Read-back returned no product for ${shopifyProductId}. Nothing written beyond ` +
+      `the pending pointer; re-run to reconcile.`
+  );
+  process.exit(1);
+}
+console.log(`product on shop (status ${p.status}): ${p.title}`);
 console.log(`productId: ${p.id}`);
 console.log("");
 // Variant titles are DISPLAY values ("One Size"); the ID map must key by the
@@ -143,6 +188,29 @@ const rows = p.variants.nodes.map((v) => ({
   variantId: v.id,
   inventoryItemId: v.inventoryItem?.id ?? "",
 }));
+
+// Completeness gate: the map is only written when EVERY expected size came
+// back as exactly one variant with an inventory item. A partial map would
+// silently starve the future inventory sync of IDs for the missing sizes.
+const readBackProblems = [];
+if (p.variants.pageInfo.hasNextPage) readBackProblems.push("more than 100 variants (unpaginated)");
+const returnedTitles = new Set(p.variants.nodes.map((v) => v.title));
+for (const s of sizes) {
+  if (!returnedTitles.has(sizeName(s))) readBackProblems.push(`size "${sizeName(s)}" missing from read-back`);
+}
+if (p.variants.nodes.length !== sizes.length) {
+  readBackProblems.push(`expected ${sizes.length} variants, read back ${p.variants.nodes.length}`);
+}
+for (const r of rows) {
+  if (!r.inventoryItemId) readBackProblems.push(`variant "${r.size}" has no inventoryItemId`);
+}
+if (readBackProblems.length) {
+  console.error(
+    `Refusing to write the ID map — read-back incomplete: ${readBackProblems.join("; ")}. ` +
+      `The pending pointer (if any) is preserved; re-run to reconcile.`
+  );
+  process.exit(1);
+}
 const w = (k) => Math.max(k.length, ...rows.map((r) => String(r[k]).length));
 const cols = ["size", "variantId", "inventoryItemId"];
 const line = (r) => cols.map((k) => String(r[k]).padEnd(w(k))).join("  ");

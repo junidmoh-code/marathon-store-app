@@ -17,10 +17,19 @@ import { requireEnv } from "./env.mjs";
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
 let cache = null; // { token, refreshAt, expiresIn, scope } — process memory only
+let minting = null; // single-flight: concurrent callers share one in-flight mint
 
 export async function getAccessToken() {
   if (cache && Date.now() < cache.refreshAt) return cache.token;
+  if (!minting) {
+    minting = mint().finally(() => {
+      minting = null;
+    });
+  }
+  return minting;
+}
 
+async function mint() {
   const shop = requireEnv("SHOPIFY_SHOP");
   const body = new URLSearchParams({
     grant_type: "client_credentials",

@@ -14,7 +14,17 @@ if (existsSync(ENV_FILE)) {
     if (!m || line.trim().startsWith("#")) continue;
     const [, key, raw] = m;
     if (process.env[key] !== undefined) continue; // real env wins
-    process.env[key] = raw.replace(/^(["'])(.*)\1$/, "$2");
+    const quoted = raw.match(/^(["'])(.*)\1$/);
+    if (quoted) {
+      process.env[key] = quoted[2];
+    } else if (/^["']/.test(raw)) {
+      // A leading quote that never closes would silently ship the quote char
+      // inside the credential and fail later as an opaque HTTP error.
+      console.warn(`.env: ignoring ${key} — unterminated quote`);
+    } else {
+      // Unquoted values may carry an inline comment ("KEY=value  # note").
+      process.env[key] = raw.replace(/\s+#.*$/, "").trim();
+    }
   }
 }
 

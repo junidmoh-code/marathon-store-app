@@ -149,6 +149,12 @@ describe("stripBrandFromName — real catalogue names", () => {
     }
   });
 
+  it("brandsIn returns clean canonical names (no regex anchors leaking through)", () => {
+    expect(brandsIn("Nike Air Force 1")).toEqual(["nike"]);
+    expect(brandsIn("New Balance 9060")).toEqual(["new balance"]);
+    expect(brandsIn("Hugo Boss beanie")).toEqual(["hugo boss"]);
+  });
+
   it("no pattern strips a kept line mark (list-level pin of the allowlist)", () => {
     for (const mark of ["Air Jordan", "Jordan", "NOCTA"]) {
       expect(stripBrandFromName(`${mark} test case`)).toBe(`${mark} test case`);
