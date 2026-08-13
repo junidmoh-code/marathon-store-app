@@ -241,6 +241,33 @@ describe("the link panel's ranked suggestions", () => {
     expect(after).toContain("Style number:");
   });
 
+  it("REGISTER: the heads-up names the STRONGEST relative, not the first in catalogue order (Sonnet review, PR #351)", async () => {
+    // Catalogue order puts a weak truncated-tier relative FIRST (aTrunc,
+    // registered 742CFA0013 — suffix-less, prefix of the captured code) and a
+    // strong family-tier relative after it (g12/g16). The note must name a
+    // family member, never the truncated hit.
+    const withCategory = [
+      { id: "aTrunc", name: "Lacoste Mystery Base", styleCodeNormalised: "742CFA0013", sizes: { a: "6" }, photoUrl: null, categoryKey: "sneakers" },
+      ...PRODUCTS.map((p) => ({ ...p, categoryKey: "sneakers" })),
+      { id: "gNew", name: "Lacoste Gripshot Navy", sizes: { a: "6" }, photoUrl: null, categoryKey: "sneakers" },
+    ];
+    let tr;
+    await act(async () => {
+      tr = TestRenderer.create(<HubCleanup products={withCategory} actorRole="warehouse" viewer={{}} />);
+    });
+    const search = tr.root.findAll((n) => n.type === "input" && n.props.placeholder === "Search the catalogue by name…")[0];
+    await act(async () => { search.props.onChange({ target: { value: "Gripshot Navy" } }); });
+    const row = tr.root.findAll((n) => n.type === "button" && textIn(n).includes("Lacoste Gripshot Navy"))[0];
+    await act(async () => { row.props.onClick(); });
+    await act(async () => { readerProps.onCode("742CFA0013-2G4", { source: "label", labelPhoto: null }); });
+    const after = textOf(tr);
+    expect(after).toContain("Heads-up");
+    // The truncated-tier hit must not be the one named…
+    expect(after).not.toContain("Lacoste Mystery Base");
+    // …the top family-tier member must be (g12 — first 93-scorer, stable sort).
+    expect(after).toContain("Lacoste Gripshot White Green Orange");
+  });
+
   it("REGISTER: a clean unrelated code shows NO heads-up", async () => {
     const withCategory = [
       ...PRODUCTS.map((p) => ({ ...p, categoryKey: "sneakers" })),

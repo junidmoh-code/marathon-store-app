@@ -1571,7 +1571,11 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
     if (!norm) return [];
     return codeSuggestions(norm, products)
       .filter((s) => s.product.id !== product.id
-        && (s.tier === "family" || s.tier === "misread" || s.tier === "truncated" || s.tier === "pendingExact"));
+        && (s.tier === "family" || s.tier === "misread" || s.tier === "truncated" || s.tier === "pendingExact"))
+      // codeSuggestions returns catalogue-iteration order; the note shows ONE
+      // relative, so it must be the STRONGEST, not the first encountered
+      // (Sonnet + Kimi substitute review, PR #351 — their one shared finding).
+      .sort((a, b) => b.score - a.score);
   }, [chosenCode, products, product.id]);
   // Answered "different colourway" for THIS code (or the index already lists
   // this product as a sibling owner — checked below). Keyed by the normalised
