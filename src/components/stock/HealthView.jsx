@@ -24,6 +24,7 @@ import {
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
   useStockTargetsState,
   useStockTargets, useTransfers, useRetryState,
+  useHiddenMissingProducts,
 } from "./useStock";
 import InTransit from "./InTransit";
 import { STALE_TRANSIT_HOURS } from "./transitLanes";
@@ -40,6 +41,7 @@ import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
 import { computeMissingFootwear } from "./missingFootwearCore";
 import { computeMissingProducts, buildChips, pickActiveTab } from "./missingProductsCore";
+import { partitionHidden } from "./hiddenProductsCore";
 import NoTargetQueue from "./NoTargetQueue";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { sizeRank } from "./hubSizeRank";
@@ -369,10 +371,25 @@ export default function HealthView({ products = [], onExit }) {
     () => (allStock && Object.keys(allStock).length ? computeMissingProducts({ allStock, products }) : null),
     [allStock, products],
   );
+  // ── HIDE — a view filter, strictly DOWNSTREAM of the compute ───────────────
+  // computeMissingProducts stays the single unforked source; hiding partitions
+  // its output here, so the chips, the headline count and the list all read
+  // the same visible set and cannot drift. The hidden set is one small node
+  // (/settings/missingProductsHidden — hiddenProductsCore.js); a null map
+  // (loading or unreadable) fails open to "nothing hidden". Hiding changes
+  // NOTHING the engine or the scan reads — a hidden product still refills.
+  const hiddenMap = useHiddenMissingProducts();
+  const { visible: missingVisible, hidden: missingHidden } = useMemo(
+    () => partitionHidden(missingProductCards || [], hiddenMap),
+    [missingProductCards, hiddenMap],
+  );
   // Clothing AND perfume cards (2026-08-13) — everything the NetworkTransfer
   // list renders. Named for what it is NOT (sneakers), because the headline sum
   // below adds the sneaker list on top and must count every card exactly once.
-  const missingNonSneaker = missingProductCards?.length ?? null;
+  // VISIBLE cards only (2026-08-13): a hidden product leaves the list and every
+  // count that describes the list — dashboard tile, drill-in badge, chips —
+  // in the same render. Null-while-loading is preserved from the raw compute.
+  const missingNonSneaker = missingProductCards == null ? null : missingVisible.length;
   // SNEAKERS are computed CLIENT-SIDE from live /stock, deliberately, not from the
   // scan's exception buckets: the engine's Health loop is clothing-only
   // (`if (!isClothing(...)) continue` — "sneakers never appear in Health"), so a
@@ -445,7 +462,7 @@ export default function HealthView({ products = [], onExit }) {
         // Three fixed chips — Clothing (owner directive 2026-08-05), Perfume
         // (2026-08-13) and Sneakers (its own list). All always render, even at
         // 0, so the row never reshuffles under the operator.
-        const chips = buildChips(missingProductCards || [], missingSneakerCards.length);
+        const chips = buildChips(missingVisible, missingSneakerCards.length);
         const activeTab = pickActiveTab(chips, missingTab);
         return (
           <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts ?? "—"} onBack={back}>
@@ -464,7 +481,7 @@ export default function HealthView({ products = [], onExit }) {
             </div>
             {activeTab === "sneakers"
               ? <MissingFootwear products={products} />
-              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingProductCards || []} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} />}
+              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingVisible} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} />}
           </DetailShell>
         );
       }

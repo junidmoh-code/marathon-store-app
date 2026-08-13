@@ -10,6 +10,7 @@ import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { STOCK_HOLD_ROOT } from "../../config/stockHold";
+import { HIDDEN_ROOT } from "./hiddenProductsCore";
 
 function useAuthReady() {
   const [ready, setReady] = useState(() => !!auth.currentUser);
@@ -215,6 +216,17 @@ export function useTargetDecisions() {
 // Rejected refill requests the engine will retry automatically every 24h.
 export function useRetryState() {
   return usePath("refill_engine/retryState");
+}
+
+// /settings/missingProductsHidden → { pid: {at,by,reason?} } — the Missing
+// Products VIEW filter (who hid what, when; hiddenProductsCore.js). Its own
+// small node, so this subscription costs the node's size (~90 B/entry), never
+// a whole-tree read. Null (unloaded, empty, or unreadable) fails OPEN — the
+// partition treats it as "nothing hidden", because a discretion filter that
+// cannot load must never hide real work. Path derives from HIDDEN_ROOT so the
+// read can never drift from the writers.
+export function useHiddenMissingProducts() {
+  return usePath(HIDDEN_ROOT);
 }
 
 // /receiving_session → { active, openedAt, closedAt } — while active the

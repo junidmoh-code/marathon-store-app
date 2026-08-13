@@ -23,6 +23,7 @@ import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets"
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts, isClothing } from "./missingProductsCore";
+import { HIDDEN_ROOT, HIDE_REASONS, hideEntry } from "./hiddenProductsCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -67,6 +68,32 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [edits, setEdits] = useState({});     // `${pid}|${size}` → qty
   const [busyPid, setBusyPid] = useState(null);
   const [done, setDone] = useState({});       // pid → {moved, dest, failed[]}
+
+  // ── HIDE — a view filter, never an action on stock ─────────────────────────
+  // Writes ONE entry to /settings/missingProductsHidden/{pid} (who, when,
+  // optional reason — hiddenProductsCore.js) and nothing else. The card leaves
+  // the list because HealthView's partition reacts to the node, so removal is
+  // as live as every other state on this screen. Reason is OPTIONAL by owner
+  // decision — the panel's third choice hides with no reason at all.
+  const [hidePid, setHidePid] = useState(null);   // which row's hide panel is open
+  const [hideBusy, setHideBusy] = useState(null);
+  const [hideErr, setHideErr] = useState({});     // pid → message (write failed)
+  const hide = async (card, reason) => {
+    if (hideBusy || !canAct) return;
+    setHideBusy(card.pid);
+    try {
+      await update(ref(database), {
+        [`${HIDDEN_ROOT}/${card.pid}`]: hideEntry({ at: serverNowMs(), by: auth.currentUser?.uid, reason }),
+      });
+      // The card vanishes via the subscription; clearing the panel state just
+      // keeps a stale pid from re-opening on a product hidden and unhidden.
+      setHidePid((cur) => (cur === card.pid ? null : cur));
+      setHideErr((e) => { const n = { ...e }; delete n[card.pid]; return n; });
+    } catch (e) {
+      setHideErr((prev) => ({ ...prev, [card.pid]: `Couldn't hide — nothing changed, retry. (${e?.message || "error"})` }));
+    }
+    setHideBusy(null);
+  };
 
   // Solve (engine-managed) — separate from the manual transfer above.
   const [solvePid, setSolvePid] = useState(null);   // which row's Solve panel is open
@@ -349,6 +376,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // button under an enabled Solve, which reads as broken. The operator can
         // still pick either store; this only changes which one is pre-selected.
         const sStore = storeFor(card);
+        const hOpen = hidePid === card.pid;
         const plan = sOpen ? solvePlan(card, sStore) : null;
         // The confirm button asks the question of the ONE nominated store, which
         // a per-location policy can answer differently from "any store".
@@ -397,12 +425,18 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
             </>}
             right={
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!!solveBlocked}
+                {canAct && (
+                  <button onClick={() => { setHidePid(hOpen ? null : card.pid); setSolvePid(null); setOpenPid(null); }}
+                          style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.4)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
+                    {hOpen ? "Close" : "Hide"}
+                  </button>
+                )}
+                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setHidePid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!!solveBlocked}
                         title={solveBlocked || undefined}
                         style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: solveBlocked ? "default" : "pointer", opacity: solveBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {sOpen ? "Close" : "Solve"}
                 </button>
-                <button onClick={() => { setOpenPid(open ? null : card.pid); setSolvePid(null); }}
+                <button onClick={() => { setOpenPid(open ? null : card.pid); setSolvePid(null); setHidePid(null); }}
                         style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
                   {open ? "Close" : "Move manually"}
                 </button>
@@ -414,11 +448,32 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 used to hide. It sits above the panels so it is readable with the
                 row collapsed — which is the state an operator meets it in. */}
             {solveBlocked && (
-              <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: sOpen || open ? 8 : 0 }}>
+              <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: sOpen || open || hOpen ? 8 : 0 }}>
                 Solve unavailable — {solveBlocked}
               </div>
             )}
-            {sResult ? (
+            {hOpen ? (
+              <>
+                {/* Hide = discretion, not action: the sentence says so, and the
+                    reason is one optional tap — never a form, never required. */}
+                <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginBottom: 8 }}>
+                  Hide from this list only — stock, refills and every other screen carry on as normal. Staff can unhide it from the hidden list.
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {HIDE_REASONS.map((r) => (
+                    <button key={r.key} onClick={() => hide(card, r.key)} disabled={hideBusy === card.pid} style={destChip(false)}>
+                      {r.label}
+                    </button>
+                  ))}
+                  <button onClick={() => hide(card)} disabled={hideBusy === card.pid} style={destChip(false)}>
+                    {hideBusy === card.pid ? "Hiding…" : "Hide without a reason"}
+                  </button>
+                </div>
+                {hideErr[card.pid] && (
+                  <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 8 }}>{hideErr[card.pid]}</div>
+                )}
+              </>
+            ) : sResult ? (
               <div style={{ fontSize: 12.5 }}>
                 <span style={{ color: sResult.ok ? GREEN : RED, fontWeight: 700 }}>{sResult.msg}</span>
               </div>
